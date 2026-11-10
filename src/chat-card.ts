@@ -91,7 +91,10 @@ export const cardPlainOf = (proposal: { payload: Record<string, unknown> }): str
   typeof proposal.payload["plain"] === "string" ? proposal.payload["plain"] : "This card can't be shown.";
 /** Cards before the proposals they lead to, so each Confirm sits under its card. */
 export function cardsFirst<T extends { kind: string; payload: Record<string, unknown> }>(proposals: readonly T[]): T[] {
-  return [...proposals.filter(isCardProposal), ...proposals.filter(one => !isCardProposal(one))];
+  // A Start card goes last (docs/plans/one-step-chat.md C5): nothing Toolroll sends for the turn comes after it.
+  const start = (one: T) => one.kind === "action" && one.payload["operation"] === "task_start";
+  const rest = proposals.filter(one => !start(one));
+  return [...rest.filter(isCardProposal), ...rest.filter(one => !isCardProposal(one)), ...proposals.filter(start)];
 }
 /** A card goes only where every project behind it is still reachable. */
 export const cardWithin = (card: Pick<ChatCard, "repos">, repos: readonly string[]): boolean => card.repos.every(one => repos.includes(one));

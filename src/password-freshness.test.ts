@@ -468,7 +468,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "authenticateApprover": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
+    "src/chat-actions.ts#executeSharedAction@26": 1,
     "src/control-setup.ts#<module>": 2,
     "src/control-setup.ts#approveSetup@2>store.transact(_)@1": 1,
     "src/desktop-host.ts#<module>": 2,
@@ -875,7 +875,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "spendingOnlyOnSuccess": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25": 1,
+    "src/chat-actions.ts#executeSharedAction@26": 1,
     "src/scope.ts#spendingOnlyOnSuccess@33": 1,
     "src/server/chat.ts#<module>": 2,
     "src/server/chat.ts#createChatHandlers@1>chatProposalAct@22><anonymous>@1": 1,
@@ -947,7 +947,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
   },
   "withFreshness": {
     "src/chat-actions.ts#<module>": 2,
-    "src/chat-actions.ts#executeSharedAction@25>act@2>store.savepoint(_)@1": 1,
+    "src/chat-actions.ts#executeSharedAction@26>act@2>store.savepoint(_)@1": 1,
     "src/scope.ts#withFreshness@34": 1,
     "src/server/chat.ts#<module>": 2,
     "src/server/chat.ts#createChatHandlers@1>chatSend@24>opened:spendingOnlyOnSuccess(_,_)@9": 1,
@@ -962,7 +962,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@11": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
-    "src/chat-actions.ts#fileSweep@30": 1,
+    "src/chat-actions.ts#fileSweep@34": 1,
   },
   // Passwordless (docs/plans/passwordless.md): the credential checks and the session reading, each site reviewed.
   authenticateCredential: {

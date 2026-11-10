@@ -36,7 +36,7 @@ import { releaseCardOf, type ReleaseCard } from "./release-card.js";
 import type { Store } from "./store.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
-import { cardTermsDigest, chatLimitProblem, permissionPlainWords, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
+import { cardTermsDigest, chatLimitProblem, permissionPlainWords, scopeTermsText, shownAsWritten, shownTermsDigest } from "./chat-terms.js";
 import { chainTermsLines } from "./scope.js";
 import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./contracts/youiyoux-request.js";
 import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
@@ -202,9 +202,10 @@ function listedOf(digest: string): Listed[] | null {
  * (after its escapes) Discord's limits, with room for the question a tap adds. Teams draws card text as Markdown, where
  * a link's label hides its address, and Slack turns `:name:` into an emoji: there such words never approve. */
 export function shownWhole(text: string, channel: DecideChannel): boolean {
+  if (!shownAsWritten(text, channel)) return false;
   switch (channel) {
     case "telegram": return text.length + ROOM <= 3_900;
-    case "slack": return text.length + ROOM <= PLATFORM_LIMITS.slack && !/:[a-z0-9_+'-]+:/i.test(text);
+    case "slack": return text.length + ROOM <= PLATFORM_LIMITS.slack;
     case "discord": return discordPlain(text).length + ROOM <= PLATFORM_LIMITS.discord;
     case "teams": return false;
   }

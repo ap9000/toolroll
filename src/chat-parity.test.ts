@@ -75,6 +75,23 @@ describe("the new chat actions", () => {
     store.signMode({ repo, name: terms.name, termsJson: modeTermsJson(terms), digest: modeDigestOf(terms), signedBy: "operator", absoluteExpiry: terms.absoluteExpiry, publication: terms.publication } as never, now);
   }
 
+  test("a Start card is drafted only by the lead's turn loop: propose_action refuses it, get_actions leaves it out, and no turn means no card", () => {
+    const draft = vi.fn(() => 1);
+    const tool = (name: string, args: Record<string, unknown>) => executeLeadTool({ store, who, now, step: 1, readDecisions: new Map(), draft }, name, args);
+    // propose_action's contract doesn't offer it, and its handler refuses it besides.
+    const offered = tool("propose_action", { operation: "task_start", repo: "r1", preview: "0".repeat(32) });
+    expect(offered.ok).toBe(false);
+    expect(offered.ok ? "" : offered.message).toContain("operation: must be one of");
+    expect(offered.ok ? "" : offered.message).not.toContain("task_start");
+    expect(draft).not.toHaveBeenCalled();
+    const listed = tool("get_actions", {});
+    expect(listed.ok && (listed.body as { actions: { operation: string }[] }).actions.some(one => one.operation === "task_start")).toBe(false);
+    expect(() => prepareSharedAction(store, who, "task_start", { repo, preview: "0".repeat(32) }, root, now)).toThrow("This expired. Ask again.");
+    expect(APPROVAL_ACTIONS.has("task_start")).toBe(true);
+    expect(CHAT_ACTIONS.task_start).toEqual({ label: "Start work", protected: true, password: false });
+    expect(CHAT_ACTION_LOCAL_ACTS.task_start).toBe("build-now");
+  });
+
   test("none is a local owner's act", () => {
     for (const operation of ["mode_revoke", "flow_unattended_off", "flow_archive", "provider_resume", "worker_note", "lead_identity", "task_archive", "task_restore", "incident_resolve", "memory_decide"] as const)
       expect(CHAT_ACTION_LOCAL_ACTS[operation], operation).toBeNull();

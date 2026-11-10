@@ -18,6 +18,8 @@ import { flowFromSteps } from "./flows.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
 import { advanceFlows } from "./flow-engine.js";
 import { prepareSharedAction } from "./chat-actions.js";
+import { confirmLeadProposal } from "./lead-doors.js";
+import { installFilingSizer } from "./task-sizing.js";
 import { resolveChannelLead } from "./chat-channel.js";
 import { verifyApproverStanding, ceilingDigestOf } from "./principal.js";
 import { assignmentOf } from "./assignment.js";
@@ -88,13 +90,14 @@ describe("Teams shared chat", () => {
   });
 
   /** A pending card on alex's own Teams thread, planned as a part, without a model turn. */
-  function draft(payload: Record<string, unknown>) {
+  function draft(given: Record<string, unknown> | ((turn: number) => Record<string, unknown>)) {
     const binding = state.bindingFor(credentials.installation, ALEX)!;
     const resolved = resolveChannelLead(store, { approver: binding.approver, approverGeneration: binding.generation }, projects, now);
     if (!resolved.ok) throw Error("session");
     const opened = store.openLeadTurn({ approver: "alex", session: resolved.session.id, thread: resolved.thread.id, credentialKey: resolved.session.credentialKey, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 0, deadlineMs: 60000 }, now);
     if (!opened.ok) throw Error("turn");
     const started = store.startLeadTurn(opened.id, now); if (!started.ok) throw Error("start");
+    const payload = typeof given === "function" ? given(opened.id) : given;
     const id = store.draftLeadProposal({ thread: resolved.thread.id, turn: opened.id, kind: "action", payload, ceilingDigest: resolved.who.ceilingDigest }, now);
     store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 1, tokensOut: 1 }, now);
     const event = chatHash(`card${++ids}`);
@@ -299,6 +302,39 @@ describe("Teams shared chat", () => {
     expect(receive({ ...activity(post("1003"), OTHER, "<at>Toolroll</at> It's the Dell."), id: "1004", conversation: { id: post("1003"), conversationType: "channel", tenantId: TENANT } })).toBe(true);
     await processTeamsEvent(options); await drain();
     expect(store.flowComments(card.id).map(one => one.body)).toEqual(["It's the Dell."]);
+  });
+
+  test("a Start card in Teams is never a tap: Teams reads card text as Markdown, so the card links to the review page and a yes sent through Teams starts nothing", async () => {
+    expect(pairAs("alex", ALEX, DM_ALEX)).not.toBeNull();
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    try {
+      answers.push(
+        { text: "", calls: [{ id: "g0", name: "get_capabilities", args: { repo: "r1" } }] },
+        { text: "", calls: [{ id: "s1", name: "propose_start", args: { repo: "r1", title: "Fix the typo in the footer" } }] },
+        { text: "Here it is." },
+      );
+      expect(receive(activity(DM_ALEX, ALEX, "just fix the typo in the footer"))).toBe(true);
+      await processTeamsEvent(options); await drain();
+      const proposal = Number(state.prepare("SELECT json_extract(payload,'$.proposal') AS id FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal') IS NOT NULL").get()?.id);
+      // The card carries none of the lead's words and no button that answers: one link to the page that shows them whole.
+      expect(lastText()).toBe("Review the full action in Toolroll before confirming.");
+      expect(lastActions()).toEqual([{ type: "Action.OpenUrl", title: "Review and start", url: `https://console.example/chat/action/${proposal}` }]);
+      // The part's own button tokens are never shown. Sent anyway (a replayed or guessed tap), they answer with the review
+      // page and start nothing.
+      const cardId = String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.proposal')=?").get(proposal)?.message);
+      for (const hidden of state.prepare("SELECT token FROM chat_action WHERE provider=:provider AND proposal=? ORDER BY rowid").all(proposal)) {
+        expect(receive({ type: "message", id: `tap-${++ids}`, serviceUrl: SERVICE, from: { id: ALEX }, recipient: { id: `28:${APP}` }, conversation: { id: DM_ALEX, conversationType: "personal", tenantId: TENANT }, replyToId: cardId, value: { so: String(hidden["token"]) } })).toBe(true);
+        await processTeamsEvent(options); await drain();
+        expect(lastText()).toBe("Review the full action in Toolroll before confirming.");
+        expect(lastActions()).toEqual([{ type: "Action.OpenUrl", title: "Review and start", url: `https://console.example/chat/action/${proposal}` }]);
+        expect(store.getLeadProposal(proposal)?.state).toBe("pending");
+      }
+      // A yes that reaches the door through Teams anyway (a forged or replayed callback) is refused there too.
+      const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects); if (!who.ok) throw Error("who");
+      expect(confirmLeadProposal(store, who.who, proposal, now, { authority: "full", via: "teams", confirm: true, evidenceRoot: join(dir, "evidence") })).toMatchObject({ ok: false, reason: "needs-confirm" });
+      expect(store.getLeadProposal(proposal)?.state).toBe("pending");
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
+    } finally { dropSizer(); }
   });
 
   test("the lead's question arrives as card buttons with Something else, and a tap is the owner's next message (ask_owner)", async () => {

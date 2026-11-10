@@ -21,7 +21,15 @@ import {
   sharedActionNeedsReview,
   type ChatAction,
 } from "./chat-actions.js";
-import { confirmLeadProposal } from "./lead-doors.js";
+import { confirmLeadProposal, dismissLeadProposal } from "./lead-doors.js";
+import { fastStartBuild, prepareChatStart } from "./fast-start.js";
+import { shellWordOrNull, startFromTerminalWords } from "./chat-actions.js";
+import { installFilingSizer } from "./task-sizing.js";
+import { setChatApproval } from "./chat-approval.js";
+import { scopeApprovedForDispatch } from "./dispatch.js";
+import { withActor } from "./actor.js";
+import { asLocalOwner } from "./local-owner.js";
+import { withRemote } from "./remote-run.js";
 import { addToolTo, projectToolsOf, validateToolSpec } from "./project-tools.js";
 import { grantListed } from "./subagent-tools.js";
 import { skillsView, importSkill, changeSkills } from "./project-skills.js";
@@ -1119,5 +1127,293 @@ describe("shared chat action lifecycle", () => {
       }).ok,
     ).toBe(false);
     expect(draft).toHaveLength(1);
+  });
+});
+
+/**
+ * The Start card (docs/plans/one-step-chat.md C2), against a real store and approve()'s own proofs: a person's yes files,
+ * approves and marks one small task in one write, under exactly the fast start rules; every road around it refuses.
+ */
+describe("the Start card", () => {
+  let root: string, repo: string, store: Store, who: VerifiedApprover, session: number, thread: number, dropSizer: () => void, token: string;
+  const now = new Date("2026-11-09T12:00:00Z");
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "start-card-")));
+    repo = join(root, "shop");
+    mkdirSync(repo);
+    store = openStore(join(root, "orders.db"));
+    const account = addApprover(store, "operator", now);
+    if (!account.ok) throw Error("account");
+    token = account.token;
+    for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "fixture", now);
+    store.upsertProject(repo, "shop", now);
+    register(store, { name: "worker", host: "fixture", capacity: 4, repos: [repo], now, newToken: () => "tok" });
+    dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    const verified = verifyApproverStanding(store, "operator", store.accountOf("operator")!.generation, [repo]);
+    if (!verified.ok) throw Error("identity");
+    who = verified.who;
+    session = store.mintLeadSession({ approver: who.name, approverGeneration: who.generation, credentialKey: "start", ceilingMicrousd: 10_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "fixture" }, now);
+    thread = store.openLeadThread(who.name, who.ceilingDigest, now).thread.id;
+  });
+  afterEach(() => { dropSizer(); store.close(); rmSync(root, { recursive: true, force: true }); });
+
+  function openTurn(): { id: number; generation: number } {
+    const turn = store.openLeadTurn({ approver: who.name, session, thread, credentialKey: "start", reservedMicrousd: 0, dailyTurns: 100, weeklyCeilingMicrousd: 10_000_000, deadlineMs: 60_000 }, now);
+    if (!turn.ok) throw Error(turn.reason);
+    const started = store.startLeadTurn(turn.id, now);
+    if (!started.ok) throw Error("start");
+    return { id: turn.id, generation: started.generation };
+  }
+  function answer(turn: { id: number; generation: number }): void {
+    store.finalizeLeadTurn(turn.id, turn.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Here it is.", activity: "" } }, now);
+  }
+  /** What the lead's turn loop does: prepare the preview in this turn, then draft the card from it. */
+  async function drafted(title = "Fix the typo in the footer", options: { previewTurn?: "other" } = {}): Promise<{ id: number; preview: string }> {
+    // "other": the preview was prepared in an earlier, finished turn of the same conversation.
+    const earlier = options.previewTurn === "other" ? openTurn() : null;
+    if (earlier !== null) answer(earlier);
+    const other = earlier?.id ?? null;
+    const turn = openTurn();
+    const prepared = await prepareChatStart(store, { actor: who.name, repo, title, turn: other ?? turn.id }, now);
+    if (!prepared.eligible) throw Error(prepared.reason);
+    const action = prepareSharedAction(store, who, "task_start", { repo, preview: prepared.preview }, root, now, other ?? turn.id);
+    const id = store.draftLeadProposal({ thread, turn: turn.id, kind: "action", payload: { ...action }, ceilingDigest: who.ceilingDigest }, now);
+    answer(turn);
+    return { id, preview: prepared.preview };
+  }
+  const tap = (id: number, via: "telegram" | "slack" | "discord" | "teams" | "cli" = "telegram") => confirmLeadProposal(store, who, id, now, { authority: "full", via, confirm: true, evidenceRoot: root });
+  const tasks = () => Number(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]);
+  const used = (preview: string) => store.handle.prepare("SELECT consumed_at FROM fast_preview WHERE id = ?").get(preview)?.["consumed_at"] ?? null;
+
+  test("the card is Toolroll's words: the small-change rule, the lead's words labelled as the lead's, the whole terms", async () => {
+    const { id } = await drafted();
+    const action = readSharedAction(store.getLeadProposal(id)!.payload);
+    if (!action.ok) throw Error("unreadable");
+    expect(action.value.operation).toBe("task_start");
+    expect(action.value.title).toBe("Start work in shop: Fix the typo in the footer");
+    expect(action.value.terms[0]).toBe("Starts now as a small change. If it grows past 3 files or 150 changed lines, it waits for you to approve it again.");
+    expect(action.value.terms[1]).toBe("Written by the lead from your request: “Fix the typo in the footer”");
+    expect(action.value.terms.join("\n")).toContain("Goal:\nFix the typo in the footer");
+    expect(action.value.terms.join("\n")).toContain("Agent permissions and limits");
+    expect(Object.keys(action.value.state).sort()).toEqual(["digest", "preview", "shown", "taskId"]);
+    expect(sharedActionNeedsReview(action.value)).toBe(true);
+  });
+
+  test("a tap files, approves and marks the task in one write", async () => {
+    const { id, preview } = await drafted();
+    const done = tap(id);
+    expect(done).toMatchObject({ ok: true, said: "Started. It's building now." });
+    if (!done.ok || done.taskId === null) throw Error("not started");
+    expect(done.href).toBe(`/t/${done.taskId}`);
+    const scope = store.getScope(done.taskId)!;
+    expect(scope.approvalBasis).toBe("chat");
+    expect(scope.approvedDigest).toBe(scope.digest);
+    expect(store.handle.prepare("SELECT fast_start_at, fast_start_until FROM task_ref WHERE external_id = ?").get(done.taskId)).toMatchObject({ fast_start_at: now.toISOString() });
+    expect(scopeApprovedForDispatch(store, store.lookupRef(done.taskId)!.id, now)).toBe(true);
+    expect(used(preview)).toBe(now.toISOString());
+    expect(store.getLeadProposal(id)!.state).toBe("confirmed");
+  });
+
+  test("a replayed tap does nothing: one task", async () => {
+    const { id } = await drafted();
+    expect(tap(id).ok).toBe(true);
+    expect(tap(id)).toMatchObject({ ok: false, reason: "not-pending" });
+    expect(tasks()).toBe(1);
+  });
+
+  test("a refused tap leaves no task and an unused preview: the person's chat approval off, or over their limit", async () => {
+    const off = await drafted();
+    expect(setChatApproval(store, { approver: who.name, scope: repo, enabled: false, via: "test" }, now).ok).toBe(true);
+    expect(tap(off.id)).toMatchObject({ ok: false, said: "You turned off approving from chat for this project." });
+    expect(tasks()).toBe(0);
+    expect(used(off.preview)).toBeNull();
+    expect(setChatApproval(store, { approver: who.name, scope: repo, enabled: true, limits: { fullAccess: true, capMicrousd: 1_000_000 }, via: "test" }, now).ok).toBe(true);
+    const capped = await drafted();
+    expect(tap(capped.id)).toMatchObject({ ok: false, said: "This is more than your chat approval setting allows." });
+    expect(tasks()).toBe(0);
+    expect(used(capped.preview)).toBeNull();
+  });
+
+  test("a card whose project default changed is stale, and nothing is filed", async () => {
+    const { id } = await drafted();
+    store.setPhaseConfig("installation", "build", "claude", "opus", "fixture", now);
+    expect(tap(id)).toMatchObject({ ok: false, reason: "stale" });
+    expect(tasks()).toBe(0);
+  });
+
+  test("a payload edited after drafting doesn't match its stamp", async () => {
+    const { id } = await drafted();
+    const other = await drafted("Fix the typo in the header");
+    const payload = { ...store.getLeadProposal(id)!.payload } as Record<string, unknown>;
+    payload["request"] = { repo, preview: (store.getLeadProposal(other.id)!.payload["request"] as Record<string, unknown>)["preview"] };
+    store.handle.prepare("UPDATE lead_proposal SET payload_json = ? WHERE id = ?").run(JSON.stringify(payload), id);
+    expect(tap(id)).toMatchObject({ ok: false, reason: "stale" });
+    expect(tasks()).toBe(0);
+  });
+
+  test("another person's tap is refused", async () => {
+    const { id } = await drafted();
+    if (!addApprover(store, "sam", now, { name: "operator", token }).ok) throw Error("sam");
+    const sam = verifyApproverStanding(store, "sam", store.accountOf("sam")!.generation, [repo]);
+    if (!sam.ok) throw Error("identity");
+    expect(confirmLeadProposal(store, sam.who, id, now, { authority: "full", via: "telegram", confirm: true, evidenceRoot: root })).toMatchObject({ ok: false, reason: "not-yours" });
+    expect(tasks()).toBe(0);
+  });
+
+  test("a preview from another turn is refused", async () => {
+    const { id } = await drafted("Fix the typo in the footer", { previewTurn: "other" });
+    expect(tap(id)).toMatchObject({ ok: false, reason: "stale", said: "This expired. Ask again." });
+    expect(tasks()).toBe(0);
+  });
+
+  test("`toolroll chat` refuses and names the terminal's own fast start; the card stays pending", async () => {
+    const { id } = await drafted();
+    expect(tap(id, "cli")).toMatchObject({ ok: false, reason: "not-confirmable", said: `Start it from the terminal with \`toolroll task new 'Fix the typo in the footer' --repo ${shellWordOrNull(repo) ?? "<project>"}\`.` });
+    expect(store.getLeadProposal(id)!.state).toBe("pending");
+    expect(tasks()).toBe(0);
+  });
+
+  test("the terminal words never carry a hostile title or project into the command: placeholders instead", () => {
+    const words = (title: string, project = "/work/shop") => {
+      store.handle.prepare("DELETE FROM fast_preview WHERE id = 'p-shell'").run();
+      store.handle.prepare(`INSERT INTO fast_preview (id, actor, via, task_id, repo, title, permission, sizing_json, digest, created_at, expires_at, turn) VALUES ('p-shell', 'operator', 'chat', 't', ?, ?, NULL, '{}', 'd', ?, ?, 1)`)
+        .run(project, title, now.toISOString(), now.toISOString());
+      return startFromTerminalWords(store, { repo: project, state: { preview: "p-shell" } });
+    };
+    const hostile = ["$(touch x)", "a `whoami` b", "it's", 'say "hi"', "line one\nline two", "; rm -rf ~", "--repo /etc", "x".repeat(500)];
+    for (const title of hostile) {
+      const said = words(title);
+      expect(said, title).toBe("Start it from the terminal with `toolroll task new \"<title>\" --repo '/work/shop'`.");
+      expect(said.includes(title), title).toBe(false);
+    }
+    expect(words("Fix the login button label")).toBe("Start it from the terminal with `toolroll task new 'Fix the login button label' --repo '/work/shop'`.");
+    expect(words("Fix the login button label", "/work/$(touch x)")).toBe("Start it from the terminal with `toolroll task new 'Fix the login button label' --repo <project>`.");
+    expect(words("Fix the login button label", "/work/it's")).toContain("--repo <project>`");
+    expect(shellWordOrNull("Ünïcode titel 2")).toBe("'Ünïcode titel 2'");
+    for (const bad of ["", "-x", "a!b", "a*b", "a=b", "a%b", "a~b", "a{b}", "a[b]", "a<b>", "a|b", "a&b", "a\\b", "a\tb"]) expect(shellWordOrNull(bad), bad).toBeNull();
+  });
+
+  test("a tap without the challenge, or a web click without the review page, is refused", async () => {
+    const { id } = await drafted();
+    expect(confirmLeadProposal(store, who, id, now, { authority: "full", via: "telegram", evidenceRoot: root })).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(confirmLeadProposal(store, who, id, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root })).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(tasks()).toBe(0);
+  });
+
+  test("the signed-in web chat starts it through the review page", async () => {
+    const { id } = await drafted();
+    const review = mintSharedActionReview(store, who, id, root, now);
+    expect(confirmLeadProposal(store, who, id, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: true, said: "Started. It's building now." });
+    expect(tasks()).toBe(1);
+  });
+
+  test("terms too long for the card open the review page", async () => {
+    // Many project tools make the card's terms longer than a chat card shows whole.
+    for (let one = 0; one < 140; one++) addToolTo(store, repo, validateToolSpec({ name: `tool-number-${one}`, transport: "stdio", command: "node", args: ["server.js"], url: null, secrets: [], bearer: null, about: "x" }), "test", "operator", now);
+    const { id } = await drafted();
+    const action = readSharedAction(store.getLeadProposal(id)!.payload);
+    if (!action.ok) throw Error("unreadable");
+    expect(action.value.terms.join("\n").length).toBeGreaterThan(3000);
+    expect(tap(id)).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(tasks()).toBe(0);
+  });
+
+  test("a lead-actor call to the executor is refused", async () => {
+    const { id } = await drafted();
+    const asLead = withActor({ account: who.name, lead: true }, () => tap(id));
+    expect(asLead).toMatchObject({ ok: false });
+    expect(tasks()).toBe(0);
+    expect(store.getLeadProposal(id)!.state).toBe("pending");
+  });
+
+  test("a dismissed card's preview can't be used", async () => {
+    const { id, preview } = await drafted();
+    expect(dismissLeadProposal(store, who, id, now)).toBe(true);
+    expect(used(preview)).toBe(now.toISOString());
+    expect(fastStartBuild(store, { preview, digest: "", actor: who.name, via: "chat", turn: store.getLeadProposal(id)!.turn, proof: { chat: { fullAccess: true, capMicrousd: null } }, approveNow: () => { throw Error("never"); } }, now)).toMatchObject({ ok: false, reason: "gone" });
+    expect(tasks()).toBe(0);
+  });
+
+  describe("typedStart opens one gate, for one operation, on Telegram only", () => {
+    /** A typed yes recorded for `proposal` (as ingress writes it). */
+    function recorded(proposal: number, event = "m9000"): { provider: string; event: string } {
+      const stamp = String(store.getLeadProposal(proposal)!.payload["stamp"] ?? "x");
+      store.handle.prepare(`INSERT INTO chat_event (provider, id, installation, binding, kind, channel, member, ts, thread, payload, created) VALUES ('telegram', ?, 'bot', NULL, 'message', 'c', 'u', '1', '', '{}', ?)`).run(event, now.toISOString());
+      store.handle.prepare(`INSERT INTO chat_typed_start (provider, event, proposal, card_message, stamp, how, created) VALUES ('telegram', ?, ?, '1', ?, 'next', ?)`).run(event, proposal, stamp, now.toISOString());
+      return { provider: "telegram", event };
+    }
+    const typedTap = (id: number, typedStart: { provider: string; event: string }, via: "telegram" | "slack" | "discord" | "teams" | "web" | "cli" = "telegram") =>
+      confirmLeadProposal(store, who, id, now, { authority: "full", via, evidenceRoot: root, typedStart, ...(via === "web" ? { person: true } : {}) });
+
+    test("the door's own road: a recorded yes for this card, on Telegram, starts it, and never with confirm or a review", async () => {
+      const { id } = await drafted();
+      expect(typedTap(id, recorded(id))).toMatchObject({ ok: true, said: "Started. It's building now." });
+      const proof = JSON.parse(String(store.handle.prepare("SELECT detail FROM action_ledger WHERE action = 'approval proved'").get()?.["detail"]));
+      expect(proof.typed).toEqual({ provider: "telegram", event: "m9000" });
+    });
+
+    test("on any other chat, on web or the terminal, it refuses and the card stays pending", async () => {
+      const { id } = await drafted();
+      const typed = recorded(id);
+      for (const via of ["slack", "discord", "teams", "web", "cli"] as const) expect(typedTap(id, typed, via), via).toMatchObject({ ok: false });
+      expect(store.getLeadProposal(id)!.state).toBe("pending");
+      expect(tasks()).toBe(0);
+    });
+
+    test("a yes recorded for another card, an unrecorded message, a settled record or another provider refuses", async () => {
+      const { id } = await drafted();
+      const other = await drafted("Fix the typo in the header");
+      expect(typedTap(id, recorded(other.id))).toMatchObject({ ok: false, reason: "refused", said: "That yes didn't start anything. Tap Start work on the card." });
+      expect(typedTap(id, { provider: "telegram", event: "m404" })).toMatchObject({ ok: false, reason: "refused" });
+      const mine = recorded(id, "m9001");
+      expect(typedTap(id, { provider: "slack", event: mine.event })).toMatchObject({ ok: false, reason: "refused" });
+      store.handle.prepare("UPDATE chat_typed_start SET outcome = 'not-counted' WHERE event = 'm9001'").run();
+      expect(typedTap(id, mine)).toMatchObject({ ok: false, reason: "refused" });
+      expect(tasks()).toBe(0);
+      expect(store.getLeadProposal(id)!.state).toBe("pending");
+    });
+
+    test("on any other operation, or any other kind of card, it refuses", async () => {
+      // Another approval action, recorded as if it were a Start card's yes.
+      const turn = openTurn();
+      if (!fileTaskProposal(store, { id: "plain", title: "Plain work", repo, filedVia: "cli", planning: "skip" }, now).ok) throw Error("file");
+      const action = prepareSharedAction(store, who, "task_cancel", { task: "plain" }, root, now, turn.id);
+      const cancel = store.draftLeadProposal({ thread, turn: turn.id, kind: "action", payload: { ...action }, ceilingDigest: who.ceilingDigest }, now);
+      const task = store.draftLeadProposal({ thread, turn: turn.id, kind: "task", payload: { repo, title: "x", goal: "x", acceptance: [{ id: "c1", statement: "x", evidence: ["manual-review"] }] }, ceilingDigest: who.ceilingDigest }, now);
+      answer(turn);
+      expect(typedTap(cancel, recorded(cancel, "m9100"))).toMatchObject({ ok: false, reason: "refused" });
+      expect(typedTap(task, recorded(task, "m9101"))).toMatchObject({ ok: false, reason: "refused" });
+      expect(store.getTask("plain")?.state).not.toBe("cancelled");
+      expect(store.getLeadProposal(task)!.state).toBe("pending");
+    });
+
+    test("a lead-actor or remote call with a recorded yes is refused", async () => {
+      const { id } = await drafted();
+      const typed = recorded(id);
+      expect(withActor({ account: who.name, lead: true }, () => typedTap(id, typed))).toMatchObject({ ok: false });
+      expect(withRemote({ account: who.name, scope: "act", tokenName: "t", source: "api", secret: "s", allows: () => true, lens: null, noteTask: () => {}, files: {} }, () => typedTap(id, typed))).toMatchObject({ ok: false });
+      expect(tasks()).toBe(0);
+      expect(store.getLeadProposal(id)!.state).toBe("pending");
+    });
+
+    test("terms too long for the card: a typed yes can't stand in for the review page", async () => {
+      for (let one = 0; one < 140; one++) addToolTo(store, repo, validateToolSpec({ name: `tool-number-${one}`, transport: "stdio", command: "node", args: ["server.js"], url: null, secrets: [], bearer: null, about: "x" }), "test", "operator", now);
+      const { id } = await drafted();
+      expect(typedTap(id, recorded(id))).toMatchObject({ ok: false, reason: "refused" });
+      expect(tasks()).toBe(0);
+    });
+  });
+
+  test("this computer's local owner starts it on web chat, on the password arm's basis", async () => {
+    // Local mode on for this owner (the laptop install's own row; initLocalMode makes it only on a new laptop).
+    store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, 'operator', 1, 1, ?, ?)").run(now.toISOString(), now.toISOString());
+    const { id } = await drafted();
+    const review = mintSharedActionReview(store, who, id, root, now);
+    const owner = { account: "operator", localGeneration: Number(store.handle.prepare("SELECT generation FROM local_mode WHERE id = 1").get()?.["generation"]), accountGeneration: who.generation, transport: "browser" as const, act: "read" as const, sessionHash: null, request: null };
+    const done = asLocalOwner(owner, () => confirmLeadProposal(store, who, id, now, { authority: "local-owner", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } }));
+    expect(done).toMatchObject({ ok: true });
+    if (!done.ok || done.taskId === null) throw Error("not started");
+    expect(store.getScope(done.taskId)!.approvalBasis).toBe("password");
+    expect(store.handle.prepare("SELECT outcome FROM action_ledger WHERE task_id = ? AND action = 'approval proved'").get(done.taskId)?.["outcome"]).toBe("local-owner");
   });
 });

@@ -114,6 +114,8 @@ export const chatActionRequestSchemas = {
   result_accept: z.strictObject({ task: words, run: id }),
   task_cancel: z.strictObject({ task: words }),
   task_resume: z.strictObject({ task: words, run: id }),
+  /** One-step start from chat: the project and the preview the lead's turn loop prepared (never the model's id). */
+  task_start: z.strictObject({ repo: words, preview: words }),
 } as const;
 
 export type ChatActionOperation = keyof typeof chatActionRequestSchemas;

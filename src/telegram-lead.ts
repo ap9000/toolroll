@@ -1,7 +1,8 @@
 import { telegramCardMessage } from "./card-render.js";
 import { cardOfProposal, cardPlainOf, cardsFirst, cardWithin, isCardProposal } from "./chat-card.js";
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
-import { armedQuestion, taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, phoneProposalLink, confirmedLink, phoneProposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
+import { typedStartOf } from "./typed-start.js";
+import { armedQuestion, taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, phoneProposalLink, confirmedLink, startedTaskLink, phoneProposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
 export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
 /**
  * The paired phone as one more way to use the same assistant.
@@ -26,7 +27,7 @@ export { channelRepos as telegramConversationRepos, resolveChannelLead as resolv
  */
 import { createHash, randomBytes } from "node:crypto";
 import { leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
-import { confirmLeadProposal, dismissLeadProposal } from "./lead-doors.js";
+import { confirmLeadProposal, confirmTypedStart, dismissLeadProposal, TYPED_START_STARTED } from "./lead-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import { LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
@@ -166,7 +167,10 @@ export function mintCardTokens(store: Store, binding: TelegramBinding, proposal:
   for (const [token, phase] of [[confirm, "confirm"], [dismiss, "dismiss"]] as const) {
     store.createTelegramProposalAction({ token, binding: binding.id, proposal, phase, chatId, ttlMs: CARD_TTL_MS, ...(messageId === undefined ? {} : { messageId }) }, now);
   }
-  return { keyboard: [[telegramButton("Confirm", confirm), telegramButton("Dismiss", dismiss)]], tokens: [confirm, dismiss] };
+  // A Start card's button says what it does: the card's last line tells the person to tap it (or reply yes).
+  const saved = store.getLeadProposal(proposal);
+  const label = saved?.kind === "action" && sharedActionPayload(saved.payload)?.operation === "task_start" ? "Start work" : "Confirm";
+  return { keyboard: [[telegramButton(label, confirm), telegramButton("Dismiss", dismiss)]], tokens: [confirm, dismiss] };
 }
 
 export type CardEffect =
@@ -298,7 +302,7 @@ export function applyProposalTap(
   }
   const irreversible = proposal.kind === "answer" && proposal.payload["reversible"] === false;
   const sharedAction = proposal.kind === "action" ? sharedActionPayload(proposal.payload) : null;
-  const challenged = sharedAction !== null && sharedActionAllowsChallenge(sharedAction);
+  const challenged = sharedAction !== null && sharedActionAllowsChallenge(sharedAction, "telegram");
   // The arm: two fresh one-time tokens make a real challenge, exactly as a
   // decision button does. Nothing is answered or recorded here.
   const arm = (): void => {
@@ -619,7 +623,11 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
         const proposal = part.kind === "card" && part.proposal !== null ? store.getLeadProposal(part.proposal) : null;
         const origin = proposal === null ? null : options.phoneOrigin?.() ?? null;
         const wanted = proposal === null ? null : phoneProposalLink(store, proposal, repos);
-        const keyboard = keyboardWith(part.keyboard, phoneLinkButton(origin, wanted));
+        // A typed yes that started a task (one-step-chat.md C5): Toolroll's reply carries the task's link, as a tapped
+        // card does. From the record and the origin read now, like every link.
+        const yes = part.kind === "reply" ? typedStartOf(store, "telegram", `m${row.id}`) : null;
+        const started = yes !== null && yes.outcome === "started" && yes.taskId !== null ? phoneLinkButton(options.phoneOrigin?.() ?? null, startedTaskLink(store, yes.taskId, repos)) : null;
+        const keyboard = keyboardWith(part.keyboard, started ?? phoneLinkButton(origin, wanted));
         // A Toolroll card: read again now, shown only where every project behind it is still reachable. An unreadable
         // one goes out as its saved plain words.
         const isCard = proposal !== null && isCardProposal(proposal);
@@ -773,6 +781,57 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     return;
   }
   const repos = telegramConversationRepos(store, binding.approver, registry);
+
+  // A typed yes to a Start card (docs/plans/one-step-chat.md C5), recorded when the message arrived: Toolroll acts on it
+  // here and no lead turn runs for it. Its outcome and Toolroll's own reply are written in ONE transaction (the claim
+  // fences the reply; a lapsed claim takes the whole act back), then sent like any reply. A settled record returns its
+  // first outcome, so a redelivery or a crash starts nothing more.
+  const typed = typedStartOf(store, "telegram", `m${row.id}`);
+  if (typed !== null) {
+    const verified = verifyApproverStanding(store, binding.approver, binding.approverGeneration, repos);
+    // The card's turn is gone when the chat was ended (its proposals are deleted) or its project deleted: there is then
+    // no session to send a reply under, and nothing can have started. Toolroll says so itself. The yes is never passed on.
+    const unanchored: { said: string | null } = { said: null };
+    try {
+      store.transact(() => {
+        const now = clock();
+        const answered = confirmTypedStart(store, verified.ok ? verified.who : null, { provider: "telegram", event: typed.event }, now, { binding: binding.id, evidenceRoot: options.evidenceRoot });
+        // The reply is fenced on the session the card was composed under.
+        const card = store.getLeadProposal(typed.proposal);
+        const turn = card === null ? null : store.getLeadTurn(card.turn);
+        if (turn === null) {
+          // A start without its card can't happen (the door re-reads the card); if it ever did, take it back.
+          if (answered.ok) throw new PlanRefused();
+          unanchored.said = answered.said;
+          return;
+        }
+        // The card is answered: its buttons are spent with it.
+        if (answered.ok) store.consumeTelegramProposalActions(typed.proposal, now);
+        if (!store.planTelegramConversationParts(row.id, owner, { session: turn.session, turn: turn.id }, [{ kind: "reply", text: answered.said, replyTo: row.messageId }], now)) throw new PlanRefused();
+      });
+    } catch (error) {
+      if (error instanceof PlanRefused) return;
+      throw error;
+    }
+    if (unanchored.said !== null) {
+      await notify(unanchored.said);
+      finish({ state: "failed", outcome: "typed-start:not-counted" });
+      report.refused++;
+      return;
+    }
+    // The card it answered is repainted as a tap's would be, best effort: its buttons are already spent, and the
+    // reply below says the same words with the same link.
+    const settled = typedStartOf(store, "telegram", typed.event);
+    if (settled?.outcome === "started" && settled.taskId !== null && pairingProblem() === null && held()) {
+      const link = phoneLinkButton(options.phoneOrigin?.() ?? null, startedTaskLink(store, settled.taskId, repos));
+      try {
+        await transport("editMessageText", { chat_id: chatId, message_id: Number(typed.cardMessage), text: `✓ ${TYPED_START_STARTED}`, link_preview_options: { is_disabled: true },
+          reply_markup: { inline_keyboard: link === null ? [] : [link] } });
+      } catch { /* the reply below still says it */ }
+    }
+    await sendOrHandOff("typed-start");
+    return;
+  }
 
   // 4. A session bound before an earlier dispatch: the receipt lives there,
   // whatever session is live today.

@@ -77,7 +77,9 @@ test("every lead proposal kind and chat operation is decided, and the decisions 
   expect(Object.keys(CHAT_ACTION_LOCAL_ACTS).sort()).toEqual(Object.keys(CHAT_ACTIONS).sort());
   expect(Object.keys(CHAT_TASK_ACTION_LOCAL_ACTS).sort()).toEqual(Object.keys(CHAT_TASK_ACTIONS).sort());
   expect(Object.entries(CHAT_ACTION_LOCAL_ACTS).filter(([, act]) => act !== null).sort()).toEqual([
-    ["code_map_switch", "code-map-switch"], ["result_accept", "complete-task"], ["scope_approve", "approve-plan"], ["suggestion_not_now", "dismiss-suggestion"], ["task_cancel", "stop-run"], ["task_resume", "resume-run"], ["trial_stop", "trial-stop"]]);
+    ["code_map_switch", "code-map-switch"], ["result_accept", "complete-task"], ["scope_approve", "approve-plan"], ["suggestion_not_now", "dismiss-suggestion"], ["task_cancel", "stop-run"], ["task_resume", "resume-run"],
+    // A Start card is the fast start's own act: the console's tasks.fast route, said in chat.
+    ["task_start", "build-now"], ["trial_stop", "trial-stop"]]);
 });
 
 test("every declared CLI command is marked for the local owner, and no mark names a missing command", () => {

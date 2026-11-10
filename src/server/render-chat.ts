@@ -773,7 +773,8 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
       )}`;
   } else if (view.kind === "action") {
     const action=sharedActionPayload(payload);
-    what=action===null?html`<p>This action is unavailable.</p>`:(sharedActionNeedsReview(action)?html``:html`${action.terms.map(term=>html`<p style="white-space:pre-wrap;overflow-wrap:anywhere">${term}</p>`)}`);
+    // A Start card (one-step-chat.md C2) names what starts and where; its whole terms and the confirm are on the review page.
+    what=action===null?html`<p>This action is unavailable.</p>`:action.operation==="task_start"?html`<h3>${action.title}</h3>${facts(["project", mono(action.repo.split(/[\\/]/).filter(Boolean).at(-1) ?? action.repo)])}`:(sharedActionNeedsReview(action)?html``:html`${action.terms.map(term=>html`<p style="white-space:pre-wrap;overflow-wrap:anywhere">${term}</p>`)}`);
   } else if (view.kind === "task_action") {
     const operation = payload["operation"];
     what = html`<h3>${text("taskTitle") || task}</h3>${
@@ -911,7 +912,7 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
   if (view.state === "pending" && !inert) {
     acts =
       view.kind === "action" && sharedActionPayload(payload)!==null && sharedActionNeedsReview(sharedActionPayload(payload)!)
-        ? html`<a class="button-link" href="${sharedActionReviewPath(view.id)}">Review action</a>${dismissForm(html`<button class="quiet">Dismiss</button>`)}`
+        ? html`<a class="button-link" href="${sharedActionReviewPath(view.id)}">${reviewWords(sharedActionPayload(payload))}</a>${dismissForm(html`<button class="quiet">Dismiss</button>`)}`
         : view.kind === "control"
         ? (isChatControl(payload["control"]) ? html`<a class="button-link" href="${chatControlHref(payload["control"], task, payload["run"], payload["project"])}">${CHAT_CONTROLS[payload["control"]].label}</a>` : html`<p>Control unavailable.</p>`)
         : view.kind === "cancel"
@@ -946,7 +947,7 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
   const sentence = (words: string): string => words.charAt(0).toUpperCase() + words.slice(1);
   const pending = view.state === "pending" && !inert;
   const primary: BrowserActionCard["primary"] = !pending ? null
-    : reviewAction !== null && sharedActionNeedsReview(reviewAction) ? { kind: "link", label: "Review action", href: sharedActionReviewPath(view.id) }
+    : reviewAction !== null && sharedActionNeedsReview(reviewAction) ? { kind: "link", label: reviewWords(reviewAction), href: sharedActionReviewPath(view.id) }
     : view.kind === "control" ? (isChatControl(payload["control"]) ? { kind: "link", label: CHAT_CONTROLS[payload["control"]].label, href: chatControlHref(payload["control"], task, payload["run"], payload["project"]) } : null)
     : view.kind === "cancel" ? { kind: "link", label: "Open task", href: taskHref(task) }
     : { kind: "confirm", label: sentence(presentation.action), irreversible, native: view.kind === "task_action" && payload["operation"] === "resume" };
@@ -964,6 +965,11 @@ export function proposalCardParts(view: ProposalCardView, inert: boolean, decisi
       : view.state === "dismissed" ? "Dismissed." : view.state === "expired" ? "Expired — this conversation moved on." : null,
   };
   return { html: cardHtml, card };
+}
+
+/** The review link's words: a Start card's is "Review and start". */
+function reviewWords(action: { operation: string } | null): string {
+  return action?.operation === "task_start" ? "Review and start" : "Review action";
 }
 
 export function leadProposalCard(proposal: LeadProposal, inert: boolean, decision: Decision | null, returnTo: string | null = null): Html {

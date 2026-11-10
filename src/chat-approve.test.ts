@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { withActor } from "./actor.js";
 import { CHAT_ACTIONS, mintSharedActionReview, prepareSharedAction, sharedActionAllowsChallenge, sharedActionPayload, APPROVAL_ACTIONS } from "./chat-actions.js";
 import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
-import { cardShowsScope, cardTermsDigest, chatLimitProblem, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
+import { cardShowsScope, cardTermsDigest, chatLimitProblem, scopeTermsText, shownAsWritten, shownTermsDigest } from "./chat-terms.js";
 import { checkAccessWords } from "./check-access.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 import { confirmLeadProposal } from "./lead-doors.js";
@@ -60,18 +60,41 @@ describe("approving from chat", () => {
 
   test("every approval says it needs no password, and each is protected: never a one-tap act", () => {
     for (const operation of APPROVAL_ACTIONS) expect(CHAT_ACTIONS[operation]).toMatchObject({ protected: true, password: false });
-    expect(sharedActionAllowsChallenge(sharedActionPayload(store.getLeadProposal(draft())!.payload)!)).toBe(true);
+    expect(sharedActionAllowsChallenge(sharedActionPayload(store.getLeadProposal(draft())!.payload)!, "telegram")).toBe(true);
   });
 
   test("a term the card would show rewritten (a 40-hex value shown as [digest]) is never complete consent", () => {
     const card = sharedActionPayload(store.getLeadProposal(draft())!.payload)!;
-    expect(sharedActionAllowsChallenge(card)).toBe(true);
+    expect(sharedActionAllowsChallenge(card, "telegram")).toBe(true);
     const sha = "0123456789abcdef0123456789abcdef01234567";
     // The same card with a term that carries a full commit or a key-like value: the card can't show it verbatim.
-    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Deploy commit ${sha}`] })).toBe(false);
-    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Token ${"ab".repeat(20)}`] })).toBe(false);
+    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Deploy commit ${sha}`] }, "telegram")).toBe(false);
+    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Token ${"ab".repeat(20)}`] }, "telegram")).toBe(false);
     // Written short, as Toolroll writes a commit, it shows exactly and stays a card the person can confirm.
-    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Deploy commit ${sha.slice(0, 7)}`] })).toBe(true);
+    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, `Deploy commit ${sha.slice(0, 7)}`] }, "telegram")).toBe(true);
+  });
+
+  test("an approval is never a tap where the chat app would show its words changed: Teams always, Slack when a word becomes an emoji", () => {
+    const id = draft(), card = sharedActionPayload(store.getLeadProposal(id)!.payload)!;
+    for (const channel of ["telegram", "slack", "discord"] as const) expect(sharedActionAllowsChallenge(card, channel)).toBe(true);
+    // Teams draws card text as Markdown: a link's label hides its address, so its card never shows the stored words.
+    expect(sharedActionAllowsChallenge(card, "teams")).toBe(false);
+    expect(sharedActionAllowsChallenge({ ...card, title: "Approve [the footer fix](https://example.test/and-the-header)" }, "teams")).toBe(false);
+    // Slack turns `:name:` into a picture; the same words are plain text on Telegram.
+    const emoji = { ...card, terms: [...card.terms, "Also :tada: the header"] };
+    expect(sharedActionAllowsChallenge(emoji, "slack")).toBe(false);
+    expect(sharedActionAllowsChallenge(emoji, "telegram")).toBe(true);
+    // A workspace's own emoji can be named in any script; an address with a port is not an emoji.
+    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, "Also :猫: the header"] }, "slack")).toBe(false);
+    expect(shownAsWritten("See http://localhost:8080/a: the page", "slack")).toBe(true);
+    expect(shownAsWritten("Checks: npm test. Limit: $2.", "slack")).toBe(true);
+    // The door reads the same rule from the chat app the tap came through: a yes sent through Teams seals nothing, and
+    // the card stays for the review page.
+    expect(confirmLeadProposal(store, who, id, now, { authority: "full", via: "teams", confirm: true, evidenceRoot: root })).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(sealed()).toBeNull();
+    expect(store.getLeadProposal(id)?.state).toBe("pending");
+    // The same yes through Slack, where these words are shown as stored, approves.
+    expect(tap(id)).toMatchObject({ ok: true });
   });
 
   test("a person's own second tap approves, recorded as that person, bound to these exact terms", () => {

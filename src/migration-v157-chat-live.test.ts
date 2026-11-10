@@ -17,7 +17,7 @@ describe("v157", () => {
     const fresh = openStore(":memory:");
     for (const table of V157_TABLES) expect(tables(fresh.handle)).toContain(table);
     fresh.close();
-    expect(SCHEMA_VERSION).toBe(158);
+    expect(SCHEMA_VERSION).toBe(159);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(157);
     expect(updateSafeSchema(156)).toBe(true);
     expect(V157_STEPS).toEqual(["chat-live-tables"]);
@@ -47,10 +47,10 @@ describe("v157", () => {
     // The new rows hang off a saved event, and only an app that has live replies may own one.
     upgraded.handle.prepare("INSERT INTO chat_live (provider, event, state, created, updated) VALUES ('slack', 'saved-event', 'creating', 'now', 'now')").run();
     expect(() => upgraded.handle.prepare("INSERT INTO chat_ack (provider, event, state, created, updated) VALUES ('telegram', 'saved-event', 'sent', 'now', 'now')").run()).toThrow();
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(158);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
     upgraded.close();
     const again = openStore(file);
-    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(158);
+    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
     again.close();
   });
 });

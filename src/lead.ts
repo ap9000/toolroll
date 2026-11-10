@@ -46,7 +46,8 @@ import {
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { redactSecretAssignments } from "./builder.js";
 import { LEAD_CONTRACT } from "./lead-contract.js";
-import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOL_SCHEMAS, executeLeadTool, isLeadTool, leadViewContextFor, projectLabelForLead, redactForLead, toolResultBytes } from "./lead-tools.js";
+import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOL_SCHEMAS, executeLeadTool, isLeadTool, leadViewContextFor, projectLabelForLead, redactForLead, startInputOf, toolResultBytes, type LeadToolContext } from "./lead-tools.js";
+import { prepareChatStart, type FastPreview } from "./fast-start.js";
 import type { ReviewSnapshot } from "./chat-review.js";
 import { composeSubscriptionLeadPrompt, performSubscriptionLeadRequest, type SubscriptionLeadRunner } from "./subscription-chat.js";
 import { LEAD_REPLY_LIMITS, leadContext, type LeadChannel } from './lead-context.js';
@@ -710,9 +711,23 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       progress({ kind: "tool", turn: turnId, step: steps, id: progressId, label: leadToolLabel(call.name) });
       // A registered tool this request did not advertise is refused before it is read or run (the only production
       // caller of executeLeadTool): the model learns the road (find_tools, then the next step) and the reply goes on.
+      const toolContext = (): LeadToolContext => ({ store, who, now: clock(), draft, selectEvidence, ...(input.replyImage === undefined ? {} : { replyImage: input.replyImage }), step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) });
+      // propose_start (docs/plans/one-step-chat.md C3), after the advertisement gate: its input is validated first (so
+      // invalid input never reaches the classifier), then Toolroll prepares this call's own preview in this turn (up to
+      // the classifier's budget), then the person's standing and the thread are re-proved after that wait, and only then
+      // does the tool run, with the preview in this call's own context. The model's arguments never name it.
+      let startPrepared: FastPreview | undefined;
+      if (call.name === "propose_start" && advertisedNames.has(call.name)) {
+        const checked = startInputOf(toolContext(), call.args);
+        if (checked.ok) {
+          startPrepared = await prepareChatStart(store, { actor: who.name, repo: checked.input.repo, title: checked.input.title, turn: turnId }, clock());
+          const changed = guard(await revalidated());
+          if (changed !== null) return changed;
+        }
+      }
       const outcome = !advertisedNames.has(call.name)
         ? { ok: false as const, message: `${call.name} isn't available in this step. Call find_tools with what you want to do; tools it finds can be called from your next step.` }
-        : executeLeadTool({ store, who, now: clock(), draft, selectEvidence, ...(input.replyImage === undefined ? {} : { replyImage: input.replyImage }), step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
+        : executeLeadTool({ ...toolContext(), ...(startPrepared === undefined ? {} : { startPrepared }) }, call.name, call.args, view);
       let displayOutcome: LeadToolOutcome = { state: "succeeded" };
       if (!outcome.ok) {
         const reason = leadToolFailureReason(call.name, outcome.message);

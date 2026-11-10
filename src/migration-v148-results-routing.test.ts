@@ -47,8 +47,8 @@ describe("the v148 migration", () => {
   test("a fresh database has every table and column", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v148-"));
     const store = opened(openStore(join(dir, "fresh.db")));
-    expect(SCHEMA_VERSION).toBe(158);
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(158);
+    expect(SCHEMA_VERSION).toBe(159);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
     expect(tables(store)).toEqual([...V148_TABLES].sort());
     for (const [table, columns] of Object.entries(V148_ADDED_COLUMNS)) {
       const present = store.handle.prepare(`PRAGMA table_info(${table})`).all().map(row => String(row["name"]));
@@ -64,7 +64,7 @@ describe("the v148 migration", () => {
     expect(updateSafeSchema(147)).toBe(true);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(148);
     const store = opened(openStore(file));
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(158);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
     expect(tables(store)).toEqual([...V148_TABLES].sort());
     // Saved rows: no class kept (counts as the model's), no origin (never a person), suggestions on.
     expect(store.handle.prepare("SELECT exec_class FROM run").all().map(row => row["exec_class"])).toEqual([null]);
@@ -102,7 +102,7 @@ describe("the v148 migration", () => {
     const peek = new DatabaseSync(crashed, { readOnly: true });
     try { expect(peek.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(-147); } finally { peek.close(); }
     const resumed = opened(openStore(crashed));
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(158);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
     expect(rowsOf(resumed)).toEqual(rowsOf(whole));
   });
 });

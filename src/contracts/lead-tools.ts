@@ -57,7 +57,7 @@ export const CODE_MAP_VIEWS = ["overview", "area", "file", "search"] as const;
 export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 
 /** The shared actions the lead proposes with propose_action; flows and subagents have their own tools. */
-const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_"));
+const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWith("flow_") && !one.startsWith("subagent_") && one !== "task_start");
 
 /** A card's spec as the lead sees it: one flat props object. Each element's own props are read strictly by card-catalog.ts. */
 const cardProps = z.strictObject({
@@ -154,6 +154,8 @@ export const LEAD_TOOL_INPUTS = {
     not: scopeText.nullable().optional(), touches: touches.optional(), acceptance,
     planning: z.enum(["auto", "required", "skip"]).optional(), report: z.boolean().optional(), checks: text("checksWords").optional(),
   }),
+  // One-step start from chat (docs/plans/one-step-chat.md C3): one small change the person asked to be done now.
+  propose_start: z.strictObject({ repo: repoId, title: text("taskTitle") }),
   // Lead fan-out (docs/plans/lead-fan-out.md): 2 to 20 independent items under one shared brief and one success test.
   propose_sweep: z.strictObject({
     repo: repoId, title: text("taskTitle"), brief: scopeText,
@@ -304,6 +306,7 @@ export const LEAD_TOOL_OUTPUTS = {
   get_decision: decisionOutput,
   queue: z.looseObject({ repo: str, queueRevision: int, ...queueColumnsOutput }),
   propose_task: proposed("task", { repo: str, deliverable: z.enum(["branch", "report"]), planning: str }),
+  propose_start: z.looseObject({ proposal: int, kind: z.enum(["action", "task"]), startsNow: z.boolean(), awaiting: str }),
   propose_sweep: cardDrafted,
   get_sweep: z.looseObject({ sweep: int, title: str, line: str, table: str, maxParallel: int, items: z.array(z.looseObject({ item: int, label: str, task: str, state: str })) }),
   propose_sweep_cancel: cardDrafted,

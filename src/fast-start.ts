@@ -11,11 +11,19 @@
  * - **the Accept backstop**: a machine can't complete it, the project's grant doesn't push it until a person accepted it,
  *   and completion, publication and merge all read one verified measure of the whole change (verifiedChange).
  *
- * Only a person's own surfaces reach here (the browser, the terminal UI as the local owner, interactive `task new`).
- * Every machine is refused in the writer from trusted context. `task add` never comes this way.
+ * Only a person's own surfaces reach here (the browser, the terminal UI as the local owner, interactive `task new`, and
+ * a person's own tap or typed yes on a chat's Start card: docs/plans/one-step-chat.md). Every machine is refused in the
+ * writer from trusted context. `task add` never comes this way.
+ *
+ * A chat start (`via: "chat"`) runs the same rules (fastStartRules). Its words are the lead's, so it is filed as the
+ * lead's text (`proposedVia: "mate"`, quarantined), and only its person-proof step differs: chat has no password, so
+ * instead of the password field it passes only within the person's own chat approval limits (chatLimitProblem), and
+ * quarantined text is approvable in chat only on a card that showed every term whole (store.ts sealScopeApproval).
  */
 import { randomBytes } from "node:crypto";
 import { approvalPasswordField, type ApprovalPasswordFacts } from "./approval-password.js";
+import type { ChatApprovalLimits } from "./chat-approval.js";
+import { chatLimitProblem } from "./chat-terms.js";
 import { isProtectedWork, protectedChanges } from "./approval-policy.js";
 import { originalTaskBase } from "./observations.js";
 import { legOf, makesNoPlan, routeFromJson, type TaskSizing } from "./phase-routing.js";
@@ -38,10 +46,11 @@ export const FAST_MAX_LINES = 150;
 /** How long a rendered form may still be pressed. */
 export const FAST_PREVIEW_MS = 15 * 60_000;
 
-/** Which person surface is filing. A chat, a flow, a token or an agent has no entry here. */
-export type FastVia = "console" | "terminal-ui" | "cli";
+/** Which person surface is filing. `chat` is a Start card a person taps or answers yes to (one-step-chat.md); a flow, a
+ * token or an agent has no entry here. */
+export type FastVia = "console" | "terminal-ui" | "cli" | "chat";
 
-export type FastRefusal = "setting" | "size" | "classifier" | "plan" | "quality" | "rules" | "protected" | "password" | "release" | "trial" | "chain" | "monthly" | "policy" | "agents" | "machine" | "mode";
+export type FastRefusal = "setting" | "size" | "classifier" | "plan" | "quality" | "rules" | "protected" | "password" | "release" | "trial" | "chain" | "monthly" | "policy" | "agents" | "machine" | "mode" | "limit";
 const FAST_WORDS: Readonly<Record<FastRefusal, string>> = {
   setting: "Small tasks don't start right away in this project.",
   size: "This looks bigger than a small change.",
@@ -59,6 +68,7 @@ const FAST_WORDS: Readonly<Record<FastRefusal, string>> = {
   agents: "Choose an agent first.",
   machine: "Only a person starts work this way.",
   mode: "This project's mode approves it.",
+  limit: "This is more than your chat approval setting allows.",
 };
 export const fastRefusalWords = (reason: FastRefusal): string => FAST_WORDS[reason];
 
@@ -91,9 +101,20 @@ export const fastAcceptance = (title: string): { id: string; statement: string; 
 export type FastInput = { actor: string; repo: string; title: string; permissionMode?: "auto" | "bypassPermissions" | undefined };
 export type PasswordFacts = Pick<ApprovalPasswordFacts, "passwordless" | "localOwner" | "freshAt" | "returnTo">;
 
-export function fastStartEligible(store: Store, input: FastInput & { taskId: string; sizing: TaskSizing; password: PasswordFacts }, now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
+/** How the person is proved at the one step that differs by surface: the password rule the form reads, or (a chat
+ * start) the person's own chat approval limits. */
+export type FastProof = { password: PasswordFacts } | { chat: ChatApprovalLimits };
+
+/** Every person surface's eligibility: the rules, then a machine is refused. */
+export function fastStartEligible(store: Store, input: FastInput & { taskId: string; sizing: TaskSizing } & ({ password: PasswordFacts } | { proof: FastProof }), now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
+  if (machineActing()) return { ok: false, reason: "machine" };
+  return fastStartRules(store, { ...input, proof: "proof" in input ? input.proof : { password: input.password } }, now);
+}
+
+/** The rules alone, the same for every surface: only the person-proof step has two forms (FastProof). A preview reads
+ * these as any caller; Build reads them again behind the machine check (fastStartEligible). */
+export function fastStartRules(store: Store, input: FastInput & { taskId: string; sizing: TaskSizing; proof: FastProof }, now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
   const no = (reason: FastRefusal) => ({ ok: false as const, reason });
-  if (machineActing()) return no("machine");
   if (!fastStartOn(store, input.repo)) return no("setting");
   const account = store.accountOf(input.actor);
   if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(input.actor, input.repo)) return no("rules");
@@ -120,28 +141,33 @@ export function fastStartEligible(store: Store, input: FastInput & { taskId: str
   // Anything approving would take a typed password for: escalated terms, wider check access, sandbox widenings.
   const profile = scope.profile as unknown as Record<string, unknown>;
   if (levelOfProfile(scope.profile) === "escalated" || profile["checkAccess"] !== undefined || profile["machLookup"] !== undefined) return no("password");
-  const field = approvalPasswordField(store, { name: input.actor, taskId: input.taskId, scope, ...input.password });
-  if (field.field === "required" || field.field === "local-refused") return no("password");
+  if ("password" in input.proof) {
+    const field = approvalPasswordField(store, { name: input.actor, taskId: input.taskId, scope, ...input.proof.password });
+    if (field.field === "required" || field.field === "local-refused") return no("password");
+  } else if (chatLimitProblem(scope, input.proof.chat, "your chat approval setting") !== null) return no("limit");
   const ref = store.lookupRef(input.taskId);
   if (ref === null || store.budgetGate(now)({ ...store.budgetSubject(ref.id), agents: store.agentsFor([scope.profile.provider]) }).over !== null) return no("monthly");
   if (store.scopePolicyRefusal(input.taskId) !== null) return no("policy");
   return { ok: true, scope };
 }
 
-/** File the task, inside the caller's transaction, exactly as Build will. */
+/** File the task, inside the caller's transaction, exactly as Build will. A chat start's words are the lead's: its text
+ * stays quarantined (`proposedVia: "mate"`), as every lead-written scope is. */
 function fileIt(store: Store, id: string, input: FastInput & { via: FastVia; sizing: TaskSizing }, now: Date): { ok: true } | { ok: false; message: string } {
   const filed = fileTaskProposal(store, {
     id, title: titleWithin(input.title), repo: input.repo, goal: input.title, acceptance: fastAcceptance(input.title), planning: "skip", sizing: input.sizing,
     ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
-    filedVia: input.via === "console" ? "console" : input.via === "terminal-ui" ? "tui" : "cli", filedBy: { name: input.actor, kind: "person" as const },
+    filedVia: input.via === "console" ? "console" : input.via === "terminal-ui" ? "tui" : input.via === "chat" ? "chat" : "cli", filedBy: { name: input.actor, kind: "person" as const },
+    ...(input.via === "chat" ? { proposedVia: "mate" as const } : {}),
   }, now);
   return filed.ok ? { ok: true } : { ok: false, message: filed.message };
 }
 
 class RolledBack<T> extends Error { constructor(readonly answer: T) { super("fast start preview"); } }
-/** Run `body` in a transaction that never commits: a preview writes nothing. */
+/** Run `body` in a savepoint that never commits: a preview writes nothing, at any nesting depth (a nested transact runs
+ * in place, so only the savepoint undoes the writes when a caller already holds a transaction). */
 function dryRun<T>(store: Store, body: () => T): T {
-  try { store.transact(() => { throw new RolledBack(body()); }); }
+  try { store.transact(() => store.savepoint(() => { throw new RolledBack(body()); })); }
   catch (error) { if (error instanceof RolledBack) return error.answer as T; throw error; }
   throw new Error("unreachable");
 }
@@ -155,8 +181,10 @@ export type FastPreview =
  * transaction that's rolled back. The filing's words and the classifier's answer are kept (fast_preview), so Build
  * files exactly this, whatever is posted.
  */
-export async function prepareFastStart(store: Store, input: FastInput & { via: FastVia; password: PasswordFacts }, now: Date): Promise<FastPreview> {
+export async function prepareFastStart(store: Store, input: FastInput & { via: Exclude<FastVia, "chat">; password: PasswordFacts }, now: Date): Promise<FastPreview> {
   if (machineActing()) return { eligible: false, reason: "machine" };
+  // A chat start is prepared in the lead's turn (prepareChatStart), bound to it.
+  if ((input.via as FastVia) === "chat") return { eligible: false, reason: "rules" };
   if (!fastStartOn(store, input.repo)) return { eligible: false, reason: "setting" };
   if (heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return { eligible: false, reason: "size" };
   // A mode that auto-approves filings comes first: its own road, its own seal.
@@ -188,30 +216,42 @@ export type FastApprove = (taskId: string, sawDigest: string, fast: { rule: stri
  * Build: file and approve in one transaction. Every check is made here, on the rows written here; anything refused
  * rolls the filing back, so a refusal leaves nothing behind.
  */
-export function fastStartBuild(store: Store, input: { preview: string; digest: string; actor: string; via: FastVia; password: PasswordFacts; approveNow: FastApprove }, now: Date): FastBuild {
+export function fastStartBuild(store: Store, input: { preview: string; digest: string; actor: string; via: FastVia; approveNow: FastApprove;
+  /** A chat start: the lead turn its card was drafted in. Its preview must have been prepared in that same turn. */
+  turn?: number } & ({ password: PasswordFacts } | { proof: FastProof }), now: Date): FastBuild {
   if (machineActing()) return { ok: false, reason: "machine", message: FAST_WORDS.machine };
+  const proof: FastProof = "proof" in input ? input.proof : { password: input.password };
+  // The chat form of the proof is a chat start's alone; the form's surfaces keep the password rule.
+  if ("chat" in proof && input.via !== "chat") return { ok: false, reason: "rules", message: FAST_WORDS.rules };
   class Refused extends Error { constructor(readonly answer: FastBuild) { super("fast start refused"); } }
   const refuse = (answer: FastBuild): never => { throw new Refused(answer); };
   try {
-    return store.transact(() => {
+    // A savepoint inside the transaction: a refusal undoes the filing even when the caller already holds a transaction
+    // (a nested transact runs in place, and this function catches its own refusal).
+    return store.transact(() => store.savepoint(() => {
       const row = store.handle.prepare("SELECT * FROM fast_preview WHERE id = ? AND consumed_at IS NULL AND expires_at > ?").get(input.preview, now.toISOString());
       if (row === undefined || row["actor"] !== input.actor || row["via"] !== input.via) return refuse({ ok: false, reason: "gone", message: "This form has expired. Start again." });
+      // A chat preview without a turn, or from another turn than its card's, is nobody's card.
+      if (input.via === "chat" && (row["turn"] === null || row["turn"] === undefined || input.turn === undefined || Number(row["turn"]) !== input.turn))
+        return refuse({ ok: false, reason: "gone", message: "This card has expired. Ask again." });
       const sizing = JSON.parse(String(row["sizing_json"])) as TaskSizing;
       const taskId = String(row["task_id"]);
       const filing = { actor: input.actor, repo: String(row["repo"]), title: String(row["title"]), ...(row["permission"] === null ? {} : { permissionMode: row["permission"] as "auto" | "bypassPermissions" }) };
       const filed = fileIt(store, taskId, { ...filing, via: input.via, sizing }, now);
       if (!filed.ok) return refuse({ ok: false, reason: "changed", message: filed.message });
-      const eligible = fastStartEligible(store, { ...filing, taskId, sizing, password: input.password }, now);
+      const eligible = fastStartEligible(store, { ...filing, taskId, sizing, proof }, now);
       if (!eligible.ok) return refuse({ ok: false, reason: eligible.reason, message: FAST_WORDS[eligible.reason] });
       const at = now.toISOString();
       // approve() compares the digest the person saw with the plan just filed: changed terms refuse "changed".
       const approved = input.approveNow(taskId, input.digest, { rule: FAST_START_RULE, at });
-      if (!approved.ok) return refuse({ ok: false, reason: approved.reason === "changed" ? "changed" : "password", message: approved.reason === "changed" ? "This changed since you read it. Read it again." : FAST_WORDS.password });
+      if (!approved.ok && approved.reason === "changed") return refuse({ ok: false, reason: "changed", message: "This changed since you read it. Read it again." });
+      // Chat has no password: a refusal there says the rule, not "takes your password".
+      if (!approved.ok) return refuse(input.via === "chat" ? { ok: false, reason: "rules", message: approved.reason === "policy" ? approved.message : FAST_WORDS.rules } : { ok: false, reason: "password", message: FAST_WORDS.password });
       store.handle.prepare("UPDATE fast_preview SET consumed_at = ? WHERE id = ?").run(at, input.preview);
       store.handle.prepare("UPDATE task_ref SET fast_start_at = ?, fast_start_until = ? WHERE backend = ? AND external_id = ?").run(at, new Date(now.getTime() + FAST_WINDOW_MS).toISOString(), BUILT_IN, taskId);
       store.bumpWake();
       return { ok: true as const, taskId };
-    });
+    }));
   } catch (error) {
     if (error instanceof Refused) return error.answer;
     throw error;
@@ -381,5 +421,67 @@ export function keepGrownChange(store: Store, taskId: string, now: Date): { ok: 
     const proposed = propose(store, { taskId, goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd,
       acceptance: scope.acceptance, qualityMode: scope.qualityMode ?? "default", candidate: last.headRevision, now });
     return { ok: true as const, digest: proposed.digest };
+  });
+}
+
+// ---- a chat start: prepared in the lead's turn (docs/plans/one-step-chat.md C1) --------------------------------------
+
+/** What a chat start's preview is for: who asked, where, the lead's one-line title, and the lead turn it is prepared in. */
+export type ChatStartInput = { actor: string; repo: string; title: string; turn: number };
+
+/**
+ * A chat start's preview, prepared by the lead's turn loop before the Start card is drafted: the classifier asked (at
+ * most its budget), the filing dry-run, and the rules read. It refuses no machine caller, because a preview grants
+ * nothing (the lead's turn runs as the lead): Build refuses a machine (fastStartBuild), and only a person's own tap or
+ * typed yes reaches Build. The row is bound to the person, `via = 'chat'` and the turn; a preview without a turn is
+ * unusable. The person's own chat limits are read again at the tap, for the chat it comes from; here only the loosest
+ * limit that still means something applies (no full access, no cap), so a card is never drafted for terms no chat
+ * approval could allow.
+ */
+export async function prepareChatStart(store: Store, input: ChatStartInput, now: Date): Promise<FastPreview> {
+  if (!Number.isSafeInteger(input.turn) || input.turn < 1) return { eligible: false, reason: "rules" };
+  if (!fastStartOn(store, input.repo)) return { eligible: false, reason: "setting" };
+  if (heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return { eligible: false, reason: "size" };
+  const mode = store.activeMode(input.repo, now);
+  if (mode !== null && /"autoApproveFiling":true/.test(mode.termsJson)) return { eligible: false, reason: "mode" };
+  const sizer = filingSizer();
+  const sizing = await classifyTask({ title: input.title, goal: input.title }, sizer.sizer, sizer.budget);
+  const taskId = `task-${randomBytes(8).toString("hex")}`;
+  const filing = { actor: input.actor, repo: input.repo, title: input.title };
+  const read = dryRun(store, () => {
+    const filed = fileIt(store, taskId, { ...filing, via: "chat", sizing }, now);
+    if (!filed.ok) return { ok: false as const, reason: "plan" as const };
+    return fastStartRules(store, { ...filing, taskId, sizing, proof: { chat: { fullAccess: false, capMicrousd: null } } }, now);
+  });
+  if (!read.ok) return { eligible: false, reason: read.reason };
+  const preview = randomBytes(16).toString("hex");
+  store.handle.prepare(`INSERT INTO fast_preview (id, actor, via, task_id, repo, title, permission, sizing_json, digest, created_at, expires_at, turn) VALUES (?, ?, 'chat', ?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
+    .run(preview, input.actor, taskId, input.repo, input.title, JSON.stringify(sizing), read.scope.digest, now.toISOString(), new Date(now.getTime() + FAST_PREVIEW_MS).toISOString(), input.turn);
+  return { eligible: true, preview, digest: read.scope.digest, scope: read.scope, taskId };
+}
+
+/** A chat start's preview, as the Start card reads it again: this person's, `via = 'chat'`, prepared in this turn,
+ * unexpired and unused. Null otherwise. */
+export function chatStartPreview(store: Store, preview: string, actor: string, turn: number, now: Date): { taskId: string; repo: string; title: string; sizing: TaskSizing; digest: string } | null {
+  const row = store.handle.prepare("SELECT * FROM fast_preview WHERE id = ? AND consumed_at IS NULL AND expires_at > ?").get(preview, now.toISOString());
+  if (row === undefined || row["actor"] !== actor || row["via"] !== "chat" || row["turn"] === null || Number(row["turn"]) !== turn) return null;
+  return { taskId: String(row["task_id"]), repo: String(row["repo"]), title: String(row["title"]), sizing: JSON.parse(String(row["sizing_json"])) as TaskSizing, digest: String(row["digest"]) };
+}
+
+/** A dismissed Start card's preview can't be used: consumed, in the dismissal's transaction. */
+export function consumeChatStartPreview(store: Store, preview: string, now: Date): void {
+  store.handle.prepare("UPDATE fast_preview SET consumed_at = ? WHERE id = ? AND via = 'chat' AND consumed_at IS NULL").run(now.toISOString(), preview);
+}
+
+/**
+ * A chat start's filing dry-run, for its card: the scope filing would make, read in a savepoint that is always rolled
+ * back, with the rules read on it (any proof form; the card shows the terms, the tap proves the person). The card is made
+ * from these words; the tap files again and compares.
+ */
+export function chatStartDryRun(store: Store, input: { actor: string; repo: string; title: string; taskId: string; sizing: TaskSizing }, now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
+  return dryRun(store, () => {
+    const filed = fileIt(store, input.taskId, { actor: input.actor, repo: input.repo, title: input.title, via: "chat", sizing: input.sizing }, now);
+    if (!filed.ok) return { ok: false as const, reason: "plan" as const };
+    return fastStartRules(store, { actor: input.actor, repo: input.repo, title: input.title, taskId: input.taskId, sizing: input.sizing, proof: { chat: { fullAccess: false, capMicrousd: null } } }, now);
   });
 }

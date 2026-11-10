@@ -19,6 +19,7 @@
  * are one command.
  */
 
+import { recordTypedStart, typedStartCard, typedYes } from "./typed-start.js";
 import { telegramCardMessage } from "./card-render.js";
 import { flowDoneCard } from "./flow-result-card.js";
 import { applyTelegramQuestionReply, applyTelegramQuestionTap, openQuestionOf, telegramQuestionButtons } from "./subagent-question.js";
@@ -1788,7 +1789,14 @@ function applyMessage(context: Context, update: Update, effects: Effect[]): void
     if (consumed) return;
     // Replies to decisions retain their existing note meaning, even if the
     // note starts with a slash. New read commands are direct messages only.
-    if (message.reply_to_message === undefined && applyPhoneRead(context, update, effects)) return;
+    // A bare "start" as the very next message after a Start card is that card's yes (docs/plans/one-step-chat.md C5),
+    // not the help command. Only the routing is decided here, by the same ids the message path reads again when it
+    // records the yes; "/start", and "start" anywhere else, stay help.
+    const yesSeat = message.reply_to_message === undefined && chat.type === "private" && typeof message.text === "string" && typedYes(message.text)
+      && context.conversation !== undefined && context.readProjects !== undefined ? store.liveTelegramBindingFor(botId, String(from.id)) : null;
+    const answersStartCard = yesSeat !== null && String(chat.id) === yesSeat.chatId
+      && typedStartCard(store, { binding: yesSeat.id, chatId: yesSeat.chatId, approver: yesSeat.approver }, { id: String(message.message_id), replyTo: null }) !== null;
+    if (message.reply_to_message === undefined && !answersStartCard && applyPhoneRead(context, update, effects)) return;
     // A reply to a decision message this bot sent is a note, exactly as
     // before. Everything else that is ordinary text talks to the shared
     // assistant when a conversation is configured; otherwise silence.
@@ -1966,13 +1974,21 @@ function applyConversation(context: Context, update: Update, effects: Effect[]):
     report.ignored++;
     return;
   }
-  store.enqueueTelegramConversation(
-    {
-      binding, updateId: update.update_id, messageId: String(message.message_id), replyTo,
-      request: telegramRequestId(botId, binding.id, update.update_id), text, context: context_, taskId, sourceRun,
-    },
-    clock(),
-  );
+  // A typed yes to a Start card (docs/plans/one-step-chat.md C5) is read here, before any model runs, and recorded with
+  // the message in the same transaction: the fixed words only, tied to one exact card by message ids and Toolroll's own
+  // delivery record. The worker acts on it (confirmTypedStart) and no lead turn runs for it. Anything else is queued for
+  // the lead exactly as before.
+  store.transact(() => {
+    const typed = typedYes(text) ? typedStartCard(store, { binding: binding.id, chatId: binding.chatId, approver: binding.approver }, { id: String(message.message_id), replyTo }) : null;
+    store.enqueueTelegramConversation(
+      {
+        binding, updateId: update.update_id, messageId: String(message.message_id), replyTo,
+        request: telegramRequestId(botId, binding.id, update.update_id), text, context: context_, taskId, sourceRun,
+      },
+      clock(),
+    );
+    if (typed !== null) recordTypedStart(store, `m${update.update_id}`, typed, clock());
+  });
   report.chatQueued = (report.chatQueued ?? 0) + 1;
   // Saved: 👀 on the owner's message right away (docs/plans/responsive-chat.md §3.1), once this update's transaction
   // has committed. It comes off when the answer or the failure notice is delivered. Never awaited: a burst of messages

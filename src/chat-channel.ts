@@ -1,5 +1,6 @@
 import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 /** Shared membership-chat identity, proposal previews and result links. Transport adapters never grant authority. */
+import { TYPED_START_LINE } from "./typed-start.js";
 import { FLOW_HREF } from "./flow-engine.js";
 import { closedQuestionWords, LIMITS } from "./decision.js";
 import { createHash } from "node:crypto";
@@ -324,8 +325,8 @@ export function proposalLink(
     return action &&
       repos.includes(action.repo) &&
       sharedActionNeedsReview(action) &&
-      !(channel !== null && sharedActionAllowsChallenge(action))
-      ? { label: "Review action", path: sharedActionReviewPath(proposal.id) }
+      !(channel !== null && sharedActionAllowsChallenge(action, channel))
+      ? { label: action.operation === "task_start" ? "Review and start" : "Review action", path: sharedActionReviewPath(proposal.id) }
       : null;
   }
   const task = typeof payload["task"] === "string" ? payload["task"] : "";
@@ -394,9 +395,10 @@ export function confirmedLink(
   // A flow change opens its canvas, the card selected.
   if (outcome.ok && proposal.kind === "action" && typeof outcome.href === "string" && FLOW_HREF.test(outcome.href)) return { label: "Open the flow", path: outcome.href };
   if (!outcome.ok || outcome.taskId === null) return null;
+  // A skill test's task, and the task a Start card started: the card opens it.
   if (
     proposal.kind === "action" &&
-    proposal.payload["operation"] === "skill_test"
+    (proposal.payload["operation"] === "skill_test" || proposal.payload["operation"] === "task_start")
   )
     return taskLink(store, outcome.taskId, repos);
   const staged =
@@ -444,6 +446,8 @@ export function proposalPreview(
     headline: string,
     body: string[] = [],
     consequence: string | null = null,
+    /** Telegram only: a fixed last line outside the terms (a Start card's "reply yes", one-step-chat.md C5). */
+    last: string | null = null,
   ): { text: string; buttons: boolean } => ({
     text: (phone
       ? [
@@ -452,6 +456,7 @@ export function proposalPreview(
           ...(body.length === 0 ? [] : ["", ...body]),
           "",
           "Nothing changes until you confirm.",
+          ...(last === null ? [] : [last]),
         ]
       : [
           headline,
@@ -477,11 +482,13 @@ export function proposalPreview(
     case "action": {
       const action = sharedActionPayload(payload);
       if (!action) return handoff("This action is unavailable.");
-      if (channel !== null && sharedActionAllowsChallenge(action))
+      if (channel !== null && sharedActionAllowsChallenge(action, channel))
         return card(
           phoneText(action.title, 200),
           action.terms.map((term) => phoneText(term, APPROVAL_TERM_CHARS)),
           "Confirm asks once more before anything is recorded.",
+          // A Start card on Telegram says what a typed yes does; no part of the lead's reply is ever inspected for it.
+          action.operation === "task_start" && channel === "telegram" ? TYPED_START_LINE : null,
         );
       return sharedActionNeedsReview(action)
         ? handoff(phoneText(action.title, 200), [
@@ -860,6 +867,11 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Card with Confirm/Dismiss through confirmLeadProposal (filed as a lead proposal, via telegram). The confirmed card links Review & start for the filed task while its scope waits; under a signed automatic mode it says the scope is approved and links the task.",
     gap: "Under manual approval the plan then needs the person's own yes, on its card.",
   },
+  propose_start: {
+    support: "direct",
+    how: "A protected shared action (task_start): Start work arms Yes and Cancel, and the person's own Yes files and approves one small task under the fast start rules (fastStartBuild), or a typed yes as a reply to the card or as the very next message. When Toolroll can't start it right away it is an ordinary task card.",
+    gap: "Terms too long for one message open the review page, in the signed-in console.",
+  },
   propose_sweep: {
     support: "direct",
     how: "A protected shared action (sweep_file): the card lists every item, the shared rules and the success test; confirming files them all and approves each scope.",
@@ -996,4 +1008,10 @@ export function confirmedCardText(
   return [`✓ ${words}`, ...[next, setup].filter((one) => one !== "")].join(
     "\n\n",
   );
+}
+
+/** The link to a task a Start card just started (a tapped card, and Toolroll's reply to a typed yes): the task's own
+ * page, only while the task is one of the person's projects. Navigation only. */
+export function startedTaskLink(store: Store, taskId: string, repos: readonly string[]): PhoneLink | null {
+  return taskLink(store, taskId, repos);
 }
