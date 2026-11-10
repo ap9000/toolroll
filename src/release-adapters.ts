@@ -20,7 +20,8 @@ const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url
 import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, MainProtection, PullRequest, ReleaseAdapters } from "./release.js";
 import { PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS } from "./release.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
-import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
+import { BEFORE_SWAP, deployActionOf, stoppedWhereNothingChanged } from "./deploy-phase.js";
+import { gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
 import {
   databasePath, finishReleaseOperation, requireFreshReleaseApproval, openStore, releaseAuthorityOfTask, releaseCarries, releaseOperations, renewReleaseLease, reserveRelease, runReleaseOperation,
@@ -70,9 +71,6 @@ const ownCli = (): readonly string[] => {
   const bin = join(dirname(fileURLToPath(import.meta.url)), "bin.js");
   return existsSync(bin) ? [process.execPath, bin] : ["toolroll"];
 };
-
-/** Journal phases the deployment's finish accepts (scripts/deploy-phases.mjs finish): the new service runs, unproven. */
-const FINISHES_FORWARD = Object.freeze(["started", "healthy"]);
 
 const cleanEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   const env = { ...process.env, ...extra };
@@ -520,16 +518,29 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // A deployment that outlived a killed release is still at work: recovering under it would race it.
         const running = (options.processes ?? processes)().filter(one => one.command.includes("deploy-browser.mjs") && one.command.includes(stage));
         if (running.length > 0) return { ok: false, message: `the deployment is still running (process ${running.map(one => one.pid).join(", ")}); let it finish, then rerun` };
-        // The new service started (deploy-rescue.ts FORWARD_ONLY): recovery refuses to roll it back, so the release
-        // resumes it forward with the deployment's own finish (health, both consoles, leases, then the pause lifted).
+        // The new service was started (the phase table's "forward" rows, deploy-phase.ts): the release resumes it
+        // forward with the deployment's own finish (health, both consoles, leases, then the pause lifted).
         // Finishing deploys, so the candidate is proven first, as for a deploy.
-        const phase = (() => { try { return object(JSON.parse(readFileSync(join(stage, "deployment.json"), "utf8")))["phase"]; } catch { return undefined; } })();
-        if (FINISHES_FORWARD.includes(String(phase))) {
+        const journalPhase = (): unknown => { try { return object(JSON.parse(readFileSync(join(stage, "deployment.json"), "utf8")))["phase"]; } catch { return undefined; } };
+        const phase = journalPhase();
+        if (deployActionOf(phase) === "forward") {
           const proven = proveCandidate(runId);
-          if (!proven.ok) return stopped(stage, proven.message);
-          const finished = await deployScript(worktree, stage, runId, proven, ["--yes", "--phase", "finish"]);
-          if (finished.code === 0) return { ok: true };
-          return stopped(stage, `${tail(finished)} (the deployment journal is at ${String(phase)}; finishing it forward stopped; ${join(stage, "deployment.json")})`);
+          let why: string;
+          if (proven.ok) {
+            const finished = await deployScript(worktree, stage, runId, proven, ["--yes", "--phase", "finish"]);
+            if (finished.code === 0) return { ok: true };
+            why = `${tail(finished)} (the deployment journal is at ${String(phase)}; finishing it forward stopped; ${join(stage, "deployment.json")})`;
+          } else why = proven.message;
+          // Once the new service was recorded as started, a journal alone never rolls it back: the release stops here.
+          // Still at "starting" (killed while waiting for the new service; finish only looks, and it did not find it
+          // running): the deployment's own recovery puts the previous service back, and only when it proves the new
+          // one gone. That needs no approval of the candidate, exactly as below.
+          if (journalPhase() !== "starting") return stopped(stage, why);
+          const recorded = recordedCommit(runId);
+          if (recorded === null) return stopped(stage, why);
+          const back = await deployScript(worktree, stage, runId, recorded, ["--phase", "recover"]);
+          if (back.code === 0) return { ok: true };
+          return stopped(stage, `${why} The previous service was not put back either: ${tail(back)}`);
         }
         // Recovery needs no approval, but it runs only the recorded commit's own script, extracted by this runtime.
         const recorded = recordedCommit(runId);
@@ -553,7 +564,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         try { acquireDeploymentLock(journalFile, 0).release(); } catch { return false; }
         let phase: unknown;
         try { phase = object(JSON.parse(readFileSync(journalFile, "utf8")))["phase"]; } catch { return false; }
-        return phase === "preparing" || phase === "released" || phase === "deployed";
+        return stoppedWhereNothingChanged(phase);
       },
       async cliLinks() { return findCliLinks(); },
       async switchLinks(links, bin, version) {

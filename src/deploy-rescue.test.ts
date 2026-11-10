@@ -37,6 +37,8 @@ test("the one unfinished deployment is shown first, recovered only with --yes, a
 
 test.each([
   ["a deployment whose new service may be running", { "/s/a": journal("started") }, undefined, "forward"],
+  ["a deployment killed while its new service was starting", { "/s/a": journal("starting") }, undefined, "forward"],
+  ["a deployment whose new service answered", { "/s/a": journal("healthy") }, undefined, "forward"],
   ["two unfinished deployments", { "/s/a": journal("stopping"), "/s/b": journal("stopped") }, undefined, "conflict"],
   ["an unreadable journal", { "/s/a": null }, undefined, "damaged"],
   ["another database's deployment", { "/s/a": journal("stopping", { database: "/other/orders.db" }) }, undefined, "conflict"],
@@ -47,6 +49,17 @@ test.each([
   const { w, calls } = world({ ...stages });
   expect(await rescueDeployment(stage, true, w)).toMatchObject({ ok: false, reason });
   expect(calls).toEqual([]);
+});
+
+test("a journal word this build does not know is shown as such, and with --yes handed to the deployment's own recovery", async () => {
+  // The release coordinator is the older build: a newer candidate's own phase must not strand its deployment.
+  const { w, calls } = world({ "/s/a": journal("almost-started") });
+  const shown = await rescueDeployment(undefined, false, w);
+  expect(shown).toMatchObject({ ok: true, acted: false, phase: "almost-started" });
+  expect(shown.ok && shown.words.join(" ")).toContain("Journal phase almost-started: the deployment's own recovery decides; it refuses anything it can't prove.");
+  expect(calls).toEqual([]);
+  expect(await rescueDeployment(undefined, true, w)).toMatchObject({ ok: true, acted: true, phase: "released" });
+  expect(calls).toEqual([{ run: 41, worktree: "/work/41", stage: "/s/a" }]);
 });
 
 test("a recovery that refuses says where the journal stands and how to retry", async () => {

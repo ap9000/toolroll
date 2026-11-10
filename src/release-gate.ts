@@ -24,10 +24,11 @@ import { join } from "node:path";
 import { durableJson } from "./desktop-update.js";
 import { removeUpdateGate, updateGateOwned } from "./desktop-update-gate.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
+import { BEFORE_SWAP, RELEASED } from "./deploy-phase.js";
 import type { Database } from "./store.js";
 
-/** The journal phases a deployment passes before it stops the old service (deploy-phases.mjs). */
-export const BEFORE_SWAP = Object.freeze(["preparing", "admission-paused", "frozen", "backup-verified", "rehearsed"]);
+/** The journal phases a deployment passes before it stops the old service (deploy-phase.ts, the one table). */
+export { BEFORE_SWAP };
 /** Journal fields that only the swap and later phases write. */
 const SWAP_FIELDS = ["stoppingService", "codingBackupBeforeSwap", "migration", "newService", "deployedAt"] as const;
 const GATE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -125,7 +126,9 @@ export function proveBeforeSwap(id: string, world: GateReleaseWorld): GateProof 
   const staged = processes.filter(one => one.command.includes(r.nextRuntime));
   if (staged.length > 0) return refuse("after-swap", `Process ${staged.map(one => one.pid).join(", ")} runs from the staged runtime ${r.nextRuntime}.`);
   const supervisor = processes.find(one => one.command.includes(`${r.priorRuntime}/controller-service.js`));
-  const worker = processes.find(one => one.command.includes(`${r.priorRuntime}/cli.js up --db ${world.database}`));
+  // The database as a whole argument: an `up` on a path that only begins with this database's is another service's.
+  const upHere = `${r.priorRuntime}/cli.js up --db ${world.database}`;
+  const worker = processes.find(one => one.command.split(upHere).slice(1).some(rest => rest === "" || /^\s/.test(rest)));
   if (supervisor === undefined || worker === undefined) return refuse("conflict", `The service is not running from ${r.priorRuntime}, so it can't be shown that the swap never began.`);
   proof.push(`The service runs from ${r.priorRuntime} (process ${supervisor.pid}); nothing runs from the staged runtime, and no deployment is running.`);
   return { ok: true, id, stage, journal: r, proof };
@@ -160,7 +163,7 @@ export function releaseGate(id: string, world: GateReleaseWorld, yes: boolean): 
       // The owner is checked again within removeUpdateGate's short write transaction.
       removeUpdateGate(db, id);
       durableJson(journalFile, {
-        ...fresh.journal, phase: "released", updatedAt: world.now().toISOString(),
+        ...fresh.journal, phase: RELEASED, updatedAt: world.now().toISOString(),
         releasedBeforeSwap: { at: world.now().toISOString(), by: "toolroll release --release-gate", from: fresh.journal.phase, proof: fresh.proof },
       });
       return { ok: true, released: true, id, stage: fresh.stage, proof: fresh.proof };
