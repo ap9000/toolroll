@@ -6,8 +6,9 @@
  */
 import { useState } from "react";
 import type { BrowserAgentControls } from "../../browser-workspace.js";
-import { Button, Textarea } from "../components/ui/index.js";
+import { Button } from "../components/ui/index.js";
 import { PostForm } from "../ui/index.js";
+import { KButton, KComposer } from "../kit/index.js";
 
 export type SteerDraft = { text: string; key: string; submitted: boolean };
 const draftStore = (run: number) => `toolroll:steer-draft:${run}`;
@@ -55,9 +56,14 @@ export function SteerControls({ controls, back }: { controls: BrowserAgentContro
   </div>;
 }
 
-/** The note box for a running attempt that takes notes (a task page, a flow card's task): Send, and Pause and send
- * when it takes live input and is not paused; the draft kept per attempt. */
-export function SteerNote({ steer, controls, back }: { steer: { action: string; run: number }; controls: BrowserAgentControls; back: SteerBack }) {
+/** The note box for a running attempt that takes notes (the task page's work panel, a flow card's task): the kit's
+ * message box, its label naming who gets the note; Send, and Pause and send when it takes live input and is not paused;
+ * the draft kept per attempt. The box can only send a note: it approves nothing. */
+export function SteerNote({ steer, controls, back, label = "A note for the agent", note }: { steer: { action: string; run: number }; controls: BrowserAgentControls; back: SteerBack;
+  /** Names the receiver ("Message Claude Sonnet"). */
+  label?: string;
+  /** One line under the box: how the note travels. */
+  note?: string }) {
   const [draft, setDraft] = useState<SteerDraft>(() => loadDraft(steer.run));
   const setText = (value: string) => setDraft(previous => {
     const next = previous.submitted ? { ...freshDraft(), text: value } : { ...previous, text: value };
@@ -65,19 +71,15 @@ export function SteerNote({ steer, controls, back }: { steer: { action: string; 
     return next;
   });
   const pauseAndSend = controls.pause !== null && controls.pause.state === null ? controls.pause : null;
-  const id = `steer-note-${steer.run}`;
+  const empty = draft.text.trim() === "";
   return <PostForm action={steer.action} data-steer-note={steer.run}
-    onSubmit={() => setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(steer.run, sent); return sent; })}
-    className="flex items-end gap-2 pt-2">
+    onSubmit={event => { if (empty) { event.preventDefault(); return; } setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(steer.run, sent); return sent; }); }}>
     <input type="hidden" name="return" value={back} /><input type="hidden" name="run" value={String(steer.run)} /><input type="hidden" name="key" value={draft.key} />
     {/* Pause and send's request is this draft's own: an edited draft is a new request, never a repeat of the last. */}
     {pauseAndSend !== null && <input type="hidden" name="request" value={`steer-${draft.key}`} />}
-    <label className="sr-only" htmlFor={id}>A note for the agent</label>
-    <Textarea id={id} name="note" rows={1} required maxLength={4000} value={draft.text} onChange={event => setText(event.target.value)}
-      placeholder="Tell the agent something" className="min-h-11 min-w-0 flex-1 resize-none"
-      onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }} />
-    {pauseAndSend !== null && <Button type="submit" formAction={pauseAndSend.action} variant="outline" className="h-11 w-auto shrink-0" disabled={draft.text.trim() === ""} data-steer-pause-send>Pause and send</Button>}
-    <Button type="submit" className="h-11 w-auto shrink-0" disabled={draft.text.trim() === ""}>Send</Button>
+    <KComposer id={`steer-note-${steer.run}`} label={label} placeholder={label} name="note" maxLength={4000} submit value={draft.text} onChange={setText} onSend={() => {}}
+      sendLabel="Send" note={note}
+      before={pauseAndSend !== null ? <KButton sm type="submit" formAction={pauseAndSend.action} label="Pause and send" disabled={empty} data-steer-pause-send="" /> : undefined} />
   </PostForm>;
 }
 

@@ -134,6 +134,7 @@ Server builders are in `src/server/kit.ts`; React components in `src/browser/kit
 | Timing rows | `timing` | `KTiming` | steps on one elapsed-time axis |
 | Progress line | `steps` | `KSteps` | a single object's fixed stages on one compact line (chat's first-task journey), the current one's reason under it |
 | Step rows | `stepRows` | `KStepRows` | the steps are the page (a task: Plan · Approval · Build · Checks · Ready); see [Step rows](#step-rows) |
+| The work | `work` | `KWork`, `KWorkRecords`, `KWorkConversation` | one agent's work as a chat, beside a page or as a sheet; see [The work](#the-work) |
 | Board | `board`, `boardCol`, `card` | `KBoard`, `KBoardCol`, `KCard` | a list's rows as columns, the optional view beside List; one column at a time on a phone |
 | Not found | `notFound(path)` | `KNotFound` | inside the shell |
 | Settings frame | `settingsShell` | `KSettingsShell` | Overview + the eight groups (`SETTINGS_GROUPS`) |
@@ -173,6 +174,18 @@ unmounted. A row that waits on the viewer owns the one ink outline around its bo
 border of its own), with the solid ink Needs-you chip beside its label. Nothing a person signs sits in a closed row.
 Without script every row is open. On a phone the label column narrows, the head is a 44px target and the body's
 action buttons are full width.
+
+**The work** (`k-work`): one agent's work as a chat. The frame: a header (600 14px title; under it who is working,
+muted 12px, with a 6px blue dot only while it runs; a ghost icon Close), the body that scrolls, and the message box
+at the foot. The body: the agent's words as plain text (14px, 1.6); each action as one quiet muted line (13px) with
+our fixed kind words and its target in mono, how it ended on the right (done green check, failed vermilion, running
+blue with a dot), output behind Show output; the notes people sent as a filled bubble on the right (`--so-user-bubble`,
+radius 18px) with who sent it and whether the agent read it under it; system lines muted 12px. Everything from the
+records is text, never markup. The reader (`useConversation`) makes no request while a password is asked anywhere on
+the page (`usePasswordAsked`) and goes on from the same place after. The box is the kit composer; it only sends a note
+and approves nothing; no ceremony renders inside the frame. On a task page it sits beside the rows at 1100px and
+wider (360–440px, a hairline on its left, as tall as the screen), as a sheet over the page below that, and full
+screen on a phone. The Agents page shows the same records with a Conversation / Terminal choice.
 
 ## Phone (760px and narrower)
 

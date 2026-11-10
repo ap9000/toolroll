@@ -52,7 +52,7 @@ import { assignmentStageOf,demoChecksOf,stageOfCode,stageOfDispatch,STATUS_MORE,
 import { buildProgressOf,dispatchActionLabel,type DisplayStatus,earlierAttemptsWords,type PublicationFacts,receiptPublicationWords,resultStatusOf,REVIEW_TOKENS,type ReviewFacts,stepRowsOf,type StepRow,type WorkStatus,workStatusOf } from "../workspace-ui.js";
 import { createHash, randomUUID } from "node:crypto";
 import { TEXT_LIMITS } from "../text-limits.js";
-import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,transcriptScript,whenTime } from "./chrome.js";
+import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,whenTime } from "./chrome.js";
 import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
@@ -1463,7 +1463,7 @@ export function planRevisionLedgerHtml(ledger: PlanRevisionLedgerView | null | u
         html`</details>`,
       ]);
   return joinHtml([
-    html`<div class="card plan-revision"><span class="eyebrow">plan updated</span><h2>Using plan revision ${current.revision}</h2>`,
+    html`<div class="card plan-revision" id="plan-revisions"><span class="eyebrow">plan updated</span><h2>Using plan revision ${current.revision}</h2>`,
     html`<p class="meta">${current.reason}${current.evidenceLink === null ? "" : ` · evidence: ${current.evidenceLink}`}</p>`,
     pending,
     history,
@@ -1833,11 +1833,8 @@ export function taskBodyParts(data: {
     // With the live file view off there is nothing live to show here: no panel (the build's own page says why).
     if (data.peekable !== true) return "";
     const peek = html`<p class="meta">What is changing right now</p><div id="run-peek"><p class="meta">Watching… the first look lands within 15 seconds</p></div><p class="meta" id="run-peek-stamp"></p>`;
-    const transcript =
-      liveRun.provider !== "claude"
-          ? html`<p class="meta">The live transcript needs the claude harness for now — this build runs on ${liveRun.provider}</p>`
-          : html`<p class="meta">What the agent is saying</p><pre id="live-transcript" class="mono" style="max-height:18rem;overflow:auto;white-space:pre-wrap"></pre><p class="meta" id="live-transcript-state"></p>`;
-    return html`<div class="card attempt-live" data-live-run="${liveRun.id}">${head}${peek}${transcript}${door}</div>`;
+    // What the agent is saying is the work panel's (Watch the work): the same records, read by the workspace.
+    return html`<div class="card attempt-live" data-live-run="${liveRun.id}">${head}${peek}${door}</div>`;
   })();
 
   // One truthful answer to the first question on a queued task: "will this
@@ -2890,7 +2887,13 @@ export function taskBodyParts(data: {
   if (planCard !== "") thread.push({ key: "plan", at: familyRuns.filter(run => run.role === "planner").map(run => run.finishedAt ?? run.startedAt).sort().at(-1) ?? task.updatedAt,
     kind: "plan", who: "agent", author: "", title: data.planDocument !== null ? "Plan written" : data.revision != null && !("problem" in data.revision) ? "Updating the plan" : "Planning", text: null, link: null, html: "", more: null });
   if (!isEmptyHtml(progressCard)) thread.push({ key: "progress", at: liveAt, kind: "progress", who: "agent", author: "", title: "Progress", text: null, link: null, html: htmlString(progressCard), more: null });
-  if (!isEmptyHtml(revisionLedgerCard)) thread.push({ key: "plan-revisions", at: liveAt, kind: "progress", who: "agent", author: "", title: "Plan changes", text: null, link: null, html: htmlString(revisionLedgerCard), more: null });
+  // A plan change is decided on the page (the Build row holds its card): the thread, which the work panel shows, keeps
+  // one line and a link there. Nothing in the thread takes a decision.
+  if (!isEmptyHtml(revisionLedgerCard)) {
+    const waiting = data.planRevisions?.pending ?? null;
+    thread.push({ key: "plan-revisions", at: liveAt, kind: "progress", who: "agent", author: "", title: waiting === null ? "Plan changes" : "Recommends a plan change",
+      text: waiting === null ? null : oneLineOf(waiting.reason, 280), link: { label: waiting === null ? "See the plan changes" : "Decide on the task page", href: "#plan-revisions" }, html: "", more: null });
+  }
   // The change a person asked for: the revision's own brief.
   if (data.revision != null && !("problem" in data.revision)) {
     const feedback = data.revision;
@@ -2912,9 +2915,11 @@ export function taskBodyParts(data: {
         text: [chosen, decision.note].filter((one): one is string => one !== null && one !== "").join(" — ") || null, link: null, html: "", more: null });
     }
   }
-  // Open questions keep their answer card (and its #task-questions anchor).
+  // Open questions are answered on the page (their cards sit in the step that waits, at #task-questions): the thread
+  // says what was asked and links there.
   if (decisionRail !== "") thread.push({ key: "questions", at: openDecisions.map(one => one.createdAt).sort()[0] ?? task.updatedAt, kind: "question", who: "agent", author: "",
-    title: openDecisions.length === 1 ? "Asked you a question" : `Asked you ${openDecisions.length} questions`, text: null, link: null, html: htmlString(decisionRail), more: null });
+    title: openDecisions.length === 1 ? "Asked you a question" : `Asked you ${openDecisions.length} questions`, text: openDecisions.map(one => oneLineOf(one.question, 280)).join("\n"),
+    link: { label: openDecisions.length === 1 ? "Answer it on the task page" : "Answer them on the task page", href: "#task-questions" }, html: "", more: null });
   for (const note of data.steering ?? []) {
     thread.push({ key: `steer-${note.id}`, at: note.createdAt, kind: "reply", who: "person", author: note.author, title: "Note to the agent", text: note.note, link: null, html: "", more: null });
   }
@@ -3077,6 +3082,19 @@ export function taskBodyParts(data: {
     plan: planView,
     // One quiet line under the step: what the agent did last, and when.
     activity: liveRun === undefined ? null : data.activity ?? null,
+    // The work panel's run: the live build, else this version's latest build or report. Its records are read through the
+    // run page's own guarded window; a page asking for a password names no window at all.
+    work: (() => {
+      const recorded = (run: Run): boolean => run.role === "builder" || run.role === "scout";
+      // Running: unfinished under the task's current claim (liveRun is the one run proved live; a builder whose repair
+      // child is the live run shares that claim and is still this attempt).
+      const running = (run: Run): boolean => liveRun !== undefined && run.outcome === null && run.finishedAt === null && run.leaseId === liveRun.leaseId;
+      const builds = data.runs.filter(recorded).sort((a, b) => b.id - a.id);
+      const run = builds.find(running) ?? builds[0];
+      if (run === undefined) return null;
+      const live = running(run);
+      return { run: run.id, live, agent: agentNameWords(run.provider, run.model), transcript: degraded ? null : `/r/${run.id}?fragment=transcript&shape=records` };
+    })(),
     stop,
     pause,
     steering: data.csrf !== "" ? data.steerComposer ?? null : null,
@@ -3093,16 +3111,18 @@ export function taskBodyParts(data: {
     recheckStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "recheck-stopped" && data.assignment.primaryAction.target.runId !== null
       ? { action: `${taskHref(data.assignment.rootId)}/recheck-stopped`, run: data.assignment.primaryAction.target.runId } : null,
     rebuild,
-    // The plan, progress and plan changes are thread entries now; the rest still needs a person here.
+    // What needs a person on the page itself. Open questions and a plan change are answered here, in their step's row:
+    // the thread (the work panel) only links to them.
     lead: [
       { key: "history", html: data.history === undefined ? "" : htmlString(data.history) }, { key: "control", html: htmlString(stop === null ? controlHtml : taskControlDetailsHtml(data.control!, task.id, data.csrf, "task", false, true)) }, { key: "problem", html: fragmentString(problemHtml) },
+      { key: "questions", html: decisionRail === "" ? "" : htmlString(decisionRail) }, { key: "plan-revisions", html: isEmptyHtml(revisionLedgerCard) ? "" : htmlString(revisionLedgerCard) },
       { key: "route-change", html: data.routeChange == null ? "" : htmlString(html`<div class="card"><p>${data.routeChange}</p></div>`) },
       { key: "fast-grown", html: data.fastGrown == null || data.csrf === "" ? "" : htmlString(html`<div class="card"><p>${data.fastGrown}</p>${postForm(`${taskHref(task.id)}/keep-grown`, btn("Approve it", { variant: "primary", type: "submit" }))}</div>`) },
       { key: "pull-request", html: fragmentString(pullRequestCard) },
       { key: "needs-scope", html: fragmentString(needsScopeCard) },
       { key: "mirror", html: fragmentString(mirrorCard) }, { key: "attempt", html: fragmentString(attemptPanel) },
     ].filter(one => one.html !== ""),
-    // Open questions are answered in the thread.
+    // Open questions are a lead block (key "questions"), so they sit in the step that waits.
     questions: "",
     facts,
     sections: [
@@ -3181,7 +3201,6 @@ export function taskPage(chrome: Chrome, data: Parameters<typeof taskBody>[0]): 
   const script =
     (liveRun === undefined ? "" : regionScript("check-progress", "check", `/r/${liveRun.id}`)) +
     (liveRun !== undefined && data.peekable === true ? regionScript("run-peek", "peek", `/r/${liveRun.id}`) : "") +
-    (liveRun !== undefined && data.peekable === true && liveRun.provider === "claude" ? transcriptScript(`/r/${liveRun.id}`) : "") +
     (data.csrf !== "" && data.decisions.some(one => one.state === "open" || one.state === "expired") ? decisionAnswerScript() : "");
   return screen(`task \u00b7 ${data.task.id}`, first.html, {
     chrome,

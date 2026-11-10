@@ -84,5 +84,6 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KSwitch**: An on/off setting: KSwitch acts at once and says its state in words; KSwitchInput is a checkbox with role=switch for a form.
 - **KTabs**: Underline tabs for sections of one object: KLinkTabs when each is an address (aria-current="page"), KTabs inside one page (role=tablist, arrow keys).
 - **KTiming**: A run's steps on one elapsed-time axis (Release, a flow's run, a pull request's checks); a queued row has no bar until it starts.
+- **KWork**: One agent's work as a chat: a header (title, who is working, a blue dot while it runs, Close), its words, each action as one quiet line, notes as bubbles, the message box.
 
 Also in `src/browser/kit`, owned but without a contract yet (no checked props, not in the usage map): section-forms.ts. Use them when they fit; ask for a contract before relying on their props.

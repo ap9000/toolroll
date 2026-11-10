@@ -11,12 +11,11 @@ import { RESOURCE, termsOf, type ChipTone } from "../../design/kit.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
   KActs, KApprove, KButton, KChip, KComposer, KCount, KDisclose, KDoc, KDocHeader, KEmpty, KFacts, KField, KGroup, KInfoLine, KInput,
-  KLinkButton, KNote, KNotice, KOverlay, KPageHeader, KPhoneHeader, KRow, KSeg, KSelect, KSlots, KTabs,
+  KLinkButton, KNote, KNotice, KOverlay, KPageHeader, KPhoneHeader, KRow, KSeg, KSelect, KSlots, KTabs, KWorkConversation, usePasswordAsked,
 } from "../kit/index.js";
 import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
 import { FormToken, Passwordless, PostForm } from "../ui/index.js";
-import { ConversationPane } from "./agent-conversation.js";
 import { LiveGrid } from "./agents-live-view.js";
 import { freshDraft, loadDraft, saveDraft, type SteerDraft } from "./steer-composer.js";
 import "./agents.css";
@@ -508,10 +507,12 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
 /** The agent's own tabs: its conversation (with the terminal view inside it) and its changes, both kept mounted. */
 function AgentTabs({ detail }: { detail: BrowserAgentDetail }) {
   const [tab, setTab] = useState<"conversation" | "changes">("conversation");
+  // A password asked on this page (a ceremony, or its popover open) pauses the reader: no request until it is gone.
+  const paused = usePasswordAsked();
   return <div className="agents-tabs" data-agent-tabs>
     <KTabs label="Agent" current={tab} onChange={key => setTab(key === "changes" ? "changes" : "conversation")}
       items={[{ key: "conversation", label: "Conversation" }, { key: "changes", label: detail.diff === null ? "Changes" : `Changes · ${detail.diff}` }]} />
-    <div role="tabpanel" aria-label="Conversation" hidden={tab !== "conversation"}><ConversationPane url={detail.transcript} live={detail.live} agent={detail.agent} /></div>
+    <div role="tabpanel" aria-label="Conversation" hidden={tab !== "conversation"}><KWorkConversation url={detail.transcript} live={detail.live} paused={paused} /></div>
     <div role="tabpanel" aria-label="Changes" hidden={tab !== "changes"}>
       <div className="agents-changes-wrap">
         <ChangesPane detail={detail} open={tab === "changes"} />

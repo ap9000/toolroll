@@ -442,6 +442,21 @@ ${item.at ? html`<time class="k-steprow-time k-num" datetime="${item.at}">${item
   })}</ol>`;
 }
 
+// ---- the work -----------------------------------------------------------------------------------------------------
+
+/** The work's frame (KIT.md "The work"): a header (the title, who is working with a blue dot while it runs, Close), the
+ * body that scrolls, and the message box at the foot. The records themselves are followed live by the workspace
+ * (`KWork` and `useConversation`); a page without script shows what `body` holds. Same markup as `KWork`. */
+export function work(options: { id: string; title: string; who?: HtmlValue; live?: boolean; close?: string | null; hidden?: boolean; body?: HtmlValue; foot?: HtmlValue; attrs?: Attrs }): Html {
+  const who = options.who === undefined || htmlString(html`${options.who}`) === "" ? ""
+    : html`<p class="k-work-who">${options.live ? html`<span class="k-work-dot" aria-hidden="true"></span>` : ""}<span>${options.who}</span></p>`;
+  const close = options.close === undefined || options.close === null ? "" : btn(options.close, { variant: "ghost", sm: true, iconOnly: "x" });
+  const foot = options.foot === undefined || htmlString(html`${options.foot}`) === "" ? "" : html`<div class="k-work-foot">${options.foot}</div>`;
+  return html`<aside class="k-work" id="${options.id}" aria-labelledby="${options.id}-h"${options.hidden ? html` hidden` : ""}${attributes(options.attrs ?? {})}>\
+<header class="k-work-head"><div class="k-work-title"><h2 id="${options.id}-h">${options.title}</h2>${who}</div>${close}</header>\
+<div class="k-work-body" data-agent-scroll="">${options.body ?? ""}</div>${foot}</aside>`;
+}
+
 // ---- guided steps (Wave E) --------------------------------------------------------------------------------------
 
 export type CheckStep = { key: string; title: string; text: HtmlValue; state: "done" | "open" | "checking"; action?: Html | null };

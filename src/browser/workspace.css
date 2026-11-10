@@ -538,12 +538,30 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-build-steps > li[data-state="blocked"] .so-build-step-mark { border-color: var(--so-danger); color: var(--so-ink); }
 .so-build-steps > li[data-state="completed"] .so-build-step-mark { border-color: var(--so-ink); background: var(--so-ink); }
 .so-build-steps > li[data-state="completed"] .so-build-step-mark::after { content: ""; width: 4px; height: 8px; margin-top: -2px; border: solid var(--so-paper); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
-/* Under the rows: More about this task, then the Activity panel (opened from the header, the Build row or ?tab=activity). */
+/* Under the rows: More about this task. */
 .so-task-more { padding-top: var(--so-space-sm); border-top: 1px solid var(--so-line); }
-.so-task-more-h, .so-task-activity-head h2 { margin: 0; font: 600 14px/1.4 var(--so-font-sans); color: var(--so-ink); }
-.so-task-activity { padding-top: var(--so-space-sm); border-top: 1px solid var(--so-line); }
-.so-task-activity[hidden] { display: none; }
-.so-task-activity-head { display: flex; align-items: center; justify-content: space-between; gap: var(--so-space-md); }
+.so-task-more-h { margin: 0; font: 600 14px/1.4 var(--so-font-sans); color: var(--so-ink); }
+/* The work panel (KIT.md "The work"; opened from the header's Activity, the Build row's Watch the work or ?tab=activity):
+ * beside the rows at 1100px and wider, a sheet over the page below that, the whole screen on a phone. Over the page it
+ * is a kit overlay: it sits just above its scrim (25), and the page under it is inert. */
+@media (min-width: 1100px) {
+  .so-workspace--kit [data-kit-page].so-task-page--work, .so-task-page--work { display: grid; grid-template-columns: minmax(0, 1fr) clamp(360px, 30vw, 440px); align-items: start; }
+  .so-task-page > .k-work { position: sticky; top: 0; grid-column: 2; grid-row: 1; height: 100dvh; border-left: 1px solid var(--so-line); }
+}
+@media (max-width: 1099px) {
+  .so-task-page > .k-work { position: fixed; left: 0; right: 0; bottom: 0; z-index: 26; --origin: 50% 100%; height: min(80dvh, 760px); border: 1px solid var(--so-overlay-line); border-bottom: 0; border-radius: 16px 16px 0 0; box-shadow: var(--so-sheet-shadow); }
+}
+@media (max-width: 760px) {
+  .so-task-page > .k-work { top: 0; height: auto; border: 0; border-radius: 0; box-shadow: none; padding-bottom: env(safe-area-inset-bottom); }
+}
+.so-work-records { display: grid; gap: var(--so-space-md); min-width: 0; }
+.so-work-records + [data-task-thread] { padding-top: 14px; border-top: 1px solid var(--so-line); }
+/* The thread in the panel: the words under the title, past the time column ("Yesterday 08:43" fits it). */
+.k-work .so-thread .so-thread-text { margin: var(--so-space-xs) 0 0 82px; }
+/* The lead's box in the panel is as narrow as a phone's: the modes take the first line, the hint and Send the second. */
+.k-work .so-mode-switch { width: 100%; }
+.k-work .so-mode { flex: 1; }
+.k-work .so-mode span { width: 100%; justify-content: center; }
 
 /* Rebuilt task page (views/task-view.tsx): the approval sheet is its own
  * section under the status card; the secondary terms fold stays flat. */
@@ -840,7 +858,9 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 /* Console v2 — the task page: one thread (a hairline rail joining each
  * entry's mark), its composer at the end, and Details beside it (a Details
  * sheet on a phone). The live mark is the only colour that moves. */
-.so-thread > .so-thread-entry::before { content: ""; position: absolute; left: 11.5px; top: 26px; bottom: 2px; width: 1px; background: var(--so-line); }
+/* The rail under a message's avatar (a message entry is position: relative); a plain entry has no avatar and no rail, so
+ * its rail can never land on whatever is positioned around the thread (the sticky work panel). */
+.so-thread > .so-thread-entry[data-thread-kind="message"]::before { content: ""; position: absolute; left: 11.5px; top: 26px; bottom: 2px; width: 1px; background: var(--so-line); }
 .so-thread > .so-thread-entry:last-child::before { display: none; }
 .so-thread .ui-message-content { font-size: 14px; }
 .so-thread .so-thread-mine { width: fit-content; max-width: 100%; padding: var(--so-space-sm) var(--so-space-md); border-radius: var(--so-radius-sheet); background: var(--so-user-bubble); }
@@ -983,8 +1003,8 @@ details.result-request-open > summary::marker { content: ""; }
 .so-result-decision [data-result-acts] { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); }
 .so-result-decision [data-accept-with-reason] { display: grid; gap: 6px; max-width: 360px; }
 /* Server cards a kit page still places (holds, stop details, a scope ledger): one hairline box, never a raised sheet. */
-.so-workspace--kit .k-doc :where(.card) { box-shadow: none; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-paper); }
-.so-workspace--kit .k-doc :where(.card .card) { border: 0; padding: 0; }
+.so-workspace--kit :is(.k-doc, .k-work) :where(.card) { box-shadow: none; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-paper); }
+.so-workspace--kit :is(.k-doc, .k-work) :where(.card .card) { border: 0; padding: 0; }
 /* A fold inside a card, and the Build row's stop details: flat, so a box never sits inside a box. */
 .so-workspace--kit .k-doc .card details:not([class]), .so-workspace--kit .k-doc .so-task-lead--control details#task-control-details { margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
 .k-slot-acts > [data-retry] { flex: 1 1 100%; }

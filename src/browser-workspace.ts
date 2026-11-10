@@ -266,6 +266,9 @@ export type BrowserTaskView = {
   activity?: RunActivity | null;
   /** The task's live room (GET /live?room=task:<root>): change nudges and who else has it open. */
   live?: { room: string; at: string | null } | null;
+  /** The work panel's run (docs/plans/task-page-steps.md "Watch the work"): the live build, else the latest one, who ran it,
+   * and its records window on the run page (null on a page that asks for a password). Null: no build yet. */
+  work?: { run: number; live: boolean; agent: string; transcript: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
   /** The running attempt's composer (steer-controls.ts): what it takes, said plainly, and its note box when it takes

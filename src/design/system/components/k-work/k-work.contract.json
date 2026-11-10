@@ -1,0 +1,92 @@
+{
+  "schema": "youi.component/v1",
+  "id": "youi:toolroll/component/k-work",
+  "name": "KWork",
+  "version": "1.0.0",
+  "status": "stable",
+  "summary": "One agent's work as a chat: a header (title, who is working, a blue dot while it runs, Close), its words, each action as one quiet line, notes as bubbles, the message box.",
+  "source": {
+    "file": "k-work.tsx",
+    "export": "KWork",
+    "also": [
+      "KWorkRecords",
+      "KWorkConversation",
+      "useConversation",
+      "usePasswordAsked"
+    ]
+  },
+  "platforms": [
+    "web"
+  ],
+  "props": {
+    "id": {
+      "type": "string",
+      "required": true,
+      "description": "The frame's id; its heading is <id>-h."
+    },
+    "title": {
+      "type": "string",
+      "required": true
+    },
+    "who": {
+      "type": "string",
+      "description": "Who is working, in words (\"Claude Sonnet · working\")."
+    },
+    "live": {
+      "type": "boolean",
+      "default": false,
+      "description": "Something runs now: the blue dot beside who is working."
+    },
+    "onClose": {
+      "type": "string",
+      "description": "Called by the Close button; no Close without it."
+    },
+    "closeLabel": {
+      "type": "string",
+      "default": "Close"
+    },
+    "hidden": {
+      "type": "boolean",
+      "default": false,
+      "description": "Out of sight and still mounted (its reader and drafts keep their place)."
+    },
+    "foot": {
+      "type": "string",
+      "description": "The message box (a KComposer form), or the one sentence that says why there is none."
+    }
+  },
+  "tokens": {
+    "surface": "youi:toolroll/token/color.paper",
+    "line": "youi:toolroll/token/color.line",
+    "live": "youi:toolroll/token/color.live",
+    "bubble": "youi:toolroll/token/color.user-bubble",
+    "muted": "youi:toolroll/token/color.muted"
+  },
+  "a11y": {
+    "role": "complementary",
+    "notes": [
+      "The frame is an aside labelled by its heading; Close is an icon button with its label read aloud.",
+      "The records are text only: nothing from the agent's records becomes markup.",
+      "Nothing pulses: a dot says running."
+    ]
+  },
+  "rules": [
+    "youi:toolroll/rule/color.no-raw-color",
+    "youi:toolroll/rule/tokens.no-arbitrary-values",
+    "youi:toolroll/rule/components.canonical-import",
+    "youi:toolroll/rule/props.contract-values"
+  ],
+  "guidance": {
+    "do": [
+      "Use to watch one agent's work and send it a note: the box names who gets the note.",
+      "Pause the reader while a password is asked on the page (usePasswordAsked)."
+    ],
+    "dont": [
+      "Never put an approval, a password or any other ceremony inside it; the box sends a note and approves nothing.",
+      "Never render a record as markup, and never use amber or a hue for anything but running (blue), passed (green) and failed (vermilion)."
+    ]
+  },
+  "examples": [],
+  "aliases": [],
+  "owners": []
+}
