@@ -27,6 +27,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isDeployed } from "./deploy-phase.js";
 import { taskBranches } from "./names.js";
 import { COMPLETION_ACTION } from "./result-completion.js";
 import { CLEANUP_CHOICES, IDLE_CHOICES, bytesWords, diskBytes, diskBytesAsync, type CheckoutCleanup, type CheckoutIdle } from "./storage.js";
@@ -82,7 +83,7 @@ export function deployedRelease(stateDir: string | null): Deployed | null {
   for (const name of names) {
     let journal: Record<string, unknown>;
     try { journal = JSON.parse(readFileSync(join(root, name, "deployment.json"), "utf8")) as Record<string, unknown>; } catch { continue; }
-    if (journal["phase"] !== "deployed") continue;
+    if (!isDeployed(journal["phase"])) continue;
     const at = typeof journal["deployedAt"] === "string" ? journal["deployedAt"] : typeof journal["updatedAt"] === "string" ? journal["updatedAt"] : "";
     if (newest !== null && newest.at >= at) continue;
     newest = { at, head: typeof journal["candidate"] === "string" ? journal["candidate"] : null, run: Number.isSafeInteger(journal["builder"]) ? Number(journal["builder"]) : null };

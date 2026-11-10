@@ -346,7 +346,7 @@ async function pruneStaged(keep) {
 }
 
 // The journaled phases and their recovery, run with the real services, runtimes and records.
-const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
+const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal, proveStartFailed } = browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt, deploymentLock, signal,
   facts, reserve, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
   processes, stopProcesses,
@@ -413,6 +413,9 @@ try {
   // Putting the previous service back needs no approval of the candidate: it resumes this deployment's own recovery.
   if (phaseWanted === "recover") {
     requireTrue(flag("stage") && existsSync(journalFile), "--phase recover resumes a failed deployment: pass --stage <dir> of one.");
+    // Killed while it waited for the new service: prove that service gone first (it stops nothing). What it can't
+    // prove is said, and the journal stays where it is for the recovery below to report.
+    try { await proveStartFailed(); } catch (error) { console.error(`✗ ${error.message}`); }
     process.exit(recoverJournal() ? 0 : 1);
   }
   const proven = early ?? proveAndReserve();

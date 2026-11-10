@@ -235,3 +235,29 @@ About 250 lines changed across 9 files plus three new small files and tests. Shi
 | 6 | Med | A newer coordinator can't fix an older candidate's script | Stated as a limit; nothing substituted. |
 | 7 | Med | Inventory missed `deploymentIdle`, `checkout-cleanup`, the first journal write, `release-gate`'s `released`, dynamic saves; derived-vs-derived test is circular | Inventory extended; writes validated at `save`/`mark`; test holds its own hand-written expectations. |
 | 8 | High | Tests missed the dangerous restart cases | Fresh-process context tests, replacement beside a stale journal, proofs failing, original-runtime restoration, adapter refusal and older-script cases. Teardown-interruption cases no longer exist (no teardown). |
+
+## Build decisions (2026-11-09)
+
+Choices made while building that the plan did not spell out, for the build review.
+
+| # | Decision | Why |
+| --- | --- | --- |
+| 1 | A word the table does not hold: the automatic settle at the start of a release refuses and names `toolroll release --recover-deploy --yes`. The explicit `--recover-deploy --yes` and `recoverDeploy`'s non-forward road still hand the journal to the deployment's own recovery script. | The coordinator is the older installed build. A newer candidate's own phase word must not strand its deployment, and the recorded commit's script knows its own phases and refuses what it can't prove. Nothing acts on an unknown word without a person's `--yes`. |
+| 2 | At `starting` the candidate proof gates only the forward finish. `--phase recover` is still tried while the journal stays at `starting`, proven candidate or not. | Putting the previous service back never needed approval of the candidate. |
+| 3 | No new arm in `recoverFailedDeployment`. `--phase recover` runs an async pre-step, `proveStartFailed`, that moves `starting` to `start-failed` and stops nothing. It requires: this run's runtimes, database and commit equal the journal's; the pause is this deployment's; the service is not loaded and no process of either runtime runs on this database; the staged runtime is proved to be the recorded commit; the coding backup and custody checks swap's failed-start branch makes. Anything unproved leaves `starting` and says why. | `starting` stays in no list recovery acts on: a journal alone never rolls a started service back. |
+| 4 | `restoreBackup` and `restoreService` refuse unless this run's "previous runtime" equals the journal's (`priorDist === r.priorRuntime`). | A fresh process after the swap reads the installed definition, where "previous" is the candidate. Only `--phase recover --stage` reads the saved one. |
+| 5 | `observeStart` (finish at `starting`) waits only while launchd has the service loaded. | Nothing starts a service launchd does not have. |
+| 6 | `proveStartFailed` calls `proveStaged()` before it loads the candidate's coding module, and requires `--head` to equal the journal's candidate. | That module's code answers for its own coding agents. Cost: one clean build inside the recover run. A failure leaves `starting`. |
+| 7 | The data file is `src/deploy-phase-data.json`; the scripts read it from the commit's `src/`, the runtime from `dist/` (copied by `scripts/postbuild.mjs`). One test fixture that copied only `scripts/deploy-*.mjs` into a stand-in extraction now copies the data file too. | The release extracts the whole commit, so `src/` is beside `scripts/` there. |
+
+Left as is, and said in the pull request:
+
+- At `starting` the new service's process ids were never recorded, so "gone" is proved by launchd not having the
+  label, no process of either runtime on this database, and the coding custody check.
+- A new service that is loaded but never answers is not stopped by anything here. The message names
+  `launchctl bootout gui/<uid>/<label>` and the rerun. Letting recovery stop it needs proof that the loaded service
+  is the one this deployment started; that is a separate decision.
+- During this change's own release the coordinator is the previous build: at `starting` it runs `--phase recover`
+  with the new scripts (the pre-step applies). "Finish first, then recover" starts with the release after.
+- `recoverJournal` latches after a thrown refusal, so a second call in the same process does nothing (existing
+  design, kept).

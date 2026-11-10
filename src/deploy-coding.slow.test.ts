@@ -960,3 +960,166 @@ test.each(['stopped', 'migrated', 'backup-restored'])('recovery at %s leaves a h
     expect(d.gateOwned()).toBe(true);
   } finally { d.close(); }
 });
+
+// A deployment killed while it waited for the new service (docs/plans/deploy-phase-table.md). The journal says
+// "starting" and nothing recorded whether the service came up.
+
+/** A swap killed in its wait for the new service: the journal is left at "starting". */
+async function killedAtStarting({ starts = true, ...options }: { starts?: boolean } & NonNullable<Parameters<typeof deployment>[0]> = {}) {
+  const d = await deployment(options);
+  await d.rehearsed();
+  d.services.starts = starts;
+  d.hooks.sleep = () => { throw Error('killed'); };
+  await expect(d.phases.swap()).rejects.toThrow('killed');
+  delete d.hooks.sleep;
+  expect(d.journal().phase).toBe('starting');
+  d.reset();
+  return d;
+}
+const migratedRows = (d: Awaited<ReturnType<typeof deployment>>) => { const db = d.orders(); try { return db.prepare("SELECT name FROM sqlite_master WHERE name='candidate_only'").get() !== undefined; } finally { db.close(); } };
+
+test('finish at starting only looks: a new service that is running moves the journal to started and the deployment finishes', async () => {
+  const d = await killedAtStarting();
+  try {
+    const lease = (heartbeat: string) => { const db = d.orders(); try { db.prepare("INSERT OR REPLACE INTO watch_lease VALUES('worker','/repo','owner',1,?,?,?)").run(heartbeat, new Date(Date.now() + 3_600_000).toISOString(), heartbeat); } finally { db.close(); } };
+    lease(new Date(Date.now() - 3_600_000).toISOString());
+    d.hooks.sleep = () => { d.log.push('lease wait'); lease(new Date().toISOString()); };
+    await d.phases.finish();
+    expect(d.log).toEqual(['started', 'fetch http://127.0.0.1:4180/t/task', 'lease wait', 'healthy', 'deployed', 'summary']);
+    expect(d.journals['started']).toMatchObject({ phase: 'started', newService: d.services.new });
+    expect(d.journal()).toMatchObject({ phase: 'deployed', leases: [{ repo: '/repo' }] });
+    expect([d.gateOwned(), d.services.running, migratedRows(d)]).toEqual([false, 'new', true]);
+  } finally { d.close(); }
+});
+
+test('finish at starting waits no longer than the swap would for a loaded service, not at all for one launchd does not have, and changes nothing', async () => {
+  const { HEALTH_WAIT_MS } = await import('../scripts/deploy-recovery.mjs');
+  for (const [running, waits] of [['failed', HEALTH_WAIT_MS / 1000], [null, 0]] as const) {
+    const d = await killedAtStarting({ starts: false });
+    try {
+      d.services.running = running;
+      let slept = 0;
+      d.hooks.sleep = () => { slept++; };
+      await expect(d.phases.finish()).rejects.toThrow('The new service is not running from the new runtime. Nothing was stopped and the journal stays at starting.');
+      expect([running, slept]).toEqual([running, waits]);
+      expect(d.log.filter(line => /bootout|bootstrap|custody|healthz/.test(line))).toEqual([]);
+      expect([d.journal().phase, d.gateOwned(), d.services.running, migratedRows(d)]).toEqual(['starting', true, running, true]);
+    } finally { d.close(); }
+  }
+});
+
+test('finish at starting does not call a service started unless the database is the migrated one under this deployment\'s pause', async () => {
+  const lost = await killedAtStarting();
+  try {
+    const db = lost.orders();
+    try { removeUpdateGate(db, lost.journal().id); } finally { db.close(); }
+    await expect(lost.phases.finish()).rejects.toThrow("The live database is not the migrated one under this deployment's pause. Nothing was stopped and the journal stays at starting.");
+    expect([lost.journal().phase, lost.journal().newService, lost.services.running]).toEqual(['starting', undefined, 'new']);
+  } finally { lost.close(); }
+  const moved = await killedAtStarting();
+  try {
+    const db = moved.orders();
+    try { db.exec('UPDATE schema_version SET version=version+1'); } finally { db.close(); }
+    await expect(moved.phases.finish()).rejects.toThrow("The live database is not the migrated one under this deployment's pause.");
+    expect([moved.journal().phase, moved.gateOwned(), moved.services.running]).toEqual(['starting', true, 'new']);
+  } finally { moved.close(); }
+});
+
+test('recovery at starting stops nothing; once the new service is proved gone it is journaled a failed start and undone like one', async () => {
+  // Loaded, and never answering: the one case left to a person.
+  const d = await killedAtStarting({ starts: false });
+  try {
+    expect(quietly(() => d.phases.recoverJournal())).toBe(false);
+    await expect(d.phases.proveStartFailed()).rejects.toThrow(/The new service is still loaded or still has processes, so the previous one was not put back\. Nothing was stopped and the journal stays at starting\..*launchctl bootout gui\/501\/com\.toolroll\.browser/);
+    expect(d.log).toEqual([]);
+    expect([d.journal().phase, d.gateOwned(), d.services.running, migratedRows(d)]).toEqual(['starting', true, 'failed', true]);
+    // The journal alone still restores nothing, however often it is asked.
+    expect(quietly(() => d.phases.recoverJournal())).toBe(false);
+    expect(d.log).toEqual([]);
+    // Its owner stopped it. Now gone is provable: the same custody checks a failed start gets, then the failed start's own recovery.
+    d.services.running = null;
+    expect(quietly(() => d.phases.recoverJournal())).toBe(false);
+    expect(d.journal().phase).toBe('starting');
+    expect(await d.phases.proveStartFailed()).toBe(true);
+    expect(d.log).toEqual(['starting', 'candidate custody', 'start-failed']);
+    expect([d.journal().phase, d.gateOwned(), migratedRows(d)]).toEqual(['start-failed', true, true]);
+    const recovering = d.log.length;
+    expect(quietly(() => d.phases.recoverJournal())).toBe(true);
+    expect(d.log.slice(recovering)).toEqual(['bootstrap previous while paused', 'healthz while paused']);
+    expect(readFileSync(d.plist, 'utf8')).toBe(d.livePlist);
+    expect([d.journal().phase, d.gateOwned(), d.services.running, migratedRows(d)]).toEqual(['released', false, 'old', false]);
+    // Asked again, it has nothing to prove.
+    expect(await d.phases.proveStartFailed()).toBe(false);
+  } finally { d.close(); }
+});
+
+test('a start is never journaled failed while the new service runs, from another context, without the pause, or without the new runtime\'s own proofs', async () => {
+  const refuse = { custody: false, staged: false };
+  const wrap = (args: Record<string, any>) => ({
+    ...args,
+    proveStaged: () => { if (refuse.staged) throw Error('Staged file differs from a clean build of the candidate commit: cli.js'); return args.proveStaged(); },
+    loadCodingDeploymentRuntime: async (dist: string) => {
+      const runtime = await args.loadCodingDeploymentRuntime(dist);
+      return refuse.custody && dist === args.nextDist ? { ...runtime, assertCodingUpdateStopped: () => { throw Error('A coding agent of the new runtime is still running.'); } } : runtime;
+    },
+  });
+  const cases: readonly (readonly [string, (d: Awaited<ReturnType<typeof deployment>>) => void, string | RegExp])[] = [
+    ['the new service answers', d => { d.services.running = 'new'; }, 'still loaded or still has processes'],
+    ['a previous runtime other than the one this run reads', d => durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), priorRuntime: join(d.root, 'older', 'dist') }), "does not match the deployment's recorded runtimes, database or commit"],
+    ['another staging directory', d => durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), nextRuntime: join(d.root, 'elsewhere', 'dist') }), "does not match the deployment's recorded runtimes, database or commit"],
+    ['another commit', d => durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), candidate: 'd'.repeat(40) }), "does not match the deployment's recorded runtimes, database or commit"],
+    ['another database', d => durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), database: join(d.root, 'demo.db') }), "does not match the deployment's recorded runtimes, database or commit"],
+    ['the pause is no longer this deployment\'s', d => { const db = d.orders(); try { removeUpdateGate(db, d.journal().id); } finally { db.close(); } }, /New work is no longer paused by this deployment \(update [0-9a-f-]{36}\)/],
+    ['the staged runtime is not the recorded commit', () => { refuse.staged = true; }, 'Staged file differs from a clean build'],
+    ['a coding agent of the new runtime is left', () => { refuse.custody = true; }, 'A coding agent of the new runtime is still running.'],
+  ];
+  for (const [name, arrange, words] of cases) {
+    Object.assign(refuse, { custody: false, staged: false });
+    const d = await killedAtStarting({ starts: false, wrap });
+    try {
+      d.services.running = null;
+      arrange(d);
+      const before = readFileSync(d.database);
+      await expect(d.phases.proveStartFailed(), name).rejects.toThrow(words);
+      expect([name, d.journal().phase, migratedRows(d)]).toEqual([name, 'starting', true]);
+      expect(d.log.filter(line => /bootout|bootstrap|healthz|start-failed/.test(line)), name).toEqual([]);
+      expect(readFileSync(d.database).equals(before), name).toBe(true);
+      // And the recovery that follows it in --phase recover still puts nothing back.
+      expect(quietly(() => d.phases.recoverJournal()), name).toBe(false);
+      expect(d.log.filter(line => /bootout|bootstrap|healthz/.test(line)), name).toEqual([]);
+    } finally { d.close(); }
+  }
+  // Any other phase: nothing to prove, nothing written.
+  const other = await started();
+  try {
+    const before = readFileSync(join(other.stage, 'deployment.json'), 'utf8');
+    expect(await other.phases.proveStartFailed()).toBe(false);
+    expect(readFileSync(join(other.stage, 'deployment.json'), 'utf8')).toBe(before);
+  } finally { other.close(); }
+});
+
+test('the backup and the previous service go back only from the run that reads the definition the deployment replaced', async () => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    d.services.starts = false;
+    await expect(d.phases.swap()).rejects.toThrow('The new service did not come up.');
+    // A run that reads the installed (new) definition has another "previous" runtime than the journal's.
+    durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), priorRuntime: join(d.root, 'older', 'dist') });
+    const recovering = d.log.length;
+    expect(quietly(() => d.phases.recoverJournal())).toBe(false);
+    expect(d.log.slice(recovering)).toEqual([]);
+    expect([d.journal().phase, d.gateOwned(), migratedRows(d)]).toEqual(['start-failed', true, true]);
+    // (From the deployment's own saved definition it goes back: 'a failed start is stopped and its custody proved' above.)
+  } finally { d.close(); }
+});
+
+test('the journal is never written with a word that is not a phase', async () => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    const before = readFileSync(join(d.stage, 'deployment.json'), 'utf8');
+    expect(() => d.phases.save(d.journal(), 'almost-started')).toThrow('"almost-started" is not a deployment phase; the journal was not written.');
+    expect(readFileSync(join(d.stage, 'deployment.json'), 'utf8')).toBe(before);
+  } finally { d.close(); }
+});

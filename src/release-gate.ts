@@ -24,10 +24,11 @@ import { join } from "node:path";
 import { durableJson } from "./desktop-update.js";
 import { removeUpdateGate, updateGateOwned } from "./desktop-update-gate.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
+import { BEFORE_SWAP, RELEASED } from "./deploy-phase.js";
 import type { Database } from "./store.js";
 
-/** The journal phases a deployment passes before it stops the old service (deploy-phases.mjs). */
-export const BEFORE_SWAP = Object.freeze(["preparing", "admission-paused", "frozen", "backup-verified", "rehearsed"]);
+/** The journal phases a deployment passes before it stops the old service (deploy-phase.ts, the one table). */
+export { BEFORE_SWAP };
 /** Journal fields that only the swap and later phases write. */
 const SWAP_FIELDS = ["stoppingService", "codingBackupBeforeSwap", "migration", "newService", "deployedAt"] as const;
 const GATE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -160,7 +161,7 @@ export function releaseGate(id: string, world: GateReleaseWorld, yes: boolean): 
       // The owner is checked again within removeUpdateGate's short write transaction.
       removeUpdateGate(db, id);
       durableJson(journalFile, {
-        ...fresh.journal, phase: "released", updatedAt: world.now().toISOString(),
+        ...fresh.journal, phase: RELEASED, updatedAt: world.now().toISOString(),
         releasedBeforeSwap: { at: world.now().toISOString(), by: "toolroll release --release-gate", from: fresh.journal.phase, proof: fresh.proof },
       });
       return { ok: true, released: true, id, stage: fresh.stage, proof: fresh.proof };
