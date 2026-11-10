@@ -234,9 +234,13 @@ export class ChatState extends ChatMessages {
     return { pending: Number(row?.["pending"] ?? 0), dropped: Number(row?.["dropped"] ?? 0) };
   }
 
-  /** Replace a part's content and send it again (a repaint after a tap). */
-  repaint(id: number, content: ChatContent): void {
-    this.prepare("UPDATE chat_part SET payload = ?, state = 'pending', next_at = NULL WHERE provider = :provider AND id = ?").run(savedChatPart(content), id);
+  /**
+   * Replace a part's content and send it again (a repaint after a tap). A dropped part stays dropped: it was given up
+   * on, or its chat disconnected, and new content doesn't bring it back. False then, so the caller can say it another way.
+   */
+  repaint(id: number, content: ChatContent): boolean {
+    return Number(this.prepare("UPDATE chat_part SET payload = ?, state = 'pending', next_at = NULL WHERE provider = :provider AND id = ? AND state <> 'dropped'")
+      .run(savedChatPart(content), id).changes) === 1;
   }
 }
 

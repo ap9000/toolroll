@@ -192,6 +192,9 @@ function mintDecide(options: ChatDeliveryOptions, binding: ChatBinding, target: 
 /** A merge approved in chat, waiting on GitHub, and the card that says how it went. */
 type PendingMerge = { merge: ChatMerge; part: number; shown: string; content: ChatContent };
 
+/** Said when a card that still waits for a tap can no longer be shown again in the chat. */
+const CARD_GONE = "This card can't be updated here now. Open Toolroll to finish this.";
+
 /**
  * A decide button (chat-decide.ts), inside the tap's transaction: the same door, words and two taps as on Telegram.
  * The card it rode is repainted in place; Request changes asks for the next message; a merge goes out after.
@@ -213,7 +216,9 @@ function applyChatDecideTap(options: ChatDeliveryOptions, event: ChatEvent, bind
   if (tapped.edit !== undefined && row !== undefined && card !== null) {
     const { decide: _decide, link: _link, also: _also, edit: _edit, ...kept } = card;
     repainted = { ...kept, text: tapped.edit.text, ...(tapped.edit.rows.length === 0 ? {} : { decide: { rows: decideRows(tapped.edit.rows) } }) };
-    state.repaint(Number(row["id"]), repainted);
+    // A card that was dropped isn't brought back: what happened goes as a new message. A step that waits for a second
+    // tap can't be shown on it, so the person is sent to the task.
+    if (!state.repaint(Number(row["id"]), repainted)) replies.push({ text: tapped.edit.tokens.length === 0 ? tapped.ack : CARD_GONE });
   } else replies.push({ text: tapped.ack });
   if (tapped.prompt !== undefined) replies.push({ text: tapped.prompt.text, prompt: tapped.prompt.id });
   state.plan(event.id, replies, now);
@@ -887,12 +892,12 @@ export function applyChatAction(
         if (link) content.link = link;
       }
     }
-    // Repaint the original persisted card; retain one placement and fresh tokens.
-    state
-      .prepare(
-        "UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?",
-      )
-      .run(savedChatPart(content), action.part);
+    // Repaint the original persisted card; retain one placement and fresh tokens. A card that was dropped isn't brought
+    // back: an outcome goes as a new message, and a card that still waits for a tap sends the person to Toolroll.
+    if (!state.repaint(action.part, content)) {
+      const { edit: _edit, proposal: _proposal, phase: _phase, ...asNew } = content;
+      state.plan(event.id, [content.proposal === undefined ? asNew : { text: CARD_GONE }], now);
+    }
     if (!content.proposal)
       state
         .prepare(
