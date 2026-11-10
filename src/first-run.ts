@@ -140,16 +140,19 @@ export function firstResultWords(since: string, at: string): string | null {
   return `First result in ${Math.round(minutes / (24 * 60))} days`;
 }
 
-/** The first task's five steps, as a person reads them. */
-export const JOURNEY_STEPS = [["plan", "Plan"], ["approve", "You approve"], ["build", "Build"], ["checks", "Checks"], ["ready", "Ready"]] as const;
+/** A task's five steps, as a person reads them: the one label set the task page's rows, chat's first-task journey and
+ * the progress line all read. */
+export const JOURNEY_STEPS = [["plan", "Plan"], ["approve", "Approval"], ["build", "Build"], ["checks", "Checks"], ["ready", "Ready"]] as const;
 export type JourneyKey = (typeof JOURNEY_STEPS)[number][0];
 /** `stuck`: the step it stopped at (Failed, Stopped, or waiting on something other than the approval). */
 /** `skipped`: a stage the task went past without it happening (its checks didn't run or couldn't be read). `needsYou`:
  * the current or stuck step waits on a person, so it is the one step drawn in the needs-you ink. */
-export type JourneyStep = { key: JourneyKey; label: string; state: "done" | "current" | "stuck" | "skipped" | "todo"; needsYou?: true };
+/** `say`: what the step's state means when its label alone doesn't say it ("Checks failed", "Checks not run"); the
+ * label is always the step's own name from JOURNEY_STEPS. */
+export type JourneyStep = { key: JourneyKey; label: string; state: "done" | "current" | "stuck" | "skipped" | "todo"; needsYou?: true; say?: string };
 
 /**
- * Where the first task stands on Plan → You approve → Build → Checks → Ready, from the one stage every surface reads
+ * Where the first task stands on Plan → Approval → Build → Checks → Ready, from the one stage every surface reads
  * (task-status.ts). Waiting for a worker before approval is still the plan; after approval it is the build. `built`:
  * the build finished with a result.
  */
@@ -173,8 +176,8 @@ export function firstTaskJourney(read: { stage: "queued" | "planning" | "needs-y
  * nothing says (the step is then shown skipped, never done). The road reads this one answer, never a row's words. */
 export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "off" | "unreadable" | null;
 /**
- * Any task's road (the read-only stepper on its page, after ReUI's Stepper): the first task's five steps, told only
- * from recorded facts. You approve is done only when the plan was approved (a rewritten plan waiting on approval
+ * Any task's road (the step rows on its page): the first task's five steps, told only
+ * from recorded facts. Approval is done only when the plan was approved (a rewritten plan waiting on approval
  * stands there again); a task that never needed one shows it skipped. Checks is done only when the approved check
  * passed; a running, missing or Off check says so, and with no checks fact it is skipped. A failed check, or one that
  * can't be read, stops the road at Checks: Ready isn't done (fail closed), even on a task a person marked complete.
@@ -194,26 +197,26 @@ export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved:
     if (step.key === "checks" && step.state === "stuck" && built) {
       switch (facts.checks ?? null) {
         case "passed": waitsAtReady = true; return { ...step, state: "done" };
-        case "not-run": waitsAtReady = true; return { ...step, state: "skipped", label: "Checks not run" };
-        case "off": waitsAtReady = true; return { ...step, state: "skipped", label: "Checks at release" };
-        case "running": return { ...step, state: "current", label: "Checks running" };
-        case "failed": return { ...step, label: "Checks failed" };
-        case "unreadable": return { ...step, label: "Checks unreadable" };
+        case "not-run": waitsAtReady = true; return { ...step, state: "skipped", say: "Checks not run" };
+        case "off": waitsAtReady = true; return { ...step, state: "skipped", say: "Checks at release" };
+        case "running": return { ...step, state: "current", say: "Checks running" };
+        case "failed": return { ...step, say: "Checks failed" };
+        case "unreadable": return { ...step, say: "Checks unreadable" };
         default: return step;
       }
     }
     if (step.key !== "checks" || (step.state !== "done" && step.state !== "current")) return step;
     // At Checks now: only a recorded failure, an unreadable check or a running check changes how it reads.
-    if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", label: "Checks failed" }
-      : facts.checks === "unreadable" ? { ...step, state: "stuck", label: "Checks unreadable" }
-      : facts.checks === "running" ? { ...step, label: "Checks running" } : step;
+    if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", say: "Checks failed" }
+      : facts.checks === "unreadable" ? { ...step, state: "stuck", say: "Checks unreadable" }
+      : facts.checks === "running" ? { ...step, say: "Checks running" } : step;
     switch (facts.checks ?? null) {
       case "passed": return step;
-      case "running": return { ...step, state: "current", label: "Checks running" };
-      case "failed": return { ...step, state: "stuck", label: "Checks failed" };
-      case "not-run": return { ...step, state: "skipped", label: "Checks not run" };
-      case "off": return { ...step, state: "skipped", label: "Checks at release" };
-      case "unreadable": return { ...step, state: "stuck", label: "Checks unreadable", ...(complete ? {} : { needsYou: true as const }) };
+      case "running": return { ...step, state: "current", say: "Checks running" };
+      case "failed": return { ...step, state: "stuck", say: "Checks failed" };
+      case "not-run": return { ...step, state: "skipped", say: "Checks not run" };
+      case "off": return { ...step, state: "skipped", say: "Checks at release" };
+      case "unreadable": return { ...step, state: "stuck", say: "Checks unreadable", ...(complete ? {} : { needsYou: true as const }) };
       default: return { ...step, state: "skipped" };
     }
   });

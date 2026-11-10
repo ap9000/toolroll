@@ -784,3 +784,105 @@ export function buildProgressOf(steps: readonly BuildStep[] | null | undefined):
 export function earlierAttemptsWords(count: number): string {
   return `${count} earlier attempt${count === 1 ? "" : "s"} stopped`;
 }
+
+/** One row of a task page's steps (docs/plans/task-page-steps.md): the step's label, how its marker reads, one plain
+ * sentence and a time, whether it has something to open, and whether it starts open. `mark`: done (an ink disc with
+ * a check), needs (waits on this person: ink), live (something runs now: blue), wait (current, waiting on nothing
+ * this person does), stuck (stopped there: vermilion), skipped (a dashed ring), todo (not reached: grey). */
+export type StepRow = {
+  key: "plan" | "approve" | "build" | "checks" | "ready";
+  label: string;
+  state: "done" | "current" | "stuck" | "skipped" | "todo";
+  mark: "done" | "needs" | "live" | "wait" | "stuck" | "skipped" | "todo";
+  sentence: string;
+  /** When the step happened (ISO), shown as a clock time; null when nothing recorded says. */
+  at: string | null;
+  needsYou: boolean;
+  /** It holds something to read or do: a finished row opens on press, the current one is open. */
+  opens: boolean;
+  open: boolean;
+};
+
+/** What `stepRowsOf` reads: facts the task page's view already carries. */
+export type StepRowFacts = {
+  journey?: readonly { key: StepRow["key"]; label: string; state: StepRow["state"]; needsYou?: true; say?: string }[] | null;
+  scout: boolean;
+  status: { status: { headline: string; sentence: string }; attempts: readonly unknown[] } | null;
+  approved?: { by: string; at: string; automatic: boolean; rule: string | null } | null;
+  approve?: { heading: string } | null;
+  approval?: string;
+  progress?: { line: string } | null;
+  plan?: { lead: string | null; by: string | null; at: string | null; planning: boolean } | null;
+  result?: { selected: unknown } | null;
+  thread?: readonly { kind: string; at: string }[];
+  release?: unknown;
+};
+
+/** The task page's rows, from its road (first-run.ts taskRoad) and the facts beside it. Null when the task has no road
+ * (cancelled, or no status): the page keeps its status block then. Pure: no clock, no store. */
+export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
+  const road = view.journey ?? null;
+  if (road === null || road.length === 0) return null;
+  const headline = view.status?.status.headline ?? null;
+  const sentence = view.status?.status.sentence ?? "";
+  const runs = headline === "Planning" || headline === "Building";
+  const approvalOpen = view.approve != null || road.some(step => step.key === "approve" && step.state === "current");
+  const hasResult = view.result != null;
+  const lastResult = [...(view.thread ?? [])].filter(one => one.kind === "result").map(one => one.at).sort().at(-1) ?? null;
+  const checksStuck = road.some(step => step.key === "checks" && step.state === "stuck");
+  const words = (step: NonNullable<StepRowFacts["journey"]>[number]): { sentence: string; at: string | null } => {
+    const here = step.state === "current" || step.state === "stuck";
+    switch (step.key) {
+      case "plan":
+        if (step.state === "done" || step.state === "skipped") {
+          const by = view.plan?.by ?? null;
+          if (approvalOpen) return { sentence: by === null ? "Shown below" : `Written by ${by} · shown below`, at: view.plan?.at ?? null };
+          return { sentence: view.plan?.lead ?? (by === null ? "Plan written" : `Written by ${by}`), at: view.plan?.at ?? null };
+        }
+        if (here) return { sentence: view.plan?.planning === true || headline === "Planning" ? "Writing the plan" : sentence || "No plan yet", at: null };
+        return { sentence: "A plan for you to approve", at: null };
+      case "approve":
+        if (step.state === "done") {
+          const by = view.approved ?? null;
+          return { sentence: by === null ? "Approved" : by.automatic ? "Approved automatically" : `Approved by ${by.by}`, at: by?.at ?? null };
+        }
+        if (step.state === "skipped") return { sentence: "No approval was asked for", at: null };
+        if (here) return { sentence: step.needsYou ? view.approve?.heading ?? "Plan ready" : "Waiting for approval", at: null };
+        return { sentence: view.scout ? "You approve before it starts" : "You approve before anything is built", at: null };
+      case "build":
+        if (step.state === "done") return { sentence: view.scout ? "The investigation finished" : "The build finished", at: lastResult };
+        if (step.state === "skipped") return { sentence: "Didn't run", at: null };
+        if (here) return { sentence: view.progress?.line ?? sentence, at: null };
+        return { sentence: approvalOpen ? "Starts when you approve" : "Starts after approval", at: null };
+      case "checks": {
+        const said = step.say ?? null;
+        if (step.state === "done") return { sentence: "Project checks passed", at: null };
+        if (step.state === "skipped") return { sentence: said === "Checks not run" ? "The checks didn't run" : said === "Checks at release" ? "Checked at release" : "No checks were recorded", at: null };
+        if (step.state === "stuck") return { sentence: said === "Checks unreadable" ? "The checks couldn't be read" : said === "Checks failed" ? "The checks failed" : sentence, at: null };
+        if (step.state === "current") return { sentence: said === "Checks running" ? "The checks are running" : sentence, at: null };
+        return { sentence: "The project's checks run on the result", at: null };
+      }
+      case "ready":
+        if (step.state === "done") return { sentence: headline === "Complete" ? "Finished" : view.scout ? "Report ready" : "Ready", at: lastResult };
+        if (here) return { sentence: step.needsYou ? (view.scout ? "Ready for you to read" : "Ready for your review") : sentence, at: null };
+        if (hasResult) return { sentence: checksStuck ? "Not ready: the checks didn't pass. The result is here." : "Not ready yet. The result so far is here.", at: null };
+        return { sentence: view.scout ? "A report for you to read" : "A result for you to review", at: null };
+    }
+  };
+  const rows = road.map((step): StepRow => {
+    const said = words(step);
+    const here = step.state === "current" || step.state === "stuck";
+    const needsYou = step.needsYou === true && here;
+    const mark: StepRow["mark"] = step.state === "done" ? "done" : step.state === "skipped" ? "skipped" : step.state === "todo" ? "todo"
+      : needsYou ? "needs" : step.state === "stuck" ? "stuck" : runs || step.say === "Checks running" ? "live" : "wait";
+    // A step not reached opens only when it holds something already there: a result before Ready was reached.
+    const opens = step.state !== "todo" || (step.key === "ready" && hasResult);
+    return { key: step.key, label: step.label, state: step.state, mark, sentence: said.sentence, at: said.at, needsYou, opens, open: here };
+  });
+  // Nothing happening (a finished task): the last step it reached is the one open.
+  if (!rows.some(row => row.open)) {
+    const last = [...rows].reverse().find(row => row.opens && row.state !== "todo");
+    if (last !== undefined) last.open = true;
+  }
+  return rows;
+}

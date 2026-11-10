@@ -134,6 +134,19 @@ export function timingBars(rows: readonly TimingRow[], scale?: number): Array<{ 
   return rows.map(row => row.st === "q" ? null : { left: (Math.max(0, row.start) / sc) * 100, width: (Math.max(row.dur, sc / 400) / sc) * 100 });
 }
 
+// ---- step rows ---------------------------------------------------------------------------------------------------
+
+/** A step row's marker: done (an ink disc with a check), needs (waits on this person: an ink ring with a dot), live
+ * (runs now: blue), wait (current, waiting on nothing this person does), stuck (stopped there: vermilion), skipped (a
+ * dashed ring), todo (not reached: a grey ring). */
+export type StepRowMark = "done" | "needs" | "live" | "wait" | "stuck" | "skipped" | "todo";
+/** The words a screen reader hears for a step row's marker. */
+export const STEP_ROW_WORDS: Readonly<Record<StepRowMark, string>> = {
+  done: "done", needs: "waiting on you", live: "in progress", wait: "waiting", stuck: "stopped here", skipped: "skipped", todo: "not started",
+};
+/** The id of a step row's body, for its disclosure's aria-controls. */
+export const stepRowBodyId = (key: string): string => `steprow-${key}`;
+
 // ---- progress line -----------------------------------------------------------------------------------------------
 
 /** One step on a progress line: done (a check), now (waits on you: ink), live (running: blue), failed, or to do. */

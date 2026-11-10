@@ -1251,6 +1251,34 @@
   .approval-roles dd { margin: 0; }
   .approval-roles dd ul { margin: 2px 0 0; color: var(--muted-foreground); }
   .chat-plan .approval-sheet { padding: 0; border: 0; background: none; }
+  /* The plan sheet (task page, docs/plans/task-page-steps.md): the same terms read top to bottom — one lead sentence,
+     Steps, Done when, Will change / Won't touch, Worth knowing, the agent — every part open, small muted headings. */
+  .plan-sheet { display: grid; gap: 22px; margin: 0; min-width: 0; color: var(--so-ink); }
+  .plan-sheet > * { margin: 0; }
+  .plan-sheet-lead { max-width: 66ch; font-size: 17px; line-height: 1.5; letter-spacing: -.01em; overflow-wrap: anywhere; }
+  .plan-sheet-text { max-width: 66ch; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .plan-sheet-part { display: grid; gap: 8px; min-width: 0; max-width: 75ch; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+  .plan-sheet-part > *, .plan-sheet-part p, .plan-sheet-part ul, .plan-sheet-part ol, .plan-sheet-part dl { margin: 0; }
+  .plan-sheet-h { margin: 0; font-size: 12px; font-weight: 500; line-height: 1.5; letter-spacing: 0; text-transform: none; color: var(--so-muted); }
+  .plan-sheet-sub { color: var(--so-muted); font-size: 12.5px; }
+  .plan-sheet-steps { display: grid; gap: 8px; padding: 0; list-style: none; counter-reset: plan-step; }
+  .plan-sheet-steps > li { display: flex; gap: 12px; counter-increment: plan-step; }
+  .plan-sheet-steps > li::before { content: counter(plan-step); flex: 0 0 22px; box-sizing: border-box; width: 22px; height: 22px; border: 1px solid var(--so-line); border-radius: 50%; display: grid; place-items: center; font-size: 12px; color: var(--so-muted); font-variant-numeric: tabular-nums; }
+  .plan-sheet-steps > li > span { min-width: 0; padding-top: 1px; }
+  .plan-sheet-done { display: grid; padding: 0; list-style: none; }
+  .plan-sheet-done > li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 8px 0; border-bottom: 1px solid var(--so-line); }
+  .plan-sheet-done > li:last-child { border-bottom: 0; }
+  .plan-sheet-done > li > span:first-child { flex: 1 1 260px; min-width: 0; }
+  .plan-sheet-how { flex: none; font-size: 12.5px; color: var(--so-muted); }
+  .plan-sheet-pair { display: flex; flex-wrap: wrap; gap: 16px 40px; }
+  .plan-sheet-pair > .plan-sheet-part { flex: 1 1 220px; }
+  .plan-sheet .approval-paths li { color: var(--so-ink); font-size: 13px; line-height: 1.7; }
+  .plan-sheet-list { display: grid; gap: 4px; padding-left: 1.25rem; }
+  .plan-sheet-warn { color: var(--so-ink); }
+  .plan-sheet .approval-amendment { margin: 0; }
+  .plan-sheet .approval-who, .plan-sheet .approval-evidence, .plan-sheet .approval-allowing, .plan-sheet .approval-you-check { margin: 0; }
+  .plan-sheet .approval-roles { margin: 0; }
+  .plan-sheet .revision-card { margin: 0; padding: 0; border: 0; background: none; }
   @media (max-width: 760px) {
     .approval-sheet { gap: var(--so-space-md); padding: 14px; }
     .approval-row { grid-template-columns: 1fr; gap: 2px; }

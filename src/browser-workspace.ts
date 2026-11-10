@@ -11,7 +11,7 @@ export { browserCrewFromIndex, browserWorkActionHref } from './browser-crew.js';
 import type { Store } from './store.js';
 import type { WorkSummaryAccess } from './work-summary.js';
 import { workIndexPage } from './work-index.js';
-import type { StatusTone } from './workspace-ui.js';
+import type { StatusTone, StepRow } from './workspace-ui.js';
 import type { Ask, AskChip } from './needs-you.js';
 import type { WorkIndexGroup } from './work-index.js';
 import type { AssignmentCard } from './assignment-ui.js';
@@ -254,7 +254,12 @@ export type BrowserTaskView = {
   runChecks?: BrowserRunChecks | null;
   /** A live build: the step it is on (or stuck on, with the act that helps), and the earlier attempts that stopped
    * before it, folded into one quiet line. */
-  progress?: { line: string; stuck: { step: number; why: string | null; line: string; action: BrowserLink | null } | null } | null;
+  progress?: { line: string; stuck: { step: number; why: string | null; line: string; action: BrowserLink | null } | null;
+    /** The plan's steps and where each stands, from the latest checkpoint (all pending before the first). */
+    steps?: { title: string; state: "pending" | "current" | "completed" | "blocked" }[] } | null;
+  /** The Plan row: the plan's lead sentence, who wrote it and when, and its body (the plan sheet and the plan's editor;
+   * only the editor while the approval shows the sheet). `planning`: a planner is writing it now. Null: no plan yet. */
+  plan?: { lead: string | null; by: string | null; at: string | null; html: string; planning: boolean } | null;
   /** What the agent did last on the live run, and when; the page words it against its own clock (activity-line.ts). */
   activity?: RunActivity | null;
   /** The task's live room (GET /live?room=task:<root>): change nudges and who else has it open. */
@@ -283,8 +288,11 @@ export type BrowserTaskView = {
   cancel: { html: string; open: boolean } | null;
   /** "Do this every time…": Settings → Flows with the matching starter flow marked. */
   everyTime?: { href: string; starter: string } | null;
-  /** Until the first Ready result: Plan → You approve → Build → Checks → Ready, filled in as it moves. */
+  /** The task's road, Plan → Approval → Build → Checks → Ready (four for a report), from recorded facts. */
   journey?: JourneyStep[] | null;
+  /** The page's step rows (workspace-ui.ts stepRowsOf over this view, after every change the server made to it): the
+   * steps are the page. Null: no road (cancelled, or no status), so the page keeps its status block. */
+  steps?: StepRow[] | null;
   /** The thread's server-side entries; the conversation's messages join them in time order. */
   thread?: BrowserTaskThreadItem[];
   details?: BrowserTaskDetailGroup[];

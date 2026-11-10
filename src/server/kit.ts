@@ -10,8 +10,8 @@
  */
 import { attributes, html, joinHtml, passwordlessRendering, postForm, type AttributeValue, type Html, type HtmlValue, type PostFormOptions } from "../html.js";
 import {
-  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, STEP_WORDS, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, needsWords, stepsFill, termsOf, timingBars,
-  type ApprovalFacts, type ApprovalKind, type ChipTone, type IconShape, type KitIcon, type StatusKey, type StepItem, type TimingRow,
+  KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, STEP_ROW_WORDS, STEP_WORDS, stepRowBodyId, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, needsWords, stepsFill, termsOf, timingBars,
+  type ApprovalFacts, type ApprovalKind, type ChipTone, type IconShape, type KitIcon, type StatusKey, type StepItem, type StepRowMark, type TimingRow,
 } from "../design/kit.js";
 import type { Headline } from "../task-status.js";
 
@@ -416,6 +416,30 @@ export function outField(options: { id: string; label: string; name: string; typ
   })}>`;
   return html`<div class="k-field"><label class="k-label" for="${options.id}">${options.label}</label>${control}\
 ${options.hint ? html`<p class="k-hint" id="${options.id}-hint">${options.hint}</p>` : ""}${options.error ? html`<p class="k-err" id="${options.id}-err" role="alert">${options.error}</p>` : ""}</div>`;
+}
+
+// ---- step rows ---------------------------------------------------------------------------------------------------
+
+/** One step row: its marker, label, one sentence, a time (`at` ISO, `when` the words for it), and its body. `toggle`: a
+ * finished row's head is a disclosure button (aria-expanded) for its body; `open` shows the body. */
+export type StepRowItem = { key: string; label: string; mark: StepRowMark; sentence: HtmlValue; needsYou?: boolean; current?: boolean;
+  at?: string | null; when?: string; body?: HtmlValue; toggle?: boolean; open?: boolean };
+
+/** The steps of one object as the page itself (a task: Plan · Approval · Build · Checks · Ready): an ordered list, a
+ * marker on a rail, the label, one sentence and a time per row, and the row's body under it. The current row is
+ * `aria-current="step"`. Same markup as `KStepRows`. */
+export function stepRows(items: readonly StepRowItem[], label = "Steps"): Html {
+  return html`<ol class="k-steprows" aria-label="${label}">${items.map(item => {
+    const hasBody = item.body !== undefined && item.body !== "";
+    const id = stepRowBodyId(item.key);
+    const head = html`<span class="k-steprow-label">${item.label}<span class="k-sr">, ${STEP_ROW_WORDS[item.mark]}</span></span>\
+<span class="k-steprow-say">${item.needsYou ? chip("Needs you", "needs") : ""}${item.sentence === "" ? "" : html`<span>${item.sentence}</span>`}</span>\
+${item.at ? html`<time class="k-steprow-time k-num" datetime="${item.at}">${item.when ?? ""}</time>` : ""}`;
+    return html`<li class="${cls("k-steprow", item.mark)}" data-step-row="${item.key}"${item.current ? html` aria-current="step"` : ""}><span class="k-steprow-mark" aria-hidden="true"></span>\
+<div class="k-steprow-main">${item.toggle && hasBody
+      ? html`<button class="k-steprow-head" type="button" aria-expanded="${item.open ? "true" : "false"}" aria-controls="${id}">${head}</button>`
+      : html`<div class="k-steprow-head">${head}</div>`}${hasBody ? html`<div class="k-steprow-body" id="${id}"${item.open ? "" : html` hidden`}>${item.body}</div>` : ""}</div></li>`;
+  })}</ol>`;
 }
 
 // ---- guided steps (Wave E) --------------------------------------------------------------------------------------
