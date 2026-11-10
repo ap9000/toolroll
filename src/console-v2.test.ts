@@ -216,6 +216,8 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     // The repair turn is no build of its own: the panel stays on the build it mends, and that build is not finished.
     expect(mending.work).toMatchObject({ run: build, live: true });
     expect(mending.work!.transcript).toBe(`/r/${build}?fragment=transcript&shape=records`);
+    // What the box offers follows the attempt's current turn (the repair), not the transcript's run.
+    expect(mending.steering).toMatchObject({ steer: null, controls: { send: null, words: expect.stringContaining("reads no notes now") } });
     // Once both end, the same build reads as a record.
     store.finishRun(admitted.runId, { outcome: "built", committed: true, now: T0 });
     store.finishRun(build, { outcome: "failed", committed: false, now: T0 });
