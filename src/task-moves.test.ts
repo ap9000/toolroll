@@ -167,6 +167,14 @@ describe("one door for task state (source)", () => {
     },
   };
 
+  /** An UPDATE of the task table that names state, in any letter case, with or without OR <word> and quotes. */
+  const WRITER = /UPDATE\s+(?:OR\s+\w+\s+)?["'\[]?task["'\]]?\s+SET\b[^;`"]*?\bstate\b/gi;
+  /** Other ways a row's state could be written: replacing the row, or an insert that updates on conflict. */
+  const REPLACERS = [
+    /REPLACE\s+INTO\s+["'\[]?task["'\]]?[\s(]/gi,
+    /INSERT\s+(?:OR\s+\w+\s+)?INTO\s+["'\[]?task["'\]]?\s*\([^;`]*?ON\s+CONFLICT[^;`]*?DO\s+UPDATE\s+SET\b[^;`]*?\bstate\b/gi,
+  ];
+
   function sourceFiles(at: string): string[] {
     const out: string[] = [];
     for (const name of readdirSync(at)) {
@@ -179,19 +187,34 @@ describe("one door for task state (source)", () => {
 
   test("no task-state write outside task-moves.ts except the counted allow-list", () => {
     const found: Record<string, number> = {};
-    const writer = /UPDATE\s+task\s+SET\b[^;`"]*?\bstate\b/g;
     for (const file of sourceFiles(SRC)) {
       const rel = relative(SRC, file);
       if (rel === "task-moves.ts") continue;
-      const hits = readFileSync(file, "utf8").match(writer)?.length ?? 0;
+      const hits = readFileSync(file, "utf8").match(WRITER)?.length ?? 0;
       if (hits > 0) found[rel] = hits;
     }
     expect(found).toEqual(Object.fromEntries(Object.entries(ALLOWED).map(([file, { count }]) => [file, count])));
   });
 
+  test("no statement replaces a task row or updates its state on an insert conflict", () => {
+    const found: string[] = [];
+    for (const file of sourceFiles(SRC)) {
+      const text = readFileSync(file, "utf8");
+      if (REPLACERS.some(pattern => text.match(pattern) !== null)) found.push(relative(SRC, file));
+    }
+    expect(found).toEqual([]);
+  });
+
+  test("the writer pattern sees other spellings of the same statement", () => {
+    const spelt = ["update task set state = ?", "UPDATE OR IGNORE task SET updated_at = ?, state = ?", 'UPDATE "task" SET\n  state = ?', "UPDATE task\n   SET updated_at = ?,\n       state = 'queued'"];
+    for (const one of spelt) expect(one.match(WRITER)?.length, one).toBe(1);
+    expect("UPDATE task_ref SET state = ?".match(WRITER)).toBeNull();
+    expect("UPDATE task SET title = ?;".match(WRITER)).toBeNull();
+  });
+
   test("the allowed store.ts statements are the cancellation write and the migration statements", () => {
     const text = readFileSync(join(SRC, "store.ts"), "utf8");
-    const at = [...text.matchAll(/UPDATE\s+task\s+SET\b[^;`"]*?\bstate\b/g)].map(match => match.index);
+    const at = [...text.matchAll(WRITER)].map(match => match.index);
     const inside = (from: string, to: string) => (index: number) => index > text.indexOf(from) && index < text.indexOf(to, text.indexOf(from));
     const inMigration = inside("function settleContestsForV115(", "\nfunction settleFallbackChainsForV115(");
     const inFallbackMigration = inside("function settleFallbackChainsForV115(", "\n}\n");
