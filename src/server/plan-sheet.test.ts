@@ -7,7 +7,8 @@ import { expect, test } from "vitest";
 import { htmlString } from "../html.js";
 import { withFormToken } from "./request-context.js";
 import { renderExecutionPlanDocument } from "../plan.js";
-import { canonicalChainJson, chainTermsLines, LIVE_CHAIN_VERSION, type ChainEntry, type Scope } from "../scope.js";
+import { canonicalChainJson, chainTermsLines, LIVE_CHAIN_VERSION, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence, type ChainEntry, type Scope } from "../scope.js";
+import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
 import { approvalSheetParts, EVIDENCE_SHEET, planSheetHtml, type ApprovalSheetInput, type PlanContractView, type RouteView } from "./render-tasks.js";
 
 const gemini = (model: string) => ({ provider: "gemini", model, approvalArgv: "auto_edit", maxTurns: "unsupported", repairMaxTurns: "unsupported",
@@ -29,7 +30,7 @@ const planDocument = renderExecutionPlanDocument({
   approach: "Add subtract right under add. Then cover it with one focused test, keeping the module's style.",
   milestones: ["Add subtract(a, b) to src/math.js, under add.", "Add a test for it in test/math.test.js.", "Run the project's checks."],
   dependencies: ["The existing test runner"], risks: ["add has no test of its own yet; this plan does not add one"],
-  proof: ["subtract(a, b) returns a minus b", "The coverage report shows the new lines"],
+  proof: ["subtract(a, b) returns a minus b", "The coverage report shows the new lines", "Only src/math.js and its test change, and no dependency is added"],
 });
 
 const route = (legs: { phase: "plan" | "build" | "repair" | "review"; provider: string; model: string }[]): RouteView => ({
@@ -133,6 +134,8 @@ test("the fixtures carry what they are named for", () => {
   // A plan proof line no requirement already says follows Done when; one a requirement says isn't repeated.
   expect(plain).toContain("The coverage report shows the new lines");
   expect(plain.split("subtract(a, b) returns a minus b").length - 1).toBe(1);
+  // A proof line that adds a condition to a requirement is its own line: only a word-for-word repeat is dropped.
+  expect(plain).toContain("Only src/math.js and its test change, and no dependency is added");
   // No plan document: the goal leads and isn't said twice.
   const report = visibleText(htmlString(planSheetHtml(CASES["report"]!)));
   expect(report.split("Add subtract(a, b) next to add in src/math.js, with a test.").length - 1).toBe(1);
@@ -142,4 +145,28 @@ test("the fixtures carry what they are named for", () => {
 test("an older plan that doesn't parse keeps its text, as written", () => {
   const sheet = visibleText(htmlString(planSheetHtml(inputOf({ planDocument: "Just do it carefully.\nNo headings here." }))));
   expect(sheet).toContain("Just do it carefully.");
+});
+
+test("a release's terms are in the plan sheet, whole: what later ships without asking, and what asks again, never folded", () => {
+  const terms = { v: 1, repo: "/work/shop", packageVersion: "1.4.0", branch: "release-1.4.0", pr: 12, base: "main", approvedSha: "a".repeat(40), approvedTree: "b".repeat(40),
+    policy: { v: 1, rules: 1, carry: true, protectProject: false, protectedPaths: ["src/billing"], limits: { lines: 400, files: 20, churn: 800 } },
+    grant: { id: 3, digest: "g".repeat(16) }, access: "sandboxed", expiresAt: "2026-11-13T09:00:00.000Z" } as unknown as NonNullable<Scope["releaseTerms"]>;
+  const markup = htmlString(planSheetHtml(inputOf({ scope: scopeOf({ releaseTerms: terms } as Partial<Scope>), releaseCiRunning: true })));
+  expect(markup).not.toContain("<details");
+  const sheet = visibleText(markup);
+  expect(sheet).toContain(releaseTermsSentence(terms));
+  expect(sheet).toContain("ship without asking you again");
+  for (const line of releaseAsksAgainWords(terms)) expect(sheet).toContain(line);
+  expect(sheet).toContain("src/billing");
+  expect(sheet).toContain(RELEASE_CI_RUNNING_WORDS);
+  // A release that asks for every commit says so, with no carry rules to list.
+  const every = visibleText(htmlString(planSheetHtml(inputOf({ scope: scopeOf({ releaseTerms: { ...terms, policy: { ...terms.policy, carry: false } } } as Partial<Scope>) }))));
+  expect(every).toContain("Every later commit asks for your approval again.");
+  expect(every).not.toContain("What asks again");
+  // A release check's purpose is said too (it reruns the same commit's check).
+  const purpose = { v: 1, purpose: "release-check", repo: "/work/shop", packageVersion: "1.4.0", branch: "release-1.4.0", pr: 12, base: "main", approvedSha: "a".repeat(40),
+    approvedTree: "b".repeat(40), grant: { id: 3, digest: "g".repeat(16) }, access: "sandboxed" } as unknown as NonNullable<Scope["releaseCheck"]>;
+  expect(visibleText(htmlString(planSheetHtml(inputOf({ scope: scopeOf({ releaseCheck: purpose } as Partial<Scope>) }))))).toContain(releaseCheckSentence(purpose));
+  // An ordinary task's sheet has no Release part.
+  expect(htmlString(planSheetHtml(CASES["plain"]!))).not.toContain("data-plan-release");
 });

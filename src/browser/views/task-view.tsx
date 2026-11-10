@@ -709,7 +709,9 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     const status = here ? statusBox(row.key) : null;
     switch (row.key) {
       case "plan":
-        return <>{status}{view.plan != null && view.plan.html !== "" && <Html html={view.plan.html} className="so-task-plan" />}</>;
+        // Installed once, and again when what it holds changes: the plan sheet joins it once the plan is approved
+        // (here or in another window), and a new plan version is a new sheet.
+        return <>{status}{view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan" />}</>;
       case "approve":
         if (approve !== null) return <div className="so-approval-step" key={`approve:${approve.fields["digest"] ?? ""}`} data-approval-step="">
           <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} inRow />
@@ -726,7 +728,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         return <>{status}
           {row.state === "current" && view.progress?.steps != null && <BuildSteps steps={view.progress.steps} />}
           {leadCards(leadOf("build"))}
-          {(row.state === "done" || row.state === "stuck" && (view.status?.attempts.length ?? 0) + (view.earlier?.attempts.length ?? 0) > 1) && <AttemptsPanel view={view} />}</>;
+          {/* The task's history stays in Build whatever the build is doing: while a revision is planned, built or stopped. */}
+          {(row.state === "done" || (view.status?.attempts.length ?? 0) > 1 || (view.earlier?.attempts.length ?? 0) > 0) && <AttemptsPanel view={view} />}</>;
       case "checks":
         return <>{status}{!here && view.status !== null && <StatusFacts card={view.status} runChecks={view.runChecks ?? null} only={key => key === "checks"} />}{leadCards(leadOf("checks"))}</>;
       case "ready":
@@ -765,7 +768,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
         {readyExtras(resultBody !== null)}
         {resultBody}
-        {view.plan != null && view.plan.html !== "" && <Html html={view.plan.html} className="so-task-plan" />}
+        {view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan" />}
       </>}
       {rows !== null && statusKey === null && statusBox(null)}
       {rows !== null && !readyOpens && readyExtras(false)}

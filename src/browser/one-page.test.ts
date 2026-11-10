@@ -39,7 +39,7 @@ const panel = (key: string) => host.querySelector<HTMLElement>(`[data-task-panel
 const withRows = (stage: "building" | "review", extra: Partial<BrowserTaskView> = {}): BrowserTaskView => {
   const journey = stage === "building" ? taskRoad({ stage: "building" }, true, false, {}) : taskRoad({ stage: "needs-you", need: "review-result" }, true, true, { checks: "passed" });
   const view = viewOf({ journey, approved: { by: "alex", at: "2026-11-10T09:00:00.000Z", automatic: false, rule: null, how: "", version: "v" },
-    plan: { lead: "Add subtract next to add.", by: null, at: "2026-11-10T08:00:00.000Z", html: '<details id="plan-edit"><summary>Edit plan</summary><textarea></textarea></details>', planning: false },
+    plan: { lead: "Add subtract next to add.", by: null, at: "2026-11-10T08:00:00.000Z", html: '<details id="plan-edit"><summary>Edit plan</summary><textarea></textarea></details>', planning: false, key: "sheet:v" },
     ...extra });
   return { ...view, steps: stepRowsOf(view) };
 };

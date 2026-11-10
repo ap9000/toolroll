@@ -808,6 +808,8 @@ export type StepRowFacts = {
   journey?: readonly { key: StepRow["key"]; label: string; state: StepRow["state"]; needsYou?: true; say?: string }[] | null;
   scout: boolean;
   status: { status: { headline: string }; attempts: readonly unknown[] } | null;
+  /** Builds that stopped before this one: with more than one version, the Build row's history. */
+  earlier?: { attempts: readonly unknown[] } | null;
   approved?: { by: string; at: string; automatic: boolean; rule: string | null } | null;
   approve?: { heading: string } | null;
   approval?: string;
@@ -827,6 +829,8 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
   const runs = headline === "Planning" || headline === "Building";
   const approvalOpen = view.approve != null || road.some(step => step.key === "approve" && step.state === "current");
   const hasResult = view.result != null;
+  // Earlier versions or stopped builds: the Build row holds them, and opens for them before the next build starts.
+  const hasHistory = (view.status?.attempts.length ?? 0) > 1 || (view.earlier?.attempts.length ?? 0) > 0;
   const lastResult = [...(view.thread ?? [])].filter(one => one.kind === "result").map(one => one.at).sort().at(-1) ?? null;
   const checksStuck = road.some(step => step.key === "checks" && step.state === "stuck");
   // A step stopped there, in a word (its box under it says why).
@@ -855,7 +859,7 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
         if (step.state === "skipped") return { sentence: "Didn't run", at: null };
         // The open row's box says the rest: its head says only how the step stands.
         if (here) return { sentence: step.needsYou ? "" : runs ? "Working now" : step.state === "stuck" ? stoppedWord : "Waiting to start", at: null };
-        return { sentence: approvalOpen ? "Starts when you approve" : "Starts after approval", at: null };
+        return { sentence: `${approvalOpen ? "Starts when you approve" : "Starts after approval"}${hasHistory ? ". Earlier attempts are here." : ""}`, at: null };
       case "checks": {
         const said = step.say ?? null;
         if (step.state === "done") return { sentence: "Project checks passed", at: null };
@@ -879,8 +883,9 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
       // Vermilion only for a failure: a stopped or held step waits, in grey.
       : needsYou ? "needs" : step.state === "stuck" ? (headline === "Failed" || step.say === "Checks failed" || step.say === "Checks unreadable" ? "stuck" : "wait")
       : runs || step.say === "Checks running" ? "live" : "wait";
-    // A step not reached opens only when it holds something already there: a result before Ready was reached.
-    const opens = step.state !== "todo" || (step.key === "ready" && hasResult);
+    // A step not reached opens only when it holds something already there: a result before Ready was reached, or
+    // earlier attempts before the next build starts.
+    const opens = step.state !== "todo" || (step.key === "ready" && hasResult) || (step.key === "build" && hasHistory);
     return { key: step.key, label: step.label, state: step.state, mark, sentence: said.sentence, at: said.at, needsYou, opens, open: here };
   });
   // A finished road whose task still waits on this person (a result to review): the last step it reached is theirs.

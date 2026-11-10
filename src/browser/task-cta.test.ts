@@ -176,3 +176,48 @@ test("in the step rows a refused password keeps the terms shown and sends nothin
   pressApprove();
   expect(popover()).not.toBeNull();
 });
+
+test("approved in another window: the Plan row takes the approved plan sheet in a live update; the same body is never swapped", () => {
+  const editor = '<details id="plan-editor"><summary>Edit plan</summary></details>';
+  const base = waiting(approveOf({ passwordless: true, remembered: false }));
+  const before: BrowserTaskView = { ...base, plan: { lead: "Add subtract.", by: null, at: null, planning: false, key: "editor", html: editor } };
+  show(before);
+  const plan = () => host.querySelector<HTMLElement>('[data-step-row="plan"]')!;
+  expect(plan().querySelector("[data-plan-sheet]")).toBeNull();
+  // A refresh while it still waits changes nothing in the installed body (a person may be typing in the editor).
+  show({ ...before, plan: { ...before.plan!, html: `<p id="swapped">x</p>${editor}` } });
+  expect(plan().querySelector("#swapped")).toBeNull();
+  // Somebody approves elsewhere: the live update carries the approved view, and the Plan row now holds the sheet.
+  const approved = viewOf(cardOf("Building", null), { journey: taskRoad({ stage: "building" }, true, false, {}),
+    approved: { by: "sam", at: "2026-11-10T09:00:00.000Z", automatic: false, rule: null, how: "", version: "v" },
+    plan: { lead: "Add subtract.", by: null, at: null, planning: false, key: "sheet:d1", html: `<article data-plan-sheet><p id="plan-words">Goal</p></article>${editor}` } });
+  show({ ...approved, steps: stepRowsOf(approved) });
+  expect(host.querySelector("[data-task-approval]")).toBeNull();
+  expect(plan().querySelector("[data-plan-sheet] #plan-words")!.textContent).toBe("Goal");
+  expect(plan().querySelectorAll("#plan-editor")).toHaveLength(1);
+});
+
+test("the task's attempts stay in the Build row: while a correction is planned (the row opens before the build starts) and while it builds", () => {
+  const attempts = [{ taskId: "t-0", label: "Original · Complete", href: "/t/t-1?version=t-0", runId: 4, detail: null }, { taskId: "t-1", label: "Correction 1 · Planning", href: "/t/t-1", runId: null, detail: null }];
+  const build = () => host.querySelector<HTMLElement>('[data-step-row="build"]')!;
+  // A correction being planned: Build hasn't started, and still opens for the earlier attempt.
+  const planning = viewOf({ ...cardOf("Building", null), attempts }, { tab: "attempts", journey: taskRoad({ stage: "planning" }, false, false, {}) });
+  show({ ...planning, steps: stepRowsOf(planning) });
+  expect(build().querySelector("button.k-steprow-head")!.getAttribute("aria-expanded")).toBe("true");
+  expect(build().textContent).toContain("Earlier attempts are here.");
+  expect(build().querySelector<HTMLElement>(".k-steprow-body")!.hidden).toBe(false);
+  expect(build().querySelectorAll("[data-attempt-timeline] a")).toHaveLength(2);
+  // With one attempt and nothing stopped before it, a step not reached has nothing to open.
+  const first = viewOf(cardOf("Building", null), { tab: "attempts", journey: taskRoad({ stage: "planning" }, false, false, {}) });
+  show({ ...first, steps: stepRowsOf(first) }, "first");
+  expect(build().querySelector("button")).toBeNull();
+  // The correction building: its history is under the live build.
+  const building = viewOf({ ...cardOf("Building", null), attempts }, { journey: taskRoad({ stage: "building" }, true, false, {}) });
+  show({ ...building, steps: stepRowsOf(building) }, "building");
+  expect(build().getAttribute("aria-current")).toBe("step");
+  expect(build().querySelectorAll("[data-attempt-timeline] a")).toHaveLength(2);
+  // Builds that stopped before this one count as history too.
+  const stopped = viewOf(cardOf("Building", null), { journey: taskRoad({ stage: "building" }, true, false, {}), earlier: { summary: "1 earlier build", attempts: [{ label: "Build #3", href: "/r/3", text: null }] } });
+  show({ ...stopped, steps: stepRowsOf(stopped) }, "stopped");
+  expect(build().querySelector("[data-earlier-attempts]")!.getAttribute("data-earlier-attempts")).toBe("1");
+});

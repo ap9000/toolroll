@@ -293,11 +293,11 @@ describe("the operations console", () => {
     const approveForm = /<form method="post" action="[^"]*\/approve" class="approve-form approval-sheet" id="approve"[^>]*>(.*?)<\/form>/s.exec(page)?.[1] ?? "";
     // One sentence in view; the lineage and inherited terms in Details.
     expect(approveForm).toContain(`<p class="approval-revision">Fixes what build #${run} missed: `);
-    const details = approveForm.slice(approveForm.indexOf('<details class="approval-details">'));
+    const details = approveForm.slice(approveForm.indexOf('<details class="approval-details"'));
     expect(details).toContain("Strict / release quality");
     expect(details).toContain(lineage);
     expect(details).toContain("never inherited");
-    expect(approveForm.slice(0, approveForm.indexOf('<details class="approval-details">'))).not.toContain("inherited");
+    expect(approveForm.slice(0, approveForm.indexOf('<details class="approval-details"'))).not.toContain("inherited");
 
     // Chat: the same words, from the same projection.
     const chat = await (await fetch(url(`/chat?task=${encodeURIComponent(childId)}`), { headers: { cookie } })).text();

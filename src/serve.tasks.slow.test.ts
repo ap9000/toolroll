@@ -1789,7 +1789,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(html)?.[1] ?? "";
     // One plain line of who builds in view; the full route in Details.
     expect(ceremony).toContain('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
-    const details = ceremony.slice(ceremony.indexOf('<details class="approval-details"><summary>Plan details</summary>'));
+    const details = ceremony.slice(ceremony.indexOf('<details class="approval-details"'));
     expect(details).toContain("<h3>Why these agents</h3><p>claude · sonnet plans; claude · opus builds and repairs</p>");
     expect(details).toContain("These exact agents are part of what you approve");
     // Why stronger agents run, in plain words, and the runtime mechanics folded away.
@@ -1959,40 +1959,43 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect((await form([["risky", "maybe"]])).status).toBe(400);
   });
 
-  test("consent: the task page and the focused chat restate the same concise exact agents before the password, with runtime limits closed away; Home only leads there", async () => {
+  test("consent: the task page and the focused chat restate the same concise exact agents before the password, with runtime limits after it (open on the task page, folded in chat); Home only leads there", async () => {
     const cookie = await loginAs("alex", approverToken);
     const summary = "claude · sonnet plans; claude · opus builds and repairs";
     const why = "a large change — planning and building use the strongest configured agent";
     const ceremonyOf = (html: string, action: string): string => new RegExp(`<form method="post" action="${action}"(.*?)<\\/form>`, "s").exec(html)?.[1] ?? "";
     // The task page and chat share the approval sheet: who builds in one
     // line before the password, the exact route and limits in Details.
-    const sheet = (ceremony: string): void => {
+    const sheet = (ceremony: string, surface: "task" | "chat"): void => {
       const whoAt = ceremony.indexOf('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
       const passwordAt = ceremony.indexOf('name="token"');
-      const detailsAt = ceremony.indexOf('<details class="approval-details"><summary>Plan details</summary>');
+      const detailsAt = ceremony.indexOf('<details class="approval-details"');
       expect(whoAt).toBeGreaterThan(-1);
       expect(passwordAt).toBeGreaterThan(whoAt);
       expect(detailsAt).toBeGreaterThan(passwordAt);
       expect(ceremony.slice(detailsAt)).toContain(`<h3>Why these agents</h3><p>${summary}</p>`);
       expect(ceremony.slice(detailsAt)).toContain(why);
       expect(ceremony.slice(detailsAt)).toContain("<h3>Runtime limits</h3>");
+      // The task page (the page without script) shows every term before the yes; chat keeps them one fold away.
       expect(ceremony).not.toContain("<details open");
+      expect(ceremony.includes('<details class="approval-details" open>')).toBe(surface === "task");
+      expect(ceremony.includes('<details class="approval-details">')).toBe(surface === "chat");
       expect(ceremony).not.toContain("not yet checked");
       expect(ceremony.replace(/<[^>]+>/g, " ")).not.toMatch(/--dangerously|config set|task route/);
     };
-    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
-    sheet(ceremonyOf(await page(cookie, "/chat?task=payouts"), "\\/t\\/payouts\\/approve"));
+    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"), "task");
+    sheet(ceremonyOf(await page(cookie, "/chat?task=payouts"), "\\/t\\/payouts\\/approve"), "chat");
     // With the sign-in's remembered password forgotten, the ceremony still asks for it (a remembered one is one click,
     // password-freshness.serve.test.ts).
     expect((await post(cookie, "/session/forget-password", { csrf: csrfOf(await page(cookie, "/t/payouts")), return: "/" })).status).toBe(303);
-    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
+    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"), "task");
     // Home carries no ceremony of its own: the row is a link to the page that restates the agents.
     const home = await page(cookie, "/");
     expect(home).not.toContain('name="token"');
     expect(ceremonyOf(home, "\\/t\\/payouts\\/approve")).toBe("");
     const row = (workspaceOf(home).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "payouts");
     expect(row?.action?.href).toMatch(/^\/t\/payouts(?:[?#]|$)/);
-    sheet(ceremonyOf(await page(cookie, row!.action!.href), "\\/t\\/payouts\\/approve"));
+    sheet(ceremonyOf(await page(cookie, row!.action!.href), "\\/t\\/payouts\\/approve"), "task");
     // Changing an agent invalidates the approval every surface signed under.
     const before = store.getScope("payouts")!;
     expect(approve(store, "payouts", "alex", T0, before.digest, approverToken).ok).toBe(true);

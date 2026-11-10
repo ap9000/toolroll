@@ -5,7 +5,7 @@ import { whenUtc } from "../when-html.js";
 import { networkWords } from "../egress.js";
 import { wasInterrupted } from "../run-ending.js";
 import type { ReleaseView } from "../release-view.js";
-import { chainTermsLines, liveChainFromJson, releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { chainTermsLines, liveChainFromJson, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence } from "../scope.js";
 import { SUBSCRIPTION_CAPABLE } from "../keys.js";
 import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
 import { writesWords } from "../writes-mode.js";
@@ -293,6 +293,8 @@ export type ApprovalSheetInput = {
   freshSince?: string | null;
   /** Easy-start C5: a laptop's local owner — eligible (no password field), or why not and where to go. */
   localOwner?: LocalApprovalView | null;
+  /** A release filed while its pull request's checks still ran: the plan sheet says nothing deploys until they pass. */
+  releaseCiRunning?: boolean;
 };
 export type LocalApprovalView = { eligible: true } | { eligible: false; message: string; href: string; action: string };
 
@@ -444,7 +446,8 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     scope.budgetMicrousd === null ? "" : html`<p class="meta">Each build attempt has a ${money(scope.budgetMicrousd)} agent-reported usage cap. On a subscription this limits work; it is not an API charge.</p>`,
   ]);
   const details = joinHtml([
-    html`<details class="approval-details"><summary>Plan details</summary>`,
+    // On the task page the details are open: the page without script shows every term before the yes. Chat keeps the fold.
+    html`<details class="approval-details"${input.surface === "task" ? html` open` : ""}><summary>Plan details</summary>`,
     revisionDetail,
     repairText === null ? "" : detail("Full goal", html`<p>${scope.goal}</p>`),
     detail("Plan record", contractDetail),
@@ -549,8 +552,8 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const part = (title: string, body: Html | "", attrs: Html = html``): Html => body === "" || isEmptyHtml(body) ? html`` : html`<section class="plan-sheet-part"${attrs}><h3 class="plan-sheet-h">${title}</h3>${body}</section>`;
   const statementKey = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   const signedKeys = scope.acceptance.map(one => statementKey(one.statement));
-  // The plan's proof lines a requirement doesn't already say.
-  const extraProof = (parsedPlan?.proof ?? []).filter(line => { const key = statementKey(line); return key !== "" && !signedKeys.some(one => one === key || one.includes(key) || key.includes(one)); });
+  // The plan's proof lines a requirement doesn't already say, word for word: a line that adds a condition to one stays.
+  const extraProof = (parsedPlan?.proof ?? []).filter(line => { const key = statementKey(line); return key !== "" && !signedKeys.includes(key); });
   const doneWhenSheet = joinHtml([
     scope.acceptance.length === 0 ? html`<p>You decide when you review the result.</p>` : html`<ul class="plan-sheet-done">${scope.acceptance.map(one =>
       html`<li><span>${one.statement}</span><span class="plan-sheet-how">${one.evidence.map(kind => EVIDENCE_SHEET[kind] ?? kind).join(" · ")}</span></li>`)}</ul>`,
@@ -571,6 +574,13 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     goalShown.trim() === sheetLead ? "" : part("Goal", html`<p class="approval-goal">${goalShown}</p>`),
     repairText === null ? "" : part("Full goal", html`<p>${scope.goal}</p>`),
     input.revision === null ? "" : part("Asked for changes", revisionBody),
+    // A release's terms are part of what the yes agrees to (the digest signs them): said whole, nothing folded.
+    scope.releaseTerms == null && scope.releaseCheck == null ? "" : part("Release", joinHtml([
+      scope.releaseTerms == null ? "" : html`<p>${releaseTermsSentence(scope.releaseTerms)}</p>`,
+      scope.releaseCheck == null ? "" : html`<p>${releaseCheckSentence(scope.releaseCheck)}</p>`,
+      input.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : "",
+      scope.releaseTerms?.policy.carry !== true ? "" : html`<p class="plan-sheet-sub">What asks again</p><ul class="plan-sheet-list">${releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`)}</ul>`,
+    ]), html` data-plan-release`),
     milestones.length === 0 ? "" : part("Steps", html`<ol class="plan-sheet-steps">${milestones.map(one => html`<li><span>${one}</span></li>`)}</ol>`),
     part("Done when", doneWhenSheet),
     html`<div class="plan-sheet-pair">`,
@@ -2091,8 +2101,8 @@ export function taskBodyParts(data: {
   // its draft; the full scope form below stays as it was.
   const inlineScopeDraft = data.scopeDraft?.has("requirement-new") === true;
   const scopeDraft = inlineScopeDraft ? undefined : data.scopeDraft;
-  // A release's terms (the plan sheet doesn't say them): in the scope card, and alone under the kit page's rows.
-  const releaseTermsHtml: Html | "" = scope?.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`;
+  // A release's terms in the scope card (the page without script); the plan sheet says them whole (approvalSheetParts).
+  const releaseTermsHtml: Html | "" = scope == null || (scope.releaseTerms == null && scope.releaseCheck == null) ? "" : html`<p><strong>Release</strong></p>${scope.releaseTerms == null ? "" : html`<p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>`}${scope.releaseCheck == null ? "" : html`<p class="recap">${releaseCheckSentence(scope.releaseCheck)}</p>`}${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms?.policy.carry === true ? html`<p><strong>What asks again</strong></p><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul>` : ""}`;
   const scopeCard =
     scope === null
       ? html`<p class="meta">No plan yet. Nothing builds until one is approved.</p>`
@@ -2260,6 +2270,7 @@ export function taskBodyParts(data: {
           coordinator: data.coordinator ?? null,
           origin: data.origin ?? null,
           deliverable: data.deliverable ?? "branch",
+          releaseCiRunning: data.releaseCiRunning === true,
           rebuild: data.assignment?.need != null && "key" in data.assignment.need && data.assignment.need.key === "replan" ? data.assignment.need.build : null,
           editHref: data.csrf !== "" && data.planSha != null && data.planDocument !== null ? "#plan-edit" : "#scope",
           notNowHref: "/tasks",
@@ -3026,15 +3037,15 @@ export function taskBodyParts(data: {
     revision: data.revision == null || "problem" in data.revision ? null : data.revision,
     revisionSourceHref: data.revision == null || "problem" in data.revision ? "" : `/r/${data.revision.sourceRun}`,
     repairChain: data.repairChain ?? null, route: data.route, coordinator: data.coordinator ?? null, origin: data.origin ?? null,
-    deliverable: data.deliverable ?? "branch", editHref: "#scope", notNowHref: "/tasks", sticky: false,
+    deliverable: data.deliverable ?? "branch", releaseCiRunning: data.releaseCiRunning === true, editHref: "#scope", notNowHref: "/tasks", sticky: false,
     earlier: { active: data.assignment?.earlierActive ?? 0, running: data.assignment?.earlierRunning ?? 0 }, edit: null,
   };
   const sheetParts = sheetShown === null ? null : approvalSheetParts(sheetShown);
   const approvalWaitsHere = data.archived == null && sheetInput !== null && !dependencyChoiceNeeded && data.csrf !== "";
   const planView: BrowserTaskView["plan"] = scope === null
-    ? (planCard === "" ? null : { lead: null, by: null, at: null, html: htmlString(planCard), planning: data.plan === "requested" })
+    ? (planCard === "" ? null : { lead: null, by: null, at: null, html: htmlString(planCard), planning: data.plan === "requested", key: "card" })
     : { lead: oneLineOf(sheetParts!.sheetLead, 160), by: plannerRun === undefined ? null : agentNameWords(plannerRun.provider, plannerRun.model),
-      at: plannerRun?.finishedAt ?? scope.proposedAt ?? null, planning: false,
+      at: plannerRun?.finishedAt ?? scope.proposedAt ?? null, planning: false, key: approvalWaitsHere ? "editor" : `sheet:${scope.digest}`,
       html: htmlString(joinHtml([approvalWaitsHere ? "" : sheetParts!.sheet, planEditorHtml])) };
   const view: BrowserTaskView = {
     kind: "task",
@@ -3091,11 +3102,11 @@ export function taskBodyParts(data: {
     sections: [
       ...(previousResult === null || thread.some(one => one.more !== null) ? [] : [{ id: "result", title: previousResult.title, html: htmlString(previousResult.html), open: false, count: null }]),
       // Questions are in the thread; the scope and the ledgers fold here until asked.
-      // The Plan and Approval rows hold the plan sheet, so this page's Plan section keeps only what the sheet leaves
-      // out (a release's terms, the links, the agents, the edit form): the plan is never printed a second time.
+      // The Plan and Approval rows hold the plan sheet (a release's terms included), so this page's Plan section keeps
+      // only what the sheet leaves out (the links, the agents, the edit form): the plan is never printed a second time.
       ...sectionParts.filter(one => !MANAGE.has(one.id) && one.id !== "decisions").map(one => one.id !== "scope" ? one : {
         ...one,
-        ...(scope === null ? {} : { html: htmlString(joinHtml([releaseTermsHtml === "" ? "" : html`<div class="card">${releaseTermsHtml}</div>`, ...scopeRest], "\n")) }),
+        ...(scope === null ? {} : { html: htmlString(joinHtml(scopeRest, "\n")) }),
         ...(scopeDraft === undefined && (finished || approval.approved) ? { open: false } : {}),
       }),
     ],
@@ -3130,7 +3141,7 @@ export function taskBodyParts(data: {
     const bodyOf = (key: StepRow["key"]): Html => joinHtml([
       key === here.key ? statusHtml : "",
       key === "plan" ? planCard : "",
-      // The shared approval sheet as chat and /next show it (its Plan details fold included, as their tests pin).
+      // The shared approval sheet, its Plan details open here: nothing the yes agrees to is folded on this page.
       key === "approve" ? (approvalHtml !== "" ? approvalHtml : view.approved == null ? "" : html`<p class="meta">${view.approved.automatic ? `Approved automatically by ${view.approved.rule ?? "a rule"}` : `Approved by ${view.approved.by}`} · ${whenTime(view.approved.at)}</p>`) : "",
       key === "build" ? joinHtml([controlHtml, progressCard, revisionLedgerCard]) : "",
       key === "ready" && previousResult !== null ? html`<section class="task-previous-result" aria-label="${previousResult.title}">${previousResult.html}</section>` : "",
