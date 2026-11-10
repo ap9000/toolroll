@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { withActor } from "./actor.js";
 import { CHAT_ACTIONS, mintSharedActionReview, prepareSharedAction, sharedActionAllowsChallenge, sharedActionPayload, APPROVAL_ACTIONS } from "./chat-actions.js";
 import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
-import { cardShowsScope, cardTermsDigest, chatLimitProblem, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
+import { cardShowsScope, cardTermsDigest, chatLimitProblem, scopeTermsText, shownAsWritten, shownTermsDigest } from "./chat-terms.js";
 import { checkAccessWords } from "./check-access.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 import { confirmLeadProposal } from "./lead-doors.js";
@@ -86,7 +86,8 @@ describe("approving from chat", () => {
     expect(sharedActionAllowsChallenge(emoji, "telegram")).toBe(true);
     // A workspace's own emoji can be named in any script; an address with a port is not an emoji.
     expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, "Also :猫: the header"] }, "slack")).toBe(false);
-    expect(sharedActionAllowsChallenge({ ...card, terms: [...card.terms, "See http://localhost:8080/a: the page"] }, "slack")).toBe(true);
+    expect(shownAsWritten("See http://localhost:8080/a: the page", "slack")).toBe(true);
+    expect(shownAsWritten("Checks: npm test. Limit: $2.", "slack")).toBe(true);
     // The door reads the same rule from the chat app the tap came through: a yes sent through Teams seals nothing, and
     // the card stays for the review page.
     expect(confirmLeadProposal(store, who, id, now, { authority: "full", via: "teams", confirm: true, evidenceRoot: root })).toMatchObject({ ok: false, reason: "needs-confirm" });
