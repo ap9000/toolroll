@@ -10,6 +10,10 @@
 import { createHash } from "node:crypto";
 import type { ChatProvider } from "./contracts/chat-tables.js";
 import type { Database, Statement, Store } from "./store.js";
+import type { ChatMessageFixedOutcome } from "./chat-message-states.js";
+
+/** The result a waiting event is dropped with when its chat is disconnected (kept only when it had none). */
+const REVOKED: ChatMessageFixedOutcome = "revoked";
 
 export type { ChatProvider };
 
@@ -180,7 +184,7 @@ export class ChatCore {
         this.prepare(`UPDATE ${table} SET consumed = ? WHERE provider = :provider AND binding = ? AND consumed IS NULL`).run(stamp, binding.id);
       for (const table of ["chat_flow_prompt", "chat_question_prompt"])
         this.prepare(`UPDATE ${table} SET consumed = ? WHERE provider = :provider AND binding = ? AND consumed IS NULL`).run(stamp, binding.id);
-      this.prepare("UPDATE chat_event SET state = 'dropped', payload = '{}', problem = 'Chat disconnected', result = COALESCE(result, 'revoked') WHERE provider = :provider AND binding = ? AND state = 'queued'").run(binding.id);
+      this.prepare("UPDATE chat_event SET state = 'dropped', payload = '{}', problem = 'Chat disconnected', result = COALESCE(result, ?) WHERE provider = :provider AND binding = ? AND state = 'queued'").run(REVOKED, binding.id);
       this.prepare(`UPDATE chat_part SET state = 'dropped', problem = 'Chat disconnected' WHERE provider = :provider AND state = 'pending'
         AND event IN (SELECT id FROM chat_event WHERE provider = :provider AND binding = ?)`).run(binding.id);
       return revoked;
@@ -192,7 +196,7 @@ export class ChatCore {
     this.store.transact(() => {
       for (const binding of this.bindings(installation)) this.revokeBinding(binding, now, by);
       this.prepare("UPDATE chat_pair SET consumed = ? WHERE provider = :provider AND (installation = ? OR installation IS NULL) AND consumed IS NULL").run(now.toISOString(), installation);
-      this.prepare("UPDATE chat_event SET state = 'dropped', payload = '{}', problem = 'Chat disconnected', result = COALESCE(result, 'revoked') WHERE provider = :provider AND installation = ? AND state = 'queued' AND kind <> 'update'").run(installation);
+      this.prepare("UPDATE chat_event SET state = 'dropped', payload = '{}', problem = 'Chat disconnected', result = COALESCE(result, ?) WHERE provider = :provider AND installation = ? AND state = 'queued' AND kind <> 'update'").run(REVOKED, installation);
       this.prepare(`UPDATE chat_part SET state = 'dropped', problem = 'Chat disconnected' WHERE provider = :provider AND state = 'pending'
         AND event IN (SELECT id FROM chat_event WHERE provider = :provider AND installation = ?)`).run(installation);
     });

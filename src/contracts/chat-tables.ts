@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS chat_pair (
 );
 -- Everything an app sent us, once each (the key is the idempotency). kind 'update' is an applied (or pushed and
 -- waiting) Telegram update; 'message' is a message the lead answers, queued to running to done or failed.
+-- done means "no more work for the lead", not "the person has the reply": Telegram writes it once every part is sent,
+-- Slack, Discord and Teams when the reply is planned. result is a word from chat-message-states.ts; whether a reply
+-- reached the person is answered there by unsent(), from chat_part.
 -- session: the lead session its turn was dispatched under, a pointer to its receipt (never an authority).
 CREATE TABLE IF NOT EXISTS chat_event (
  ${PROVIDER}, id TEXT NOT NULL, installation TEXT NOT NULL, binding INTEGER,

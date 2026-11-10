@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { LEAD_ASK_TTL_MS } from "./store.js";
 import { ChatCore, chatHash, type ChatBinding, type ChatProvider, type ChatRoom } from "./chat-core.js";
 import { ChatMessages } from "./chat-messages.js";
+import { unsentPart } from "./chat-message-states.js";
 import { readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatEventBody } from "./contracts/chat-content.js";
 
 export { savedChatPart, chatHash, type ChatContent, type ChatEventBody, type ChatBinding, type ChatProvider, type ChatRoom };
@@ -99,6 +100,11 @@ export class ChatState extends ChatMessages {
     this.prepare("UPDATE chat_event SET next_at = ?, problem = ? WHERE provider = :provider AND id = ? AND state = 'queued'").run(until.toISOString(), problem, event);
   }
 
+  /**
+   * Mark an event handled: done (or dropped). For a message this runs when its reply is planned, before any part is
+   * sent, with no check of the state it comes from; so on these apps done does not mean the person has the reply.
+   * Ask `unsent()` in chat-message-states.ts for that.
+   */
   finish(event: string, dropped = false): void {
     this.prepare("UPDATE chat_event SET state = ?, payload = '{}' WHERE provider = :provider AND id = ?").run(dropped ? "dropped" : "done", event);
   }
@@ -223,7 +229,7 @@ export class ChatState extends ChatMessages {
 
   /** One person's replies still waiting to send, and those that could not be delivered (settings show both). */
   partCounts(binding: number): { pending: number; dropped: number } {
-    const row = this.prepare(`SELECT SUM(p.state = 'pending') AS pending, SUM(p.state = 'dropped') AS dropped FROM chat_part p
+    const row = this.prepare(`SELECT SUM(${unsentPart("p")}) AS pending, SUM(p.state = 'dropped') AS dropped FROM chat_part p
       JOIN chat_event e ON e.provider = p.provider AND e.id = p.event WHERE p.provider = :provider AND e.binding = ?`).get(binding);
     return { pending: Number(row?.["pending"] ?? 0), dropped: Number(row?.["dropped"] ?? 0) };
   }
