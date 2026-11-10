@@ -13,7 +13,7 @@
  * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
  * console uses. */
 import { routeChangeOf } from "./route-change.js";
-import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
+import { CONFIRM_TTL_MS, NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
 import type { ContractResult } from "./contracts/contract.js";
@@ -82,7 +82,6 @@ export const DECIDE_LABELS = {
 
 const OFFER_TTL_MS = 7 * 86_400_000;
 const CHANNEL_NAMES: Record<DecideChannel, string> = { telegram: "Telegram", slack: "Slack", discord: "Discord", teams: "Teams" };
-const CONFIRM_TTL_MS = 10 * 60_000;
 const PROMPT_TTL_MS = 30 * 60_000;
 export const WHAT_SHOULD_CHANGE = "What should change?";
 

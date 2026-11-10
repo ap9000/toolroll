@@ -31,7 +31,7 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { closedQuestionWords, validateNote } from "./decision.js";
 import { isShotsKind, resultShotsFor, type ResultShot } from "./result-shots.js";
-import { isLifecycleNotification, isTelegramProgressNotification, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
+import { CONFIRM_TTL_MS, isLifecycleNotification, isTelegramProgressNotification, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
 import { telegramProgressCard, type ProgressEntity } from "./telegram-progress.js";
 import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerson, quietCardView, type QuietView } from "./chat-quiet.js";
 import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot } from "./chat-voice.js";
@@ -78,7 +78,6 @@ export { TELEGRAM_TOKEN_ENV as TOKEN_ENV, TELEGRAM_TOKEN_ENVS as TOKEN_ENVS } fr
 const TOKEN_SHAPE = /^(\d+):[A-Za-z0-9_-]{20,}$/;
 
 export const PAIRING_TTL_MS = 10 * 60_000;
-export const CONFIRM_TTL_MS = 10 * 60_000;
 export const BRIDGE_LEASE_MS = 2 * 60_000;
 export const DELIVERY_CLAIM_MS = 2 * 60_000;
 /** Telegram's own message ceiling, with room for our part headers. */

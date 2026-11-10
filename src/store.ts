@@ -27114,3 +27114,6 @@ export function leadAskAwaitsAnswer(store: Store, thread: number, now: Date): bo
  * One bound parameter: the current time as an ISO string. Every read and write that asks "is this invite usable" uses
  * this fragment, so the join page, the attempt counter, the join terms and the open-invites list agree. */
 export const INVITE_USABLE_SQL = "revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10";
+
+/** How long a confirm step stays open: the Yes and Cancel buttons shown after a first tap, in every chat app. */
+export const CONFIRM_TTL_MS = 10 * 60_000;
