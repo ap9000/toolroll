@@ -10,6 +10,8 @@ import type { AssignmentCard } from "../assignment-ui.js";
 import type { BrowserTaskThreadItem, BrowserTaskView } from "../browser-workspace.js";
 import { TaskView } from "./views/task-view.js";
 import { Passwordless } from "./ui/post-form.js";
+import { taskRoad } from "../first-run.js";
+import { stepRowsOf } from "../workspace-ui.js";
 
 const cardOf = (headline: "Needs you" | "Building", action: AssignmentCard["action"] = { label: "Open result", href: "/review?result=t-1" }): AssignmentCard => ({
   token: "assignment", tone: headline === "Needs you" ? "attention" : "info", label: headline,
@@ -125,4 +127,52 @@ test("a fold inside a thread entry's More opens with it: one tap shows it all", 
   expect(inner.open).toBe(false);
   act(() => { outer.open = true; outer.dispatchEvent(new Event("toggle")); });
   expect(inner.open).toBe(true);
+});
+
+/** The view as the server sends it while the plan waits on this person: its road and step rows. */
+const waiting = (approve: Approve): BrowserTaskView => {
+  const view = viewOf(cardOf("Needs you", null), { approve, journey: taskRoad({ stage: "needs-you", need: "approval" }, false, false, {}) });
+  return { ...view, steps: stepRowsOf(view) };
+};
+
+test("in the step rows the approval is the open Approval row: one outline, one chip, the act, then the plan it signs, nothing folded", () => {
+  show(waiting({ ...approveOf({ passwordless: true, remembered: false }), planHtml: '<article data-plan-sheet><p id="plan-words">Goal</p></article><details id="plan-editor"><summary>Request changes</summary></details>' }));
+  const row = host.querySelector<HTMLElement>('[data-step-row="approve"]')!;
+  expect(row.classList.contains("needs")).toBe(true);
+  expect(row.getAttribute("aria-current")).toBe("step");
+  // Never a toggle while it waits: its head is no button, its body is open.
+  expect(row.querySelector("button.k-steprow-head")).toBeNull();
+  const body = row.querySelector<HTMLElement>(".k-steprow-body")!;
+  expect(body.hidden).toBe(false);
+  // The act first, then the sheet, both in the row's body; the plan row above is one line pointing below.
+  expect(body.querySelector("[data-task-approval]")).not.toBeNull();
+  const sheet = body.querySelector("[data-plan-sheet]")!;
+  expect(sheet.closest("details, [hidden]")).toBeNull();
+  expect(body.querySelector("[data-task-approval]")!.compareDocumentPosition(sheet) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(host.querySelector('[data-step-row="plan"]')!.textContent).toContain("Shown below");
+  // The chip is said once, by the row.
+  expect([...host.querySelectorAll(".k-chip.needs")].map(one => one.closest("[data-step-row]")?.getAttribute("data-step-row"))).toEqual(["approve"]);
+  expect(host.querySelectorAll("[data-task-approval]")).toHaveLength(1);
+});
+
+test("in the step rows a newer approval disables the yes and the sheet stays the one first shown", () => {
+  show(waiting({ ...approveOf({ passwordless: true, remembered: false }, "d1"), planHtml: '<p id="plan-words">First terms</p>' }));
+  show(waiting({ ...approveOf({ passwordless: true, remembered: false }, "d2"), planHtml: '<p id="plan-words">Newer terms</p>' }));
+  const body = host.querySelector<HTMLElement>('[data-step-row="approve"] .k-steprow-body')!;
+  expect(body.querySelector("#plan-words")!.textContent).toBe("First terms");
+  expect(body.querySelector<HTMLInputElement>('input[name="digest"]')!.value).toBe("d1");
+  expect([...body.querySelectorAll("[data-task-approval] button")].map(one => one.textContent)).toEqual(["Reload"]);
+});
+
+test("in the step rows a refused password keeps the terms shown and sends nothing until asked again", () => {
+  show(waiting({ ...approveOf({ passwordless: false, remembered: false }, "d1"), planHtml: '<p id="plan-words">First terms</p>' }));
+  pressApprove();
+  // The person closes the popover (a wrong password is refused by the server, which answers the same page): the
+  // act is released, nothing went, and the terms on the page are the ones shown.
+  act(() => document.querySelector<HTMLButtonElement>('.k-pop [aria-label="Close"], .k-pop button[data-k-close]')?.click());
+  expect(submitted).toEqual([]);
+  show(waiting({ ...approveOf({ passwordless: false, remembered: false }, "d1"), planHtml: '<p id="plan-words">Re-rendered terms</p>' }));
+  expect(host.querySelector("#plan-words")!.textContent).toBe("First terms");
+  pressApprove();
+  expect(popover()).not.toBeNull();
 });

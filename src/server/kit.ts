@@ -8,7 +8,7 @@
  * (src/browser/kit/behavior.ts), which wires any kit markup the workspace places; every control here still works
  * as plain HTML without it.
  */
-import { attributes, html, joinHtml, passwordlessRendering, postForm, type AttributeValue, type Html, type HtmlValue, type PostFormOptions } from "../html.js";
+import { attributes, html, htmlString, joinHtml, passwordlessRendering, postForm, type AttributeValue, type Html, type HtmlValue, type PostFormOptions } from "../html.js";
 import {
   KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, STEP_ROW_WORDS, STEP_WORDS, stepRowBodyId, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, needsWords, stepsFill, termsOf, timingBars,
   type ApprovalFacts, type ApprovalKind, type ChipTone, type IconShape, type KitIcon, type StatusKey, type StepItem, type StepRowMark, type TimingRow,
@@ -430,7 +430,7 @@ export type StepRowItem = { key: string; label: string; mark: StepRowMark; sente
  * `aria-current="step"`. Same markup as `KStepRows`. */
 export function stepRows(items: readonly StepRowItem[], label = "Steps"): Html {
   return html`<ol class="k-steprows" aria-label="${label}">${items.map(item => {
-    const hasBody = item.body !== undefined && item.body !== "";
+    const hasBody = item.body !== undefined && htmlString(html`${item.body}`) !== "";
     const id = stepRowBodyId(item.key);
     const head = html`<span class="k-steprow-label">${item.label}<span class="k-sr">, ${STEP_ROW_WORDS[item.mark]}</span></span>\
 <span class="k-steprow-say">${item.needsYou ? chip("Needs you", "needs") : ""}${item.sentence === "" ? "" : html`<span>${item.sentence}</span>`}</span>\

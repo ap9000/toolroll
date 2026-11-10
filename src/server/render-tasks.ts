@@ -2729,33 +2729,8 @@ export function taskBodyParts(data: {
     : html`<details class="task-secondary-approval"><summary>Updated approval terms</summary>${approveForm}</details>`;
   const optionsHtml = html`${identity}${dispatchStatus}${dependencyChoiceNeeded ? "" : actsBar}`;
   const optionsOpen = data.assignment?.primaryAction?.code === "unhold" || data.assignment?.primaryAction?.code === "retry-task";
-  // `rows`: the task's step rows, every one open (the page without script, docs/plans/task-page-steps.md): the status,
-  // the approval, the plan, the build's progress and the previous result move into their rows; everything else stays.
-  const nativeBody = (rows: Html | null): Html => joinHtml([
-    // The title is bare; the receipt or shared task status leads once.
-    html`<div class="task-title-row"><h1 class="task-main-title">${data.rootTitle ?? task.title}</h1>${data.csrf === "" ? "" : taskViewSwitch(data.rootId ?? task.id, "overview")}</div>`,
-    data.versionLabel == null ? "" : html`<p class="meta">${data.versionLabel} · <a href="${taskHref(data.rootId ?? task.id)}">Current work</a></p>`,
-    data.archived == null ? "" : html`<div class="task-archived" data-archived><p>${archivedWords(data.archived)} · ${whenUtc(data.archived.at)}</p>${data.canPutAway === true && data.csrf !== ""
-      ? postForm(`${taskHref(task.id)}/restore`, html`<button type="submit" class="secondary">Restore</button>`, { hidden: { return: taskHref(task.id) }, attrs: { class: "inline" } }) : ""}</div>`,
-    (data.history ?? ""),
-    rows ?? "",
-    // A put-away task's banner is its status: no Needs you card, no act, no approval form (each would be refused).
-    rows === null && data.archived == null ? statusHtml : "",
-    rows === null ? controlHtml : "",
-    rows !== null || previousResult === null ? "" : html`<details class="task-previous-result"><summary>${previousResult.title}</summary>${previousResult.html}</details>`,
-    rows === null ? progressCard : "",
-    rows === null ? revisionLedgerCard : "",
-    rows === null ? planCard : "",
-    mirrorCard,
-    problemHtml,
-    needsScopeCard,
-    rows === null && data.archived == null ? approvalHtml : "",
-    html`<details class="task-status-details" id="task-diagnostics"${optionsOpen ? html` open` : ""}><summary>Task options</summary>${optionsHtml}</details>`,
-    // Evidence-first (M5.5): what needs you, then what happened — decisions
-    // and incidents above the attempt ledger and spend, the mechanics
-    // (scope, holds, acts) after. Only trustworthy facts moved up. The rail
-    // (slice 1c) rides beside the main column on wide screens and above it
-    // on narrow ones.
+  // The page's sections, built once and in order (each `section` also records its part for the rebuilt page).
+  const layoutTail = joinHtml([
     html`<div class="task-layout"><div class="task-main">`,
     attemptPanel,
     data.coordinatorProposals == null || data.coordinatorProposals.rows.length === 0
@@ -2806,6 +2781,35 @@ export function taskBodyParts(data: {
     section("holds", holds, true, data.holds.length),
     cancelAct,
     html`</div><aside class="task-rail">${rail}</aside></div>`,
+  ], "\n");
+  // `rows`: the task's step rows, every one open (the page without script, docs/plans/task-page-steps.md): the status,
+  // the approval, the plan, the build's progress and the previous result move into their rows; everything else stays.
+  const nativeBody = (rows: Html | null): Html => joinHtml([
+    // The title is bare; the receipt or shared task status leads once.
+    html`<div class="task-title-row"><h1 class="task-main-title">${data.rootTitle ?? task.title}</h1>${data.csrf === "" ? "" : taskViewSwitch(data.rootId ?? task.id, "overview")}</div>`,
+    data.versionLabel == null ? "" : html`<p class="meta">${data.versionLabel} · <a href="${taskHref(data.rootId ?? task.id)}">Current work</a></p>`,
+    data.archived == null ? "" : html`<div class="task-archived" data-archived><p>${archivedWords(data.archived)} · ${whenUtc(data.archived.at)}</p>${data.canPutAway === true && data.csrf !== ""
+      ? postForm(`${taskHref(task.id)}/restore`, html`<button type="submit" class="secondary">Restore</button>`, { hidden: { return: taskHref(task.id) }, attrs: { class: "inline" } }) : ""}</div>`,
+    (data.history ?? ""),
+    rows ?? "",
+    // A put-away task's banner is its status: no Needs you card, no act, no approval form (each would be refused).
+    rows === null && data.archived == null ? statusHtml : "",
+    rows === null ? controlHtml : "",
+    rows !== null || previousResult === null ? "" : html`<details class="task-previous-result"><summary>${previousResult.title}</summary>${previousResult.html}</details>`,
+    rows === null ? progressCard : "",
+    rows === null ? revisionLedgerCard : "",
+    rows === null ? planCard : "",
+    mirrorCard,
+    problemHtml,
+    needsScopeCard,
+    rows === null && data.archived == null ? approvalHtml : "",
+    html`<details class="task-status-details" id="task-diagnostics"${optionsOpen ? html` open` : ""}><summary>Task options</summary>${optionsHtml}</details>`,
+    // Evidence-first (M5.5): what needs you, then what happened — decisions
+    // and incidents above the attempt ledger and spend, the mechanics
+    // (scope, holds, acts) after. Only trustworthy facts moved up. The rail
+    // (slice 1c) rides beside the main column on wide screens and above it
+    // on narrow ones.
+    layoutTail,
   ], "\n");
   // Console v2: one thread in time order (the plan, the agent's notes and
   // results, its questions, the person's replies) and the metadata grouped
@@ -3114,6 +3118,7 @@ export function taskBodyParts(data: {
     const bodyOf = (key: StepRow["key"]): Html => joinHtml([
       key === here.key ? statusHtml : "",
       key === "plan" ? planCard : "",
+      // The shared approval sheet as chat and /next show it (its Plan details fold included, as their tests pin).
       key === "approve" ? (approvalHtml !== "" ? approvalHtml : view.approved == null ? "" : html`<p class="meta">${view.approved.automatic ? `Approved automatically by ${view.approved.rule ?? "a rule"}` : `Approved by ${view.approved.by}`} · ${whenTime(view.approved.at)}</p>`) : "",
       key === "build" ? joinHtml([controlHtml, progressCard, revisionLedgerCard]) : "",
       key === "ready" && previousResult !== null ? html`<section class="task-previous-result" aria-label="${previousResult.title}">${previousResult.html}</section>` : "",

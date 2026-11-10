@@ -1215,12 +1215,21 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // The repair's approval says what it fixes in one sentence, the
     // criterion as words; the machine brief ("Unmet: c1") stays in Details.
     expect(draftHtml).toContain(`<p class="approval-revision">Fixes what build #${run} missed: it works.</p>`);
-    const sheetMain = draftHtml.slice(draftHtml.indexOf('class="approve-form approval-sheet"'), draftHtml.indexOf('<details class="approval-details">'));
+    const sheetMain = draftHtml.slice(draftHtml.indexOf('class="approve-form approval-sheet"'), draftHtml.indexOf('<details class="approval-details"'));
     expect(sheetMain).not.toContain("Unmet");
     // Its requirement is one only you can check, said plainly above Approve.
     expect(sheetMain).toContain('<p class="approval-you-check" data-approval-you-check>You’ll check: it works</p>');
     // Edit plan shows the goal without the machine brief, which rides along unchanged.
     expect(sheetMain).not.toContain("inherited terms");
+    // Without script the steps are the page too (docs/plans/task-page-steps.md): every row open, in order, and the
+    // approval form the person signs sits in the Approval row.
+    const native = new Window();
+    native.document.body.innerHTML = draftHtml;
+    expect([...native.document.querySelectorAll(".k-steprows > .k-steprow")].map(one => one.getAttribute("data-step-row"))).toEqual(["plan", "approve", "build", "checks", "ready"]);
+    expect(native.document.querySelector(".k-steprow-body[hidden]")).toBeNull();
+    expect(native.document.querySelector('[data-step-row="approve"] form.approval-sheet')).not.toBeNull();
+    expect(native.document.querySelectorAll("form.approval-sheet")).toHaveLength(1);
+    await native.happyDOM.close();
 
     // Historical repair records stay readable on their task pages. They do
     // not add a second assessment-based stage to what Home asks of a person.
@@ -2192,9 +2201,12 @@ describe("failures say what failed and builds say how far along: the demo's own 
     const stuck = "Stuck on step 4 of 6: the flag is off in the staging deploy target — confirming before enforcing.";
     expect(building.status!.status.headline).toBe("Building");
     expect(building.status!.status.sentence).toBe(stuck);
-    expect(building.progress).toEqual({ line: stuck, stuck: {
+    expect(building.progress).toMatchObject({ line: stuck, stuck: {
       step: 4, why: "the flag is off in the staging deploy target — confirming before enforcing", line: stuck,
       action: { label: "Send the agent a note", href: "#steering" } } });
+    // The Build row's steps, typed, from the latest checkpoint: the stuck one says so.
+    expect(building.progress!.steps!.map(one => one.state)).toEqual(["completed", "completed", "current", "blocked", "pending", "pending"]);
+    expect(building.steps!.find(one => one.key === "build")).toMatchObject({ state: "current", mark: "live", open: true });
     // The act lands somewhere real: the Steering fold with its note form.
     expect(building.manage.some(one => one.id === "steering")).toBe(true);
     // Stop is in that card, for this exact build; the control card below keeps its details but not a second Stop, and
