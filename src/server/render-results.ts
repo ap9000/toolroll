@@ -72,7 +72,7 @@ export function editorFileHref(worktree: string, path: string, line?: number | n
  * chat (v39, extending Priority 2's "one surface, six places" rule from
  * the verdict word to the per-criterion state). */
 export function matrixStateBadge(state: CriterionMatrixRow["state"]): Html {
-  // Red belongs to a Failed headline alone (task-status.ts); an unmet requirement is an amber note.
+  // Red belongs to a Failed headline alone (task-status.ts); an unmet requirement is an ink note.
   const cls = state === "pass" ? "badge-done" : state === "failed" ? "badge-note" : state === "missing" ? "badge-note" : "badge-manual-review";
   // The same words as the Checks tab and the card's Requirements row (task-status.ts).
   return html`<span class="badge ${cls}" data-matrix-state="${state}">${requirementWordOf({ state })}</span>`;
@@ -995,7 +995,7 @@ export function pullRequestCardHtml(pr: TaskPullRequest, csrf: string): Html {
   const view = pr.view;
   const url = safePrUrl(view.prUrl);
   const link = view.prNumber === null ? "" : url === null ? html`<span class="mono">PR #${view.prNumber}</span>` : html`<a href="${url}" class="mono" rel="noreferrer" target="_blank">PR #${view.prNumber}</a>`;
-  // A pull request's trouble never undoes the result: amber, never red.
+  // A pull request's trouble never undoes the result: an ink note, never red.
   const tone = view.state === "ready" || view.state === "merged" ? "ok" : view.state === "failing" || view.state === "failed" ? "problem" : "waiting";
   const revision = view.revisionTask === null || view.state !== "failing" ? "" : html` <a href="${taskHref(view.revisionTask)}">Open revision</a>`;
   const merged = view.mergeCommit === null ? "" : html`<p class="meta">Merge commit <span class="mono">${view.mergeCommit.slice(0, 12)}</span></p>`;
@@ -1866,7 +1866,7 @@ export function completionReceiptCard(view: CompletionReceiptView, taskId: strin
     lead,
     html`<p class="receipt-summary">${conciseOutcomeOf(view.summary ?? (view.outcome === "no-change" ? "The agent found that no repository change was needed." : "The build finished without a concise handoff."))}</p>`,
     headline ? html`<div class="receipt-actions"><a class="button-link" href="${resultHref}" data-open-result data-primary-action>${status.action?.label ?? "Open result"}</a></div>` : "",
-    // A pull request that couldn't open never undoes the result: an amber note, not red.
+    // A pull request that couldn't open never undoes the result: an ink note, not red.
     view.publication?.state === "failed" ? html`<p class="receipt-note">${statusIconSvg("note")} Pull request couldn't open. The commit is safe locally.</p>` : "",
     caveats,
     coverage,

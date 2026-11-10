@@ -134,7 +134,7 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(workspaceOf(clear).sensitive).toBe(false);
   });
 
-  test("the signed rubric restates above the seal on the ceremony, the read-only card, and a second task's page — never a second amber form (v39)", async () => {
+  test("the signed rubric restates above the seal on the ceremony, the read-only card, and a second task's page — never a second waiting form (v39)", async () => {
     store.createTask({ id: "t-rubric", title: "needs a yes with a rubric" }, T0);
     store.saveScope({
       taskId: "t-rubric", goal: "guard the payout path", outOfScope: null, touches: ["src/payout.ts"],

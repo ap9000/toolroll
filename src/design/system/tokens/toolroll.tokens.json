@@ -449,7 +449,7 @@
         ],
         "hex": "#ab6400"
       },
-      "$description": "Amber: setup trouble and caution.",
+      "$description": "The terminal's yellow only. Pages never use it: cautions are neutral ink.",
       "$extensions": {
         "dev.youiyoux": {
           "css": "warning"
@@ -676,8 +676,8 @@
     },
     "wait": {
       "$type": "color",
-      "$value": "{color.warning}",
-      "$description": "Needs You Amber: what waits on this person, and nothing else (the Needs-you chip's dot, a waiting box's outline, the dock's dot). Never a warning, quota, link or decoration.",
+      "$value": "{color.signal}",
+      "$description": "Needs You Ink: what waits on this person, and nothing else (the Needs-you chip, a waiting box's outline, the dock's dot). Ink, the same as the one main action: no hue. Never a warning, quota, link or decoration.",
       "$extensions": {
         "dev.youiyoux": {
           "css": "needs"
@@ -686,8 +686,8 @@
     },
     "wait-soft": {
       "$type": "color",
-      "$value": "{color.warning-soft}",
-      "$description": "The wash behind a Needs-you chip.",
+      "$value": "{color.signal-soft}",
+      "$description": "The ink wash behind a quiet Needs-you mark.",
       "$extensions": {
         "dev.youiyoux": {
           "css": "needs-soft"

@@ -17,7 +17,7 @@
     "wait": {
       "type": "boolean",
       "default": false,
-      "description": "Waits on this person: the amber outline."
+      "description": "Waits on this person: the ink outline."
     },
     "status": {
       "type": "node",

@@ -349,7 +349,7 @@ ${AUTHORITY_LINE}
 - The rail is four rows — inbox · board · builds · projects — and a
   **more** group: portfolio, task list, fleet, system,
   requirements, people, operating mode, settings. On a phone the same
-  five sit in the tab bar and more is \`/menu\`. Amber appears only on
+  five sit in the tab bar and more is \`/menu\`. The needs-you mark appears only on
   what needs a person: the inbox count and the one act that resolves a
   screen (approve, answer, retry).
 

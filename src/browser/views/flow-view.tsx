@@ -45,7 +45,7 @@ const KIND_ICONS: Record<BrowserFlowStage["kind"], ReactNode> = {
 
 /** What Jev decided about a card: its answer and how sure. A card it wasn't sure about says so. */
 function SortChip({ sorted }: { sorted: NonNullable<BrowserFlowCard["sorted"]> }) {
-  return <span className={cn("inline-flex max-w-full items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[11px] font-medium", !sorted.confident && "text-warning")}
+  return <span className={cn("inline-flex max-w-full items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-mono-count leading-4 font-medium", !sorted.confident && "text-foreground")}
     title={sorted.confident ? "Sorted by Jev" : "Jev wasn't sure"} data-sort-chip>
     <Split className="size-3 shrink-0" style={{ color: sorted.confident ? COLORS["violet"] : undefined }} aria-hidden="true" /><span className="truncate">{sorted.confident ? sorted.chip : `Not sure · ${sorted.chip}`}</span></span>;
 }
@@ -625,7 +625,7 @@ function SecretsBox({ view, csrf, apply, words, chosen, choose }: { view: Browse
         ? <p className="flex flex-wrap gap-1.5">{view.requestSecrets.map(name => <Badge key={name} tone="neutral" className="font-mono">{name}</Badge>)}</p>
         : <div className="flex flex-wrap gap-x-3 gap-y-1.5">{view.requestSecrets.map(name => <label key={name} className="inline-flex items-center gap-1.5 font-mono text-mono">
             <input type="checkbox" className="size-4 accent-primary" checked={picked.includes(name)} onChange={event => choose(event.target.checked ? [...picked, name] : picked.filter(one => one !== name))} />{name}</label>)}</div>)}
-      {picked.filter(name => !view.requestSecrets.includes(name)).map(name => <p key={name} className="text-caption text-warning font-normal">{name} isn't saved yet: save it below.</p>)}
+      {picked.filter(name => !view.requestSecrets.includes(name)).map(name => <p key={name} className="text-caption text-foreground font-medium">{name} isn't saved yet: save it below.</p>)}
       <div className="flex gap-1.5">
         <Input value={secret.name} onChange={event => setSecret({ ...secret, name: event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_") })} className="w-32 shrink-0 font-mono text-mono" placeholder="API_TOKEN" aria-label="Secret name" />
         <Input type="password" autoComplete="off" value={secret.value} onChange={event => setSecret({ ...secret, value: event.target.value })} placeholder="Its value (empty removes it)" aria-label="Secret value" />
@@ -1179,7 +1179,7 @@ function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: Bro
   return <details className="mt-2 rounded-md border px-2 py-1.5" open={!hook.ready || hook.warning !== null} data-trigger-signing={current}>
     <summary className="cursor-pointer text-body font-medium">Signing{hook.ready && current !== "none" ? "" : " · needs you"}</summary>
     <div className="mt-2 flex flex-col gap-2">
-      {hook.warning !== null && <p className={cn("text-caption font-normal", current === "none" || !hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{hook.warning}</p>}
+      {hook.warning !== null && <p className={cn("text-caption font-normal", current === "none" || !hook.ready ? "text-foreground" : "text-muted-foreground")} data-trigger-signing-warning>{hook.warning}</p>}
       {hook.readerNote !== null && <p className="text-caption text-muted-foreground font-normal" data-trigger-reader-note>{hook.readerNote}</p>}
       <Field label="Signed by" hint="Who signs this webhook's deliveries. Changing it keeps the address and drops the secret: it then needs one again.">
         <select className={SELECT_INLINE} value={sender} onChange={event => setSender(event.target.value)} data-trigger-sender>
@@ -1270,7 +1270,7 @@ function BrowserLine({ view, csrf, apply }: { view: BrowserFlowView; csrf: strin
 }
 
 /**
- * Browser use not allowed, or its approval expired: the decision frame (amber: the next run waits on a person), the
+ * Browser use not allowed, or its approval expired: the decision frame (ink outline: the next run waits on a person), the
  * reason in one line, the scope you'd approve visible before you consent, and Allow browser as the screen's primary.
  * The terms are frozen when the frame is first read: a live update never swaps what the password approves; when the
  * flow's terms move on, it says so and the person reads the new ones first. The digest shown rides back.
@@ -1419,7 +1419,7 @@ function TriggersPanel({ view, csrf, apply, focus, onPress }: { view: BrowserFlo
         <div className="min-w-0 flex-1">
           <p className="text-body leading-snug font-medium">{trigger.words}</p>
           <p className="text-caption text-muted-foreground font-normal">Starts in {trigger.zone}{trigger.state === "paused" ? " · Paused" : ""}{trigger.shared ? " · Shared as a form" : ""}</p>
-          {trigger.status !== null && <p className={cn("text-caption font-normal", trigger.failing ? "text-warning" : "text-muted-foreground")}>{ago(trigger.statusAt)}: {trigger.status}<StatusLink link={trigger.statusLink} /></p>}
+          {trigger.status !== null && <p className={cn("text-caption font-normal", trigger.failing ? "text-foreground" : "text-muted-foreground")}>{ago(trigger.statusAt)}: {trigger.status}<StatusLink link={trigger.statusLink} /></p>}
         </div>
       </div>
       {/* Its approval is what turning it on agrees to, so it stays in view; the terms each run files open on demand. */}

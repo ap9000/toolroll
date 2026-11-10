@@ -1,0 +1,16 @@
+schema: youi.rule/v1
+id: youi:toolroll/rule/color.ink-means-waits
+title: The needs mark means "waits on you", only
+severity: warn
+statement: The needs tokens (--so-needs, --so-needs-soft, --so-needs-ink; the chip tone "needs") mark what waits on this person and nothing else. Never a warning, quota, caution, link, decoration or emphasis; something that waits on someone else never carries it. The mark is ink (the signal colour), never a hue of its own.
+rationale: Attention is the currency. One mark that only ever means "you are needed" lets a person scan a screen and know.
+agent: Use the needs tone only for a wait on the viewer (a Needs-you chip, a waiting slots box, the needs panel). Warnings and caution use neutral ink or danger, never a yellow or amber; resource states (Idle, Building, Offline) never take the needs tone.
+check:
+  engine: advisory
+files:
+  - "**/*.{ts,tsx,css}"
+examples:
+  bad:
+    - <KChip word="Quota 83%" tone="needs" />
+  good:
+    - <KChip word="Plan" tone="ask" /> inside the Needs-you group

@@ -187,7 +187,7 @@ test("the first task's way to Ready fills in as it moves", () => {
   expect(firstTaskJourney({ stage: "needs-you", need: "other" }, true, true).map(one => one.state)).toEqual(["done", "done", "done", "stuck", "todo"]);
 });
 
-test("a task's road says only what happened: no Checks for a report, skipped checks say so, the wait is the one amber step", () => {
+test("a task's road says only what happened: no Checks for a report, skipped checks say so, the wait is the one ink step", () => {
   const road = (...args: Parameters<typeof taskRoad>) => taskRoad(...args).map(one => `${one.key}:${one.state}${one.needsYou ? "!" : ""}:${one.label}`);
   // A research report has no Checks step at all.
   expect(road({ stage: "finished" }, true, true, { report: true })).toEqual(["plan:done:Plan", "approve:done:You approve", "build:done:Build", "ready:done:Ready"]);

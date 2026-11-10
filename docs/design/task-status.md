@@ -44,7 +44,7 @@ Crew is not exempt: it reads the Tasks list's own words for each task, the headl
 
 **3. Severity rules.**
 - Red only when the headline is Failed.
-- A detail problem that doesn't undo the outcome (pull request couldn't open, output shortened) is an amber note *on that row*, with one action ("Open the pull request", "Retry", "Open it on GitHub"). It never turns the headline, the card border or the whole card red.
+- A detail problem that doesn't undo the outcome (pull request couldn't open, output shortened) is an ink note with a caution mark *on that row*, with one action ("Open the pull request", "Retry", "Open it on GitHub"). It never turns the headline, the card border or the whole card red.
 - A detail problem that blocks the next step makes the headline "Needs you", with that problem as the sentence.
 
 **Ready, or Needs you with the ask.** A finished result reads Ready for review unless a person must act first: a requirement only they can check, a missing screenshot, an unmet requirement, a missing required check or an unresolved HIGH review finding reads Needs you, and the sentence is that ask. A failed check reads Failed. The same rule (`completionBlockersOf`) refuses `task complete`, the console and chat completion and `scripts/deploy-candidate.mjs`: a failed or missing required check, an unresolved requirement or an unresolved HIGH finding. Checks deliberately Off are not missing; a requirement a release check covers counts as met. The shown verdict is derived the same way and never rewrites the stored one.

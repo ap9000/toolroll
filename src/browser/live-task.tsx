@@ -19,10 +19,10 @@ export function useNow(everyMs = 5_000): number {
   return now;
 }
 
-/** What the agent did last, and when: one quiet line; amber when it has gone quiet or its worker is offline. */
+/** What the agent did last, and when: one quiet line; ink and medium weight when it has gone quiet or its worker is offline. */
 export function ActivityLine({ activity, className }: { activity: RunActivity; className?: string }) {
   const line = activityLine(activity, useNow());
-  return <span className={cn("block min-w-0 truncate text-body", line.quiet ? "font-medium text-warning" : "font-normal text-muted-foreground", className)}
+  return <span className={cn("block min-w-0 truncate text-body", line.quiet ? "font-medium text-foreground" : "font-normal text-muted-foreground", className)}
     data-activity={line.quiet ? "quiet" : line.stale ? "stale" : "fresh"} title={line.text}>
     <time dateTime={activity.at}>{line.text}</time>
   </span>;

@@ -2,7 +2,7 @@
  * the status card names the release check, its step and its progress, never "an agent"; there is no agent activity
  * line and no "doesn't read notes" (nothing to send); the release's panel reads Running while a machine step waits,
  * and Needs you only at its Approval; the generic Plan → Build stepper gives way to the release's own steps. An agent's
- * build keeps all of those. Quiet time on an agent's build is neutral words, never amber. */
+ * build keeps all of those. Quiet time on an agent's build is neutral words, never the needs-you mark. */
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -38,7 +38,3 @@
 [data-view] :is(details, summary):not(.so-native-region *):where(:not([class^="k-"], [class*=" k-"], .k-tabs *, .k-seg *, .k-disclose > summary, .k-dh *, .k-slot-status *, .k-needs-h, .k-needs-item *, .k-facts *, .k-opt *, .k-checks *, .k-menu *, .k-pop-h *, .k-drawer-h *, .k-sheet-h *, .k-timing-h *, .k-crow *, .k-frow-l *, .k-sbody > header, .k-sbody > header *, .k-composer *, .k-empty *, .k-ph *, .k-tb > h1, .k-grp *, .k-switch *, .k-secthead *, .k-sec > h3, .k-crumbs *, .k-nav *)) { margin: 0; padding: 0; min-height: 0; font-size: inherit; background: transparent; box-shadow: none; border-radius: 0; }
 [data-view] { font-family: var(--font-sans); color: var(--so-ink); }
 
-/* "Needs you" text on the amber wash: the warning token alone reads 4.21:1 on
- * its wash in light, so the chip's words lean 15% toward ink (5.3:1 light,
- * over 9:1 dark). The dot and the outline stay pure --so-warning. */
-@utility text-needs { color: color-mix(in oklab, var(--so-warning) 85%, var(--so-ink)); }

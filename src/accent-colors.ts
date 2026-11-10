@@ -107,7 +107,7 @@ export function accentTokens(hex: string): { light: AccentTokens; dark: AccentTo
 
 /** What a person should know before keeping a colour: a grey won't stand out, and a status hue can be mistaken. */
 const STATUS: [string, string, string, string][] = [
-  ["#c4320a", "red", "failures", "a failed one"], ["#ab6400", "amber", "warnings", "a warning"],
+  ["#c4320a", "red", "failures", "a failed one"],
   ["#218358", "green", "passed checks", "a passed one"], ["#0d74ce", "blue", "running work", "a running one"],
 ];
 export function accentNote(hex: string): string | null {

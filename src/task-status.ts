@@ -8,7 +8,7 @@
  *
  * Severity: red belongs to the Failed headline alone. A detail problem that
  * doesn't undo the outcome (a pull request that couldn't open, shortened
- * output) is an amber note on its own row with one action; the exact
+ * output) is an ink note on its own row with one action; the exact
  * technical reason stays one tap away in `why`. */
 import { DEFAULT_LEAD_NAME } from "./lead-identity.js";
 import { html, type Html } from "./html.js";
@@ -39,7 +39,7 @@ export const MACHINE_CHECK_RUNNING = "Running the check on the prepared version.
 
 export type DetailKey = "checks" | "pull-request" | "requirements" | "evidence";
 /** The row's small icon: the only coloured part of a detail. `failed` is red
- * and only ever appears under the Failed headline; `note` is amber. */
+ * and only ever appears under the Failed headline; `note` is ink, with a caution mark. */
 export type DetailMark = "ok" | "running" | "none" | "note" | "failed";
 export type StatusAction = { label: string; href: string | null };
 export type StatusDetail = { key: DetailKey; label: string; text: string; mark: DetailMark; href: string | null; action: StatusAction | null; why: string | null };
@@ -274,7 +274,7 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
   }
 }
 
-/** A detail problem: red only under Failed, otherwise an amber note. */
+/** A detail problem: red only under Failed, otherwise an ink note. */
 const problem = (headline: Headline): DetailMark => headline === "Failed" ? "failed" : "note";
 
 function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
@@ -682,7 +682,7 @@ export function statusWhyHtml(status: TaskStatus, extra: readonly string[] = [],
 }
 
 /** Shared CSS for the server-rendered status: neutral rows, coloured icons. */
-export const TASK_STATUS_CSS = `.status-headline{display:flex;align-items:center;gap:.6rem;margin:0;font-size:1.125rem;font-weight:600;color:var(--foreground)}.status-headline i{width:.625rem;height:.625rem;border-radius:999px;flex-shrink:0;background:var(--muted-foreground)}[data-headline-tone=live] .status-headline i{background:var(--so-info,#0d74ce)}[data-headline-tone=attention] .status-headline i{background:var(--so-attention,var(--attention))}[data-headline-tone=ready] .status-headline i{background:transparent;box-shadow:inset 0 0 0 2px var(--so-success,#218358)}[data-headline-tone=success] .status-headline i{background:var(--so-success,#218358)}[data-headline-tone=danger] .status-headline i{background:var(--so-danger,#c4320a)}.status-sentence{margin:.35rem 0 0;color:var(--muted-foreground)}.status-details{list-style:none;margin:.75rem 0 0;padding:.25rem 0 0;border-top:1px solid var(--so-line,var(--border))}.status-detail{display:grid;grid-template-columns:14px 7.5rem minmax(0,1fr);align-items:center;gap:.6rem;padding:.4rem 0;font-size:.8125rem;color:var(--foreground)}.status-detail .status-icon{align-self:center;color:var(--muted-foreground)}.status-detail--ok .status-icon{color:var(--so-success,#218358)}.status-detail--running .status-icon{color:var(--so-info,#0d74ce)}.status-detail--note .status-icon{color:var(--so-warning,#ab6400)}.status-detail--failed .status-icon{color:var(--so-danger,#c4320a)}.status-detail-label{color:var(--muted-foreground)}.status-detail-text{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .6rem;min-width:0;overflow-wrap:anywhere}.status-detail-text a{color:inherit}.status-detail-act{font-weight:600;white-space:nowrap}.status-detail--note .status-detail-act{color:var(--so-warning,#ab6400)}@media(max-width:480px){.status-detail{grid-template-columns:14px 6.5rem minmax(0,1fr);min-height:2.75rem;padding:.25rem 0}.status-detail-text a{display:inline-block;padding:.75rem 0;margin:-.75rem 0}}.status-why{border:0;padding:0;margin:.25rem 0 0;background:transparent;box-shadow:none}.status-why>summary{cursor:pointer;min-height:2.75rem;display:list-item;align-content:center;font-size:.8125rem;color:var(--muted-foreground)}.status-why p{margin:.25rem 0 .5rem}.receipt-note{display:flex;align-items:center;gap:.45rem;font-size:.8125rem;color:var(--foreground)}.receipt-note .status-icon{color:var(--so-warning,#ab6400)}`;
+export const TASK_STATUS_CSS = `.status-headline{display:flex;align-items:center;gap:.6rem;margin:0;font-size:1.125rem;font-weight:600;color:var(--foreground)}.status-headline i{width:.625rem;height:.625rem;border-radius:999px;flex-shrink:0;background:var(--muted-foreground)}[data-headline-tone=live] .status-headline i{background:var(--so-info,#0d74ce)}[data-headline-tone=attention] .status-headline i{background:var(--so-attention,var(--attention))}[data-headline-tone=ready] .status-headline i{background:transparent;box-shadow:inset 0 0 0 2px var(--so-success,#218358)}[data-headline-tone=success] .status-headline i{background:var(--so-success,#218358)}[data-headline-tone=danger] .status-headline i{background:var(--so-danger,#c4320a)}.status-sentence{margin:.35rem 0 0;color:var(--muted-foreground)}.status-details{list-style:none;margin:.75rem 0 0;padding:.25rem 0 0;border-top:1px solid var(--so-line,var(--border))}.status-detail{display:grid;grid-template-columns:14px 7.5rem minmax(0,1fr);align-items:center;gap:.6rem;padding:.4rem 0;font-size:.8125rem;color:var(--foreground)}.status-detail .status-icon{align-self:center;color:var(--muted-foreground)}.status-detail--ok .status-icon{color:var(--so-success,#218358)}.status-detail--running .status-icon{color:var(--so-info,#0d74ce)}.status-detail--note .status-icon{color:var(--so-ink)}.status-detail--failed .status-icon{color:var(--so-danger,#c4320a)}.status-detail-label{color:var(--muted-foreground)}.status-detail-text{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .6rem;min-width:0;overflow-wrap:anywhere}.status-detail-text a{color:inherit}.status-detail-act{font-weight:600;white-space:nowrap}.status-detail--note .status-detail-act{color:var(--so-ink)}@media(max-width:480px){.status-detail{grid-template-columns:14px 6.5rem minmax(0,1fr);min-height:2.75rem;padding:.25rem 0}.status-detail-text a{display:inline-block;padding:.75rem 0;margin:-.75rem 0}}.status-why{border:0;padding:0;margin:.25rem 0 0;background:transparent;box-shadow:none}.status-why>summary{cursor:pointer;min-height:2.75rem;display:list-item;align-content:center;font-size:.8125rem;color:var(--muted-foreground)}.status-why p{margin:.25rem 0 .5rem}.receipt-note{display:flex;align-items:center;gap:.45rem;font-size:.8125rem;color:var(--foreground)}.receipt-note .status-icon{color:var(--so-ink)}`;
 
 /** A dispatch diagnosis as its stage, for the phone and CLI reads that hold
  * no assignment. A done task is Complete once a person marked its result;

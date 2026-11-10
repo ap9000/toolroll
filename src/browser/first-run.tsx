@@ -171,10 +171,10 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
 
 /** A task's road to Ready (after ReUI's Stepper, read-only): Plan → You approve → Build → Checks → Ready, filled in as it
  * moves. Each step's mark is the shared status glyph: done is green, the step at work blue, the step that waits on a
- * person amber (the only amber), a failure vermilion, a skipped or future step a dashed ring. The words carry it. */
+ * person ink, a failure vermilion, a skipped or future step a dashed ring. The words carry it. */
 const ROAD_GLYPH = (step: JourneyStep): { kind: GlyphKind; className?: string } =>
   step.state === "done" ? { kind: "done" }
-  : step.needsYou === true ? { kind: "decide", className: "text-warning" }
+  : step.needsYou === true ? { kind: "decide", className: "text-foreground" }
   : step.state === "current" ? { kind: "building" }
   : step.state === "stuck" ? { kind: "failed" }
   : { kind: "idle" };

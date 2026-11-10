@@ -143,7 +143,7 @@ export function facts(rows: ReadonlyArray<readonly [key: string, value: HtmlValu
 export const note = (text: HtmlValue): Html => html`<p class="k-note">${text}</p>`;
 /** A refusal or problem, where it happened (role=alert): what went wrong and what didn't change. */
 export const notice = (text: HtmlValue): Html => html`<p class="k-notice" role="alert">${icon("alert", true)}<span>${text}</span></p>`;
-/** One neutral system line (a builder offline, an update): not a failure, never amber. */
+/** One neutral system line (a builder offline, an update): not a failure, never the needs-you mark. */
 export const infoLine = (text: HtmlValue): Html => html`<p class="k-notice info">${text}</p>`;
 export function empty(options: { title: string; text?: string; action?: Html }): Html {
   return html`<div class="k-empty"><p class="k-empty-t">${options.title}</p>${options.text ? html`<p class="k-empty-x">${options.text}</p>` : ""}${options.action ?? ""}</div>`;
@@ -238,7 +238,7 @@ export function approveForm(options: {
 /** The terms line for an act, from the same rules. */
 export const approvalTerms = (kind: ApprovalKind, facts: ApprovalFacts): string => termsOf(kind, facts);
 
-/** Waits that aren't tasks, on their own page (a spend limit, a failed backup): one amber outline, a count, items
+/** Waits that aren't tasks, on their own page (a spend limit, a failed backup): one ink outline, a count, items
  * split by hairlines, each with its one action. They never join the global Needs-you count. */
 export function needsPanel(items: ReadonlyArray<{ title: string; text?: string; action?: Html }>, label = "Needs you"): Html {
   if (items.length === 0) return html``;

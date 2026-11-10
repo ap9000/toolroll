@@ -95,7 +95,7 @@ const CARD_KIND: Record<string, [string, KitIcon]> = {
   review: ["Review", "file"], steer: ["Guidance", "file"], next: ["Queue", "send"], reserve: ["Worker", "file"], hold: ["Hold", "stop"],
   unhold: ["Hold", "send"], answer: ["Decision", "check"], agents: ["Agents", "file"], control: ["Control", "file"], action: ["Action", "file"],
 };
-/** A card's state as one chip: a proposal that waits on this person's confirmation is the amber Needs you. */
+/** A card's state as one chip: a proposal that waits on this person's confirmation is the solid ink Needs you. */
 export function cardChip(card: Pick<BrowserActionCard, "state" | "primary" | "dismissable">): { word: string; tone: ChipTone } {
   switch (card.state) {
     case "pending": return card.primary !== null || card.dismissable ? { word: "Needs you", tone: "needs" } : { word: "Waiting", tone: "" };

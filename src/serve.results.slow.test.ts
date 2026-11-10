@@ -704,7 +704,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(plain).toContain('data-matrix-state="missing"');
     expect(plain).toContain('data-receipt-publication="failed">The last publication attempt failed; no pull request or merge is recorded here.</p>');
     // The failed publication stays in the open, ahead of the tabs (repair 2026-09-14), as the
-    // shared status's amber Pull request row; its exact reason waits one tap away (task-status.ts).
+    // shared status's Pull request note row; its exact reason waits one tap away (task-status.ts).
     expect(plain).toContain('data-status-detail="pull-request" data-mark="note"');
     expect(plain).toContain("Pull request: remote: permission denied The commit is safe locally.");
   });
@@ -2440,7 +2440,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
           expect(html).toMatch(/data-result-attention=|class="problem"|<details class="assignment-notices"><summary>Saved output is partial<\/summary>|data-status-detail="evidence" data-mark="note"/);
         } else {
           // Missing, damaged, and unreadable current material stays expanded.
-          // The shared status names it as an amber Saved evidence row; the exact file waits under Details.
+          // The shared status names it as a Saved evidence note row; the exact file waits under Details.
           expect(html).toMatch(/data-result-attention=|class="problem"|data-status-detail="evidence" data-mark="note"/);
         }
         if (sample.kind !== "shortened") {

@@ -32,7 +32,7 @@ The kit added these System tokens to Signal 1.0.0's (in `src/design/system/token
 
 | Token | Light / dark | For |
 |---|---|---|
-| `--so-needs`, `--so-needs-soft` | the warning amber and its wash | what waits on this person, only |
+| `--so-needs`, `--so-needs-soft` | the signal ink and its wash (no hue) | what waits on this person, only |
 | `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of an outline button, switch track or radio card (audit F6); never a text field's |
 | `--so-field` | `#ececec` / `#232323` | the filled surface of every text field, select and secondary text box |
 | `--so-composer` | `#f2f2f2` / `#242424` | the composer's filled surface, one step off the page |
@@ -78,7 +78,7 @@ its title passes `same` (`docHeader({ same: true })`, `KDocHeader same`) or uses
 
 | Word | `kit.ts` `STATUS` | Tone | Meaning |
 |---|---|---|---|
-| Needs you | `needs` | amber (`k-chip needs`) | waits on this person |
+| Needs you | `needs` | solid ink, no dot (`k-chip needs`) | waits on this person |
 | Running | `running` | blue (`live`) | happening now |
 | Queued | `queued` | neutral | will happen |
 | Finished | `finished` | green (`done`) | done or passed |
@@ -86,16 +86,17 @@ its title passes `same` (`docHeader({ same: true })`, `KDocHeader same`) or uses
 
 A task's headline (`task-status.ts`) maps onto them with `chipOfHeadline` / `statusOfHeadline` (server
 `headlineChip`, React `KHeadlineChip`): Needs you and Ready for review wait on you; Planning and Building run;
-Waiting, Queued and Stopped are neutral (something that waits on someone else is never amber); Complete is finished;
+Waiting, Queued and Stopped are neutral (something that waits on someone else never carries the needs mark); Complete is finished;
 Failed is failed. Inside a Needs-you group the chip names the specific ask in the `ask` tone (`chip("Plan", "ask")`),
 never the group's word again. A more specific running word (Building, Merging) keeps `live`; a more specific finished
 word (Merged, Released) keeps `done`.
 
 **Resource states** (a computer that builds, not work): `RESOURCE` Idle neutral, Building `live`, Offline `failed`.
-Never amber.
+Never the needs tone.
 
-**Amber means "waits on you", only**: the Needs-you chip, the 7px dot, the outline of a waiting `k-slots wait` box
-and the `k-needs` panel. Never warnings, quota, caution, links, decoration or emphasis. The one verb that resolves a
+**The needs mark means "waits on you", only**: the solid ink Needs-you chip, the 7px ink dot, the ink outline of a
+waiting `k-slots wait` box and the `k-needs` panel. It has no hue of its own. Never warnings, quota, caution, links,
+decoration or emphasis; a caution is neutral ink with a caution glyph, never yellow or amber. The one verb that resolves a
 wait is the ink primary.
 
 **One ink primary per screen.** Every other act is outline or ghost. Navigation is never the primary. An irreversible
@@ -168,7 +169,7 @@ breakpoints left controls at 28–32px in between, audit B M4). Every standalone
 has 16px text; no horizontal page scroll at 390px. The top bar becomes the phone header (back or menu · title ·
 one trailing action). The screen's one primary lives in the dock (`dock`, `KDock`), beside the Needs-you button;
 the dock holds filled controls only (the Needs-you button and any secondary act are `--so-composer-control` fills,
-never outlined boxes; the amber dot is its one accent); the card's copy of it is
+never outlined boxes; the ink dot is its one mark); the card's copy of it is
 hidden on a phone when it is marked `docked`. The Settings section nav is hidden, so a settings page links its
 sections from the body.
 
@@ -204,7 +205,7 @@ caller's `menu` items, as a conversation's settings; only what this box supports
 word, then a dimmer secondary word, as "payments-api  Lead"; it opens the project menu, a bottom sheet on a phone),
 any toggle chips (`toggleChip`, as Read code before planning) or small acts (a pill), then the **round send**: an
 arrow up, 36px (44px on a phone), solid ink with a paper arrow once the box has text, the muted control fill while
-empty. Never amber. `gate` (a message box) marks it `aria-disabled` while empty; a form's send stays pressable so an
+empty. `gate` (a message box) marks it `aria-disabled` while empty; a form's send stays pressable so an
 empty press says what is missing next to the box. With Stop it carries its twin: the box's `working` class swaps
 them and the icon morphs (160ms, none under reduced motion). No "Enter sends" hint, no mic without a real feature
 behind it. A project chosen without script is a native select drawn as the chip (`select({ chip: true })`).
@@ -262,7 +263,7 @@ the order of events are identical.
 
 Anything that asks for a decision uses the slots (`slots`, `KSlots`): status (chip + heading) · supporting text ·
 actions · terms, plus the error slot, the same in every state (waiting, approved, automatic, refused) so nothing
-moves. Waiting = `wait` (amber outline). Give the slots `data-approval="<digest>"` on a server page:
+moves. Waiting = `wait` (ink outline). Give the slots `data-approval="<digest>"` on a server page:
 `GuardedHtml` disables a kit approval form (`form.k-approve`) whose approval changed under an open edit, as it does
 for the console's ceremonies.
 

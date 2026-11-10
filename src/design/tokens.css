@@ -41,10 +41,10 @@
   --so-nav-hover: #e4e4e4;
   /* Nav Ink: idle sidebar rows and their hover fill on the frame. */
   --so-nav-ink: #525252;
-  /* Needs You Amber: what waits on this person, and nothing else (the Needs-you chip's dot, a waiting box's outline, the dock's dot). Never a warning, quota, link or decoration. */
-  --so-needs: var(--so-warning);
-  /* The wash behind a Needs-you chip. */
-  --so-needs-soft: var(--so-warning-soft);
+  /* Ink accent: the default accent, used for what waits on a person. */
+  --so-needs: var(--so-signal);
+  /* Ink wash: the fill behind attention badge text and the 3px focus halo around a focused field or composer — one step stronger than the neutral badge fill, so a waiting badge still reads first. */
+  --so-needs-soft: var(--so-signal-soft);
   --so-neutral-ink: #525252;
   /* Neutral Badge: the badge for anything that is a fact and not a claim on the person, such as queued, running or built today in a project peek, or a count in a fold. */
   --so-neutral-soft: #f0f0f0;
@@ -156,7 +156,7 @@
   --so-typography-title-sm-letter-spacing: -0.14px;
   --so-typography-title-sm-line-height: 1.3;
   --so-user-bubble: #f2f2f2;
-  /* Amber: setup trouble and caution. */
+  /* The terminal's yellow only. Pages never use it: cautions are neutral ink. */
   --so-warning: #ab6400;
   --so-warning-soft: #fff4d5;
 }

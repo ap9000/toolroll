@@ -54,7 +54,7 @@ describe("the brief's states", () => {
     expect(status.headline).toBe("Ready for review");
   });
 
-  test("a complete task whose checks failed keeps the failure visible in amber, not red", () => {
+  test("a complete task whose checks failed keeps the failure visible as an ink note, not red", () => {
     const status = taskStatusOf({ stage: "complete", checks: failed, completedBy: "sam" });
     expect(status.headline).toBe("Complete");
     expect(row(status, "checks")).toMatchObject({ text: "Failed (exit 1)", mark: "note", action: { label: "See what failed", href: null } });
@@ -83,7 +83,7 @@ describe("severity", () => {
       }
       // A detail problem that doesn't undo the outcome never changes the headline.
       expect(status.headline).toBe(headlineOf(facts));
-      // Every amber note carries exactly one action.
+      // Every note carries exactly one action.
       for (const one of status.details.filter(detail => detail.mark === "note")) expect(one.action, JSON.stringify(facts)).not.toBeNull();
     }
     expect(count).toBe(stages.length * checks.length * prs.length * requirements.length * evidence.length);

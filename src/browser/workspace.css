@@ -105,9 +105,9 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 /* The demo notice is a quiet one-line label, not a slab above the work. */
 .ui-alert.so-demo-notice { justify-self: start; width: fit-content; max-width: 100%; padding: 4px 10px; border-radius: var(--so-radius-full); background: var(--so-soft); color: var(--so-muted); font-size: 12px; line-height: 1.45; }
 .so-page-content > .so-demo-notice { margin-bottom: var(--so-space-lg); }
-.so-sign-in { background: var(--so-warning-soft); color: var(--so-ink); display: grid; grid-template-columns: 1fr auto; column-gap: var(--so-space-md); align-items: center; }
+.so-sign-in { background: var(--so-neutral-soft); color: var(--so-ink); display: grid; grid-template-columns: 1fr auto; column-gap: var(--so-space-md); align-items: center; }
 .so-sign-in p { margin: 0; grid-column: 1; }
-.so-sign-in-title { font-weight: 650; color: var(--so-warning); }
+.so-sign-in-title { font-weight: 650; color: var(--so-ink); }
 .so-sign-in-detail { color: var(--so-ink); }
 .so-sign-in code { font-size: 12px; }
 .so-sign-in form { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
@@ -180,7 +180,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-composer-hint { position: absolute; left: 0; right: 0; bottom: 1px; margin: 0; padding: 0 44px; color: var(--so-muted); font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; visibility: hidden; }
 .so-composer-area:has(#lead-message:focus:placeholder-shown) .so-composer-hint, .so-composer-hint[data-warning] { visibility: visible; }
 .so-composer-hint[data-warning] { color: var(--so-ink); }
-.so-connection { display: flex; gap: var(--so-space-sm); align-items: center; justify-content: space-between; color: var(--so-warning); background: var(--so-warning-soft); padding: 10px var(--so-space-md); border-radius: var(--so-radius-md); margin-bottom: 10px; font-size: 12px; }
+.so-connection { display: flex; gap: var(--so-space-sm); align-items: center; justify-content: space-between; color: var(--so-ink); background: var(--so-neutral-soft); padding: 10px var(--so-space-md); border-radius: var(--so-radius-md); margin-bottom: 10px; font-size: 12px; }
 .so-connection > span { min-width: 0; overflow-wrap: anywhere; }
 .so-conversation-settings { margin: 9px 2px 0; font-size: 11px; }
 .so-conversation-settings > summary { padding: 2px 0; font-size: 11px; }
@@ -230,7 +230,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 @media (hover: hover) and (pointer: fine) { .so-project-state > a:hover, .so-project-tasks a:hover { background: var(--so-raised); } }
 .so-needs-chip { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; border: 1px solid var(--so-attention); border-radius: 999px; background: transparent; color: var(--so-attention); font-size: 13px; white-space: nowrap; }
 .so-usage-chip { display: block; margin: 0 10px var(--so-space-sm); padding: 4px 8px; border: 1px solid var(--so-line); border-radius: 6px; font: 400 11px/1.4 var(--so-mono); color: var(--so-muted); text-decoration: none; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.so-usage-chip[data-usage-chip="warning"] { color: var(--so-warning); border-color: var(--so-warning); }
+.so-usage-chip[data-usage-chip="warning"] { color: var(--so-ink); border-color: var(--so-neutral-ink); font-weight: 600; }
 .so-usage-chip[data-usage-chip="danger"] { color: var(--so-danger); border-color: var(--so-danger); }
 .so-usage-chip[data-usage-stale] { border-style: dashed; opacity: .75; }
 @media (hover: hover) and (pointer: fine) { .so-usage-chip:hover { color: var(--so-ink); } }
@@ -280,7 +280,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-task-context + .ui-artifact { margin-top: 22px; }
 .so-native-region { min-width: 0; overflow-wrap: anywhere; }
 .so-native-region > .ui-alert { margin-bottom: var(--so-space-md); }
-.so-deferred { margin: 0 0 var(--so-space-md); background: var(--so-warning-soft); color: var(--so-warning); border-radius: var(--so-radius-md); padding: 10px var(--so-space-md); font-size: 12px; }
+.so-deferred { margin: 0 0 var(--so-space-md); background: var(--so-neutral-soft); color: var(--so-ink); border-radius: var(--so-radius-md); padding: 10px var(--so-space-md); font-size: 12px; }
 .so-native-region .eyebrow { text-transform: none; letter-spacing: normal; font-family: var(--so-font); font-size: 11px; }
 .so-native-region :where(.card, .pane) { box-shadow: none; border-radius: var(--so-radius); }
 .so-native-region .card { background: var(--so-paper); color: var(--so-ink); }
@@ -692,7 +692,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-phone-others a, .so-phone-options .so-first-run-choice-hint a { color: var(--so-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--so-input-line); }
 
 /* A task's road to Ready (after ReUI's Stepper, read-only): a glyph per step on a hairline, the words under it. The
-   glyph carries the hue (components/ui/status-glyph.tsx); amber only on the step that waits on a person. */
+   glyph carries the hue (components/ui/status-glyph.tsx); ink on the step that waits on a person. */
 .first-task-journey { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 0 var(--so-space-lg); padding: 0; list-style: none; }
 .first-task-journey li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; text-align: center; font-size: 12px; font-weight: 500; line-height: 1.3; color: var(--so-muted); }
 .first-task-journey li::before { content: ""; position: absolute; top: 6.5px; right: calc(50% + 11px); left: calc(-50% + 11px); height: 1px; background: var(--so-line); }
@@ -707,7 +707,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .first-task-journey-mark:empty { box-sizing: border-box; border: 1.5px solid var(--so-input-line); border-radius: 50%; background: var(--so-paper); }
 .first-task-journey li[data-state="done"] .first-task-journey-mark:empty { border-color: var(--so-success); background: var(--so-success); }
 .first-task-journey li[data-state="current"] .first-task-journey-mark:empty { border-color: var(--so-info); box-shadow: inset 0 0 0 2.5px var(--so-paper); background: var(--so-info); }
-.first-task-journey li[data-step="approve"][data-state="current"] .first-task-journey-mark:empty { border-color: var(--so-warning); background: var(--so-warning); }
+.first-task-journey li[data-step="approve"][data-state="current"] .first-task-journey-mark:empty { border-color: var(--so-needs); background: var(--so-needs); }
 .first-task-journey li[data-state="stuck"] .first-task-journey-mark:empty { border-color: var(--so-ink); background: var(--so-ink); }
 @media (max-width: 760px) {
   .first-task-journey li { font-size: 11.5px; }

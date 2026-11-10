@@ -4,7 +4,7 @@
   "name": "KNeedsPanel",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "Waits that aren't tasks (a spend limit, a failed backup), on their own page: one amber outline, a count, one action each. Never part of the global Needs-you count.",
+  "summary": "Waits that aren't tasks (a spend limit, a failed backup), on their own page: one ink outline, a count, one action each. Never part of the global Needs-you count.",
   "source": {
     "file": "k-needs-panel.tsx",
     "export": "KNeedsPanel",
