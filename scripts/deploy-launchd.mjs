@@ -41,9 +41,11 @@ const WATCHED = new Set(["pid", "path", "state", "arguments"]);
  * `launchctl print <target>` output, read strictly: `{ state, pid, path, arguments }` with pid null when no pid line is
  * printed, or null when the text is not exactly one well-formed block for `target`. Refused: a first line other than
  * `<target> = {`; indentation that is not exactly one tab per level; trailing whitespace; an unbalanced or truncated
- * block; anything after it; a `pid`, `path`, `state` or `arguments` field below the top level or given twice; a missing
- * `path`, `state` or `arguments`; those fields out of launchd's order (path, state, arguments, pid); a pid that is not
- * a plain number above 1; an empty argument list.
+ * block; anything after it; a top-level `pid`, `path`, `state` or `arguments` field given twice; a missing `path`,
+ * `state` or `arguments`; those fields out of launchd's order (path, state, arguments, pid); a pid that is not a plain
+ * number above 1; an empty argument list. Only the job's own fields, one tab deep, are read: a field of the same name
+ * inside a nested block (launchd prints `state = active` inside `resource coalition` and `jetsam coalition`) belongs
+ * to that block and is never taken for the job's.
  */
 export function parseLaunchdPrint(text, target) {
   if (typeof text !== "string" || typeof target !== "string" || target === "") return null;
@@ -73,8 +75,8 @@ export function parseLaunchdPrint(text, target) {
     const split = rest.indexOf(" = ");
     const key = split > 0 ? rest.slice(0, split) : null;
     const value = split > 0 ? rest.slice(split + 3) : null;
-    if (key !== null && WATCHED.has(key)) {
-      if (depth !== 1 || Object.hasOwn(found, key)) return null;
+    if (key !== null && depth === 1 && WATCHED.has(key)) {
+      if (Object.hasOwn(found, key)) return null;
       if (key === "arguments") { if (value !== "{") return null; args = []; found.arguments = args; argsDepth = depth + 1; depth++; order.push(key); continue; }
       if (value === "{" || value === "") return null;
       found[key] = value;

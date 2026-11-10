@@ -34,6 +34,7 @@ const WHY = {
   changed: 'the service changed while recovery was checking it',
   answered: 'its console answered http://127.0.0.1:4180/healthz',
   unsure: 'a check of the service did not finish or could not run',
+  late: 'the checks took longer than recovery allows',
   unwritten: 'its record of the stop could not be written',
 };
 const STOPPING = (pid: number) => `Stopping the new service: it is loaded but has not started all its processes for ${HEALTH_WAIT_MS / 1000} seconds (process ${pid}).`;
@@ -113,6 +114,9 @@ const T2: Row[] = [
   { name: 'new and previous runtimes that are one folder through a link', arrange: d => { rmSync(d.nextDist, { recursive: true }); symlinkSync(d.priorDist, d.nextDist); }, why: WHY.sameRuntime },
   { name: 'a runtime whose real path cannot be read', arrange: d => rmSync(d.nextDist, { recursive: true }), why: WHY.runtime },
   { name: 'a process of the previous runtime', arrange: d => { d.services.extraRows.push(row(fakePid(32), 1, d.serviceArgs(d.priorDist).slice(2).join(' '))); }, why: WHY.prior },
+  // F6 excuses only the observed new service's own supervisor and `up`: anything else naming this database refuses.
+  { name: 'a process on this database whose command shows no runtime folder', arrange: d => { d.services.extraRows.push(row(fakePid(40), 1, `${NODE} cli.js up --db ${d.database}`)); }, why: WHY.prior },
+  { name: 'a child of the new service that names this database but is not its `up`', arrange: d => { d.services.extraRows.push(row(fakePid(41), d.services.failed[0]!, `/bin/sh -c exec ${NODE} cli.js up --db ${d.database}`)); }, why: WHY.prior },
   { name: 'a console that answers /healthz', arrange: d => { d.hooks.spawn = name => name === 'curl -fsS' ? { status: 0, stdout: '{"status":"ok"}' } : undefined; }, why: WHY.answered },
 ];
 
@@ -426,4 +430,53 @@ test('T20: finish keeps its contract: a starting journal without the launchd rec
     expect(d.journals['started']).toMatchObject({ phase: 'started', newService: d.services.new });
     expect([d.journal().phase, d.gateOwned(), d.services.running, effects(d)]).toEqual(['deployed', false, 'new', []]);
   } finally { d.close(); }
+});
+
+test('T23: time running out during the last checks stops nothing; no call begins past the deadline and each is cut to the time left', async () => {
+  // After the wait 135 s are left (the bootout's 75 s and a margin of 60 s).
+  for (const [name, at, jump, ran] of [
+    ['before the last checks', null, 600_000, []],
+    ['past the deadline during the listing', 'ps -A', 600_000, ['ps -A']],
+    ['less than a bootout left at launchd\'s answer', 'launchctl print', 70_000, ['ps -A', 'curl -fsS', 'launchctl print']],
+  ] as const) {
+    const d = await stuck();
+    try {
+      const clock = d.hooks.now!, after: string[] = [];
+      let ahead = 0, requested = false;
+      d.hooks.now = () => clock()! + ahead;
+      d.hooks.durable = (_file, r, write) => { write(); if (r.newServiceStop?.state === 'requested') { requested = true; if (at === null) ahead = jump; } };
+      d.hooks.spawn = name => { if (requested) { after.push(name); if (name === at) ahead = jump; } return undefined; };
+      expect([name, await failure(d.asRecover().proveStartFailed())]).toEqual([name, because(WHY.late)]);
+      expect([name, after, effects(d), d.journal().phase]).toEqual([name, ran, [], 'starting']);
+      expect(d.journal().newServiceStop).toMatchObject({ state: 'failed', acted: false, reason: WHY.late });
+    } finally { d.close(); }
+  }
+  // Five seconds left: the calls that still begin may run no longer than that.
+  const d = await stuck();
+  try {
+    const clock = d.hooks.now!, timeouts: [string, number][] = [];
+    let ahead = 0, requested = false;
+    d.hooks.now = () => clock()! + ahead;
+    d.hooks.durable = (_file, r, write) => { write(); if (r.newServiceStop?.state === 'requested') requested = true; };
+    d.hooks.spawn = (name, _args, options) => { if (requested) { timeouts.push([name, options?.timeout]); if (name === 'ps -A') ahead = 130_000; } return undefined; };
+    expect(await failure(d.asRecover().proveStartFailed())).toBe(because(WHY.late));
+    expect(timeouts).toEqual([['ps -A', 10_000], ['curl -fsS', 5_000], ['launchctl print', 5_000]]);
+    expect(effects(d)).toEqual([]);
+  } finally { d.close(); }
+});
+
+test('T24: recovery interrupted while the intent is written, or during launchd\'s last answer, stops nothing', async () => {
+  for (const [at, ran] of [['the intent', []], ['launchctl print', ['ps -A', 'curl -fsS', 'launchctl print']]] as const) {
+    const d = await stuck();
+    try {
+      const after: string[] = [];
+      let requested = false;
+      const interrupt = () => d.cancellation.abort(Error('Deployment interrupted by SIGTERM.'));
+      d.hooks.durable = (_file, r, write) => { write(); if (r.newServiceStop?.state === 'requested' && !requested) { requested = true; if (at === 'the intent') interrupt(); } };
+      d.hooks.spawn = name => { if (requested) { after.push(name); if (name === at) interrupt(); } return undefined; };
+      expect([at, await failure(d.asRecover().proveStartFailed())]).toEqual([at, 'Deployment interrupted by SIGTERM.']);
+      expect([at, after, effects(d), d.journal().phase]).toEqual([at, ran, [], 'starting']);
+      expect(d.journal().newServiceStop).toMatchObject({ state: 'failed', acted: false, reason: 'recovery was interrupted' });
+    } finally { d.close(); }
+  }
 });

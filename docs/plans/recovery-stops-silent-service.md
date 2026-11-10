@@ -175,12 +175,18 @@ sentence appended naming the fact (section 11).
 - `realpath` of `nextDist`, `priorDist` and `r.priorRuntime` must all be readable. The real `nextDist` must differ
   from the real previous runtimes and must lie inside the real stage folder. String inequality is not enough, because
   `commandKind` matches both spellings of a runtime (`deploy-stop.mjs:8`–`:14`).
-- `leftFrom(priorDist)` and `leftFrom(r.priorRuntime)` are empty (`deploy-stop.mjs:101`–`:107`).
+- `leftFrom(priorDist)` and `leftFrom(r.priorRuntime)` are empty (`deploy-stop.mjs:101`–`:107`), with one row
+  excused. `leftFrom` counts any command that has `up --db <database>`, so read literally it always finds the new
+  service itself and the stop could never act. The excused row is a process of the observed new service's own tree
+  (matched by pid and start time) whose command is exactly the new runtime's supervisor or `up` on this database.
+  Every other row refuses, including a command that names this database without showing a runtime folder (for
+  example `node cli.js up --db <database>` started from inside a previous runtime's folder).
 
 ### F7. The new service never started completely, as watched by this run
 
 - For `HEALTH_WAIT_MS`, once a second, as `observeStart` does (`deploy-phases.mjs:538`): the label stays loaded with
-  the same pid and path, and `service(nextDist)` stays null.
+  the same pid and path, and `service(nextDist)` stays null. The watch also ends on the clock after `HEALTH_WAIT_MS`,
+  so slow checks on a busy machine do not use up the time the last checks and the act need.
 - Also refuse if `http://127.0.0.1:<port>/healthz` answers `{"status":"ok"}` at any point (the check
   `restorePriorService` uses, `:317`–`:318`). This can only add refusals.
 - A complete structure appearing, a new pid, or a changed path keeps the journal at `starting`. A complete structure
@@ -258,7 +264,13 @@ A new function in `browserDeployment`, called from `proveStartFailed` after the 
   `PATH`, and `LC_ALL=C`.
 - `service()` (`deploy-browser.mjs:164`) uses `execFileSync` with no timeout. It gains an optional runner argument;
   the stop passes the bounded helper. `swap` and `finish` keep calling it as today.
-- One overall deadline for the whole function: wait (120 s) + absence (75 s) + 60 s margin. Every loop checks it.
+- One deadline for everything before the act: wait (120 s) + one bounded bootout (75 s) + 60 s margin, counted from
+  the start of the function. No call begins after it, and a call's own timeout is cut to the time left. The loop, the
+  start of C, the listing and the last structure read check it. The act begins only if a whole bounded bootout
+  (75 s) still fits. After the act, absence is watched for its own 75 s.
+- Interruption: every call here is synchronous, so a stop signal is only seen after a turn of the event loop. The
+  function takes one such turn, then checks the lock and the signal, at the end of A, at the start of C, and after
+  the last `launchctl print`. Nothing is read between that last check and the bootout.
 - A timeout, a signal, `status: null`, a spawn error, or a `print` status other than 0 or 113 is **uncertain**: the
   intent is kept, nothing is restored, and a plain message is printed (section 11).
 
@@ -283,8 +295,11 @@ C. Last checks, in this order, each bounded:
    5. `curl /healthz` does not answer ok.
    6. `service(nextDist)` is null. This is the last structure read.
    7. `launchctl print` once more: same pid, `state = running`, same path and arguments. This is the last read.
+   8. No read: the lock and the stop signal are checked after one turn of the event loop, and a whole bounded
+      bootout must still fit before the deadline.
 
    Any failure: set `state: "failed"`, `acted: false`, with the reason, write the journal, keep the manual message.
+   An interruption is recorded the same way (reason "recovery was interrupted") and ends the run.
 
 D. `launchctl bootout gui/${uid}/${label}`, bounded.
 
@@ -294,7 +309,7 @@ E. Exit status 0: go to F. A numeric non-zero status: set `state: "failed"`, `ac
    fixed short reason (never raw stderr), write the journal, print the message, and stop. Do not look for absence in
    this run (Q4). A timeout, signal or spawn error: `state: "uncertain"`, same handling.
 
-F. Wait for absence, observed, within the deadline:
+F. Wait for absence, observed, for at most 75 s after the act:
    - poll `launchctl print` until it exits 113;
    - every recorded `{ pid, start }` is gone: no process has that pid with that start time. A pid now held by a
      process with a different start time counts as gone, because the recorded process has exited. The same start
@@ -489,10 +504,20 @@ placement fact (F1) holds, and the temp root's name passes the "Toolroll's own" 
   reaches `started` and `deployed` (extends `:1013`).
 - **T21. Release gate.** A pre-swap journal carrying `launchd` or `newServiceStop` is refused as contradictory, in the
   style of the existing release-gate tests.
-- **T22. Parsers** (`src/deploy-launchd.test.ts`, fast): scrubbed real `launchctl print` output parses; duplicate or
-  nested `pid`, `path`, `state` or `arguments` fields, a truncated or unbalanced block, reordered fields and odd
+- **T22. Parsers** (`src/deploy-launchd.test.ts`, fast): a made-up `launchctl print` block in launchd's layout as
+  publicly reported parses. No output was captured from a real machine: the canary is what would show the real
+  text. Only the job's own fields, one tab deep, are read; a field of the same name inside a nested block (launchd
+  prints `state = active` inside `resource coalition` and `jetsam coalition`) is that block's and is ignored. A
+  duplicate top-level `pid`, `path`, `state` or `arguments`, a truncated or unbalanced block, reordered fields and odd
   whitespace return null; `ProgramArguments` with a duplicate key, a nested array, an unknown entity, or an argument
   with a line break returns null.
+- **T2, two more rows.** A process on this database whose command shows no runtime folder, and a child of the new
+  service that names this database but is not its `up`: both refuse as a previous-version process.
+- **T23. Time running out during the last checks.** Before C, during the listing, and with less than a bootout's
+  time left at launchd's last answer: no bootout, `failed`, `acted: false`. No call begins past the deadline, and a
+  call's timeout is cut to the time left.
+- **T24. Interrupted.** A stop signal while the intent is written, or during the last `launchctl print`: no bootout,
+  `failed`, `acted: false`, reason "recovery was interrupted".
 
 ### Real-launchd canary (only with the owner's explicit yes)
 
@@ -565,3 +590,19 @@ request then says plainly that the launchd lifecycle itself (bootout timing, exi
 | 8 | Medium | Tests miss dangerous boundaries; a `sleep` canary cannot pass the argv check. | Adopted. Cases T2–T22 added; the real exit proof runs on fake listings; the canary uses an idle fake supervisor with a matching command line, owner's yes only. | §12 |
 | 9 | Medium | A shared helper could change `finish`; the release gate lacks the new fields. | Adopted. `installedIsOurs` unchanged; `SWAP_FIELDS` gains both fields; T20, T21. | §4 F3, §10, §12 |
 | 10 | Low | Overclaims (structure vs answering, finish writes, timeline best effort, environment not compared, partial bootout effects); two citations wrong. | Adopted. Wording fixed throughout; citations now `:241` and `:238`; "nothing else changed" qualified. | §1, §2, §4 F4, §8, §11 |
+
+## 16. Ledger: Codex review of the implementation (NO-GO, 4 findings)
+
+This was the second and last review round for this change. The fixes below were made and tested after it and have
+not been reviewed again.
+
+| # | Severity | Finding | Fix | Where |
+| --- | --- | --- | --- | --- |
+| 1 | High | The previous-version check dropped any process that names this database unless its command showed a previous runtime folder, so a bootout could happen while a previous-version process was still running. | Only the observed new service's own supervisor and `up` are excused (by pid, start time and exact command). Everything else refuses. | §4 F6; T2 rows |
+| 2 | Medium | The parser refused launchd's real output, which has `state = active` inside its coalition blocks, so the stop could never act. | Only the job's own top-level fields are read; same-named fields in nested blocks are ignored. The sample now has both coalition blocks. | T22 |
+| 3 | Medium | The deadline was only checked at the start of the last checks; they could use up the time and still reach the bootout. | No call begins after the deadline, call timeouts are cut to the time left, and the act needs a whole bootout's time. | §8 bounds, C8; T23 |
+| 4 | Medium | No interruption check between the intent and the act. | One event-loop turn plus the lock and signal checks at the end of A, the start of C and after the last read. | §8 bounds, C8; T24 |
+
+Still not proved, and named in the pull request: the real launchd lifecycle (the canary, with the owner's yes); the
+text of a real `launchctl print` (the sample is made up); failures inside the real bounded structure reader (the
+fixture replaces `service`).

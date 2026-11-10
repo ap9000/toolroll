@@ -9,7 +9,7 @@ import { dirname, join, sep } from "node:path";
 import { observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment, ledgerStaleCodingRelease } from "./deploy-coding.mjs";
 import { FORWARD_ONLY, NEEDS_NO_RECOVERY, assertDeployPhase, stoppedWhereNothingChanged } from "./deploy-phase-table.mjs";
 import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
-import { commandKind, listProcesses, recordedStillRunning, serviceProcesses, spellings } from "./deploy-stop.mjs";
+import { commandKind, listProcesses, recordedStillRunning, serviceProcesses } from "./deploy-stop.mjs";
 import { ABSENCE_MS, BOOTOUT_MS, CALL_MS, boundedRunner, mergeRecorded, ownStateFolder, parseLaunchdPrint, programArguments, recordedLeft, treeOf, uncertain } from "./deploy-launchd.mjs";
 
 export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -316,8 +316,17 @@ export function browserDeployment({
   // ever signalled here: the recorded `{ pid, start }` set is only a list of processes that must be proved gone.
   /** Every subprocess the stop runs is bounded (plan §8): a timeout per call, a fixed PATH and locale. */
   const bounded = boundedRunner(spawnSync);
-  /** One whole process listing through a bounded `ps` (deploy-stop.mjs listProcesses), or null. */
-  const listed = () => listProcesses((command, args, options) => { try { return spawnSync(command, args, { ...options, timeout: CALL_MS }); } catch (error) { return { status: null, error }; } });
+  /** While a stop runs, the time by which its checks and its act must have begun (plan §8); Infinity otherwise. No
+   * bounded call begins after it, and a call's own timeout never runs past it. */
+  let stopBy = Infinity;
+  const remaining = () => stopBy - now();
+  /** One whole process listing through a bounded `ps` (deploy-stop.mjs listProcesses), or null (also once the stop's
+   * time is up). */
+  const listed = () => {
+    const left = remaining();
+    if (!(left > 0)) return null;
+    return listProcesses((command, args, options) => { try { return spawnSync(command, args, { ...options, timeout: Math.max(1, Math.min(CALL_MS, left)) }); } catch (error) { return { status: null, error }; } });
+  };
   /** A refusal of the stop, before its act: nothing was stopped. `reason` is the fixed reason the journal keeps. */
   class Kept extends Error { constructor(message, reason) { super(message); this.reason = reason; } }
   /** A call whose outcome is not known: a timeout, a signal, a spawn error or an exit status it can't read. */
@@ -352,8 +361,18 @@ export function browserDeployment({
   const bootoutError = status => `launchctl bootout returned an error (exit ${status}), so it is not known whether the new service stopped. Recovery did nothing more and the journal stays at starting. Run the release again: it checks again before doing anything.`;
   const unrecorded = "The new service stopped, but recovery could not record that. Nothing was put back and the journal stays at starting. Run the release again.";
   const target = `gui/${uid}/${label}`;
-  /** A bounded call with a numeric exit status, or Unsure. */
-  const call = (command, args, ms = CALL_MS) => { const out = bounded(command, args, ms); if (uncertain(out)) throw new Unsure(command); return out; };
+  /** A bounded call with a numeric exit status, or Unsure. Refused once the stop's time is up; its timeout is never
+   * longer than the time the stop has left. */
+  const call = (command, args, ms = CALL_MS) => {
+    const left = remaining();
+    if (!(left > 0)) throw keep(WHY.late);
+    const out = bounded(command, args, Math.max(1, Math.min(ms, left)));
+    if (uncertain(out)) throw new Unsure(command);
+    return out;
+  };
+  /** One turn of the event loop, then the lock and cancellation checks: every call here is synchronous, so a stop
+   * signal that arrived during one is only seen after a turn. */
+  const turn = () => settle(sleep(0));
   const lstatOrNull = path => { try { return lstatSync(path); } catch { return null; } };
   const plainFile = path => { try { const stat = lstatSync(path); return stat.isFile() && !stat.isSymbolicLink(); } catch { return false; } };
   const write = r => { assertLocked(); oldRt.update.durableJson(journalFile, r); };
@@ -397,14 +416,15 @@ export function browserDeployment({
     if (next === prior || next === recorded) return WHY.sameRuntime;
     return next.startsWith(stage + sep) ? null : WHY.outside;
   };
-  /** F6: a process of the previous runtime on this database, as leftFrom tells it (deploy-stop.mjs serviceProcesses),
-   * except a row it counts only because its command has `up --db <database>` without naming the previous runtime:
-   * that is the new service itself. */
-  const priorRunning = (rows, r) => {
-    const dists = [...new Set([priorDist, r.priorRuntime])];
-    const folders = spellings(dists).map(dist => `${dist}/`);
-    const found = serviceProcesses(rows, { dists, database });
-    return found.targets.length > 0 || found.unproven.some(row => folders.some(folder => row.command.includes(folder)));
+  /** F6: a process of the previous runtime on this database, as leftFrom tells it (deploy-stop.mjs serviceProcesses):
+   * every row it finds, proved or only naming the previous runtime or this database. One kind of row is excused,
+   * because serviceProcesses counts any command with `up --db <database>`: a process of the observed new service's
+   * own tree (`tree`, by pid and start time) whose command is exactly the new runtime's supervisor or `up` on this
+   * database. Anything else that names this database, whatever folder its command shows, refuses. */
+  const priorRunning = (rows, r, tree) => {
+    const found = serviceProcesses(rows, { dists: [...new Set([priorDist, r.priorRuntime])], database });
+    const ours = row => tree.some(one => one.pid === row.pid && one.start === row.start) && ["supervisor", "up"].includes(commandKind(row.command, { dist: nextDist, database }));
+    return found.targets.length > 0 || found.unproven.some(row => !ours(row));
   };
   const pausedByUs = r => {
     try { const db = openDeploymentDatabase(database, { readOnly: true }); try { return oldRt.gate.updateGateOwned(db, r.id) === true; } finally { db.close(); } }
@@ -441,7 +461,7 @@ export function browserDeployment({
     if (top === undefined || top.ppid !== 1 || commandKind(top.command, { dist: nextDist, database }) !== "supervisor") throw keep(WHY.notOurs);
     const tree = treeOf(rows, pid);
     if (tree === null) throw keep(WHY.tree);
-    if (priorRunning(rows, r)) throw keep(WHY.prior);
+    if (priorRunning(rows, r, tree)) throw keep(WHY.prior);
     return { rows, top, tree };
   };
   const healthy = () => {
@@ -480,8 +500,12 @@ export function browserDeployment({
    * Returns once absence is proved and recorded; otherwise throws the words to say, with nothing restored.
    */
   async function stopNewService(r) {
-    const deadline = now() + HEALTH_WAIT_MS + ABSENCE_MS + 60_000;
-    const late = () => now() > deadline;
+    // The checks and the act must begin within the wait, one bounded bootout and a margin (plan §8).
+    stopBy = now() + HEALTH_WAIT_MS + BOOTOUT_MS + 60_000;
+    try { return await stopWithin(r); } finally { stopBy = Infinity; }
+  }
+  async function stopWithin(r) {
+    const late = () => !(remaining() > 0);
     let def, first, observed, stage;
     // A: the facts, and the wait.
     try {
@@ -499,8 +523,10 @@ export function browserDeployment({
       if (runtime !== null) throw keep(runtime);
       first = loadedAsDefined(def);
       const start = observe(first.pid, r).top.start;
-      // F7: watched by this run for as long as the swap would have waited, once a second.
-      for (let i = 0; i < HEALTH_WAIT_MS / 1000; i++) {
+      // F7: watched by this run for as long as the swap would have waited, once a second. The watch ends on the clock
+      // too, so slow checks on a busy machine do not use up the time the last checks and the act need.
+      const watched = now() + HEALTH_WAIT_MS;
+      for (let i = 0; i < HEALTH_WAIT_MS / 1000 && now() < watched; i++) {
         if (late()) throw keep(WHY.late);
         if (service(nextDist, serviceCall) !== null) throw completed();
         stillSame(first, def);
@@ -510,6 +536,7 @@ export function browserDeployment({
       if (late()) throw keep(WHY.late);
       observed = observe(first.pid, r);
       if (observed.top.start !== start) throw keep(WHY.changed);
+      await turn();
     } catch (error) { throw refusal(error); }
 
     // B: the intent, with every recorded process, written before the act.
@@ -524,24 +551,32 @@ export function browserDeployment({
 
     // C: the last checks, in order; the structure read and then launchd's own answer are the last reads before the act.
     try {
+      // A stop signal that arrived while the intent was being written is seen before any of the last checks.
+      await turn();
       if (late()) throw keep(WHY.late);
       const again = definition(r.launchd);
       if (again === null || again.text !== def.text) throw keep(WHY.definition);
       if (!pausedByUs(r)) throw keep(WHY.pause);
       const runtime = runtimes(r, stage);
       if (runtime !== null) throw keep(runtime);
+      if (late()) throw keep(WHY.late);
       const rows = listed();
       if (rows === null) throw keep(WHY.tree);
-      if (priorRunning(rows, r)) throw keep(WHY.prior);
       const top = rows.find(row => row.pid === first.pid);
       if (top === undefined || top.start !== observed.top.start || top.ppid !== 1 || commandKind(top.command, { dist: nextDist, database }) !== "supervisor") throw keep(WHY.changed);
       const tree = treeOf(rows, first.pid);
       if (tree === null) throw keep(WHY.tree);
+      if (priorRunning(rows, r, tree)) throw keep(WHY.prior);
       // A process not in the recorded set may be the service completing its structure.
       if (tree.some(one => !r.newServiceStop.pids.some(kept => kept?.pid === one.pid && kept?.start === one.start))) throw keep(WHY.changed);
       if (healthy()) throw keep(WHY.answered);
+      if (late()) throw keep(WHY.late);
       if (service(nextDist, serviceCall) !== null) throw completed();
       stillSame(first, def);
+      // No read follows launchd's answer. A stop signal that arrived during these synchronous checks is seen here, and
+      // the act begins only while this run still holds the lock and a whole bounded bootout still fits its time.
+      await turn();
+      if (remaining() < BOOTOUT_MS) throw keep(WHY.late);
     } catch (error) {
       const kept = refusal(error);
       settleRecord(r, { state: "failed", acted: false, reason: kept instanceof Kept ? kept.reason : "recovery was interrupted" });
@@ -560,8 +595,9 @@ export function browserDeployment({
       settleRecord(r, { state: "failed", acted: true, exitStatus: out.status, reason: "launchctl bootout returned an error" });
       throw Error(bootoutError(out.status));
     }
-    // F: absence, observed, within the deadline.
-    const until = Math.min(deadline, now() + ABSENCE_MS);
+    // F: absence, observed, for a bounded time after the act.
+    const until = now() + ABSENCE_MS;
+    stopBy = until + CALL_MS;
     let left;
     try {
       for (;;) {

@@ -1,6 +1,7 @@
 // T22 (docs/plans/recovery-stops-silent-service.md): the strict readers the stop of a new service relies on. The sample
-// is a scrubbed `launchctl print` block in launchd's own layout (tabs per level, path/state/arguments/pid in order);
-// no output was captured from a real machine for it, and every name and path in it is made up.
+// is a made-up `launchctl print` block in launchd's layout as publicly reported (tabs per level; path, state, arguments
+// and pid in order; `state = active` inside the two coalition blocks). No output was captured from a real machine for
+// it, and every name, id and path in it is made up.
 import { describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,6 +55,22 @@ const SAMPLE = [
   "\tproxy started suspended = 0",
   "\tlast exit code = (never exited)",
   "",
+  "\tresource coalition = {",
+  "\t\tID = 1201",
+  "\t\ttype = resource",
+  "\t\tstate = active",
+  "\t\tactive count = 1",
+  "\t\tname = com.example.browser",
+  "\t}",
+  "",
+  "\tjetsam coalition = {",
+  "\t\tID = 1202",
+  "\t\ttype = jetsam",
+  "\t\tstate = active",
+  "\t\tactive count = 1",
+  "\t\tname = com.example.browser",
+  "\t}",
+  "",
   "\tspawn type = daemon (3)",
   "\tjetsam priority = 40",
   "\tjetsam memory limit (active) = (unlimited)",
@@ -82,10 +99,6 @@ describe("launchctl print, read strictly", () => {
     ["a duplicate path", swap("\ttype = LaunchAgent\n", "\ttype = LaunchAgent\n\tpath = /opt/example/other.plist\n")],
     ["a duplicate state", swap("\tstate = running\n", "\tstate = running\n\tstate = running\n")],
     ["a duplicate arguments block", swap("\tworking directory", "\targuments = {\n\t\t/bin/sh\n\t}\n\tworking directory")],
-    ["a nested pid", swap("\t\tXPC_SERVICE_NAME => com.example.browser\n", `\t\tXPC_SERVICE_NAME => com.example.browser\n\t\tpid = ${fakePid(3)}\n`)],
-    ["a nested path", swap("\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n", "\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n\t\tpath = /opt/example/other.plist\n")],
-    ["a nested state", swap("\t\tSSH_AUTH_SOCK", "\t\tstate = running\n\t\tSSH_AUTH_SOCK")],
-    ["a nested arguments block", swap("\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n", "\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n\t\targuments = {\n\t\t\t/bin/sh\n\t\t}\n")],
     ["a block inside the arguments", swap("\t\tup\n", "\t\tup = {\n\t\t}\n")],
     ["a truncated block", SAMPLE.slice(0, SAMPLE.indexOf("\tspawn type"))],
     ["an unclosed arguments block", swap("\t\t/opt/example/state/orders.db\n\t}\n", "\t\t/opt/example/state/orders.db\n")],
@@ -106,6 +119,22 @@ describe("launchctl print, read strictly", () => {
     ["empty arguments", swap(`\targuments = {\n${ARGS.map(arg => `\t\t${arg}\n`).join("")}\t}\n`, "\targuments = {\n\t}\n")],
     ["CRLF line ends", SAMPLE.replaceAll("\n", "\r\n")],
   ];
+  // Only the job's own fields are read: launchd itself prints `state = active` inside its coalition blocks.
+  const nested: [string, string][] = [
+    ["a nested pid", swap("\t\tXPC_SERVICE_NAME => com.example.browser\n", `\t\tXPC_SERVICE_NAME => com.example.browser\n\t\tpid = ${fakePid(3)}\n`)],
+    ["a nested path", swap("\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n", "\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n\t\tpath = /opt/example/other.plist\n")],
+    ["a nested state", swap("\t\tSSH_AUTH_SOCK", "\t\tstate = running\n\t\tSSH_AUTH_SOCK")],
+    ["a nested arguments block", swap("\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n", "\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin\n\t\targuments = {\n\t\t\t/bin/sh\n\t\t}\n")],
+  ];
+  test.each(nested)("%s is the nested block's own field, never the job's", (_name, text) => {
+    expect(parseLaunchdPrint(text, TARGET)).toEqual(parseLaunchdPrint(SAMPLE, TARGET));
+    expect(parseLaunchdPrint(SAMPLE, TARGET)).toMatchObject({ state: "running", pid: PID });
+  });
+  test("a job that is not running is not taken for running because a coalition is active", () => {
+    const waiting = SAMPLE.replace(`\tpid = ${PID}\n`, "").replace("\tstate = running", "\tstate = waiting");
+    expect(waiting).toContain("\t\tstate = active");
+    expect(parseLaunchdPrint(waiting, TARGET)).toMatchObject({ state: "waiting", pid: null });
+  });
   test.each(refused)("refuses %s", (_name, text, target = TARGET) => {
     expect(parseLaunchdPrint(text, target)).toBeNull();
   });

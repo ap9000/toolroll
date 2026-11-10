@@ -80,7 +80,7 @@ export async function deployment({ codingCatalog = true, wrap = (args: Record<st
 
   const log: string[] = [];
   const journals: Record<string, Record<string, any>> = {};
-  const hooks: { spawn?: (name: string, args: string[]) => Record<string, any> | undefined; printText?: (text: string) => string; durable?: (file: string, r: Record<string, any>, write: () => void) => void; service?: (dist: string) => void;
+  const hooks: { spawn?: (name: string, args: string[], options?: Record<string, any>) => Record<string, any> | undefined; printText?: (text: string) => string; durable?: (file: string, r: Record<string, any>, write: () => void) => void; service?: (dist: string) => void;
     stopped?: (pids: number[]) => void; sleep?: (ms?: number) => void; print?: () => void; fetch?: () => void; now?: () => number; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void; reserve?: (proven: unknown) => void } = {};
   const current = { completion: { digest: 'complete', actor: 'lead' }, gateDigest: 'check', taskId: 'task', repo: '/repo', scopeDigest: 'scope' };
   const services = {
@@ -165,9 +165,9 @@ export async function deployment({ codingCatalog = true, wrap = (args: Record<st
     verifyServiceStopped: async (pids: number[]) => { log.push(`proved stopped ${pids.join(' ')}`); hooks.stopped?.(pids); },
     load: async () => ({ SCHEMA_VERSION: schema, openStore: (file: string) => { log.push('migrate'); const db = new DatabaseSync(file); db.exec('CREATE TABLE candidate_only(value)'); return db; } }),
     loadCodingDeploymentRuntime: async (dist: string) => dist === nextDist ? candidate : installed,
-    spawnSync: (command: string, args: string[]) => {
+    spawnSync: (command: string, args: string[], options?: Record<string, any>) => {
       const name = `${basename(command)} ${args[0]}`;
-      const hooked = hooks.spawn?.(name, args);
+      const hooked = hooks.spawn?.(name, args, options);
       if (hooked !== undefined) return hooked;
       if (name === 'launchctl bootout') { log.push('bootout'); services.running = null; services.loaded = undefined; services.definition = null; if (launchd) return { status: 0, stdout: '', stderr: '' }; }
       if (name === 'launchctl bootstrap') {
