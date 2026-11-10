@@ -24,7 +24,7 @@ import {
 } from "./chat-channel.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { renderReply } from "./reply-shape.js";
-import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatBinding, type ChatContent, type ChatEvent } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, type ChatBinding, type ChatContent, type ChatEvent } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readSlackBlockActions, readSlackButton, SLACK_LINK_ACTION } from "./contracts/slack-callback.js";
 import {
@@ -580,13 +580,7 @@ export async function deliverSlackPart(
         ? error
         : new SlackError("Slack delivery is waiting to retry", 15_000, true);
     state.setProblem(identity.installation, options.owner, problem.message);
-    const until = new Date(
-      nowOf(options).getTime() +
-        Math.max(
-          problem.retryMs,
-          [5000, 15000, 60000, 300000][Math.min(row.attempts, 3)]!,
-        ),
-    ).toISOString();
+    const until = chatRetryAt(nowOf(options), problem.retryMs, row.attempts);
     state.partFailed(row.id, { problem: problem.message, until, uncertain: problem.uncertain });
     if (problem.code === "ratelimited") state.deferUntil(identity.installation, until);
     return true;

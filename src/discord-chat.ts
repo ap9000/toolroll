@@ -8,7 +8,7 @@ import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { admitChatEvent } from "./chat-admission.js";
 import {
-  ChatState, ChatDeliveryError, chatHash, partContent, type ChatIdentity, type ChatContent, type ChatEvent,
+  ChatState, ChatDeliveryError, chatHash, chatRetryAt, partContent, type ChatIdentity, type ChatContent, type ChatEvent,
 } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readDiscordButtonToken, readDiscordComponentInteraction } from "./contracts/discord-callback.js";
@@ -555,13 +555,7 @@ export async function deliverDiscordPart(
             15_000,
             true,
           );
-    const until = new Date(
-      (options.clock?.() ?? new Date()).getTime() +
-        Math.max(
-          problem.retryMs,
-          [5000, 15000, 60000, 300000][Math.min(row.attempts, 3)]!,
-        ),
-    ).toISOString();
+    const until = chatRetryAt(options.clock?.() ?? new Date(), problem.retryMs, row.attempts);
     state.partFailed(row.id, { problem: problem.message, until, uncertain: problem.uncertain });
     state.setProblem(identity.installation, options.owner, problem.code === "ratelimited" ? "Discord asked us to wait. Saved replies will retry." : problem.message);
     if (problem.code === "ratelimited") state.deferUntil(identity.installation, until);
