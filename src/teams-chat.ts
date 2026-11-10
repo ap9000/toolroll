@@ -3,7 +3,7 @@
 import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
 import { isLiveMessage, liveSpacingOf, underCooldown, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import { channelAccess, chatObject as object, heldForWatch, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
@@ -235,7 +235,7 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
       return true;
     }
     const problem = error instanceof TeamsError ? error : new TeamsError("Teams delivery failed", 15_000, true);
-    state.partFailed(row.id, { problem: problem.message, until: new Date(now.getTime() + problem.retryMs).toISOString(), uncertain: problem.uncertain }, 20);
+    state.partFailed(row.id, { problem: problem.message, until: chatRetryAt(now, problem.retryMs, row.attempts), uncertain: problem.uncertain });
     return true;
   }
 }

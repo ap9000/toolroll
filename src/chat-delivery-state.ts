@@ -102,11 +102,12 @@ export class ChatState extends ChatMessages {
 
   /**
    * Mark an event handled: done (or dropped). For a message this runs when its reply is planned, before any part is
-   * sent, with no check of the state it comes from; so on these apps done does not mean the person has the reply.
-   * Ask `unsent()` in chat-message-states.ts for that.
+   * sent; so on these apps done does not mean the person has the reply. Ask `unsent()` in chat-message-states.ts for
+   * that. Dropped is final: an event dropped while its handler was still working (the chat was disconnected) is
+   * never written back to done.
    */
   finish(event: string, dropped = false): void {
-    this.prepare("UPDATE chat_event SET state = ?, payload = '{}' WHERE provider = :provider AND id = ?").run(dropped ? "dropped" : "done", event);
+    this.prepare("UPDATE chat_event SET state = ?, payload = '{}' WHERE provider = :provider AND id = ? AND state <> 'dropped'").run(dropped ? "dropped" : "done", event);
   }
 
   /** Point an event at the binding its pairing made. */
@@ -118,9 +119,13 @@ export class ChatState extends ChatMessages {
     return (this.prepare("SELECT * FROM chat_part WHERE provider = :provider AND id = ?").get(id) as ChatPart | undefined) ?? null;
   }
 
-  /** The reply to an event, part by part, with each part's buttons minted with it; the event is then handled. Planned once. */
-  plan(event: string, parts: ChatContent[], now: Date): void {
-    this.store.transact(() => {
+  /**
+   * The reply to an event, part by part, with each part's buttons minted with it; the event is then handled. Planned
+   * once. A dropped event gets no reply: nothing is saved, no button is minted, and the answer is false.
+   */
+  plan(event: string, parts: ChatContent[], now: Date): boolean {
+    return this.store.transact(() => {
+      if (this.prepare("SELECT state FROM chat_event WHERE provider = :provider AND id = ?").get(event)?.["state"] === "dropped") return false;
       for (const [ordinal, part] of parts.entries()) {
         if (this.prepare("SELECT 1 AS hit FROM chat_part WHERE provider = :provider AND event = ? AND ordinal = ?").get(event, ordinal) !== undefined) continue;
         const id = this.nextId("chat_part");
@@ -149,6 +154,7 @@ export class ChatState extends ChatMessages {
               .run(token(), id, part.flow.card, part.flow.entry, action, now.toISOString(), new Date(now.getTime() + 7 * DAY_MS).toISOString());
       }
       this.finish(event);
+      return true;
     });
   }
 
@@ -220,11 +226,14 @@ export class ChatState extends ChatMessages {
     });
   }
 
-  /** Not sent this time: counted, named, and (when the answer was lost rather than refused) counted as uncertain. */
-  partFailed(id: number, failure: { problem: string; until: string; uncertain: boolean }, giveUpAfter?: number): void {
-    this.prepare(`UPDATE chat_part SET attempts = attempts + 1, uncertain = uncertain + ?, next_at = ?, problem = ?,
-      state = CASE WHEN ? IS NOT NULL AND attempts >= ? THEN 'dropped' ELSE state END WHERE provider = :provider AND id = ?`)
-      .run(failure.uncertain ? 1 : 0, failure.until, failure.problem, giveUpAfter ?? null, giveUpAfter ?? 0, id);
+  /**
+   * Not sent this time: counted, named, and (when the answer was lost rather than refused) counted as uncertain. The
+   * part stays pending. A failed send never drops it on any app: it goes when the app says it can never be sent, or
+   * when the chat is disconnected.
+   */
+  partFailed(id: number, failure: { problem: string; until: string; uncertain: boolean }): void {
+    this.prepare("UPDATE chat_part SET attempts = attempts + 1, uncertain = uncertain + ?, next_at = ?, problem = ? WHERE provider = :provider AND id = ?")
+      .run(failure.uncertain ? 1 : 0, failure.until, failure.problem, id);
   }
 
   /** One person's replies still waiting to send, and those that could not be delivered (settings show both). */
@@ -234,9 +243,13 @@ export class ChatState extends ChatMessages {
     return { pending: Number(row?.["pending"] ?? 0), dropped: Number(row?.["dropped"] ?? 0) };
   }
 
-  /** Replace a part's content and send it again (a repaint after a tap). */
-  repaint(id: number, content: ChatContent): void {
-    this.prepare("UPDATE chat_part SET payload = ?, state = 'pending', next_at = NULL WHERE provider = :provider AND id = ?").run(savedChatPart(content), id);
+  /**
+   * Replace a part's content and send it again (a repaint after a tap). A dropped part stays dropped: it was given up
+   * on, or its chat disconnected, and new content doesn't bring it back. False then, so the caller can say it another way.
+   */
+  repaint(id: number, content: ChatContent): boolean {
+    return Number(this.prepare("UPDATE chat_part SET payload = ?, state = 'pending', next_at = NULL WHERE provider = :provider AND id = ? AND state <> 'dropped'")
+      .run(savedChatPart(content), id).changes) === 1;
   }
 }
 
@@ -246,6 +259,18 @@ export function partContent(payload: string): ChatContent {
   if (!read.ok) throw new ChatDeliveryError(`This saved message can't be read: ${read.issues.map(issue => issue.line).join("; ")}`, 0, false, true);
   return read.value;
 }
+/** The least time before a failed part is sent again, by how many times it has failed. The last step repeats. */
+export const CHAT_RETRY_STEPS_MS = [5000, 15000, 60000, 300000] as const;
+
+/**
+ * When a part that failed to send is tried again: after the app's own wait or the step for its count of failures,
+ * whichever is longer. One rule for Slack, Discord and Teams.
+ */
+export function chatRetryAt(now: Date, retryMs: number, attempts: number): string {
+  const step = CHAT_RETRY_STEPS_MS[Math.min(Math.max(attempts, 0), CHAT_RETRY_STEPS_MS.length - 1)]!;
+  return new Date(now.getTime() + Math.max(retryMs, step)).toISOString();
+}
+
 export class ChatDeliveryError extends Error {
   constructor(
     readonly code: string,

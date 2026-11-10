@@ -11,7 +11,7 @@
  * asked, and only while nobody has written in that thread since.
  */
 import type { ChatBinding, ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
-import { chatHash, partContent, savedChatPart } from "./chat-delivery-state.js";
+import { chatHash, partContent } from "./chat-delivery-state.js";
 import { LEAD_ASK_OTHER, type LeadAsk, type Store } from "./store.js";
 
 /** Whether a task (the execution shown, never only its family's root) moved past a lead's question asked at `since`:
@@ -62,7 +62,8 @@ function repaint(state: ChatState, part: number, event: ChatEvent, line: string,
   }
   const before = partContent(String(row["payload"]));
   const content: ChatContent = { text: `${before.text}\n\n${line}`.slice(0, 3400), edit: event.ts, ...(before.channel === undefined ? {} : { channel: before.channel }) };
-  state.prepare("UPDATE chat_part SET payload=?,state='pending',next_at=NULL WHERE provider=:provider AND id=?").run(savedChatPart(content), part);
+  // A question that was dropped isn't brought back: the line goes as a new message, the same as one too old to edit.
+  if (!state.repaint(part, content)) state.plan(event.id, [{ text: line }], now);
   state.finish(event.id);
 }
 

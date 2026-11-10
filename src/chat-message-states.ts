@@ -16,7 +16,8 @@
  * give the same answer on every app.
  *
  * `failed` is used by Telegram only. `dropped` means the chat was disconnected (or an app gave the event up) while
- * it waited; Telegram rows read a dropped row as failed.
+ * it waited; Telegram rows read a dropped row as failed. Dropped is final: `ChatState.finish` never writes over it,
+ * and `ChatState.plan` saves no reply for it.
  */
 import type { ResolvedLead } from "./chat-channel.js";
 import type { LeadFailure, LeadRefusal } from "./lead.js";
