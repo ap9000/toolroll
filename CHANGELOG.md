@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **An agent cut short shows as Stopped, not Failed.** When a restart or a stop ends an agent's run before it finishes, the run now shows as Stopped, so Failed means the work itself failed.
+- **People lists only invites that can still be used.** An invite that was already used no longer shows as open.
+- **A chat message that was dropped stays dropped.** When a chat is disconnected while Toolroll is still working on a message from it, the late answer is no longer saved or sent, and a dropped part of a reply is never brought back by a later update.
+- **Teams keeps trying to send, like Slack and Discord.** A reply Teams fails to take is no longer given up after 20 tries. It waits longer between tries (up to 5 minutes) and goes out when Teams takes it. The three apps now share one retry rule.
+
 ## 0.9.99 — 2026-11-09
 
 - **A Toolroll update interrupted while the new service was starting no longer gets stuck.** Before, an update killed in that short window left new work paused until someone edited a file by hand. Running the release again now finishes the update when the new service is running, and puts the previous service back once the new one is proved gone. Nothing is stopped on a guess: a new service that is loaded but never answers is left alone, and the message names the one command that stops it.
