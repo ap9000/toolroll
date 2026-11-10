@@ -261,3 +261,27 @@ Left as is, and said in the pull request:
   with the new scripts (the pre-step applies). "Finish first, then recover" starts with the release after.
 - `recoverJournal` latches after a thrown refusal, so a second call in the same process does nothing (existing
   design, kept).
+
+## Ledger: Codex round 2 on the build (NO-GO, the arc's last round)
+
+Three findings. Both review rounds for this arc are used, so the fixes below were verified by tests and by reading
+the code, not by a third review. Finding 1 is narrowed, not closed; what is left is said under it.
+
+| # | Severity | Finding | What was done |
+| --- | --- | --- | --- |
+| 1 | High | During a rollback the label can be loaded (a login, a person) between the proof that the service is gone, the database restore, and the write of the previous definition. Until that write the installed definition names the new runtime, so a load starts it on the restored database and migrates it again. | The previous definition is now written before the database is restored, with absence proved on both sides of the write. A load after the write starts the previous runtime, which refuses a newer database. A load detected after the write stops the rollback before the database is touched ("The service was loaded while its previous definition was put back; the database was left as it is."). |
+| 2 | High | `service()` in `scripts/deploy-browser.mjs` told the running service by substring: a service of the same runtime on `orders.db-other` counted, so finish at `starting` could call another database's service this deployment's start. | `commandKind` (`scripts/deploy-stop.mjs`) answers by exact runtime path and exact database argument, the same rule the stop proof uses; `service()` uses it for the supervisor and its `up`. `observeStart` also requires the installed definition to be, byte for byte, the one `swap()` wrote (`browser.next.plist`). The same substring test in `src/release-gate.ts` now takes the database as a whole argument. |
+| 3 | Medium | The tests ran every phase in one context, and the launchd fake tied "loaded" to "a failed start has processes". | The fixture can run a phase as its own run (`asFinish` reads the installed definition, `asRecover` the saved one), launchd's label is a fact apart from the processes, and `bootstrap` refuses a loaded label. New cases: finish and recover at `starting` as their own runs; a finish-context recovery puts nothing back; loaded with no process, and processes with no label; a replaced or missing definition and a service on another database at `starting`; a rollback whose backup fails has already put the definition back and left the database alone; a load between the two absence proofs; a rollback the previous runtime can read (service only, database kept). |
+
+What finding 1 still leaves:
+
+- A loader that read the old definition file just before the write and bootstraps it after the second absence proof
+  still starts the new runtime during the restore. The same holds for a load of the previous runtime mid-restore: it
+  refuses the database while it is newer, and could open it once the restore's rename lands. Both need a load in a
+  window of well under a second, inside a deployment that already failed.
+- This window is on `main` today for `migrating`, `migrated` and `start-failed`; this change shortens it and does not
+  add to it.
+- `launchctl disable` around the restore was considered and not used: the runtime's own install path
+  (`installLaunchdService`) enables the label before it bootstraps, so disable is not an exclusion against it; a
+  crash between disable and enable would leave the service unable to start at login; and it cannot be proved against
+  real launchd in tests. A real exclusion (a lock every loader honours) is its own change with its own plan and review.

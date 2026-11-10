@@ -1,5 +1,5 @@
 import { test, expect, vi } from 'vitest';
-import { copyFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync, rmSync, statSync, renameSync, symlinkSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, readdirSync, realpathSync, writeFileSync, rmSync, statSync, renameSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -12,7 +12,7 @@ import { installUpdateGate, freezeUpdateGate, removeUpdateGate, updateGateOwned 
 import { durableJson } from './desktop-update.js';
 import { loadCodingDeploymentRuntime, observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment } from '../scripts/deploy-coding.mjs';
 import { browserDeployment, openDeploymentDatabase, snapshotBackup } from '../scripts/deploy-phases.mjs';
-import { listProcesses, serviceStopper } from '../scripts/deploy-stop.mjs';
+import { commandKind, listProcesses, serviceStopper } from '../scripts/deploy-stop.mjs';
 import { acquireDeploymentLock } from './deploy-lock.js';
 import { deploymentChild } from '../test/deploy-process.js';
 import { fakePid } from '../test/fake-pid.js';
@@ -191,7 +191,7 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
 
   const log: string[] = [];
   const journals: Record<string, Record<string, any>> = {};
-  const hooks: { stopped?: (pids: number[]) => void; sleep?: (ms?: number) => void; fetch?: () => void; now?: () => number; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void; reserve?: (proven: unknown) => void } = {};
+  const hooks: { stopped?: (pids: number[]) => void; sleep?: (ms?: number) => void; print?: () => void; fetch?: () => void; now?: () => number; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void; reserve?: (proven: unknown) => void } = {};
   const current = { completion: { digest: 'complete', actor: 'lead' }, gateDigest: 'check', taskId: 'task', repo: '/repo', scopeDigest: 'scope' };
   const services = {
     old: { supervisor: fakePid(1), children: [fakePid(2)], commands: [] as string[] },
@@ -199,7 +199,13 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
     failed: [fakePid(6), fakePid(7)],
     running: 'old' as 'old' | 'new' | 'failed' | null,
     starts: true,
+    /** Whether launchd has the label, when that differs from "something of it runs": loaded with no process, or
+     * processes left with the label gone. Unset, the label is loaded exactly while something runs. */
+    loaded: undefined as boolean | undefined,
+    /** The database the new service's `up` was started on, when not this deployment's. */
+    newDatabase: undefined as string | undefined,
   };
+  const labelLoaded = () => services.loaded ?? services.running !== null;
   const coding = (who: string) => ({
     backupCodingCatalog: async (from: string, to: string) => { log.push(`${who} backs up coding`); hooks.codingBackup?.(); copyFileSync(from, to); },
     assertCodingUpdateStopped: () => { log.push(`${who} custody`); },
@@ -216,7 +222,7 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
   let lastPhase = '';
   const deploymentLock = acquireDeploymentLock(journalFile);
   const cancellation = new AbortController();
-  const phases = browserDeployment(wrap({
+  const args = wrap({
     deploymentLock, signal: cancellation.signal,
     database, stageDir: stage, stateDir: root, journalFile, plist, livePlist, priorDist, nextDist, uid: 501, label: 'com.toolroll.browser', servicePort: '4180',
     runId: 7, candidateHead: 'c'.repeat(40), publicUrl: null, script: 'scripts/deploy-browser.mjs --phase',
@@ -225,7 +231,11 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
     reserve: (proven: unknown) => { hooks.reserve?.(proven); },
     quiet: () => {},
     service: (dist: string) => {
-      if (dist === nextDist && services.running === 'new') return services.new;
+      if (dist === nextDist && services.running === 'new') {
+        // Told as deploy-browser.mjs tells it: by the commands, exact runtime and exact database.
+        const up = `/usr/bin/node ${nextDist}/cli.js up --db ${services.newDatabase ?? database} --port 4180`;
+        return commandKind(`/usr/bin/node ${nextDist}/controller-service.js ${up}\n`, { dist, database }) === 'supervisor' && commandKind(`${up}\n`, { dist, database }) === 'up' ? services.new : null;
+      }
       return dist === priorDist && services.running === 'old' ? services.old : null;
     },
     leftFrom: (dist: string) => (dist === priorDist && services.running === "old") || (dist === nextDist && services.running !== null && services.running !== "old") ? [999] : [],
@@ -235,14 +245,23 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
     loadCodingDeploymentRuntime: async (dist: string) => dist === nextDist ? candidate : installed,
     spawnSync: (command: string, args: string[]) => {
       const name = `${basename(command)} ${args[0]}`;
-      if (name === 'launchctl bootout') { log.push('bootout'); services.running = null; }
+      if (name === 'launchctl bootout') { log.push('bootout'); services.running = null; services.loaded = undefined; }
       if (name === 'launchctl bootstrap') {
+        // launchd refuses a label it already has.
+        if (labelLoaded()) return { status: 5, stderr: 'Bootstrap failed: 5: Input/output error' };
         const next = readFileSync(plist, 'utf8').includes(nextDist);
         log.push(next ? 'bootstrap candidate' : `bootstrap previous${paused()}`);
         services.running = !next ? 'old' : services.starts ? 'new' : 'failed';
+        services.loaded = undefined;
         return { status: 0, stderr: '' };
       }
-      if (name === 'launchctl print') return services.running === 'failed' ? { status: 0, stdout: `\n\tpid = ${services.failed[0]}` } : { status: 113, stdout: '' };
+      if (name === 'launchctl print') {
+        hooks.print?.();
+        if (!labelLoaded()) return { status: 113, stdout: '' };
+        // A loaded label with no process prints no pid.
+        const pid = services.running === 'failed' ? services.failed[0] : services.running === 'new' ? services.new.supervisor : services.running === 'old' ? services.old.supervisor : null;
+        return { status: 0, stdout: pid === null ? '\n\tstate = waiting' : `\n\tstate = running\n\tpid = ${pid}` };
+      }
       if (name === 'pgrep -P') return { status: 0, stdout: `${services.failed[1]}\n` };
       if (name === 'curl -fsS') { log.push(`healthz${paused()}`); return { status: 0, stdout: '{"status":"ok"}' }; }
       return { status: 1, stdout: '' };
@@ -259,7 +278,15 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
     },
     requireTrue: (okay: unknown, message: string) => { if (!okay) throw Error(message); },
     pruneStaged: async () => [],
-  }));
+  });
+  const phases = browserDeployment(args);
+  /** Another run of the deploy script on this installation: its own process, so its own reading of the service
+   * definition. Every phase but recover reads the installed one (after the swap that names the new runtime, so this
+   * run's "previous" runtime IS the new one); recover with --stage reads the one saved at preparation. */
+  const definitionRuntime = (text: string) => (text.match(/<string>([^<]*\/dist)\/cli\.js<\/string>/) ?? [])[1]!;
+  const freshRun = (definition: string) => browserDeployment({ ...args, livePlist: definition, priorDist: definitionRuntime(definition) });
+  const asFinish = () => freshRun(readFileSync(plist, 'utf8'));
+  const asRecover = () => freshRun(readFileSync(join(stage, 'browser.saved.plist'), 'utf8'));
   const journal = () => JSON.parse(readFileSync(journalFile, 'utf8')) as Record<string, any>;
   const orders = () => new DatabaseSync(database);
   const gateOwned = () => { const db = orders(); try { return gate.updateGateOwned(db, journal().id); } finally { db.close(); } };
@@ -271,13 +298,15 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
     log.length = 0; lastPhase = '';
   };
   return {
-    deploymentLock, cancellation, root, database, stage, plist, livePlist, nextDist, codingBackup, log, journals, hooks, current, services, phases, journal, orders, gateOwned, rehearsed, appearCatalog,
+    deploymentLock, cancellation, root, database, stage, plist, livePlist, priorDist, nextDist, codingBackup, log, journals, hooks, current, services, phases, asFinish, asRecover, journal, orders, gateOwned, rehearsed, appearCatalog,
     reset: () => { log.length = 0; lastPhase = ''; for (const key of Object.keys(journals)) delete journals[key]; },
     close: () => { deploymentLock.release(); rmSync(root, { recursive: true, force: true }); },
   };
 }
 const tamper = (file: string) => writeFileSync(file, 'changed after it was verified');
 const quietly = <T>(run: () => T) => { const spy = vi.spyOn(console, 'error').mockImplementation(() => {}); try { return run(); } finally { spy.mockRestore(); } };
+/** What a run printed to stderr, and what it returned. */
+const said = <T>(run: () => T) => { const spy = vi.spyOn(console, 'error').mockImplementation(() => {}); try { const result = run(); return { result, words: spy.mock.calls.map(call => call.join(' ')).join('\n') }; } finally { spy.mockRestore(); } };
 
 test('prepare pauses and freezes admission, observes custody, then backs up and re-verifies before backup-verified', async () => {
   const d = await deployment({ codingCatalog: false });
@@ -925,6 +954,8 @@ test('recovery leaves live services untouched, then restores only after the owne
     s.d.phases.save({ ...r, stoppingService: s.d.services.old }, 'stopping');
     process.kill(s.old.supervisor, 'SIGTERM');
     await waitFor('the supervisor to exit', () => !isAlive(s.old.supervisor));
+    // That stop booted the label out; what is left is processes, which the real process table answers for.
+    s.d.services.running = null;
     // The same runtime serving a sandbox's database: never this deployment's, never touched.
     const other = await stuckService(s.priorDist, join(s.d.root, 'demo.db'), sandbox);
     s.d.reset();
@@ -951,12 +982,13 @@ test.each(['stopped', 'migrated', 'backup-restored'])('recovery at %s leaves a h
     await d.rehearsed();
     durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), phase });
     d.services.running = 'new';
-    const before = readFileSync(d.database);
+    const before = readFileSync(d.database), definition = readFileSync(d.plist, 'utf8');
     d.reset();
     expect(quietly(() => d.phases.recoverJournal())).toBe(false);
     expect(d.services.running).toBe('new');
     expect(d.log).not.toContain('bootout');
     expect(readFileSync(d.database)).toEqual(before);
+    expect(readFileSync(d.plist, 'utf8')).toBe(definition);
     expect(d.gateOwned()).toBe(true);
   } finally { d.close(); }
 });
@@ -1111,6 +1143,196 @@ test('the backup and the previous service go back only from the run that reads t
     expect(d.log.slice(recovering)).toEqual([]);
     expect([d.journal().phase, d.gateOwned(), migratedRows(d)]).toEqual(['start-failed', true, true]);
     // (From the deployment's own saved definition it goes back: 'a failed start is stopped and its custody proved' above.)
+  } finally { d.close(); }
+});
+
+// Codex build review, round 2 (docs/plans/deploy-phase-table.md): each phase is its own run of the script, with its
+// own reading of the service definition; launchd's label is a fact apart from the processes; and the service is told
+// by exact runtime and exact database.
+
+/** A swap whose new service never came up: stopped in-process, journaled "start-failed", nothing put back yet. */
+async function failedStart({ compatible = false }: { compatible?: boolean } = {}) {
+  const d = await deployment();
+  await d.rehearsed();
+  if (compatible) durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), rehearsal: { integrity: 'ok', previousRuntimeCompatible: true } });
+  d.services.starts = false;
+  await expect(d.phases.swap()).rejects.toThrow('The new service did not come up.');
+  expect([d.journal().phase, d.services.running]).toEqual(['start-failed', null]);
+  d.reset();
+  return d;
+}
+
+test('finish at starting, as its own run reading the installed definition, finishes; that run puts nothing back, and the recover run does', async () => {
+  const d = await killedAtStarting();
+  try {
+    // The run that follows the kill: the installed definition names the new runtime, so that is its "previous" one.
+    expect(readFileSync(d.plist, 'utf8')).toBe(readFileSync(join(d.stage, 'browser.next.plist'), 'utf8'));
+    const lease = (heartbeat: string) => { const db = d.orders(); try { db.prepare("INSERT OR REPLACE INTO watch_lease VALUES('worker','/repo','owner',1,?,?,?)").run(heartbeat, new Date(Date.now() + 3_600_000).toISOString(), heartbeat); } finally { db.close(); } };
+    lease(new Date(Date.now() - 3_600_000).toISOString());
+    d.hooks.sleep = () => { d.log.push('lease wait'); lease(new Date().toISOString()); };
+    await d.asFinish().finish();
+    expect(d.log).toEqual(['started', 'fetch http://127.0.0.1:4180/t/task', 'lease wait', 'healthy', 'deployed', 'summary']);
+    expect([d.journal().phase, d.gateOwned(), d.services.running, migratedRows(d)]).toEqual(['deployed', false, 'new', true]);
+  } finally { d.close(); }
+
+  const failed = await failedStart();
+  try {
+    const before = readFileSync(failed.database), definition = readFileSync(failed.plist, 'utf8');
+    // A finish (or any phase but recover) that exits at a failed start runs the same recovery on its way out.
+    const refused = said(() => failed.asFinish().recoverJournal());
+    expect(refused.result).toBe(false);
+    expect(refused.words).toContain(`This run reads the service definition the deployment installed, not the one it replaced; nothing was put back. Use --phase recover with --stage ${failed.stage}.`);
+    expect(failed.log).toEqual([]);
+    expect([readFileSync(failed.database).equals(before), readFileSync(failed.plist, 'utf8') === definition]).toEqual([true, true]);
+    expect([failed.journal().phase, failed.gateOwned(), migratedRows(failed)]).toEqual(['start-failed', true, true]);
+    // --phase recover --stage reads the definition saved at preparation.
+    expect(quietly(() => failed.asRecover().recoverJournal())).toBe(true);
+    expect(failed.log).toEqual(['bootstrap previous while paused', 'healthz while paused']);
+    expect(readFileSync(failed.plist, 'utf8')).toBe(failed.livePlist);
+    expect([failed.journal().phase, failed.gateOwned(), failed.services.running, migratedRows(failed)]).toEqual(['released', false, 'old', false]);
+  } finally { failed.close(); }
+});
+
+test('recover at starting, as its own run: a new service proved gone is journaled failed and undone; one that runs is left alone', async () => {
+  const gone = await killedAtStarting({ starts: false });
+  try {
+    gone.services.running = null;
+    const recover = gone.asRecover();
+    expect(await recover.proveStartFailed()).toBe(true);
+    expect(quietly(() => recover.recoverJournal())).toBe(true);
+    expect(gone.log).toEqual(['starting', 'candidate custody', 'start-failed', 'bootstrap previous while paused', 'healthz while paused']);
+    expect(readFileSync(gone.plist, 'utf8')).toBe(gone.livePlist);
+    expect([gone.journal().phase, gone.gateOwned(), gone.services.running, migratedRows(gone)]).toEqual(['released', false, 'old', false]);
+  } finally { gone.close(); }
+
+  const up = await killedAtStarting();
+  try {
+    const before = readFileSync(up.database), definition = readFileSync(up.plist, 'utf8');
+    const recover = up.asRecover();
+    await expect(recover.proveStartFailed()).rejects.toThrow('The new service is still loaded or still has processes');
+    expect(readFileSync(up.database).equals(before)).toBe(true);
+    // (The recovery that follows keeps the deployment's timeline in the database; it restores and starts nothing.)
+    expect(quietly(() => recover.recoverJournal())).toBe(false);
+    expect(up.log).toEqual([]);
+    expect(readFileSync(up.plist, 'utf8')).toBe(definition);
+    expect([up.journal().phase, up.gateOwned(), up.services.running, migratedRows(up)]).toEqual(['starting', true, 'new', true]);
+  } finally { up.close(); }
+});
+
+test('a label launchd holds with no process, or processes left with no label, is never taken for a stopped service', async () => {
+  const { HEALTH_WAIT_MS } = await import('../scripts/deploy-recovery.mjs');
+  const arrangements: readonly (readonly [string, (d: Awaited<ReturnType<typeof deployment>>) => void])[] = [
+    ['loaded, no process', d => { d.services.running = null; d.services.loaded = true; }],
+    ['processes, no label', d => { d.services.running = 'failed'; d.services.loaded = false; }],
+  ];
+  for (const [name, arrange] of arrangements) {
+    // Killed at starting: finish does not call it started, recover does not call it failed.
+    const d = await killedAtStarting({ starts: false });
+    try {
+      arrange(d);
+      const before = readFileSync(d.database), definition = readFileSync(d.plist, 'utf8');
+      let slept = 0;
+      d.hooks.sleep = () => { slept++; };
+      await expect(d.asFinish().finish(), name).rejects.toThrow('The new service is not running from the new runtime. Nothing was stopped and the journal stays at starting.');
+      // A loaded label is waited for as long as the swap would; nothing starts one launchd does not have.
+      expect([name, slept]).toEqual([name, d.services.loaded ? HEALTH_WAIT_MS / 1000 : 0]);
+      const recover = d.asRecover();
+      await expect(recover.proveStartFailed(), name).rejects.toThrow(/still loaded or still has processes.*launchctl bootout gui\/501\/com\.toolroll\.browser/);
+      expect([name, readFileSync(d.database).equals(before)]).toEqual([name, true]);
+      expect(quietly(() => recover.recoverJournal()), name).toBe(false);
+      expect(d.log, name).toEqual([]);
+      expect([name, readFileSync(d.plist, 'utf8') === definition]).toEqual([name, true]);
+      expect([name, d.journal().phase, d.gateOwned(), migratedRows(d)]).toEqual([name, 'starting', true, true]);
+    } finally { d.close(); }
+
+    // A failed start already journaled: nothing is put back, neither the definition nor the database.
+    const failed = await failedStart();
+    try {
+      arrange(failed);
+      const before = readFileSync(failed.database), definition = readFileSync(failed.plist, 'utf8');
+      const refused = said(() => failed.asRecover().recoverJournal());
+      expect([name, refused.result]).toEqual([name, false]);
+      expect(refused.words, name).toContain('The service is not proved stopped; its database and definition were left in place.');
+      expect(failed.log, name).toEqual([]);
+      expect([name, readFileSync(failed.database).equals(before), readFileSync(failed.plist, 'utf8') === definition]).toEqual([name, true, true]);
+      expect([name, failed.journal().phase, failed.gateOwned(), migratedRows(failed)]).toEqual([name, 'start-failed', true, true]);
+    } finally { failed.close(); }
+  }
+});
+
+test('finish at starting calls a service started only when it is this deployment\'s: its definition, its runtime, its database', async () => {
+  const kept = 'Nothing was stopped and the journal stays at starting.';
+  const cases: readonly (readonly [string, (d: Awaited<ReturnType<typeof deployment>>) => void, string])[] = [
+    ['the installed definition was replaced', d => writeFileSync(d.plist, readFileSync(d.plist, 'utf8').replace('<string>worker</string>', '<string>local</string>')), `The installed service definition is not the one this deployment installed. ${kept}`],
+    ['the definition this deployment wrote is gone', d => rmSync(join(d.stage, 'browser.next.plist')), `The installed service definition is not the one this deployment installed. ${kept}`],
+    ['the definition this deployment wrote was changed to match', d => { const other = readFileSync(d.plist, 'utf8').replaceAll(d.nextDist, join(d.root, 'elsewhere', 'dist')); writeFileSync(d.plist, other); writeFileSync(join(d.stage, 'browser.next.plist'), other); }, `The installed service definition is not the one this deployment installed. ${kept}`],
+    ['the new runtime serves a database whose path only begins with this one\'s', d => { d.services.newDatabase = `${d.database}-other`; }, `The new service is not running from the new runtime. ${kept}`],
+    ['the new runtime serves another database', d => { d.services.newDatabase = join(d.root, 'demo.db'); }, `The new service is not running from the new runtime. ${kept}`],
+  ];
+  for (const [name, arrange, words] of cases) {
+    const d = await killedAtStarting();
+    try {
+      arrange(d);
+      const before = readFileSync(d.database), definition = readFileSync(d.plist, 'utf8');
+      // In the run that was killed's own terms, and as the run that follows it.
+      await expect(d.phases.finish(), name).rejects.toThrow(words);
+      if (definition.includes(`${d.nextDist}/cli.js`)) await expect(d.asFinish().finish(), name).rejects.toThrow(words);
+      expect(d.log.filter(line => /bootout|bootstrap|custody|healthz|started/.test(line)), name).toEqual([]);
+      expect([name, readFileSync(d.database).equals(before), readFileSync(d.plist, 'utf8') === definition]).toEqual([name, true, true]);
+      expect([name, d.journal().phase, d.journal().newService, d.gateOwned(), d.services.running]).toEqual([name, 'starting', undefined, true, 'new']);
+    } finally { d.close(); }
+  }
+});
+
+test('a rollback puts the previous definition back before the database, and restores no database once the label is loaded', async () => {
+  // The backup no longer verifies: the database is left as it is, and what a load would start is already the
+  // previous runtime (which refuses a newer database), not the new one.
+  const d = await failedStart();
+  try {
+    tamper(d.journal().backup);
+    const before = readFileSync(d.database);
+    const refused = said(() => d.asRecover().recoverJournal());
+    expect(refused.result).toBe(false);
+    expect(refused.words).toMatch(/the verified backup .* is missing or changed/i);
+    expect(readFileSync(d.plist, 'utf8')).toBe(d.livePlist);
+    expect(readFileSync(d.database).equals(before)).toBe(true);
+    expect(d.log).toEqual([]);
+    expect([d.journal().phase, d.gateOwned(), d.services.running, migratedRows(d)]).toEqual(['start-failed', true, null, true]);
+  } finally { d.close(); }
+
+  // Something loads the label just as the definition goes back (a login, a person): absence is proved again after
+  // the write, and the database is not restored under a loaded service.
+  const raced = await failedStart();
+  try {
+    const before = readFileSync(raced.database);
+    raced.hooks.print = () => { if (readFileSync(raced.plist, 'utf8') === raced.livePlist) raced.services.running = 'old'; };
+    const refused = said(() => raced.asRecover().recoverJournal());
+    expect(refused.result).toBe(false);
+    expect(refused.words).toContain('The service was loaded while its previous definition was put back; the database was left as it is.');
+    expect(readFileSync(raced.database).equals(before)).toBe(true);
+    expect(raced.log).toEqual([]);
+    expect([raced.journal().phase, raced.gateOwned(), migratedRows(raced)]).toEqual(['start-failed', true, true]);
+    // Its owner stops it; the same recovery then finishes.
+    delete raced.hooks.print;
+    raced.services.running = null;
+    expect(quietly(() => raced.asRecover().recoverJournal())).toBe(true);
+    expect(raced.log).toEqual(['bootstrap previous while paused', 'healthz while paused']);
+    expect([raced.journal().phase, raced.gateOwned(), raced.services.running, migratedRows(raced)]).toEqual(['released', false, 'old', false]);
+  } finally { raced.close(); }
+});
+
+test('a failed start whose result the previous runtime reads keeps the live database: only the service goes back', async () => {
+  const d = await failedStart({ compatible: true });
+  try {
+    const recovered = said(() => d.asRecover().recoverJournal());
+    expect(recovered.result).toBe(true);
+    expect(recovered.words).toContain('the previous service is running again and new work resumed.');
+    expect(recovered.words).not.toContain('put back from the backup');
+    expect(d.log).toEqual(['bootstrap previous while paused', 'healthz while paused']);
+    expect(readFileSync(d.plist, 'utf8')).toBe(d.livePlist);
+    // Nothing was copied aside and nothing restored: what the new runtime wrote is still there.
+    expect(readdirSync(d.stage).filter(name => name.includes('.kept.'))).toEqual([]);
+    expect([d.journal().phase, d.gateOwned(), d.services.running, migratedRows(d)]).toEqual(['released', false, 'old', true]);
   } finally { d.close(); }
 });
 

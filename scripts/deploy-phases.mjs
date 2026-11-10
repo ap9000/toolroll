@@ -211,7 +211,17 @@ export function browserDeployment({
         stopProved: stopped,
         // A stale journal cannot authorize stopping a newly healthy service, even at the same runtime path.
         // Recovery observes exit only; normal shutdown belongs to the current service owner.
-        restoreBackup: () => { requireStopped(); return restoreDeploymentBackup(r, { database, stageDir }); },
+        // The previous definition goes back before the database does (Codex build review, finding 1). Until now the
+        // installed definition named the new runtime, which would start on the restored database and migrate it
+        // again if anything loaded the label (a login, a person) before the definition was replaced. From here a
+        // load starts the previous runtime, which refuses a newer database. Absence is proved on both sides of the
+        // write, and restorePriorService refuses a label it finds loaded.
+        restoreBackup: () => {
+          requireStopped();
+          writeFileSync(plist, livePlist);
+          if (!stopped()) throw Error("The service was loaded while its previous definition was put back; the database was left as it is.");
+          return restoreDeploymentBackup(r, { database, stageDir });
+        },
         restoreService: () => { requireStopped(); restorePriorService(r); },
         removeGate: () => {
           const db = openDeploymentDatabase(database);
@@ -520,6 +530,9 @@ export function browserDeployment({
    */
   async function observeStart(r) {
     const loaded = () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113;
+    const installedIsOurs = () => {
+      try { const ours = readFileSync(join(stageDir, "browser.next.plist"), "utf8"); return ours.includes(`${nextDist}/cli.js`) && readFileSync(plist, "utf8") === ours; } catch { return false; }
+    };
     let live = service(nextDist);
     // Nothing starts a service launchd does not have: no waiting for one.
     for (let i = 0; i < HEALTH_WAIT_MS / 1000 && live === null && loaded(); i++) { await settle(sleep(1000)); live = service(nextDist); }
@@ -529,6 +542,9 @@ export function browserDeployment({
     try { migratedAndPaused = db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id); } finally { db.close(); }
     live = live === null ? null : service(nextDist);
     requireTrue(live !== null, "The new service is not running from the new runtime. Nothing was stopped and the journal stays at starting.");
+    // The service under the label is the one this deployment installed: the definition on disk is still, byte for
+    // byte, the one swap() wrote. A definition someone replaced since is theirs, and is not called this deployment's start.
+    requireTrue(installedIsOurs(), "The installed service definition is not the one this deployment installed. Nothing was stopped and the journal stays at starting.");
     requireTrue(migratedAndPaused, "The live database is not the migrated one under this deployment's pause. Nothing was stopped and the journal stays at starting.");
     r.newService = live;
     save(r, "started");

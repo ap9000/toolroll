@@ -2,10 +2,10 @@
  * Native fixtures cover real orphaned processes; their owner stops them before recovery can prove exit. */
 import { test, expect, afterEach } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classify, recordedStillRunning, listProcesses, serviceProcesses, serviceStopper, stopServiceProcesses } from "../scripts/deploy-stop.mjs";
+import { classify, commandKind, recordedStillRunning, listProcesses, serviceProcesses, serviceStopper, stopServiceProcesses } from "../scripts/deploy-stop.mjs";
 import { fakePid } from "../test/fake-pid.js";
 
 type Row = { pid: number; ppid: number; start: string; command: string };
@@ -47,6 +47,34 @@ test.each([
   [`/usr/bin/vim notes.txt`, null],
 ] as const)("classify %s → %s", (command, kind) => {
   expect(classify(command, { dists, database })?.kind ?? null).toBe(kind);
+});
+
+// What the deployment calls "the service is running" (deploy-browser.mjs service()): one runtime, one database, both
+// exact. A service of the same runtime on a database whose path only begins with this one's is not it.
+test("the running service is told by exact runtime and exact database, never a prefix of either", () => {
+  const scope = { dist: next, database };
+  // As ps prints them, trailing newline and all.
+  expect(commandKind(`${node} ${next}/controller-service.js ${node} ${next}/cli.js up --db ${database} --port 4180\n`, scope)).toBe("supervisor");
+  expect(commandKind(`${node} ${next}/cli.js up --db ${database} --runner mac --port 4180 \n`, scope)).toBe("up");
+  expect(commandKind(`${node} ${next}/cli.js up --db ${database}\n`, scope)).toBe("up");
+  for (const other of [`${database}-other`, `${database}.coding.sqlite`, `${database}2`, "/tmp/demo/orders.db"]) {
+    expect([other, commandKind(`${node} ${next}/cli.js up --db ${other} --port 4180\n`, scope)]).not.toEqual([other, "up"]);
+    expect([other, commandKind(`${node} ${next}/controller-service.js ${node} ${next}/cli.js up --db ${other}\n`, scope)]).not.toEqual([other, "supervisor"]);
+  }
+  // The other runtime of a deployment, or a path that only begins with this runtime's: not this runtime's service.
+  for (const dist of [prior, `${next}-old`, `${next}2`]) {
+    expect([dist, commandKind(`${node} ${dist}/cli.js up --db ${database}\n`, scope)]).not.toEqual([dist, "up"]);
+    expect([dist, commandKind(`${node} ${dist}/controller-service.js ${node} ${dist}/cli.js up --db ${database}\n`, scope)]).not.toEqual([dist, "supervisor"]);
+  }
+  // A supervisor of this runtime whose `up` is another runtime's is not this service's supervisor.
+  expect(commandKind(`${node} ${next}/controller-service.js ${node} ${prior}/cli.js up --db ${database}\n`, scope)).not.toBe("supervisor");
+  expect(commandKind("", scope)).toBe(null);
+  // service() asks this, and holds no looser test of its own.
+  const browser = readFileSync(join(import.meta.dirname, "..", "scripts", "deploy-browser.mjs"), "utf8");
+  const body = browser.slice(browser.indexOf("function service(dist) {"), browser.indexOf("const sleep = ms"));
+  expect(body).toContain('if (commandKind(command, { dist, database }) !== "supervisor") return null;');
+  expect(body).toContain('const up = children.filter((_, at) => commandKind(commands[at], { dist, database }) === "up");');
+  expect(body).not.toMatch(/includes\(`\$\{dist\}\/(?:cli|controller-service)\.js/);
 });
 
 test("a role child is the service's only under one of its own `up`s or when the journal recorded it", () => {

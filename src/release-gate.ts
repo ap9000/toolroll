@@ -126,7 +126,9 @@ export function proveBeforeSwap(id: string, world: GateReleaseWorld): GateProof 
   const staged = processes.filter(one => one.command.includes(r.nextRuntime));
   if (staged.length > 0) return refuse("after-swap", `Process ${staged.map(one => one.pid).join(", ")} runs from the staged runtime ${r.nextRuntime}.`);
   const supervisor = processes.find(one => one.command.includes(`${r.priorRuntime}/controller-service.js`));
-  const worker = processes.find(one => one.command.includes(`${r.priorRuntime}/cli.js up --db ${world.database}`));
+  // The database as a whole argument: an `up` on a path that only begins with this database's is another service's.
+  const upHere = `${r.priorRuntime}/cli.js up --db ${world.database}`;
+  const worker = processes.find(one => one.command.split(upHere).slice(1).some(rest => rest === "" || /^\s/.test(rest)));
   if (supervisor === undefined || worker === undefined) return refuse("conflict", `The service is not running from ${r.priorRuntime}, so it can't be shown that the swap never began.`);
   proof.push(`The service runs from ${r.priorRuntime} (process ${supervisor.pid}); nothing runs from the staged runtime, and no deployment is running.`);
   return { ok: true, id, stage, journal: r, proof };
