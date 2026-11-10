@@ -10671,7 +10671,7 @@ export class Store {
   inviteIsLive(tokenValue: string, now: Date): boolean {
     const row = this.db
       .prepare(
-        "SELECT 1 AS hit FROM invite WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10",
+        `SELECT 1 AS hit FROM invite WHERE token_hash = ? AND ${INVITE_USABLE_SQL}`,
       )
       .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
     return row !== undefined;
@@ -10687,7 +10687,7 @@ export class Store {
     const row = this.db
       .prepare(
         `UPDATE invite SET attempts = attempts + 1
-          WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10
+          WHERE token_hash = ? AND ${INVITE_USABLE_SQL}
           RETURNING role, minted_by`,
       )
       .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
@@ -10713,6 +10713,8 @@ export class Store {
       // concurrent join must read as 'gone' — the indistinguishable dead
       // shape — never as a name collision that discloses the winner.
       const hash = createHash("sha256").update(args.tokenValue, "utf8").digest("hex");
+      // Not INVITE_USABLE_SQL on purpose: admitInviteAttempt has already counted this submission, so the tenth
+      // admitted attempt arrives here with attempts = 10 and must still be able to join.
       const live = this.db
         .prepare("SELECT 1 AS hit FROM invite WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ?")
         .get(hash, now.toISOString());
@@ -11037,7 +11039,7 @@ export class Store {
   openInvites(now: Date): { id: number; role: "approver" | "viewer"; mintedBy: string; mintedAt: string; expiresAt: string; attempts: number; projects: ProjectAccess }[] {
     return this.db
       .prepare(
-        "SELECT id, role, minted_by, minted_at, expires_at, attempts, projects_json FROM invite WHERE revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? ORDER BY id",
+        `SELECT id, role, minted_by, minted_at, expires_at, attempts, projects_json FROM invite WHERE ${INVITE_USABLE_SQL} ORDER BY id`,
       )
       .all(now.toISOString())
       .map(row => ({
@@ -26488,7 +26490,7 @@ export function restoreTaskFamily(store: Store, taskId: string, by: string, now:
  */
 export function liveInviteTerms(store: Store, tokenValue: string, now: Date): { role: "approver" | "viewer"; mintedBy: string; expiresAt: string; projects: ProjectAccess } | null {
   const row = store.handle
-    .prepare("SELECT role, minted_by, expires_at, projects_json FROM invite WHERE token_hash = ? AND revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10")
+    .prepare(`SELECT role, minted_by, expires_at, projects_json FROM invite WHERE token_hash = ? AND ${INVITE_USABLE_SQL}`)
     .get(createHash("sha256").update(tokenValue, "utf8").digest("hex"), now.toISOString());
   if (row === undefined) return null;
   return { role: String(row["role"]) === "approver" ? "approver" : "viewer", mintedBy: String(row["minted_by"]), expiresAt: String(row["expires_at"]), projects: readProjectAccess(row["projects_json"]) };
@@ -27107,3 +27109,8 @@ export function leadAskAwaitsAnswer(store: Store, thread: number, now: Date): bo
       WHERE m.id = (SELECT MAX(id) FROM lead_message WHERE thread = ? AND role = 'assistant') AND t.state = 'answered'`).get(thread);
   return row !== undefined && Date.parse(String(row["at"])) + LEAD_ASK_TTL_MS > now.getTime();
 }
+
+/** When an invite can still be used: not revoked, not consumed, not expired, and fewer than ten admitted attempts.
+ * One bound parameter: the current time as an ISO string. Every read and write that asks "is this invite usable" uses
+ * this fragment, so the join page, the attempt counter, the join terms and the open-invites list agree. */
+export const INVITE_USABLE_SQL = "revoked_at IS NULL AND consumed_at IS NULL AND expires_at > ? AND attempts < 10";
