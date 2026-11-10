@@ -683,7 +683,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   // Lead cards attach to their row: a problem to the step that stopped, a pull request to Ready, a missing plan to
   // Approval, the build's control and its live attempt (files changing) to Build; the rest stay under the rows.
   const stuckKey = rows?.find(row => row.state === "stuck")?.key ?? currentKey;
-  const ATTACHED: Readonly<Record<string, string | null>> = { problem: stuckKey, "pull-request": "ready", "needs-scope": "approve", control: "build", attempt: "build" };
+  // A refusal while the approval form is on the page sits with that form, wherever the road stands.
+  const ATTACHED: Readonly<Record<string, string | null>> = { problem: approve !== null ? "approve" : stuckKey, "pull-request": "ready", "needs-scope": "approve", control: "build", attempt: "build" };
   const leadOf = (key: string) => rows === null ? [] : view.lead.filter(block => ATTACHED[block.key] === key && rows.some(row => row.key === key && row.opens));
   const unattached = view.lead.filter(block => rows === null || !rows.some(row => row.key === ATTACHED[block.key] && row.opens));
   const leadCards = (blocks: readonly { key: string; html: string }[]) => blocks.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />);
@@ -711,12 +712,14 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       case "plan":
         // Installed once, and again when what it holds changes: the plan sheet joins it once the plan is approved
         // (here or in another window), and a new plan version is a new sheet.
-        return <>{status}{view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan" />}</>;
+        return <>{status}{leadCards(leadOf("plan"))}{view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan" />}</>;
       case "approve":
         if (approve !== null) return <div className="so-approval-step" key={`approve:${approve.fields["digest"] ?? ""}`} data-approval-step="">
+          {/* Why the last yes wasn't taken reads first, above the form it answers. */}
+          {leadCards(leadOf("approve").filter(block => block.key === "problem"))}
           <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} inRow />
           <div className="so-approval-sheet"><Html html={approve.planHtml} className="so-task-plan" /></div>
-          {leadCards(leadOf("approve"))}
+          {leadCards(leadOf("approve").filter(block => block.key !== "problem"))}
         </div>;
         return <>{status}
           {row.state === "done" && view.approved != null && <KInfoLine>{approvedWords(view.approved)}</KInfoLine>}

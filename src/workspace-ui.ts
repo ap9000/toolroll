@@ -814,7 +814,7 @@ export type StepRowFacts = {
   approve?: { heading: string } | null;
   approval?: string;
   progress?: { line: string } | null;
-  plan?: { lead: string | null; by: string | null; at: string | null; planning: boolean } | null;
+  plan?: { lead: string | null; by: string | null; at: string | null; planning: boolean; updating?: boolean } | null;
   result?: { selected: unknown } | null;
   thread?: readonly { kind: string; at: string }[];
   release?: unknown;
@@ -844,7 +844,9 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
           if (approvalOpen) return { sentence: by === null ? "Shown below" : `Written by ${by} · shown below`, at: view.plan?.at ?? null };
           return { sentence: view.plan?.lead ?? (by === null ? "Plan written" : `Written by ${by}`), at: view.plan?.at ?? null };
         }
-        if (here) return { sentence: view.plan?.planning === true || headline === "Planning" ? "Writing the plan" : step.needsYou ? "" : "No plan yet", at: null };
+        // Stopped at Plan with a plan already written (a held task whose plan waits for approval): it says it stopped, never "No plan yet".
+        if (here) return { sentence: view.plan?.updating === true ? "Updating the plan" : view.plan?.planning === true || headline === "Planning" ? "Writing the plan" : step.needsYou ? ""
+          : step.state === "stuck" && view.approve != null ? stoppedWord : "No plan yet", at: null };
         return { sentence: "A plan for you to approve", at: null };
       case "approve":
         if (step.state === "done") {
@@ -885,8 +887,11 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
       : runs || step.say === "Checks running" ? "live" : "wait";
     // A step not reached opens only when it holds something already there: a result before Ready was reached, or
     // earlier attempts before the next build starts.
-    const opens = step.state !== "todo" || (step.key === "ready" && hasResult) || (step.key === "build" && hasHistory);
-    return { key: step.key, label: step.label, state: step.state, mark, sentence: said.sentence, at: said.at, needsYou, opens, open: here };
+    // An approval this person can give is always on the page, open, wherever the road stands (a held task stops at
+    // Plan with its plan still waiting for a yes): the Approval row holds its form.
+    const approvalHere = step.key === "approve" && view.approve != null;
+    const opens = step.state !== "todo" || (step.key === "ready" && hasResult) || (step.key === "build" && hasHistory) || approvalHere;
+    return { key: step.key, label: step.label, state: step.state, mark, sentence: said.sentence, at: said.at, needsYou, opens, open: here || approvalHere };
   });
   // A finished road whose task still waits on this person (a result to review): the last step it reached is theirs.
   const waitsOnViewer = headline === "Ready for review" || headline === "Needs you";

@@ -9,7 +9,7 @@ import { withFormToken } from "./request-context.js";
 import { renderExecutionPlanDocument } from "../plan.js";
 import { canonicalChainJson, chainTermsLines, LIVE_CHAIN_VERSION, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence, type ChainEntry, type Scope } from "../scope.js";
 import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
-import { approvalSheetParts, EVIDENCE_SHEET, planSheetHtml, type ApprovalSheetInput, type PlanContractView, type RouteView } from "./render-tasks.js";
+import { approvalSheetHtml, approvalSheetParts, EVIDENCE_SHEET, planSheetHtml, type ApprovalSheetInput, type PlanContractView, type RouteView } from "./render-tasks.js";
 
 const gemini = (model: string) => ({ provider: "gemini", model, approvalArgv: "auto_edit", maxTurns: "unsupported", repairMaxTurns: "unsupported",
   timeoutSeconds: 1800, repairTimeoutSeconds: 900, repairModel: "inherit" }) as unknown as ChainEntry["profile"];
@@ -169,4 +169,16 @@ test("a release's terms are in the plan sheet, whole: what later ships without a
   expect(visibleText(htmlString(planSheetHtml(inputOf({ scope: scopeOf({ releaseCheck: purpose } as Partial<Scope>) }))))).toContain(releaseCheckSentence(purpose));
   // An ordinary task's sheet has no Release part.
   expect(htmlString(planSheetHtml(CASES["plain"]!))).not.toContain("data-plan-release");
+  // The form the page without script and chat show says the same, above Approve and outside the details fold.
+  for (const surface of ["task", "chat"] as const) {
+    const form = withFormToken("c", () => htmlString(approvalSheetHtml(inputOf({ surface, scope: scopeOf({ releaseTerms: terms, releaseCheck: purpose } as Partial<Scope>), releaseCiRunning: true }))));
+    const act = form.indexOf('<div class="approval-act"');
+    expect(act, surface).toBeGreaterThan(-1);
+    const before = visibleText(form.slice(0, act));
+    expect(before, surface).toContain(releaseTermsSentence(terms));
+    expect(before, surface).toContain(releaseCheckSentence(purpose));
+    expect(before, surface).toContain(RELEASE_CI_RUNNING_WORDS);
+    for (const line of releaseAsksAgainWords(terms)) expect(before, surface).toContain(line);
+    expect(withFormToken("c", () => htmlString(approvalSheetHtml(inputOf({ surface }))))).not.toContain("data-approval-release");
+  }
 });

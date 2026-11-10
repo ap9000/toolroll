@@ -729,14 +729,13 @@ async function sendBack(id, note) {
   const child = new URL(page.url()).searchParams.get("version") ?? rows(`SELECT t.external_id AS id FROM task_ref t WHERE t.revision_of IS NOT NULL ORDER BY t.id DESC LIMIT 1`)[0]?.id;
   if (!child || child === id) throw new Error(`no revision was made: ${page.url()}`);
   if (refOf(child)?.plan !== "requested" && refOf(child)?.plan !== "drafted") throw new Error(`the revision wasn't sent to the planner: plan ${refOf(child)?.plan}`);
-  // The page the request lands on: its steps are back at Plan, and (while the planner is still at it) the revision's
-  // Activity says the plan is being updated with the notes.
+  // The page the request lands on: its steps are back at Plan, and (while the planner is still at it) the Plan row
+  // says the plan is being updated with the notes.
   const step = await page.locator('.k-steprows .k-steprow[aria-current="step"]').first().getAttribute("data-step-row", { timeout: 10_000 }).catch(() => null);
   if (step !== "plan") throw new Error(`the revision's steps aren't at Plan: ${step}`);
   if (refOf(child)?.plan === "requested") {
-    await page.locator("[data-open-activity]").click();
-    const said = await page.locator('[data-task-panel="activity"]').innerText();
-    if (!/Updating the plan/.test(said) && refOf(child)?.plan === "requested") throw new Error(`the revision's Activity doesn't say the plan is being updated: ${said.slice(0, 300)}`);
+    const said = await page.locator('.k-steprows .k-steprow[data-step-row="plan"]').innerText();
+    if (!/Updating the plan/.test(said) && refOf(child)?.plan === "requested") throw new Error(`the revision's Plan row doesn't say the plan is being updated: ${said.slice(0, 300)}`);
   }
   await plannerDrafted(child, "the planner's updated plan");
   return child;
@@ -3176,8 +3175,9 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   await on.goto(`${install.base}/t/${encodeURIComponent(id)}`);
   const accept = on.locator(`[data-result-decision] form[action="/t/${id}/complete"] button[data-accept-result]`);
   await waitFor(accept, "Accept on the result", { timeoutMs: 30_000, seen: () => saysNow(on) });
-  // How it was approved, in its own words (never "password typed").
-  const approvedLine = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
+  // How it was approved, in its own words (never "password typed"): the Approval row says it when opened.
+  await on.locator('[data-step-row="approve"] button.k-steprow-head').click();
+  const approvedLine = (await on.locator('[data-step-row="approve"]').first().innerText()).replace(/\s+/g, " ");
   if (!/on this computer, no password/.test(approvedLine)) throw new Error(`the approval reads: ${approvedLine.slice(0, 300)}`);
   await bothSizes(on, "4-ready", "easy-start");
   // The sample came with its own check (its one test): the result says the checks passed. A fast start's one requirement

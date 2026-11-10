@@ -261,7 +261,7 @@ export type BrowserTaskView = {
    * only the editor while the approval shows the sheet). `planning`: a planner is writing it now. Null: no plan yet.
    * `key` names what the body holds (the editor alone, or the sheet of one exact plan): the page installs the body once
    * and again when the key changes. */
-  plan?: { lead: string | null; by: string | null; at: string | null; html: string; planning: boolean; key: string } | null;
+  plan?: { lead: string | null; by: string | null; at: string | null; html: string; planning: boolean; updating?: boolean; key: string } | null;
   /** What the agent did last on the live run, and when; the page words it against its own clock (activity-line.ts). */
   activity?: RunActivity | null;
   /** The task's live room (GET /live?room=task:<root>): change nudges and who else has it open. */

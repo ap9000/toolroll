@@ -696,6 +696,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               coordinator: view.coordinator ?? null,
               origin: view.origin ?? null,
               repairChain: view.repairChain ?? null,
+              releaseCiRunning: view.releaseCiRunning === true,
             },
       decisions: (view?.decisions ?? runtime.store.decisionsForTask(ref.id))
         .filter(one => one.state === "open" || one.state === "expired")

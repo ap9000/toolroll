@@ -525,12 +525,21 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
       input.deliverable === "report" ? html`<p class="approval-note">Read-only: it reports back and changes nothing in the repository.</p>` : "",
       originNote(input.origin) === null ? "" : html`<p class="approval-note" data-approval-origin>${originNote(input.origin)!}</p>`,
   ]);
+  // A release's terms are part of what the yes agrees to (the digest signs them): said whole on every approval
+  // surface (the plan sheet, the page without script, chat), before Approve, with nothing folded.
+  const releaseBody: Html | "" = scope.releaseTerms == null && scope.releaseCheck == null ? "" : joinHtml([
+    scope.releaseTerms == null ? "" : html`<p>${releaseTermsSentence(scope.releaseTerms)}</p>`,
+    scope.releaseCheck == null ? "" : html`<p>${releaseCheckSentence(scope.releaseCheck)}</p>`,
+    input.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : "",
+    scope.releaseTerms?.policy.carry !== true ? "" : html`<p class="plan-sheet-sub">What asks again</p><ul class="plan-sheet-list">${releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`)}</ul>`,
+  ]);
   const rows = joinHtml([
       html`<dl class="approval-rows">`,
       row("Goal", html`<p class="approval-goal">${goalShown}</p>`),
       row("Changes", changes),
       row("Won’t touch", html`<p>${scope.outOfScope === null ? "Nothing is ruled out." : scope.outOfScope}</p>`),
       row("Done when", doneWhen),
+      releaseBody === "" ? "" : html`<div class="approval-row" data-approval-release><dt>Release</dt><dd>${releaseBody}</dd></div>`,
       chain.length === 0 ? "" : row("If it runs out", html`<p>${chain[0]!}</p><ol class="approval-steps" data-approval-fallback>${chain.slice(1).map(one => html`<li>${one.replace(/^\d+\. /, "")}</li>`)}</ol>`),
       html`</dl>`,
       amendment,
@@ -574,13 +583,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     goalShown.trim() === sheetLead ? "" : part("Goal", html`<p class="approval-goal">${goalShown}</p>`),
     repairText === null ? "" : part("Full goal", html`<p>${scope.goal}</p>`),
     input.revision === null ? "" : part("Asked for changes", revisionBody),
-    // A release's terms are part of what the yes agrees to (the digest signs them): said whole, nothing folded.
-    scope.releaseTerms == null && scope.releaseCheck == null ? "" : part("Release", joinHtml([
-      scope.releaseTerms == null ? "" : html`<p>${releaseTermsSentence(scope.releaseTerms)}</p>`,
-      scope.releaseCheck == null ? "" : html`<p>${releaseCheckSentence(scope.releaseCheck)}</p>`,
-      input.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : "",
-      scope.releaseTerms?.policy.carry !== true ? "" : html`<p class="plan-sheet-sub">What asks again</p><ul class="plan-sheet-list">${releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`)}</ul>`,
-    ]), html` data-plan-release`),
+    releaseBody === "" ? "" : part("Release", releaseBody, html` data-plan-release`),
     milestones.length === 0 ? "" : part("Steps", html`<ol class="plan-sheet-steps">${milestones.map(one => html`<li><span>${one}</span></li>`)}</ol>`),
     part("Done when", doneWhenSheet),
     html`<div class="plan-sheet-pair">`,
@@ -2885,7 +2888,7 @@ export function taskBodyParts(data: {
   const liveAt = liveRun?.startedAt ?? task.updatedAt;
   // The plan itself is the page's Plan row: the thread keeps one line saying it was written.
   if (planCard !== "") thread.push({ key: "plan", at: familyRuns.filter(run => run.role === "planner").map(run => run.finishedAt ?? run.startedAt).sort().at(-1) ?? task.updatedAt,
-    kind: "plan", who: "agent", author: "", title: data.planDocument === null ? "Planning" : "Plan written", text: null, link: null, html: "", more: null });
+    kind: "plan", who: "agent", author: "", title: data.planDocument !== null ? "Plan written" : data.revision != null && !("problem" in data.revision) ? "Updating the plan" : "Planning", text: null, link: null, html: "", more: null });
   if (!isEmptyHtml(progressCard)) thread.push({ key: "progress", at: liveAt, kind: "progress", who: "agent", author: "", title: "Progress", text: null, link: null, html: htmlString(progressCard), more: null });
   if (!isEmptyHtml(revisionLedgerCard)) thread.push({ key: "plan-revisions", at: liveAt, kind: "progress", who: "agent", author: "", title: "Plan changes", text: null, link: null, html: htmlString(revisionLedgerCard), more: null });
   // The change a person asked for: the revision's own brief.
@@ -3042,11 +3045,14 @@ export function taskBodyParts(data: {
   };
   const sheetParts = sheetShown === null ? null : approvalSheetParts(sheetShown);
   const approvalWaitsHere = data.archived == null && sheetInput !== null && !dependencyChoiceNeeded && data.csrf !== "";
+  // A revision's plan being updated with the notes: the planner's card says so above the plan it starts from.
+  const planUpdating = data.planDocument === null && data.plan === "requested" && data.revision != null && !("problem" in data.revision) && planCard !== "";
   const planView: BrowserTaskView["plan"] = scope === null
-    ? (planCard === "" ? null : { lead: null, by: null, at: null, html: htmlString(planCard), planning: data.plan === "requested", key: "card" })
+    ? (planCard === "" ? null : { lead: null, by: null, at: null, html: htmlString(planCard), planning: data.plan === "requested", updating: planUpdating, key: "card" })
     : { lead: oneLineOf(sheetParts!.sheetLead, 160), by: plannerRun === undefined ? null : agentNameWords(plannerRun.provider, plannerRun.model),
-      at: plannerRun?.finishedAt ?? scope.proposedAt ?? null, planning: false, key: approvalWaitsHere ? "editor" : `sheet:${scope.digest}`,
-      html: htmlString(joinHtml([approvalWaitsHere ? "" : sheetParts!.sheet, planEditorHtml])) };
+      at: plannerRun?.finishedAt ?? scope.proposedAt ?? null, planning: planUpdating, updating: planUpdating,
+      key: `${planUpdating ? "updating:" : ""}${approvalWaitsHere ? "editor" : `sheet:${scope.digest}`}`,
+      html: htmlString(joinHtml([planUpdating ? planCard : "", approvalWaitsHere ? "" : sheetParts!.sheet, planEditorHtml])) };
   const view: BrowserTaskView = {
     kind: "task",
     id: task.id,

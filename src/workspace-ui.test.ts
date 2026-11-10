@@ -187,6 +187,21 @@ describe("the task page's step rows (stepRowsOf)", () => {
     expect(stepRowsOf(view)![0]!.at).toBe("2026-11-10T23:28:00.000Z");
   });
 
+  test("a held task whose plan still waits for a yes: the road stops at Plan, and the Approval row is open with its form", () => {
+    const held = facts({ journey: taskRoad({ stage: "stopped" }, false, false, {}), approve: { heading: "Plan ready" },
+      plan: { lead: "Rename the helper.", by: null, at: null, planning: false }, status: { status: { headline: "Stopped", sentence: "On hold." }, attempts: [] } });
+    expect(rows(held).slice(0, 3)).toEqual(["plan:wait+:Stopped", "approve:todo+:You approve before anything is built", "build:todo-:Starts when you approve"]);
+    // With no approval to give, a step not reached holds nothing to open.
+    expect(rows({ ...held, approve: null })[1]).toBe("approve:todo-:You approve before anything is built");
+  });
+
+  test("a revision whose plan is being updated with the notes says so on the Plan row, not that a plan is being written", () => {
+    const updating = facts({ journey: taskRoad({ stage: "planning" }, false, false, {}), plan: { lead: "Add subtract.", by: null, at: null, planning: true, updating: true },
+      status: { status: { headline: "Planning", sentence: "" }, attempts: [] } });
+    expect(rows(updating)[0]).toMatch(/^plan:live\+?:Updating the plan$/);
+    expect(rows({ ...updating, plan: { ...updating.plan!, updating: false } })[0]).toMatch(/^plan:live\+?:Writing the plan$/);
+  });
+
   test("building: the build runs in blue with its progress line; finished steps say who and when", () => {
     const view = facts({ journey: taskRoad({ stage: "building" }, true, false, {}), progress: { line: "Step 2 of 3: Adding the test." },
       approved: { by: "alex", at: "2026-11-10T23:30:00.000Z", automatic: false, rule: null },

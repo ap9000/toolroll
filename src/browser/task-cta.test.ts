@@ -197,6 +197,25 @@ test("approved in another window: the Plan row takes the approved plan sheet in 
   expect(plan().querySelectorAll("#plan-editor")).toHaveLength(1);
 });
 
+test("a refused approval is said where the form is: above it in the Approval row of a held task, and in the Plan row when nothing can be approved", () => {
+  const problem = { key: "problem", html: '<div class="problem">You filed this task, and this project needs someone else to approve it.</div>' };
+  // A held task: the road stops at Plan, the form is in the Approval row, and the refusal reads above the form.
+  const held = viewOf(cardOf("Needs you", null), { approve: approveOf({ passwordless: true, remembered: false }), lead: [problem], journey: taskRoad({ stage: "stopped" }, false, false, {}) });
+  show({ ...held, steps: stepRowsOf(held) });
+  const said = host.querySelectorAll(".so-task-lead--problem");
+  expect(said).toHaveLength(1);
+  expect(said[0]!.closest("[data-step-row]")!.getAttribute("data-step-row")).toBe("approve");
+  expect(said[0]!.textContent).toContain("You filed this task");
+  expect(said[0]!.compareDocumentPosition(host.querySelector("[data-task-approval]")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Stopped at Plan with no approval to give: the Plan row holds it. It is never dropped.
+  const stopped = viewOf(cardOf("Needs you", null), { lead: [problem], journey: taskRoad({ stage: "stopped" }, false, false, {}) });
+  show({ ...stopped, steps: stepRowsOf(stopped) }, "stopped");
+  const kept = host.querySelectorAll(".so-task-lead--problem");
+  expect(kept).toHaveLength(1);
+  expect(kept[0]!.closest("[data-step-row]")!.getAttribute("data-step-row")).toBe("plan");
+  expect(kept[0]!.closest("[hidden]")).toBeNull();
+});
+
 test("the task's attempts stay in the Build row: while a correction is planned (the row opens before the build starts) and while it builds", () => {
   const attempts = [{ taskId: "t-0", label: "Original · Complete", href: "/t/t-1?version=t-0", runId: 4, detail: null }, { taskId: "t-1", label: "Correction 1 · Planning", href: "/t/t-1", runId: null, detail: null }];
   const build = () => host.querySelector<HTMLElement>('[data-step-row="build"]')!;
