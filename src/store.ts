@@ -145,6 +145,7 @@ import { configBase, envValue, namedPath } from "./names.js";
 import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
+import { endedInterrupted, wasInterrupted } from "./run-ending.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 import { cardShowsScope, cardTermsDigest, shownTermsDigest } from "./chat-terms.js";
 
@@ -15690,7 +15691,7 @@ export class Store {
     const taskId = this.externalIdFor(taskRef);
     if (taskId === null) return;
     const role = String(prior["role"]);
-    const stopped = result.outcome === "failed" && result.reason === "interrupted" && this.stopOf(id) !== null;
+    const stopped = wasInterrupted(result) && this.stopOf(id) !== null;
     if (role === "builder") {
       if (stopped) {
         this.noteLifecycle({ taskRef, run: id, kind: "run-stopped", identity: `r${id}`, subject: `Build #${id} stopped`, body: "Its work is preserved. Resume this attempt from the task page when ready.", link: chatControlHref("recovery", taskId) }, now);
@@ -16374,7 +16375,7 @@ export class Store {
     if (parent.worktree !== run.worktree || parent.branch !== run.branch) return `run #${parent.id} left its draft in ${parent.worktree ?? "no worktree"} on ${parent.branch ?? "no branch"}, not ${run.worktree} on ${run.branch}`;
     // An attempt that stopped before its handoff (run 2085) left its work in
     // place for exactly this: the retry inherits it, like an interrupted one's.
-    const interrupted = parent.outcome === null || (parent.outcome === "failed" && (parent.reason === "interrupted" || parent.reason === "no-handoff"));
+    const interrupted = parent.outcome === null || endedInterrupted(parent) || (parent.outcome === "failed" && parent.reason === "no-handoff");
     if (!interrupted) return `run #${parent.id} ended as ${parent.outcome}${parent.reason === null ? "" : ` (${parent.reason})`} — only an interrupted attempt's draft is recovered`;
     if (parent.outcome === null && this.liveClaimByLease(parent.leaseId, now) !== null) return `run #${parent.id} is still being built under lease ${parent.leaseId} — nothing recovers a live attempt's draft`;
     // THE RESUME GRANT (v52): an operator-stopped attempt's draft is
