@@ -54,7 +54,7 @@ import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
 import { readAcceptance, readScopeTerms, storedRubricSchema, type AcceptanceCriterion, type AcceptanceProblem, type ScopeTerms } from "./contracts/scope.js";
 import type { Store, Mutation } from "./store.js";
-import { taskArchived } from "./task-archive.js";
+import { taskArchived, taskCancelled } from "./task-archive.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import type { QualityMode } from "./quality.js";
 import type { AuthMode } from "./keys.js";
@@ -1178,7 +1178,9 @@ export type ApproveResult =
   /** Approval policy, phase 1: a machine credential (the lead's token, a remote API token) is not a person. */
   | { ok: false; reason: "machine-proof" }
   /** v145 (task-tidy.md): the task is put away; it is restored before anyone can approve it. */
-  | { ok: false; reason: "archived" };
+  | { ok: false; reason: "archived" }
+  /** The task was cancelled: a cancelled task takes no approval, by any road (a stale page, the CLI). */
+  | { ok: false; reason: "cancelled" };
 
 /**
  * Whether this name-and-token pair is a person the store knows. Shared by
@@ -1565,6 +1567,9 @@ export function approve(
     if (scope === null) return { ok: false as const, reason: "no-scope" as const };
     // A put-away task (v145) is restored first; sealScopeApproval refuses it too, on every road.
     if (taskArchived(store, taskId)) return { ok: false as const, reason: "archived" as const };
+    // A cancelled task takes no yes either — read here, in the seal's transaction, before any vote or proof is
+    // written: an approval page left open while the task was cancelled elsewhere, or the CLI, approves nothing.
+    if (taskCancelled(store, taskId)) return { ok: false as const, reason: "cancelled" as const };
 
     // The digest is required, not optional. An operator reads a scope, somebody
     // rewrites it, and an approval that did not name what it saw would agree to
@@ -2015,6 +2020,8 @@ export function liveReleaseOf(store: Store, taskId: string, action: ReleaseActio
   const refuse = (why: string): LiveRelease => ({ applies: true, ok: false, why, authority: a });
   // A put-away task (v145, task-tidy.md), or a put-away anchor, deploys, merges and carries nothing: restore it first.
   if (taskArchived(store, taskId) || taskArchived(store, a.anchorTask)) return refuse("the release task is put away");
+  // A cancelled task, or a cancelled anchor, the same: cancelling ends what its approval allows.
+  if (taskCancelled(store, taskId) || taskCancelled(store, a.anchorTask)) return refuse("the release task was cancelled");
   const newest = newestReleaseGeneration(store, a.repo, a.version, a.pr);
   if (newest === null || newest.id !== a.id) return refuse("a newer approval of this release replaced this one");
   if (a.state === "superseded") return refuse("a newer approval of this release replaced this one");

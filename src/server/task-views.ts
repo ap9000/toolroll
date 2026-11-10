@@ -39,7 +39,7 @@ import { runActivityOf } from "../task-activity.js";
 import { taskFingerprint } from "../task-live.js";
 import { pullRequestFactOf } from '../task-status.js';
 import { openWorkDecisionOf } from "../work-summary.js";
-import { learningHtml } from "../workspace-ui.js";
+import { learningHtml, stepRowsOf } from "../workspace-ui.js";
 
 import { createHash, randomBytes } from "node:crypto";
 import { type ServerResponse } from "node:http";
@@ -696,6 +696,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               coordinator: view.coordinator ?? null,
               origin: view.origin ?? null,
               repairChain: view.repairChain ?? null,
+              releaseCiRunning: view.releaseCiRunning === true,
             },
       decisions: (view?.decisions ?? runtime.store.decisionsForTask(ref.id))
         .filter(one => one.state === "open" || one.state === "expired")
@@ -918,6 +919,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       oneTaskView.steering = null;
       if (oneTaskView.release != null) oneTaskView.journey = null;
     }
+    // The step rows read the view as the page will show it (its result, its release, its checks words).
+    if (oneTaskView?.kind === "task") oneTaskView.steps = stepRowsOf(oneTaskView);
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;

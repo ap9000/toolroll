@@ -18,7 +18,7 @@ import { V156_SCHEMA, V156_STEPS } from "./fallback-schema.js";
 import { V158_ADDED_COLUMNS, V158_SCHEMA, V158_STEPS, LEAD_FAILURE_DETAILS, LEAD_ROUTES, type LeadFailureDetail, type LeadRoute } from "./lead-latency-schema.js";
 import { V157_SCHEMA, V157_STEPS } from "./chat-live-schema.js";
 import { V159_ADDED_COLUMNS, V159_SCHEMA, V159_STEPS } from "./one-step-chat-schema.js";
-import { refArchived, taskArchived } from "./task-archive.js";
+import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
 import { type ChatBinding, type ChatRoom } from "./chat-core.js";
@@ -9501,7 +9501,11 @@ export class Store {
     card?: "release" | "terms" | "shown"; cardDigest?: string;
     /** `shown`: the exact words a card showed whole, whose digest (kept when it was made) is `cardDigest`. */
     shownTerms?: string }, approverKind?: ApproverKind): boolean {
-    return (
+    // ONE TRANSACTION, the primitive's own (Codex review of the steps page, round 2): every check below is read in
+    // the same write transaction as the seal and the release authority it opens, so a task cancelled or put away on
+    // another connection can't slip between the check and the write, and a seal whose release authority can't open
+    // rolls back whole even when the caller opened no transaction. Reentrant: inside a caller's transaction it joins.
+    const seal = (): boolean =>
       this.once(mutation, "sealScopeApproval", () => {
         // ONLY A PERSON'S SEAL HAS NO BASIS (approval policy, phase 1): with none given this is the person's
         // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
@@ -9509,6 +9513,9 @@ export class Store {
         if (basis === undefined && machineActing()) return false;
         // A PUT-AWAY TASK (v145, task-tidy.md) is never approved, by any road: restore it first.
         if (taskArchived(this, taskId)) return false;
+        // A CANCELLED TASK the same (Codex review of the steps page, finding 2): no seal, and so no release authority,
+        // is written for work that was cancelled — whichever road asks (a stale form, the CLI, a rule, the schedule).
+        if (taskCancelled(this, taskId)) return false;
         // A RELEASE WAITING FOR CI (Codex review round 1, finding 4): filed while its pull request's checks still ran,
         // only the automatic road (which proves CI itself) seals it until the plane read exact-head CI passing.
         if (basis?.kind !== "auto-check" && basis?.kind !== "auto-green" && releaseCiHoldOf(this, taskId) !== null) return false;
@@ -9710,8 +9717,10 @@ export class Store {
           }
         }
         return changed.changes > 0;
-      }) === true
-    );
+      }) === true;
+    // Already inside a transaction (a caller's transact(), or a savepoint opened outside one): it joins that one,
+    // which owns the commit and the rollback. Otherwise it opens its own.
+    return (this.db as { isTransaction?: boolean }).isTransaction === true ? seal() : this.transact(seal);
   }
 
   /** Whether this task's scope carries a LIVE seal: approved, and the

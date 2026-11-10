@@ -1215,12 +1215,34 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // The repair's approval says what it fixes in one sentence, the
     // criterion as words; the machine brief ("Unmet: c1") stays in Details.
     expect(draftHtml).toContain(`<p class="approval-revision">Fixes what build #${run} missed: it works.</p>`);
-    const sheetMain = draftHtml.slice(draftHtml.indexOf('class="approve-form approval-sheet"'), draftHtml.indexOf('<details class="approval-details">'));
+    const sheetMain = draftHtml.slice(draftHtml.indexOf('class="approve-form approval-sheet"'), draftHtml.indexOf('<details class="approval-details"'));
     expect(sheetMain).not.toContain("Unmet");
     // Its requirement is one only you can check, said plainly above Approve.
     expect(sheetMain).toContain('<p class="approval-you-check" data-approval-you-check>You’ll check: it works</p>');
     // Edit plan shows the goal without the machine brief, which rides along unchanged.
     expect(sheetMain).not.toContain("inherited terms");
+    // Without script the steps are the page too (docs/plans/task-page-steps.md): every row open, in order, and the
+    // approval form the person signs sits in the Approval row.
+    const native = new Window();
+    native.document.body.innerHTML = draftHtml;
+    expect([...native.document.querySelectorAll(".k-steprows > .k-steprow")].map(one => one.getAttribute("data-step-row"))).toEqual(["plan", "approve", "build", "checks", "ready"]);
+    expect(native.document.querySelector(".k-steprow-body[hidden]")).toBeNull();
+    expect(native.document.querySelector('[data-step-row="approve"] form.approval-sheet')).not.toBeNull();
+    expect(native.document.querySelectorAll("form.approval-sheet")).toHaveLength(1);
+    await native.happyDOM.close();
+    // With script the rows show the plan once: the Plan section under them keeps its links and never repeats the plan.
+    const draftView = workspaceOf(draftHtml).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(draftView.approve).not.toBeNull();
+    const planSection = draftView.sections.find(one => one.id === "scope")!;
+    expect(planSection.html).toContain("Audit record");
+    expect(planSection.html).not.toContain("<strong>Goal</strong>");
+    // A cancelled task asks for no approval, with or without script: nothing would start.
+    store.cancelTask(trigger.draftTaskId, T0, "not needed");
+    const cancelledHtml = await (await fetch(url(`/t/${trigger.draftTaskId}`), { headers: { cookie } })).text();
+    expect(cancelledHtml).not.toContain("approval-sheet");
+    const cancelledView = workspaceOf(cancelledHtml).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(cancelledView.approve ?? null).toBeNull();
+    expect(cancelledView.plan?.html ?? "").not.toContain("k-approve");
 
     // Historical repair records stay readable on their task pages. They do
     // not add a second assessment-based stage to what Home asks of a person.
@@ -1767,7 +1789,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(html)?.[1] ?? "";
     // One plain line of who builds in view; the full route in Details.
     expect(ceremony).toContain('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
-    const details = ceremony.slice(ceremony.indexOf('<details class="approval-details"><summary>Plan details</summary>'));
+    const details = ceremony.slice(ceremony.indexOf('<details class="approval-details"'));
     expect(details).toContain("<h3>Why these agents</h3><p>claude · sonnet plans; claude · opus builds and repairs</p>");
     expect(details).toContain("These exact agents are part of what you approve");
     // Why stronger agents run, in plain words, and the runtime mechanics folded away.
@@ -1937,40 +1959,43 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect((await form([["risky", "maybe"]])).status).toBe(400);
   });
 
-  test("consent: the task page and the focused chat restate the same concise exact agents before the password, with runtime limits closed away; Home only leads there", async () => {
+  test("consent: the task page and the focused chat restate the same concise exact agents before the password, with runtime limits after it (open on the task page, folded in chat); Home only leads there", async () => {
     const cookie = await loginAs("alex", approverToken);
     const summary = "claude · sonnet plans; claude · opus builds and repairs";
     const why = "a large change — planning and building use the strongest configured agent";
     const ceremonyOf = (html: string, action: string): string => new RegExp(`<form method="post" action="${action}"(.*?)<\\/form>`, "s").exec(html)?.[1] ?? "";
     // The task page and chat share the approval sheet: who builds in one
     // line before the password, the exact route and limits in Details.
-    const sheet = (ceremony: string): void => {
+    const sheet = (ceremony: string, surface: "task" | "chat"): void => {
       const whoAt = ceremony.indexOf('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
       const passwordAt = ceremony.indexOf('name="token"');
-      const detailsAt = ceremony.indexOf('<details class="approval-details"><summary>Plan details</summary>');
+      const detailsAt = ceremony.indexOf('<details class="approval-details"');
       expect(whoAt).toBeGreaterThan(-1);
       expect(passwordAt).toBeGreaterThan(whoAt);
       expect(detailsAt).toBeGreaterThan(passwordAt);
       expect(ceremony.slice(detailsAt)).toContain(`<h3>Why these agents</h3><p>${summary}</p>`);
       expect(ceremony.slice(detailsAt)).toContain(why);
       expect(ceremony.slice(detailsAt)).toContain("<h3>Runtime limits</h3>");
+      // The task page (the page without script) shows every term before the yes; chat keeps them one fold away.
       expect(ceremony).not.toContain("<details open");
+      expect(ceremony.includes('<details class="approval-details" open>')).toBe(surface === "task");
+      expect(ceremony.includes('<details class="approval-details">')).toBe(surface === "chat");
       expect(ceremony).not.toContain("not yet checked");
       expect(ceremony.replace(/<[^>]+>/g, " ")).not.toMatch(/--dangerously|config set|task route/);
     };
-    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
-    sheet(ceremonyOf(await page(cookie, "/chat?task=payouts"), "\\/t\\/payouts\\/approve"));
+    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"), "task");
+    sheet(ceremonyOf(await page(cookie, "/chat?task=payouts"), "\\/t\\/payouts\\/approve"), "chat");
     // With the sign-in's remembered password forgotten, the ceremony still asks for it (a remembered one is one click,
     // password-freshness.serve.test.ts).
     expect((await post(cookie, "/session/forget-password", { csrf: csrfOf(await page(cookie, "/t/payouts")), return: "/" })).status).toBe(303);
-    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"));
+    sheet(ceremonyOf(await page(cookie, "/t/payouts"), "\\/t\\/payouts\\/approve"), "task");
     // Home carries no ceremony of its own: the row is a link to the page that restates the agents.
     const home = await page(cookie, "/");
     expect(home).not.toContain('name="token"');
     expect(ceremonyOf(home, "\\/t\\/payouts\\/approve")).toBe("");
     const row = (workspaceOf(home).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "payouts");
     expect(row?.action?.href).toMatch(/^\/t\/payouts(?:[?#]|$)/);
-    sheet(ceremonyOf(await page(cookie, row!.action!.href), "\\/t\\/payouts\\/approve"));
+    sheet(ceremonyOf(await page(cookie, row!.action!.href), "\\/t\\/payouts\\/approve"), "task");
     // Changing an agent invalidates the approval every surface signed under.
     const before = store.getScope("payouts")!;
     expect(approve(store, "payouts", "alex", T0, before.digest, approverToken).ok).toBe(true);
@@ -2192,9 +2217,12 @@ describe("failures say what failed and builds say how far along: the demo's own 
     const stuck = "Stuck on step 4 of 6: the flag is off in the staging deploy target — confirming before enforcing.";
     expect(building.status!.status.headline).toBe("Building");
     expect(building.status!.status.sentence).toBe(stuck);
-    expect(building.progress).toEqual({ line: stuck, stuck: {
+    expect(building.progress).toMatchObject({ line: stuck, stuck: {
       step: 4, why: "the flag is off in the staging deploy target — confirming before enforcing", line: stuck,
       action: { label: "Send the agent a note", href: "#steering" } } });
+    // The Build row's steps, typed, from the latest checkpoint: the stuck one says so.
+    expect(building.progress!.steps!.map(one => one.state)).toEqual(["completed", "completed", "current", "blocked", "pending", "pending"]);
+    expect(building.steps!.find(one => one.key === "build")).toMatchObject({ state: "current", mark: "live", open: true });
     // The act lands somewhere real: the Steering fold with its note form.
     expect(building.manage.some(one => one.id === "steering")).toBe(true);
     // Stop is in that card, for this exact build; the control card below keeps its details but not a second Stop, and

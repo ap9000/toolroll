@@ -19,3 +19,9 @@ export function cardTaskArchived(store: Store, cardId: number): boolean {
   return store.handle.prepare(`SELECT 1 FROM flow_card c JOIN task_ref r ON r.backend = 'built-in' AND r.external_id IN (c.task, c.primary_task)
     JOIN task_archive a ON a.task_ref = r.id WHERE c.id = ?`).get(cardId) !== undefined;
 }
+
+/** Whether the built-in task with this id is cancelled. Every door that approves, seals or carries a release asks
+ * this beside the put-away check: a cancelled task takes no new yes (fail closed), by any road. */
+export function taskCancelled(store: Store, taskId: string): boolean {
+  return store.handle.prepare("SELECT 1 FROM task WHERE id = ? AND state = 'cancelled'").get(taskId) !== undefined;
+}

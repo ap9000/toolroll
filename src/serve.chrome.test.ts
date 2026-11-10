@@ -160,7 +160,7 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(ceremonyAcceptance).toBeGreaterThan(-1);
     expect(ceremonyAcceptance).toBeLessThan(ceremonySeal);
     expect(approveForm).toContain('<ul class="approval-done"><li>The payout guard rejects a negative amount.</li><li>The settings panel still opens.</li></ul>');
-    const rows = approveForm.slice(0, approveForm.indexOf('<details class="approval-details">'));
+    const rows = approveForm.slice(0, approveForm.indexOf('<details class="approval-details"'));
     expect(rows).not.toMatch(/\bc[12]\b|requires:/);
     expect(approveForm).toContain('<code>c1</code> The payout guard rejects a negative amount. <span class="meta">shown by the project check</span>');
     expect(approveForm).toContain('<code>c2</code> The settings panel still opens. <span class="meta">shown by screenshots</span>');
@@ -177,7 +177,8 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(granted.ok).toBe(true);
     const after = await (await fetch(url("/t/t-rubric"), { headers: { cookie } })).text();
     const cardAcceptance = after.indexOf(">Acceptance<");
-    const cardSeal = after.indexOf("Approved by alex");
+    // (The page's Approval row says who approved first; the scope card's own seal follows its acceptance.)
+    const cardSeal = after.indexOf("Approved by alex", cardAcceptance);
     expect(cardAcceptance).toBeGreaterThan(-1);
     expect(cardAcceptance).toBeLessThan(cardSeal);
 

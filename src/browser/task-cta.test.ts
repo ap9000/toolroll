@@ -10,6 +10,8 @@ import type { AssignmentCard } from "../assignment-ui.js";
 import type { BrowserTaskThreadItem, BrowserTaskView } from "../browser-workspace.js";
 import { TaskView } from "./views/task-view.js";
 import { Passwordless } from "./ui/post-form.js";
+import { taskRoad } from "../first-run.js";
+import { stepRowsOf } from "../workspace-ui.js";
 
 const cardOf = (headline: "Needs you" | "Building", action: AssignmentCard["action"] = { label: "Open result", href: "/review?result=t-1" }): AssignmentCard => ({
   token: "assignment", tone: headline === "Needs you" ? "attention" : "info", label: headline,
@@ -125,4 +127,116 @@ test("a fold inside a thread entry's More opens with it: one tap shows it all", 
   expect(inner.open).toBe(false);
   act(() => { outer.open = true; outer.dispatchEvent(new Event("toggle")); });
   expect(inner.open).toBe(true);
+});
+
+/** The view as the server sends it while the plan waits on this person: its road and step rows. */
+const waiting = (approve: Approve): BrowserTaskView => {
+  const view = viewOf(cardOf("Needs you", null), { approve, journey: taskRoad({ stage: "needs-you", need: "approval" }, false, false, {}) });
+  return { ...view, steps: stepRowsOf(view) };
+};
+
+test("in the step rows the approval is the open Approval row: one outline, one chip, the act, then the plan it signs, nothing folded", () => {
+  show(waiting({ ...approveOf({ passwordless: true, remembered: false }), planHtml: '<article data-plan-sheet><p id="plan-words">Goal</p></article><details id="plan-editor"><summary>Request changes</summary></details>' }));
+  const row = host.querySelector<HTMLElement>('[data-step-row="approve"]')!;
+  expect(row.classList.contains("needs")).toBe(true);
+  expect(row.getAttribute("aria-current")).toBe("step");
+  // Never a toggle while it waits: its head is no button, its body is open.
+  expect(row.querySelector("button.k-steprow-head")).toBeNull();
+  const body = row.querySelector<HTMLElement>(".k-steprow-body")!;
+  expect(body.hidden).toBe(false);
+  // The act first, then the sheet, both in the row's body; the plan row above is one line pointing below.
+  expect(body.querySelector("[data-task-approval]")).not.toBeNull();
+  const sheet = body.querySelector("[data-plan-sheet]")!;
+  expect(sheet.closest("details, [hidden]")).toBeNull();
+  expect(body.querySelector("[data-task-approval]")!.compareDocumentPosition(sheet) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(host.querySelector('[data-step-row="plan"]')!.textContent).toContain("Shown below");
+  // The chip is said once, by the row.
+  expect([...host.querySelectorAll(".k-chip.needs")].map(one => one.closest("[data-step-row]")?.getAttribute("data-step-row"))).toEqual(["approve"]);
+  expect(host.querySelectorAll("[data-task-approval]")).toHaveLength(1);
+});
+
+test("in the step rows a newer approval disables the yes and the sheet stays the one first shown", () => {
+  show(waiting({ ...approveOf({ passwordless: true, remembered: false }, "d1"), planHtml: '<p id="plan-words">First terms</p>' }));
+  show(waiting({ ...approveOf({ passwordless: true, remembered: false }, "d2"), planHtml: '<p id="plan-words">Newer terms</p>' }));
+  const body = host.querySelector<HTMLElement>('[data-step-row="approve"] .k-steprow-body')!;
+  expect(body.querySelector("#plan-words")!.textContent).toBe("First terms");
+  expect(body.querySelector<HTMLInputElement>('input[name="digest"]')!.value).toBe("d1");
+  expect([...body.querySelectorAll("[data-task-approval] button")].map(one => one.textContent)).toEqual(["Reload"]);
+});
+
+test("in the step rows a refused password keeps the terms shown and sends nothing until asked again", () => {
+  show(waiting({ ...approveOf({ passwordless: false, remembered: false }, "d1"), planHtml: '<p id="plan-words">First terms</p>' }));
+  pressApprove();
+  // The person closes the popover (a wrong password is refused by the server, which answers the same page): the
+  // act is released, nothing went, and the terms on the page are the ones shown.
+  act(() => document.querySelector<HTMLButtonElement>('.k-pop [aria-label="Close"], .k-pop button[data-k-close]')?.click());
+  expect(submitted).toEqual([]);
+  show(waiting({ ...approveOf({ passwordless: false, remembered: false }, "d1"), planHtml: '<p id="plan-words">Re-rendered terms</p>' }));
+  expect(host.querySelector("#plan-words")!.textContent).toBe("First terms");
+  pressApprove();
+  expect(popover()).not.toBeNull();
+});
+
+test("approved in another window: the Plan row takes the approved plan sheet in a live update; the same body is never swapped", () => {
+  const editor = '<details id="plan-editor"><summary>Edit plan</summary></details>';
+  const base = waiting(approveOf({ passwordless: true, remembered: false }));
+  const before: BrowserTaskView = { ...base, plan: { lead: "Add subtract.", by: null, at: null, planning: false, key: "editor", html: editor } };
+  show(before);
+  const plan = () => host.querySelector<HTMLElement>('[data-step-row="plan"]')!;
+  expect(plan().querySelector("[data-plan-sheet]")).toBeNull();
+  // A refresh while it still waits changes nothing in the installed body (a person may be typing in the editor).
+  show({ ...before, plan: { ...before.plan!, html: `<p id="swapped">x</p>${editor}` } });
+  expect(plan().querySelector("#swapped")).toBeNull();
+  // Somebody approves elsewhere: the live update carries the approved view, and the Plan row now holds the sheet.
+  const approved = viewOf(cardOf("Building", null), { journey: taskRoad({ stage: "building" }, true, false, {}),
+    approved: { by: "sam", at: "2026-11-10T09:00:00.000Z", automatic: false, rule: null, how: "", version: "v" },
+    plan: { lead: "Add subtract.", by: null, at: null, planning: false, key: "sheet:d1", html: `<article data-plan-sheet><p id="plan-words">Goal</p></article>${editor}` } });
+  show({ ...approved, steps: stepRowsOf(approved) });
+  expect(host.querySelector("[data-task-approval]")).toBeNull();
+  expect(plan().querySelector("[data-plan-sheet] #plan-words")!.textContent).toBe("Goal");
+  expect(plan().querySelectorAll("#plan-editor")).toHaveLength(1);
+});
+
+test("a refused approval is said where the form is: above it in the Approval row of a held task, and in the Plan row when nothing can be approved", () => {
+  const problem = { key: "problem", html: '<div class="problem">You filed this task, and this project needs someone else to approve it.</div>' };
+  // A held task: the road stops at Plan, the form is in the Approval row, and the refusal reads above the form.
+  const held = viewOf(cardOf("Needs you", null), { approve: approveOf({ passwordless: true, remembered: false }), lead: [problem], journey: taskRoad({ stage: "stopped" }, false, false, {}) });
+  show({ ...held, steps: stepRowsOf(held) });
+  const said = host.querySelectorAll(".so-task-lead--problem");
+  expect(said).toHaveLength(1);
+  expect(said[0]!.closest("[data-step-row]")!.getAttribute("data-step-row")).toBe("approve");
+  expect(said[0]!.textContent).toContain("You filed this task");
+  expect(said[0]!.compareDocumentPosition(host.querySelector("[data-task-approval]")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Stopped at Plan with no approval to give: the Plan row holds it. It is never dropped.
+  const stopped = viewOf(cardOf("Needs you", null), { lead: [problem], journey: taskRoad({ stage: "stopped" }, false, false, {}) });
+  show({ ...stopped, steps: stepRowsOf(stopped) }, "stopped");
+  const kept = host.querySelectorAll(".so-task-lead--problem");
+  expect(kept).toHaveLength(1);
+  expect(kept[0]!.closest("[data-step-row]")!.getAttribute("data-step-row")).toBe("plan");
+  expect(kept[0]!.closest("[hidden]")).toBeNull();
+});
+
+test("the task's attempts stay in the Build row: while a correction is planned (the row opens before the build starts) and while it builds", () => {
+  const attempts = [{ taskId: "t-0", label: "Original · Complete", href: "/t/t-1?version=t-0", runId: 4, detail: null }, { taskId: "t-1", label: "Correction 1 · Planning", href: "/t/t-1", runId: null, detail: null }];
+  const build = () => host.querySelector<HTMLElement>('[data-step-row="build"]')!;
+  // A correction being planned: Build hasn't started, and still opens for the earlier attempt.
+  const planning = viewOf({ ...cardOf("Building", null), attempts }, { tab: "attempts", journey: taskRoad({ stage: "planning" }, false, false, {}) });
+  show({ ...planning, steps: stepRowsOf(planning) });
+  expect(build().querySelector("button.k-steprow-head")!.getAttribute("aria-expanded")).toBe("true");
+  expect(build().textContent).toContain("Earlier attempts are here.");
+  expect(build().querySelector<HTMLElement>(".k-steprow-body")!.hidden).toBe(false);
+  expect(build().querySelectorAll("[data-attempt-timeline] a")).toHaveLength(2);
+  // With one attempt and nothing stopped before it, a step not reached has nothing to open.
+  const first = viewOf(cardOf("Building", null), { tab: "attempts", journey: taskRoad({ stage: "planning" }, false, false, {}) });
+  show({ ...first, steps: stepRowsOf(first) }, "first");
+  expect(build().querySelector("button")).toBeNull();
+  // The correction building: its history is under the live build.
+  const building = viewOf({ ...cardOf("Building", null), attempts }, { journey: taskRoad({ stage: "building" }, true, false, {}) });
+  show({ ...building, steps: stepRowsOf(building) }, "building");
+  expect(build().getAttribute("aria-current")).toBe("step");
+  expect(build().querySelectorAll("[data-attempt-timeline] a")).toHaveLength(2);
+  // Builds that stopped before this one count as history too.
+  const stopped = viewOf(cardOf("Building", null), { journey: taskRoad({ stage: "building" }, true, false, {}), earlier: { summary: "1 earlier build", attempts: [{ label: "Build #3", href: "/r/3", text: null }] } });
+  show({ ...stopped, steps: stepRowsOf(stopped) }, "stopped");
+  expect(build().querySelector("[data-earlier-attempts]")!.getAttribute("data-earlier-attempts")).toBe("1");
 });

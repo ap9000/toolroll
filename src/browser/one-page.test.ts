@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
-/** One page per task (docs/plans/one-page-task-and-agent.md): the tabs keep every panel mounted and the address keeps
- * the tab; the Result tab holds the result it loaded (a newer one is announced, never swapped in); and the current
+/** One page per task (docs/plans/task-page-steps.md): the steps are the page, closed rows stay mounted, the address
+ * keeps its tab; the Result tab holds the result it loaded (a newer one is announced, never swapped in); and the current
  * result on a task page still says what is its own — its report not matching its changes, its caveats. */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -8,6 +8,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { BrowserTaskView } from "../browser-workspace.js";
 import { TaskView } from "./views/task-view.js";
 import { SelectedResult } from "./views/result-view.js";
+import { taskRoad } from "../first-run.js";
+import { stepRowsOf } from "../workspace-ui.js";
 
 type Selected = NonNullable<BrowserTaskView["result"]>["selected"];
 const selectedOf = (build: number, extra: Partial<Selected> = {}): Selected => ({
@@ -33,20 +35,75 @@ afterEach(() => { act(() => root?.unmount()); host.remove(); vi.unstubAllGlobals
 const render = (view: BrowserTaskView) => act(() => root!.render(createElement(TaskView, { view, details: false, csrf: "c", result: shown })));
 const panel = (key: string) => host.querySelector<HTMLElement>(`[data-task-panel="${key}"]`)!;
 
-test("the tab the address names is in front; switching keeps every panel mounted and the address follows", () => {
-  render(viewOf({ tab: "activity" }));
+/** A view with its road and rows (as the server sends it): building, or finished with a result to review. */
+const withRows = (stage: "building" | "review", extra: Partial<BrowserTaskView> = {}): BrowserTaskView => {
+  const journey = stage === "building" ? taskRoad({ stage: "building" }, true, false, {}) : taskRoad({ stage: "needs-you", need: "review-result" }, true, true, { checks: "passed" });
+  const view = viewOf({ journey, approved: { by: "alex", at: "2026-11-10T09:00:00.000Z", automatic: false, rule: null, how: "", version: "v" },
+    plan: { lead: "Add subtract next to add.", by: null, at: "2026-11-10T08:00:00.000Z", html: '<details id="plan-edit"><summary>Edit plan</summary><textarea></textarea></details>', planning: false, key: "sheet:v" },
+    ...extra });
+  return { ...view, steps: stepRowsOf(view) };
+};
+const row = (key: string) => host.querySelector<HTMLElement>(`[data-step-row="${key}"]`)!;
+const body = (key: string) => row(key).querySelector<HTMLElement>(".k-steprow-body");
+
+test("the steps are the page: the current row is open, finished rows open on press and stay mounted when closed", () => {
+  render(withRows("building"));
+  expect(host.querySelector("[role=tablist], .k-tabs, .k-steps")).toBeNull();
+  expect(row("build").getAttribute("aria-current")).toBe("step");
+  expect(body("build")!.hidden).toBe(false);
+  // A finished row is one line whose head is a disclosure; its body is there, hidden.
+  const head = row("plan").querySelector<HTMLButtonElement>("button.k-steprow-head")!;
+  expect(head.getAttribute("aria-expanded")).toBe("false");
+  expect(body("plan")!.hidden).toBe(true);
+  expect(host.querySelector("#plan-edit")).not.toBeNull();
+  act(() => head.click());
+  expect(head.getAttribute("aria-expanded")).toBe("true");
+  expect(body("plan")!.hidden).toBe(false);
+  act(() => head.click());
+  expect(body("plan")!.hidden).toBe(true);
+  expect(host.querySelector("#plan-edit")).not.toBeNull();
+  // Steps not reached are one line with nothing to open.
+  expect(row("checks").querySelector("button")).toBeNull();
+  expect(body("checks")).toBeNull();
+  // Under the rows, More about this task keeps the old Plan tab's sections.
+  expect(host.querySelector("[data-task-more-about] #scope-words")).not.toBeNull();
+});
+
+test("the address keeps its tab: activity opens the panel, result opens Ready, attempts opens Build", () => {
+  render(withRows("building", { tab: "activity" }));
   expect(panel("activity").hidden).toBe(false);
-  expect(panel("plan").hidden).toBe(true);
-  act(() => host.querySelector<HTMLButtonElement>('[data-k-tab="attempts"]')!.click());
-  expect(panel("attempts").hidden).toBe(false);
+  act(() => host.querySelector<HTMLButtonElement>("[data-close-activity]")!.click());
   expect(panel("activity").hidden).toBe(true);
-  // Hidden, never unmounted: the Plan's content is still there.
-  expect(host.querySelector("#scope-words")).not.toBeNull();
-  expect(new URL(location.href).searchParams.get("tab")).toBe("attempts");
-  // The first tab (Plan, or Result once there is one) is the page's own address.
-  act(() => host.querySelector<HTMLButtonElement>('[data-k-tab="plan"]')!.click());
-  expect(panel("plan").hidden).toBe(false);
   expect(new URL(location.href).searchParams.has("tab")).toBe(false);
+  act(() => host.querySelector<HTMLButtonElement>("[data-open-activity]")!.click());
+  expect(panel("activity").hidden).toBe(false);
+  expect(new URL(location.href).searchParams.get("tab")).toBe("activity");
+  act(() => root!.unmount()); root = createRoot(host);
+  const result = { selected: selectedOf(5), current: true, attempts: [], revision: "r1" };
+  render(withRows("review", { tab: "result", result }));
+  expect(body("ready")!.hidden).toBe(false);
+  expect(host.querySelector("[data-step-row=\"ready\"] [data-shown]")?.getAttribute("data-shown")).toBe("5");
+});
+
+test("a hash link to a part inside a closed row opens that row; links to another version or run are not intercepted", () => {
+  history.replaceState(null, "", "/t/t-1#plan-edit");
+  render(withRows("building"));
+  expect(body("plan")!.hidden).toBe(false);
+  history.replaceState(null, "", "/t/t-1");
+  const link = (href: string) => { const a = document.createElement("a"); a.href = href; a.textContent = "go"; host.querySelector(".k-doc")!.append(a); return a; };
+  const click = (a: HTMLAnchorElement) => { const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }); act(() => { a.dispatchEvent(event); }); return event.defaultPrevented; };
+  expect(click(link("/t/t-1?tab=attempts"))).toBe(true);
+  expect(click(link("/t/t-1?version=t-0&tab=attempts"))).toBe(false);
+  expect(click(link("/t/t-1?tab=result&run=99"))).toBe(false);
+  expect(click(link("/t/t-1?tab=attempts&section=holds"))).toBe(false);
+});
+
+test("a live update keeps the result the Ready row loaded, and announces a newer one", () => {
+  const result = (build: number, revision: string) => ({ selected: selectedOf(build), current: true, attempts: [], revision });
+  render(withRows("review", { result: result(5, "r1") }));
+  render(withRows("review", { result: result(6, "r2") }));
+  expect(host.querySelector("[data-step-row=\"ready\"] [data-shown]")?.getAttribute("data-shown")).toBe("5");
+  expect(host.querySelector("[data-result-newer]")?.textContent).toContain("A newer result is ready.");
 });
 
 test("the Result tab holds the result it loaded: an update or a newer run is announced with Reload, never swapped in", () => {
@@ -99,4 +156,19 @@ test("How it ran: the result's record says time, turns, tokens and cache in one 
   const unknown = { ...efficiency, turns: null, usage: { ...efficiency.usage, in: null, out: null, cacheShare: null } };
   act(() => root!.render(createElement(SelectedResult, { selected: selectedOf(6, { efficiency: unknown }), csrf: "c" })));
   expect(host.querySelector("#how-it-ran summary")?.textContent).toContain("14 min · — tokens in · — out");
+});
+
+test("Can I merge? sits with a result in the Ready row: never loose under the rows, never on a research task", () => {
+  const mergeReady = { answer: "not-yet" as const, sentence: "Not yet: the checks are still running.", rows: [] };
+  const result = { selected: selectedOf(5), current: true, attempts: [], revision: "r1" };
+  // Still building: no result, so no merge answer anywhere on the page.
+  render(withRows("building", { mergeReady }));
+  expect(host.querySelector("[data-merge-ready]")).toBeNull();
+  // A result to review: the answer is in the Ready row, once, with a plain chip.
+  act(() => root!.render(createElement(TaskView, { key: "review", view: withRows("review", { mergeReady, result }), details: false, csrf: "c", result: shown })));
+  expect([...host.querySelectorAll("[data-merge-ready]")].map(one => one.closest("[data-step-row]")?.getAttribute("data-step-row"))).toEqual(["ready"]);
+  expect(host.querySelector("[data-merge-ready] .k-chip")?.className).not.toMatch(/needs|ink/);
+  // A research task has nothing to merge.
+  act(() => root!.render(createElement(TaskView, { key: "scout", view: withRows("review", { mergeReady, result, scout: true }), details: false, csrf: "c", result: shown })));
+  expect(host.querySelector("[data-merge-ready]")).toBeNull();
 });

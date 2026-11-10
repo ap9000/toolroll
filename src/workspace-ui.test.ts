@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { acceptWordsOf, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf } from "./workspace-ui.js";
+import { acceptWordsOf, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
+import { taskRoad } from "./first-run.js";
 import { failedAttemptSentence, INTERNAL_ERROR, isInternalErrorReason, latestFinishedAttempt, missedRequirementLine, missedRequirementSuggestion, RETRY_NOTE_LIMIT, retryNoteOf, RUN_REASON_WORDS } from "./needs-you.js";
 
 describe("the result's Accept words", () => {
@@ -164,5 +165,90 @@ describe("how far along a live build is", () => {
     expect(buildProgressOf(steps(["completed", "current", "blocked"], "the staging flag is off")))
       .toEqual({ step: 3, total: 3, line, stuck: { step: 3, why: "the staging flag is off", line } });
     expect(buildProgressOf(steps(["completed", "blocked", "pending"]))?.line).toBe("Stuck on step 2 of 3: Step 2 words.");
+  });
+});
+
+describe("the task page's step rows (stepRowsOf)", () => {
+  const facts = (extra: Partial<StepRowFacts> & Pick<StepRowFacts, "journey">): StepRowFacts => ({ scout: false, status: { status: { headline: "Building", sentence: "Step 2 of 3: Adding the test." }, attempts: [] }, ...extra });
+  const rows = (view: StepRowFacts) => stepRowsOf(view)!.map(one => `${one.key}:${one.mark}${one.open ? "+" : ""}${one.opens ? "" : "-"}:${one.sentence}`);
+
+  test("no road, no rows: a cancelled task keeps its status block", () => {
+    expect(stepRowsOf(facts({ journey: null }))).toBeNull();
+  });
+
+  test("waiting on the approval: the plan is one line pointing below, the approval is the one ink step, the rest say what will happen", () => {
+    const view = facts({ journey: taskRoad({ stage: "needs-you", need: "approval" }, false, false, {}), approve: { heading: "Plan ready" },
+      plan: { lead: "Add subtract next to add.", by: "Claude Sonnet", at: "2026-11-10T23:28:00.000Z", planning: false },
+      status: { status: { headline: "Needs you", sentence: "Approve the plan." }, attempts: [] } });
+    expect(rows(view)).toEqual(["plan:done:Written by Claude Sonnet · shown below", "approve:needs+:", "build:todo-:Starts when you approve",
+      "checks:todo-:The project's checks run on the result", "ready:todo-:A result for you to review"]);
+    const approval = stepRowsOf(view)![1]!;
+    expect(approval).toMatchObject({ label: "Approval", needsYou: true, state: "current" });
+    expect(stepRowsOf(view)![0]!.at).toBe("2026-11-10T23:28:00.000Z");
+  });
+
+  test("a held task whose plan still waits for a yes: the road stops at Plan, and the Approval row is open with its form", () => {
+    const held = facts({ journey: taskRoad({ stage: "stopped" }, false, false, {}), approve: { heading: "Plan ready" },
+      plan: { lead: "Rename the helper.", by: null, at: null, planning: false }, status: { status: { headline: "Stopped", sentence: "On hold." }, attempts: [] } });
+    expect(rows(held).slice(0, 3)).toEqual(["plan:wait+:Stopped", "approve:todo+:You approve before anything is built", "build:todo-:Starts when you approve"]);
+    // With no approval to give, a step not reached holds nothing to open.
+    expect(rows({ ...held, approve: null })[1]).toBe("approve:todo-:You approve before anything is built");
+  });
+
+  test("a revision whose plan is being updated with the notes says so on the Plan row, not that a plan is being written", () => {
+    const updating = facts({ journey: taskRoad({ stage: "planning" }, false, false, {}), plan: { lead: "Add subtract.", by: null, at: null, planning: true, updating: true },
+      status: { status: { headline: "Planning", sentence: "" }, attempts: [] } });
+    expect(rows(updating)[0]).toMatch(/^plan:live\+?:Updating the plan$/);
+    expect(rows({ ...updating, plan: { ...updating.plan!, updating: false } })[0]).toMatch(/^plan:live\+?:Writing the plan$/);
+  });
+
+  test("building: the build runs in blue with its progress line; finished steps say who and when", () => {
+    const view = facts({ journey: taskRoad({ stage: "building" }, true, false, {}), progress: { line: "Step 2 of 3: Adding the test." },
+      approved: { by: "alex", at: "2026-11-10T23:30:00.000Z", automatic: false, rule: null },
+      plan: { lead: "Add subtract next to add.", by: null, at: null, planning: false } });
+    expect(rows(view)).toEqual(["plan:done:Add subtract next to add.", "approve:done:Approved by alex", "build:live+:Working now",
+      "checks:todo-:The project's checks run on the result", "ready:todo-:A result for you to review"]);
+    expect(stepRowsOf({ ...view, approved: { by: "", at: "2026-11-10T23:30:00.000Z", automatic: true, rule: "your operating mode" } })![1]!.sentence).toBe("Approved automatically");
+  });
+
+  test("checks failed: Checks is the stuck row, and the result opens from Ready although Ready wasn't reached", () => {
+    const journey = taskRoad({ stage: "finished" }, true, true, { checks: "failed" });
+    const view = facts({ journey, status: { status: { headline: "Failed", sentence: "Checks failed on a1b2c3d." }, attempts: [] }, result: { selected: {} } });
+    expect(rows(view).slice(3)).toEqual(["checks:stuck+:The checks failed", "ready:todo:Not ready: the checks didn't pass. The result is here."]);
+    // With no result yet, a step not reached has nothing to open.
+    expect(rows({ ...view, result: null }).at(-1)).toBe("ready:todo-:A result for you to review");
+  });
+
+  test("ready for review waits on the viewer at Ready; a finished task opens its last step", () => {
+    const review = facts({ journey: taskRoad({ stage: "needs-you", need: "review-result" }, true, true, { checks: "passed" }),
+      status: { status: { headline: "Ready for review", sentence: "Ready." }, attempts: [] } });
+    // The open row's head says how it stands; the box under it says the rest (no sentence twice).
+    expect(rows(review).slice(3)).toEqual(["checks:done:Project checks passed", "ready:needs+:"]);
+    // A finished road with a result still waiting on the viewer: Ready is theirs, never one done line.
+    const finished = facts({ journey: taskRoad({ stage: "finished" }, true, true, { checks: "passed" }), status: { status: { headline: "Ready for review" }, attempts: [] } });
+    expect(rows(finished).at(-1)).toBe("ready:needs+:");
+    const done = facts({ journey: taskRoad({ stage: "complete" }, true, true, { checks: "passed" }), status: { status: { headline: "Complete", sentence: "Done." }, attempts: [] } });
+    expect(rows(done).at(-1)).toBe("ready:done+:Finished");
+    expect(stepRowsOf(done)!.filter(one => one.open)).toHaveLength(1);
+  });
+
+  test("a report has four rows and no Checks; skipped checks say why", () => {
+    const report = facts({ scout: true, journey: taskRoad({ stage: "finished" }, true, true, { report: true }), status: { status: { headline: "Complete", sentence: "" }, attempts: [] } });
+    expect(stepRowsOf(report)!.map(one => one.label)).toEqual(["Plan", "Approval", "Build", "Ready"]);
+    expect(rows(report).at(-1)).toBe("ready:done+:Finished");
+    expect(rows({ ...report, status: { status: { headline: "Waiting", sentence: "" }, attempts: [] } }).at(-1)).toBe("ready:done+:Report ready");
+    const notRun = facts({ journey: taskRoad({ stage: "finished" }, true, true, { checks: "not-run" }) });
+    expect(rows(notRun)[3]).toBe("checks:skipped:The checks didn't run");
+    // The label is always the step's name; the state words are the sentence.
+    expect(stepRowsOf(notRun)![3]!.label).toBe("Checks");
+  });
+
+  test("a failed build stops at Build in vermilion, waiting on nobody", () => {
+    const failed = facts({ journey: taskRoad({ stage: "failed" }, true, false, {}), status: { status: { headline: "Failed", sentence: "The new test did not pass." }, attempts: [] } });
+    expect(rows(failed)[2]).toBe("build:stuck+:Failed");
+    expect(stepRowsOf(failed)!.some(one => one.needsYou)).toBe(false);
+    // A stopped build waits, in grey: vermilion is only for a failure.
+    const stopped = facts({ journey: taskRoad({ stage: "stopped" }, true, false, {}), status: { status: { headline: "Stopped" }, attempts: [] } });
+    expect(rows(stopped)[2]).toBe("build:wait+:Stopped");
   });
 });

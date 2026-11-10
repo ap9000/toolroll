@@ -1,8 +1,9 @@
-/** One task (src/design/KIT.md): a reading page in one centred column. The title and its meta, Full record and
- * Details; the progress line (Plan · Approval · Build · Checks · Ready); the status box with its one act (the
- * approval asks for a password only when the real rules say so); then the tabs: Plan (Result once there is one),
- * Activity (one thread in time order, ending in the composer) and Attempts. Details opens as a drawer. Forms,
- * ceremonies and ledgers stay the server's own HTML (same ids, same page scripts); this page only frames them. */
+/** One task (src/design/KIT.md, docs/plans/task-page-steps.md): a reading page in one centred column. The title and
+ * its meta, Full record, Activity and Details; then the steps are the page — Plan, Approval, Build, Checks, Ready (four
+ * for a report) as step rows: a finished step is one line that opens on press, the step happening now is open and
+ * holds the one action, a step not reached is one grey line. Under the rows, "More about this task". Forms, ceremonies
+ * and ledgers stay the server's own HTML (same ids, same page scripts); this page only frames them. A task with no
+ * road (cancelled) keeps its status block. */
 import { useContext, useEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import { freshDraft, loadDraft, saveDraft, SteerNote, UnsentNote, type SteerDraft } from "./steer-composer.js";
 import { HEADLINE_TONE, HEADLINES, type Headline } from "../../task-status.js";
@@ -11,10 +12,11 @@ import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskMore, BrowserTaskSection, BrowserTaskTab, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { termsOf, type StepItem } from "../../design/kit.js";
 import type { JourneyStep } from "../../first-run.js";
+import type { StepRow } from "../../workspace-ui.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
   KApprove, KButton, KChip, KCount, KDisclose, KDocHeader, KDock, KEmpty, KFacts, KHeadlineChip, KInfoLine, KLinkButton, KNote, KOverlay, KRow, KSelect,
-  KNotice, KSlots, KSteps, KTabs, KTextarea, KTiming, useKMenu,
+  KNotice, KSlots, KStepRows, KTextarea, KTiming, useKMenu, type KStepRowItem,
 } from "../kit/index.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
@@ -24,14 +26,16 @@ import { ActivityLine, AlsoViewing, useLiveTask } from "../live-task.js";
 import { HEADLINE_GLYPH, statusWhyLines } from "./status-summary.js";
 import type { GlyphKind } from "../components/ui/status-glyph.js";
 
-/** Bring an element of this page into view: switch to the tab that holds it (panels stay mounted, so it is always
- * found), open the Details drawer when it is there, open every fold around it, then scroll and focus its first field
- * when asked. The one road for hash links (#scope, #holds, #cancel-task…) and ⋯ go-to items alike. */
-function revealTarget(id: string, showTab: (tab: PageTab) => void, focus = false): boolean {
+/** Bring an element of this page into view: open the step row or the Activity panel that holds it (bodies stay
+ * mounted, so it is always found), open the Details drawer when it is there, open every fold around it, then scroll
+ * and focus its first field when asked. The one road for hash links (#scope, #holds, #cancel-task…) and ⋯ go-to items
+ * alike. */
+function revealTarget(id: string, show: (place: Place) => void, focus = false): boolean {
   const target = id === "" ? null : document.getElementById(id);
   if (target === null) return false;
-  const panel = target.closest<HTMLElement>("[data-task-panel]");
-  if (panel !== null) showTab(panel.dataset["taskPanel"] as PageTab);
+  const row = target.closest<HTMLElement>("[data-step-row]");
+  if (row !== null) show({ row: row.dataset["stepRow"]! });
+  if (target.closest("[data-task-panel=\"activity\"]") !== null) show({ activity: true });
   if (target.closest("[data-task-details]") !== null) window.dispatchEvent(new CustomEvent("so:show-details"));
   // After the tab is shown: open the folds, then scroll (a hidden panel has no layout to scroll to).
   requestAnimationFrame(() => {
@@ -45,10 +49,10 @@ function revealTarget(id: string, showTab: (tab: PageTab) => void, focus = false
   return true;
 }
 
-/** A link to a fold (#scope, #holds, #cancel-task) shows its tab and opens it, on arrival and on in-page links alike. */
-function useRevealHashTarget(showTab: (tab: PageTab) => void) {
+/** A link to a fold (#scope, #holds, #cancel-task) opens what holds it, on arrival and on in-page links alike. */
+function useRevealHashTarget(show: (place: Place) => void) {
   useEffect(() => {
-    const reveal = () => { revealTarget(decodeURIComponent(window.location.hash.slice(1)), showTab); };
+    const reveal = () => { revealTarget(decodeURIComponent(window.location.hash.slice(1)), show); };
     reveal();
     window.addEventListener("hashchange", reveal);
     return () => window.removeEventListener("hashchange", reveal);
@@ -177,7 +181,9 @@ function usePlanEditing(): boolean {
   return editing;
 }
 
-function ApprovalBox({ approve, latest, onEdit, reject = false }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null; reject?: boolean }) {
+function ApprovalBox({ approve, latest, onEdit, reject = false, inRow = false }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null; reject?: boolean;
+  /** In the Approval row, which carries the Needs-you chip and the one outline itself. */
+  inRow?: boolean }) {
   const ref = useRef<HTMLFormElement>(null);
   const editing = usePlanEditing();
   const changed = latest == null || latest.fields["digest"] !== approve.fields["digest"];
@@ -192,7 +198,7 @@ function ApprovalBox({ approve, latest, onEdit, reject = false }: { approve: Non
   return <PostForm ref={ref} action={approve.action} className="k-approve" data-approval-kind={approve.kind} data-task-approval data-editing={editing ? "" : undefined}>
     {Object.entries(approve.fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
     <input type="hidden" name="token" value="" />
-    <KSlots wait status={<><KChip word="Needs you" tone="needs" /><h2>{approve.heading}</h2></>} text={approve.text}
+    <KSlots wait status={<>{!inRow && <KChip word="Needs you" tone="needs" />}<h2>{approve.heading}</h2></>} text={approve.text}
       acts={changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
         : editing ? <KButton label="Back to the edit" onClick={() => onEdit?.()} />
         : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text} onApprove={approveNow} />
@@ -235,9 +241,11 @@ function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release
 function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["mergeReady"]>; retry: BrowserTaskView["retry"] }) {
   const MARK: Readonly<Record<string, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?" };
   const chip = ready.answer === "yes" || ready.answer === "merged" ? <KChip word={ready.answer === "merged" ? "Merged" : "Ready"} tone="done" />
-    : ready.answer === "no" ? <KChip word="Not yet" tone="needs" /> : <KChip word="Not yet" />;
+    // "Not yet" is an answer, not a request: a plain chip (the ink one is only for what waits on the viewer).
+    : <KChip word="Not yet" />;
   return <section className="k-sec so-merge-ready" aria-label="Can I merge?" data-merge-ready={ready.answer}>
-    <KSlots status={<>{chip}<h3>Can I merge?</h3></>} text={ready.sentence} acts={null} terms={null} />
+    <div className="so-merge-head">{chip}<h3>Can I merge?</h3></div>
+    <p className="so-merge-say">{ready.sentence}</p>
     <ul className="so-merge-rows">
       {ready.rows.map(row => <li key={row.key} data-merge-row={row.key} data-mark={row.mark}>
         <span className="so-merge-mark" aria-hidden="true">{MARK[row.mark] ?? ""}</span>
@@ -296,7 +304,13 @@ function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): stri
  * slots). A live build says the step it is on, or the step it is stuck on with the act that helps; Pause, Resume and
  * Stop sit beside it. A failed task says what it missed and offers Retry with its note. The recorded reasons sit
  * under More. */
-function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"] }) {
+function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
+  /** "Watch the work": opens the Activity panel beside the live build's acts. */
+  watch?: (() => void) | null;
+  /** The Checks row shows the project checks fact itself. */
+  checksElsewhere?: boolean;
+  /** The result is right under this box (the Ready row): its link to the result is not offered again. */
+  resultHere?: boolean }) {
   const failed = card.status.headline === "Failed";
   const confirm = view.recheckStopped ?? null, rebuild = view.rebuild ?? null, retry = view.retry ?? null, failure = view.failure ?? null;
   const stuck = view.progress?.stuck ?? null;
@@ -311,12 +325,13 @@ function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card
     : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} />
     : <>
       {stuck?.action != null ? <KLinkButton label={stuck.action.label} href={stuck.action.href} data-stuck-action="" />
-        : card.action !== null && <KLinkButton variant={waits ? "primary" : "outline"} className={waits ? "k-docked" : undefined} label={card.action.label} href={card.action.href} data-primary-action=""
+        : card.action !== null && !(resultHere && (card.action.openResult || /[?&]tab=result\b/.test(card.action.href))) && <KLinkButton variant={waits ? "primary" : "outline"} className={waits ? "k-docked" : undefined} label={card.action.label} href={card.action.href} data-primary-action=""
           {...(card.action.openResult ? { "data-open-result": "" } : {})} />}
       {pause !== null && pause.state === null && <PauseForm pause={pause} />}
       {pause !== null && pause.state === "paused" && <ResumeForm pause={pause} />}
       {pause !== null && !steering && <KButton label={pause.state === "paused" ? "Continue with a note" : "Pause and steer"} onClick={() => setSteering(true)} data-pause-steer="" />}
       {view.stop != null && csrf !== "" && <StopForm stop={view.stop} />}
+      {watch !== null && <KButton label="Watch the work" onClick={watch} data-watch-work="" />}
     </>;
   const terms: ReactNode = failed && failure != null && !retrying ? <span data-failure-suggestion>What to change: {failure.suggestion}</span>
     : view.record != null ? <a className="k-link" href={view.record.href} data-build-record>{view.record.label}</a>
@@ -339,15 +354,16 @@ function StatusBox({ view, card, csrf, approved }: { view: BrowserTaskView; card
       <KNote>{view.steering.controls.words}</KNote>
       {view.steering.steer !== null && <SteerNote key={view.steering.steer.run} steer={view.steering.steer} controls={{ ...view.steering.controls, pause: null }} back="task" />}
     </div>}
-    <StatusFacts card={card} runChecks={view.runChecks ?? null} />
+    <StatusFacts card={card} runChecks={view.runChecks ?? null} only={checksElsewhere ? key => key !== "checks" : null} />
     {why.length > 0 && <KDisclose summary="More">{why.map(one => <KNote key={one}>{one}</KNote>)}</KDisclose>}
   </div>;
 }
 
 /** The status's detail rows (Project checks, Requirements, Pull request…) as facts; Run checks runs in place. */
-function StatusFacts({ card, runChecks }: { card: AssignmentCard; runChecks: BrowserTaskView["runChecks"] }) {
-  if (card.status.details.length === 0) return null;
-  return <KFacts rows={card.status.details.map(detail => {
+function StatusFacts({ card, runChecks, only = null }: { card: AssignmentCard; runChecks: BrowserTaskView["runChecks"]; only?: ((key: string) => boolean) | null }) {
+  const details = only === null ? card.status.details : card.status.details.filter(one => only(one.key));
+  if (details.length === 0) return null;
+  return <KFacts rows={details.map(detail => {
     const inPlace = runChecks != null && detail.action?.href === runChecks.action;
     const text = detail.href === null ? detail.text : <a className="k-link" href={detail.href}>{detail.text}</a>;
     const act = detail.action === null ? null : inPlace
@@ -434,11 +450,11 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
   </div>;
 }
 
-/** The Plan tab's order: what the work is and what it waits on first, then its options, then the records. */
+/** "More about this task": what the work is and what it waits on first, then its options, then the records. */
 const PLAN_ORDER = ["scope", "waits-for", "holds", "steering", "task-diagnostics"];
 const planRank = (id: string): number => { const at = PLAN_ORDER.indexOf(id); return at === -1 ? PLAN_ORDER.length : at; };
 
-/** One section of the Plan tab, flat: its heading and its content, open, never a fold (page → tab → section). */
+/** One section under the rows, flat: its heading and its content, open, never a fold. */
 function PlanSection({ section }: { section: BrowserTaskSection }) {
   return <section id={section.id} aria-labelledby={`plan-${section.id}`} className="k-sec so-plan-sec" data-task-section={section.id}>
     <h3 id={`plan-${section.id}`}>{section.title}{section.count !== null && section.count > 0 && <> <KCount n={section.count} /></>}</h3>
@@ -446,19 +462,20 @@ function PlanSection({ section }: { section: BrowserTaskSection }) {
   </section>;
 }
 
-/** The Plan tab: what the approval signs (its rows), then the scope and agents, dependencies and holds, the records,
- * the task's options, and Cancel — armed behind one deliberate tap, last. */
-function PlanPanel({ view, planHtml, approval }: { view: BrowserTaskView; planHtml: string | null; approval: boolean }) {
+/** More about this task, under the rows: the scope and agents, dependencies and holds, the records, the task's options,
+ * and Cancel — armed behind one deliberate tap, last. (The plan the approval signs is the Plan / Approval row's.) */
+function MoreAboutTask({ view, approval }: { view: BrowserTaskView; approval: boolean }) {
   const sections = [...view.sections, ...view.manage].map((one, index) => ({ one, index })).sort((a, b) => planRank(a.one.id) - planRank(b.one.id) || a.index - b.index).map(({ one }) => one);
-  return <div className="k-sec">
-    {planHtml !== null && <Html html={planHtml} className="so-task-approval so-task-plan" />}
+  if (sections.length === 0 && view.cancel === null && !approval) return null;
+  return <section className="k-sec so-task-more" aria-labelledby="task-more" data-task-more-about="">
+    <h2 id="task-more" className="so-task-more-h">More about this task</h2>
     {approval && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
     {sections.map(one => <PlanSection key={one.id} section={one} />)}
     {view.cancel !== null && <details id="cancel-task" open={view.cancel.open} className="k-disclose so-cancel" data-task-section="cancel">
       <summary>Cancel task</summary>
       <Html html={view.cancel.html} className="so-task-cancel" />
     </details>}
-  </div>;
+  </section>;
 }
 
 /** The Result tab: the chosen attempt's result as its result page shows it — evidence, your checks, the decision —
@@ -516,8 +533,8 @@ function AttemptsPanel({ view }: { view: BrowserTaskView }) {
 
 /** ⋯ More actions: the task's secondary acts in one menu, the same order everywhere — Work, Share & reuse, Danger
  * last. A one-click POST submits its own small form (outside the menu, so closing the menu never drops it); a go-to
- * shows the tab that holds the item's one form, opens it and focuses it. */
-function MoreMenu({ items, showTab }: { items: BrowserTaskMore[]; showTab: (tab: PageTab) => void }) {
+ * opens what holds the item's one form (a row, the Activity panel), opens it and focuses it. */
+function MoreMenu({ items, show }: { items: BrowserTaskMore[]; show: (place: Place) => void }) {
   const forms = useRef(new Map<number, HTMLFormElement | null>());
   const menu = useKMenu();
   if (items.length === 0) return null;
@@ -525,7 +542,7 @@ function MoreMenu({ items, showTab }: { items: BrowserTaskMore[]; showTab: (tab:
   const sorted = items.map((item, index) => ({ item, index })).sort((a, b) => order[a.item.group] - order[b.item.group] || a.index - b.index);
   const select = (item: BrowserTaskMore, index: number) => {
     if (item.kind === "post") forms.current.get(index)?.requestSubmit();
-    else if (item.kind === "goto") { showTab(pageTabOf(item.tab)); revealTarget(item.target, showTab, true); }
+    else if (item.kind === "goto") { if (item.tab === "activity") show({ activity: true }); revealTarget(item.target, show, true); }
     else if (item.kind === "link") window.location.assign(item.href);
     else void navigator.clipboard?.writeText(window.location.href).catch(() => {});
   };
@@ -548,48 +565,85 @@ export function approvalIdentity(approval: string): string {
   return `${folded ? "folded" : "open"}:${digest}`;
 }
 
-/** The task's road (first-run.ts taskRoad) as the kit's progress line: Plan · Approval · Build · Checks · Ready, the
- * step that waits on you ink, a running one blue, one that stopped red, and why under its name. */
+/** The task's road (first-run.ts taskRoad) as the kit's compact progress line: Plan · Approval · Build · Checks ·
+ * Ready, the step that waits on you ink, a running one blue, one that stopped red, and why under its name. */
 export function stepsOf(road: readonly JourneyStep[]): StepItem[] {
-  const LABEL: Record<JourneyStep["key"], string> = { plan: "Plan", approve: "Approval", build: "Build", checks: "Checks", ready: "Ready" };
   return road.map(step => {
-    const variant = step.label !== LABEL[step.key] && step.label.startsWith(LABEL[step.key]) ? step.label.slice(LABEL[step.key].length).trim() : "";
     const state: StepItem["state"] = step.state === "done" || step.state === "skipped" ? "done"
       : step.state === "current" ? (step.needsYou ? "now" : "live") : step.state === "stuck" ? (step.needsYou ? "now" : "failed") : "todo";
-    const sub = step.state === "skipped" ? (variant === "" ? "skipped" : variant)
-      : step.needsYou && (step.state === "current" || step.state === "stuck") ? (step.key === "ready" ? "your review" : "needs you")
-      : variant;
-    return { label: LABEL[step.key], state, ...(sub === "" ? {} : { sub }) };
+    const sub = step.needsYou && (step.state === "current" || step.state === "stuck") ? (step.key === "ready" ? "your review" : "needs you")
+      : step.say ?? (step.state === "skipped" ? "skipped" : "");
+    return { label: step.label, state, ...(sub === "" ? {} : { sub }) };
   });
 }
 
-type PageTab = "plan" | "activity" | "attempts";
-/** The address's tab (`tab=`) as this page's three: Plan and Result are the first tab, then Activity and Attempts. */
-const pageTabOf = (tab: string | undefined | null): PageTab => tab === "activity" ? "activity" : tab === "attempts" ? "attempts" : "plan";
+/** Where a link or a go-to lands: a step row (opened), or the Activity panel. */
+type Place = { row: string } | { activity: true };
+/** The address's tab (`tab=`) as the row it opens: Result is Ready, Attempts is Build, Plan is the step happening now;
+ * Activity is the panel. */
+const rowOfTab = (tab: string | null | undefined): string | null => tab === "result" ? "ready" : tab === "attempts" ? "build" : null;
 
-/** The page (docs/plans/one-page-task-and-agent.md): one header, the progress line, the status and its one act, then
- * Plan (Result once there is one), Activity and Attempts, all on this page; Details opens as a drawer. */
+/** The plan's steps in the live Build row: each one's state as the latest checkpoint reported it. */
+function BuildSteps({ steps }: { steps: NonNullable<NonNullable<BrowserTaskView["progress"]>["steps"]> }) {
+  if (steps.length === 0) return null;
+  const WORD = { pending: "not started", current: "in progress", completed: "done", blocked: "stuck" } as const;
+  return <ol className="so-build-steps" aria-label="Plan steps" data-build-steps="">
+    {steps.map((step, index) => <li key={index} data-state={step.state} aria-current={step.state === "current" ? "step" : undefined}>
+      <span className="so-build-step-mark" aria-hidden="true">{step.state === "completed" ? "" : index + 1}</span>
+      <span>{step.title}<span className="k-sr">, {WORD[step.state]}</span></span>
+    </li>)}
+  </ol>;
+}
+
+/** The Activity panel: the task's thread in time order, ending in the composer (docs/plans/task-page-steps.md: the
+ * Build row's "Watch the work", Activity in the header and `?tab=activity` open it). Hidden, never unmounted. */
+function ActivityPanel({ view, chat, open, onClose }: { view: BrowserTaskView; chat: ThreadChat | null; open: boolean; onClose: () => void }) {
+  return <section id="task-activity" className="k-sec so-task-activity" aria-labelledby="task-activity-h" hidden={!open} data-task-panel="activity">
+    <div className="so-task-activity-head"><h2 id="task-activity-h">Activity</h2><KButton variant="ghost" sm label="Close" onClick={onClose} data-close-activity="" /></div>
+    <Thread items={view.thread ?? []} chat={chat} chatHref={chat === null ? view.chatHref ?? null : null} />
+  </section>;
+}
+
+/** The page (docs/plans/task-page-steps.md): one header, then the steps are the page — each row's body holds its own
+ * part (the plan, the approval and the plan it signs, the build and its attempts, the checks, the result); then More
+ * about this task, and the Activity panel. Details opens as a drawer. */
 export function TaskView({ view, chat = null, csrf = "", result }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string; result?: ResultSlot }) {
-  // The result the page loaded with (a later one is announced in its panel, never swapped in).
+  // The result the page loaded with (a later one is announced in its row, never swapped in).
   const loadedResult = useRef(view.result ?? null);
   const hasResult = loadedResult.current !== null;
-  const [tab, setTab] = useState<PageTab>(pageTabOf(view.tab));
-  const [details, setDetails] = useState<HTMLElement | null>(null);
-  const detailsButton = useRef<HTMLButtonElement>(null);
+  const rows = view.steps ?? null;
   // The approval keeps the terms it first showed (src/design/KIT.md): a refresh never swaps them under a person's hands.
   const shownApproval = useRef(view.approve ?? null);
   if (shownApproval.current === null && view.approve != null) shownApproval.current = view.approve;
   const approve = view.approve != null ? shownApproval.current : null;
-  const showTab = (next: PageTab) => {
-    setTab(next);
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => {
+    const keys = new Set<string>((rows ?? []).filter(row => row.open).map(row => row.key));
+    const asked = rowOfTab(view.tab);
+    if (asked !== null && rows?.some(row => row.key === asked && row.opens)) keys.add(asked);
+    if (approve !== null) keys.add("approve");
+    return keys;
+  });
+  const [activity, setActivity] = useState(view.tab === "activity");
+  const [details, setDetails] = useState<HTMLElement | null>(null);
+  const detailsButton = useRef<HTMLButtonElement>(null);
+  // The step happening now opens as it moves (a live update), whatever the person opened or closed before.
+  const currentKey = rows?.find(row => row.state === "current" || row.state === "stuck")?.key ?? null;
+  useEffect(() => { if (currentKey !== null) setOpened(previous => previous.has(currentKey) ? previous : new Set([...previous, currentKey])); }, [currentKey]);
+  const setTab = (tab: string | null) => {
     try {
       const url = new URL(window.location.href);
-      if (next === "plan") url.searchParams.delete("tab"); else url.searchParams.set("tab", next);
-      if (next !== "plan") url.searchParams.delete("section");
+      if (tab === null) url.searchParams.delete("tab"); else url.searchParams.set("tab", tab);
+      if (tab !== null) url.searchParams.delete("section");
       history.replaceState(history.state, "", url.pathname + url.search + url.hash);
-    } catch { /* the address is a convenience; the tab is shown either way */ }
+    } catch { /* the address is a convenience; the place is shown either way */ }
   };
-  useRevealHashTarget(showTab);
+  const show = (place: Place) => {
+    if ("activity" in place) { setActivity(true); setTab("activity"); return; }
+    setOpened(previous => previous.has(place.row) ? previous : new Set([...previous, place.row]));
+  };
+  const toggle = (key: string) => setOpened(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  const closeActivity = () => { setActivity(false); setTab(null); };
+  useRevealHashTarget(show);
   useEffect(() => {
     const open = () => setDetails(detailsButton.current ?? document.body);
     window.addEventListener("so:show-details", open);
@@ -597,7 +651,9 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   }, []);
   const people = useLiveTask(view.live);
   const approvalHere = view.approval !== "" && (view.approvalPlacement ?? "lead") === "lead" && approve === null;
-  // A link to this very page's other tab (the status's Review result, a build in the thread) switches in place.
+  const scrollTo = (selector: string) => requestAnimationFrame(() => document.querySelector(selector)?.scrollIntoView({ block: "start",
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" }));
+  // A link to this very page's other part (the status's Review result, a build in the thread) opens it in place.
   const inPage = (event: MouseEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const anchor = (event.target as HTMLElement).closest?.("a[href]");
@@ -609,27 +665,95 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     const run = to.searchParams.get("run");
     if (wanted === "result" && run !== null && String(view.result?.selected.build ?? "") !== run) return;
     if (to.searchParams.get("section") !== null && to.searchParams.get("section") !== here.searchParams.get("section")) return;
+    const row = wanted === "plan" ? currentKey : rowOfTab(wanted);
+    if (wanted !== "activity" && rows !== null && (row === null || !rows.some(one => one.key === row && one.opens))) return;
     event.preventDefault();
-    showTab(pageTabOf(wanted));
-    if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), showTab);
+    if (wanted === "activity") { show({ activity: true }); scrollTo("#task-activity"); }
+    else if (row !== null) { show({ row }); setTab(wanted === "plan" ? null : wanted); scrollTo(`[data-step-row="${row}"]`); }
+    if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), show);
   };
-  const editPlan = approve === null ? null : () => { showTab("plan"); revealTarget("plan-editor", showTab, true); };
-  const attempts = Math.max(view.status?.attempts.length ?? 0, 1) + (view.earlier?.attempts.length ?? 0);
-  const first = hasResult ? "Result" : view.scout ? "Investigation" : "Plan";
+  const editPlan = approve === null ? null : () => { show({ row: "approve" }); revealTarget("plan-editor", show, true); };
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span>{view.scout && <> · research only</>}
     {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
   const record = view.audit ?? null;
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
   const primary = approve === null && needs && view.status?.action != null && view.recheckStopped == null && view.rebuild == null && view.retry == null
+    && !(rows !== null && hasResult && (view.status.action.openResult || /[?&]tab=result\b/.test(view.status.action.href)))
     ? <KLinkButton variant="primary" label={view.status.action.label} href={view.status.action.href} /> : null;
+  // Lead cards attach to their row: a problem to the step that stopped, a pull request to Ready, a missing plan to
+  // Approval, the build's control and its live attempt (files changing) to Build; the rest stay under the rows.
+  const stuckKey = rows?.find(row => row.state === "stuck")?.key ?? currentKey;
+  // A refusal while the approval form is on the page sits with that form, wherever the road stands.
+  const ATTACHED: Readonly<Record<string, string | null>> = { problem: approve !== null ? "approve" : stuckKey, "pull-request": "ready", "needs-scope": "approve", control: "build", attempt: "build" };
+  const leadOf = (key: string) => rows === null ? [] : view.lead.filter(block => ATTACHED[block.key] === key && rows.some(row => row.key === key && row.opens));
+  const unattached = view.lead.filter(block => rows === null || !rows.some(row => row.key === ATTACHED[block.key] && row.opens));
+  const leadCards = (blocks: readonly { key: string; html: string }[]) => blocks.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />);
+  // Where the status box goes: the step happening now, else the last one reached.
+  const statusKey = currentKey ?? rows?.find(row => row.open)?.key ?? null;
+  const readyOpens = rows?.some(row => row.key === "ready" && row.opens) ?? false;
+  const checksOpens = rows?.some(row => row.key === "checks" && row.opens) ?? false;
+  const resultBody = (hasResult || view.result != null) ? <ResultPanel view={view} loaded={loadedResult.current} csrf={csrf} result={result} /> : null;
+  // "Can I merge?" belongs to a result: it shows with one (in the Ready row), never loose under the rows, and never
+  // on a research task (a report has nothing to merge).
+  const readyExtras = (withResult: boolean) => <>
+    {view.release != null && <ReleaseBox release={view.release} />}
+    {withResult && view.mergeReady != null && !view.scout && <MergeReadyBox ready={view.mergeReady} retry={view.retry ?? null} />}
+    {view.ship != null && <ShipBox ship={view.ship} />}
+  </>;
+  const statusBox = (key: string | null) => approve !== null ? null : view.status !== null
+    // In a row, the Approval row says who approved: the status box doesn't repeat it.
+    ? <StatusBox view={view} card={view.status} csrf={csrf} approved={key === null ? view.approved ?? null : null} watch={key === "build" && view.stop != null ? () => { show({ activity: true }); scrollTo("#task-activity"); } : null}
+      checksElsewhere={checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} />
+    : <Html html={view.statusHtml} />;
+  const bodyOf = (row: StepRow): ReactNode => {
+    const here = row.key === statusKey;
+    const status = here ? statusBox(row.key) : null;
+    switch (row.key) {
+      case "plan":
+        // Installed once, and again when what it holds changes: the plan sheet joins it once the plan is approved
+        // (here or in another window), and a new plan version is a new sheet.
+        return <>{status}{leadCards(leadOf("plan"))}{view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan" />}</>;
+      case "approve":
+        if (approve !== null) return <div className="so-approval-step" key={`approve:${approve.fields["digest"] ?? ""}`} data-approval-step="">
+          {/* Why the last yes wasn't taken reads first, above the form it answers. */}
+          {leadCards(leadOf("approve").filter(block => block.key === "problem"))}
+          <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} inRow />
+          <div className="so-approval-sheet"><Html html={approve.planHtml} className="so-task-plan" /></div>
+          {leadCards(leadOf("approve").filter(block => block.key !== "problem"))}
+        </div>;
+        return <>{status}
+          {row.state === "done" && view.approved != null && <KInfoLine>{approvedWords(view.approved)}</KInfoLine>}
+          {/* The approval region the server drew (a blocked or closed approval, a fold of updated terms): installed once,
+              and a new region when what it is changes (folded or open, and the exact plan it signs). */}
+          {view.approval !== "" && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
+          {leadCards(leadOf("approve"))}</>;
+      case "build":
+        return <>{status}
+          {row.state === "current" && view.progress?.steps != null && <BuildSteps steps={view.progress.steps} />}
+          {leadCards(leadOf("build"))}
+          {/* The task's history stays in Build whatever the build is doing: while a revision is planned, built or stopped. */}
+          {(row.state === "done" || (view.status?.attempts.length ?? 0) > 1 || (view.earlier?.attempts.length ?? 0) > 0) && <AttemptsPanel view={view} />}</>;
+      case "checks":
+        return <>{status}{!here && view.status !== null && <StatusFacts card={view.status} runChecks={view.runChecks ?? null} only={key => key === "checks"} />}{leadCards(leadOf("checks"))}</>;
+      case "ready":
+        return <>{status}{resultBody}{readyExtras(resultBody !== null)}{leadCards(leadOf("ready"))}</>;
+    }
+  };
+  const items: KStepRowItem[] = (rows ?? []).map(row => {
+    const here = row.state === "current" || row.state === "stuck";
+    return { key: row.key, label: row.label, mark: row.mark, sentence: row.sentence, needsYou: row.needsYou, current: here,
+      at: row.at, when: row.at === null ? "" : threadWhen(row.at), body: row.opens || here ? bodyOf(row) : undefined,
+      toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
+  });
   return <div data-kit-page data-task-page={view.id}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
           {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
+          <KButton variant="ghost" sm label="Activity" aria-expanded={activity} aria-controls="task-activity" onClick={() => activity ? closeActivity() : (show({ activity: true }), scrollTo("#task-activity"))} data-open-activity="" />
           <KButton ref={detailsButton} variant="ghost" sm lead="panel" label="Details" className="k-desk-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} data-open-details="" />
           <KButton variant="ghost" sm iconOnly="panel" label="Details" className="k-phone-only" aria-haspopup="dialog" onClick={event => setDetails(event.currentTarget)} />
-          <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} showTab={showTab} />
+          <MoreMenu items={[...(view.more ?? []), ...(view.everyTime ? [{ group: "share" as const, label: "Do this every time…", kind: "link" as const, href: view.everyTime.href }] : [])]} show={show} />
         </nav>} />
       {view.version !== null && <KInfoLine>{view.version.label} · <a className="k-link" href={view.version.current.href}>{view.version.current.label}</a></KInfoLine>}
       {view.archived != null && <KSlots status={<><KChip word="Archived" /><h2>Put away</h2></>}
@@ -639,31 +763,23 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           <KButton type="submit" variant="primary" label="Restore" data-restore="" />
         </PostForm> : null}
         terms={view.archived.restore !== null ? "Restoring puts it back in Tasks. Its history and results were kept." : "An approver can restore it."} />}
-      {view.journey != null && <KSteps steps={stepsOf(view.journey)} />}
-      {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} />}
-      {/* The approval box is the status while the plan waits on this person: never a second box saying the same. */}
-      {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} /> : <Html html={view.statusHtml} />}
-      {/* The older approval region (a blocked or closed approval, a fold of updated terms): installed once, and a new
-          region when what it is changes (folded or open, and the exact plan it signs). */}
-      {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
-      {view.release != null && <ReleaseBox release={view.release} />}
-      {view.mergeReady != null && <MergeReadyBox ready={view.mergeReady} retry={view.retry ?? null} />}
-      {view.ship != null && <ShipBox ship={view.ship} />}
-      {view.lead.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />)}
+      {rows !== null ? <KStepRows label="Steps" rows={items} onToggle={toggle} /> : <>
+        {/* No road (cancelled, or no status): the status block as it was, then what the task holds. */}
+        {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} />}
+        {approve !== null && <Html html={approve.planHtml} className="so-task-plan" />}
+        {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} /> : <Html html={view.statusHtml} />}
+        {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
+        {readyExtras(resultBody !== null)}
+        {resultBody}
+        {view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan" />}
+      </>}
+      {rows !== null && statusKey === null && statusBox(null)}
+      {rows !== null && !readyOpens && readyExtras(false)}
+      {leadCards(unattached)}
       {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}
-      <KTabs label="Task" current={tab} onChange={key => showTab(key as PageTab)}
-        items={[{ key: "plan", label: first }, { key: "activity", label: "Activity" }, { key: "attempts", label: "Attempts", count: <KCount n={attempts} /> }]} />
-      <div role="tabpanel" aria-label={first} hidden={tab !== "plan"} data-task-panel="plan" className="k-sec">
-        {(hasResult || view.result != null) && <ResultPanel view={view} loaded={loadedResult.current} csrf={csrf} result={result} />}
-        {hasResult ? <KDisclose summary="Plan and settings"><PlanPanel view={view} planHtml={approve?.planHtml ?? null} approval={view.approval !== "" && !approvalHere && approve === null} /></KDisclose>
-          : <PlanPanel view={view} planHtml={approve?.planHtml ?? null} approval={view.approval !== "" && !approvalHere && approve === null} />}
-      </div>
-      <div role="tabpanel" aria-label="Activity" hidden={tab !== "activity"} data-task-panel="activity">
-        <Thread items={view.thread ?? []} chat={chat} chatHref={chat === null ? view.chatHref ?? null : null} />
-      </div>
-      <div role="tabpanel" aria-label="Attempts" hidden={tab !== "attempts"} data-task-panel="attempts">
-        <AttemptsPanel view={view} />
-      </div>
+      {rows === null && (view.status?.attempts.length ?? 0) + (view.earlier?.attempts.length ?? 0) > 1 && <AttemptsPanel view={view} />}
+      <MoreAboutTask view={view} approval={view.approval !== "" && !approvalHere && approve === null && !(rows?.some(row => row.key === "approve" && (row.opens || row.state === "current" || row.state === "stuck")) ?? false)} />
+      <ActivityPanel view={view} chat={chat} open={activity} onClose={closeActivity} />
     </div>
     {details !== null && <KOverlay kind="drawer" title="Details" trigger={details} onClose={() => setDetails(null)}><TaskDetails view={view} /></KOverlay>}
     {primary !== null && <KDock>{primary}</KDock>}

@@ -101,6 +101,8 @@ export type TaskChatFocus = {
     origin?: TaskOrigin | null;
     /** The repair chain row when this task is a machine-drafted repair. */
     repairChain: RepairChainRow | null;
+    /** A release filed while its pull request's checks still ran: the sheet says nothing deploys until they pass. */
+    releaseCiRunning?: boolean;
   } | null;
   decisions: (Decision & { taskId: string; repo: string | null })[];
   publication: Publication | null;
@@ -164,6 +166,7 @@ export function taskChatApproval(focus: TaskChatFocus, csrf: string): Html {
       coordinator: approval.coordinator,
       origin: approval.origin ?? null,
       deliverable: approval.deliverable,
+      releaseCiRunning: approval.releaseCiRunning === true,
       rebuild: focus.assignment?.need != null && "key" in focus.assignment.need && focus.assignment.need.key === "replan" ? focus.assignment.need.build : null,
       // Edit plan opens the task page's sheet with its fields open for editing.
       editHref: `${taskHref(focus.id)}?edit=plan#plan-editor`,

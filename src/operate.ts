@@ -11086,6 +11086,7 @@ function describeApproveFailure(reason: string, id: string): string {
   // Approval policy, phase 1: the lead's token (or a remote API token) proves a credential, not a person.
   if (reason === "machine-proof") return "only a person can approve this — approve it on the task page or from your paired chat";
   if (reason === "archived") return `${id} is put away — restore it with \`toolroll task restore ${id}\` first`;
+  if (reason === "cancelled") return `${id} was cancelled, so there is nothing to approve`;
   if (reason === "second-approver") return `your approval of ${id} is recorded; it is protected work, so a second person needs to approve it (toolroll task approve ${id} as them)`;
   if (reason === "no-approvers") {
     return "nobody can approve anything yet — `toolroll approver add <you>` mints the credential that lets a person say yes";

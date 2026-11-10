@@ -179,7 +179,8 @@ try {
   await shot(page, 'task-approval-390', 'Long task scope waiting for approval at 390×844: the next step leads (fixture)');
   const approvalHtml = await page.content();
   check('c2 exact goal text is present in full on the approval page', approvalHtml.includes('never buffers more than one thousand rows in memory') && approvalHtml.includes('downstream spreadsheets keep working'));
-  check('c2 every acceptance criterion id is on the approval page', ['c1', 'c2', 'c3', 'c4', 'c5', 'c6'].every(id => new RegExp(`>${id}<|${id}\\b`).test(approvalHtml)));
+  // The plan sheet (docs/plans/task-page-steps.md) says each requirement in words, never its internal id.
+  check('c2 every acceptance criterion is on the approval page, in words', fixture.store.getScope(fixture.tasks.long).acceptance.every(one => approvalHtml.includes(one.statement.replace(/&/g, '&amp;').replace(/</g, '&lt;'))));
   check('c2 Ask and Overview are both retained', (await page.$$('.task-view-switch a')).length === 2);
   const jump = await page.$('a[href="#approval-terms"], .approval-orient a[href^="#"]');
   check('c2 a clear Review scope jump exists', jump !== null);

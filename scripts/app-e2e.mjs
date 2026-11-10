@@ -671,25 +671,25 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   const run = await builtAndChecked(firstTask);
   const diff = execFileSync("git", ["-C", repo, "diff", "main", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${run.id}`)[0].branch}`, "--", "src/math.js"], { encoding: "utf8" });
   if (!/subtract/.test(diff)) throw new Error(`the build's branch doesn't add subtract: ${diff.slice(0, 300)}`);
-  // One page per task: the status's one action opens the Result tab in place — the result never leaves the task.
+  // One page per task, the steps are the page (docs/plans/task-page-steps.md): the Ready row is open on the result, the
+  // one thing that waits on the person — the result never leaves the task.
   await page.goto(`${base}/t/${encodeURIComponent(firstTask)}`);
   const opened = page.url();
-  await page.locator("[data-task-status] a[data-primary-action]").first().click();
-  // The first tab reads Result once there is one, and it is the one shown.
-  await until("the Result tab", async () => await page.locator('[role="tab"][data-k-tab="plan"][aria-selected="true"]', { hasText: "Result" }).count() === 1, { timeoutMs: 10_000, everyMs: 200 });
+  await until("the Ready row, open", async () => await page.locator('[data-step-row="ready"][aria-current="step"] .k-steprow-body:not([hidden]) [data-result-panel]').count() > 0, { timeoutMs: 10_000, everyMs: 200 });
   if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
-  const panel = page.locator("[data-task-panel=\"plan\"] [data-result-panel]").first();
+  const panel = page.locator('[data-step-row="ready"] [data-result-panel]').first();
   await panel.waitFor({ timeout: 20_000 });
   // One vocabulary (docs/plans/plain-toolroll.md P1.1): the task page's own words say "plan", never scope, a digest or "signs".
   const said = await page.locator("body").innerText();
   const internal = /\b(?:scope|signs|sealed|binds|digest)\b|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,64}\b/i.exec(said);
   if (internal !== null) throw new Error(`the task page says "${internal[0]}": …${said.slice(Math.max(0, internal.index - 80), internal.index + 40)}…`);
   // How it ran: one line in the result's record — its time and tokens as recorded (docs/plans/run-efficiency.md).
-  const ran = await page.locator('[data-task-panel="plan"] #how-it-ran summary').first().innerText();
+  const ran = await page.locator('[data-step-row="ready"] #how-it-ran summary').first().innerText();
   if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
   // What a person sees: checks passed (the task's header says it once), and the decision after the evidence says what
   // accepting does (plain Accept when every requirement is met; the planner may have left one for a person to check).
-  const status = await page.locator('[data-task-status] [data-status-detail="checks"]').first().innerText();
+  // The checks fact is the Checks row's own.
+  const status = (await page.locator('[data-step-row="checks"] [data-status-detail="checks"]').first().textContent()) ?? "";
   if (!/Passed/.test(status)) throw new Error(`the task's checks say: ${status.slice(0, 200)}`);
   const checks = "passed";
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
@@ -729,14 +729,13 @@ async function sendBack(id, note) {
   const child = new URL(page.url()).searchParams.get("version") ?? rows(`SELECT t.external_id AS id FROM task_ref t WHERE t.revision_of IS NOT NULL ORDER BY t.id DESC LIMIT 1`)[0]?.id;
   if (!child || child === id) throw new Error(`no revision was made: ${page.url()}`);
   if (refOf(child)?.plan !== "requested" && refOf(child)?.plan !== "drafted") throw new Error(`the revision wasn't sent to the planner: plan ${refOf(child)?.plan}`);
-  // The page the request lands on: the progress line is back at Plan, and (while the planner is still at it) the
-  // revision's Activity says the plan is being updated with the notes.
-  const step = await page.locator(".k-steps .k-step[aria-current]").first().getAttribute("aria-label", { timeout: 10_000 }).catch(() => null);
-  if (step === null || !/^Plan/.test(step)) throw new Error(`the revision's progress line isn't at Plan: ${step}`);
+  // The page the request lands on: its steps are back at Plan, and (while the planner is still at it) the Plan row
+  // says the plan is being updated with the notes.
+  const step = await page.locator('.k-steprows .k-steprow[aria-current="step"]').first().getAttribute("data-step-row", { timeout: 10_000 }).catch(() => null);
+  if (step !== "plan") throw new Error(`the revision's steps aren't at Plan: ${step}`);
   if (refOf(child)?.plan === "requested") {
-    await page.locator('[role="tab"][data-k-tab="activity"]').click();
-    const said = await page.locator('[data-task-panel="activity"]').innerText();
-    if (!/Updating the plan/.test(said) && refOf(child)?.plan === "requested") throw new Error(`the revision's Activity doesn't say the plan is being updated: ${said.slice(0, 300)}`);
+    const said = await page.locator('.k-steprows .k-steprow[data-step-row="plan"]').innerText();
+    if (!/Updating the plan/.test(said) && refOf(child)?.plan === "requested") throw new Error(`the revision's Plan row doesn't say the plan is being updated: ${said.slice(0, 300)}`);
   }
   await plannerDrafted(child, "the planner's updated plan");
   return child;
@@ -3172,17 +3171,19 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const proof = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action LIKE '%approv%' ORDER BY rowid DESC LIMIT 1`)[0];
   // Ready, then Complete.
   const run = await laptopReady(id);
+  // The Ready row is open on the result (docs/plans/task-page-steps.md): its decision is right there.
   await on.goto(`${install.base}/t/${encodeURIComponent(id)}`);
-  await on.locator("[data-task-status] a[data-primary-action]").first().click();
   const accept = on.locator(`[data-result-decision] form[action="/t/${id}/complete"] button[data-accept-result]`);
   await waitFor(accept, "Accept on the result", { timeoutMs: 30_000, seen: () => saysNow(on) });
-  // How it was approved, in its own words (never "password typed").
-  const approvedLine = (await on.locator("[data-task-status]").first().innerText()).replace(/\s+/g, " ");
+  // How it was approved, in its own words (never "password typed"): the Approval row says it when opened.
+  await on.locator('[data-step-row="approve"] button.k-steprow-head').click();
+  const approvedLine = (await on.locator('[data-step-row="approve"]').first().innerText()).replace(/\s+/g, " ");
   if (!/on this computer, no password/.test(approvedLine)) throw new Error(`the approval reads: ${approvedLine.slice(0, 300)}`);
   await bothSizes(on, "4-ready", "easy-start");
   // The sample came with its own check (its one test): the result says the checks passed. A fast start's one requirement
   // is yours to check, and the scripted builder reports none, so accepting takes a reason here.
-  if (!/Project checks Passed/.test(approvedLine)) throw new Error(`the sample's checks didn't read passed: ${approvedLine.slice(0, 300)}`);
+  const checksLine = ((await on.locator('[data-step-row="checks"]').first().textContent()) ?? "").replace(/\s+/g, " ");
+  if (!/Project checks ?Passed/.test(checksLine)) throw new Error(`the sample's checks didn't read passed: ${checksLine.slice(0, 300)}`);
   for (const looks of await on.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
   const reason = on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]');
   if (await reason.count() > 0) await reason.fill("I read the diff and the test passes.");

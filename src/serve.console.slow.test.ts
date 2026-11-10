@@ -7,7 +7,7 @@ import { projectIdentities } from "./project-identity.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer as createNetServer } from "node:net";
 import type { FolderLookRunner } from "./folder-look.js";
-import type { BrowserAgentsView, BrowserHomeView, BrowserTasksView } from "./browser-workspace.js";
+import type { BrowserAgentsView, BrowserHomeView, BrowserTasksView, BrowserTaskView } from "./browser-workspace.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -206,6 +206,11 @@ describe("the operations console", () => {
     expect(page1).not.toContain("<em>no exclusions</em>");
     // Sent back with a note, it is planned afresh before anyone approves it.
     expect(page1).toContain("Updating the plan");
+    // On the steps page too: the Plan row says it, and holds the planner's card above the plan it starts from.
+    const view1 = workspaceOf(page1).view as BrowserTaskView;
+    expect(view1.plan).toMatchObject({ planning: true, updating: true });
+    expect(view1.plan!.html).toContain("Updating the plan");
+    expect(view1.steps!.find(row => row.key === "plan")).toMatchObject({ key: "plan", sentence: "Updating the plan" });
     expect(page1).not.toContain('id="approve"');
     plannerKeptTerms(store, newTaskId);
 
@@ -293,11 +298,11 @@ describe("the operations console", () => {
     const approveForm = /<form method="post" action="[^"]*\/approve" class="approve-form approval-sheet" id="approve"[^>]*>(.*?)<\/form>/s.exec(page)?.[1] ?? "";
     // One sentence in view; the lineage and inherited terms in Details.
     expect(approveForm).toContain(`<p class="approval-revision">Fixes what build #${run} missed: `);
-    const details = approveForm.slice(approveForm.indexOf('<details class="approval-details">'));
+    const details = approveForm.slice(approveForm.indexOf('<details class="approval-details"'));
     expect(details).toContain("Strict / release quality");
     expect(details).toContain(lineage);
     expect(details).toContain("never inherited");
-    expect(approveForm.slice(0, approveForm.indexOf('<details class="approval-details">'))).not.toContain("inherited");
+    expect(approveForm.slice(0, approveForm.indexOf('<details class="approval-details"'))).not.toContain("inherited");
 
     // Chat: the same words, from the same projection.
     const chat = await (await fetch(url(`/chat?task=${encodeURIComponent(childId)}`), { headers: { cookie } })).text();
