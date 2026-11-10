@@ -1910,7 +1910,7 @@ import { permissionPlainWords } from "./chat-terms.js";
 import { limitRecognised } from "./exhaustion.js";
 import { SUBSCRIPTION_CAPABLE } from "./keys.js";
 import { releaseCheckPurposeDigest, releaseTermsDigest, type ReleaseCheckPurpose, type ReleaseTerms } from "./contracts/release-terms.js";
-import { CHECK_ACCESS_WIDTH, autoEvidenceOf, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseAutoApproves, releaseSealProblem, type AutoEvidence, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
+import { CHECK_ACCESS_WIDTH, autoEvidenceOf, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseAutoApproves, releaseSealProblem, releaseStateAt, type AutoEvidence, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
 
 /** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
 export const machineActing = (): boolean => currentActor()?.lead === true || activeRemote() !== null;
@@ -2020,7 +2020,7 @@ export function liveReleaseOf(store: Store, taskId: string, action: ReleaseActio
   if (a.state === "superseded") return refuse("a newer approval of this release replaced this one");
   if (a.state === "revoked") return refuse(`${a.endedBy ?? "an approver"} stopped carrying commits for this release`);
   // Expiry stops every live state (security review): an operation already reserved finishes only through reconciliation.
-  if (a.state === "expired" || ((a.state === "open" || a.state === "deploying" || a.state === "merge-reserved") && a.expiresAt <= now.toISOString())) return refuse("the release approval expired");
+  if (releaseStateAt(a, now) === "expired") return refuse("the release approval expired");
   if (a.state === "merged") return refuse("the release was already merged");
   if (!RELEASE_ACTION_STATES[action].includes(a.state)) return refuse(a.state === "open" ? "the release hasn't started deploying" : `the release is already ${a.state === "deploying" ? "deploying" : "merging"}`);
   if (a.tipTask !== taskId) return refuse("this is not the release's current commit");

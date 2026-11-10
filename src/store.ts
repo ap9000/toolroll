@@ -25597,7 +25597,7 @@ export {
   type ReleaseAuthority, type ReleaseCarry, type ReleaseOperation, type ReleaseState,
 } from "./release-authority.js";
 import {
-  LIVE_RELEASE_STATES, autoEvidenceOf, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
+  LIVE_RELEASE_STATES, autoEvidenceOf, belongsToRelease, releaseExpiredAt, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
   type ReleaseCarry, type ReleaseOperation,
 } from "./release-authority.js";
 
@@ -25675,7 +25675,7 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
     if (releaseCiRunningOf(store, input.taskId) !== null) return { ok: false as const, why: "This release still waits for GitHub CI. Resume it with `toolroll release`." };
     const at = input.now.toISOString();
     // Expiry stops every live state; an operation already reserved settles only through reconciliation.
-    if (a.expiresAt <= at) return { ok: false as const, why: "The release approval expired." };
+    if (releaseExpiredAt(a, input.now)) return { ok: false as const, why: "The release approval expired." };
     if (a.tipTask !== input.taskId || a.tipSha !== input.candidate) return { ok: false as const, why: `Task ${input.taskId} is not the release's current commit.` };
     const leased = a.leaseOwner !== null && a.leaseExpires !== null && a.leaseExpires > at;
     if (input.epoch === null ? leased : input.epoch !== a.leaseEpoch || !leased) return { ok: false as const, why: input.epoch === null ? `A release coordinator (${a.leaseOwner}) holds this release; let it deploy.` : "This coordinator no longer holds the release's lease." };
@@ -25713,7 +25713,7 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
     if (releaseCiRunningOf(store, op.taskId) !== null) return false;
     // Past the expiry nothing new starts; the reserved operation is settled by reconciliation instead.
-    if (a.expiresAt <= now.toISOString()) return false;
+    if (releaseExpiredAt(a, now)) return false;
     // The lease that reserved it still holds (a person's direct deploy: still no coordinator holding the release), and
     // the live-release predicate still accepts it, at this moment (review round 1).
     const at = now.toISOString();
