@@ -2,7 +2,7 @@
  * A cancelled task takes no approval, by any road (Codex review of the steps page, finding 2): the ceremony refuses
  * before any vote or proof is kept, the primitive every automatic road calls refuses too, a page left open while the
  * task was cancelled elsewhere approves nothing, the CLI says why, and a task reopened afterwards carries no seal
- * from its cancelled time. Isolated stores only.
+ * from its cancelled time. The primitive checks and writes in one transaction of its own. Isolated stores only.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -73,6 +73,33 @@ describe("the store's doors", () => {
     expect(store.getScope("reopen")).toMatchObject({ approvedAt: null, approvedDigest: null });
     expect(approve(store, "reopen", "alex", LATER, store.getScope("reopen")!.digest, token)).toMatchObject({ ok: true });
     expect(store.getScope("reopen")!.approvedBy).toBe("alex");
+  });
+
+  test("the primitive, called with no transaction around it, checks and writes in one of its own", () => {
+    seed("bare");
+    const inside: boolean[] = [];
+    const wake = store.bumpWake.bind(store);
+    // bumpWake runs after the seal's UPDATE: what it sees is what the checks and the write ran in.
+    store.bumpWake = () => { inside.push(store.handle.isTransaction); wake(); };
+    expect(store.handle.isTransaction).toBe(false);
+    expect(store.sealScopeApproval("bare", "mode standard", LATER, {}, { kind: "mode", modeDigest: "m" })).toBe(true);
+    expect(inside).toEqual([true]);
+    expect(store.handle.isTransaction).toBe(false);
+    // And it is all or nothing: a seal that fails after its UPDATE keeps nothing.
+    seed("whole");
+    store.bumpWake = () => { throw new Error("stopped after the write"); };
+    expect(() => store.sealScopeApproval("whole", "mode standard", LATER, {}, { kind: "mode", modeDigest: "m" })).toThrow("stopped after the write");
+    expect(store.getScope("whole")).toMatchObject({ approvedAt: null, approvedBy: null, approvedDigest: null });
+    expect(store.handle.isTransaction).toBe(false);
+    // Inside a savepoint a caller opened with no transaction around it, it joins that one (it opens no second
+    // transaction), and the caller backing out takes the seal with it.
+    store.bumpWake = wake;
+    seed("joined");
+    expect(() => store.savepoint(() => {
+      expect(store.sealScopeApproval("joined", "mode standard", LATER, {}, { kind: "mode", modeDigest: "m" })).toBe(true);
+      throw new Error("the caller backed out");
+    })).toThrow("the caller backed out");
+    expect(store.getScope("joined")).toMatchObject({ approvedAt: null, approvedBy: null, approvedDigest: null });
   });
 });
 
