@@ -12,6 +12,7 @@ import { lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSyn
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { isDeployed } from "./deploy-phase.js";
 import { quarantine, quarantineEntries, claimQuarantine, releaseQuarantine, restoreQuarantine, deleteQuarantineSync, type Quarantine } from "./sweep-quarantine.js";
 import { processCensus, type ProcessRow } from "./run-closeout.js";
 
@@ -63,7 +64,7 @@ function readStage(path: string, name: string, fallbackAt?: number): Stage {
   const stamp = String(journal?.["deployedAt"] ?? journal?.["startedAt"] ?? journal?.["createdAt"] ?? "");
   let at = Date.parse(stamp);
   if (!Number.isFinite(at)) { try { at = fallbackAt ?? statSync(path).mtimeMs; } catch { at = 0; } }
-  const finished = deploy !== null ? deploy["phase"] === "deployed" : update !== null ? typeof update["finishedAt"] === "string" : false;
+  const finished = deploy !== null ? isDeployed(deploy["phase"]) : update !== null ? typeof update["finishedAt"] === "string" : false;
   const from = update?.["from"] as { dist?: unknown } | undefined;
   const prior = typeof deploy?.["priorRuntime"] === "string" ? deploy["priorRuntime"] : typeof from?.dist === "string" ? from.dist : null;
   let keptAside = false;

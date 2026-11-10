@@ -1,0 +1,21 @@
+{
+  "phases": [
+    { "phase": "preparing", "action": "lift-pause", "flags": ["beforeSwap", "beforePause"] },
+    { "phase": "admission-paused", "action": "lift-pause", "flags": ["beforeSwap"] },
+    { "phase": "frozen", "action": "lift-pause", "flags": ["beforeSwap"] },
+    { "phase": "backup-verified", "action": "lift-pause", "flags": ["beforeSwap"] },
+    { "phase": "rehearsed", "action": "lift-pause", "flags": ["beforeSwap"] },
+    { "phase": "stopping", "action": "roll-back", "flags": [] },
+    { "phase": "stopped", "action": "roll-back", "flags": ["restartable"] },
+    { "phase": "migrating", "action": "roll-back", "flags": ["migrationStarted", "restartable"] },
+    { "phase": "migrated", "action": "roll-back", "flags": ["migrationStarted", "restartable"] },
+    { "phase": "starting", "action": "forward", "flags": [] },
+    { "phase": "started", "action": "forward", "flags": [] },
+    { "phase": "healthy", "action": "forward", "flags": [] },
+    { "phase": "start-failed", "action": "roll-back", "flags": ["migrationStarted", "restartable"] },
+    { "phase": "backup-restored", "action": "roll-back", "flags": ["restartable"] },
+    { "phase": "restored", "action": "roll-back", "flags": [] },
+    { "phase": "released", "action": "none", "flags": [] },
+    { "phase": "deployed", "action": "none", "flags": ["deployed"] }
+  ]
+}

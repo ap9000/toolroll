@@ -11,8 +11,9 @@
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { FORWARD_ONLY, rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
-import { BEFORE_SWAP, releaseGate, type GateReleaseWorld } from "./release-gate.js";
+import { deployActionOf, type DeployAction } from "./deploy-phase.js";
+import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
+import { releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { journalFile, readJournal, type ReleaseJournal } from "./release.js";
 import { autoPublishHeld, PUBLISH_ALLOWED_ACTION } from "./release-auto.js";
 import type { Store } from "./store.js";
@@ -62,16 +63,8 @@ export async function takeReleaseRun(stateDir: string, branch: string, say: (lin
 }
 
 export type SettleWorld = { rescue: RescueWorld; gate: GateReleaseWorld };
-export type DeployAction = "none" | "lift-pause" | "forward" | "roll-back" | "refuse";
-
-/** The one action a deployment's journal calls for. */
-export function deployActionOf(phase: unknown): DeployAction {
-  if (typeof phase !== "string") return "refuse";
-  if (phase === "released" || phase === "deployed") return "none";
-  if (BEFORE_SWAP.includes(phase)) return "lift-pause";
-  if (FORWARD_ONLY.includes(phase)) return "forward";
-  return "roll-back";
-}
+/** The one action a deployment's journal calls for: a row of the one phase table (deploy-phase.ts). */
+export { deployActionOf, type DeployAction };
 
 /** Settle what a stopped deployment left, saying what was done. A refusal stops the release before it does anything. */
 export async function settleDeployment(world: SettleWorld, say: (line: string) => void): Promise<{ ok: true } | { ok: false; message: string }> {
@@ -80,7 +73,14 @@ export async function settleDeployment(world: SettleWorld, say: (line: string) =
   if (open.length > 1) return { ok: false, message: `${open.length} deployments are unfinished: ${open.map(one => one.stage).join(", ")}. Nothing was changed.` };
   const { stage, journal } = open[0]!;
   const action = deployActionOf(journal?.["phase"]);
-  if (action === "refuse") return { ok: false, message: `The deployment journal in ${stage} can't be read. Nothing was changed.` };
+  if (action === "refuse") {
+    // A word this version's table does not hold (a newer candidate's, or damage) is never acted on by itself: the
+    // deployment's own recovery knows its own phases, and the person starts it.
+    const phase = journal?.["phase"];
+    return typeof phase === "string"
+      ? { ok: false, message: `The deployment in ${stage} stopped at a step this version doesn't know (${/^[a-z-]{1,40}$/.test(phase) ? phase : "not a plain word"}). Nothing was changed. Its own recovery can decide: \`toolroll release --recover-deploy --yes\`.` }
+      : { ok: false, message: `The deployment journal in ${stage} can't be read. Nothing was changed.` };
+  }
   if (action === "forward") { say("Finishing the deployment that was under way."); return { ok: true }; }
   if (action === "lift-pause") {
     const lifted = releaseGate(String(journal?.["id"] ?? ""), world.gate, true);

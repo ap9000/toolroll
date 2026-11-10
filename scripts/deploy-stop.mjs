@@ -127,3 +127,10 @@ export function serviceStopper({ database, spawnSync, kill, sleep, signal, say =
   }
   return { processes, leftFrom, stopProcesses, verifyServiceStopped };
 }
+
+/** What one command is to the service of exactly this runtime on exactly this database ("supervisor", "up", "role",
+ * "foreign", "named") or null. The database is a whole argument, never a prefix: an `up` on `orders.db-other` is
+ * not this service's. */
+export function commandKind(command, { dist, database }) {
+  return classify(String(command).trim(), { dists: [dist], database })?.kind ?? null;
+}
