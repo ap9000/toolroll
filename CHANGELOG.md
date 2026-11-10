@@ -1,15 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.9.100 — 2026-11-10
 
+- **An update whose new version never starts completely is now rolled back without asking you to unload the service by hand.** When Toolroll can prove the service still loaded is the one this update installed, running its new version on this database, it stops that service itself and puts the previous version back. If anything doesn't match, nothing is stopped and the message says why.
 - **An agent cut short shows as Stopped, not Failed.** When a restart or a stop ends an agent's run before it finishes, the run now shows as Stopped, so Failed means the work itself failed.
-- **People lists only invites that can still be used.** An invite that was already used no longer shows as open.
 - **A chat message that was dropped stays dropped.** When a chat is disconnected while Toolroll is still working on a message from it, the late answer is no longer saved or sent, and a dropped part of a reply is never brought back by a later update.
 - **Teams keeps trying to send, like Slack and Discord.** A reply Teams fails to take is no longer given up after 20 tries. It waits longer between tries (up to 5 minutes) and goes out when Teams takes it. The three apps now share one retry rule.
+- **People lists only invites that can still be used.** An invite that was already used no longer shows as open.
 - **A claim on a finished task is refused, and says why.** `toolroll claim` on a task that is done, failed or cancelled now answers `closed` with the task's state and a next step that works for that task (`task requeue` when a rerun would be accepted, `task state <id> queued` for a cancelled task, otherwise `task show`). Before, it took the task and marked it running again. A worker whose lease ran out can't renew it onto a task that was closed meanwhile either (`heartbeat` answers `closed`).
 - **`toolroll worker release` hands a task back in one step.** Releasing the lease and putting the task back in the queue now happen together, so another worker can no longer claim the task in between and then see it marked as waiting. Releasing the same lease twice changes nothing the second time.
 - **No false "stalled, retry it" notice for a task that is already closed.** When a build or scouting attempt uses up its retries on a task a person already marked done, failed or cancelled, the task keeps that state, and no incident, hold or notification is added. The failed attempt is still recorded.
-- **An update whose new version never starts completely is now rolled back without asking you to unload the service by hand.** When Toolroll can prove the service still loaded is the one this update installed, running its new version on this database, it stops that service itself and puts the previous version back. If anything doesn't match, nothing is stopped and the message says why.
 
 ## 0.9.99 — 2026-11-09
 
