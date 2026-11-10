@@ -2,13 +2,15 @@
 // tests run the same ordered steps against temporary journals and databases with recorded effects. The
 // command line passes the real ones: launchd, the installed and staged runtimes, and the plane's records.
 import { DatabaseSync, backup } from "node:sqlite";
-import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, sep } from "node:path";
 import { observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment, ledgerStaleCodingRelease } from "./deploy-coding.mjs";
 import { FORWARD_ONLY, NEEDS_NO_RECOVERY, assertDeployPhase, stoppedWhereNothingChanged } from "./deploy-phase-table.mjs";
 import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
-import { recordedStillRunning } from "./deploy-stop.mjs";
+import { commandKind, listProcesses, recordedStillRunning, serviceProcesses } from "./deploy-stop.mjs";
+import { ABSENCE_MS, BOOTOUT_MS, CALL_MS, boundedRunner, mergeRecorded, ownStateFolder, parseLaunchdPrint, programArguments, recordedLeft, treeOf, uncertain } from "./deploy-launchd.mjs";
 
 export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 /** How long, in all, finish asks the started console's own port before giving up (each ask and pause fits inside it). */
@@ -132,7 +134,7 @@ export function activeWorkRefusal(work) {
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
   facts, reserve, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
-  processes, now = Date.now,
+  processes, now = Date.now, home = homedir(),
 }) {
   const short = candidateHead.slice(0, 7);
   const assertLocked = () => deploymentLock.assertHeld(journalFile);
@@ -262,16 +264,24 @@ export function browserDeployment({
     const dists = [...new Set([priorDist, r.priorRuntime, r.nextRuntime].filter(one => typeof one === "string" && one !== ""))];
     return stopProved(r, { alive: pid => aliveAsService(pid, dists),
       remaining: () => dists.flatMap(dist => leftFrom?.(dist) ?? ["unreadable runtime processes"]),
-      loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113 });
+      loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113 }) && newServiceStopGone(r);
   };
+  /** Once a journal records a stop of the new service, every process it recorded must have exited too, whatever state
+   * the record is in (plan §8): the recorded set is only ever a list of processes that must be gone. */
+  const newServiceStopGone = r => r.newServiceStop === undefined || recordedLeft(listed(), r.newServiceStop?.pids).length === 0;
+  /** Today's message when the new service is not proved gone (docs/plans/deploy-phase-table.md), word for word. */
+  const stillLoaded = `The new service is still loaded or still has processes, so the previous one was not put back. Nothing was stopped and the journal stays at starting. If it is running, run the release again to finish the deployment. If it never answers, stop it (launchctl bootout gui/${uid}/${label}), then run the release again.`;
   /**
    * `--phase recover` at "starting", before the recovery above: the deployment was killed while it waited for the new
    * service, so nothing recorded whether that service came up, and a journal alone never rolls a started service back.
-   * This stops nothing. Only when the new service is proved gone (not loaded, no process of either runtime on this
-   * database) and the pause is still this deployment's does it make the checks a failed start makes inside swap()
-   * (the coding backup, and the new runtime's own proof that no coding agent of it is left) and journal
-   * "start-failed", which the recovery then undoes like any failed start. Anything it cannot prove leaves the journal
-   * at "starting" and says why. Returns whether it journaled.
+   * A new service still loaded is stopped only by stopNewService below: one `launchctl bootout` of this label, after it
+   * proved the installed definition is the one this deployment wrote and the loaded process is this deployment's new
+   * runtime on this database, and that it never started completely while this run watched. Only when the new service
+   * is proved gone (not loaded, no process of either runtime on this database, nothing it recorded still running) and
+   * the pause is still this deployment's does it make the checks a failed start makes inside swap() (the coding backup,
+   * and the new runtime's own proof that no coding agent of it is left) and journal "start-failed", which the recovery
+   * then undoes like any failed start. Anything it cannot prove leaves the journal at "starting" and says why. Returns
+   * whether it journaled.
    */
   async function proveStartFailed() {
     checkpoint();
@@ -281,7 +291,10 @@ export function browserDeployment({
     // Only from the deployment's own saved definition and staging directory, on its own database.
     requireTrue(priorDist === r.priorRuntime && nextDist === r.nextRuntime && database === r.database && candidateHead === r.candidate, `This recovery does not match the deployment's recorded runtimes, database or commit. ${kept}`);
     const stillOurs = db => oldRt.gate.updateGateOwned(db, r.id);
-    const proveGone = () => requireTrue(serviceGone(r), `The new service is still loaded or still has processes, so the previous one was not put back. ${kept} If it is running, run the release again to finish the deployment. If it never answers, stop it (launchctl bootout gui/${uid}/${label}), then run the release again.`);
+    const proveGone = () => requireTrue(serviceGone(r), stillLoaded);
+    // Loaded and never started completely: recovery stops it itself only once it has proved the facts of plan §4, and
+    // otherwise says why it did not, after today's message (stopNewService below).
+    if (!serviceGone(r)) await stopNewService(r);
     proveGone();
     // The new runtime's own code answers for its coding agents below: prove it is the recorded commit before loading it.
     proveStaged();
@@ -298,6 +311,313 @@ export function browserDeployment({
     } finally { db.close(); }
     return true;
   }
+  // ---- The stop of a new service that never started completely (docs/plans/recovery-stops-silent-service.md) ----
+  // The only act is one `launchctl bootout gui/<uid>/<label>` of this run's own label in its own GUI domain. No pid is
+  // ever signalled here: the recorded `{ pid, start }` set is only a list of processes that must be proved gone.
+  /** Every subprocess the stop runs is bounded (plan §8): a timeout per call, a fixed PATH and locale. */
+  const bounded = boundedRunner(spawnSync);
+  /** While a stop runs, the time by which its checks and its act must have begun (plan §8); Infinity otherwise. No
+   * bounded call begins after it, and a call's own timeout never runs past it. */
+  let stopBy = Infinity;
+  const remaining = () => stopBy - now();
+  /** One whole process listing through a bounded `ps` (deploy-stop.mjs listProcesses), or null (also once the stop's
+   * time is up). */
+  const listed = () => {
+    const left = remaining();
+    if (!(left > 0)) return null;
+    return listProcesses((command, args, options) => { try { return spawnSync(command, args, { ...options, timeout: Math.max(1, Math.min(CALL_MS, left)) }); } catch (error) { return { status: null, error }; } });
+  };
+  /** A refusal of the stop, before its act: nothing was stopped. `reason` is the fixed reason the journal keeps. */
+  class Kept extends Error { constructor(message, reason) { super(message); this.reason = reason; } }
+  /** A call whose outcome is not known: a timeout, a signal, a spawn error or an exit status it can't read. */
+  class Unsure extends Error {}
+  const WHY = Object.freeze({
+    record: "the deployment journal does not name this service",
+    earlier: "its record of an earlier stop cannot be read",
+    placement: "the deployment folder is not in Toolroll's own folder",
+    link: "a deployment file is a link or not a plain file",
+    definition: "the installed service definition is not the one this deployment installed",
+    job: "launchd's loaded job is not this deployment's definition",
+    noProcess: "launchd shows no running process for the service",
+    notLoaded: "launchd does not have the service loaded, but some of its processes have not exited",
+    notOurs: "the running process is not the new runtime's service on this database",
+    tree: "the service's processes could not all be listed",
+    runtime: "a runtime folder could not be read",
+    sameRuntime: "the new and previous runtimes are the same folder",
+    outside: "the new runtime is not in the deployment folder",
+    prior: "a process of the previous version is still running",
+    pause: "new work is no longer paused by this deployment",
+    changed: "the service changed while recovery was checking it",
+    journal: "the deployment journal changed while recovery was checking it",
+    answered: `its console answered http://127.0.0.1:${servicePort}/healthz`,
+    unsure: "a check of the service did not finish or could not run",
+    late: "the checks took longer than recovery allows",
+    unwritten: "its record of the stop could not be written",
+  });
+  const keep = why => new Kept(`${stillLoaded} Recovery did not stop it itself because ${why}.`, why);
+  const completed = () => new Kept("The new service started all its processes while recovery was waiting. Nothing was stopped and the journal stays at starting. Run the release again to finish the deployment.", "the service started all its processes");
+  const refusal = error => error instanceof Kept || signal?.aborted ? error : keep(WHY.unsure);
+  const notProved = detail => `The new service was asked to stop, but it is not proved stopped (${detail}). Nothing was put back and the journal stays at starting. Run the release again once it has stopped.`;
+  const bootoutError = status => `launchctl bootout returned an error (exit ${status}), so it is not known whether the new service stopped. Recovery did nothing more and the journal stays at starting. Run the release again: it checks again before doing anything.`;
+  const unrecorded = "The new service stopped, but recovery could not record that. Nothing was put back and the journal stays at starting. Run the release again.";
+  const target = `gui/${uid}/${label}`;
+  /** A bounded call with a numeric exit status, or Unsure. Refused once the stop's time is up; its timeout is never
+   * longer than the time the stop has left. */
+  const call = (command, args, ms = CALL_MS) => {
+    const left = remaining();
+    if (!(left > 0)) throw keep(WHY.late);
+    const out = bounded(command, args, Math.max(1, Math.min(ms, left)));
+    if (uncertain(out)) throw new Unsure(command);
+    return out;
+  };
+  /** One turn of the event loop, then the lock and cancellation checks: every call here is synchronous, so a stop
+   * signal that arrived during one is only seen after a turn. */
+  const turn = () => settle(sleep(0));
+  const lstatOrNull = path => { try { return lstatSync(path); } catch { return null; } };
+  const plainFile = path => { try { const stat = lstatSync(path); return stat.isFile() && !stat.isSymbolicLink(); } catch { return false; } };
+  const write = r => { assertLocked(); oldRt.update.durableJson(journalFile, r); };
+  /** Settles the record after its request was written. Best effort: a record left at "requested" is read as uncertain. */
+  const settleRecord = (r, fields) => { r.newServiceStop = { ...r.newServiceStop, ...fields, settledAt: new Date().toISOString() }; try { write(r); } catch { /* left at requested */ } };
+  /** F1 (placement): the real stage is a direct child of the real <state>/staged-upgrades, the state folder holds the
+   * database and is Toolroll's own by the fence's test, and the journal and both definitions are plain files. */
+  const placement = () => {
+    let state, staged, stage, db, own;
+    try {
+      if (journalFile !== join(stageDir, "deployment.json")) return WHY.placement;
+      if (lstatSync(stageDir).isSymbolicLink()) return WHY.link;
+      state = realpathSync(stateDir); staged = realpathSync(join(stateDir, "staged-upgrades")); stage = realpathSync(stageDir); db = realpathSync(database);
+      own = ownStateFolder(state, (() => { try { return realpathSync(home); } catch { return home; } })());
+    } catch { return WHY.placement; }
+    if (staged !== join(state, "staged-upgrades") || dirname(stage) !== staged || dirname(db) !== state || !own || existsSync(join(staged, ".git"))) return WHY.placement;
+    for (const file of [journalFile, join(stageDir, "browser.next.plist"), join(stageDir, "browser.saved.plist")]) {
+      if (plainFile(file)) continue;
+      if (existsSync(file) || lstatOrNull(file) !== null) return WHY.link;
+      // Missing: the definition this deployment wrote is F3's to refuse; anything else is not this deployment's folder.
+      return file === join(stageDir, "browser.next.plist") ? WHY.definition : WHY.placement;
+    }
+    return { stage };
+  };
+  /** F3: the installed definition is, byte for byte, the one this deployment wrote and recorded; null otherwise. */
+  const definition = named => {
+    try {
+      const next = join(stageDir, "browser.next.plist");
+      if (!plainFile(next)) return null;
+      const ours = readFileSync(next), installed = readFileSync(plist);
+      if (!ours.equals(installed) || sha(ours) !== named.nextPlistSha256) return null;
+      const text = ours.toString("utf8");
+      const args = text.includes(`${nextDist}/cli.js`) ? programArguments(text) : null;
+      return args === null ? null : { text, args };
+    } catch { return null; }
+  };
+  /** F6: the runtimes by real path, readable, distinct, and the new one inside the real stage; a reason otherwise. */
+  const runtimes = (r, stage) => {
+    let next, prior, recorded;
+    try { next = realpathSync(nextDist); prior = realpathSync(priorDist); recorded = realpathSync(r.priorRuntime); } catch { return WHY.runtime; }
+    if (next === prior || next === recorded) return WHY.sameRuntime;
+    return next.startsWith(stage + sep) ? null : WHY.outside;
+  };
+  /** F6: a process of the previous runtime on this database, as leftFrom tells it (deploy-stop.mjs serviceProcesses):
+   * every row it finds, proved or only naming the previous runtime or this database. One kind of row is excused,
+   * because serviceProcesses counts any command with `up --db <database>`: a process of the observed new service's
+   * own tree (`tree`, by pid and start time) whose command is exactly the new runtime's supervisor or `up` on this
+   * database. Anything else that names this database, whatever folder its command shows, refuses. */
+  const priorRunning = (rows, r, tree) => {
+    const found = serviceProcesses(rows, { dists: [...new Set([priorDist, r.priorRuntime])], database });
+    const ours = row => tree.some(one => one.pid === row.pid && one.start === row.start) && ["supervisor", "up"].includes(commandKind(row.command, { dist: nextDist, database }));
+    return found.targets.length > 0 || found.unproven.some(row => !ours(row));
+  };
+  const pausedByUs = r => {
+    try { const db = openDeploymentDatabase(database, { readOnly: true }); try { return oldRt.gate.updateGateOwned(db, r.id) === true; } finally { db.close(); } }
+    catch { return false; }
+  };
+  /** F4: launchd's job under the label, read strictly: { loaded: false } on 113, else what it shows (null if unreadable). */
+  const job = () => {
+    const out = call("/bin/launchctl", ["print", target]);
+    if (out.status === 113) return { loaded: false };
+    if (out.status !== 0) throw new Unsure("launchctl print");
+    return { loaded: true, seen: parseLaunchdPrint(String(out.stdout ?? ""), target) };
+  };
+  const sameJob = (seen, def) => seen.path === plist && JSON.stringify(seen.arguments) === JSON.stringify(def.args);
+  /** F4: loaded, running one process, from exactly this definition's path and arguments. */
+  const loadedAsDefined = def => {
+    const current = job();
+    if (!current.loaded) throw keep(WHY.notLoaded);
+    if (current.seen === null) throw keep(WHY.job);
+    if (current.seen.state !== "running" || current.seen.pid === null) throw keep(WHY.noProcess);
+    if (!sameJob(current.seen, def)) throw keep(WHY.job);
+    return current.seen;
+  };
+  /** The same job as first seen: still loaded and running, the same pid, path and arguments. */
+  const stillSame = (first, def) => {
+    const current = job();
+    if (!current.loaded || current.seen === null || current.seen.state !== "running" || current.seen.pid !== first.pid || !sameJob(current.seen, def)) throw keep(WHY.changed);
+  };
+  /** F5 and F6 over one listing: the pid is this runtime's supervisor on this database with parent 1, its tree is
+   * whole, and nothing of the previous runtime runs. */
+  const observe = (pid, r) => {
+    const rows = listed();
+    if (rows === null) throw keep(WHY.tree);
+    const top = rows.find(row => row.pid === pid);
+    if (top === undefined || top.ppid !== 1 || commandKind(top.command, { dist: nextDist, database }) !== "supervisor") throw keep(WHY.notOurs);
+    const tree = treeOf(rows, pid);
+    if (tree === null) throw keep(WHY.tree);
+    if (priorRunning(rows, r, tree)) throw keep(WHY.prior);
+    return { rows, top, tree };
+  };
+  const healthy = () => {
+    const out = call("/usr/bin/curl", ["-fsS", "-m", "2", `http://127.0.0.1:${servicePort}/healthz`]);
+    if (out.status !== 0) return false;
+    try { return JSON.parse(String(out.stdout)).status === "ok"; } catch { return false; }
+  };
+  /** For service(): each call bounded, and a definite answer or a throw (deploy-browser.mjs). */
+  const serviceCall = (command, args) => call(command, args);
+  /** What is still there after the act, in words (empty: proved gone). */
+  const stillThere = (r, def) => {
+    const left = [];
+    const out = bounded("/bin/launchctl", ["print", target]);
+    if (uncertain(out) || (out.status !== 0 && out.status !== 113)) left.push("launchd's answer could not be read");
+    else if (out.status === 0) left.push("launchd still has it loaded");
+    const rows = listed();
+    left.push(...recordedLeft(rows, r.newServiceStop.pids));
+    if (rows !== null) {
+      for (const dist of [nextDist, priorDist, r.priorRuntime]) {
+        const found = serviceProcesses(rows, { dists: [dist], database });
+        for (const row of [...found.targets, ...found.unproven]) left.push(`process ${row.pid}`);
+      }
+      for (const pid of recordedServicePids(r)) if (!(Number.isInteger(pid) && pid > 1) || rows.some(row => row.pid === pid)) left.push(`process ${pid}`);
+    }
+    const installed = definition(r.launchd);
+    if (installed === null || installed.text !== def.text) left.push("the installed service definition changed");
+    return [...new Set(left)];
+  };
+  const leftWords = left => left.map(one => /^process \S+$/.test(one) ? `${one} is still running` : one).join("; ");
+
+  /**
+   * `--phase recover` at "starting" when the new service is not proved gone: stop it, once, only when every fact of
+   * plan §4 holds. A: the facts and the full wait, then the observed { pid, start } set (a listing that can't be read
+   * whole refuses before anything is written). B: the intent, written durably. C: the last checks, ending with the
+   * structure read and then `launchctl print`. D: the bootout. E–H: its exit status and the observed proof of absence.
+   * Returns once absence is proved and recorded; otherwise throws the words to say, with nothing restored.
+   */
+  async function stopNewService(r) {
+    // The checks and the act must begin within the wait, one bounded bootout and a margin (plan §8).
+    stopBy = now() + HEALTH_WAIT_MS + BOOTOUT_MS + 60_000;
+    try { return await stopWithin(r); } finally { stopBy = Infinity; }
+  }
+  async function stopWithin(r) {
+    const late = () => !(remaining() > 0);
+    let def, first, observed, stage;
+    // A: the facts, and the wait.
+    try {
+      const placed = placement();
+      if (typeof placed === "string") throw keep(placed);
+      stage = placed.stage;
+      const named = r.launchd;
+      if (named === null || typeof named !== "object" || named.uid !== uid || named.label !== label || named.plist !== plist ||
+        typeof named.nextPlistSha256 !== "string" || !/^[0-9a-f]{64}$/.test(named.nextPlistSha256)) throw keep(WHY.record);
+      if (r.newServiceStop !== undefined && (r.newServiceStop === null || typeof r.newServiceStop !== "object" || !Array.isArray(r.newServiceStop.pids))) throw keep(WHY.earlier);
+      def = definition(named);
+      if (def === null) throw keep(WHY.definition);
+      if (!pausedByUs(r)) throw keep(WHY.pause);
+      const runtime = runtimes(r, stage);
+      if (runtime !== null) throw keep(runtime);
+      first = loadedAsDefined(def);
+      const start = observe(first.pid, r).top.start;
+      // F7: watched by this run for as long as the swap would have waited, once a second. The watch ends on the clock
+      // too, so slow checks on a busy machine do not use up the time the last checks and the act need.
+      const watched = now() + HEALTH_WAIT_MS;
+      for (let i = 0; i < HEALTH_WAIT_MS / 1000 && now() < watched; i++) {
+        if (late()) throw keep(WHY.late);
+        if (service(nextDist, serviceCall) !== null) throw completed();
+        stillSame(first, def);
+        if (healthy()) throw keep(WHY.answered);
+        await settle(sleep(1000));
+      }
+      if (late()) throw keep(WHY.late);
+      observed = observe(first.pid, r);
+      if (observed.top.start !== start) throw keep(WHY.changed);
+      await turn();
+    } catch (error) { throw refusal(error); }
+
+    // B: the intent, with every recorded process, written before the act.
+    try {
+      if (JSON.stringify(readJournal()) !== JSON.stringify(r)) throw keep(WHY.journal);
+      const earlier = r.newServiceStop;
+      r.newServiceStop = { state: "requested", at: new Date().toISOString(), label, pids: mergeRecorded(earlier?.pids, observed.tree),
+        attempts: (Number.isSafeInteger(earlier?.attempts) && earlier.attempts > 0 ? earlier.attempts : 0) + 1 };
+      noteMilestone(r, "stopping the new service");
+      write(r);
+    } catch (error) { throw error instanceof Kept ? error : keep(WHY.unwritten); }
+
+    // C: the last checks, in order; the structure read and then launchd's own answer are the last reads before the act.
+    try {
+      // A stop signal that arrived while the intent was being written is seen before any of the last checks.
+      await turn();
+      if (late()) throw keep(WHY.late);
+      const again = definition(r.launchd);
+      if (again === null || again.text !== def.text) throw keep(WHY.definition);
+      if (!pausedByUs(r)) throw keep(WHY.pause);
+      const runtime = runtimes(r, stage);
+      if (runtime !== null) throw keep(runtime);
+      if (late()) throw keep(WHY.late);
+      const rows = listed();
+      if (rows === null) throw keep(WHY.tree);
+      const top = rows.find(row => row.pid === first.pid);
+      if (top === undefined || top.start !== observed.top.start || top.ppid !== 1 || commandKind(top.command, { dist: nextDist, database }) !== "supervisor") throw keep(WHY.changed);
+      const tree = treeOf(rows, first.pid);
+      if (tree === null) throw keep(WHY.tree);
+      if (priorRunning(rows, r, tree)) throw keep(WHY.prior);
+      // A process not in the recorded set may be the service completing its structure.
+      if (tree.some(one => !r.newServiceStop.pids.some(kept => kept?.pid === one.pid && kept?.start === one.start))) throw keep(WHY.changed);
+      if (healthy()) throw keep(WHY.answered);
+      if (late()) throw keep(WHY.late);
+      if (service(nextDist, serviceCall) !== null) throw completed();
+      stillSame(first, def);
+      // No read follows launchd's answer. A stop signal that arrived during these synchronous checks is seen here, and
+      // the act begins only while this run still holds the lock and a whole bounded bootout still fits its time.
+      await turn();
+      if (remaining() < BOOTOUT_MS) throw keep(WHY.late);
+    } catch (error) {
+      const kept = refusal(error);
+      settleRecord(r, { state: "failed", acted: false, reason: kept instanceof Kept ? kept.reason : "recovery was interrupted" });
+      throw kept;
+    }
+
+    // D: the one act.
+    say(`Stopping the new service: it is loaded but has not started all its processes for ${HEALTH_WAIT_MS / 1000} seconds (process ${first.pid}).`);
+    const out = bounded("/bin/launchctl", ["bootout", target], BOOTOUT_MS);
+    // E: its outcome. A non-zero status may have had a partial effect: nothing more this run (Q4).
+    if (uncertain(out)) {
+      settleRecord(r, { state: "uncertain", acted: true, reason: "launchctl bootout did not finish" });
+      throw Error(notProved("launchctl bootout did not finish"));
+    }
+    if (out.status !== 0) {
+      settleRecord(r, { state: "failed", acted: true, exitStatus: out.status, reason: "launchctl bootout returned an error" });
+      throw Error(bootoutError(out.status));
+    }
+    // F: absence, observed, for a bounded time after the act.
+    const until = now() + ABSENCE_MS;
+    stopBy = until + CALL_MS;
+    let left;
+    try {
+      for (;;) {
+        left = stillThere(r, def);
+        if (left.length === 0 || now() >= until) break;
+        await settle(sleep(1000));
+      }
+    } catch { left = [...(left ?? []), "recovery stopped before it finished checking"]; }
+    // H: not proved.
+    if (left.length > 0) {
+      settleRecord(r, { state: "uncertain", acted: true, reason: "absence not proved", left: left.slice(0, 20) });
+      throw Error(notProved(leftWords(left)));
+    }
+    // G: proved; the failed start is journaled as before (proveStartFailed).
+    r.newServiceStop = { ...r.newServiceStop, state: "stopped", settledAt: new Date().toISOString() };
+    noteMilestone(r, "stopped the new service");
+    try { write(r); } catch { throw Error(unrecorded); }
+    say("Stopped the new service. Putting the previous version back.");
+  }
+
   /** The previous definition, loaded again once its processes were proved gone, and only on the schema it runs.
    * Restored means it runs from its runtime and answers /healthz. */
   function restorePriorService(r) {
@@ -482,6 +802,9 @@ export function browserDeployment({
     verifyCodingBackup(oldRt.coding, r);
     const beforeReplace = openDeploymentDatabase(database, { readOnly: true });
     try { assertCodingDeploymentStopped(oldRt.coding, database, beforeReplace, r); } finally { beforeReplace.close(); }
+    // The launchd job this deployment installs, durable with "starting" below: what recovery's stop of a new service
+    // that never started completely must find (docs/plans/recovery-stops-silent-service.md, F2 and F3).
+    r.launchd = { uid, label, plist, nextPlistSha256: sha(nextPlist) };
     writeFileSync(plist, nextPlist);
     const booted = spawnSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, plist], { encoding: "utf8" });
     requireTrue(booted.status === 0, `launchctl bootstrap failed: ${booted.stderr}`);
