@@ -13,8 +13,9 @@
 // and without one the journal stays resumable under the same id.
 // Which phase belongs to which of these groups is one table (src/deploy-phase-data.json, read through
 // deploy-phase-table.mjs), not lists kept here. "starting" is in none of them: a deployment killed while it waited for
-// the new service is not undone from its journal alone (deploy-phases.mjs proveStartFailed proves the new service gone
-// and journals "start-failed" first).
+// the new service is not undone from its journal alone (deploy-phases.mjs proveStartFailed proves the new service gone,
+// stopping one that never started completely only under docs/plans/recovery-stops-silent-service.md, and journals
+// "start-failed" first).
 import { MIGRATION_STARTED, PAUSED_BEFORE_SWAP, RESTARTABLE } from "./deploy-phase-table.mjs";
 export { MIGRATION_STARTED, PAUSED_BEFORE_SWAP };
 

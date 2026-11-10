@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **An update whose new version never starts completely is now rolled back without asking you to unload the service by hand.** When Toolroll can prove the service still loaded is the one this update installed, running its new version on this database, it stops that service itself and puts the previous version back. If anything doesn't match, nothing is stopped and the message says why.
+
 ## 0.9.99 — 2026-11-09
 
 - **A Toolroll update interrupted while the new service was starting no longer gets stuck.** Before, an update killed in that short window left new work paused until someone edited a file by hand. Running the release again now finishes the update when the new service is running, and puts the previous service back once the new one is proved gone. Nothing is stopped on a guess: a new service that is loaded but never answers is left alone, and the message names the one command that stops it.

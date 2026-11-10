@@ -161,26 +161,35 @@ function quiet(db) {
     requireTrue(!problem, problem);
   }
 }
-function service(dist) {
-  const launch = spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" });
+/** The service of runtime `dist` on this database, or null when launchd shows none whose structure is complete.
+ * `run(command, args)` (optional) replaces each subprocess call with a bounded one that throws when its outcome is not
+ * known (deploy-phases.mjs, the stop of a new service that never started completely); there `pgrep -P`'s exit 1 is
+ * read as "no children", its documented meaning. Without it, every call is as it always was. */
+function service(dist, run) {
+  const call = run ?? ((command, argv) => spawnSync(command, argv, { encoding: "utf8" }));
+  const strict = run === undefined ? (command, argv) => execFileSync(command, argv, { encoding: "utf8" })
+    : (command, argv) => { const out = run(command, argv); if (out.status !== 0) throw Error(`${command} exited ${out.status}`); return String(out.stdout); };
+  const launch = call("/bin/launchctl", ["print", `gui/${uid}/${label}`]);
   const pid = Number(launch.stdout.match(/\n\s*pid = (\d+)/)?.[1]);
   if (!(pid > 1) || !launch.stdout.includes("state = running")) return null;
-  const command = execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  const command = strict("/bin/ps", ["-p", String(pid), "-o", "command="]);
   // By exact runtime path and exact database argument (deploy-stop.mjs): a service of this runtime on another
   // database, even one whose path begins with this one's, is not this service.
   if (commandKind(command, { dist, database }) !== "supervisor") return null;
-  const children = execFileSync("/usr/bin/pgrep", ["-P", String(pid)], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean).map(Number);
-  const commands = children.map(p => spawnSync("/bin/ps", ["-p", String(p), "-o", "command="], { encoding: "utf8" }).stdout);
+  const listed = run === undefined ? strict("/usr/bin/pgrep", ["-P", String(pid)])
+    : (() => { const out = run("/usr/bin/pgrep", ["-P", String(pid)]); if (out.status === 1) return ""; if (out.status !== 0) throw Error(`pgrep exited ${out.status}`); return String(out.stdout); })();
+  const children = listed.trim().split(/\s+/).filter(Boolean).map(Number);
+  const commands = children.map(p => call("/bin/ps", ["-p", String(p), "-o", "command="]).stdout);
   const up = children.filter((_, at) => commandKind(commands[at], { dist, database }) === "up");
   if (up.length !== 1) return null;
   // `up`'s console and worker (isolated-checks stage 1), each verified by its command: this runtime's role entry and
   // its one role argument. Deployment proves their exit too (round 1, finding 3). A role from another runtime is not
   // this service. An `up` from before the split has none.
   const roles = [];
-  const below = spawnSync("/usr/bin/pgrep", ["-P", String(up[0])], { encoding: "utf8" });
+  const below = call("/usr/bin/pgrep", ["-P", String(up[0])]);
   if (below.status !== 0 && below.status !== 1) return null;
   for (const child of below.stdout.trim().split(/\s+/).filter(Boolean).map(Number)) {
-    const roleCommand = spawnSync("/bin/ps", ["-p", String(child), "-o", "command="], { encoding: "utf8" }).stdout.trim();
+    const roleCommand = call("/bin/ps", ["-p", String(child), "-o", "command="]).stdout.trim();
     if (!roleCommand.includes("up-role-child.js")) continue;
     const role = / (console|worker)$/.exec(roleCommand)?.[1];
     if (!roleCommand.includes(`${dist}/up-role-child.js `) || role === undefined) return null;
@@ -415,8 +424,10 @@ try {
   // Putting the previous service back needs no approval of the candidate: it resumes this deployment's own recovery.
   if (phaseWanted === "recover") {
     requireTrue(flag("stage") && existsSync(journalFile), "--phase recover resumes a failed deployment: pass --stage <dir> of one.");
-    // Killed while it waited for the new service: prove that service gone first (it stops nothing). What it can't
-    // prove is said, and the journal stays where it is for the recovery below to report.
+    // Killed while it waited for the new service: prove that service gone first. A new service still loaded that never
+    // started completely is stopped (one bootout of this label) only once every fact of
+    // docs/plans/recovery-stops-silent-service.md holds. What it can't prove is said, and the journal stays where it is
+    // for the recovery below to report.
     try { await proveStartFailed(); } catch (error) { console.error(`✗ ${error.message}`); }
     process.exit(recoverJournal() ? 0 : 1);
   }
