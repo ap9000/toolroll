@@ -29,6 +29,8 @@ await mkdir(resolve(root, "dist", "design"), { recursive: true });
 await copyFile(resolve(root, "src", "design", "tokens.css"), resolve(root, "dist", "design", "tokens.css"));
 // And the revamp kit's sheet, which it appends (src/design/KIT.md).
 await copyFile(resolve(root, "src", "design", "kit.css"), resolve(root, "dist", "design", "kit.css"));
+// The deployment phase table is one JSON file; deploy-phase.js reads it as a sibling (the deploy scripts read src's copy).
+await copyFile(resolve(root, "src", "deploy-phase-data.json"), resolve(root, "dist", "deploy-phase-data.json"));
 
 if (process.platform !== "win32") {
   for (const name of ["bin.js", "cli.js"]) {

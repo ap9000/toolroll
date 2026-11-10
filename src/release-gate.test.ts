@@ -80,6 +80,7 @@ describe("toolroll release --release-gate", () => {
     ["a definition that differs from the saved one", "conflict", p => { writeFileSync(join(p.stage, "browser.saved.plist"), "<plist>older</plist>"); }],
     ["no service definition", "conflict", p => { p.plists.length = 0; }],
     ["a service that is not running", "conflict", p => { p.processes.length = 0; }],
+    ["a service of this runtime on a database whose path only begins with this one's", "conflict", p => { p.processes[1]!.command = `/usr/bin/node ${p.prior}/cli.js up --db ${p.database}-other --runner local`; }],
     ["a process running from the staged runtime", "after-swap", p => { p.processes.push({ pid: fakePid(3), command: `/usr/bin/node ${p.next}/controller-service.js` }); }],
     ["a deployment still running", "deploying", p => { p.processes.push({ pid: fakePid(4), command: `node scripts/deploy-browser.mjs --run 7 --stage ${p.stage} --yes` }); }],
   ];

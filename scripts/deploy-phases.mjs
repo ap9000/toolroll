@@ -6,6 +6,7 @@ import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, l
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment, ledgerStaleCodingRelease } from "./deploy-coding.mjs";
+import { FORWARD_ONLY, NEEDS_NO_RECOVERY, assertDeployPhase, stoppedWhereNothingChanged } from "./deploy-phase-table.mjs";
 import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
 import { recordedStillRunning } from "./deploy-stop.mjs";
 
@@ -139,7 +140,8 @@ export function browserDeployment({
   // Await settlement, never race an open SQLite backup against cancellation.
   const settle = async promise => { const result = await promise; checkpoint(); return result; };
   const readJournal = () => { assertLocked(); return JSON.parse(readFileSync(journalFile, "utf8")); };
-  const save = (r, phase) => { assertLocked(); r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
+  // A journal is only ever written with a word of the phase table (deploy-phase-table.mjs): every reader decides from it.
+  const save = (r, phase) => { assertLocked(); assertDeployPhase(phase); r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
   // Every phase that proves the candidate refreshes its reservation against being put away (v145,
   // docs/plans/task-tidy.md), never inside another handle's transaction. A deployment that can't reserve doesn't go on.
   const refreshReservation = proven => {
@@ -197,17 +199,29 @@ export function browserDeployment({
     let r;
     try { r = readJournal(); } catch { return false; }
     try {
-      const dists = [...new Set([priorDist, r.priorRuntime, r.nextRuntime].filter(one => typeof one === "string" && one !== ""))];
       // Re-prove at every destructive recovery use, even if a historical journal already says "stopped".
-      const stopped = () => stopProved(r, { alive: pid => aliveAsService(pid, dists),
-        remaining: () => dists.flatMap(dist => leftFrom?.(dist) ?? ["unreadable runtime processes"]),
-        loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113 });
-      const requireStopped = () => { if (!stopped()) throw Error("The service is not proved stopped; its database and definition were left in place."); };
+      const stopped = () => serviceGone(r);
+      // The previous service is the one this run's definition names. A run that reads the definition the swap
+      // installed (any phase but recover) has the new runtime there, and would start that on the restored database.
+      const requireStopped = () => {
+        if (priorDist !== r.priorRuntime) throw Error(`This run reads the service definition the deployment installed, not the one it replaced; nothing was put back. Use --phase recover with --stage ${stageDir}.`);
+        if (!stopped()) throw Error("The service is not proved stopped; its database and definition were left in place.");
+      };
       const words = recoverFailedDeployment(r.phase, {
         stopProved: stopped,
         // A stale journal cannot authorize stopping a newly healthy service, even at the same runtime path.
         // Recovery observes exit only; normal shutdown belongs to the current service owner.
-        restoreBackup: () => { requireStopped(); return restoreDeploymentBackup(r, { database, stageDir }); },
+        // The previous definition goes back before the database does (Codex build review, finding 1). Until now the
+        // installed definition named the new runtime, which would start on the restored database and migrate it
+        // again if anything loaded the label (a login, a person) before the definition was replaced. From here a
+        // load starts the previous runtime, which refuses a newer database. Absence is proved on both sides of the
+        // write, and restorePriorService refuses a label it finds loaded.
+        restoreBackup: () => {
+          requireStopped();
+          writeFileSync(plist, livePlist);
+          if (!stopped()) throw Error("The service was loaded while its previous definition was put back; the database was left as it is.");
+          return restoreDeploymentBackup(r, { database, stageDir });
+        },
         restoreService: () => { requireStopped(); restorePriorService(r); },
         removeGate: () => {
           const db = openDeploymentDatabase(database);
@@ -219,13 +233,14 @@ export function browserDeployment({
             return true;
           } finally { db.close(); }
         },
-        mark: phase => { r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); },
+        mark: phase => { assertDeployPhase(phase); r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); },
       }, { previousRuntimeCompatible: r.schema === r.nextSchema && r.rehearsal?.previousRuntimeCompatible === true });
       keepDeployTimeline(database, r);
       if (words) console.error(words);
       else if (r.phase === "preparing") console.error(`The deployment stopped while preparing, before it paused new work (update ${r.id}); nothing was paused. Rerun --phase prepare with --stage ${stageDir} to resume it.`);
-      else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}. \`toolroll release --recover-deploy\` shows what recovery can still do.`);
-      const done = words !== null || ["preparing", "released", "deployed"].includes(r.phase);
+      else if (r.phase === "starting") console.error(`The deployment stopped while the new service was starting, before anything recorded whether it came up. Nothing was stopped and new work stays paused (update ${r.id}). Run the release again: it finishes the deployment when the new service is running, and puts the previous service back when the new one is proved gone.`);
+      else if (!NEEDS_NO_RECOVERY.includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}. \`toolroll release --recover-deploy\` shows what recovery can still do.`);
+      const done = words !== null || stoppedWhereNothingChanged(r.phase);
       // Only a finished recovery latches: a refused one (old processes still running) may be retried in this process.
       if (!done) recoveryAttempted = false;
       return done;
@@ -241,6 +256,48 @@ export function browserDeployment({
     if (rows === null || rows === undefined) return spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status !== 1;
     return recordedStillRunning(rows, pid, { dists, database });
   };
+  /** Every process the journal recorded for the service it stopped is gone, nothing of the previous or the new
+   * runtime runs on this database, and launchd has no service under the label. Observed, never caused. */
+  const serviceGone = r => {
+    const dists = [...new Set([priorDist, r.priorRuntime, r.nextRuntime].filter(one => typeof one === "string" && one !== ""))];
+    return stopProved(r, { alive: pid => aliveAsService(pid, dists),
+      remaining: () => dists.flatMap(dist => leftFrom?.(dist) ?? ["unreadable runtime processes"]),
+      loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113 });
+  };
+  /**
+   * `--phase recover` at "starting", before the recovery above: the deployment was killed while it waited for the new
+   * service, so nothing recorded whether that service came up, and a journal alone never rolls a started service back.
+   * This stops nothing. Only when the new service is proved gone (not loaded, no process of either runtime on this
+   * database) and the pause is still this deployment's does it make the checks a failed start makes inside swap()
+   * (the coding backup, and the new runtime's own proof that no coding agent of it is left) and journal
+   * "start-failed", which the recovery then undoes like any failed start. Anything it cannot prove leaves the journal
+   * at "starting" and says why. Returns whether it journaled.
+   */
+  async function proveStartFailed() {
+    checkpoint();
+    const r = readJournal();
+    if (r.phase !== "starting") return false;
+    const kept = "Nothing was stopped and the journal stays at starting.";
+    // Only from the deployment's own saved definition and staging directory, on its own database.
+    requireTrue(priorDist === r.priorRuntime && nextDist === r.nextRuntime && database === r.database && candidateHead === r.candidate, `This recovery does not match the deployment's recorded runtimes, database or commit. ${kept}`);
+    const stillOurs = db => oldRt.gate.updateGateOwned(db, r.id);
+    const proveGone = () => requireTrue(serviceGone(r), `The new service is still loaded or still has processes, so the previous one was not put back. ${kept} If it is running, run the release again to finish the deployment. If it never answers, stop it (launchctl bootout gui/${uid}/${label}), then run the release again.`);
+    proveGone();
+    // The new runtime's own code answers for its coding agents below: prove it is the recorded commit before loading it.
+    proveStaged();
+    const coding = await settle(loadCodingDeploymentRuntime(nextDist));
+    await ensureCodingBackup(coding, r);
+    verifyCodingBackup(coding, r);
+    const db = openDeploymentDatabase(database, { readOnly: true });
+    try {
+      assertCodingDeploymentStopped(coding, database, db, r);
+      // Proved again with nothing awaited between the proof and the write.
+      requireTrue(stillOurs(db), `New work is no longer paused by this deployment (update ${r.id}). ${kept}`);
+      proveGone();
+      save(r, "start-failed");
+    } finally { db.close(); }
+    return true;
+  }
   /** The previous definition, loaded again once its processes were proved gone, and only on the schema it runs.
    * Restored means it runs from its runtime and answers /healthz. */
   function restorePriorService(r) {
@@ -464,11 +521,41 @@ export function browserDeployment({
     await ensureCodingBackup(await settle(loadCodingDeploymentRuntime(nextDist)), r);
   }
 
+  /**
+   * finish at "starting": the deployment was killed while it waited for the new service, so nothing recorded whether
+   * it came up. This only looks, for as long as swap() would have waited: when the new service runs from the new
+   * runtime, on the migrated database, still under this deployment's pause, the journal moves to "started" and finish
+   * goes on as after any swap. It starts nothing and stops nothing; a service that is not there leaves the journal at
+   * "starting" (the release then asks recovery, proveStartFailed above).
+   */
+  async function observeStart(r) {
+    const loaded = () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113;
+    const installedIsOurs = () => {
+      try { const ours = readFileSync(join(stageDir, "browser.next.plist"), "utf8"); return ours.includes(`${nextDist}/cli.js`) && readFileSync(plist, "utf8") === ours; } catch { return false; }
+    };
+    let live = service(nextDist);
+    // Nothing starts a service launchd does not have: no waiting for one.
+    for (let i = 0; i < HEALTH_WAIT_MS / 1000 && live === null && loaded(); i++) { await settle(sleep(1000)); live = service(nextDist); }
+    // Proved together, with nothing awaited before the write.
+    const db = openDeploymentDatabase(database, { readOnly: true });
+    let migratedAndPaused;
+    try { migratedAndPaused = db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id); } finally { db.close(); }
+    live = live === null ? null : service(nextDist);
+    requireTrue(live !== null, "The new service is not running from the new runtime. Nothing was stopped and the journal stays at starting.");
+    // The service under the label is the one this deployment installed: the definition on disk is still, byte for
+    // byte, the one swap() wrote. A definition someone replaced since is theirs, and is not called this deployment's start.
+    requireTrue(installedIsOurs(), "The installed service definition is not the one this deployment installed. Nothing was stopped and the journal stays at starting.");
+    requireTrue(migratedAndPaused, "The live database is not the migrated one under this deployment's pause. Nothing was stopped and the journal stays at starting.");
+    r.newService = live;
+    save(r, "started");
+  }
+
   async function finish() {
     checkpoint();
     const phase = readJournal().phase;
-    requireTrue(["started", "healthy"].includes(phase), `Unexpected finish phase: ${phase}.`);
+    requireTrue(FORWARD_ONLY.includes(phase), `Unexpected finish phase: ${phase}.`);
     const r = loadPhase(phase);
+    if (phase === "starting") await observeStart(r);
     const coding = await settle(loadCodingDeploymentRuntime(nextDist));
     await ensureCodingBackup(coding, r);
     const live = service(nextDist);
@@ -521,7 +608,7 @@ export function browserDeployment({
     say({ deployed: candidateHead, runtime: nextDist, at: r.deployedAt, projects: r.leases.length, remote, stagedRemoved: stagedRemoved.length });
   }
 
-  return { readJournal, save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, verifyPreparedDatabase, prepare, swap, finish, recoverJournal };
+  return { readJournal, save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, verifyPreparedDatabase, prepare, swap, finish, recoverJournal, proveStartFailed };
 }
 
 /** A process and every descendant (pgrep -P, level by level, at most four deep: supervisor, `up`, its roles and

@@ -226,6 +226,93 @@ describe("the release adapters", () => {
     expect(calls).toEqual([]);
   });
 
+  test("a deployment killed while its new service was starting is finished forward, and put back only by its own recovery", async () => {
+    const stage = root(), database = join(stage, "orders.db"), { project, head: approved } = projectAt(stage);
+    const { runId } = provableCandidate(database, "deploy-me", "person", approved, project);
+    const input = { stage, run: runId, worktree: "/w/7" };
+    const journal = (phase: string) => writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase }));
+    const phases: string[][] = [];
+    // What each script run does: its exit, its last words, and the phase it leaves the journal at.
+    let finish = { code: 0, stderr: "", leaves: "deployed" }, recover = { code: 0, stderr: "", leaves: "released" };
+    const run: Exec = async (command, args) => {
+      const extracted = extracting(command, args);
+      if (extracted) return extracted;
+      const tail = args.slice(args.indexOf("--git-dir") + 2);
+      phases.push(tail);
+      const does = tail.includes("finish") ? finish : recover;
+      journal(does.leaves);
+      return { code: does.code, stdout: "", stderr: does.stderr };
+    };
+    const adapter = releaseAdapters({ checkout: "/rv", run, database, processes: () => [] }).toolroll;
+    // The new service came up: finish carries the deployment through; recovery is never asked.
+    journal("starting");
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
+    expect(phases.splice(0)).toEqual([["--yes", "--phase", "finish"]]);
+    // It never came up (finish only looks, the journal stays): the deployment's own recovery puts the previous one back.
+    finish = { code: 1, stderr: "✗ The new service is not running from the new runtime. Nothing was stopped and the journal stays at starting.", leaves: "starting" };
+    journal("starting");
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
+    expect(phases.splice(0)).toEqual([["--yes", "--phase", "finish"], ["--phase", "recover"]]);
+    // Recovery could not prove the new service gone: the release stops with both reasons, and nothing is retried.
+    recover = { code: 1, stderr: "✗ The new service is still loaded or still has processes, so the previous one was not put back.", leaves: "starting" };
+    journal("starting");
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^✗ The new service is not running from the new runtime\. .*\(the deployment journal is at starting; finishing it forward stopped; .*\) The previous service was not put back either: ✗ The new service is still loaded or still has processes/) });
+    expect(phases.splice(0)).toEqual([["--yes", "--phase", "finish"], ["--phase", "recover"]]);
+    // A finish that recorded the new service as started and then stopped is never rolled back by a journal.
+    finish = { code: 1, stderr: "✗ The configured HTTPS console is unavailable.", leaves: "started" };
+    recover = { code: 0, stderr: "", leaves: "released" };
+    journal("starting");
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^✗ The configured HTTPS console is unavailable\./) });
+    expect(phases.splice(0)).toEqual([["--yes", "--phase", "finish"]]);
+  });
+
+  test("at starting an unproven candidate is not finished, but its own recovery still runs; later forward phases stop", async () => {
+    const stage = root(), database = join(stage, "orders.db"), { project, head } = projectAt(stage);
+    // Recorded, so recovery can run its script, but approved by the lead, not a person: not a deployable candidate.
+    const { runId } = provableCandidate(database, "deploy-me", "lead", head, project);
+    const input = { stage, run: runId, worktree: "/w/7" };
+    const phases: string[][] = [];
+    const run: Exec = async (command, args) => {
+      const extracted = extracting(command, args);
+      if (extracted) return extracted;
+      phases.push(args.slice(args.indexOf("--git-dir") + 2));
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const adapter = releaseAdapters({ checkout: "/rv", run, database, processes: () => [] }).toolroll;
+    writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase: "starting" }));
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
+    expect(phases.splice(0)).toEqual([["--phase", "recover"]]);
+    for (const phase of ["started", "healthy"]) {
+      writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase }));
+      expect((await adapter.recoverDeploy(input)).ok).toBe(false);
+    }
+    expect(phases).toEqual([]);
+  });
+
+  test("a journal word this build does not know is handed to the deployment's own recovery, never finished", async () => {
+    const stage = root(), database = join(stage, "orders.db"), { project, head: approved } = projectAt(stage);
+    const { runId } = provableCandidate(database, "deploy-me", "person", approved, project);
+    const input = { stage, run: runId, worktree: "/w/7" };
+    const phases: string[][] = [];
+    const answer = { code: 0, stdout: "", stderr: "" };
+    const run: Exec = async (command, args) => {
+      const extracted = extracting(command, args);
+      if (extracted) return extracted;
+      phases.push(args.slice(args.indexOf("--git-dir") + 2));
+      return answer;
+    };
+    const adapter = releaseAdapters({ checkout: "/rv", run, database, processes: () => [] }).toolroll;
+    for (const phase of ["almost-started", "Starting", 7, null]) {
+      writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase }));
+      expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
+    }
+    expect(phases.splice(0)).toEqual(Array(4).fill(["--phase", "recover"]));
+    // The recorded commit's script refuses a word it does not know either: the release stops and names it.
+    Object.assign(answer, { code: 1, stderr: "✗ The deployment stopped at almost-started." });
+    writeFileSync(join(stage, "deployment.json"), JSON.stringify({ phase: "almost-started" }));
+    expect(await adapter.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^✗ The deployment stopped at almost-started\. \(the deployment journal is at almost-started;/) });
+  });
+
   test("calls the CLI of the build running the release, not the first toolroll on PATH", async () => {
     const calls: { command: string; args: readonly string[] }[] = [];
     const run: Exec = async (command, args) => { calls.push({ command, args }); return { code: 0, stdout: JSON.stringify({ ok: true, scope: {} }), stderr: "" }; };

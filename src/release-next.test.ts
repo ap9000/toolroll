@@ -65,6 +65,44 @@ describe("each journal phase has one action", () => {
     for (const phase of PHASES) expect(deployActionOf(phase), phase).toBe("roll-back");
     for (const phase of ["released", "deployed"]) expect(deployActionOf(phase), phase).toBe("none");
     expect(deployActionOf(undefined)).toBe("refuse");
+    // A word the table does not hold is never a roll-back.
+    for (const word of ["no-such-phase", "Starting", "", "__proto__", 7, null, {}]) expect(deployActionOf(word), String(word)).toBe("refuse");
+  });
+
+  test("a step this version doesn't know is refused: nothing is rolled back, lifted or finished", async () => {
+    for (const [phase, words] of [
+      ["almost-started", "stopped at a step this version doesn't know (almost-started). Nothing was changed. Its own recovery can decide: `toolroll release --recover-deploy --yes`."],
+      ["Starting", "doesn't know (not a plain word). Nothing was changed."],
+      ["$(rm -rf ~)\n`x`", "doesn't know (not a plain word). Nothing was changed."],
+      ["", "doesn't know (not a plain word). Nothing was changed."],
+    ] as const) {
+      const said: string[] = [];
+      const world = worldAt(phase);
+      const settled = await settleDeployment(world, line => said.push(line));
+      expect(settled).toMatchObject({ ok: false, message: expect.stringContaining(words) });
+      // Words from the journal reach the person only as a plain word.
+      expect(!settled.ok && settled.message).not.toContain("rm -rf");
+      expect(world.recover).not.toHaveBeenCalled();
+      expect(said).toEqual([]);
+    }
+    // No phase at all, or one that is not text: the journal can't be read.
+    for (const phase of [7, null, ["starting"]]) {
+      const world = worldAt("stopped");
+      world.rescue.journals = () => [{ stage: "/s/one", journal: { phase, id: "u1", builder: 1, priorRuntime: "a", nextRuntime: "b", database: "/db" } }];
+      expect(await settleDeployment(world, () => {})).toEqual({ ok: false, message: "The deployment journal in /s/one can't be read. Nothing was changed." });
+      expect(world.recover).not.toHaveBeenCalled();
+    }
+  });
+
+  test("killed while the new service was starting goes forward too; a service already put back is still settled by recovery", async () => {
+    const said: string[] = [];
+    const starting = worldAt("starting");
+    expect(await settleDeployment(starting, line => said.push(line))).toEqual({ ok: true });
+    expect(starting.recover).not.toHaveBeenCalled();
+    expect(said).toEqual(["Finishing the deployment that was under way."]);
+    const restored = worldAt("restored");
+    expect(await settleDeployment(restored, () => {})).toEqual({ ok: true });
+    expect(restored.recover).toHaveBeenCalledTimes(1);
   });
 
   const worldAt = (phase: string | null, recover = vi.fn(async () => ({ ok: true as const }))): SettleWorld & { recover: typeof recover } => ({ recover,

@@ -125,6 +125,9 @@ describe("attack: the repository changes what the release extracts", () => {
     const extraction = join(dir, "extraction"), worktree = join(dir, "worktree");
     mkdirSync(join(extraction, "scripts"), { recursive: true });
     for (const file of readdirSync(join(ROOT, "scripts")).filter(one => /^deploy-.*\.mjs$/.test(one))) cpSync(join(ROOT, "scripts", file), join(extraction, "scripts", file));
+    // The deploy scripts read the phase table from the commit's own src (scripts/deploy-phase-table.mjs).
+    mkdirSync(join(extraction, "src"));
+    cpSync(join(ROOT, "src", "deploy-phase-data.json"), join(extraction, "src", "deploy-phase-data.json"));
     mkdirSync(worktree);
     const runScript = () => spawnSync(process.execPath, [join(extraction, "scripts", "deploy-browser.mjs"), "--run", "1", "--source", worktree, "--git-dir", join(dir, "none"),
       "--head", "a".repeat(40), "--plist", join(dir, "no.plist")], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", HOME: dir } });

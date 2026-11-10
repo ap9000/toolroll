@@ -18,11 +18,10 @@
  */
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
-import { BEFORE_SWAP } from "./release-gate.js";
+import { BEFORE_SWAP, FORWARD_ONLY, MIGRATION_STARTED, NEEDS_NO_RECOVERY, RESTARTABLE } from "./deploy-phase.js";
 
 /** Phases where the new service may be running: recovery leaves them to the release, which resumes forward. */
-export const FORWARD_ONLY = Object.freeze(["starting", "started", "healthy"]);
-const FINISHED = Object.freeze(["released", "deployed"]);
+export { FORWARD_ONLY };
 
 export type RescueWorld = {
   /** The live database. */
@@ -52,8 +51,8 @@ export function rescuePlan(phase: string, journal: Record<string, unknown>): str
   if (phase === "stopping") {
     words.push("The old service must already be stopped. Recovery checks for remaining processes and refuses while any may still be running. Stop them through the service owner, then rerun recovery.");
   }
-  if (["stopping", "stopped", "migrating", "migrated", "start-failed", "backup-restored"].includes(phase)) {
-    if (["migrating", "migrated", "start-failed"].includes(phase)) words.push("Puts the verified backup back first when the previous runtime can't read the migrated database.");
+  if (phase === "stopping" || RESTARTABLE.includes(phase)) {
+    if (MIGRATION_STARTED.includes(phase)) words.push("Puts the verified backup back first when the previous runtime can't read the migrated database.");
     words.push(`Starts the previous service (${prior}) again and waits for it to answer, past a stopped worker's heartbeat window; then lifts update pause ${id}.`);
   }
   return words.length > 0 ? words : [`Journal phase ${phase}: the deployment's own recovery decides; it refuses anything it can't prove.`];
@@ -67,7 +66,7 @@ export async function rescueDeployment(stageArg: string | undefined, yes: boolea
     chosen = all.find(one => real(one.stage) === real(stageArg));
     if (chosen === undefined) return { ok: false, reason: "usage", message: `${stageArg} is not a deployment stage of this installation (under ${join(world.stateDir, "staged-upgrades")}).` };
   } else {
-    const open = all.filter(one => one.journal === null || !FINISHED.includes(String(one.journal["phase"])));
+    const open = all.filter(one => one.journal === null || !NEEDS_NO_RECOVERY.includes(String(one.journal["phase"])));
     if (open.length === 0) return { ok: true, acted: false, stage: null, phase: null, words: ["Nothing to recover: every deployment finished or was already put back."] };
     if (open.length > 1) return { ok: false, reason: "conflict", message: `${open.length} deployments are unfinished: ${open.map(one => one.stage).join(", ")}. Name one with --stage <dir>.` };
     chosen = open[0]!;
@@ -80,7 +79,7 @@ export async function rescueDeployment(stageArg: string | undefined, yes: boolea
   }
   if (journal["database"] !== world.database) return { ok: false, reason: "conflict", message: `That deployment ran on ${String(journal["database"])}, not ${world.database}; nothing was changed.` };
   if (!Number.isSafeInteger(run) || (run as number) < 1) return { ok: false, reason: "damaged", message: `${join(stage, "deployment.json")} names no builder run, so its commit's recovery can't be found; nothing was changed.` };
-  if (FINISHED.includes(phase)) return { ok: true, acted: false, stage, phase, words: [`Nothing to recover: that deployment is ${phase}.`] };
+  if (NEEDS_NO_RECOVERY.includes(phase)) return { ok: true, acted: false, stage, phase, words: [`Nothing to recover: that deployment is ${phase}.`] };
   if (FORWARD_ONLY.includes(phase)) {
     return { ok: false, reason: "forward", message: `That deployment is at ${phase}: the new service may be running, so nothing was stopped. Continue it forward with \`toolroll release <branch>\` (it resumes the deployment's finish).` };
   }

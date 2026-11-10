@@ -27,7 +27,7 @@ import { blobAt, extractTree, headOf, trackedChanges } from "./deploy-git.mjs";
 import { loadCodingDeploymentRuntime } from "./deploy-coding.mjs";
 import { recoverOnExit } from "./deploy-recovery.mjs";
 import { activeWorkRefusal, browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
-import { serviceStopper } from "./deploy-stop.mjs";
+import { commandKind, serviceStopper } from "./deploy-stop.mjs";
 
 const args = process.argv.slice(2);
 // git on the candidate's repository (AGENTS.md trust boundary) runs only through deploy-git.mjs: a Git directory of the
@@ -166,10 +166,12 @@ function service(dist) {
   const pid = Number(launch.stdout.match(/\n\s*pid = (\d+)/)?.[1]);
   if (!(pid > 1) || !launch.stdout.includes("state = running")) return null;
   const command = execFileSync("/bin/ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
-  if (!command.includes(`${dist}/controller-service.js`)) return null;
+  // By exact runtime path and exact database argument (deploy-stop.mjs): a service of this runtime on another
+  // database, even one whose path begins with this one's, is not this service.
+  if (commandKind(command, { dist, database }) !== "supervisor") return null;
   const children = execFileSync("/usr/bin/pgrep", ["-P", String(pid)], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean).map(Number);
   const commands = children.map(p => spawnSync("/bin/ps", ["-p", String(p), "-o", "command="], { encoding: "utf8" }).stdout);
-  const up = children.filter((_, at) => commands[at].includes(`${dist}/cli.js up --db ${database}`));
+  const up = children.filter((_, at) => commandKind(commands[at], { dist, database }) === "up");
   if (up.length !== 1) return null;
   // `up`'s console and worker (isolated-checks stage 1), each verified by its command: this runtime's role entry and
   // its one role argument. Deployment proves their exit too (round 1, finding 3). A role from another runtime is not
@@ -346,7 +348,7 @@ async function pruneStaged(keep) {
 }
 
 // The journaled phases and their recovery, run with the real services, runtimes and records.
-const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
+const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal, proveStartFailed } = browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt, deploymentLock, signal,
   facts, reserve, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
   processes, stopProcesses,
@@ -413,6 +415,9 @@ try {
   // Putting the previous service back needs no approval of the candidate: it resumes this deployment's own recovery.
   if (phaseWanted === "recover") {
     requireTrue(flag("stage") && existsSync(journalFile), "--phase recover resumes a failed deployment: pass --stage <dir> of one.");
+    // Killed while it waited for the new service: prove that service gone first (it stops nothing). What it can't
+    // prove is said, and the journal stays where it is for the recovery below to report.
+    try { await proveStartFailed(); } catch (error) { console.error(`✗ ${error.message}`); }
     process.exit(recoverJournal() ? 0 : 1);
   }
   const proven = early ?? proveAndReserve();

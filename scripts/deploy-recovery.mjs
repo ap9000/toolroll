@@ -11,10 +11,12 @@
 // journals "preparing" before it installs its pause, so a failure between the
 // two still knows the pause's owner: one held by this deployment is lifted,
 // and without one the journal stays resumable under the same id.
-export const PAUSED_BEFORE_SWAP = Object.freeze(["admission-paused", "frozen", "backup-verified", "rehearsed"]);
-/** The candidate's store opened the live database, or the new service ran on it. */
-export const MIGRATION_STARTED = Object.freeze(["migrating", "migrated", "start-failed"]);
-const RESTARTABLE = Object.freeze(["stopped", "backup-restored", ...MIGRATION_STARTED]);
+// Which phase belongs to which of these groups is one table (src/deploy-phase-data.json, read through
+// deploy-phase-table.mjs), not lists kept here. "starting" is in none of them: a deployment killed while it waited for
+// the new service is not undone from its journal alone (deploy-phases.mjs proveStartFailed proves the new service gone
+// and journals "start-failed" first).
+import { MIGRATION_STARTED, PAUSED_BEFORE_SWAP, RESTARTABLE } from "./deploy-phase-table.mjs";
+export { MIGRATION_STARTED, PAUSED_BEFORE_SWAP };
 
 /** effects: stopProved() says whether every old process is gone (asked only at "stopping");
  * restoreBackup() puts the verified backup in place of the live database and returns where the
