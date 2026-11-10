@@ -81,3 +81,16 @@ export function moveTask(db: MoveDatabase, id: string, move: TaskMoveName, now: 
   return Number(db.prepare(moveSql(rule)).run(state, now.toISOString(), id).changes) > 0;
 }
 
+/**
+ * SQL condition, true while a runner holds a live claim on the task: the claim is not released, has not expired, and
+ * is the newest generation for its task. It needs the `claim` table in scope under that name, and binds one
+ * parameter: the current time as an ISO string. This is ownership, not proof that a process is alive.
+ */
+export const claimedNowSql =
+  "claim.released_at IS NULL AND claim.expires_at > ? AND claim.lease_generation = (SELECT MAX(newest.lease_generation) FROM claim AS newest WHERE newest.task_ref = claim.task_ref)";
+
+/**
+ * SQL condition, true when the task's stored state is running (the `task` table in scope under that name). A task
+ * can be marked running with no live claim (see claimedNowSql), so the two can count differently.
+ */
+export const markedRunningSql = "task.state = 'running'";

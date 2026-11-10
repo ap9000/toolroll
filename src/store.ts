@@ -146,7 +146,7 @@ import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostU
 import { usageOf } from "./run-efficiency.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 import { cardShowsScope, cardTermsDigest, shownTermsDigest } from "./chat-terms.js";
-import { moveTask } from "./task-moves.js";
+import { markedRunningSql, moveTask } from "./task-moves.js";
 
 // PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
 // replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
@@ -21903,7 +21903,7 @@ export class Store {
       .prepare(
         `SELECT
            SUM(CASE WHEN task.state = 'queued' THEN 1 ELSE 0 END) AS queued,
-           SUM(CASE WHEN task.state = 'running' THEN 1 ELSE 0 END) AS running
+           SUM(CASE WHEN ${markedRunningSql} THEN 1 ELSE 0 END) AS running
            FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
           WHERE task_ref.repo = ? AND NOT EXISTS (SELECT 1 FROM task_archive WHERE task_archive.task_ref = task_ref.id)`,
       )

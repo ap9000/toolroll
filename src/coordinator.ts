@@ -23,6 +23,7 @@ import { fileTaskProposal } from "./proposal.js";
 import { describeScope } from "./scope.js";
 import { reportSummaryFor } from "./lead-tools.js";
 import type { Store } from "./store.js";
+import { claimedNowSql, markedRunningSql } from "./task-moves.js";
 import { taskWorkSummaryOf, type WorkSummary } from "./work-summary.js";
 import { assignmentOf, assignmentBrief } from "./assignment.js";
 
@@ -386,8 +387,7 @@ export function statusFor(store: Store, who: VerifiedCoordinator, now: Date): {
   const running = one(
     `SELECT COUNT(DISTINCT claim.task_ref) AS n FROM claim
       JOIN task_ref ON task_ref.id = claim.task_ref AND task_ref.backend = 'built-in'
-      WHERE task_ref.repo IN (${sql}) AND claim.released_at IS NULL AND claim.expires_at > ?
-        AND claim.lease_generation = (SELECT MAX(newest.lease_generation) FROM claim AS newest WHERE newest.task_ref = claim.task_ref)`,
+      WHERE task_ref.repo IN (${sql}) AND ${claimedNowSql}`,
     [now.toISOString()],
   );
   const incidents = one(
@@ -409,7 +409,7 @@ export function statusFor(store: Store, who: VerifiedCoordinator, now: Date): {
     .prepare(
       `SELECT task_ref.repo AS repo,
               SUM(CASE WHEN task.state = 'queued' THEN 1 ELSE 0 END) AS queued,
-              SUM(CASE WHEN task.state = 'running' THEN 1 ELSE 0 END) AS running
+              SUM(CASE WHEN ${markedRunningSql} THEN 1 ELSE 0 END) AS running
          FROM task_ref JOIN task ON task.id = task_ref.external_id AND task_ref.backend = 'built-in'
         WHERE task_ref.repo IN (${sql}) GROUP BY task_ref.repo ORDER BY task_ref.repo`,
     )
