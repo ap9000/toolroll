@@ -241,9 +241,11 @@ function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release
 function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["mergeReady"]>; retry: BrowserTaskView["retry"] }) {
   const MARK: Readonly<Record<string, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?" };
   const chip = ready.answer === "yes" || ready.answer === "merged" ? <KChip word={ready.answer === "merged" ? "Merged" : "Ready"} tone="done" />
-    : ready.answer === "no" ? <KChip word="Not yet" tone="needs" /> : <KChip word="Not yet" />;
+    // "Not yet" is an answer, not a request: a plain chip (the ink one is only for what waits on the viewer).
+    : <KChip word="Not yet" />;
   return <section className="k-sec so-merge-ready" aria-label="Can I merge?" data-merge-ready={ready.answer}>
-    <KSlots status={<>{chip}<h3>Can I merge?</h3></>} text={ready.sentence} acts={null} terms={null} />
+    <div className="so-merge-head">{chip}<h3>Can I merge?</h3></div>
+    <p className="so-merge-say">{ready.sentence}</p>
     <ul className="so-merge-rows">
       {ready.rows.map(row => <li key={row.key} data-merge-row={row.key} data-mark={row.mark}>
         <span className="so-merge-mark" aria-hidden="true">{MARK[row.mark] ?? ""}</span>
@@ -690,13 +692,16 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const readyOpens = rows?.some(row => row.key === "ready" && row.opens) ?? false;
   const checksOpens = rows?.some(row => row.key === "checks" && row.opens) ?? false;
   const resultBody = (hasResult || view.result != null) ? <ResultPanel view={view} loaded={loadedResult.current} csrf={csrf} result={result} /> : null;
-  const readyExtras = <>
+  // "Can I merge?" belongs to a result: it shows with one (in the Ready row), never loose under the rows, and never
+  // on a research task (a report has nothing to merge).
+  const readyExtras = (withResult: boolean) => <>
     {view.release != null && <ReleaseBox release={view.release} />}
-    {view.mergeReady != null && <MergeReadyBox ready={view.mergeReady} retry={view.retry ?? null} />}
+    {withResult && view.mergeReady != null && !view.scout && <MergeReadyBox ready={view.mergeReady} retry={view.retry ?? null} />}
     {view.ship != null && <ShipBox ship={view.ship} />}
   </>;
   const statusBox = (key: string | null) => approve !== null ? null : view.status !== null
-    ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} watch={key === "build" && view.stop != null ? () => { show({ activity: true }); scrollTo("#task-activity"); } : null}
+    // In a row, the Approval row says who approved: the status box doesn't repeat it.
+    ? <StatusBox view={view} card={view.status} csrf={csrf} approved={key === null ? view.approved ?? null : null} watch={key === "build" && view.stop != null ? () => { show({ activity: true }); scrollTo("#task-activity"); } : null}
       checksElsewhere={checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} />
     : <Html html={view.statusHtml} />;
   const bodyOf = (row: StepRow): ReactNode => {
@@ -725,7 +730,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       case "checks":
         return <>{status}{!here && view.status !== null && <StatusFacts card={view.status} runChecks={view.runChecks ?? null} only={key => key === "checks"} />}{leadCards(leadOf("checks"))}</>;
       case "ready":
-        return <>{status}{resultBody}{readyExtras}{leadCards(leadOf("ready"))}</>;
+        return <>{status}{resultBody}{readyExtras(resultBody !== null)}{leadCards(leadOf("ready"))}</>;
     }
   };
   const items: KStepRowItem[] = (rows ?? []).map(row => {
@@ -758,12 +763,12 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         {approve !== null && <Html html={approve.planHtml} className="so-task-plan" />}
         {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} /> : <Html html={view.statusHtml} />}
         {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
-        {readyExtras}
+        {readyExtras(resultBody !== null)}
         {resultBody}
         {view.plan != null && view.plan.html !== "" && <Html html={view.plan.html} className="so-task-plan" />}
       </>}
       {rows !== null && statusKey === null && statusBox(null)}
-      {rows !== null && !readyOpens && readyExtras}
+      {rows !== null && !readyOpens && readyExtras(false)}
       {leadCards(unattached)}
       {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}
       {rows === null && (view.status?.attempts.length ?? 0) + (view.earlier?.attempts.length ?? 0) > 1 && <AttemptsPanel view={view} />}

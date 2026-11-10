@@ -1230,6 +1230,19 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(native.document.querySelector('[data-step-row="approve"] form.approval-sheet')).not.toBeNull();
     expect(native.document.querySelectorAll("form.approval-sheet")).toHaveLength(1);
     await native.happyDOM.close();
+    // With script the rows show the plan once: the Plan section under them keeps its links and never repeats the plan.
+    const draftView = workspaceOf(draftHtml).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(draftView.approve).not.toBeNull();
+    const planSection = draftView.sections.find(one => one.id === "scope")!;
+    expect(planSection.html).toContain("Audit record");
+    expect(planSection.html).not.toContain("<strong>Goal</strong>");
+    // A cancelled task asks for no approval, with or without script: nothing would start.
+    store.cancelTask(trigger.draftTaskId, T0, "not needed");
+    const cancelledHtml = await (await fetch(url(`/t/${trigger.draftTaskId}`), { headers: { cookie } })).text();
+    expect(cancelledHtml).not.toContain("approval-sheet");
+    const cancelledView = workspaceOf(cancelledHtml).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(cancelledView.approve ?? null).toBeNull();
+    expect(cancelledView.plan?.html ?? "").not.toContain("k-approve");
 
     // Historical repair records stay readable on their task pages. They do
     // not add a second assessment-based stage to what Home asks of a person.

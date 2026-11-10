@@ -157,3 +157,18 @@ test("How it ran: the result's record says time, turns, tokens and cache in one 
   act(() => root!.render(createElement(SelectedResult, { selected: selectedOf(6, { efficiency: unknown }), csrf: "c" })));
   expect(host.querySelector("#how-it-ran summary")?.textContent).toContain("14 min · — tokens in · — out");
 });
+
+test("Can I merge? sits with a result in the Ready row: never loose under the rows, never on a research task", () => {
+  const mergeReady = { answer: "not-yet" as const, sentence: "Not yet: the checks are still running.", rows: [] };
+  const result = { selected: selectedOf(5), current: true, attempts: [], revision: "r1" };
+  // Still building: no result, so no merge answer anywhere on the page.
+  render(withRows("building", { mergeReady }));
+  expect(host.querySelector("[data-merge-ready]")).toBeNull();
+  // A result to review: the answer is in the Ready row, once, with a plain chip.
+  act(() => root!.render(createElement(TaskView, { key: "review", view: withRows("review", { mergeReady, result }), details: false, csrf: "c", result: shown })));
+  expect([...host.querySelectorAll("[data-merge-ready]")].map(one => one.closest("[data-step-row]")?.getAttribute("data-step-row"))).toEqual(["ready"]);
+  expect(host.querySelector("[data-merge-ready] .k-chip")?.className).not.toMatch(/needs|ink/);
+  // A research task has nothing to merge.
+  act(() => root!.render(createElement(TaskView, { key: "scout", view: withRows("review", { mergeReady, result, scout: true }), details: false, csrf: "c", result: shown })));
+  expect(host.querySelector("[data-merge-ready]")).toBeNull();
+});

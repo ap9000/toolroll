@@ -2,8 +2,8 @@
   "schema": "youi.lock/v1",
   "system": "toolroll",
   "systemVersion": "1.0.0",
-  "sourceCommit": "183a7e216ba5ca548d118c667b91463c2c2ddda5",
-  "syncedAt": "2026-11-10T17:44:33.364Z",
+  "sourceCommit": "d31dd2e55cf20564b376a5d463c26d74b2e66c42",
+  "syncedAt": "2026-11-10T18:11:51.383Z",
   "files": {
     ".agents/skills/youiyoux/SKILL.md": {
       "kind": "generated",

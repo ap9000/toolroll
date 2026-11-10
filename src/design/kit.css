@@ -572,8 +572,8 @@ html:not(.k-js) .k-composer:focus-within, html.k-kbd .k-composer:focus-within { 
   .k-steprow-say { order: 3; flex: 1 1 100%; }
   .k-steprow-say:empty { display: none; }
   .k-steprow.needs > .k-steprow-main > .k-steprow-body { padding: 14px; }
-  /* An open body takes the whole width under its head; the rail stops at the head. */
-  .k-steprow-body { margin-left: -34px; position: relative; z-index: 2; background: var(--so-paper); }
+  /* An open body takes the whole width under its head; the rail stops at the head. No z-index: one would trap the body's phone dock under the app's. */
+  .k-steprow-body { margin-left: -34px; position: relative; background: var(--so-paper); }
   .k-steprow-body .k-slot-acts > .k-btn, .k-steprow-body .k-slot-acts > form, .k-steprow-body .k-slot-acts > form > .k-btn { flex: 1 1 100%; width: 100%; }
   .k-doc { padding: 14px 16px 40px; gap: 18px; }
   .k-dh h1 { font-size: 20px; }

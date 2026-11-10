@@ -550,6 +550,11 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-task-approval details.task-secondary-approval { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
 .so-task-approval section.task-plan-review { margin: 0; }
 /* "Can I merge?" (P1.6): one row per fact, its mark, and the blocker's act on the right; it wraps under on a phone. */
+/* The task's status box is not a decision: it keeps no empty room for an action or a note it doesn't have (an approval box keeps its fixed slots). */
+[data-task-status] > .k-slots > :is(.k-slot-acts, .k-slot-terms):empty { display: none; }
+.so-merge-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--so-space-sm); }
+.so-merge-head h3 { margin: 0; }
+.so-merge-say { margin: 0; color: var(--so-muted); font-size: 13px; line-height: 1.5; }
 .so-merge-rows { list-style: none; margin: var(--so-space-sm) 0 0; padding: 0; display: grid; gap: var(--so-space-xs); }
 .so-merge-rows > li { display: grid; grid-template-columns: 1.25em minmax(0, 1fr) auto; gap: var(--so-space-sm); align-items: start; padding: var(--so-space-xs) 0; border-top: 1px solid var(--so-line); }
 .so-merge-rows > li > :nth-child(n+3) { grid-column: 2 / -1; }
@@ -980,6 +985,8 @@ details.result-request-open > summary::marker { content: ""; }
 /* Server cards a kit page still places (holds, stop details, a scope ledger): one hairline box, never a raised sheet. */
 .so-workspace--kit .k-doc :where(.card) { box-shadow: none; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-paper); }
 .so-workspace--kit .k-doc :where(.card .card) { border: 0; padding: 0; }
+/* A fold inside a card, and the Build row's stop details: flat, so a box never sits inside a box. */
+.so-workspace--kit .k-doc .card details:not([class]), .so-workspace--kit .k-doc .so-task-lead--control details#task-control-details { margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
 .k-slot-acts > [data-retry] { flex: 1 1 100%; }
 /* A kit page with a phone dock keeps its last row clear of it. */
 /* Room above the phone dock: a kit view's root, or a server page known as kit by its phone header (app.tsx isKitPage). */

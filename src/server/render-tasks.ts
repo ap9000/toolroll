@@ -2090,6 +2090,8 @@ export function taskBodyParts(data: {
   // its draft; the full scope form below stays as it was.
   const inlineScopeDraft = data.scopeDraft?.has("requirement-new") === true;
   const scopeDraft = inlineScopeDraft ? undefined : data.scopeDraft;
+  // A release's terms (the plan sheet doesn't say them): in the scope card, and alone under the kit page's rows.
+  const releaseTermsHtml: Html | "" = scope?.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`;
   const scopeCard =
     scope === null
       ? html`<p class="meta">No plan yet. Nothing builds until one is approved.</p>`
@@ -2100,7 +2102,7 @@ export function taskBodyParts(data: {
           scope.touches.length === 0 ? "" : html`<p class="scope-paths"><strong>Files</strong> ${scope.touches.join(", ")}</p>`,
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
-          scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
+          releaseTermsHtml,
           approval.approved && data.autoRelease != null
             ? html`<p class="meta scope-seal">${autoReleaseWords(data.autoRelease)}</p>${planVersionDetailsHtml(scope.digest)}`
             : approval.approved && data.release?.kind === "carried"
@@ -2235,8 +2237,9 @@ export function taskBodyParts(data: {
     (data.assignment?.primaryAction?.code === "approve-scope" && data.assignment.primaryAction.target.taskId === task.id);
   // The sheet's terms, when this person can approve them here: the task page's kit approval box (its Plan tab shows
   // the rows) and the legacy sheet both read these.
+  // A cancelled task asks for no approval: nothing would start, so its page offers no Approve (reopening asks again).
   const sheetInput: ApprovalSheetInput | null =
-    scope === null || approval.approved || data.plan === "requested" || (data.revision != null && "problem" in data.revision) ||
+    scope === null || approval.approved || task.state === "cancelled" || data.plan === "requested" || (data.revision != null && "problem" in data.revision) ||
     scope.profileState === "unresolved" || !consentDoor.open ? null : {
           surface: "task",
           action: `${taskHref(task.id)}/approve`,
@@ -2266,7 +2269,7 @@ export function taskBodyParts(data: {
               open: data.editPlan === true, stepsHref: data.planSha != null && data.planDocument !== null ? "#plan-edit" : null },
         };
   const approveForm =
-    scope === null || approval.approved || data.plan === "requested"
+    scope === null || approval.approved || task.state === "cancelled" || data.plan === "requested"
       ? ""
       : data.revision !== null && data.revision !== undefined && "problem" in data.revision
         ? html`<div class="card approve-form" id="approve"><p><strong>This task is waiting on you: approval is blocked.</strong></p><p class="meta">${data.revision.problem}. A revision can be approved only when its saved notes can be read.</p></div>`
@@ -2729,6 +2732,8 @@ export function taskBodyParts(data: {
     : html`<details class="task-secondary-approval"><summary>Updated approval terms</summary>${approveForm}</details>`;
   const optionsHtml = html`${identity}${dispatchStatus}${dependencyChoiceNeeded ? "" : actsBar}`;
   const optionsOpen = data.assignment?.primaryAction?.code === "unhold" || data.assignment?.primaryAction?.code === "retry-task";
+  // The Plan section after its scope card: the release, the recipe and audit links, the agents, the edit form.
+  const scopeRest: (Html | "")[] = [releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), html`<p class="meta">${data.repo !== null && data.scope !== null ? html`<a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a> · ` : ""}<a href="${taskHref(data.rootId ?? task.id)}/evidence">Audit record →</a></p>`, agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm];
   // The page's sections, built once and in order (each `section` also records its part for the rebuilt page).
   const layoutTail = joinHtml([
     html`<div class="task-layout"><div class="task-main">`,
@@ -2773,7 +2778,7 @@ export function taskBodyParts(data: {
       "plan",
       // The recipe road rides with the scope it reuses (UI polish
       // 2026-09-13), off the title-to-action path.
-      joinHtml([html`<h2>Plan</h2>`, scopeCard, releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), html`<p class="meta">${data.repo !== null && data.scope !== null ? html`<a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a> · ` : ""}<a href="${taskHref(data.rootId ?? task.id)}/evidence">Audit record →</a></p>`, agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
+      joinHtml([html`<h2>Plan</h2>`, scopeCard, ...scopeRest], "\n"),
       scopeDraft !== undefined || (data.plan !== "requested" && approveForm === "" && !(scope === null && canPlan)),
       undefined, "scope",
     ),
@@ -3085,7 +3090,13 @@ export function taskBodyParts(data: {
     sections: [
       ...(previousResult === null || thread.some(one => one.more !== null) ? [] : [{ id: "result", title: previousResult.title, html: htmlString(previousResult.html), open: false, count: null }]),
       // Questions are in the thread; the scope and the ledgers fold here until asked.
-      ...sectionParts.filter(one => !MANAGE.has(one.id) && one.id !== "decisions").map(one => one.id === "scope" && scopeDraft === undefined && (finished || approval.approved) ? { ...one, open: false } : one),
+      // The Plan and Approval rows hold the plan sheet, so this page's Plan section keeps only what the sheet leaves
+      // out (a release's terms, the links, the agents, the edit form): the plan is never printed a second time.
+      ...sectionParts.filter(one => !MANAGE.has(one.id) && one.id !== "decisions").map(one => one.id !== "scope" ? one : {
+        ...one,
+        ...(scope === null ? {} : { html: htmlString(joinHtml([releaseTermsHtml === "" ? "" : html`<div class="card">${releaseTermsHtml}</div>`, ...scopeRest], "\n")) }),
+        ...(scopeDraft === undefined && (finished || approval.approved) ? { open: false } : {}),
+      }),
     ],
     manage: [
       ...sectionParts.filter(one => MANAGE.has(one.id)),

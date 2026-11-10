@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 /** k-steprows (src/design/KIT.md "Step rows"): the server's stepRows and React's KStepRows write the same markup for the
  * same rows, so the page without script and the workspace never have two looks. */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
@@ -39,4 +41,11 @@ test("the server and React draw the same step rows", () => {
   // The state is read aloud with the label; the wait on the viewer is the one ink chip.
   expect(host.querySelector('[data-step-row="build"] .k-steprow-label')!.textContent).toBe("Build, waiting on you");
   expect(host.querySelectorAll(".k-chip.needs")).toHaveLength(1);
+});
+
+test("a step row's body sets no z-index: one would trap the Approve dock it holds under the phone's own dock", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "design", "kit.css"), "utf8");
+  const bodyRules = css.split("\n").filter(line => /^\s*\.k-steprow-body\s*\{/.test(line));
+  expect(bodyRules.length).toBeGreaterThan(0);
+  for (const rule of bodyRules) expect(rule).not.toMatch(/z-index|transform|contain|filter|isolation/);
 });
