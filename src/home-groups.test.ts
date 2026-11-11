@@ -1,6 +1,7 @@
 /** Home's three groups (docs/plans/one-step-chat.md H1): the one rule (home-groups.ts), and Home's view on the demo's
- * work — every row the old groups showed lands in exactly one new group, the figures still equal the lists they open,
- * Done lists only the last 7 days, and the overflow count is what Waiting on you leaves out. */
+ * work (docs/plans/live-pages-and-home.md B1) — every row that waits on you lands in exactly one ask group, what runs
+ * and waits is listed once, the figures still equal the lists they open, Done today lists only today, and each group's
+ * count covers what the page leaves out. */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +16,7 @@ import { verifyApproverByPassword } from "./principal.js";
 import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { openStore, type Store } from "./store.js";
 import { workIndexPage, type WorkIndexItem } from "./work-index.js";
-import { homeView, HOME_NEEDS_SHOWN, type HomeFacts } from "./server/home.js";
+import { homeView, HOME_NEEDS_SHOWN, startOfToday, type HomeFacts } from "./server/home.js";
 
 const item = (views: string[], label = "Needs you") => ({ status: { views, label } });
 
@@ -62,44 +63,47 @@ describe("Home's view", () => {
   });
   afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
 
-  test("on the demo's work: every row the old groups showed is in exactly one new group, in the same order", () => {
+  test("on the demo's work: every row that waits on you is in exactly one ask group, in the index's order", () => {
     const now = new Date();
     store.recordInstallationFact("demo", "1", now);
     seedDemo(store, repos, join(root, "evidence"), now);
     const view = homeView(facts(now));
-    // The old groups, read exactly as Home read them: what waits by its ask, then running, then waiting.
+    // What waits on you, read as the Needs you list reads it; then what runs, then what waits its turn.
     const needs = page(now, "needs-you", HOME_NEEDS_SHOWN).items;
-    const asked = (["decide", null, "review", "unblock"] as const).flatMap(ask => needs.filter(one => one.ask === ask));
+    const asked = needs.filter(one => one.status.views.includes("needs-you"));
     const running = page(now, "running", 8).items.filter(one => !one.status.views.includes("needs-you"));
     const waiting = page(now, "queued", 8).items.filter(one => one.status.label === "Waiting" && !one.status.views.includes("needs-you"));
     const ids = (items: readonly WorkIndexItem[]) => items.map(one => one.rootId);
     const group = (key: string) => view.groups.find(one => one.key === key)?.rows.map(row => row.id) ?? [];
     expect(asked.length + running.length + waiting.length, "the demo has work in the old groups").toBeGreaterThan(0);
-    expect(group("you")).toEqual(ids(asked));
+    // Each row sits in the group of its own ask, in the index's order there.
+    for (const key of ["approve", "answer", "wrong", "review", "other"] as const) expect(group(key), key).toEqual(ids(asked.filter(one => one.askGroup === key)));
+    expect(view.groups.flatMap(one => one.rows.map(row => row.id)).sort()).toEqual(ids(asked).sort());
     // Working is the Running rows, then the Queued rows; every row the old Waiting group showed is among them, in order.
     const queued = page(now, "queued", 8).items.filter(one => !one.status.views.includes("needs-you") && !ids(running).includes(one.rootId));
-    expect(group("working")).toEqual([...ids(running), ...ids(queued)]);
+    const working = view.working.map(row => row.id);
+    expect(working).toEqual([...ids(running), ...ids(queued)]);
     expect(ids(queued).filter(id => ids(waiting).includes(id))).toEqual(ids(waiting).filter(id => !ids(running).includes(id)));
-    const listed = view.groups.flatMap(one => one.rows.map(row => row.id));
+    const listed = [...view.groups.flatMap(one => one.rows.map(row => row.id)), ...working, ...view.finishedToday.rows.map(row => row.id)];
     expect(new Set(listed).size, "one row per family").toBe(listed.length);
     for (const id of [...ids(asked), ...ids(running), ...ids(waiting)]) expect(listed.filter(one => one === id), id).toHaveLength(1);
-    // Groups in Home's order, with their headings.
-    expect(view.groups.map(one => [one.key, one.label])).toEqual(([["you", "Waiting on you"], ["working", "Working"], ["done", "Done"]] as const)
-      .filter(([key]) => group(key).length > 0));
+    // Groups in Home's order, with their headings; the counts add up to the figure.
+    const order = ["approve", "answer", "wrong", "review", "other"];
+    expect(view.groups.map(one => order.indexOf(one.key))).toEqual(view.groups.map(one => order.indexOf(one.key)).sort((a, b) => a - b));
+    expect(view.groups.reduce((sum, one) => sum + one.count, 0)).toBe(page(now, "all", 1).totals["needs-you"]);
     // Each figure keeps the name and count of the list it opens; Done is the whole Completed total.
     const totals = page(now, "all", 1).totals;
     expect(view.counts.map(one => [one.key, one.label, one.value, one.href])).toEqual([
-      ["needs", "Waiting on you", totals["needs-you"], "/tasks?scope=all&view=needs-you"], ["running", "Running", totals.running, "/tasks?scope=all&view=running"],
-      ["queued", "Queued", totals.queued, "/tasks?scope=all&view=queued"], ["finished", "Done", totals.completed, "/tasks?scope=all&view=completed"]]);
-    // Done lists what finished this week, newest first, never more than eight.
-    const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
-    const finished = page(now, "completed", 100).items.filter(one => homeGroupOf(one) === "done" && (one.completion?.at ?? one.updatedAt) >= weekAgo);
-    expect(group("done")).toEqual(ids(finished).slice(0, 8));
-    // What waits on you comes first and is selected: the overflow counts only what that group leaves out.
-    expect(view.more).toEqual(totals["needs-you"] > group("you").length ? { count: totals["needs-you"] - group("you").length, href: view.counts[0]!.href } : null);
+      ["needs", "Needs you", totals["needs-you"], "/tasks?scope=all&view=needs-you"], ["running", "Running", totals.running, "/tasks?scope=all&view=running"],
+      ["queued", "Queued", totals.queued, "/tasks?scope=all&view=queued"], ["finished", "Finished", totals.completed, "/tasks?scope=all&view=completed"]]);
+    // Done today lists what finished since midnight, newest first, never more than eight.
+    const since = startOfToday(now).toISOString();
+    const finished = page(now, "completed", 100).items.filter(one => homeGroupOf(one) === "done" && (one.completion?.at ?? one.updatedAt) >= since);
+    expect(view.finishedToday.rows.map(row => row.id)).toEqual(ids(finished).slice(0, 8));
+    expect(view.finishedToday.count).toBe(finished.length);
   });
 
-  test("cancelled and replaced work is in no group; Done lists only the last 7 days, even when fewer than eight are newer", () => {
+  test("cancelled and replaced work is listed nowhere; Done today lists only what finished since midnight", () => {
     const now = new Date("2026-11-01T12:00:00.000Z");
     const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000);
     const REPO = "/repos/storefront";
@@ -150,21 +154,24 @@ describe("Home's view", () => {
     expect(ended.find(one => one.rootId === "old-way")?.status.detail).toMatch(/new-way/);
     for (const one of ended) expect(homeGroupOf(one), one.rootId).toBeNull();
     const view = homeView(facts(now));
-    const listed = view.groups.flatMap(one => one.rows.map(row => row.id));
+    const listed = [...view.groups.flatMap(one => one.rows), ...view.working, ...view.finishedToday.rows].map(row => row.id);
     expect(listed).not.toContain("dropped");
     expect(listed).not.toContain("old-way");
-    // Today: ten finished this week, so the newest eight are listed.
-    const done = (v: typeof view) => v.groups.find(one => one.key === "done")?.rows.map(row => row.id) ?? [];
     expect(page(now, "all", 1).totals.completed).toBe(14);
-    expect(done(view)).toEqual(["done-0", "done-1", "done-2", "done-3", "done-4", "done-5", "done-6", "done-7"]);
-    // Four and a quarter days on, only five finished in the last 7 days: those five, and none of the older ones.
-    const later = homeView(facts(new Date(now.getTime() + 4.25 * 86_400_000)));
-    expect(done(later)).toEqual(["done-0", "done-1", "done-2", "done-3", "done-4"]);
+    // Done today: what was completed since midnight on this computer's clock, newest first, at most eight, and its
+    // figure counts them all. (Which of the fixture's days fall today depends on the clock's time zone.)
+    const today = (at: Date) => days.map((day, n) => ({ id: `done-${n}`, at: new Date(now.getTime() - day * 86_400_000) }))
+      .filter(one => one.at.getTime() >= startOfToday(at).getTime() && one.at.getTime() <= at.getTime()).map(one => one.id);
+    expect(view.finishedToday.rows.map(row => row.id)).toEqual(today(now).slice(0, 8));
+    expect(view.finishedToday.count).toBe(today(now).length);
+    // A day and a half on, nothing the fixture finished is from that day.
+    const later = homeView(facts(new Date(now.getTime() + 1.5 * 86_400_000)));
+    expect(later.finishedToday).toMatchObject({ count: 0, rows: [] });
     // The figure is still the whole Completed list it opens.
-    expect(later.counts.find(one => one.key === "finished")).toMatchObject({ label: "Done", value: 14, href: "/tasks?scope=all&view=completed" });
+    expect(later.counts.find(one => one.key === "finished")).toMatchObject({ label: "Finished", value: 14, href: "/tasks?scope=all&view=completed" });
   });
 
-  test("the overflow count is what Waiting on you leaves out, and the first row listed waits on you", () => {
+  test("a group's count is its whole total, past the rows the page lists", () => {
     const now = new Date("2026-11-01T12:00:00.000Z");
     for (let n = 0; n < HOME_NEEDS_SHOWN + 3; n++) {
       store.createTask({ id: `t-${n}`, title: `Task ${n}` }, now);
@@ -172,8 +179,8 @@ describe("Home's view", () => {
     }
     const view = homeView(facts(now));
     expect(view.counts[0]!.value).toBe(HOME_NEEDS_SHOWN + 3);
-    expect(view.groups.map(one => one.key)).toEqual(["you"]);
+    // A task with no plan yet fits none of the four asks: it is under Needs you.
+    expect(view.groups.map(one => [one.key, one.label, one.count])).toEqual([["other", "Needs you", HOME_NEEDS_SHOWN + 3]]);
     expect(view.groups[0]!.rows).toHaveLength(HOME_NEEDS_SHOWN);
-    expect(view.more).toEqual({ count: 3, href: "/tasks?scope=all&view=needs-you" });
   });
 });

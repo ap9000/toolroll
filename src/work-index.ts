@@ -50,6 +50,8 @@ export type WorkIndexItem = {
   ask: Ask | null;
   /** The row's chip under its group: the specific ask (needs-you.ts askChipOf), or none. */
   chip: AskChip | null;
+  /** What a Needs you row asks, in Home's five groups (ASK_GROUP_SQL); null for every other row. */
+  askGroup: WorkAskGroup | null;
   primaryAction: WorkAction | null;
   completion: { actor: string; at: string; digest: string; landed?: string } | null;
   evidence: 'recorded';
@@ -58,14 +60,23 @@ export type WorkIndexItem = {
   /** Put away (v145, task-tidy.md): by whom (a person's name, or tidy), why and when. Only the Archived view lists it. */
   archived?: { by: string; byKind: 'person' | 'tidy'; reason: string; at: string };
 };
-/** `root`: the evidence root, so a result whose checks were Off can read the release check that covers it. */
-export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string;
+/** `root`: the evidence root, so a result whose checks were Off can read the release check that covers it.
+ * `completedSince` (an ISO time): the Completed view lists only what was completed at or after it, filtered before the
+ * page limit, and the page's `completedSince` counts them all. */
+export type WorkIndexOptions = { view?: WorkView; limit?: number; cursor?: string | null; project?: string | null; state?: TaskState; leadId?: string; root?: string; completedSince?: string;
   /** Only these families (by root task id): the sidebar reads its rows' own words this way. */
   roots?: readonly string[] };
 /** How the list is grouped: the Needs you rows by their ask, then building, then the rest. */
 export type WorkIndexGroup = Ask | 'building' | 'rest';
 export type WorkIndexGroupCounts = Record<WorkIndexGroup, number>;
-export type WorkIndexPage = { items: WorkIndexItem[]; totals: WorkIndexCounts; groups: WorkIndexGroupCounts; projects: WorkProjectCounts[]; nextCursor: string | null; limit: number; view: WorkView };
+/** What a Needs you row asks, as Home groups it (docs/plans/live-pages-and-home.md B1.2): a plan to approve, a question
+ * to answer, something that went wrong, a result to review, or anything else that needs the person. */
+export type WorkAskGroup = 'approve' | 'answer' | 'wrong' | 'review' | 'other';
+export const WORK_ASK_GROUPS: readonly WorkAskGroup[] = ['approve', 'answer', 'wrong', 'review', 'other'];
+/** `asks`: the exact Needs you totals per ask group, over every row in view (never only the page). `completedSince`:
+ * how many the Completed view lists from `options.completedSince` on (0 without it). */
+export type WorkIndexPage = { items: WorkIndexItem[]; totals: WorkIndexCounts; groups: WorkIndexGroupCounts; asks: Record<WorkAskGroup, number>; completedSince: number;
+  projects: WorkProjectCounts[]; nextCursor: string | null; limit: number; view: WorkView };
 export type WorkProjectCounts = { repo: string | null; totals: WorkIndexCounts; queued: number; doneRecently: number };
 
 export const WORK_INDEX_PAGE_LIMIT = 40;
@@ -73,6 +84,7 @@ export const WORK_INDEX_MAX_LIMIT = 100;
 
 const EMPTY: WorkIndexCounts = { all: 0, 'needs-you': 0, ready: 0, running: 0, queued: 0, completed: 0, archived: 0 };
 const NO_GROUPS: WorkIndexGroupCounts = { decide: 0, review: 0, unblock: 0, building: 0, rest: 0 };
+const NO_ASKS: Record<WorkAskGroup, number> = { approve: 0, answer: 0, wrong: 0, review: 0, other: 0 };
 const FAMILY_PROBLEM = 'Task history is unavailable or incomplete. This task is shown separately.';
 const VIEWS: readonly WorkView[] = ['all', 'needs-you', 'ready', 'running', 'queued', 'completed', 'archived'];
 /** The family's current version is put away (v145): it waits on nobody and only the Archived view lists it. */
@@ -119,6 +131,11 @@ export function askOfCode(code: string, custody = false): Ask {
 const codesOf = (ask: Ask) => PERSON_CODES.filter(code => askOfCode(code) === ask).map(code => `'${code}'`).join(',');
 /** The ask as its place in the list (ASKS order), read by the same code the row's status reads. */
 const ASK_RANK = `CASE WHEN code IN (${codesOf('decide')}) THEN 0 WHEN code IN (${codesOf('review')}) AND NOT custody_unresolved THEN 1 ELSE 2 END`;
+/** Home's ask group of a row, by its code alone, so a row's group and its group's count are one rule: a plan waiting
+ * for its yes, a question, a build that failed or stopped unexpectedly, a saved result to review (ASK_RANK's Review),
+ * and everything else that waits on a person. Read on Needs you rows only. */
+const ASK_GROUP_SQL = `CASE WHEN code='needs-approval' THEN 'approve' WHEN code IN ('waiting-decision','decision-queue') THEN 'answer'
+      WHEN code IN ('failed','waiting-incident','vanished-run') THEN 'wrong' WHEN code IN (${codesOf('review')}) AND NOT custody_unresolved THEN 'review' ELSE 'other' END`;
 /** Where a row sits in the list: Decide, Review, Unblock, then building, then the rest by recency. */
 const ORDER = `(CASE WHEN rank=0 THEN ask_rank WHEN rank=1 THEN 3 ELSE 4 END)`;
 /** A row whose build may still be running (the store's reading, custodyReadings): Waiting, not Needs you. */
@@ -310,7 +327,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     ${ARCHIVED} archived,
     CASE WHEN code='complete' THEN 3 WHEN code='cancelled' THEN 4 WHEN code='running' THEN 1
       WHEN ${CUSTODY_WAITS} OR code IN (${WAITING_SQL.replace(/'(?:cancelled|complete|running)',/g, '')}) THEN 2 ELSE 0 END rank,
-    ${ASK_RANK} ask_rank,
+    ${ASK_RANK} ask_rank,${ASK_GROUP_SQL} ask_group,
     CASE WHEN code='complete' THEN completed.at ELSE family_updated END sort_at,
     completed.actor checked_actor,completed.at checked_at,completed.outcome checked_digest,completed.detail checked_detail
   FROM claimed c LEFT JOIN action_ledger completed ON completed.id=c.checked_id WHERE ($state IS NULL OR c.state=$state) AND ($leadId IS NULL OR EXISTS(SELECT 1 FROM team_task_owner own WHERE own.task_ref=c.root_ref AND own.lead=$leadId))
@@ -404,6 +421,12 @@ const TOTALS = `COALESCE(SUM(archived=0),0) all_count,COALESCE(SUM(needs),0) nee
   + `COALESCE(SUM(${QUEUED}),0) queued_count,COALESCE(SUM(code='complete' AND archived=0),0) completed_count,COALESCE(SUM(archived),0) archived_count`;
 const GROUP_TOTALS = `COALESCE(SUM(rank=0 AND ask_rank=0 AND archived=0),0) decide_count,COALESCE(SUM(rank=0 AND ask_rank=1 AND archived=0),0) review_count,COALESCE(SUM(rank=0 AND ask_rank=2 AND archived=0),0) unblock_count,`
   + `COALESCE(SUM(rank=1 AND archived=0),0) building_count,COALESCE(SUM(rank>1 AND archived=0),0) rest_count`;
+/** The exact Needs you totals per ask group, and what was completed since the page's `completedSince`: page reads only. */
+const ASK_TOTALS = WORK_ASK_GROUPS.map(group => `COALESCE(SUM(needs AND ask_group='${group}'),0) ask_${group}_count`).join(',')
+  + `,COALESCE(SUM(code='complete' AND archived=0 AND $completedSince IS NOT NULL AND sort_at>=$completedSince),0) completed_since_count`;
+function askCounts(row: Row): Record<WorkAskGroup, number> {
+  return Object.fromEntries(WORK_ASK_GROUPS.map(group => [group, n(row, `ask_${group}_count`)])) as Record<WorkAskGroup, number>;
+}
 function groupCounts(row: Row): WorkIndexGroupCounts {
   return { decide: n(row, 'decide_count'), review: n(row, 'review_count'), unblock: n(row, 'unblock_count'), building: n(row, 'building_count'), rest: n(row, 'rest_count') };
 }
@@ -418,7 +441,8 @@ function cursorScope(access: WorkSummaryAccess, options: WorkIndexOptions, view:
   return createHash('sha256').update(JSON.stringify({ principal: access.principal,
     repos: access.repos === null ? null : [...new Set(access.repos)].sort(),
     unplaced: access.principal === 'operator' && access.includeUnplaced === true,
-    leadId: options.leadId ?? null, project: options.project ?? null, state: options.state ?? null, view })).digest('hex');
+    leadId: options.leadId ?? null, project: options.project ?? null, state: options.state ?? null, view,
+    ...(options.completedSince === undefined ? {} : { completedSince: options.completedSince }) })).digest('hex');
 }
 function readCursor(value: string | null | undefined, scope: string): Cursor | null {
   if (value == null) return null;
@@ -454,18 +478,18 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
-  const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'ready' ? READY : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0" : 'archived=0';
+  const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'ready' ? READY : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0 AND ($completedSince IS NULL OR sort_at>=$completedSince)" : 'archived=0';
   const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
     SELECT * FROM ranked WHERE ($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
       ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
     ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit
-  ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS} FROM ranked), project_totals AS (
+  ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS},${ASK_TOTALS} FROM ranked), project_totals AS (
     SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
       SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo
   )
   SELECT 0 record_kind,totals.*,(SELECT json_group_array(json_object('repo',repo,'all_count',all_count,'needs_count',needs_count,'ready_count',ready_count,
     'running_count',running_count,'queued_count',queued_count,'completed_count',completed_count,'archived_count',archived_count,'queued',queued,'done_recently',done_recently)) FROM project_totals) row_json FROM totals
-  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,0,0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
+  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,0,0,${WORK_ASK_GROUPS.map(() => '0,').join('')}0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
     'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
     'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
     'state',state,'created_at',created_at,'family_updated',family_updated,'version_count',version_count,'earlier_active',earlier_active,
@@ -477,7 +501,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'check_follows',(SELECT json_group_array(q.outcome||' '||COALESCE((SELECT substr(f.outcome,instr(f.outcome,':')+1) FROM action_ledger f WHERE f.repo IS page.repo AND f.run_id=page_result_id
       AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM action_ledger WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
-    'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
+    'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'ask_group',ask_group,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
     'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,600),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,
@@ -485,7 +509,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),'machine_check',COALESCE(machine_check,0),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
-    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $recent: new Date(now.getTime()-86_400_000).toISOString() });
+    .all({ ...parameters(now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $completedSince: options.completedSince ?? null, $recent: new Date(now.getTime()-86_400_000).toISOString() });
   const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,
@@ -503,7 +527,8 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const memo: ReleaseMemo = new Map();
   const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(store, now, options.root, row, checks, memo);
   return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined, now)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
-    groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), nextCursor, limit, view };
+    groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), asks: rows[0] === undefined ? { ...NO_ASKS } : askCounts(rows[0]),
+    completedSince: rows[0] === undefined ? 0 : n(rows[0], 'completed_since_count'), nextCursor, limit, view };
 }
 
 export function workCountsByProject(store: Store, now: Date, access: WorkSummaryAccess): WorkProjectCounts[] {
@@ -776,6 +801,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     status: { token: `assignment-${assignmentState}`, label, detail, tone: workToneOf(shared.headline),
       action: primaryAction === null ? null : { label: actionLabel, kind: actionCode === 'open-result' ? 'open-result' : 'open-task' }, views, rank: n(row, 'rank') },
     ask: need ? ASKS[n(row, 'ask_rank')] ?? 'unblock' : null,
+    askGroup: need ? WORK_ASK_GROUPS.find(group => group === s(row, 'ask_group')) ?? 'other' : null,
     chip: need ? askChipOf({ headline: shared.headline, need: shared.need?.key ?? null, planChanged, mismatch: verdict === 'refuted' && n(row, 'proof_failed_check') !== 1, ask: ASKS[n(row, 'ask_rank')] ?? 'unblock' }) : null,
     primaryAction, completion: code === 'complete' ? { actor: String(row['checked_actor']), at: String(row['checked_at']), digest: String(row['checked_digest']), ...(landed === null ? {} : { landed }) } : null,
     evidence: 'recorded', ...(lead === 'on-it' ? { lead: leadOnIt(leadName) } : {}), ...(archived === null ? {} : { archived }) };

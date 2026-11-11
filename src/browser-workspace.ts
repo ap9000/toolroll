@@ -836,30 +836,45 @@ export type BrowserWorkspace = {
   reconnect?: { kind: 'password'; href: string } | { kind: 'command'; command: string };
 };
 
-/** Home ("/"): one sentence that answers "what needs me?", four counts that agree with the Tasks filters they open,
- * the work grouped as Waiting on you, Working and Done, and the selected item answered in place. */
+/** Home ("/", docs/plans/live-pages-and-home.md B1): the heading said once, one quiet line for what runs and waits, what
+ * needs this person grouped by what is asked (each group with its exact count), the selected one open beside the list,
+ * and the lead's last message above the message box. With nothing waiting: what runs and what finished today. */
 export type BrowserHomeView = {
   kind: 'home';
-  /** "7 need you across 2 projects.", derived from the same counts as the figures. */
+  /** "19 tasks need you", "Nothing needs you", read from the same total as the rail's count. */
   say: string;
-  /** The project in view (a path) or every project (null), and the scope links (null with one project). */
+  /** The project in view (a path) or every project (null), and the project filter's choices (null with one project). */
   project: string | null;
   scopes: { key: string; label: string; href: string; active: boolean }[] | null;
+  /** The work index totals, each with the Tasks list it opens. */
   counts: { key: 'needs' | 'running' | 'queued' | 'finished'; label: string; value: number; href: string }[];
-  /** The work in three groups, in this order (home-groups.ts): Waiting on you, Working, Done (finished in the last 7 days). */
-  groups: { key: 'you' | 'working' | 'done'; label: string; rows: BrowserHomeRow[] }[];
-  /** More waits on you than the list shows: open them all in Tasks. */
-  more: { count: number; href: string } | null;
+  /** What needs you, by what is asked, in this order: approve, answer, wrong, review, other (anything none of the four
+   * fits). `count` is the exact total for that ask, past the rows listed. */
+  groups: { key: BrowserHomeAsk; label: string; count: number; rows: BrowserHomeRow[] }[];
+  /** What runs, then what waits its turn. */
+  working: BrowserHomeRow[];
+  /** What was completed today: the exact figure, the newest rows, and the list that has them all. */
+  finishedToday: { count: number; rows: BrowserHomeRow[]; href: string };
   newTask: string;
   /** The lead's message box, where chat is allowed for this person: a POST to /chat in this scope. */
   ask: { project: string | null; placeholder: string } | null;
+  /** The lead's last message in this person's main thread, as one plain line that opens the chat; null when there is
+   * none or this person may not read that thread. */
+  lastLead: { text: string; age: string; href: string } | null;
   empty: { title: string; text: string } | null;
   /** While the first run is open (no first result yet): the welcome's address, linked as Finish setup. */
   setup?: string | null;
 };
+/** What a waiting row asks (work-index.ts WorkAskGroup). */
+export type BrowserHomeAsk = 'approve' | 'answer' | 'wrong' | 'review' | 'other';
 export type BrowserHomeRow = {
   id: string; title: string; href: string; project: string | null; age: string;
-  chip: { word: string; tone: '' | 'needs' | 'ask' | 'live' | 'done' | 'failed' };
+  /** Which list it is in: it needs you, it runs, it waits its turn, or it finished. */
+  state: 'needs' | 'running' | 'queued' | 'done';
+  /** What it asks of you (its group), or null when it doesn't wait on you. */
+  ask: BrowserHomeAsk | null;
+  /** Why, in one short line: only a row where something went wrong. */
+  reason: string | null;
   /** One line: what it asks, or what the agent is doing now. */
   line: string | null;
   /** The one act that resolves it (a link), or null. */
@@ -949,11 +964,13 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
 export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
   const under = (...roots: string[]) => roots.some(root => pathname === root || pathname.startsWith(`${root}/`));
-  // The rail (UI revamp, wave B): Home carries the one Needs-you count; the lead chat and an agent's question live
-  // under Home, a task's pages under Tasks, every computer and terminal under Agents, every setting under Settings.
+  // The rail (UI revamp, wave B; Chat under Home, live-pages-and-home.md B1): Home carries the one Needs-you count and
+  // an agent's question lives under it; the lead chat is its own item; a task's pages under Tasks, every computer and
+  // terminal under Agents, every setting under Settings.
   return [
-    { label: 'Home', href: '/', active: pathname === '/' || pathname === '/chat' || under('/d', '/activity', '/morning'),
+    { label: 'Home', href: '/', active: pathname === '/' || under('/d', '/activity', '/morning'),
       ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
+    { label: 'Chat', href: '/chat', active: under('/chat') },
     { label: 'Tasks', href: `/tasks${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
       active: under('/tasks', '/t', '/r', '/review') },
     { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
