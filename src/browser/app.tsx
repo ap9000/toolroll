@@ -37,7 +37,7 @@ import { NeedsDock, PhoneHeader, Rail, useNeeds, useNeedsRefresh } from "./shell
 import { SearchMenu } from "./search.js";
 import "./workspace.css";
 import { keyed, markAgentSeen } from "./mutation-key.js";
-import { installNavigation, loadDocument } from "./navigate.js";
+import { documentLeaving, installNavigation, loadDocument, pageHeld, whenStayed } from "./navigate.js";
 
 export { GuardedHtml, regionIsEditing };
 export { REPLACED_THREAD_DIVIDER, replyTook } from "./lead-chat.js";
@@ -88,7 +88,9 @@ export type AcceptHow = "refresh" | "navigate" | "confirm";
  *    `next`, else a document load.
  * 3. A page that gains a page script on its own re-read (`inPlace` turns false under "refresh") is kept as today: no
  *    script runs until the next document load.
- * True: show `next`. False: a document load has started instead (`href`, else `next`'s own address).
+ * True: show `next`. False: a document load has started instead (`href`, else `next`'s own address), or, when this
+ * document is already leaving (navigate.ts documentLeaving), nothing at all: a script never cancels the browser's own
+ * navigation, and nothing of `next` is rendered either way.
  */
 export function acceptWorkspace(next: BrowserWorkspace, how: AcceptHow, href: string = next.path, replace = false): boolean {
   const startedAsThis = documentStart !== null && documentStart.sensitive && documentStart.path === next.path;
@@ -130,6 +132,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
   const sendLatch = useRef(false);
   /** Moves with every in-place page change: a read or send begun for the page before lands on nothing. */
   const generation = useRef(0);
+  /** The page on screen was read ahead and is not confirmed yet (A2.1): it reads nothing and sends nothing. */
+  const provisional = useRef(false);
   useLayoutEffect(() => { onScreen = workspace; }, [workspace]);
 
   /** The conversation this page's own send started, by its acknowledgement (quiet page visits). */
@@ -151,7 +155,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
   const followsWorkspace = Boolean(page.conversation || page.refreshSeconds || agentsBoard);
   const check = useCallback(async (force = true, retry = false): Promise<void> => {
     clearRefreshRetry();
-    if (!mounted.current || state.current.stale || !(followsWorkspace || liveTask) || !canRefreshWorkspace()) return;
+    if (!mounted.current || state.current.stale || provisional.current || !(followsWorkspace || liveTask) || !canRefreshWorkspace()) return;
     // A send, a nudge or an explicit refresh during a read runs immediately afterward,
     // rather than lose its receipt check or start an overlapping request.
     if (polling.current) { refreshQueued.current = true; return; }
@@ -170,7 +174,13 @@ export function useWorkspace(initial: BrowserWorkspace) {
       }
       const next = read.workspace;
       // The one door (acceptWorkspace): a page that became sensitive loads as its own document, and this page stops.
-      if (!acceptWorkspace(next, "refresh")) { state.current.stale = true; setStale(true); return; }
+      if (!acceptWorkspace(next, "refresh")) {
+        // This document is already leaving (the browser's own navigation), so nothing was loaded over it. If it stays
+        // after all (a cancelled leave), it reads again then, in full (this read's tag would answer "unchanged"), and
+        // the door loads the sensitive page as its own document.
+        if (documentLeaving()) { refreshTag.current = null; whenStayed(() => { if (gen === generation.current) void check(true); }); return; }
+        state.current.stale = true; setStale(true); return;
+      }
       // A page that showed no conversation accepts the one its own send started: acknowledged, or holding its receipt.
       const started = startedBySend.current ?? (asked !== null && next.receipt?.request === asked && next.receipt.received ? next.conversation?.sessionId ?? null : null);
       if (!sameConversation(state.current.workspace, next, started)) {
@@ -252,7 +262,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
     event.preventDefault();
     const current = state.current;
     // A reply in progress no longer blocks a send: the server queues it (docs/plans/lead-message-queue.md).
-    if (sendLatch.current || current.stale || navigator.onLine === false || current.draft.pending || !current.draft.text.trim()) return "skipped";
+    if (sendLatch.current || current.stale || provisional.current || navigator.onLine === false || current.draft.pending || !current.draft.text.trim()) return "skipped";
     const next = submitDraft(current.draft);
     if (!next.pending) return "skipped";
     sendLatch.current = true;
@@ -340,7 +350,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
   const steer = async (text: string): Promise<string | null> => {
     const current = state.current;
     if (current.draft.text.trim() !== "" || current.draft.pending) return "Send or clear the message you're writing first.";
-    if (sendLatch.current || current.stale || navigator.onLine === false) return "The conversation isn't connected. Try again in a moment.";
+    if (sendLatch.current || current.stale || provisional.current || navigator.onLine === false) return "The conversation isn't connected. Try again in a moment.";
     updateDraft(editDraft(current.draft, text));
     const request = state.current.draft.request;
     const outcome = await send({ preventDefault() {} } as FormEvent);
@@ -360,9 +370,11 @@ export function useWorkspace(initial: BrowserWorkspace) {
   };
 
   /** Another page, changed in place (A1.3): every piece of state starts from it, as a document load would. The message
-   * box keeps its words when the conversation is the same one, and takes the saved draft for a different one. */
-  const adopt = useCallback((next: BrowserWorkspace) => {
+   * box keeps its words when the conversation is the same one, and takes the saved draft for a different one.
+   * `ahead`: a page read ahead, shown until its ordinary read is adopted (A2.1); until then it reads and sends nothing. */
+  const adopt = useCallback((next: BrowserWorkspace, ahead = false) => {
     generation.current += 1;
+    provisional.current = ahead;
     clearRefreshRetry();
     polling.current = false; refreshQueued.current = false; refreshTag.current = null;
     startedBySend.current = null; sendLatch.current = false;
@@ -734,7 +746,8 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const [phoneView, setPhoneView] = useState<"chat" | "work">(workspace.result || workspace.focus ? "work" : "chat");
   // Easy-start C2: a result opened here is seen (a keyed act, never the page read's side effect).
   const seenRun = workspace.result?.runId ?? null;
-  useEffect(() => { if (seenRun !== null) markAgentSeen(seenRun, workspace.csrf); }, [seenRun, workspace.csrf]);
+  // Never from a page shown ahead of its own read: the confirmed page is the next epoch, and is seen then.
+  useEffect(() => { if (seenRun !== null && !pageHeld()) markAgentSeen(seenRun, workspace.csrf); }, [seenRun, workspace.csrf, epoch]);
   const hasWork = workspace.focus !== null || workspace.result !== null;
   const selectedTask = workspace.crew.find(item => item.id === workspace.focus?.id);
   const isChat = new URL(workspace.path, window.location.origin).pathname === "/chat";
@@ -791,10 +804,10 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const adopt = controller.adopt;
   useEffect(() => installNavigation({
     current: () => shown.current,
-    accept: (next, href, replace) => acceptWorkspace(next, "navigate", href, replace),
-    show: next => flushSync(() => {
+    accept: (next, href, replace, how) => acceptWorkspace(next, how, href, replace),
+    show: (next, ahead) => flushSync(() => {
       closeAll();
-      adopt(next);
+      adopt(next, ahead);
       setTeamSnapshot(next.team);
       setPhoneView(next.result || next.focus ? "work" : "chat");
       setPanelTab("chat");

@@ -38,7 +38,7 @@ const skipBuild = flag("--skip-build");
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
   console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
-  pages: { journeys: 9, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
+  pages: { journeys: 10, about: "Every main page on desktop and phone, settings, search, pages changing in place, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
   task: { journeys: 5, about: "A task from an idea to an accepted result, then sent back twice; the same by keyboard alone" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
@@ -1286,6 +1286,33 @@ await journey("pages", SCRIPTED, "Search finds the project and a task", [], asyn
   await until("a project among the results", async () => (await page.locator(".so-cmdk-g", { hasText: "Projects" }).count()) > 0 && (await page.locator(".so-cmdk-i").count()) > 0, { timeoutMs: 5000, everyMs: 300 });
   await page.keyboard.press("Escape");
   await page.locator(".so-cmdk").waitFor({ state: "detached", timeout: 5000 });
+});
+
+await journey("pages", SCRIPTED, "The menu changes pages in place: Tasks and Projects open with no page load, a link rested on is read ahead, and Back returns in place", [], async () => {
+  await page.goto(`${base}/agents`);
+  await page.waitForSelector("#workspace-main");
+  // A mark on this document: a page load would lose it.
+  await page.evaluate(() => { window.__sameDocument = true; });
+  const same = () => page.evaluate(() => window.__sameDocument === true).catch(() => false);
+  const at = path => new URL(page.url()).pathname === path;
+  const reads = [];
+  const heard = request => { const purpose = request.headers()["x-toolroll-read"]; if (purpose === "prefetch" || purpose === "navigate") reads.push(`${purpose} ${new URL(request.url()).pathname}`); };
+  page.on("request", heard);
+  try {
+    await page.locator('a[href="/tasks"]:visible').first().click();
+    await until("Tasks to open in place", async () => at("/tasks") && await same() && reads.includes("navigate /tasks"), { timeoutMs: 10_000, everyMs: 200 });
+    // Resting on a link reads its page ahead; the click then shows it at once and the ordinary read confirms it.
+    const projects = page.locator('a[href="/projects"]:visible').first();
+    await projects.hover();
+    await until("Projects to be read ahead", async () => reads.includes("prefetch /projects"), { timeoutMs: 10_000, everyMs: 100 });
+    await projects.click();
+    await until("Projects to open in place and be confirmed", async () => at("/projects") && await same() && reads.includes("navigate /projects")
+      && await page.evaluate(() => document.querySelector("#workspace-main [inert]") === null && !document.getElementById("workspace-main")?.hasAttribute("data-so-provisional")), { timeoutMs: 10_000, everyMs: 200 });
+    await page.goBack();
+    await until("Back to return to Tasks in place", async () => at("/tasks") && await same(), { timeoutMs: 10_000, everyMs: 200 });
+    // Nothing of the move is left behind.
+    await until("the page change to settle", async () => page.evaluate(() => !/so-nav/.test(document.documentElement.className) && document.querySelector("[data-so-loading], [data-so-pressed]") === null), { timeoutMs: 5_000, everyMs: 200 });
+  } finally { page.off("request", heard); }
 });
 
 // ------------------------------------------------------------------ code in flows

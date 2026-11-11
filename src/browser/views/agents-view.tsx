@@ -20,6 +20,7 @@ import { LiveGrid } from "./agents-live-view.js";
 import { freshDraft, loadDraft, saveDraft, type SteerDraft } from "./steer-composer.js";
 import "./agents.css";
 import { keyed, markAgentSeen, watchAgent } from "../mutation-key.js";
+import { pageHeld } from "../navigate.js";
 
 /** "38 s", "4 min", "1 h 12 min". */
 export function elapsedWords(fromIso: string, to: number): string {
@@ -528,7 +529,8 @@ function AgentPage({ detail }: { detail: BrowserAgentDetail }) {
   // Easy-start C2: viewing is a keyed act, never a page read's side effect: a finished agent opened here is seen; a
   // running one is watched (chat pings hold off) while this page stays open.
   const csrf = useContext(FormToken);
-  useEffect(() => detail.live ? watchAgent(detail.runId, csrf) : (markAgentSeen(detail.runId, csrf), undefined), [detail.runId, detail.live, csrf]);
+  // Never from a page shown ahead of its own read (navigate.ts): the confirmed page is a fresh mount, and acts then.
+  useEffect(() => pageHeld() ? undefined : detail.live ? watchAgent(detail.runId, csrf) : (markAgentSeen(detail.runId, csrf), undefined), [detail.runId, detail.live, csrf]);
   const meta = [detail.project, `run ${detail.runId}`, detail.agent].filter(Boolean).join(" · ");
   const task = detail.task ?? null;
   return <div className="agents-agent" id="agents-view" data-agent-detail={detail.runId}>
