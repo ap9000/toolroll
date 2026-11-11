@@ -1,7 +1,7 @@
 /**
  * Home ("/", docs/plans/live-pages-and-home.md B1): the heading said once ("19 tasks need you"), one quiet line for
  * what runs and waits, one project filter, and what needs you grouped by what is asked (Approve a plan, Answer a
- * question, Something went wrong, Review a result, Needs you), each group with its exact count. The selected row opens
+ * question, Something went wrong, Review results, Needs you), each group with its exact count. The selected row opens
  * beside the list (an agent's question answered in place, one click); the lead's last message sits above the message
  * box. With nothing waiting: what runs, what finished today and the message box, in the middle of the page. On a phone
  * the next one is a card with its one action, then the list; the message box and New task sit at the bottom.

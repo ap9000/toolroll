@@ -107,7 +107,7 @@ test("each of Home's counts equals the list its link opens (Queued included), on
     // Each figure keeps the name of the list it opens.
     expect(home.counts.map(one => one.label)).toEqual(["Needs you", "Running", "Queued", "Finished"]);
     // What needs you, grouped by what is asked: each group its own heading, and the groups' exact counts add up to the figure.
-    expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ approve: "Approve a plan", answer: "Answer a question", wrong: "Something went wrong", review: "Review a result", other: "Needs you" })[one.key]));
+    expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ approve: "Approve a plan", answer: "Answer a question", wrong: "Something went wrong", review: "Review results", other: "Needs you" })[one.key]));
     expect(home.groups.reduce((sum, one) => sum + one.count, 0)).toBe(home.counts[0]!.value);
     const labels: Record<string, string> = { needs: "Needs you", running: "Running", queued: "Queued", finished: "Finished" };
     for (const count of home.counts) {

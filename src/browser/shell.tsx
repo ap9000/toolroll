@@ -72,8 +72,6 @@ export function useNeedsRefresh(workspace: BrowserWorkspace, states: unknown): v
 }
 
 const NAV_ICONS: Record<string, KitIcon> = { Home: "home", Tasks: "tasks", Flows: "flows", Agents: "agents", Projects: "projects", Settings: "settings" };
-/** Chat's icon: a speech bubble, drawn like the kit's icons (the kit's set has none for it yet). */
-const ChatIcon = () => <svg className="k-i" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>;
 export const OPEN_SEARCH_EVENT = "so:open-search";
 export const openSearch = (trigger?: HTMLElement | null): void => { window.dispatchEvent(new CustomEvent(OPEN_SEARCH_EVENT, { detail: trigger ?? null })); };
 
@@ -262,3 +260,6 @@ export function NeedsDock({ workspace }: { workspace: BrowserWorkspace }) {
     {sheet && <NeedsSheet needs={needs} trigger={sheet} onClose={close} />}
   </div>;
 }
+
+/** Chat's icon: a speech bubble, drawn like the kit's icons (the kit's set has none for it yet). */
+const ChatIcon = () => <svg className="k-i" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>;

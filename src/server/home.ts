@@ -1,6 +1,6 @@
 /**
  * Home ("/", docs/plans/live-pages-and-home.md B1): what needs this person, grouped by what is asked (Approve a plan,
- * Answer a question, Something went wrong, Review a result, and Needs you for the rest), each group with its exact
+ * Answer a question, Something went wrong, Review results, and Needs you for the rest), each group with its exact
  * count; one quiet line for what runs and waits; with nothing waiting, what runs and what finished today. The figures
  * are read from the same work index the Tasks list filters, so a count and the list it opens always agree. Reads
  * only: every act keeps its own route and rules (an agent's question is answered through POST /d/<id>/answer, the
@@ -26,7 +26,7 @@ const LEAD_LINE_LIMIT = 160;
 
 /** Each group's heading, in the order Home shows them. */
 export const HOME_ASK_LABEL: Readonly<Record<BrowserHomeAsk, string>> = {
-  approve: "Approve a plan", answer: "Answer a question", wrong: "Something went wrong", review: "Review a result", other: "Needs you",
+  approve: "Approve a plan", answer: "Answer a question", wrong: "Something went wrong", review: "Review results", other: "Needs you",
 };
 
 export type HomeFacts = {

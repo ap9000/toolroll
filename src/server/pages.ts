@@ -224,23 +224,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/tasks">Tasks</a></p></div>`, { chrome, workspace: { view } }));
   }
 
-  /** The lead's last message in this person's main thread, for Home's one line above the message box. The thread is
-   * read only through the gate a docked conversation uses (serve.ts dockedConversation): an approver in a browser
-   * session, chat enabled, the approver's standing re-proved now (leadPrincipal), their lead session under the current
-   * ceiling and generation; and then through leadConversationRows, the very rows /chat renders, which keep only a thread
-   * under this person's current ceiling. Null at any refusal, and when the lead has said nothing yet. */
-  function leadLastMessage(who: Who & { via: "cookie" }, now: Date): { text: string; at: string } | null {
-    if (who.role !== "approver") return null;
-    const enabled = chatEnablement();
-    const principal = enabled.ok ? leadPrincipal(who) : null;
-    if (!enabled.ok || principal === null) return null;
-    const found = store.activeLeadSession(who.name);
-    const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
-    if (!notStarted && (found === null || found.ceilingDigest !== principal.ceilingDigest || found.approverGeneration !== principal.generation)) return null;
-    const said = leadConversationRows(who, principal, null, now, null).messages.filter(one => one.role === "assistant" && one.pending !== true).at(-1);
-    return said === undefined ? null : { text: said.text, at: said.createdAt };
-  }
-
   // Search (UI revamp wave B): the ⌘K menu's "See all results". The places come from the page; the tasks here are the
   // most recent ones in view (live and archived), matched on their title and id. Reads only.
   async function searchPage(ctx: HandlerContext): Promise<void> {
@@ -1215,5 +1198,22 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "edge.font": fontAsset,
     "edge.desktop-health": desktopHealth,
   });
+  /** The lead's last message in this person's main thread, for Home's one line above the message box. The thread is
+   * read only through the gate a docked conversation uses (serve.ts dockedConversation): an approver in a browser
+   * session, chat enabled, the approver's standing re-proved now (leadPrincipal), their lead session under the current
+   * ceiling and generation; and then through leadConversationRows, the very rows /chat renders, which keep only a thread
+   * under this person's current ceiling. Null at any refusal, and when the lead has said nothing yet. */
+  function leadLastMessage(who: Who & { via: "cookie" }, now: Date): { text: string; at: string } | null {
+    if (who.role !== "approver") return null;
+    const enabled = chatEnablement();
+    const principal = enabled.ok ? leadPrincipal(who) : null;
+    if (!enabled.ok || principal === null) return null;
+    const found = store.activeLeadSession(who.name);
+    const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
+    if (!notStarted && (found === null || found.ceilingDigest !== principal.ceilingDigest || found.approverGeneration !== principal.generation)) return null;
+    const said = leadConversationRows(who, principal, null, now, null).messages.filter(one => one.role === "assistant" && one.pending !== true).at(-1);
+    return said === undefined ? null : { text: said.text, at: said.createdAt };
+  }
+
   return { registrations, projectsScreen };
 }

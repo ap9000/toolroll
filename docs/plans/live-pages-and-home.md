@@ -243,7 +243,7 @@ Desktop, something needs you:
 - Heading "N tasks need you" said once; under it one quiet line "1 building now · 1 queued".
 - One project filter (a select), not a row of tabs.
 - Left: the list, grouped by what is asked: **Approve a plan**, **Answer a question**, **Something went wrong**,
-  **Review a result**, and **Needs you** for any row that fits none of the four. A group heading carries its count.
+  **Review results**, and **Needs you** for any row that fits none of the four. A group heading carries its count.
   A row is one link: title, then project and age. Only a failed row has a reason, in red. No chip per row.
 - Right: the selected task's summary and its one action, as today (B2 puts the plan and Approve there).
 - Bottom: the lead's last message as one line that links to the chat, then the filled rounded message box

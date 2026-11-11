@@ -27,7 +27,7 @@ const view = (over: Partial<BrowserHomeView> = {}): BrowserHomeView => ({
     { key: "answer", label: "Answer a question", count: 1, rows: [row("q", { ask: "answer", line: "How should retries back off?", action: null, question: { id: 7, text: "How should retries back off?", recap: "They hammer endpoints.", options: [
       { id: "exp", label: "Exponential", consequence: "Slow to give up.", recommended: true }, { id: "fixed", label: "Fixed", consequence: "Gives up fast.", recommended: false }] } })] },
     { key: "wrong", label: "Something went wrong", count: 1, rows: [row("f", { ask: "wrong", reason: "Build failed", line: "Build failed.", action: { label: "Review and retry", href: "/t/f" } })] },
-    { key: "review", label: "Review a result", count: 16, rows: [row("r", { ask: "review", action: { label: "Open result", href: "/review?result=r&run=3" } })] },
+    { key: "review", label: "Review results", count: 16, rows: [row("r", { ask: "review", action: { label: "Open result", href: "/review?result=r&run=3" } })] },
   ],
   working: [row("w", { state: "running", ask: null, line: "Building", action: null })],
   finishedToday: { count: 0, rows: [], href: "/tasks?scope=all&view=completed" },
@@ -58,7 +58,7 @@ test("what needs you is grouped by what is asked, each heading with its exact co
   expect(document.querySelector("[data-home-say]")?.textContent).toBe("19 tasks need you");
   expect(document.querySelector("[data-home-activity]")?.textContent).toBe("1 running now·1 queued·See all tasks");
   expect([...document.querySelectorAll("[data-group]")].map(one => [one.getAttribute("data-group"), one.querySelector(".so-tri-g span")?.textContent, one.querySelector("[data-group-count]")?.textContent]))
-    .toEqual([["approve", "Approve a plan", "1"], ["answer", "Answer a question", "1"], ["wrong", "Something went wrong", "1"], ["review", "Review a result", "16"]]);
+    .toEqual([["approve", "Approve a plan", "1"], ["answer", "Answer a question", "1"], ["wrong", "Something went wrong", "1"], ["review", "Review results", "16"]]);
   // A group with more than it lists says how many more, and opens them in Tasks.
   expect(document.querySelector('[data-group="review"] .so-tri-more')?.textContent).toBe("15 more in Tasks");
   expect(document.querySelector('[data-group="review"] .so-tri-more')?.getAttribute("href")).toBe("/tasks?scope=all&view=needs-you");
