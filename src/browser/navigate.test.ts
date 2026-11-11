@@ -187,6 +187,30 @@ test("a menu link changes the page in place: the address, the title, focus, the 
   expect(window.history.length).toBe(before + 1);
 });
 
+test("after a reload on a page that is not in place, Back to an entry an in-place change made loads that page", async () => {
+  // The entry left by an in-place change carries the mark, and keeps the state it had.
+  await open("/");
+  window.history.replaceState({ kept: 1 }, "", "/");
+  click(railLink("/tasks"));
+  await arrivedAt("/tasks");
+  expect(window.history.state).toEqual({ toolroll: "in-place" });
+  await act(async () => root?.unmount());
+  root = null; host?.remove(); host = null; loads = [];
+  // A new document at /tasks whose page now carries a page script (not in place); the person presses Back.
+  const tasks = await workspaceAt("/tasks");
+  await open("/tasks", { ...tasks, inPlace: false });
+  window.history.replaceState({ kept: 1, toolroll: "in-place" }, "", "/");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: { kept: 1, toolroll: "in-place" } }));
+  await settle();
+  expect(loads).toEqual([{ href: "/", replace: true }]);
+  // An entry of the page's own (no mark) is left to the page, as today.
+  loads = [];
+  window.history.replaceState({ liveRun: 3 }, "", "/tasks?own=1");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: { liveRun: 3 } }));
+  await settle();
+  expect(loads).toEqual([]);
+});
+
 test("each doubt is a document load of the same address", async () => {
   await open("/");
   const cases: [string, (path: string, init: RequestInit) => Promise<Response> | null][] = [

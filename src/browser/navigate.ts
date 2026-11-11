@@ -60,6 +60,10 @@ function leavingAsks(): boolean {
   return document.querySelector("form[data-k-gate][data-dirty]") !== null;
 }
 
+/** The history state key on every entry an in-place change made or left. */
+const MARK = "toolroll";
+const marked = (state: unknown): boolean => typeof state === "object" && state !== null && (state as Record<string, unknown>)[MARK] === "in-place";
+
 let host: InPlaceHost | null = null;
 let reading: AbortController | null = null;
 /** The address (path and query) of the page on screen, to tell a page change from a hash change on Back. */
@@ -93,7 +97,14 @@ export async function follow(href: string, mode: "push" | "pop"): Promise<void> 
   if (leavingAsks()) { loadDocument(href, replace); return; }
   if (!host.accept(next, href, replace)) return;
   const address = url.pathname + url.search + url.hash;
-  if (mode === "push") { window.history.pushState({ toolroll: "in-place" }, "", address); pushed = true; }
+  if (mode === "push") {
+    // Both ends of the change carry the mark (the entry left keeps whatever state it had), so a later document that
+    // lands between them (a reload) still knows Back and Forward here are page changes (onPop).
+    const leaving: unknown = window.history.state;
+    window.history.replaceState({ ...(typeof leaving === "object" && leaving !== null ? leaving : {}), [MARK]: "in-place" }, "");
+    window.history.pushState({ [MARK]: "in-place" }, "", address);
+    pushed = true;
+  }
   shownAt = here();
   document.title = next.title;
   host.show(next);
@@ -137,11 +148,13 @@ function onClick(event: MouseEvent): void {
   void follow(url.pathname + url.search + url.hash, "push");
 }
 
-function onPop(): void {
+function onPop(event: PopStateEvent): void {
   // Back or Forward between entries of this one page (a #section) changes no page.
   if (host === null || here() === shownAt) return;
-  // A page that keeps its own history (the Agents Live grid's runs) and never changed in place: its own, as today.
-  if (host.current().inPlace !== true && !pushed) return;
+  // A page that keeps its own history (the Agents Live grid's runs): its own, as today. An entry an in-place change
+  // made (in this document, or in one before a reload) is a page change even when this page is not in place: follow()
+  // then loads it as a document, so the address bar never names one page over another's content.
+  if (host.current().inPlace !== true && !pushed && !marked(event.state)) return;
   void follow(window.location.pathname + window.location.search + window.location.hash, "pop");
 }
 
