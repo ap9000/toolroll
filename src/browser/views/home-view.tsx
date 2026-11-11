@@ -12,6 +12,7 @@ import { FormToken } from "../ui/index.js";
 import { WORKSPACE_NUDGE } from "../live-task.js";
 import "./home.css";
 import { keyed } from "../mutation-key.js";
+import { askDraft, keepAskDraft } from "../workspace-client.js";
 
 const nudge = () => window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
 const rowsOf = (view: BrowserHomeView): BrowserHomeRow[] => view.groups.flatMap(group => group.rows);
@@ -77,7 +78,8 @@ function OpenPane({ row, waits }: { row: BrowserHomeRow | null; waits: boolean }
 function AskLead({ ask }: { ask: NonNullable<BrowserHomeView["ask"]> }) {
   const csrf = useContext(FormToken);
   const form = useRef<HTMLFormElement>(null);
-  const [text, setText] = useState("");
+  // Kept in this tab across pages (live-pages-and-home.md A1.3); gone once sent.
+  const [text, setText] = useState(() => askDraft(csrf, ask.project));
   const [sending, setSending] = useState(false);
   const request = useRef(Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""));
   const send = () => {
@@ -88,12 +90,12 @@ function AskLead({ ask }: { ask: NonNullable<BrowserHomeView["ask"]> }) {
     if (field) field.value = text;
     form.current?.requestSubmit();
   };
-  return <form ref={form} method="post" action="/chat" className="so-home-ask" aria-label="Ask the lead" onSubmit={() => setSending(true)}>
+  return <form ref={form} method="post" action="/chat" className="so-home-ask" aria-label="Ask the lead" onSubmit={() => { setSending(true); keepAskDraft(csrf, ask.project, ""); }}>
     <input type="hidden" name="csrf" value={csrf} />
     <input type="hidden" name="request" value={request.current} />
     {ask.project !== null && <input type="hidden" name="project" value={ask.project} />}
     <input type="hidden" name="message" value={text} />
-    <KComposer id="home-ask" label="Ask the lead" placeholder={ask.placeholder} value={text} onChange={setText} onSend={send} line sendLabel="Ask the lead" disabled={sending} />
+    <KComposer id="home-ask" label="Ask the lead" placeholder={ask.placeholder} value={text} onChange={value => { setText(value); keepAskDraft(csrf, ask.project, value); }} onSend={send} line sendLabel="Ask the lead" disabled={sending} />
   </form>;
 }
 

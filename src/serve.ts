@@ -185,7 +185,8 @@ import { createPeopleHandlers } from './server/people-tokens.js';
 import type { RouteDeclaration } from './server/route-table.js';
 import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
-import { requestContext } from "./server/request-context.js";
+import { readPurpose, requestContext } from "./server/request-context.js";
+import { inPlaceRoute, prefetchRoute } from "./server/in-place.js";
 import { asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
 import { defaultAgentOf,fillDefaultRouting } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
@@ -870,9 +871,22 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Passive polls authenticate without extending the browser session.
     const fragmentName = url.searchParams.get("fragment");
     const workspaceRead = method === "GET" && url.searchParams.get('format') === 'workspace';
-    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'
+    // A workspace read's purpose (live-pages-and-home.md A1.4): bookkeeping only. Read on workspace GETs alone; on any other
+    // request the header means nothing. No authorisation decision below reads it.
+    const purpose = workspaceRead ? readPurpose(request.headers['x-toolroll-read']) : 'poll';
+    // The reads that never extend the session, whatever their header says.
+    const noTouch = edgeRoute?.domain === 'live' || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'
       // The Agents view's Live grid only watches: its polls never extend or write the session.
-      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live')));
+      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live');
+    // A followed link (`navigate`) extends the session exactly as the HTML GET of the same address would; every other
+    // workspace read (a re-read, a prefetch) does not.
+    const touch = !(method === "GET" && (noTouch || (workspaceRead && purpose !== 'navigate')));
+    // A read ahead is answered only for a browser session, only for the prefetch allowlist (in-place.ts): anything else
+    // hears 204 before any sign-in bookkeeping (a token's last use, a sign-in charge) is written.
+    if (purpose === 'prefetch' && (request.headers.authorization !== undefined || !prefetchRoute(matchedRoute?.id, url))) {
+      request.resume();
+      return respond(response, 204, "text/plain; charset=utf-8", "");
+    }
     const refuseBudget = (admitted: Admission): boolean => {
       if (admitted.ok) return false;
       request.resume();
@@ -893,6 +907,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       }
     }
     if (who?.via === "bearer" && refuseBudget(admitBearer(request, who))) return;
+    // A read ahead from anything but a signed-in browser session (signed out, a token): 204, never the sign-in page.
+    if (purpose === 'prefetch' && who?.via !== 'cookie') {
+      request.resume();
+      return respond(response, 204, "text/plain; charset=utf-8", "");
+    }
     const passwordProof = who?.via === 'cookie' ? { name: who.name, generation: who.session.generation } : null;
     const fresh = freshFactsOf(request, who, matchedRoute?.freshness === 'allowlist');
     if (edgeRoute?.domain === 'people') return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => dispatchEdge(edgeRoute, { url, who, request, response, method })));
@@ -929,6 +948,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
+      readPurpose: purpose,
+      ...(matchedRoute?.stage === 'console' ? { routeId: matchedRoute.id } : {}),
       freshWork: ["request", "task", "result"].some(name => url.searchParams.has(name)),
       ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
       workspaceRequest: url.searchParams.get('request'),
@@ -941,7 +962,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         ? { localStepUp: localOwnerRefusal(false, method === "GET" ? passwordSetNext(pagePathOf(url)) : "/").href } : {}),
       reconnect: browserKeys.stale(who, method === "GET" ? safeReturn(pagePathOf(url)) : "/"),
     };
-    response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
+    // A read ahead writes nothing, not even a slow request's record.
+    if (purpose !== 'prefetch') response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
       const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
@@ -1619,8 +1641,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       } catch { chats = []; }
       const conversation = extras.conversation ?? null;
       const request = requestFacts.workspaceRequest;
+      // React owns the conversation and its refresh/draft lifecycle. Native
+      // guarded forms keep their current behavior after React inserts them.
+      // A page with its own view keeps its script; the chat page runs the result script.
+      // The exact page script the document would run: the JSON arm and the document arm read this one value.
+      const functional = conversation === null || extras.view ? (s.functional?.script ?? '') : RESULT_REVIEW_SCRIPT;
+      // May replace another page without a document load (live-pages-and-home.md A1.1): an allowlisted route, no password
+      // field, no page script (a page script runs once per document, so its page always loads as one).
+      const inPlace = inPlaceRoute(requestFacts.routeId, path) && !sensitive && functional === '';
       const workspace: BrowserWorkspace = {
-        version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive,
+        version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive, inPlace,
         // The project picker names the open project; the settings frame carries its breadcrumb.
         // Only a project this person may see now: never the raw saved path (settings-kit.ts openProjectFor).
         openProject: openProjectFor(requestFacts.openProject ?? null, s.chrome.project, s.chrome.projects ?? []),
@@ -1689,10 +1719,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         return respond(response, status, 'application/json; charset=utf-8', body);
       }
       const nonce = randomBytes(16).toString('base64');
-      // React owns the conversation and its refresh/draft lifecycle. Native
-      // guarded forms keep their current behavior after React inserts them.
-      // A page with its own view keeps its script; the chat page runs the result script.
-      const functional = conversation === null || extras.view ? (s.functional?.script ?? '') : RESULT_REVIEW_SCRIPT;
       const document = shell(s.title, s.body, { chrome: s.chrome, sensitive });
       // The keys and their list (keymap.ts) work here as on every chromed page; the list sits beside the app React owns.
       // A sensitive page keeps to its own script.

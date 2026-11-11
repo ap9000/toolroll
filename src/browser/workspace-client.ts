@@ -245,3 +245,60 @@ export async function awaitReceipt(pendingRequest: () => string | null, request:
   }
   return pendingRequest() !== request;
 }
+
+/** How long a followed link waits for its page before the browser loads it as a document instead (A1.5). */
+export const PAGE_READ_MS = 8_000;
+
+/**
+ * Read another page as data for an in-place change (docs/plans/live-pages-and-home.md A1.4, A1.5): `navigate` for a
+ * followed link or Back (it extends the session as the page's own document load would), `prefetch` for a read ahead
+ * (never minted, never extends the session). The page, or null for anything that is not exactly one: a redirect (a
+ * sign-in, a moved page), an error or refusal, a 204, an answer that is not a complete workspace, more than
+ * PAGE_READ_MS, a network error, or `signal` aborted (a later click). Null means "load it as a document".
+ */
+export async function readPage(href: string, purpose: "navigate" | "prefetch", fetcher: typeof fetch = fetch, signal?: AbortSignal): Promise<BrowserWorkspace | null> {
+  let url: URL;
+  try { url = new URL(localUrl(href), window.location.origin); } catch { return null; }
+  if (url.origin !== window.location.origin) return null;
+  url.hash = "";
+  url.searchParams.set("format", "workspace");
+  url.searchParams.delete("request");
+  const stop = new AbortController();
+  const abort = () => stop.abort();
+  const timer = setTimeout(abort, PAGE_READ_MS);
+  if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await fetcher(url.pathname + url.search, { credentials: "same-origin", cache: "no-store", redirect: "manual", signal: stop.signal,
+      headers: { accept: "application/json", "x-toolroll-read": purpose } });
+    if (response.status !== 200 || response.redirected || response.type === "opaqueredirect") return null;
+    if (!(response.headers.get("content-type") ?? "").includes("application/json")) return null;
+    const data: unknown = await response.json();
+    return isWorkspace(data) ? data : null;
+  } catch { return null; }
+  finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
+}
+
+/** Home's ask box keeps its words in this tab while the person moves between pages (A1.3), bound to this sign-in (a
+ * digest of its form token) and the project it asks about; sent or emptied, it is gone. */
+const ASK_PREFIX = "standing-orders:home-ask:";
+function askKey(csrf: string, project: string | null): string {
+  let hash = 2166136261;
+  for (let i = 0; i < csrf.length; i++) hash = Math.imul(hash ^ csrf.charCodeAt(i), 16777619) >>> 0;
+  return `${ASK_PREFIX}${hash.toString(16)}:${encodeURIComponent(project ?? "")}`;
+}
+export function askDraft(csrf: string, project: string | null, storage: DraftStorage | null = sessionStore(), now = Date.now()): string {
+  try {
+    const saved: unknown = JSON.parse(storage?.getItem(askKey(csrf, project)) ?? "null");
+    return record(saved) && typeof saved.text === "string" && typeof saved.at === "number" && saved.at > now - DRAFT_TTL && saved.at <= now ? saved.text : "";
+  } catch { return ""; }
+}
+export function keepAskDraft(csrf: string, project: string | null, text: string, storage: DraftStorage | null = sessionStore(), now = Date.now()): void {
+  try {
+    if (csrf === "") return;
+    if (text === "") storage?.removeItem(askKey(csrf, project));
+    else storage?.setItem(askKey(csrf, project), JSON.stringify({ text, at: now }));
+  } catch { /* the words stay on this page only */ }
+}
+function sessionStore(): DraftStorage | null {
+  try { return window.sessionStorage; } catch { return null; }
+}
