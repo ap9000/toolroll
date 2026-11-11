@@ -11,6 +11,7 @@ import type { PageWork } from "../page-work-contract.js";
 import { knownWork, PageWorkController, usePageWork, workKey, type WorkStarter } from "./page-work.js";
 
 const answer: PageWork = { kind: "answer" };
+const result: PageWork = { kind: "result" };
 const check = (run: number): PageWork => ({ kind: "region", region: "check-progress", run });
 const peek = (run: number): PageWork => ({ kind: "region", region: "run-peek", run });
 
@@ -29,7 +30,9 @@ test("the app knows a closed list of work, and all of a page's work or none", ()
   expect(knownWork(undefined)).toBe(true);
   expect(knownWork([])).toBe(true);
   expect(knownWork([answer, check(7), peek(7)])).toBe(true);
-  expect(knownWork([answer, { kind: "result" }])).toBe(false);
+  expect(knownWork([answer, result, check(7)])).toBe(true);
+  expect(knownWork([answer, { kind: "chat" }])).toBe(false);
+  expect(knownWork([{ kind: "results" }])).toBe(false);
   expect(knownWork([{ kind: "region", region: "board-region", run: 7 }])).toBe(false);
   expect(knownWork([{ kind: "region", region: "run-peek", run: "7" }])).toBe(false);
   expect(knownWork([{ kind: "region", region: "run-peek", run: 0 }])).toBe(false);
@@ -69,6 +72,24 @@ test("a region whose build left stops, the next build's starts, and the answer s
   expect(started.filter(key => key === "answer")).toEqual(["answer"]);
   page.stop();
   expect(stopped.at(-1)).toBe("answer");
+});
+
+test("reviewing a result is bound once to the page: a re-read never restarts it, and it ends when the page is replaced", () => {
+  const { started, stopped, starter } = recorder();
+  const page = new PageWorkController(starter);
+  expect(workKey(result)).toBe("result");
+  // The build finished while the page was shown: its regions leave, the result's review starts.
+  page.reconcile([check(7), peek(7)]);
+  page.reconcile([result]);
+  page.reconcile([result, answer]);
+  page.reconcile([result]);
+  // A re-read that no longer names it (a newer build began): the draft under the person's hands is not unbound.
+  page.reconcile([check(8)]);
+  page.reconcile([result]);
+  expect(started.filter(key => key === "result")).toEqual(["result"]);
+  expect(stopped).not.toContain("result");
+  page.stop();
+  expect(stopped).toContain("result");
 });
 
 test("a page that was replaced leaves nothing running and starts nothing more", () => {
@@ -140,7 +161,7 @@ test("a page that may not run work runs none: held, a password page, a document 
 test("work the app does not know starts nothing, and what runs keeps running", async () => {
   const { started, stopped, starter } = recorder();
   await show({ epoch: 1, work: [answer], starter });
-  await show({ epoch: 1, work: [answer, { kind: "result" }], starter });
+  await show({ epoch: 1, work: [answer, { kind: "a-later-kind" }], starter });
   await show({ epoch: 1, work: [{ kind: "script", script: "alert(1)" }], starter });
   expect(started).toEqual(["answer"]);
   expect(stopped).toEqual([]);

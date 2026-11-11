@@ -3,6 +3,9 @@
 Status: plan v2, 2026-11-10. Codex reviewed v1 once, read-only: go with changes. Its eight findings are folded in and
 listed at the end. No second plan review (the arc's budget is two rounds; the other one is for the implementation).
 
+Built: C1 (PR #353, 2026-11-11; the implementation review was spent on it) and C2 (2026-11-11, verified without a
+further review round). The work version is 2 since C2.
+
 ## Why
 
 Alex's words: "Do the next slice to get the rest into the app so it's not reloading".
@@ -69,10 +72,11 @@ exactly as today (the string ships, no `work`, `inPlace` false):
 2. the page is not sensitive (a password page keeps today's string path, including the result script on it);
 3. the route is on the in-place allowlist (unchanged);
 4. the reader can run it: a document load (the app bundle is served `no-store`, so the document always gets the
-   bundle that matches the server), or a workspace read that says so with `x-toolroll-work: 1`. The header is a
-   capability hint like `x-toolroll-read`: it chooses between two safe forms of the same page and no authorisation
-   decision reads it. A tab that still runs an older app sends no header and keeps every barrier it has today,
-   on its re-reads too.
+   bundle that matches the server), or a workspace read that says so with `x-toolroll-work: <version>`, exactly
+   the server's own (`PAGE_WORK_VERSION`: 1 in C1, 2 since C2 added `result`). The header is a capability hint
+   like `x-toolroll-read`: it chooses between two safe forms of the same page and no authorisation decision reads
+   it. A tab that still runs an older app sends no header, or an earlier version, and keeps every barrier it has
+   today, on its re-reads too.
 
 When the app form is used: no page script string in the document, `work` in the workspace, and the existing rule
 makes the page `inPlace`. A document that does ship a page script string says so: `scripted: true` in its workspace.
@@ -146,7 +150,10 @@ the request token (minted, rotated when the note, path, line or image changes, `
 - Result tabs rewrite the address (`section`). `navigate.ts` gains `replaceAddress(url)`: it keeps
   `history.state` (the entry's name) and updates the address navigation compares against, so places keep being
   saved after a tab change. The task view's own local address rewrites use it too.
-- Not ported: the chat-page arm (no result panel); chat pages keep the string.
+- Not ported: the chat-page arm (no result panel); chat pages keep the string. The mark that arm reads (a time,
+  left when the result page is left, so a conversation opened from a result returns the reader to their place in
+  it) is still left: on `pagehide` as in the string, and when the page is left in place.
+- A read ahead of a result page writes nothing: "How it ran" is derived for it and saved only by an ordinary read.
 
 Never started per page: the kit's own behaviour, `chromeScript` and the key fill stay the document's services.
 
@@ -184,9 +191,10 @@ pin that moved rather than regenerate it.
   with an open question in place (a window marker survives), answer it (one POST, the answer form leaves the page),
   go Back; once the task has a result it still loads as a document. The `stop` group's journey opens its running
   build in place.
-- **C2**: `result`, `replaceAddress`. A task with a result opens in place. Journeys: open it in place, switch a
-  result section, pin a line, open Request changes, type a note, go Back and return (the place and the draft are
-  kept), reload (the same), leave through a form post.
+- **C2**: `result`, `replaceAddress`. A task with a result opens in place. Journey (`pages` group, the same one,
+  continued on desktop): open it in place, switch a result section, pin a line (Request changes opens on it), type
+  a note, go Back and Forward (the section, the pin and the draft are kept), reload (the same), leave through a
+  form post (Accept).
 
 Each is its own PR.
 

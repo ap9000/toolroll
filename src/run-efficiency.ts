@@ -186,9 +186,10 @@ export function deriveRunEfficiency(run: Run & { usageJson?: string | null }, ev
 
 /**
  * A finished run's How it ran: the saved one when it was derived by this version, else derived now and saved (once:
- * a row whose steps were complete or have expired is final). An unfinished run is derived but never saved.
+ * a row whose steps were complete or have expired is final). An unfinished run is derived but never saved, and
+ * nothing is saved when `save` is false (a page read ahead of its link writes nothing).
  */
-export function runEfficiencyOf(store: Store, evidenceRoot: string, runId: number, now: Date): RunEfficiency | null {
+export function runEfficiencyOf(store: Store, evidenceRoot: string, runId: number, now: Date, save = true): RunEfficiency | null {
   const run = store.getRun(runId);
   if (run === null) return null;
   const usageJson = store.handle.prepare("SELECT usage_json FROM run WHERE id = ?").get(runId)?.["usage_json"];
@@ -204,7 +205,7 @@ export function runEfficiencyOf(store: Store, evidenceRoot: string, runId: numbe
   const payload = JSON.stringify(derived);
   // A row too large for its column (it can't be: the counts are bounded) is shown, never saved.
   // Saving is a convenience: a store that can't take the row (read-only, busy) still shows what was derived.
-  if (payload.length <= 16_384) {
+  if (save && payload.length <= 16_384) {
     try {
       store.handle.prepare(`INSERT INTO run_efficiency (run, parser_version, steps, steps_reason, payload_json, derived_at) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(run) DO UPDATE SET parser_version = excluded.parser_version, steps = excluded.steps, steps_reason = excluded.steps_reason,

@@ -2719,8 +2719,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         summary: detail.handoff?.conclusion ?? run.handoff,
       },
       detail,
-      // How it ran: derived from the run's own records once it has finished, display only.
-      efficiency: (() => { try { return runEfficiencyOf(store, evidenceRoot, run.id, now); } catch { return null; } })(),
+      // How it ran: derived from the run's own records once it has finished, display only. A read ahead of the page's
+      // link (x-toolroll-read: prefetch) derives it and saves nothing.
+      efficiency: (() => { try { return runEfficiencyOf(store, evidenceRoot, run.id, now, requestContext.getStore()?.readPurpose !== "prefetch"); } catch { return null; } })(),
       // What its network was and what its proxy saw (egress.ts), display only.
       network: store.runNetwork(run.id),
       // Where the time went: its release check's parts and the task's deploys (latency-timeline.ts), display only.

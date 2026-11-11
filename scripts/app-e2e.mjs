@@ -38,7 +38,7 @@ const skipBuild = flag("--skip-build");
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
   console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
-  pages: { journeys: 11, about: "Every main page on desktop and phone, settings, search, pages changing in place, a task with a question opened and answered in place, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
+  pages: { journeys: 11, about: "Every main page on desktop and phone, settings, search, pages changing in place, a task with a question opened and answered in place and its result reviewed in place, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
   task: { journeys: 5, about: "A task from an idea to an accepted result, then sent back twice; the same by keyboard alone" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
@@ -1250,8 +1250,9 @@ createInterface({ input: process.stdin }).on("line", line => {
 await journey("console", SCRIPTED, "Models: Check now reads the live model lists", [], async () => {
   await page.goto(`${base}/settings/models`);
   await Promise.all([page.waitForNavigation(), page.click('form[action="/settings/models/check"] button')]);
-  const said = await page.locator('p[role="status"]').first().innerText().catch(() => "");
-  if (!/^Checked\./.test(said)) throw new Error(`checking said: ${said}`);
+  // The page that loads draws its answer a moment after the load: wait for the line, don't read it once.
+  const line = () => page.locator('p[role="status"]').first().innerText().catch(() => "");
+  const said = await until("checking to say Checked", async () => { const text = await line(); return /^Checked\./.test(text) ? text : false; }, { timeoutMs: 15_000, everyMs: 200, seen: line });
   return { said };
 });
 
@@ -1322,7 +1323,7 @@ await journey("pages", SCRIPTED, "The menu changes pages in place: Tasks and Pro
   } finally { page.off("request", heard); }
 });
 
-await journey("pages", SCRIPTED, "A task with an open question opens in place, on desktop and on a phone, and its answer is sent in place; once it has a result it opens as a page of its own", [], async () => {
+await journey("pages", SCRIPTED, "A task with an open question opens in place, on desktop and on a phone, and its answer is sent in place; its result opens in place too, and its review keeps its section, pin and note across Back and a reload", [], async () => {
   const id = "modulo";
   // The first build stops on a question; the build the answer admits finishes.
   script(
@@ -1381,8 +1382,8 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
   if (answered?.answered_by !== "alex" || answered.answered_via !== "web") throw new Error(`the answer wasn't recorded as yours: ${JSON.stringify(answered)}`);
   await page.goBack();
   await until("Back to return to Tasks in place", async () => at(page, "/tasks") && await same(page), { timeoutMs: 10_000, everyMs: 200 });
-  // The build the answer admits finishes. A task showing a result still runs that page's own script, so it opens as a
-  // page of its own (docs/plans/task-page-in-app.md, C2 moves it in).
+  // The build the answer admits finishes. A task showing a result opens in place too: the app runs the result's review
+  // itself (docs/plans/task-page-in-app.md, C2).
   await until(`${id} to be built`, async () => { const one = latestBuild(id); return one && one.id > asked.run && one.finished_at ? one.outcome === "built" : false; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(latestBuild(id)) });
   await until(`${id}'s result on its page`, async () => { await page.goto(`${base}/t/${id}`); return (await page.locator("[data-result-decision]").count()) > 0; }, { timeoutMs: 120_000, everyMs: 2000 });
   await page.goto(`${base}/tasks?scope=all`);
@@ -1390,7 +1391,47 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
   await waitFor(row, `${id} in the Tasks list`, { timeoutMs: 15_000, seen: () => says(page) });
   await page.evaluate(() => { window.__sameDocument = true; });
   await row.click();
-  await until(`${id}'s result page to load as a document`, async () => at(page, `/t/${id}`) && !(await same(page)) && (await page.locator("[data-result-decision]").count()) > 0, { timeoutMs: 15_000, everyMs: 200, seen: () => says(page) });
+  const settled = on => on.evaluate(() => !document.getElementById("workspace-main")?.hasAttribute("data-so-provisional"));
+  await until(`${id}'s result to open in place`, async () => at(page, `/t/${id}`) && await same(page) && (await page.locator("[data-result-decision]").count()) > 0 && await settled(page),
+    { timeoutMs: 15_000, everyMs: 200, seen: () => says(page) });
+  // A section of the result: shown at once, named in the address, and no page is loaded for it.
+  const section = () => { const url = new URL(page.url()); return url.searchParams.get("section") ?? url.searchParams.get("tab"); };
+  await page.locator('a[data-result-tab="changes"]').click();
+  await until("the Changes section, named in the address", async () => section() === "changes" && await page.locator('[data-result-view="changes"]').isVisible() && await same(page), { timeoutMs: 10_000, everyMs: 200, seen: () => page.url() });
+  // A line of the change, pinned: the feedback form opens on it, and a note typed there is kept as a draft.
+  await page.locator('button[data-diff-mode="annotate"]').first().click();
+  await page.locator("button.pick-line:visible").first().click();
+  const note = page.locator('#comment-form textarea[name="note"]');
+  await waitFor(note, "the feedback form, opened by the pin", { timeoutMs: 10_000, seen: () => says(page) });
+  const pinned = await page.locator('#comment-form [name="line"]').inputValue();
+  if (!/^[1-9][0-9]*$/.test(pinned)) throw new Error(`the pin named line "${pinned}"`);
+  const words = "Say what modulo of zero is.";
+  await note.fill(words);
+  /** The review as it was left: its section, its pin and its note. */
+  const kept = async how => until(`the review as it was left (${how})`, async () => at(page, `/t/${id}`) && section() === "changes" && await page.locator('[data-result-view="changes"]').isVisible().catch(() => false)
+    && await note.isVisible().catch(() => false) && await note.inputValue() === words && await page.locator('#comment-form [name="line"]').inputValue() === pinned,
+    { timeoutMs: 15_000, everyMs: 200, seen: async () => `${page.url()} · ${await note.inputValue().catch(() => "no note box")}` });
+  // Back and Forward: both in place, and the review is as it was left.
+  await page.goBack();
+  await until("Back to return to Tasks in place (from the result)", async () => at(page, "/tasks") && await same(page), { timeoutMs: 10_000, everyMs: 200 });
+  await page.goForward();
+  await kept("Forward");
+  if (!(await same(page))) throw new Error("Forward to the result loaded a page");
+  // A reload is a page load, and the review is still as it was left.
+  await page.reload();
+  await kept("a reload");
+  if (await same(page)) throw new Error("the reload kept the document");
+  // Leaving through one of the result's own forms is an ordinary form post: Accept finishes the task.
+  await page.evaluate(() => { window.__sameDocument = true; });
+  for (const looks of await page.locator("[data-check-item] button[data-looks-right]:visible").all()) await looks.click();
+  const posts2 = [];
+  const counted = request => { if (request.method() === "POST") posts2.push(new URL(request.url()).pathname); };
+  page.on("request", counted);
+  try {
+    await Promise.all([page.waitForNavigation(), page.locator(`[data-result-decision] form[action="/t/${id}/complete"] button[data-accept-result]`).click()]);
+  } finally { page.off("request", counted); }
+  if (!posts2.includes(`/t/${id}/complete`)) throw new Error(`accepting posted: ${posts2.join(", ") || "nothing"}`);
+  await until(`${id} to read complete`, async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500, seen: () => says(page) });
 });
 
 // ------------------------------------------------------------------ code in flows

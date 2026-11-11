@@ -15,6 +15,7 @@ import { postInPlace, sentence } from "../act.js";
 import type { JourneyStep } from "../../first-run.js";
 import type { StepRow } from "../../workspace-ui.js";
 import { GuardedHtml } from "../guarded-html.js";
+import { replaceAddress } from "../navigate.js";
 import {
   KApprove, KButton, KChip, KCount, KDisclose, KDocHeader, KDock, KEmpty, KFacts, KHeadlineChip, KInfoLine, KLinkButton, KNote, KOverlay, KRow, KSelect,
   KNotice, KSlots, KStepRows, KTextarea, KTiming, KWork, KWorkRecords, openOverlay, useConversation, useKMenu, usePasswordAsked, type KStepRowItem,
@@ -798,7 +799,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       const url = new URL(window.location.href);
       if (tab === null) url.searchParams.delete("tab"); else url.searchParams.set("tab", tab);
       if (tab !== null) url.searchParams.delete("section");
-      history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+      // Through navigation, so the page's place keeps being saved under the address it now has.
+      replaceAddress(url.pathname + url.search + url.hash);
     } catch { /* the address is a convenience; the place is shown either way */ }
   };
   const activityNow = useRef(activity);
@@ -849,7 +851,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (inside && to.origin === here.origin && to.pathname === here.pathname && to.hash !== "" && to.search === here.search) {
       if (!revealTarget(decodeURIComponent(to.hash.slice(1)), show)) return;
       event.preventDefault();
-      try { const now = new URL(window.location.href); history.replaceState(history.state, "", now.pathname + now.search + to.hash); } catch { /* the place is shown either way */ }
+      try { const now = new URL(window.location.href); replaceAddress(now.pathname + now.search + to.hash); } catch { /* the place is shown either way */ }
       return;
     }
     // The same page only when everything but the tab matches: another version, run or section is another page, and loads.
