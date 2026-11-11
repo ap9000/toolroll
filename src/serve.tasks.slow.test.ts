@@ -22,6 +22,7 @@ import { Window } from "happy-dom";
 import { presented, renderedHtmlOf, sealScopeFixture, T0, workspaceOf } from "../test/serve-kit.js";
 import type { BrowserHomeView, BrowserTaskView, BrowserTasksView } from "./browser-workspace.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
+import { decisionAnswerScript } from "./server/render-tasks.js";
 import { createDemoSandbox } from "./demo.js";
 
 describe("A2 — the live peek over real HTTP: guards, fence, and the names-only fragment", () => {
@@ -1473,7 +1474,12 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(loaded.work).toEqual([{ kind: "region", region: "check-progress", run }, { kind: "region", region: "run-peek", run }, { kind: "answer" }]);
     expect(loaded.inPlace).toBe(true);
     expect(loaded.scripted).toBeUndefined();
-    expect(html).not.toContain("form.decide-inline");
+    // The answer script is not on the page beside the work (two handlers would send two answers). The marker is a
+    // piece of that script's own text, so this cannot pass by naming something the script never says.
+    const answerMark = "HTMLFormElement.prototype.getAttribute.call(f,";
+    expect(decisionAnswerScript()).toContain(answerMark);
+    expect(html).not.toContain(answerMark);
+    expect(html).not.toContain(decisionAnswerScript());
     expect(html).not.toContain(`"/r/${run}?fragment=peek"`);
     expect(html).not.toContain(`"/r/${run}?fragment=check"`);
 
