@@ -140,13 +140,15 @@ test("the press: a minting read, then one post with the form token, that nonce, 
   expect(post.headers["accept"]).toBe("application/json");
   expect([...new URLSearchParams(post.body)]).toEqual([["csrf", "csrf-1"], ["nonce", NONCE], ["digest", DIGEST(1)], ["return", "next"]]);
   expect(post.body).not.toContain("token");
-  // Approved: the row leaves, the next is selected, "Approved." shows above the list, Home reads itself again.
+  // Approved: the row leaves, the next is selected, "Approved." shows above the list. Home reads itself again only
+  // once the row has gone, so a read that lands first cannot leave a still-waiting task hidden.
   expect(document.querySelector("[data-home-approved]")?.textContent).toBe("Approved.");
   expect(document.querySelector('[data-row="a"]')?.classList.contains("so-ti-leave")).toBe(true);
   expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("b");
-  expect(nudges.length).toBeGreaterThan(0);
+  expect(nudges).toHaveLength(0);
   await wait(250);
   expect(document.querySelector('[data-row="a"]')).toBeNull();
+  expect(nudges.length).toBeGreaterThan(0);
   // The line stays until the person selects another row.
   await settle();
   expect(document.querySelector("[data-home-approved]")).not.toBeNull();

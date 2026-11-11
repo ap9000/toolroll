@@ -161,14 +161,14 @@ export function HomeApproval({ row, onApproved, onChanged }: {
     {changed && <p className="so-home-changed" role="status" data-home-changed>The plan changed. Read it again.</p>}
     {shown.phase === "reading" && <p className="so-open-x so-home-reading">Reading the plan…</p>}
     {snapshot?.planHtml != null && <GuardedHtml key={snapshot.digest} html={snapshot.planHtml} immutable className="so-home-plan" />}
-    {offer && snapshot !== null ? <>
+    {offer && snapshot !== null ? <div className="so-home-do">
       <p className="so-home-terms" data-home-terms>{[snapshot.text, snapshot.termsWords].filter(Boolean).join(" ")}</p>
       <div className="k-acts">
         <KButton variant="primary" label="Approve" busy={busy === "sending" ? "Approving…" : busy === "checking" ? "Checking…" : false}
           aria-disabled={!armed || busy !== null ? true : undefined} data-home-approve="" onClick={() => { void press(); }} />
         <a className="k-link" href={taskChatHref(snapshot.taskId)} data-home-changes="">Request changes</a>
       </div>
-    </> : shown.phase !== "reading" && <div className="k-acts">
+    </div> : shown.phase !== "reading" && <div className="k-acts">
       <KLinkButton variant="primary" label="Review the plan" href={href} data-full-load="" data-home-review="" />
     </div>}
     {said && <p className={`so-home-said${said.tone === "refused" ? " is-refused" : ""}`} role="status" data-home-said={said.tone}>{said.text}</p>}

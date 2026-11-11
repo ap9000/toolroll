@@ -168,8 +168,9 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
     setApprovedLine(true);
     setLeaving(id);
     setSelected(next?.id ?? null);
-    window.setTimeout(() => { setGone(previous => new Set([...previous, id])); setLeaving(current => current === id ? null : current); }, reducedMotion() ? 0 : LEAVE_MS);
-    nudge();
+    // Home re-reads only once the row has gone: a read that landed first would clear `gone` and the row would then
+    // stay hidden even where the task still waits on the person for something else (its builder is offline, say).
+    window.setTimeout(() => { setGone(previous => new Set([...previous, id])); setLeaving(current => current === id ? null : current); nudge(); }, reducedMotion() ? 0 : LEAVE_MS);
   };
   const open = rows.find(one => one.id === selected) ?? null;
   const askedOf = (row: BrowserHomeRow | null) => view.groups.find(group => row !== null && group.rows.includes(row))?.label ?? "";
