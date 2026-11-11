@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { htmlString } from "./html.js";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createScheduledFlow } from "./flow-schedule.js";
-import { flowFallbackHtml, flowView } from "./flows-ui.js";
+import { flowCardWaitsOn, flowFallbackHtml, flowView } from "./flows-ui.js";
+import { decisionsFlow } from "../test/flow-decisions.js";
+import { addApprover } from "./scope.js";
 import { signUnattended } from "./flow-unattended.js";
 import { openStore, type Store } from "./store.js";
 
@@ -69,4 +71,25 @@ test("runs on its own: the view and the fallback page say until when, and who ca
   expect(flowView(store, flow, { name: "alex", approver: false }, null).unattended).toMatchObject({ canSign: false, problem: "Only an approver can change this." });
   // Past its end, by the page's clock, it isn't shown as running.
   expect(flowView(store, flow, { name: "alex", approver: true }, null, { dir: null, repos: [], now: new Date("2026-10-09T17:00:00Z") }).unattended.active).toBeNull();
+});
+
+test("who may decide a card is the one shared rule (flowCardWaitsOn), the same table as before it was shared", () => {
+  if (!addApprover(store, "sam", now, { name: "alex", token: fixture.password }).ok) throw new Error("sam");
+  const { flow, cards } = decisionsFlow(store);
+  const name = new Map(Object.entries(cards).map(([key, id]) => [id, key]));
+  const deciding = (viewer: { name: string; approver: boolean }) => {
+    const shown = flowView(store, store.getFlow(flow)!, viewer, null).cards;
+    // The flow page and the shared rule agree on every card.
+    for (const card of shown) expect(flowCardWaitsOn(store, store.getFlow(flow)!, store.getFlowCard(card.id)!, viewer).decide, `${viewer.name} ${name.get(card.id)}`).toBe(card.canDecide);
+    return shown.filter(card => card.canDecide).map(card => name.get(card.id)).sort();
+  };
+  // Approver, an active card in an approval zone, the zone's decider (named, the owner, or any approver), and no subagent
+  // deciding it first: exactly the rule flowView applied before.
+  expect(deciding({ name: "alex", approver: true })).toEqual(["anyone", "mayaHanded", "owner"]);
+  expect(deciding({ name: "sam", approver: true })).toEqual(["anyone", "mayaHanded", "sam"]);
+  expect(deciding({ name: "jo", approver: true })).toEqual(["anyone", "mayaHanded"]);
+  expect(deciding({ name: "sam", approver: false })).toEqual([]);
+  // A finished card is no one's to decide.
+  store.updateFlowCard(cards.anyone, { state: "done" }, now);
+  expect(deciding({ name: "alex", approver: true })).toEqual(["mayaHanded", "owner"]);
 });

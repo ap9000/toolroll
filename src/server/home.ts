@@ -1,7 +1,7 @@
 /**
- * Home ("/", docs/plans/live-pages-and-home.md B1): what needs this person, grouped by what is asked (Approve a plan,
- * Answer a question, Something went wrong, Review results, and Needs you for the rest), each group with its exact
- * count; one quiet line for what runs and waits; with nothing waiting, what runs and what finished today. The figures
+ * Home ("/", docs/plans/live-pages-and-home.md B1, home-other-asks.md): what needs this person, grouped by what is asked
+ * (Approve a release, Approve a plan, Answer a question, Flow decisions, Something went wrong, Review results, Finish
+ * setting up, and Needs you for the rest), each group with its exact count; one quiet line for what runs and waits; with nothing waiting, what runs and what finished today. The figures
  * are read from the same work index the Tasks list filters, so a count and the list it opens always agree. Reads
  * only: every act keeps its own route and rules (an agent's question is answered through POST /d/<id>/answer, the
  * same one-click act as its own page).
@@ -11,10 +11,11 @@ import { browserWorkActionHref } from "../browser-crew.js";
 import { NO_REASON_RECORDED } from "../needs-you.js";
 import { projectName } from "../project.js";
 import type { Store } from "../store.js";
-import { WORK_ASK_GROUPS, workIndexPage, type WorkIndexItem, type WorkIndexPage } from "../work-index.js";
+import { workIndexPage, type WorkIndexItem, type WorkIndexPage } from "../work-index.js";
 import type { WorkSummaryAccess } from "../work-summary.js";
 import { oneLineOf, relativeAge } from "./chrome.js";
 import { taskHref } from "./http.js";
+import { NO_HOME_ASKS, releaseSheetHref, type HomeAskRow, type HomeAsks } from "./home-asks.js";
 
 /** How many waiting rows Home lists; each group says how many more open in Tasks. */
 export const HOME_NEEDS_SHOWN = 30;
@@ -26,8 +27,11 @@ const LEAD_LINE_LIMIT = 160;
 
 /** Each group's heading, in the order Home shows them. */
 export const HOME_ASK_LABEL: Readonly<Record<BrowserHomeAsk, string>> = {
-  approve: "Approve a plan", answer: "Answer a question", wrong: "Something went wrong", review: "Review results", other: "Needs you",
+  release: "Approve a release", approve: "Approve a plan", answer: "Answer a question", flow: "Flow decisions", wrong: "Something went wrong",
+  review: "Review results", setup: "Finish setting up", other: "Needs you",
 };
+/** The groups in Home's one order. */
+export const HOME_ASK_ORDER: readonly BrowserHomeAsk[] = ["release", "approve", "answer", "flow", "wrong", "review", "setup", "other"];
 
 export type HomeFacts = {
   store: Store; now: Date; access: WorkSummaryAccess; evidenceRoot?: string;
@@ -39,6 +43,11 @@ export type HomeFacts = {
   chat: boolean;
   /** This person can answer an agent's question (an approver in a browser session). */
   canAnswer: boolean;
+  /** An approver in a browser session (default: `canAnswer`): a release is then read in Approve a release, never
+   * approved here; for anyone else it stays an ordinary task row. */
+  approver?: boolean;
+  /** What else waits on this person (home-asks.ts), already read through each page's own admission. */
+  asks?: HomeAsks;
   /** Why this task's plan can't take a yes right now (render-tasks.ts consentDoorOf), or null when it can. */
   closedDoor: (taskId: string) => { title: string; why: string; road: "scope" | "agents" } | null;
   /** The lead's last message in this person's main thread, already read through the chat's own access check
@@ -46,11 +55,14 @@ export type HomeFacts = {
   leadMessage?: { text: string; at: string } | null;
 };
 
-/** "19 tasks need you": the heading, said once, from the same total as the rail's count. */
-export function homeSentence(needs: number, any: boolean): string {
-  if (!any) return "No tasks yet";
-  if (needs === 0) return "Nothing needs you";
-  return needs === 1 ? "1 task needs you" : `${needs} tasks need you`;
+/** "19 tasks need you", "3 tasks and 2 other things need you", "2 things need you": the heading, said once. Tasks
+ * are the same total as the rail's count; `others` are the rows that aren't tasks (a held publication, a flow card, a
+ * setup step). */
+export function homeSentence(needs: number, any: boolean, others = 0): string {
+  const tasks = needs === 1 ? "1 task" : `${needs} tasks`;
+  if (others === 0) return !any ? "No tasks yet" : needs === 0 ? "Nothing needs you" : `${tasks} ${needs === 1 ? "needs" : "need"} you`;
+  if (needs === 0) return others === 1 ? "1 thing needs you" : `${others} things need you`;
+  return `${tasks} and ${others} other ${others === 1 ? "thing" : "things"} need you`;
 }
 
 /** The lead's words as one plain line: no markdown marks, no line breaks, cut to about one line. */
@@ -70,7 +82,16 @@ export function startOfToday(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
 
-function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, canAnswer: boolean, closedDoor: HomeFacts["closedDoor"], state: BrowserHomeRow["state"]): BrowserHomeRow {
+function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, canAnswer: boolean, closedDoor: HomeFacts["closedDoor"], state: BrowserHomeRow["state"],
+  release: ((taskId: string) => string | null) | null): BrowserHomeRow {
+  // A release (approvers): read on its own sheet, never approved here. Its line is its version, or why the sheet can't
+  // take a yes now; its one link opens the sheet.
+  if (state === "needs" && item.askGroup === "release" && release !== null) {
+    const href = releaseSheetHref(item.activeTaskId);
+    return { id: item.rootId, title: item.title, href, state, ask: "release", reason: null,
+      project: multi || item.repo === null ? (item.repo === null ? "Unplaced" : projectName(item.repo)) : null,
+      age: relativeAge(item.updatedAt, now), line: release(item.activeTaskId), action: { label: "Review the release", href }, question: null };
+  }
   const action = item.primaryAction;
   const href = action?.code === "open-result" && action.target.runId != null
     ? `/review?result=${encodeURIComponent(action.target.taskId)}&run=${action.target.runId}` : browserWorkActionHref(item);
@@ -82,7 +103,8 @@ function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, can
     id: decision.id, text: decision.question, recap: decision.recap,
     options: decision.options.map(option => ({ id: option.id, label: option.label, consequence: option.consequence, recommended: option.id === decision.recommendation })),
   } : null;
-  const ask = state === "needs" ? item.askGroup ?? "other" : null;
+  // Anyone else reads a release as the plan it is.
+  const ask = state === "needs" ? (item.askGroup === "release" ? "approve" : item.askGroup ?? "other") : null;
   const said = item.status.detail !== item.status.label ? item.status.detail : null;
   const line = state === "needs" && open ? decision.question : (item as { progress?: string }).progress ?? said;
   // Only a row where something went wrong says why, in one short line.
@@ -134,21 +156,40 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
   const live = take(running.items, "running");
   const queued = take(waiting.items, "queued");
   const done = take(today.items, "completed");
-  const multi = project === null && new Set([...yours, ...live, ...queued, ...done].map(one => one.repo ?? "")).size > 1;
-  const row = (item: WorkIndexItem, state: BrowserHomeRow["state"]) => rowOf(store, item, now, multi, facts.canAnswer, facts.closedDoor, state);
+  const approver = facts.approver ?? facts.canAnswer;
+  const asks = facts.asks ?? NO_HOME_ASKS;
+  // A held publication, a flow card and a setup step are an approver's alone (home-asks.ts reads them only for one).
+  const held = approver ? asks.held : [], flows = approver ? asks.flows : [];
+  // The builder step waits behind a task row that already asks for a builder: that row says it.
+  const setup = approver ? asks.setup.filter(one => one.key !== "builder" || needs.builderWaits === 0) : [];
+  const extra = [...held, ...flows, ...setup];
+  const multi = project === null && new Set([...yours, ...live, ...queued, ...done].map(one => one.repo ?? "").concat(extra.flatMap(one => one.repo === null ? [] : [one.repo]))).size > 1;
+  const row = (item: WorkIndexItem, state: BrowserHomeRow["state"]) => rowOf(store, item, now, multi, facts.canAnswer, facts.closedDoor, state, approver ? asks.release : null);
   const rows = yours.map(one => row(one, "needs"));
-  // Each group's count is the work index's exact total for that ask, over every row in view, not only those listed.
-  const groups: BrowserHomeView["groups"] = WORK_ASK_GROUPS.flatMap(key => {
-    const count = needs.asks[key];
-    const listed = rows.filter(one => one.ask === key);
+  const askRow = (one: HomeAskRow, ask: BrowserHomeAsk): BrowserHomeRow => ({ id: one.id, title: one.title, href: one.href, state: "needs", ask, reason: null,
+    project: multi && one.repo !== null ? projectName(one.repo) : null, age: one.at === null ? "" : relativeAge(one.at, now), line: one.line, action: one.action, question: null });
+  // Each group's count is exact over every row in view, not only those listed: the work index's total for a task ask
+  // (a release counted once, in its own group for an approver and as a plan for anyone else), and every other row.
+  const askTotals: Record<BrowserHomeAsk, number> = {
+    release: (approver ? needs.asks.release : 0) + held.length, approve: needs.asks.approve + (approver ? 0 : needs.asks.release), answer: needs.asks.answer,
+    flow: flows.length, wrong: needs.asks.wrong, review: needs.asks.review, setup: setup.length, other: needs.asks.other,
+  };
+  const listedOf: Record<BrowserHomeAsk, BrowserHomeRow[]> = {
+    release: [...rows.filter(one => one.ask === "release"), ...held.map(one => askRow(one, "release"))], approve: rows.filter(one => one.ask === "approve"),
+    answer: rows.filter(one => one.ask === "answer"), flow: flows.map(one => askRow(one, "flow")), wrong: rows.filter(one => one.ask === "wrong"),
+    review: rows.filter(one => one.ask === "review"), setup: setup.map(one => askRow(one, "setup")), other: rows.filter(one => one.ask === "other"),
+  };
+  const groups: BrowserHomeView["groups"] = HOME_ASK_ORDER.flatMap(key => {
+    const count = askTotals[key], listed = listedOf[key];
     return count === 0 && listed.length === 0 ? [] : [{ key, label: HOME_ASK_LABEL[key], count: Math.max(count, listed.length), rows: listed }];
   });
+  const others = extra.length;
   const any = totals.all > 0 || totals.completed > 0 || (totals.archived ?? 0) > 0;
   const lead = facts.chat ? facts.leadMessage ?? null : null;
   const leadText = lead === null ? "" : leadLineOf(lead.text);
   return {
     kind: "home",
-    say: homeSentence(totals["needs-you"], any),
+    say: homeSentence(totals["needs-you"], any, others),
     project,
     scopes: facts.projects.length < 2 ? null : [
       { key: "", label: "All projects", href: "/", active: project === null },
@@ -160,6 +201,6 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
     newTask: "/tasks/new",
     ask: facts.chat ? { project, placeholder: "Message the lead" } : null,
     lastLead: lead === null || leadText === "" ? null : { text: leadText, age: relativeAge(lead.at, now), href: "/chat" },
-    empty: any ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
+    empty: any || others > 0 ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
   };
 }

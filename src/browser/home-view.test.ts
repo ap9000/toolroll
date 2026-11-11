@@ -51,6 +51,35 @@ test("the heading reads the one total", () => {
   expect(homeSentence(1, true)).toBe("1 task needs you");
   expect(homeSentence(0, true)).toBe("Nothing needs you");
   expect(homeSentence(0, false)).toBe("No tasks yet");
+  // What isn't a task is named apart; the task count stays the rail's.
+  expect(homeSentence(3, true, 2)).toBe("3 tasks and 2 other things need you");
+  expect(homeSentence(1, true, 1)).toBe("1 task and 1 other thing need you");
+  expect(homeSentence(0, true, 2)).toBe("2 things need you");
+  expect(homeSentence(0, false, 1)).toBe("1 thing needs you");
+});
+
+test("a release, a flow card and a setup step: their own groups, ids that never meet a task's, and one link to their own page", async () => {
+  const own = (id: string, ask: "release" | "flow" | "setup", label: string, href: string) => row(id, { ask, href, line: `${label} line`, action: { label, href } });
+  await mount(view({ say: "1 task and 2 other things need you", groups: [
+    { key: "release", label: "Approve a release", count: 1, rows: [own("rel", "release", "Review the release", "/t/rel/release")] },
+    { key: "approve", label: "Approve a plan", count: 1, rows: [row("a")] },
+    { key: "flow", label: "Flow decisions", count: 1, rows: [own("flow:12", "flow", "Open the card", "/flows/3?card=12")] },
+    { key: "setup", label: "Finish setting up", count: 1, rows: [own("setup:builder", "setup", "Start a builder", "/start-builder")] },
+  ] }));
+  expect([...document.querySelectorAll("[data-group]")].map(one => one.getAttribute("data-group"))).toEqual(["release", "approve", "flow", "setup"]);
+  expect([...document.querySelectorAll(".so-tri-list [data-row]")].map(one => one.getAttribute("data-row"))).toEqual(["rel", "a", "flow:12", "setup:builder"]);
+  // The release is first and open: its line and the one link to its sheet; never the plan approval.
+  const pane = document.querySelector(".so-tri-open")!;
+  const links = () => [...pane.querySelectorAll("a")].map(one => [one.textContent, one.getAttribute("href")]);
+  expect(pane.querySelector("[data-home-approval]")).toBeNull();
+  expect(pane.textContent).toContain("Review the release line");
+  expect(links()).toEqual([["Review the release", "/t/rel/release"]]);
+  const list = document.querySelector<HTMLElement>(".so-tri-list")!;
+  const down = async () => act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+  await down(); await down();
+  expect(links()).toEqual([["Open the card", "/flows/3?card=12"]]);
+  await down();
+  expect(links()).toEqual([["Start a builder", "/start-builder"]]);
 });
 
 test("what needs you is grouped by what is asked, each heading with its exact count; rows wear no chip; the first is open beside the list", async () => {

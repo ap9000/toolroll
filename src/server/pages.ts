@@ -11,7 +11,8 @@ import { realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
 import { basename,dirname,join,resolve } from "node:path";
-import { buildersFor } from "../dispatch.js";
+import { builderReadyFor, buildersFor, firstRunBuilderRepo } from "../dispatch.js";
+import { withBuilderStep } from "../first-run.js";
 import { listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -79,6 +80,7 @@ import { consentDoorOf,decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
 import { homeView } from "./home.js";
+import { flowAsks, releaseAsks, setupAsks, type HomeAsks } from "./home-asks.js";
 import { workIndexPage } from "../work-index.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
   const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows } = runtime;
@@ -217,8 +219,9 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return door.open ? null : door;
     };
     const chat = chrome.chat === true;
-    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat, canAnswer: who.role === "approver", closedDoor,
-      leadMessage: chat ? leadLastMessage(who, now) : null }),
+    const access = workAccess(), approver = who.role === "approver";
+    const view = { ...homeView({ store, now, access, evidenceRoot, project, projects, chat, canAnswer: approver, approver, closedDoor,
+      leadMessage: chat ? leadLastMessage(who, now) : null, asks: homeAsksFor(who, access, now, project) }),
       // Until the first result: the welcome's three steps stay one link away.
       setup: firstRunStepsNow(now) !== null ? "/welcome" : null };
     return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/tasks">Tasks</a></p></div>`, { chrome, workspace: { view } }));
@@ -1213,6 +1216,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (!notStarted && (found === null || found.ceilingDigest !== principal.ceilingDigest || found.approverGeneration !== principal.generation)) return null;
     const said = leadConversationRows(who, principal, null, now, null).messages.filter(one => one.role === "assistant" && one.pending !== true).at(-1);
     return said === undefined ? null : { text: said.text, at: said.createdAt };
+  }
+  /** What else waits on this person at Home (home-asks.ts): releases and held publications in the work index's own
+   * access, flow cards in the projects this person may pick (the Flows list's admission, each flow's project re-checked
+   * against the account), and the first-run steps with the builder step as Chat reads them. Approvers only. */
+  function homeAsksFor(who: Who & { via: "cookie" }, access: ReturnType<typeof workAccess>, now: Date, project: string | null): HomeAsks {
+    const approver = who.role === "approver";
+    const steps = withBuilderStep(firstRunStepsNow(now), builderReadyFor(store, firstRunBuilderRepo(store, project, visible, runtime.managedRepos()), now));
+    return { ...releaseAsks(store, now, access, project, approver, evidenceRoot), flows: flowAsks(store, consoleProjects(), { name: who.name, approver }, project),
+      setup: setupAsks(steps, approver) };
   }
 
   return { registrations, projectsScreen };

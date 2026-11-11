@@ -7,6 +7,10 @@ import { addApprover, approve, propose } from "../scope.js";
 import { openStore, type Store } from "../store.js";
 import { workIndexPage } from "../work-index.js";
 import { HOME_NEEDS_SHOWN, homeView, leadLineOf, startOfToday, type HomeFacts } from "./home.js";
+import { NO_HOME_ASKS, releaseAsks } from "./home-asks.js";
+import { releaseFixture, RELEASE_NOW, VERSION, type ReleaseFixture } from "../../test/release-fixture.js";
+import { recordReleaseCi } from "../release-approval.js";
+import { holdAutoPublish } from "../release-auto.js";
 
 const NOW = new Date(2026, 10, 5, 12, 0, 0);
 const REPO = "/repos/home-groups";
@@ -56,7 +60,7 @@ describe("the groups", () => {
     expect(view.groups.map(group => [group.key, group.label])).toEqual([["approve", "Approve a plan"], ["wrong", "Something went wrong"], ["other", "Needs you"]]);
     // The work index counts per ask over every row in view, the same totals.
     const page = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { view: "needs-you", limit: 1 });
-    expect(page.asks).toEqual({ approve: APPROVALS, answer: 0, wrong: 1, review: 0, other: 1 });
+    expect(page.asks).toEqual({ release: 0, approve: APPROVALS, answer: 0, wrong: 1, review: 0, other: 1 });
     expect(page.items[0]!.askGroup).not.toBeNull();
   });
 
@@ -134,5 +138,94 @@ describe("finished today", () => {
     const later = workIndexPage(store, NOW, access, { view: "completed", limit: 100, completedSince: new Date(NOW.getTime() + 60_000).toISOString() });
     expect(later.items).toEqual([]);
     expect(later.completedSince).toBe(0);
+  });
+});
+
+describe("releases", () => {
+  // A release waiting for its person (its sealed scope, never its title), beside more plans than the page lists.
+  let f: ReleaseFixture;
+  const PLANS = HOME_NEEDS_SHOWN + 5;
+  const access = () => ({ principal: "operator" as const, repos: [f.repo] });
+  const read = (approver: boolean, over: Partial<HomeFacts> = {}) => homeView({ store: f.store, now: RELEASE_NOW, access: access(), project: null, projects: [{ name: "project", path: f.repo }],
+    chat: false, canAnswer: approver, approver, closedDoor: () => null,
+    asks: { ...NO_HOME_ASKS, ...releaseAsks(f.store, RELEASE_NOW, access(), null, approver) }, ...over });
+  beforeAll(() => {
+    f = releaseFixture({ approve: false, candidate: { "src/x.js": "1\n" } });
+    for (let i = 0; i < PLANS; i++) {
+      const at = new Date(RELEASE_NOW.getTime() - (i + 10) * 60_000);
+      f.store.createTask({ id: `plan-${i}`, title: `Task ${i}` }, at);
+      f.store.placeTask(f.store.refFor("built-in", `plan-${i}`).id, f.repo, {}, at);
+      propose(f.store, { taskId: `plan-${i}`, goal: `Do ${i}`, touches: ["src/a.ts"], acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }], now: at });
+    }
+  });
+  afterAll(() => f.close());
+
+  test("the work index names a release from its sealed state: its own ask group, counted once, exact past the page", () => {
+    const page = workIndexPage(f.store, RELEASE_NOW, access(), { view: "needs-you", limit: 1 });
+    expect(page.asks).toEqual({ release: 1, approve: PLANS, answer: 0, wrong: 0, review: 0, other: 0 });
+    expect(page.totals["needs-you"]).toBe(PLANS + 1);
+    const listed = workIndexPage(f.store, RELEASE_NOW, access(), { view: "needs-you", limit: 100 }).items;
+    expect(listed.filter(one => one.askGroup === "release").map(one => one.rootId)).toEqual([f.taskId]);
+    // A plan titled like a release, or with a release-shaped id, is still a plan.
+    f.store.createTask({ id: "release-9.9.9-abcdef1", title: "Release 9.9.9" }, RELEASE_NOW);
+    f.store.placeTask(f.store.refFor("built-in", "release-9.9.9-abcdef1").id, f.repo, {}, RELEASE_NOW);
+    propose(f.store, { taskId: "release-9.9.9-abcdef1", goal: "Release it", touches: ["src/a.ts"], acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }], now: RELEASE_NOW });
+    try {
+      expect(workIndexPage(f.store, RELEASE_NOW, access(), { view: "needs-you", limit: 1 }).asks).toMatchObject({ release: 1, approve: PLANS + 1 });
+    } finally { f.store.setTaskState("release-9.9.9-abcdef1", "cancelled", RELEASE_NOW); }
+  });
+
+  test("an approver reads a release in Approve a release with one link to its sheet, never a plan approval", () => {
+    const view = read(true);
+    expect(view.groups.map(group => [group.key, group.label, group.count])).toEqual([["release", "Approve a release", 1], ["approve", "Approve a plan", PLANS]]);
+    expect(view.groups.reduce((sum, group) => sum + group.count, 0)).toBe(view.counts.find(one => one.key === "needs")!.value);
+    const release = view.groups[0]!.rows;
+    expect(release).toEqual([expect.objectContaining({ id: f.taskId, ask: "release", href: `/t/${f.taskId}/release`, question: null, line: `Version ${VERSION} waits for your approval.`,
+      action: { label: "Review the release", href: `/t/${f.taskId}/release` } })]);
+    expect(view.groups[1]!.rows.some(row => row.id === f.taskId)).toBe(false);
+    expect(view.say).toBe(`${PLANS + 1} tasks need you`);
+  });
+
+  test("a release that can't take a yes says why, in the sheet's words", () => {
+    recordReleaseCi(f.store, { taskId: f.taskId, candidate: f.approved, state: "failed", failed: ["unit"], runs: [{ id: 1, name: "unit", status: "completed", conclusion: "failure" }], now: RELEASE_NOW });
+    expect(read(true).groups[0]!.rows[0]!.line).toContain(`GitHub CI failed on ${f.approved.slice(0, 7)}: unit.`);
+  });
+
+  test("for anyone else a release stays an ordinary task row in Approve a plan", () => {
+    const view = read(false);
+    expect(view.groups.map(group => [group.key, group.count])).toEqual([["approve", PLANS + 1]]);
+    const row = view.groups[0]!.rows.find(one => one.id === f.taskId)!;
+    expect(row).toMatchObject({ ask: "approve", href: `/t/${f.taskId}` });
+  });
+});
+
+describe("a held publication and setup", () => {
+  let f: ReleaseFixture;
+  const access = () => ({ principal: "operator" as const, repos: [f.repo] });
+  const builderStep = { key: "builder" as const, id: "setup:builder", title: "Connect a builder", href: "/start-builder", repo: null, at: null, line: null, action: { label: "Start a builder", href: "/start-builder" } };
+  const read = (approver = true) => homeView({ store: f.store, now: RELEASE_NOW, access: access(), project: null, projects: [], chat: false, canAnswer: approver, approver, closedDoor: () => null,
+    asks: { ...NO_HOME_ASKS, ...releaseAsks(f.store, RELEASE_NOW, access(), null, approver), setup: [builderStep] } });
+  beforeAll(() => {
+    f = releaseFixture({ candidate: { "src/x.js": "1\n" } });
+    holdAutoPublish(f.store, { taskId: f.taskId, why: "CI stopped passing after the merge.", now: RELEASE_NOW });
+  });
+  afterAll(() => f.close());
+
+  test("while its family is already a row (it waits for a builder), the held publication isn't listed again, and the builder step waits behind that row", () => {
+    const view = read();
+    expect(view.groups.map(group => group.key)).toEqual(["other"]);
+    expect(view.groups[0]!.rows.map(row => row.id)).toEqual([f.taskId]);
+    expect(view.say).toBe("1 task needs you");
+  });
+
+  test("otherwise it is one row in Approve a release, linked to the sheet, and the sentence names it", () => {
+    register(f.store, { name: "builder-1", host: "test", capacity: 2, repos: [f.repo], now: RELEASE_NOW, newToken: () => "tok" });
+    const view = read();
+    expect(view.groups.map(group => [group.key, group.count])).toEqual([["release", 1], ["setup", 1]]);
+    expect(view.groups[0]!.rows).toEqual([expect.objectContaining({ id: `release:${f.taskId}`, ask: "release", line: "CI stopped passing after the merge.",
+      action: { label: "Review the release", href: `/t/${f.taskId}/release` } })]);
+    expect(view.say).toBe("2 things need you");
+    // Not for anyone but an approver.
+    expect(read(false).groups).toEqual([]);
   });
 });

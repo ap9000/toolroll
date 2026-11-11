@@ -330,3 +330,14 @@ export function waitingJournals(stateDir: string, expectedFile: (branch: string)
   }
   return { journals, unreadable };
 }
+
+/** A release as Home names it (docs/plans/home-other-asks.md, part 1): its version, and why it can't take a yes now
+ * in the sheet's own words (`refusalOf`, the one source), or null when this isn't a release. Reads only; Home never
+ * approves one, it links to the sheet. */
+export function releaseAskOf(store: Store, taskId: string): { version: string; refusal: string | null } | null {
+  const found = releaseTaskOf(store, taskId);
+  if (found === null) return null;
+  const { scope, seal } = found;
+  const refusal = approvalOf(scope).approved ? null : refusalOf(store, taskId, scope, releaseCiOf(store, taskId, scope.candidate!));
+  return { version: seal.identity.packageVersion, refusal };
+}

@@ -107,8 +107,9 @@ test("each of Home's counts equals the list its link opens (Queued included), on
     // Each figure keeps the name of the list it opens.
     expect(home.counts.map(one => one.label)).toEqual(["Needs you", "Running", "Queued", "Finished"]);
     // What needs you, grouped by what is asked: each group its own heading, and the groups' exact counts add up to the figure.
-    expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ approve: "Approve a plan", answer: "Answer a question", wrong: "Something went wrong", review: "Review results", other: "Needs you" })[one.key]));
-    expect(home.groups.reduce((sum, one) => sum + one.count, 0)).toBe(home.counts[0]!.value);
+    expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ release: "Approve a release", approve: "Approve a plan", answer: "Answer a question", flow: "Flow decisions", wrong: "Something went wrong", review: "Review results", setup: "Finish setting up", other: "Needs you" })[one.key]));
+    // The tasks' groups add up to the figure; a flow card or a setup step is never a task.
+    expect(home.groups.filter(one => one.key !== "flow" && one.key !== "setup").reduce((sum, one) => sum + one.count, 0)).toBe(home.counts[0]!.value);
     const labels: Record<string, string> = { needs: "Needs you", running: "Running", queued: "Queued", finished: "Finished" };
     for (const count of home.counts) {
       const list = (await read(count.href)).view as BrowserTasksView;
@@ -185,4 +186,23 @@ test("search finds tasks by title and id, and strips control characters from the
   expect(byId.tasks.map(one => one.title)).toEqual(["Rotate the request-log format"]);
   const none = (await page("/search", cookie)).view as BrowserSearchView;
   expect(none.tasks).toEqual([]);
+});
+
+test("a flow card waiting on this person is a Flow decisions row on Home that opens the card; a project they can't see adds none", async () => {
+  task("ship-webhooks", "Harden webhook delivery", repoA);
+  const stage = (id: string, kind: string, rest: Record<string, unknown> = {}) => ({ id, title: id, kind, zone: {}, next: null, onFail: null, ...rest });
+  const flowIn = (repo: string, title: string) => {
+    const flow = store.createFlow({ repo, name: "Purchases", by: "alex", definitionJson: JSON.stringify({ version: 1, start: "decide", stages: [stage("decide", "approval", { next: "done" }), stage("done", "done")] }) }, T0);
+    const card = store.addFlowCard({ flow, title, description: null, stage: "decide", by: "alex", byKind: "person" }, T0);
+    return { flow, card };
+  };
+  const mine = flowIn(repoA, "Buy a label printer");
+  flowIn("/somewhere/else", "Buy a forklift");
+  const cookie = await login();
+  const home = (await page("/", cookie)).view as BrowserHomeView;
+  const flows = home.groups.find(one => one.key === "flow")!;
+  expect(flows).toMatchObject({ label: "Flow decisions", count: 1 });
+  expect(flows.rows).toEqual([expect.objectContaining({ id: `flow:${mine.card}`, title: "Buy a label printer", href: `/flows/${mine.flow}?card=${mine.card}`,
+    action: { label: "Open the card", href: `/flows/${mine.flow}?card=${mine.card}` }, question: null })]);
+  expect(home.say).toMatch(/^1 task and \d+ other things? need you$/);
 });

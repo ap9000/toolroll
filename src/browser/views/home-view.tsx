@@ -1,7 +1,8 @@
 /**
  * Home ("/", docs/plans/live-pages-and-home.md B1): the heading said once ("19 tasks need you"), one quiet line for
- * what runs and waits, one project filter, and what needs you grouped by what is asked (Approve a plan, Answer a
- * question, Something went wrong, Review results, Needs you), each group with its exact count. The selected row opens
+ * what runs and waits, one project filter, and what needs you grouped by what is asked (Approve a release, Approve a
+ * plan, Answer a question, Flow decisions, Something went wrong, Review results, Finish setting up, Needs you), each
+ * group with its exact count. The selected row opens
  * beside the list (an agent's question answered in place, one click); the lead's last message sits above the message
  * box. With nothing waiting: what runs, what finished today and the message box, in the middle of the page. On a phone
  * the next one is a card with its one action, then the list; the message box and New task sit at the bottom.
@@ -64,10 +65,21 @@ function Question({ row }: { row: BrowserHomeRow }) {
   </>;
 }
 
+/** A release, a flow card or a setup step is never acted on at Home (home-other-asks.md): its line and the one link to
+ * its own page. */
+const OWN_PAGE: ReadonlySet<BrowserHomeRow["ask"]> = new Set(["release", "flow", "setup"]);
+
 /** The selected item, open beside the list: what it is, the one act that resolves it, and its task one link away. A
  * plan waiting for approval is read and approved here (home-approval.tsx, live-pages-and-home.md B2). */
 function OpenPane({ row, asked, onApproved }: { row: BrowserHomeRow | null; asked: string; onApproved: (id: string) => void }) {
   if (row === null) return null;
+  if (OWN_PAGE.has(row.ask)) return <>
+    <div className="so-open-k"><span>{[row.project, row.age].filter(Boolean).join(" · ")}</span></div>
+    <h2 className="so-open-t">{row.title}</h2>
+    <p className="so-open-chip"><KChip word="Needs you" tone="needs" /><span>{asked}</span></p>
+    {row.line && <p className="so-open-x">{row.line}</p>}
+    {row.action && <div className="k-acts"><KLinkButton variant="primary" label={row.action.label} href={row.action.href} /></div>}
+  </>;
   const kicker = <div className="so-open-k"><span>{[row.project, row.age].filter(Boolean).join(" · ")}</span><span className="k-grow" /><a className="k-link" href={row.href}>Open task</a></div>;
   if (row.question) return <>{kicker}<p className="so-open-of">{row.title}</p><Question key={row.question.id} row={row} /></>;
   if (row.ask === "approve") return <>{kicker}<h2 className="so-open-t">{row.title}</h2><HomeApproval row={row} onApproved={onApproved} onChanged={nudge} /></>;
