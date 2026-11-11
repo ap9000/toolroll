@@ -1223,7 +1223,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   function homeAsksFor(who: Who & { via: "cookie" }, access: ReturnType<typeof workAccess>, now: Date, project: string | null): HomeAsks {
     const approver = who.role === "approver";
     const steps = withBuilderStep(firstRunStepsNow(now), builderReadyFor(store, firstRunBuilderRepo(store, project, visible, runtime.managedRepos()), now));
-    return { ...releaseAsks(store, now, access, project, approver, evidenceRoot), flows: flowAsks(store, consoleProjects(), { name: who.name, approver }, project),
+    return { ...releaseAsks(store, now, access, project, approver), flows: flowAsks(store, consoleProjects(), { name: who.name, approver }, project),
       setup: setupAsks(steps, approver) };
   }
 

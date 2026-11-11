@@ -9,10 +9,10 @@ import { browserViewOf } from "../flow-browser.js";
 import type { FirstRunStep } from "../first-run.js";
 import { flowCardWaitsOn } from "../flows-ui.js";
 import { releaseAskOf, releaseTaskOf } from "../release-approval.js";
-import { autoPublishHeld, PUBLISH_HELD_ACTION } from "../release-auto.js";
+import { autoPublishHeld, PUBLISH_ALLOWED_ACTION, PUBLISH_HELD_ACTION } from "../release-auto.js";
 import type { Store } from "../store.js";
 import { taskArchived } from "../task-archive.js";
-import { workIndexTask } from "../work-index.js";
+import { workStateRows } from "../work-index.js";
 import type { WorkSummaryAccess } from "../work-summary.js";
 
 /** One row Home lists that isn't a task's own row. `id` is namespaced so it never meets a task's id; `at` (when it
@@ -38,28 +38,37 @@ const REVIEW_RELEASE = "Review the release";
 
 /** A release's line (its version, or the sheet's refusal) and every held publication in view. Approvers only: the sheet
  * mints its approval only for them; anyone else reads a release as an ordinary task row. */
-export function releaseAsks(store: Store, now: Date, access: WorkSummaryAccess, project: string | null, approver: boolean, evidenceRoot?: string): Pick<HomeAsks, "release" | "held"> {
+export function releaseAsks(store: Store, now: Date, access: WorkSummaryAccess, project: string | null, approver: boolean): Pick<HomeAsks, "release" | "held"> {
   if (!approver) return { release: () => null, held: [] };
   const release = (taskId: string): string | null => {
     const ask = releaseAskOf(store, taskId);
     return ask === null ? null : ask.refusal ?? `Version ${ask.version} waits for your approval.`;
   };
   const shown = (repo: string) => (access.repos === null || access.repos.includes(repo)) && (project === null || repo === project);
+  // Only what is still held: the newest held-or-allowed act per task is the held one (release-auto.ts autoPublishHeld's
+  // own rule, read in one statement). Each is then a release this person may see in this scope, before anything heavier.
+  const marked = store.handle.prepare(`SELECT a.task_id, a.at, a.detail FROM action_ledger a WHERE a.action = $held AND a.task_id IS NOT NULL
+    AND a.id = (SELECT MAX(b.id) FROM action_ledger b WHERE b.task_id = a.task_id AND b.action IN ($held, $allowed)) ORDER BY a.at DESC, a.id DESC`)
+    .all({ $held: PUBLISH_HELD_ACTION, $allowed: PUBLISH_ALLOWED_ACTION });
+  const candidates = marked.flatMap(row => {
+    const taskId = String(row["task_id"]);
+    const found = releaseTaskOf(store, taskId);
+    return found === null || !shown(found.ref.repo) || taskArchived(store, taskId) ? []
+      : [{ taskId, ref: found.ref.id, repo: found.ref.repo, at: String(row["at"]), why: autoPublishHeld(store, taskId) ?? String(row["detail"] ?? "") }];
+  });
+  if (candidates.length === 0) return { release, held: [] };
+  // Every family in this person's view, read once (the Tasks list's own projection): a held release's family that is
+  // already a row that needs them (in any group) is not listed twice, and one the view doesn't admit is not listed.
+  const familyOf = new Map<number, { rootId: string; needs: boolean }>();
+  for (const family of workStateRows(store, now, access)) for (const member of family.members) familyOf.set(member, { rootId: family.rootId, needs: family.needs });
   const families = new Set<string>();
   const held: HomeAskRow[] = [];
-  const marked = store.handle.prepare("SELECT task_id, MAX(at) at FROM action_ledger WHERE action = ? AND task_id IS NOT NULL GROUP BY task_id ORDER BY MAX(at) DESC").all(PUBLISH_HELD_ACTION);
-  for (const row of marked) {
-    const taskId = String(row["task_id"]);
-    const why = autoPublishHeld(store, taskId);
-    const found = why === null ? null : releaseTaskOf(store, taskId);
-    if (why === null || found === null || !shown(found.ref.repo) || taskArchived(store, taskId)) continue;
-    // Its family as the Tasks list reads it, under this person's access: already a row that needs them (in any group)
-    // is not listed twice.
-    const item = workIndexTask(store, taskId, now, access, evidenceRoot);
-    if (item === null || item.status.views.includes("needs-you") || families.has(item.rootId)) continue;
-    families.add(item.rootId);
-    held.push({ id: `release:${item.rootId}`, title: store.getTask(taskId)?.title ?? item.title, href: releaseSheetHref(taskId), repo: found.ref.repo, at: String(row["at"]),
-      line: why, action: { label: REVIEW_RELEASE, href: releaseSheetHref(taskId) } });
+  for (const one of candidates) {
+    const family = familyOf.get(one.ref);
+    if (family === undefined || family.needs || families.has(family.rootId)) continue;
+    families.add(family.rootId);
+    held.push({ id: `release:${family.rootId}`, title: store.getTask(one.taskId)?.title ?? one.taskId, href: releaseSheetHref(one.taskId), repo: one.repo, at: one.at,
+      line: one.why, action: { label: REVIEW_RELEASE, href: releaseSheetHref(one.taskId) } });
   }
   return { release, held };
 }
@@ -76,9 +85,9 @@ export function flowAsks(store: Store, repos: readonly string[], viewer: { name:
     let browser: ReturnType<typeof browserViewOf> | undefined;
     for (const card of store.flowCards(flow.id, false)) {
       if (card.state !== "active") continue;
+      // A card whose zone was removed still has its subagent's open question (the flow page still takes the answer).
       const stage = stages.find(one => one.id === card.stage);
-      if (stage === undefined) continue;
-      if (stage.kind === "check" && stage.browser === true && browser === undefined) browser = browserViewOf(store, flow);
+      if (stage?.kind === "check" && stage.browser === true && browser === undefined) browser = browserViewOf(store, flow);
       const waits = flowCardWaitsOn(store, flow, card, viewer, { stage, ...(browser === undefined ? {} : { browser }) });
       if (!waits.decide && !waits.choose && !waits.answer && !waits.browser && !waits.reply) continue;
       const asked = waits.answer ? store.openSubagentQuestionOn(card.id, card.entry)?.question ?? null : null;

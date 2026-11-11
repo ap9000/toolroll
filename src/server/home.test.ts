@@ -10,7 +10,8 @@ import { HOME_NEEDS_SHOWN, homeView, leadLineOf, startOfToday, type HomeFacts } 
 import { NO_HOME_ASKS, releaseAsks } from "./home-asks.js";
 import { releaseFixture, RELEASE_NOW, VERSION, type ReleaseFixture } from "../../test/release-fixture.js";
 import { recordReleaseCi } from "../release-approval.js";
-import { holdAutoPublish } from "../release-auto.js";
+import { allowAutoPublish, holdAutoPublish } from "../release-auto.js";
+import { releaseTermsFor } from "../release-carry.js";
 
 const NOW = new Date(2026, 10, 5, 12, 0, 0);
 const REPO = "/repos/home-groups";
@@ -227,5 +228,51 @@ describe("a held publication and setup", () => {
     expect(view.say).toBe("2 things need you");
     // Not for anyone but an approver.
     expect(read(false).groups).toEqual([]);
+  });
+});
+
+describe("held publications, many at once", () => {
+  // Several releases of one project, each its own family: held and otherwise asking nobody (cancelled here, so that
+  // nothing else about it waits on a person), held but already a row that needs the person (its plan still waits for
+  // a yes), held then let go on, never held.
+  let f: ReleaseFixture;
+  const access = (repos?: string[]) => ({ principal: "operator" as const, repos: repos ?? [f.repo] });
+  const release = (id: string) => {
+    f.store.createTask({ id, title: `Release ${id}` }, RELEASE_NOW);
+    f.store.placeTask(f.store.refFor("built-in", id).id, f.repo, {}, RELEASE_NOW);
+    const terms = releaseTermsFor(f.store, { repo: f.repo, version: VERSION, branch: "release-0.9.71", pr: 240, candidate: f.approved, now: RELEASE_NOW });
+    if (!terms.ok) throw new Error(terms.why);
+    propose(f.store, { taskId: id, goal: `Verify ${id}`, candidate: f.approved, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], releaseTerms: terms.terms, now: RELEASE_NOW });
+  };
+  const hold = (id: string, minutes: number) => holdAutoPublish(f.store, { taskId: id, why: `${id} waits: CI stopped passing.`, now: new Date(RELEASE_NOW.getTime() + minutes * 60_000) });
+  beforeAll(() => {
+    f = releaseFixture({ candidate: { "src/x.js": "1\n" } });
+    register(f.store, { name: "builder-1", host: "test", capacity: 8, repos: [f.repo], now: RELEASE_NOW, newToken: () => "tok" });
+    for (const id of ["quiet-1", "quiet-2", "asks-a-yes", "let-go", "never-held"]) release(id);
+    for (const id of ["quiet-1", "quiet-2"]) f.store.setTaskState(id, "cancelled", RELEASE_NOW);
+    hold("quiet-1", 1); hold("quiet-2", 2); hold("asks-a-yes", 3); hold("let-go", 4);
+    if (!allowAutoPublish(f.store, { taskId: "let-go", by: "alex", now: new Date(RELEASE_NOW.getTime() + 5 * 60_000) }).ok) throw new Error("allow");
+    // Held twice is still one row.
+    hold("quiet-1", 6);
+  });
+  afterAll(() => f.close());
+
+  test("one row per still-held family that isn't already a row, newest first; exact counts; none outside the view", () => {
+    const read = releaseAsks(f.store, RELEASE_NOW, access(), null, true);
+    expect(read.held.map(one => [one.id, one.line, one.href])).toEqual([
+      ["release:quiet-1", "quiet-1 waits: CI stopped passing.", "/t/quiet-1/release"],
+      ["release:quiet-2", "quiet-2 waits: CI stopped passing.", "/t/quiet-2/release"],
+    ]);
+    const view = homeView({ store: f.store, now: RELEASE_NOW, access: access(), project: null, projects: [], chat: false, canAnswer: true, approver: true, closedDoor: () => null,
+      asks: { ...NO_HOME_ASKS, ...read } });
+    // The releases that wait for a yes (held or not) are their own rows in Approve a release; the two held ones follow.
+    const releases = view.groups.find(one => one.key === "release")!;
+    expect(releases.count).toBe(5);
+    expect(releases.rows.slice(0, 3).map(one => one.id).sort()).toEqual(["asks-a-yes", "let-go", "never-held"]);
+    expect(releases.rows.slice(3).map(one => one.id)).toEqual(["release:quiet-1", "release:quiet-2"]);
+    expect(view.say).toBe("3 tasks and 2 other things need you");
+    // Another project in view, or a view without this project: none.
+    expect(releaseAsks(f.store, RELEASE_NOW, access(), "/repos/elsewhere", true).held).toEqual([]);
+    expect(releaseAsks(f.store, RELEASE_NOW, access(["/repos/elsewhere"]), null, true).held).toEqual([]);
   });
 });

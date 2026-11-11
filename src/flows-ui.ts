@@ -249,18 +249,21 @@ export function flowCardWaitsOn(store: Store, flow: FlowRow, card: FlowCardRow, 
   const none: FlowCardWait = { decide: false, choose: false, answer: false, browser: false, reply: false };
   if (!viewer.approver || card.state !== "active") return none;
   const stage = "stage" in reads ? reads.stage : flowDefinitionOf(flow)?.stages.find(one => one.id === card.stage);
-  if (stage === undefined) return none;
+  // Its subagent's open question is the person's to answer whatever zone it is in, even one since removed from the flow
+  // (the flow page shows it and takes the answer).
+  const asked = "asked" in reads ? reads.asked ?? null : store.openSubagentQuestionOn(card.id, card.entry);
+  const answer = asked !== null && asked.state === "open" && asked.askedOf === viewer.name && store.getSubagent(asked.subagent) !== null;
+  if (stage === undefined) return { ...none, answer };
   const decider = stage.kind === "approval" ? deciderOf(stage, flow) : null;
   // While its subagent is deciding (v92), the card isn't anyone else's to decide yet.
   const subagentDeciding = stage.subagent !== undefined && card.waiting !== null && card.waiting.endsWith(" is deciding");
-  const asked = "asked" in reads ? reads.asked ?? null : store.openSubagentQuestionOn(card.id, card.entry);
   const choosing = stage.kind !== "choose" ? null : "choosing" in reads ? reads.choosing ?? null : flowChoiceAt(store, card.id, card.entry);
   const browser = stage.kind !== "check" || stage.browser !== true ? null : "browser" in reads ? reads.browser ?? null : browserViewOf(store, flow);
   const wait = stage.wait ?? { for: "reply" as const };
   return {
     decide: stage.kind === "approval" && (decider === null || decider === viewer.name) && !subagentDeciding,
     choose: choosing !== null && choosing.person === viewer.name,
-    answer: asked !== null && asked.state === "open" && asked.askedOf === viewer.name && store.getSubagent(asked.subagent) !== null,
+    answer,
     browser: browserWaitOn(card, stage, browser) && store.accountOf(viewer.name)?.projects === null,
     reply: stage.kind === "wait" && wait.for === "reply" && card.waiting !== null && card.waiting.startsWith("No reply after ") && card.waiting.endsWith(NO_REPLY_MOVE_ON)
       && flowPersonOf(card, flow) === viewer.name,
