@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.102 — 2026-11-11
+
+- **Pages change in place.** Moving between Home, Tasks, a task page, Projects, Agents, Search and Settings no longer reloads the whole page. The menu stays put and the page changes with a short cross-fade: going deeper slides in, going back slides out (off when your system asks for reduced motion). Resting the pointer on a link reads its page ahead, so the click shows it at once. Back and Forward change the page the same way and return you to the spot you left. The link you pressed is marked, and a thin loading line shows when a page is slow.
+- **Task pages open in place too.** A task with an open question, a running build or a result to review opens without a reload. An answer to a question is sent in place. A review keeps its section, its pinned lines and your note across Back, Forward and a reload. A page that asks for your password still loads as its own page, on purpose, and so do Accept, Request changes and Stop.
+- **Home is grouped by what is asked.** One sentence says how many tasks need you, then the list is grouped: Approve a plan, Answer a question, Something went wrong, Review results, Needs you. Each group shows its exact count. The lead's last message is one line above the message box, and the words you type there stay in the tab until sent. With nothing waiting, Home shows what runs and what finished today. On a phone, the next task is a card with its one action.
+- **Approve a plan from Home.** Select a row under "Approve a plan": the plan shows beside the list with one Approve button that stays in view. One press approves it, the row leaves the list and Home says "Approved." Nothing reloads, and the task page's one-click Approve acts in place too. This is offered only when no password is needed (Passwordless is on, or you are the local owner). Otherwise Home shows the plan and a link, "Review the plan", to the task page. Home never shows a password field, and a click made by a script never counts as a press.
+- **Chat is in the menu.** Chat sits under Home in the menu, and New task is a plus beside the Toolroll name.
+
 ## 0.9.101 — 2026-11-10
 
 - **The task page is one list of steps: Plan, Approval, Build, Review, Ready.** The step happening now is open, finished steps fold to one line each, and the one thing that needs you sits in its row. The plan reads as a sheet: the goal, what will change, how it is checked and, for a release, exactly what a yes agrees to. The Approve form is in the Approval row with the plan beside it, and a refused approval says why right above the form.
