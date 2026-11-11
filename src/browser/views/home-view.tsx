@@ -15,6 +15,7 @@ import { WORKSPACE_NUDGE } from "../live-task.js";
 import "./home.css";
 import { keyed } from "../mutation-key.js";
 import { askDraft, keepAskDraft } from "../workspace-client.js";
+import { HomeApproval } from "./home-approval.js";
 
 const nudge = () => window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
 const rowsOf = (view: BrowserHomeView): BrowserHomeRow[] => view.groups.flatMap(group => group.rows);
@@ -63,11 +64,13 @@ function Question({ row }: { row: BrowserHomeRow }) {
   </>;
 }
 
-/** The selected item, open beside the list: what it is, the one act that resolves it, and its task one link away. */
-function OpenPane({ row, asked }: { row: BrowserHomeRow | null; asked: string }) {
+/** The selected item, open beside the list: what it is, the one act that resolves it, and its task one link away. A
+ * plan waiting for approval is read and approved here (home-approval.tsx, live-pages-and-home.md B2). */
+function OpenPane({ row, asked, onApproved }: { row: BrowserHomeRow | null; asked: string; onApproved: (id: string) => void }) {
   if (row === null) return null;
   const kicker = <div className="so-open-k"><span>{[row.project, row.age].filter(Boolean).join(" · ")}</span><span className="k-grow" /><a className="k-link" href={row.href}>Open task</a></div>;
   if (row.question) return <>{kicker}<p className="so-open-of">{row.title}</p><Question key={row.question.id} row={row} /></>;
+  if (row.ask === "approve") return <>{kicker}<h2 className="so-open-t">{row.title}</h2><HomeApproval row={row} onApproved={onApproved} onChanged={nudge} /></>;
   return <>{kicker}
     <h2 className="so-open-t">{row.title}</h2>
     <p className="so-open-chip"><KChip word="Needs you" tone="needs" /><span>{asked}</span></p>
@@ -140,13 +143,35 @@ function WorkRow({ row }: { row: BrowserHomeRow }) {
   </a>;
 }
 
+/** How long an approved row takes to leave the list (none with reduced motion). */
+const LEAVE_MS = 200;
+const reducedMotion = (): boolean => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 export function HomeView({ view }: { view: BrowserHomeView }) {
-  const rows = view.groups.flatMap(group => group.rows);
+  // Rows approved here leave at once; Home's own re-read then agrees (or puts one back if it still waits).
+  const [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
+  const [leaving, setLeaving] = useState<string | null>(null);
+  // "Approved.": Home's own line above the list, until the person selects another row.
+  const [approvedLine, setApprovedLine] = useState(false);
+  useEffect(() => { setGone(new Set()); }, [view]);
+  const groups = view.groups.map(group => ({ ...group, rows: group.rows.filter(one => !gone.has(one.id)) }));
+  const rows = groups.flatMap(group => group.rows);
   const first = rows[0] ?? null;
   const [selected, setSelected] = useState<string | null>(first?.id ?? null);
   const list = useRef<HTMLDivElement>(null);
+  const choose = (id: string) => { setSelected(id); setApprovedLine(false); };
   // A re-read that removed the selected row selects the first.
-  useEffect(() => { if (selected === null || !rows.some(one => one.id === selected)) setSelected(first?.id ?? null); }, [view]);
+  useEffect(() => { if (selected === null || !rows.some(one => one.id === selected)) setSelected(first?.id ?? null); }, [view, gone]);
+  const approved = (id: string) => {
+    const at = rows.findIndex(one => one.id === id);
+    const next = rows.filter(one => one.id !== id)[Math.max(0, at)] ?? null;
+    setApprovedLine(true);
+    setLeaving(id);
+    setSelected(next?.id ?? null);
+    // Home re-reads only once the row has gone: a read that landed first would clear `gone` and the row would then
+    // stay hidden even where the task still waits on the person for something else (its builder is offline, say).
+    window.setTimeout(() => { setGone(previous => new Set([...previous, id])); setLeaving(current => current === id ? null : current); nudge(); }, reducedMotion() ? 0 : LEAVE_MS);
+  };
   const open = rows.find(one => one.id === selected) ?? null;
   const askedOf = (row: BrowserHomeRow | null) => view.groups.find(group => row !== null && group.rows.includes(row))?.label ?? "";
   const needsHref = view.counts.find(one => one.key === "needs")?.href ?? "/tasks?view=needs-you";
@@ -154,7 +179,7 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
     const at = rows.findIndex(one => one.id === selected);
     const next = rows[Math.max(0, Math.min(rows.length - 1, at + step))];
     if (!next) return;
-    setSelected(next.id);
+    choose(next.id);
     list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(next.id)}"]`)?.focus();
   };
   const header = <header className="so-home-h">
@@ -206,19 +231,20 @@ export function HomeView({ view }: { view: BrowserHomeView }) {
       <div className="so-tri-list" ref={list} role="listbox" aria-label="Needs you" onKeyDown={event => {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); move(event.key === "ArrowDown" ? 1 : -1); }
       }}>
-        {view.groups.map(group => <div key={group.key} className="so-tri-grp" role="group" aria-label={`${group.label}, ${group.count}`} data-group={group.key}>
+        {approvedLine && <p className="so-home-approved" role="status" data-home-approved>Approved.</p>}
+        {groups.map(group => <div key={group.key} className="so-tri-grp" role="group" aria-label={`${group.label}, ${group.count}`} data-group={group.key}>
           <p className="so-tri-g" aria-hidden="true"><span>{group.label}</span><span className="so-tri-n k-num" data-group-count>{group.count}</span></p>
-          {group.rows.map(row => <a key={row.id} className={`so-ti${row === first ? " so-ti-next" : ""}`} href={row.href} role="option" aria-selected={row.id === selected} data-row={row.id}
+          {group.rows.map(row => <a key={row.id} className={`so-ti${row === first ? " so-ti-next" : ""}${row.id === leaving ? " so-ti-leave" : ""}`} href={row.href} role="option" aria-selected={row.id === selected} data-row={row.id}
             tabIndex={row.id === selected ? 0 : -1}
-            onClick={event => { if (!isPhone() && !event.metaKey && !event.ctrlKey && !event.shiftKey) { event.preventDefault(); setSelected(row.id); } }}
-            onFocus={() => { if (!isPhone()) setSelected(row.id); }}>
+            onClick={event => { if (!isPhone() && !event.metaKey && !event.ctrlKey && !event.shiftKey) { event.preventDefault(); choose(row.id); } }}
+            onFocus={() => { if (!isPhone() && row.id !== selected) choose(row.id); }}>
             <span className="so-ti-t">{row.title}</span>
             <span className="so-ti-m">{row.reason && <span className="so-ti-why">{row.reason}</span>}{[row.project, row.age].filter(Boolean).join(" · ")}</span>
           </a>)}
           {group.count > group.rows.length && <a className="so-tri-more k-link" href={needsHref}>{group.count - group.rows.length} more in Tasks</a>}
         </div>)}
       </div>
-      <section className="so-tri-open k-desk-only" aria-label="Selected task" aria-live="polite"><OpenPane row={open} asked={askedOf(open)} /></section>
+      <section className="so-tri-open k-desk-only" aria-label="Selected task" aria-live="polite"><OpenPane row={open} asked={askedOf(open)} onApproved={approved} /></section>
     </div>
     {view.ask ? <div className="so-home-bar" data-home-bar>
       {view.lastLead && <LeadLine lead={view.lastLead} />}

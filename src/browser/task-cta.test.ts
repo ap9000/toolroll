@@ -9,7 +9,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AssignmentCard } from "../assignment-ui.js";
 import type { BrowserTaskThreadItem, BrowserTaskView } from "../browser-workspace.js";
 import { TaskView } from "./views/task-view.js";
-import { Passwordless } from "./ui/post-form.js";
+import { FormToken, Passwordless } from "./ui/post-form.js";
 import { taskRoad } from "../first-run.js";
 import { stepRowsOf } from "../workspace-ui.js";
 
@@ -35,7 +35,7 @@ beforeEach(() => {
 });
 afterEach(async () => { if (root !== null) await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 /** `key`: a new server render of the page (its native regions install once; a new render mounts them afresh). */
-const show = (view: BrowserTaskView, key = "page") => act(() => root!.render(createElement(TaskView, { key, view, details: false, csrf: "csrf" })));
+const show = (view: BrowserTaskView, key = "page") => act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(TaskView, { key, view, details: false, csrf: "csrf" }))));
 
 type Approve = NonNullable<BrowserTaskView["approve"]>;
 const approveOf = (facts: Approve["facts"], digest = "d1", rememberedUntil: string | null = null): Approve => ({
@@ -58,15 +58,62 @@ test("a password is needed: Approve opens a password popover, and only its submi
   expect(submitted).toEqual([{ action: "/t/t-1/approve", token: "s3cret" }]);
 });
 
-test("Passwordless on, or a password remembered here: one click, no popover", () => {
+const NONCE = "cd".repeat(16);
+const inPlaceAnswer = (outcome: string, words: string, status = 200) => new Response(JSON.stringify({ outcome, words }), { status, headers: { "content-type": "application/json" } });
+/** One click posts in place (live-pages-and-home.md B2.4): every POST the page's fetch sent, and what it answers. */
+const stubPosts = (answer: () => Response | Promise<Response>) => {
+  const posts: { url: string; headers: Record<string, string>; body: string }[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => { posts.push({ url, headers: { ...(init.headers as Record<string, string>) }, body: String(init.body) }); return answer(); }));
+  return posts;
+};
+const settled = () => act(async () => { await new Promise(done => setTimeout(done, 0)); });
+
+test("Passwordless on, or a password remembered here: one click, no popover, posted in place with the page's own nonce and never a password", async () => {
   for (const facts of [{ passwordless: true, remembered: false }, { passwordless: false, remembered: true }]) {
     submitted = [];
-    show(viewOf(cardOf("Needs you", null), { approve: approveOf(facts, "d1", facts.remembered ? "2026-11-02T10:47:00.000Z" : null) }), JSON.stringify(facts));
+    const posts = stubPosts(() => inPlaceAnswer("approved", "Approved."));
+    show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf(facts, "d1", facts.remembered ? "2026-11-02T10:47:00.000Z" : null), fields: { nonce: NONCE, digest: "d1" } } }), JSON.stringify(facts));
     expect(host.textContent).toContain("No password needed");
     pressApprove();
+    await settled();
     expect(popover()).toBeNull();
-    expect(submitted).toEqual([{ action: "/t/t-1/approve", token: "" }]);
+    // Not the native form: one in-place post, its fields exactly the snapshot's.
+    expect(submitted).toEqual([]);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.url).toBe("/t/t-1/approve");
+    expect(posts[0]!.headers["x-toolroll-act"]).toBe("in-place");
+    expect([...new URLSearchParams(posts[0]!.body)]).toEqual([["csrf", "csrf"], ["nonce", NONCE], ["digest", "d1"], ["return", "next"]]);
+    expect(host.querySelector("[data-task-approval]")?.textContent).toContain("Approved.");
   }
+});
+
+test("one click in place: a refusal says the server's words and that nothing changed, and offers Reload, never the spent form", async () => {
+  stubPosts(() => inPlaceAnswer("refused", "that approval form is stale — read it again", 409));
+  show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf({ passwordless: true, remembered: false }), fields: { nonce: NONCE, digest: "d1" } } }));
+  pressApprove();
+  await settled();
+  const box = host.querySelector("[data-task-approval]")!;
+  expect(box.textContent).toContain("That approval form is stale — read it again. Nothing changed.");
+  expect([...box.querySelectorAll("button")].map(one => one.textContent)).toEqual(["Reload"]);
+});
+
+test("one click in place: an answer that is not the route's own loads the task page as a document", async () => {
+  const assign = vi.fn();
+  vi.spyOn(window.location, "assign").mockImplementation(assign);
+  stubPosts(() => new Response("<html>Sign in</html>", { status: 200, headers: { "content-type": "text/html" } }));
+  show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf({ passwordless: true, remembered: false }), fields: { nonce: NONCE, digest: "d1" } } }));
+  pressApprove();
+  await settled();
+  expect(assign).toHaveBeenCalledWith("/t/t-1");
+});
+
+test("one click with a form that holds no minted nonce posts nothing", async () => {
+  const posts = stubPosts(() => inPlaceAnswer("approved", "Approved."));
+  show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf({ passwordless: true, remembered: false }), fields: { nonce: "unminted", digest: "d1" } } }));
+  pressApprove();
+  await settled();
+  expect(posts).toEqual([]);
+  expect(submitted).toEqual([]);
 });
 
 test("a rule approves automatically: nothing to press", () => {

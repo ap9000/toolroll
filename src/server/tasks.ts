@@ -20,7 +20,7 @@ import { DEPRECATED_PAGE } from "../deprecations.js";
 import { html, htmlString, joinHtml, postForm, textHtml, type Html } from "../html.js";
 import { createHash,randomBytes,randomUUID } from "node:crypto";
 import { existsSync,lstatSync,realpathSync } from "node:fs";
-import { type ServerResponse } from "node:http";
+import { type IncomingMessage,type ServerResponse } from "node:http";
 import { withActor } from "../actor.js";
 import { gateWords } from "../approval-policy.js";
 import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator } from '../assignment.js';
@@ -108,7 +108,7 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { retiredRedirect } from "./retired-routes.js";
-import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
+import { answersInPlace,chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
 import { putAwayPage,boardBody,boardWorkers,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { timingFor } from "../latency-timeline.js";
@@ -1178,7 +1178,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const { url, who, response, now, posted } = ctx;
     const act = matchTaskPath(url.pathname, `/${verb}$`);
     if (act === null) return noPage(who, response);
-    return taskMutation(response, who, act.taskId, verb, posted, now);
+    return taskMutation(response, who, act.taskId, verb, posted, now, ctx.request);
   };
 
   // Cockpit E: Show in Finder — the checkout proved again right now (live, this machine's runner, inside the pool),
@@ -1639,6 +1639,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     verb: string,
     posted: URLSearchParams,
     now: Date,
+    /** Read only to shape an answer in place (answersInPlace), after the act's proofs. */
+    request: IncomingMessage | null = null,
   ): void {
     const ref = store.lookupRef(taskId);
     if (ref === null || store.getTask(taskId) === null) {
@@ -2254,8 +2256,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             : safeChatReturn(requestedReturn);
         // The release sheet's Approve release (trusted-release-reports.md A7): the same door, its own page for words.
         const sheet = body.get("sheet") === "release";
-        const approvalProblem = (message: string, status: number): void => {
+        // Each caller names its outcome (live-pages-and-home.md B2.3); none is inferred from the status.
+        const approvalProblem = (outcome: Exclude<ApprovalOutcome, "approved">, message: string, status: number): void => {
           if (sheet) return releaseSheet.sheetScreen({ who, response, project: null }, taskId, message, status);
+          // Asked in place: the same proofs ran, only the answer's shape differs.
+          if (answersInPlace(request)) return answerApprovalInPlace(response, outcome, message, status);
           if (requestedReturn !== null && requestedReturn !== "next") {
             return redirect(response, chatReturnWithSaid(approvalBack, message));
           }
@@ -2264,6 +2269,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const approvingRef = store.lookupRef(taskId);
         if (approvingRef?.plan === "requested") {
           return approvalProblem(
+            "refused",
             "approval is blocked while planning is in progress — review the drafted plan first",
             409,
           );
@@ -2275,23 +2281,23 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const token = body.get("token") ?? "";
         const nonce = body.get("nonce") ?? "";
         if (!consumeApprovalNonce(nonce, who.name, taskId, digest)) {
-          return approvalProblem("that approval form is stale — read it again", 409);
+          return approvalProblem("refused", "that approval form is stale — read it again", 409);
         }
         // An empty password stands for an explicit identity-provider re-check not yet spent, or (cockpit B2) a password
         // remembered on this session; approve() decides whether these terms may stand on a remembered one.
         // Easy-start C5: a laptop's local owner approves eligible work with no password (approve() proves it again).
         if (token === "" && !passwordlessSessionFor(store, who.name) && !ssoNowAvailable(who.name) && withFreshness("approve-standard", () => freshnessFor(who.name)) === null
           && !(who.authority === "local-owner" && localApprovalEligible(store, who.name, taskId).ok)) {
-          return approvalProblem("approval requires your password, typed again", 400);
+          return approvalProblem("refused", "approval requires your password, typed again", 400);
         }
         // The sheet binds the release card's digest (the nonce was minted for it): the shared card wrapper decides.
         if (sheet) return releaseSheet.approveFromSheet({ who, response, project: null }, taskId, digest, token);
         const scopeRow = store.getScope(taskId);
-        if (scopeRow === null) return approvalProblem("this task has no scope to approve", 409);
+        if (scopeRow === null) return approvalProblem("refused", "this task has no scope to approve", 409);
         const planView = planViewOf(ref.id);
         const expectedDigest = approvalFormDigest(scopeRow.digest, planView?.sha256 ?? null);
         if (digest !== expectedDigest) {
-          return approvalProblem("the scope or plan changed while this form was open — read the latest version and approve again", 409);
+          return approvalProblem("refused", "the scope or plan changed while this form was open — read the latest version and approve again", 409);
         }
         // A revision approves ONLY against a brief that still verifies
         // (Codex M5-M8 audit, IV-3): the batch the screen restated must be
@@ -2301,7 +2307,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (approvingRef !== null && approvingRef.revisionBriefArtifact !== null) {
           const view = revisionViewOf(approvingRef);
           if (view !== null && "problem" in view) {
-            return approvalProblem(`approval is blocked: ${view.problem}`, 409);
+            return approvalProblem("refused", `approval is blocked: ${view.problem}`, 409);
           }
         }
         // A re-check is spent only if this yes is kept (sealed, or a protected-work vote recorded).
@@ -2309,10 +2315,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           result => !result.ok && !(result.reason === "second-approver" && !result.already));
         if (!approved.ok) {
           // v102: a first yes on protected work is recorded, not refused — the page says who else is needed.
-          if (approved.reason === "second-approver") return approvalProblem(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }), 200);
-          if (approved.reason === "policy") return approvalProblem(approved.message, 403);
+          if (approved.reason === "second-approver") return approvalProblem("vote", gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }), 200);
+          if (approved.reason === "policy") return approvalProblem("refused", approved.message, 403);
           const status = approved.reason === "changed" || approved.reason === "unrouted" ? 409 : 403;
-          return approvalProblem(approveRefusalWords(approved.reason), status);
+          return approvalProblem("refused", approveRefusalWords(approved.reason), status);
         }
         // Approve & build again (the plan was rewritten after a build): the same yes requeues, only for the build the
         // sheet named, and only while it is still the task's latest result, made to an earlier plan than this one.
@@ -2323,9 +2329,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           // requeueTask re-proves, in its own transaction, that it is still the latest result and that scope approved.
           const offered = named != null && named.taskRef === ref.id && named.role === "builder" && !!named.scopeDigest && named.scopeDigest !== scopeRow.digest;
           const requeued = offered ? store.requeueTask(taskId, who.name, now, { run: named.id, scopeDigest: scopeRow.digest }) : null;
-          if (requeued === null || (!requeued.ok && requeued.reason === "moved")) return approvalProblem("Approved. The task changed while this page was open, so it wasn't built again — check its status.", 200);
-          if (!requeued.ok) return approvalProblem(`Approved, but building again didn't start (${requeued.reason}). Use Build again.`, 200);
+          if (requeued === null || (!requeued.ok && requeued.reason === "moved")) return approvalProblem("approved-not-rebuilt", "Approved. The task changed while this page was open, so it wasn't built again — check its status.", 200);
+          if (!requeued.ok) return approvalProblem("approved-not-rebuilt", `Approved, but building again didn't start (${requeued.reason}). Use Build again.`, 200);
         }
+        if (!sheet && answersInPlace(request)) return answerApprovalInPlace(response, "approved", "Approved.", 200);
         return redirect(response, approvalBack);
       }
       case "accept-proof": {
@@ -3245,4 +3252,14 @@ export function createReleaseSheetHandlers(runtime: ServerRuntime) {
   }
 
   return { routes: { "task.release": showSheet, "task.release.go-on": goOn, "release.locate": locate }, sheetScreen, approveFromSheet };
+}
+
+/** What a plan approval asked in place came to (live-pages-and-home.md B2.3): approved; a first yes on protected work
+ * recorded; approved but building again did not start; or refused, with nothing changed. */
+export type ApprovalOutcome = "approved" | "vote" | "approved-not-rebuilt" | "refused";
+
+/** The answer to an approval asked in place: its named outcome and the same words the page would show, as JSON. Written
+ * only after the approve route's proofs, by the caller that knows the outcome. */
+export function answerApprovalInPlace(response: ServerResponse, outcome: ApprovalOutcome, words: string, status: number): void {
+  respond(response, status, "application/json; charset=utf-8", JSON.stringify({ outcome, words }));
 }
