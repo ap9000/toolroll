@@ -117,6 +117,7 @@ function leaving(): void {
   reading?.abort();
   reading = null;
   loading(false);
+  press(null);
   if (leaveTimer !== null) clearTimeout(leaveTimer);
   leaveTimer = setTimeout(stayed, LEAVE_MS);
   // A page read ahead shown and not yet confirmed is never left to act: if this document stays, it loads as one.
