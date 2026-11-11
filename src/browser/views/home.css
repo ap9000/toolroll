@@ -45,6 +45,23 @@
 [data-view] .so-home .so-tri-open .k-radios { grid-template-columns: minmax(0, 1fr); max-width: 640px; }
 [data-view] .so-home .so-next { display: none; }
 
+/* A plan waiting for approval, read and approved in the pane (live-pages-and-home.md B2): the plan under the title,
+ * the terms line, then the one ink Approve and one link. Hairlines, not boxes. */
+[data-view] .so-home .so-home-approval { display: grid; gap: var(--so-space-lg); min-width: 0; }
+[data-view] .so-home .so-home-plan { min-width: 0; padding-top: var(--so-space-lg); border-top: 1px solid var(--so-line); overflow-wrap: anywhere; }
+[data-view] .so-home .so-home-terms { margin: 0; padding-top: var(--so-space-md); border-top: 1px solid var(--so-line); font-size: 13px; line-height: 1.55; color: var(--so-nav-ink); max-width: 66ch; }
+[data-view] .so-home .so-home-approval .k-acts { align-items: center; gap: var(--so-space-lg); }
+[data-view] .so-home .so-home-approval .k-acts .k-link { font-size: 13.5px; color: var(--so-ink); font-weight: 500; }
+[data-view] .so-home .so-home-changed { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--so-ink); }
+[data-view] .so-home .so-home-reading { color: var(--so-muted); }
+[data-view] .so-home .so-home-said { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--so-ink); max-width: 66ch; }
+[data-view] .so-home .so-home-said.is-refused { color: var(--so-danger); }
+[data-view] .so-home .so-home-approved { margin: 0; padding: 10px 12px 4px; font: 500 13px/1.5 var(--so-font-sans); color: var(--so-ink); }
+/* An approved row leaves the list: its height and opacity over 200 ms; with reduced motion it simply goes. */
+[data-view] .so-home .so-tri-list .so-ti-leave { overflow: hidden; pointer-events: none; animation: so-ti-leave 200ms ease-out forwards; }
+@keyframes so-ti-leave { from { opacity: 1; max-height: 96px; } to { opacity: 0; max-height: 0; padding-block: 0; } }
+@media (prefers-reduced-motion: reduce) { [data-view] .so-home .so-tri-list .so-ti-leave { animation: none; display: none; } }
+
 /* The bottom: the lead's last message as one line, then the filled message box. */
 [data-view] .so-home .so-home-bar { flex: none; padding: var(--so-space-md) var(--so-space-3xl) var(--so-space-lg); border-top: 1px solid var(--so-line); background: var(--so-paper); }
 [data-view] .so-home .so-home-bar-row { display: flex; align-items: center; gap: var(--so-space-sm); max-width: 760px; }
