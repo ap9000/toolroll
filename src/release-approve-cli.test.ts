@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { releaseFixture, FIXTURE_PASSWORD, VERSION, type ReleaseFixture } from "../test/release-fixture.js";
+import { releaseFixture, FIXTURE_PASSWORD, RELEASE_REFUSALS, VERSION, type ReleaseFixture } from "../test/release-fixture.js";
 import { EXIT, runOperate } from "./operate.js";
 import { journalFile } from "./release.js";
 import { personApprovalOf, propose } from "./scope.js";
@@ -163,5 +163,25 @@ describe("toolroll release approve", () => {
     expect(await withRemote(remote, () => run(["approve", "--json", "--digest", digest]))).toBe(EXIT.refused);
     expect(payload()).toMatchObject({ reason: "machine-proof" });
     expect(f.store.getScope(f.taskId)!.approvedAt).toBeNull();
+  });
+});
+
+describe("toolroll task approve on a release", () => {
+  const taskApprove = async (digest: string) => { lines = []; return runOperate("task", ["approve", f.taskId, "--yes", "--digest", digest, ...credentials, "--json"], line => lines.push(line), { databaseFile: f.databaseFile, now: NOW }); };
+
+  test.each(RELEASE_REFUSALS.map(one => [one.name, one] as const))("%s: refused in the sheet's words, nothing sealed", async (_name, one) => {
+    one.apply(f, NOW);
+    expect(await taskApprove(f.store.getScope(f.taskId)!.digest)).toBe(EXIT.refused);
+    const said = payload() as { ok: boolean; command: string; reason: string; message: string };
+    expect(said).toMatchObject({ ok: false, command: "task approve", reason: "policy" });
+    expect(said.message.startsWith(`${f.taskId}: `)).toBe(true);
+    expect(said.message.slice(`${f.taskId}: `.length)).toMatch(one.words);
+    const scope = f.store.getScope(f.taskId)!;
+    expect(scope.approvedAt === null || scope.approvedDigest !== scope.digest).toBe(true);
+  });
+
+  test("a clean release still approves through it", async () => {
+    expect(await taskApprove(f.store.getScope(f.taskId)!.digest)).toBe(EXIT.ok);
+    expect(personApprovalOf(f.store, f.taskId)).toMatchObject({ ok: true, by: "alex", method: "password-now" });
   });
 });

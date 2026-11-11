@@ -8,7 +8,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, releaseAuthorityOfTask, type ReleaseAuthority, type Store } from "../src/store.js";
+import { archiveTaskFamily, openStore, releaseAuthorityOfTask, type ReleaseAuthority, type Store } from "../src/store.js";
+import { recordReleaseCi } from "../src/release-approval.js";
 import { addApprover, approve, propose } from "../src/scope.js";
 import { releaseCheckPurposeFor, releaseTermsFor, carriedTaskId } from "../src/release-carry.js";
 
@@ -235,3 +236,35 @@ function createHashHex(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 import { createHash } from "node:crypto";
+
+/**
+ * Every state the release sheet refuses (release-approval.ts refusalOf), each put on a fixture's unapproved release task
+ * with no CI hold outstanding, and the sheet's own sentence for it. `phrase` is a piece of that sentence with no
+ * apostrophe, for HTML bodies. Every approval road refuses these in these words (scope.ts approve()).
+ */
+export const RELEASE_REFUSALS: readonly { name: string; apply(f: ReleaseFixture, now: Date): void; words: RegExp; phrase: string }[] = [
+  { name: "put away", phrase: "This release is put away. Restore it before approving.", words: /^This release is put away\. Restore it before approving\.$/,
+    apply: (f, now) => {
+      const put = archiveTaskFamily(f.store, f.taskId, { by: "alex", byKind: "person", rule: null, reason: "test" }, now);
+      if (!put.ok) throw new Error(put.message);
+    } },
+  { name: "GitHub CI recorded failed, no hold", phrase: "Fix the branch or rerun the failed job on GitHub, then release again.",
+    words: /^GitHub CI failed on [0-9a-f]{7}: E2E \(failure\)\. Fix the branch or rerun the failed job on GitHub, then release again\.$/,
+    apply: (f, now) => {
+      recordReleaseCi(f.store, { taskId: f.taskId, candidate: f.approved, state: "failed", failed: ["E2E (failure)"], runs: [{ id: 3, name: "E2E", status: "completed", conclusion: "failure" }], now });
+    } },
+  { name: "the release check already failed on this commit", phrase: "The release check already failed on this commit. Fix the branch and release the new commit.",
+    words: /^The release check already failed on this commit\. Fix the branch and release the new commit\.$/,
+    apply: (f, now) => {
+      f.store.handle.prepare("INSERT INTO release_step (task_id, tag, version, pr, step, state, started_at, ended_at, detail, updated_at) VALUES (?, ?, ?, 240, 'check', 'failed', ?, ?, NULL, ?)")
+        .run(f.taskId, `v${VERSION}`, VERSION, now.toISOString(), now.toISOString(), now.toISOString());
+    } },
+  { name: "terms changed after an earlier approval", phrase: "terms changed after an earlier approval. Read them again.",
+    words: /^The release's terms changed after an earlier approval\. Read them again\.$/,
+    apply: (f, now) => {
+      const yes = approve(f.store, f.taskId, "alex", now, f.store.getScope(f.taskId)!.digest, f.password);
+      if (!yes.ok) throw new Error(`approve: ${yes.reason}`);
+      // The yes stands on an earlier version of the terms: what is on file now isn't what was agreed.
+      f.store.handle.prepare("UPDATE task_scope SET approved_digest = ? WHERE task_id = ?").run("e".repeat(64), f.taskId);
+    } },
+];

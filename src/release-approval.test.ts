@@ -6,7 +6,7 @@
  * digest is what approve() gets); the proofs exactly as today; the notification's whole life and the push it becomes.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { releaseFixture, FIXTURE_PASSWORD, VERSION, type ReleaseFixture } from "../test/release-fixture.js";
+import { releaseFixture, FIXTURE_PASSWORD, RELEASE_REFUSALS, VERSION, type ReleaseFixture } from "../test/release-fixture.js";
 import { releaseCheckPurposeSchema } from "./contracts/release-terms.js";
 import { pullRequestCommits, PULL_REQUEST_COMMITS_MAX, RELEASE_CHECK_LABELS, recordVerifiedRelease, schemaLeaves, subjectText, verifiedReleaseBaseline, type PullRequestReader } from "./release-card.js";
 import {
@@ -195,6 +195,46 @@ describe("the one card-approval wrapper", () => {
     expect(approveReleaseCard(f.store, { taskId: f.taskId, cardDigest: passing.digest, approveNow: typed() })).toMatchObject({ ok: false, reason: "changed" });
     expect(cardOf().refusal).toContain("GitHub CI is still running");
     expect(f.store.getScope(f.taskId)!.approvedAt).toBeNull();
+  });
+});
+
+describe("every approval road refuses what the sheet refuses", () => {
+  const nothingKept = () => {
+    const scope = f.store.getScope(f.taskId)!;
+    expect(scope.approvedAt === null || scope.approvedDigest !== scope.digest).toBe(true);
+  };
+  test.each(RELEASE_REFUSALS.map(one => [one.name, one] as const))("%s: the shared core (approve(), as the task page, Home and the CLI call it) refuses in the sheet's words", (_name, one) => {
+    one.apply(f, NOW);
+    const sheetSays = cardOf().refusal;
+    expect(sheetSays).toMatch(one.words);
+    const votes = () => f.store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE task_id = ?").get(f.taskId)!["n"];
+    const before = votes();
+    expect(approve(f.store, f.taskId, "alex", NOW, f.store.getScope(f.taskId)!.digest, FIXTURE_PASSWORD)).toEqual({ ok: false, reason: "policy", message: sheetSays });
+    // Refused before any vote or proof row is written.
+    expect(votes()).toBe(before);
+    nothingKept();
+  });
+  test.each(RELEASE_REFUSALS.map(one => [one.name, one] as const))("%s: the sheet still refuses it, approve() never runs", (_name, one) => {
+    one.apply(f, NOW);
+    const card = cardOf();
+    const approveNow = vi.fn(typed());
+    expect(approveReleaseCard(f.store, { taskId: f.taskId, cardDigest: card.digest, approveNow })).toEqual({ ok: false, reason: "refused", message: card.refusal });
+    expect(approveNow).not.toHaveBeenCalled();
+    nothingKept();
+  });
+  test("a clean release: the sheet and the core both approve, and a task that isn't a release is untouched by the rule", () => {
+    expect(cardOf().refusal).toBeNull();
+    expect(approveReleaseCard(f.store, { taskId: f.taskId, cardDigest: cardOf().digest, approveNow: typed() })).toMatchObject({ ok: true });
+    const g = releaseFixture({ termsless: true, approve: false, candidate: { "src/card.js": "1\n" } });
+    try {
+      expect(approve(g.store, g.taskId, "alex", NOW, g.store.getScope(g.taskId)!.digest, FIXTURE_PASSWORD)).toMatchObject({ ok: true });
+      // An ordinary task with a failed release-check row and a failed CI reading under its id: not a release, so no release rule.
+      g.store.createTask({ id: "plain-work", title: "Release 9.9.9" }, NOW);
+      g.store.placeTask(g.store.refFor("built-in", "plain-work").id, g.repo, {}, NOW);
+      const plain = propose(g.store, { taskId: "plain-work", goal: "Ordinary work", now: NOW });
+      g.store.handle.prepare("INSERT INTO release_step (task_id, tag, version, pr, step, state, started_at, updated_at) VALUES ('plain-work', 'v9.9.9', '9.9.9', 1, 'check', 'failed', ?, ?)").run(NOW.toISOString(), NOW.toISOString());
+      expect(approve(g.store, "plain-work", "alex", NOW, plain.digest, FIXTURE_PASSWORD)).toMatchObject({ ok: true });
+    } finally { g.close(); }
   });
 });
 

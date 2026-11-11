@@ -19,11 +19,14 @@ import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { permissionPlainWords } from "./chat-terms.js";
 import { approvalTermsOf, releaseAccessWords, releaseCardOf, releaseSealOf, type PullRequestReader, type ReleaseCard, type ReleaseSeal, type TermLine } from "./release-card.js";
-import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { approvalOf, type ApproveResult, type Scope } from "./scope.js";
 import { releaseProgressFor, type Notification, type Store } from "./store.js";
 import { taskArchived } from "./task-archive.js";
 import { cleanTerminalLine } from "./terminal-text.js";
+import { ciName, ciWords, refusalOf, releaseCiOf, RELEASE_CI_SEEN_ACTION, type ReleaseCiRun, type ReleaseCiSnapshot } from "./release-refusal.js";
+
+// The CI reading and the refusals live in release-refusal.ts, so scope.ts approve() can read them without a cycle.
+export { ciWords, releaseApprovalRefusal, releaseCiOf, RELEASE_CI_SEEN_ACTION, type ReleaseCiRun, type ReleaseCiSnapshot } from "./release-refusal.js";
 
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -32,15 +35,6 @@ const SCOPE_DIGEST = /^[0-9a-f]{32,64}$/;
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 // ---- GitHub CI as the coordinator read it -------------------------------------------------------------------------
-
-/** The ledger act holding the coordinator's latest reading of the pull request's CI on the exact candidate. */
-export const RELEASE_CI_SEEN_ACTION = "release CI observed";
-
-/** One check's newest attempt, as the coordinator's own gh read it. A re-run is a new check run id. */
-export type ReleaseCiRun = { id: number | null; name: string; status: string; conclusion: string | null };
-export type ReleaseCiSnapshot = { candidate: string; at: string; state: "passed" | "running" | "failed"; failed: string[]; runs: ReleaseCiRun[] };
-
-const ciName = (value: unknown): string => cleanTerminalLine(String(value ?? "")).trim().slice(0, 120);
 
 /**
  * Record what the coordinator just read of the pull request's CI on `candidate` (its verdict and every check's newest
@@ -66,32 +60,10 @@ export function recordReleaseCi(store: Store, input: { taskId: string; candidate
   return true;
 }
 
-/** The coordinator's latest CI reading for this task on exactly `candidate`, or null (not read yet, or another commit). */
-export function releaseCiOf(store: Store, taskId: string, candidate: string): ReleaseCiSnapshot | null {
-  const row = store.handle.prepare("SELECT detail, at FROM action_ledger WHERE task_id = ? AND action = ? ORDER BY id DESC LIMIT 1").get(taskId, RELEASE_CI_SEEN_ACTION);
-  if (row === undefined) return null;
-  let parsed: unknown;
-  try { parsed = JSON.parse(String(row["detail"])); } catch { return null; }
-  const one = parsed as { v?: unknown; candidate?: unknown; state?: unknown; failed?: unknown; runs?: unknown };
-  if (one.v !== 1 || one.candidate !== candidate || !["passed", "running", "failed"].includes(String(one.state)) || !Array.isArray(one.failed) || !Array.isArray(one.runs)) return null;
-  return { candidate, at: String(row["at"]), state: one.state as ReleaseCiSnapshot["state"], failed: one.failed.map(ciName),
-    runs: one.runs.map(run => { const r = run as Record<string, unknown>; return { id: typeof r["id"] === "number" ? r["id"] : null, name: ciName(r["name"]), status: ciName(r["status"]), conclusion: r["conclusion"] == null ? null : ciName(r["conclusion"]) }; }) };
-}
-
 /** What of a CI reading the card binds: its state and each check's attempt, whether it finished, and how. Queued and
  * in progress read alike (neither is finished); the time it was read is not bound. */
 export function ciBinding(ci: ReleaseCiSnapshot | null): unknown {
   return ci === null ? null : { candidate: ci.candidate, state: ci.state, failed: ci.failed, runs: ci.runs.map(run => [run.id, run.name, run.status === "completed", run.conclusion]) };
-}
-
-/** GitHub CI in one line, as the sheet and the CLI say it. */
-export function ciWords(ci: ReleaseCiSnapshot | null, candidate: string): string {
-  const short = candidate.slice(0, 7);
-  if (ci === null) return `GitHub CI on ${short} hasn't been read yet.`;
-  if (ci.state === "passed") return `GitHub CI passed on ${short}.`;
-  if (ci.state === "failed") return `GitHub CI failed on ${short}: ${ci.failed.join(", ") || "a check"}.`;
-  const finished = ci.runs.filter(run => run.status === "completed").length;
-  return `GitHub CI is running on ${short}: ${finished} of ${ci.runs.length} checks finished.`;
 }
 
 // ---- the card --------------------------------------------------------------------------------------------------
@@ -115,22 +87,6 @@ export type ReleaseApprovalCard = {
   /** Binds everything above that a person is shown and can change under them. */
   digest: string;
 };
-
-/** The release check failed on this task already (the coordinator's record): nobody approves it again here. */
-function checkFailed(store: Store, taskId: string): boolean {
-  return store.handle.prepare("SELECT 1 FROM release_step WHERE task_id = ? AND step = 'check' AND state = 'failed' LIMIT 1").get(taskId) !== undefined;
-}
-
-/** Why a release can't be approved now, from the plane's own state, or null. */
-function refusalOf(store: Store, taskId: string, scope: Scope, ci: ReleaseCiSnapshot | null): string | null {
-  if (taskArchived(store, taskId)) return "This release is put away. Restore it before approving.";
-  const hold = releaseCiHoldOf(store, taskId);
-  if (hold !== null) return releaseCiHoldWords(hold);
-  if (ci?.state === "failed") return `${ciWords(ci, scope.candidate!)} Fix the branch or rerun the failed job on GitHub, then release again.`;
-  if (checkFailed(store, taskId)) return "The release check already failed on this commit. Fix the branch and release the new commit.";
-  if (scope.approvedAt !== null && scope.approvedDigest !== scope.digest) return "The release's terms changed after an earlier approval. Read them again.";
-  return null;
-}
 
 /** A release task from the plane's own state: a sealed form (terms or a release check's purpose) whose repository is the
  * task's project and whose approved commit is the scope's candidate. Never from a title or a task id. */

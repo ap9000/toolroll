@@ -11,7 +11,7 @@ import type { Server } from "node:http";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { releaseFixture, FIXTURE_PASSWORD, VERSION, type ReleaseFixture } from "../release-fixture.js";
+import { releaseFixture, FIXTURE_PASSWORD, RELEASE_REFUSALS, VERSION, type ReleaseFixture } from "../release-fixture.js";
 import { createDecisionServer } from "../../src/serve.js";
 import { addApprover, personApprovalOf, propose } from "../../src/scope.js";
 import { recordReleaseCi } from "../../src/release-approval.js";
@@ -132,6 +132,94 @@ describe("the sheet and its one approval", () => {
     const after = await page(`/t/${f.taskId}/release`);
     expect(after.body).toContain("Release approved");
     expect(after.body).not.toContain('name="nonce"');
+  });
+});
+
+describe("every web road refuses what the sheet refuses", () => {
+  /** A console of its own over a fresh unapproved release, signed in as alex. */
+  async function openConsole() {
+    const g = releaseFixture({ termsless: true, approve: false, candidate: { "src/card.js": "1\n" } });
+    const id = Number(g.store.handle.prepare(`INSERT INTO release_authority (repo, generation, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree, tip_sha, tip_task,
+      policy_json, policy_digest, verify_command, verify_digest, access_digest, state, expires_at, created_at) VALUES (?,1,'0.9.70',1,'b','main','t','d',?,?,?,'t','{}','p',1,'v','a','merged',?,?)`)
+      .run(g.repo, g.base, g.base, g.base, NOW.toISOString(), NOW.toISOString()).lastInsertRowid);
+    g.store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, external_ref, reserved_at, finished_at) VALUES (?,?, 'merge', 't', ?, 1, 'succeeded', ?, ?, ?)")
+      .run(`op-${id}`, id, g.base, g.base, NOW.toISOString(), NOW.toISOString());
+    mkdirSync(join(g.dir, "config"), { recursive: true });
+    const console = createDecisionServer({ store: g.store, evidenceRoot: join(g.dir, "evidence"), repo: g.repo, configDir: join(g.dir, "config"), telegramTokenFile: join(g.dir, "config", "telegram-token") });
+    await new Promise<void>(resolve => console.listen(0, "127.0.0.1", resolve));
+    const at = `http://127.0.0.1:${(console.address() as { port: number }).port}`;
+    const signedIn = ((await fetch(`${at}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: FIXTURE_PASSWORD }), redirect: "manual" })).headers.get("set-cookie") ?? "").split(";")[0]!;
+    const get = async (path: string) => (await fetch(`${at}${path}`, { headers: { cookie: signedIn } })).text();
+    const post = async (form: Record<string, string>, headers: Record<string, string> = {}) => {
+      const answer = await fetch(`${at}/t/${g.taskId}/approve`, { method: "POST", redirect: "manual", headers: { cookie: signedIn, origin: at, "content-type": "application/x-www-form-urlencoded", ...headers }, body: new URLSearchParams(form) });
+      return { status: answer.status, type: answer.headers.get("content-type") ?? "", body: await answer.text() };
+    };
+    /** The task page's own approve form (no `sheet` field), as the plain form and Home's in-place yes send it. */
+    const taskForm = async () => {
+      const body = await get(`/t/${g.taskId}`);
+      const form = { csrf: field(body, "csrf"), nonce: field(body, "nonce"), digest: field(body, "digest") };
+      expect(form.nonce).not.toBe("");
+      expect(body).not.toContain('name="sheet"');
+      return form;
+    };
+    const close = async () => { await new Promise<void>(resolve => console.close(() => resolve())); g.close(); };
+    return { g, get, post, taskForm, close };
+  }
+  const notSealed = (g: ReleaseFixture) => { const scope = g.store.getScope(g.taskId)!; expect(scope.approvedAt === null || scope.approvedDigest !== scope.digest).toBe(true); };
+
+  test.each(RELEASE_REFUSALS.map(one => [one.name, one] as const))("%s: the plain task-page approve (no sheet field) refuses in the sheet's words", async (_name, one) => {
+    const c = await openConsole();
+    try {
+      const form = await c.taskForm();
+      one.apply(c.g, NOW);
+      const answer = await c.post({ ...form, token: FIXTURE_PASSWORD });
+      expect(answer.status).toBe(403);
+      expect(answer.body).toContain(one.phrase.replace(/'/g, "&#39;"));
+      notSealed(c.g);
+    } finally { await c.close(); }
+  });
+
+  test.each(RELEASE_REFUSALS.map(one => [one.name, one] as const))("%s: Home's in-place yes (no sheet field) refuses in the sheet's words", async (_name, one) => {
+    const c = await openConsole();
+    try {
+      const form = await c.taskForm();
+      one.apply(c.g, NOW);
+      const answer = await c.post({ ...form, token: FIXTURE_PASSWORD }, { "x-toolroll-act": "in-place", accept: "application/json" });
+      expect(answer.status).toBe(403);
+      expect(answer.type).toContain("application/json");
+      const said = JSON.parse(answer.body) as { outcome: string; words: string };
+      expect(said.outcome).toBe("refused");
+      expect(said.words).toMatch(one.words);
+      notSealed(c.g);
+    } finally { await c.close(); }
+  });
+
+  test.each(RELEASE_REFUSALS.map(one => [one.name, one] as const))("%s: the release sheet still refuses it", async (_name, one) => {
+    const c = await openConsole();
+    try {
+      // Read while it was clean; the state lands while the sheet is open: its card digest binds the refusal, so it refuses.
+      const open = sheetForm(await c.get(`/t/${c.g.taskId}/release`));
+      expect(open.sheet).toBe("release");
+      one.apply(c.g, NOW);
+      const answer = await c.post({ ...open, token: FIXTURE_PASSWORD });
+      expect(answer.status).toBe(409);
+      notSealed(c.g);
+      // Read again, the sheet says why in the same words and offers no approval.
+      const body = await c.get(`/t/${c.g.taskId}/release`);
+      expect(body).toContain(one.phrase.replace(/'/g, "&#39;"));
+      expect(sheetForm(body).nonce).toBe("");
+    } finally { await c.close(); }
+  });
+
+  test("a clean release: the plain form and Home's in-place yes still approve it", async () => {
+    for (const headers of [{}, { "x-toolroll-act": "in-place", accept: "application/json" }]) {
+      const c = await openConsole();
+      try {
+        const answer = await c.post({ ...(await c.taskForm()), token: FIXTURE_PASSWORD }, headers);
+        expect([200, 303]).toContain(answer.status);
+        expect(personApprovalOf(c.g.store, c.g.taskId)).toMatchObject({ ok: true, by: "alex", method: "password-now" });
+      } finally { await c.close(); }
+    }
   });
 });
 

@@ -56,6 +56,7 @@ import { readAcceptance, readScopeTerms, storedRubricSchema, type AcceptanceCrit
 import type { Store, Mutation } from "./store.js";
 import { taskArchived, taskCancelled } from "./task-archive.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
+import { releaseApprovalRefusal } from "./release-refusal.js";
 import type { QualityMode } from "./quality.js";
 import type { AuthMode } from "./keys.js";
 import type { ProviderId } from "./provider.js";
@@ -1565,6 +1566,10 @@ export function approve(
 
     const scope = store.getScope(taskId);
     if (scope === null) return { ok: false as const, reason: "no-scope" as const };
+    // A release takes no yes the release sheet would refuse (put away, CI held or failed, its check failed on this
+    // commit, terms changed after an earlier yes), in the sheet's words, on every road: read here, before any vote.
+    const releaseRefusal = releaseApprovalRefusal(store, taskId, scope);
+    if (releaseRefusal !== null) return { ok: false as const, reason: "policy" as const, message: releaseRefusal };
     // A put-away task (v145) is restored first; sealScopeApproval refuses it too, on every road.
     if (taskArchived(store, taskId)) return { ok: false as const, reason: "archived" as const };
     // A cancelled task takes no yes either — read here, in the seal's transaction, before any vote or proof is

@@ -224,6 +224,8 @@ describe("a release check purpose without terms: the same-candidate rerun, and o
     const other = f.commit({ "src/index.js": "export const answer = 44;\n" }, "other");
     const purpose = f.store.getScope(f.taskId)!.releaseCheck!;
     const scope = propose(f.store, { taskId: f.taskId, goal: `Verify ${f.approved}`, candidate: other, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], releaseCheck: purpose, now: LATER });
+    // The earlier yes is withdrawn first: approve() refuses a release whose terms changed after an earlier approval.
+    f.store.handle.prepare("UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, approved_profile_json = NULL WHERE task_id = ?").run(f.taskId);
     expect(approve(f.store, f.taskId, "alex", LATER, scope.digest, f.password).ok).toBe(true);
     const { runId } = sealedCheck(f, f.taskId, other, () => null, { forceFull: true, plane: { configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" } });
     f.store.saveProofVerdict(runId, "refuted", ["the approved release check failed"], RELEASE_NOW, []);
