@@ -26,7 +26,10 @@ import { presented, T0, renderedHtmlOf, workspaceOf, revisionIdOf, plannerKeptTe
 import { handoffBytes } from "../test/handoff-fixture.js";
 
 /** Home's rows and a Board column, as the page's own snapshot carries them (Home and the Board render in the browser). */
-const homeRowsOf = (html: string) => (workspaceOf(html).view as BrowserHomeView).groups.flatMap(group => group.rows);
+const homeRowsOf = (html: string) => {
+  const view = workspaceOf(html).view as BrowserHomeView;
+  return [...view.groups.flatMap(group => group.rows), ...view.working, ...view.finishedToday.rows];
+};
 const homeRowOf = (html: string, id: string) => homeRowsOf(html).find(one => one.id === id) ?? null;
 const boardColumnOf = (html: string, key: string) => (workspaceOf(html).view as BrowserTasksView).board!.find(one => one.key === key)!;
 

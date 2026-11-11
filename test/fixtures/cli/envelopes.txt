@@ -6623,6 +6623,7 @@ $ task list --json → 0
         "rank": 0
       },
       "ask": "decide",
+      "askGroup": "other",
       "chip": null,
       "primaryAction": {
         "code": "write-scope",
@@ -6673,6 +6674,7 @@ $ task list --json → 0
         "rank": 0
       },
       "ask": "decide",
+      "askGroup": "other",
       "chip": null,
       "primaryAction": {
         "code": "write-scope",
