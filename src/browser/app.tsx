@@ -37,7 +37,7 @@ import { NeedsDock, PhoneHeader, Rail, useNeeds, useNeedsRefresh } from "./shell
 import { SearchMenu } from "./search.js";
 import "./workspace.css";
 import { keyed, markAgentSeen } from "./mutation-key.js";
-import { documentLeaving, installNavigation, loadDocument, whenStayed } from "./navigate.js";
+import { documentLeaving, installNavigation, loadDocument, pageHeld, whenStayed } from "./navigate.js";
 
 export { GuardedHtml, regionIsEditing };
 export { REPLACED_THREAD_DIVIDER, replyTook } from "./lead-chat.js";
@@ -746,7 +746,8 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const [phoneView, setPhoneView] = useState<"chat" | "work">(workspace.result || workspace.focus ? "work" : "chat");
   // Easy-start C2: a result opened here is seen (a keyed act, never the page read's side effect).
   const seenRun = workspace.result?.runId ?? null;
-  useEffect(() => { if (seenRun !== null) markAgentSeen(seenRun, workspace.csrf); }, [seenRun, workspace.csrf]);
+  // Never from a page shown ahead of its own read: the confirmed page is the next epoch, and is seen then.
+  useEffect(() => { if (seenRun !== null && !pageHeld()) markAgentSeen(seenRun, workspace.csrf); }, [seenRun, workspace.csrf, epoch]);
   const hasWork = workspace.focus !== null || workspace.result !== null;
   const selectedTask = workspace.crew.find(item => item.id === workspace.focus?.id);
   const isChat = new URL(workspace.path, window.location.origin).pathname === "/chat";

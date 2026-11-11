@@ -110,7 +110,7 @@ test("a read ahead changes nothing, on every allowlisted page and its query vari
   const { cookie, hash } = await login();
   clockAt = Date.now();
   for (const path of ["/", `/?project=${encodeURIComponent(repo)}`, "/tasks", `/tasks?project=${encodeURIComponent(repo)}`, "/tasks?view=needs-you", "/tasks?page=2",
-    "/projects", "/agents", "/agents?run=1", "/search", "/search?q=limiter", "/t/t-plan"]) {
+    "/projects", "/agents", "/search", "/search?q=limiter", "/t/t-plan"]) {
     const address = path + (path.includes("?") ? "&" : "?") + "format=workspace";
     const before = writes();
     const { moved, response } = await seenAfter(hash, () => read(cookie, address, "prefetch"));
@@ -143,6 +143,8 @@ test("a read ahead from anything but a browser session, or of any page off the a
     ["/chat?format=workspace", { cookie }],
     ["/term?format=workspace", { cookie }],
     ["/agents?view=live&format=workspace", { cookie }],
+    // An opened agent is seen or watched by opening it: never read ahead.
+    ["/agents?run=1&format=workspace", { cookie }],
     ["/t/t-plan/release?format=workspace", { cookie }],
     ["/login?format=workspace", {}],
   ] as const) {

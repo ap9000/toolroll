@@ -19,8 +19,8 @@ const SETTINGS_PAGES = [
 /** Home, the Tasks list, a task page, Projects, Agents (the list), Search and the Settings pages. */
 export const IN_PLACE_ROUTES: ReadonlySet<string> = new Set(["home", "tasks", "task.page", "projects.page", "agents", "search", ...SETTINGS_PAGES]);
 
-/** What may be read ahead with `x-toolroll-read: prefetch`: Home, the Tasks list, Projects, Agents (the list), Search,
- * a task page. Everything else answers 204. */
+/** What may be read ahead with `x-toolroll-read: prefetch`: Home, the Tasks list, Projects, Agents (the list, never an
+ * opened agent), Search, a task page. Everything else answers 204. */
 export const PREFETCH_ROUTES: ReadonlySet<string> = new Set(["home", "tasks", "projects.page", "agents", "search", "task.page"]);
 
 /** The Agents view's Live grid shares the `agents` row (`/agents?view=live`); it only watches, and is never in place. */
@@ -30,6 +30,10 @@ export function inPlaceRoute(id: string | undefined, url: URL): boolean {
   return id !== undefined && IN_PLACE_ROUTES.has(id) && !liveGrid(id, url);
 }
 
+/** An opened agent shares the `agents` row too (`/agents?run=`): opening one marks it seen or watched, which is an
+ * act, so its page is never read ahead (the browser never shows it before the person's own read). */
+const openedAgent = (id: string, url: URL): boolean => id === "agents" && url.searchParams.has("run");
+
 export function prefetchRoute(id: string | undefined, url: URL): boolean {
-  return id !== undefined && PREFETCH_ROUTES.has(id) && !liveGrid(id, url);
+  return id !== undefined && PREFETCH_ROUTES.has(id) && !liveGrid(id, url) && !openedAgent(id, url);
 }

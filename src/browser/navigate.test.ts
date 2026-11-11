@@ -24,7 +24,7 @@ import { KEY_FILL_SCRIPT } from "../server/mutation-key.js";
 import { html, htmlString } from "../html.js";
 import { T0 } from "../../test/serve-kit.js";
 import { acceptWorkspace, useWorkspace, WorkspaceApp } from "./app.js";
-import { follow, LEAVE_MS, linkToFollow, mayBeInPlace, setDocumentLoader } from "./navigate.js";
+import { follow, forgetPlaces, LEAVE_MS, linkToFollow, mayBeInPlace, pageHeld, setDocumentLoader } from "./navigate.js";
 import { mayPrefetch, prefetch, prefetchedKeys, PREFETCH_MAX_PAGES, PREFETCH_TTL_MS, setPrefetchClock, takePrefetched } from "./prefetch.js";
 import { askDraft, keepAskDraft, PAGE_READ_MS, readPage } from "./workspace-client.js";
 import { WORKSPACE_NUDGE } from "./live-task.js";
@@ -200,7 +200,7 @@ test("after a reload on a page that is not in place, Back to an entry an in-plac
   window.history.replaceState({ kept: 1 }, "", "/");
   click(railLink("/tasks"));
   await arrivedAt("/tasks");
-  expect(window.history.state).toEqual({ toolroll: "in-place" });
+  expect(window.history.state).toEqual({ toolroll: "in-place", toolrollEntry: expect.stringMatching(/^[0-9a-f]{16}$/) });
   await act(async () => root?.unmount());
   root = null; host?.remove(); host = null; loads = [];
   // A new document at /tasks whose page now carries a page script (not in place); the person presses Back.
@@ -538,7 +538,7 @@ test("reading ahead: two at once, twenty pages, ten seconds each, dropped on a c
   await waitFor(() => prefetchedKeys().length === 2);
   // Only the pages the server reads ahead.
   expect(["/", "/tasks", "/t/one", "/projects", "/agents", "/search"].every(path => mayPrefetch(at(path)))).toBe(true);
-  expect(["/settings", "/settings/models", "/agents?view=live", "/chat", "/welcome", "/term"].some(path => mayPrefetch(at(path)))).toBe(false);
+  expect(["/settings", "/settings/models", "/agents?view=live", "/agents?run=3", "/chat", "/welcome", "/term"].some(path => mayPrefetch(at(path)))).toBe(false);
   // A change in the workspace's room, and a nudge, drop everything.
   window.dispatchEvent(new CustomEvent("so:live", { detail: { room: "workspace", event: "change", data: {} } }));
   expect(prefetchedKeys()).toEqual([]);
@@ -591,29 +591,163 @@ test("without a page read ahead the pressed link is marked at once, and a slow r
   expect(document.querySelector("[data-so-pressed]")).toBeNull();
 });
 
-test("Back puts the page where it was left, keeping the in-place mark and every other key of the entry", async () => {
+test("Back puts the page where it was left: kept in this tab, never written to history by a scroll; the entry left keeps its mark and every other key", async () => {
   await open("/");
   click(railLink("/tasks"));
   await arrivedAt("/tasks");
   window.history.replaceState({ ...window.history.state, kept: 1 }, "");
+  const entry = (window.history.state as Record<string, unknown>).toolrollEntry;
+  expect(entry).toMatch(/^[0-9a-f]{16}$/);
   const pane = () => document.querySelector<HTMLElement>("#workspace-main .so-page-content")!;
-  pane().scrollTop = 120;
   const written: unknown[] = [];
   const replace = window.history.replaceState.bind(window.history);
-  const spy = vi.spyOn(window.history, "replaceState").mockImplementation((state, unused, url) => { written.push(state); replace(state, unused, url); });
+  const push = window.history.pushState.bind(window.history);
+  const replaced = vi.spyOn(window.history, "replaceState").mockImplementation((state, unused, url) => { written.push(state); replace(state, unused, url); });
+  const pushedTo = vi.spyOn(window.history, "pushState").mockImplementation((state, unused, url) => { written.push(state); push(state, unused, url); });
+  // A scroll that settles is kept under the entry's name in this tab's storage. History hears nothing of it: a history
+  // write is a navigation to everything that waits for one.
+  pane().scrollTop = 120;
+  pane().dispatchEvent(new Event("scroll"));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 220)); });
+  expect(written).toEqual([]);
+  const kept = new Map(JSON.parse(sessionStorage.getItem("toolroll.places") ?? "[]") as [string, { parts: [string, number, number][] }][]);
+  expect(kept.get(String(entry))?.parts.some(part => part[1] === 120)).toBe(true);
   await act(async () => { await follow("/projects", "push"); });
-  spy.mockRestore();
+  replaced.mockRestore(); pushedTo.mockRestore();
   await settle();
-  const left = written.find(state => typeof state === "object" && state !== null && "toolrollScroll" in state) as Record<string, unknown> | undefined;
-  expect(left).toMatchObject({ toolroll: "in-place", kept: 1 });
+  const left = written.find(state => typeof state === "object" && state !== null && (state as Record<string, unknown>).kept === 1) as Record<string, unknown> | undefined;
+  expect(left).toEqual({ toolroll: "in-place", toolrollEntry: entry, kept: 1 });
+  expect(JSON.stringify(written)).not.toContain("parts");
   expect(pane().scrollTop).toBe(0);
-  // Back to it.
+  // Back to it, in a document that remembers nothing itself (a reload between the two entries).
+  forgetPlaces();
   window.history.replaceState(left, "", "/tasks");
   window.dispatchEvent(new PopStateEvent("popstate", { state: left }));
   await arrivedAt("/tasks");
   await waitFor(() => pane()?.scrollTop === 120);
   expect(loads).toEqual([]);
   expect(pane().scrollTop).toBe(120);
+  // What the storage holds is checked like any input: a damaged list is no place at all.
+  await act(async () => { await follow("/projects", "push"); });
+  await settle();
+  forgetPlaces();
+  sessionStorage.setItem("toolroll.places", JSON.stringify([[entry, { x: "0", y: 0, parts: [["0", 120, 0]] }], ["not a name", { x: 0, y: 9, parts: [] }]]));
+  window.history.replaceState(left, "", "/tasks");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: left }));
+  await arrivedAt("/tasks");
+  await settle();
+  expect(loads).toEqual([]);
+  expect(pane().scrollTop).toBe(0);
+});
+
+test("Back and then Forward before the page is read: the page on screen stays under its own address, and the late answer shows nothing", async () => {
+  await open("/");
+  click(railLink("/tasks"));
+  await arrivedAt("/tasks");
+  const tasksEntry = window.history.state as Record<string, unknown>;
+  const title = document.title;
+  const late = gate();
+  override = (path, init) => path.startsWith("/?") && purposeOf(init) === "navigate" ? late.wait(path, init) : null;
+  // Back: the address is Home's, and Home is being read.
+  window.history.replaceState({ toolroll: "in-place" }, "", "/");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: { toolroll: "in-place" } }));
+  await settle();
+  expect(reads.at(-1)).toEqual({ path: "/?format=workspace", purpose: "navigate" });
+  // Forward, before it lands: the address is the Tasks list's again, the page still on screen.
+  window.history.replaceState(tasksEntry, "", "/tasks");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: tasksEntry }));
+  await settle();
+  late.open();
+  await settle();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+  expect(window.location.pathname).toBe("/tasks");
+  expect(document.querySelector("[data-home]")).toBeNull();
+  expect(document.title).toBe(title);
+  expect(loads).toEqual([]);
+  expect(document.querySelector(".so-main-column")!.hasAttribute("data-so-loading")).toBe(false);
+  // Links work as before.
+  override = null;
+  click(railLink("/projects"));
+  await arrivedAt("/projects");
+  expect(loads).toEqual([]);
+  expect(window.location.pathname).toBe("/projects");
+});
+
+test("a page shown ahead whose confirming read Back called off is read again on Forward: it never stays unconfirmed", async () => {
+  await open("/");
+  const homeEntry = { toolroll: "in-place" };
+  rest(railLink("/tasks"));
+  await waitFor(() => prefetchedKeys().includes("/tasks"));
+  const first = gate(), home = gate();
+  let tasksReads = 0;
+  override = (path, init) => {
+    if (purposeOf(init) !== "navigate") return null;
+    if (path.startsWith("/tasks?")) { tasksReads += 1; return tasksReads === 1 ? first.wait(path, init) : null; }
+    return path.startsWith("/?") ? home.wait(path, init) : null;
+  };
+  click(railLink("/tasks"));
+  await waitFor(() => window.location.pathname === "/tasks");
+  await settle();
+  const main = () => document.getElementById("workspace-main")!;
+  expect(main().hasAttribute("data-so-provisional")).toBe(true);
+  expect(pageHeld()).toBe(true);
+  const tasksEntry = window.history.state as Record<string, unknown>;
+  // Back (Home is being read; the page shown ahead is still on screen, inert), then Forward before Home lands.
+  window.history.replaceState(homeEntry, "", "/");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: homeEntry }));
+  await settle();
+  expect(main().hasAttribute("data-so-provisional")).toBe(true);
+  window.history.replaceState(tasksEntry, "", "/tasks");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: tasksEntry }));
+  await waitFor(() => !main().hasAttribute("data-so-provisional"));
+  await settle();
+  // Confirmed by a read of its own, and interactive; the two answers called off change nothing when they land.
+  expect(tasksReads).toBe(2);
+  expect(pageHeld()).toBe(false);
+  expect(mainParts().some(part => part.hasAttribute("inert"))).toBe(false);
+  first.open(); home.open();
+  await settle();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+  expect(window.location.pathname).toBe("/tasks");
+  expect(document.querySelector("[data-home]")).toBeNull();
+  expect(loads).toEqual([]);
+});
+
+test("a page shown ahead of its own read acts on nothing: a result is marked seen only once the page is confirmed, and an opened agent is never read ahead", async () => {
+  const tasks = await workspaceAt("/tasks");
+  const withResult = { ...tasks, result: { runId: 7, html: "<p>Done.</p>" } };
+  await open("/");
+  const seen: string[] = [];
+  const confirming = gate();
+  override = (path, init) => {
+    if (path === "/agents/seen" || path === "/agents/watch") { seen.push(`${path} ${String(init.body)}`); return Promise.resolve(json({ ok: true })); }
+    if (!path.startsWith("/tasks?")) return null;
+    return purposeOf(init) === "prefetch" ? Promise.resolve(json(withResult)) : confirming.wait(path, init);
+  };
+  rest(railLink("/tasks"));
+  await waitFor(() => prefetchedKeys().includes("/tasks"));
+  click(railLink("/tasks"));
+  await waitFor(() => window.location.pathname === "/tasks");
+  await settle();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+  expect(document.getElementById("workspace-main")!.hasAttribute("data-so-provisional")).toBe(true);
+  expect(pageHeld()).toBe(true);
+  expect(seen).toEqual([]);
+  confirming.open(() => Promise.resolve(json(withResult)));
+  await waitFor(() => !document.getElementById("workspace-main")!.hasAttribute("data-so-provisional"));
+  await waitFor(() => seen.length > 0);
+  expect(pageHeld()).toBe(false);
+  expect(seen.length).toBe(1);
+  expect(seen[0]).toContain("/agents/seen");
+  expect(seen[0]).toContain("run=7");
+  // An opened agent (seen or watched by opening it) is never read ahead at all.
+  const at = (path: string) => new URL(path, window.location.href);
+  expect(mayPrefetch(at("/agents"))).toBe(true);
+  expect(["/agents?run=3", "/agents?run=3&project=x", "/agents?view=live"].some(path => mayPrefetch(at(path)))).toBe(false);
+  const before = reads.length;
+  prefetch(at("/agents?run=3"));
+  await settle();
+  expect(reads.length).toBe(before);
 });
 
 // ---- a navigation the browser began wins over one a script would start ----------------------------------------------

@@ -12,7 +12,9 @@
  * A2 (the same plan): a page read ahead (prefetch.ts) is shown at once, `inert`, and replaced by a remount from the
  * ordinary read when it lands; without one, the pressed link is marked at once and a 2px line runs along the top of the
  * content column after 150 ms. The change moves only the page content (transition.ts). Back restores where the page
- * was left, from `history.state`. Once this document has started leaving, nothing here loads, shows or pushes anything.
+ * was left, kept under the entry's name in this tab's session storage: a scroll never writes to history (a history
+ * write is a navigation to everything that watches for one). A change reaches the address bar and the screen in one
+ * step, and only while it is still the latest one begun: Back, a newer change or the document leaving calls it off.
  */
 import type { BrowserWorkspace } from "../browser-workspace.js";
 import { installPrefetch, mayPrefetch, prefetch, takePrefetched } from "./prefetch.js";
@@ -80,22 +82,29 @@ function leavingAsks(): boolean {
 /** The history state key on every entry an in-place change made or left. */
 const MARK = "toolroll";
 const marked = (state: unknown): boolean => typeof state === "object" && state !== null && (state as Record<string, unknown>)[MARK] === "in-place";
-/** The history state key that holds where a page was left (A2.3). */
-const SCROLL = "toolrollScroll";
+/** The history state key that names an entry: where its page was left is kept under that name (A2.3). */
+const ENTRY = "toolrollEntry";
 
 let host: InPlaceHost | null = null;
 let reading: AbortController | null = null;
+/** The address the read under way is for (as `here()` compares). */
+let readingAt = "";
+/** Counts every change begun and every one called off: a change pushes and shows only while it is the latest. */
+let turn = 0;
+/** The name of the entry whose page is on screen (null: an entry no in-place change has made or left). */
+let shownEntry: string | null = null;
 /** The address (path and query) of the page on screen, to tell a page change from a hash change on Back. */
 let shownAt = "";
 /** This document has added an entry of its own: every Back or Forward within it is a page change to read. */
 let pushed = false;
 /** This page's address as it compares: a `?draft=` the page took into its message box and removed is not a change. */
-const here = (): string => {
-  const query = new URLSearchParams(window.location.search);
+const addressOf = (at: { pathname: string; search: string }): string => {
+  const query = new URLSearchParams(at.search);
   query.delete("draft");
   const search = query.toString();
-  return window.location.pathname + (search === "" ? "" : `?${search}`);
+  return at.pathname + (search === "" ? "" : `?${search}`);
 };
+const here = (): string => addressOf(window.location);
 
 // ---- leaving: a navigation the browser began wins (A2, from the A1 journey) -----------------------------------------
 
@@ -111,13 +120,18 @@ export function whenStayed(then: () => void): void {
   if (!documentLeaving()) { then(); return; }
   onStay.add(then);
 }
-function leaving(): void {
-  leftAt = Date.now();
-  // A read under way lands on nothing: its answer would show, push or load something over the browser's navigation.
+/** Call off whatever change is under way: its read lands on nothing, and it pushes and shows nothing. */
+function callOff(): void {
+  turn += 1;
   reading?.abort();
   reading = null;
   loading(false);
   press(null);
+}
+function leaving(): void {
+  leftAt = Date.now();
+  // A change under way lands on nothing: it would show, push or load something over the browser's navigation.
+  callOff();
   if (leaveTimer !== null) clearTimeout(leaveTimer);
   leaveTimer = setTimeout(stayed, LEAVE_MS);
   // A page read ahead shown and not yet confirmed is never left to act: if this document stays, it loads as one.
@@ -155,6 +169,9 @@ function loading(on: boolean): void {
 
 /** A page read ahead is on screen and not yet confirmed. */
 let held = false;
+/** True while the page on screen is one read ahead and not yet confirmed: nothing of it may act (a view's own effect
+ * that posts asks this first; the confirmed page is a fresh mount, whose effects run then). */
+export function pageHeld(): boolean { return held; }
 /** Hold the page content (and its side panels) inert, or let it go: visible, not interactive. A confirmed page is a
  * fresh mount, so its nodes never carry the hold; letting go clears whatever is left too. */
 function hold(on: boolean): void {
@@ -197,8 +214,7 @@ export function scrollNow(): Scroll {
   }
   return { x: window.scrollX, y: window.scrollY, parts };
 }
-function scrollOf(state: unknown): Scroll | null {
-  const saved = typeof state === "object" && state !== null ? (state as Record<string, unknown>)[SCROLL] : null;
+function asScroll(saved: unknown): Scroll | null {
   if (typeof saved !== "object" || saved === null) return null;
   const { x, y, parts } = saved as Record<string, unknown>;
   if (typeof x !== "number" || typeof y !== "number" || !Array.isArray(parts) || parts.length > MAX_PARTS) return null;
@@ -217,20 +233,62 @@ function restoreScroll(scroll: Scroll, page: () => boolean): void {
   requestAnimationFrame(() => requestAnimationFrame(() => { if (page()) applyScroll(scroll); }));
 }
 
-/** The current entry, with where its page is now. Every other key it holds stays (the in-place mark, a view's own). */
-function withScroll(state: unknown, scroll: Scroll): Record<string, unknown> {
-  return { ...(typeof state === "object" && state !== null ? state : {}), [SCROLL]: scroll };
+/** An entry's name, from its history state (null: none, or not one of ours). */
+function entryOf(state: unknown): string | null {
+  const name = typeof state === "object" && state !== null ? (state as Record<string, unknown>)[ENTRY] : null;
+  return typeof name === "string" && /^[0-9a-f]{16}$/.test(name) ? name : null;
 }
+function newEntry(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(8)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Where each entry's page was left, by the entry's name: in memory, and in this tab's session storage so a reload
+ * between two entries keeps it. Never in `history.state`: writing there as the page scrolls is a navigation to
+ * everything that watches for one. */
+const PLACES = "toolroll.places";
+const MAX_PLACES = 50;
+let places: Map<string, Scroll> | null = null;
+function allPlaces(): Map<string, Scroll> {
+  if (places !== null) return places;
+  const kept = new Map<string, Scroll>();
+  try {
+    const raw: unknown = JSON.parse(window.sessionStorage.getItem(PLACES) ?? "[]");
+    if (Array.isArray(raw)) for (const one of raw.slice(-MAX_PLACES)) {
+      const name = Array.isArray(one) && one.length === 2 ? entryOf({ [ENTRY]: one[0] }) : null;
+      const scroll = name === null ? null : asScroll((one as unknown[])[1]);
+      if (name !== null && scroll !== null) kept.set(name, scroll);
+    }
+  } catch { /* nothing kept: a page starts at its top */ }
+  places = kept;
+  return kept;
+}
+function keepPlace(entry: string | null, scroll: Scroll): void {
+  if (entry === null) return;
+  const all = allPlaces();
+  all.delete(entry);
+  all.set(entry, scroll);
+  while (all.size > MAX_PLACES) all.delete(all.keys().next().value!);
+  try { window.sessionStorage.setItem(PLACES, JSON.stringify([...all])); } catch { /* kept in memory, for this document */ }
+}
+/** Where the page of the entry `state` belongs to was left, or null. */
+function placeOf(state: unknown): Scroll | null {
+  const entry = entryOf(state);
+  return entry === null ? null : allPlaces().get(entry) ?? null;
+}
+/** TESTS ONLY: forget what this document remembers (a test's document is not a new one). */
+export function forgetPlaces(): void { places = null; }
+
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function cancelSave(): void { if (saveTimer !== null) clearTimeout(saveTimer); saveTimer = null; }
-/** A scroll in the page: once it settles, the current entry remembers it (so Back to it, from any entry, finds it). */
+/** A scroll in the page: once it settles, where the page is now is kept under the current entry's name (so Back to
+ * it, from any entry, finds it). An entry without a name yet gets one, and its place, when it is left (record). */
 function onScroll(): void {
   cancelSave();
   const at = here();
   saveTimer = setTimeout(() => {
     saveTimer = null;
     if (host === null || at !== here() || at !== shownAt) return;
-    try { window.history.replaceState(withScroll(window.history.state, scrollNow()), ""); } catch { /* the browser limits how often; the next settle tries again */ }
+    keepPlace(entryOf(window.history.state), scrollNow());
   }, 150);
 }
 
@@ -243,12 +301,17 @@ export async function follow(href: string, mode: "push" | "pop", saved: Scroll |
   skipTransition();
   cancelSave();
   const mine = new AbortController();
+  const me = ++turn;
+  /** Called off since it began: a newer change, Back to the page on screen, the document leaving. */
+  const off = () => turn !== me;
   reading = mine;
+  readingAt = "";
   const replace = mode === "pop";
   const from = host?.current();
   press(pressed);
   let url: URL;
   try { url = new URL(href, window.location.href); } catch { loadDocument(href, replace); return; }
+  readingAt = addressOf(url);
   if (host === null || from === undefined || from.inPlace !== true || !mayBeInPlace(url) || leavingAsks()) { loadDocument(href, replace); return; }
   const leftHref = window.location.href;
   const ahead = takePrefetched(url);
@@ -260,29 +323,38 @@ export async function follow(href: string, mode: "push" | "pop", saved: Scroll |
     // A read ahead still under way may land before the ordinary read: the first to land decides how this goes.
     if (ahead !== null) early = await Promise.race([ahead.pending, read.then(() => null)]);
   }
-  if (reading !== mine) return;
+  if (off()) return;
   const done = () => { if (reading === mine) reading = null; loading(false); press(null); };
   if (early !== null && !leavingAsks()) {
     // Shown at once from the read ahead, inert, through the same door as any other page.
     loading(false);
     if (!host.accept(early, href, replace, "navigate")) { mine.abort(); done(); return; }
-    record(url, mode);
-    document.title = early.title;
     const shown = early;
-    await swap(() => { host?.show(shown, true); hold(true); if (saved !== null) applyScroll(saved); }, directionOf(from.path, shown.path));
-    if (reading !== mine) return;
+    // The address bar and the screen change in one step (the swap may run a frame later): a change called off before
+    // then pushes and shows nothing, so the address never names one page over another's content.
+    await swap(() => {
+      if (off() || host === null) return;
+      record(url, mode);
+      document.title = shown.title;
+      held = true;
+      host.show(shown, true);
+      hold(true);
+      if (saved !== null) applyScroll(saved);
+    }, directionOf(from.path, shown.path));
+    if (off()) return;
     arrive(shown.title, url.hash !== "", saved);
     const next = await read;
-    if (reading !== mine) return;
+    if (off()) return;
     done();
     // The confirming read failed a check: the address bar already says `href`, so the document replaces this entry.
     if (next === null) { loadDocument(href, true); return; }
     if (!host.accept(next, href, true, "confirm")) return;
     // Remounted from the confirmed page, never patched: every piece of page state starts from it. No motion; the place
-    // in the page is kept.
+    // in the page is kept. The hold is over before the page mounts, so its own effects run as a confirmed page's.
     const kept = scrollNow();
     const focused = document.activeElement?.id === "workspace-main" || document.activeElement === document.body;
     document.title = next.title;
+    held = false;
     host.show(next, false);
     hold(false);
     if (focused) document.getElementById("workspace-main")?.focus({ preventScroll: true });
@@ -291,30 +363,40 @@ export async function follow(href: string, mode: "push" | "pop", saved: Scroll |
     return;
   }
   const next = await read;
-  if (reading !== mine) return;
+  if (off()) return;
   done();
   if (next === null) { loadDocument(href, replace); return; }
   // A section form changed while the page was read: the browser asks before it is left.
   if (leavingAsks()) { loadDocument(href, replace); return; }
   if (!host.accept(next, href, replace, "navigate")) return;
-  record(url, mode);
-  document.title = next.title;
-  await swap(() => { host?.show(next, false); hold(false); if (saved !== null) applyScroll(saved); }, directionOf(from.path, next.path));
-  if (reading !== null) return;
+  await swap(() => {
+    if (off() || host === null) return;
+    record(url, mode);
+    document.title = next.title;
+    held = false;
+    host.show(next, false);
+    hold(false);
+    if (saved !== null) applyScroll(saved);
+  }, directionOf(from.path, next.path));
+  if (off()) return;
   arrive(next.title, url.hash !== "", saved);
   afterArrival(leftHref, mode);
 }
 
-/** The history entry of a change: a push marks both ends (the entry left keeps whatever state it had, plus where its
- * page was left), so a later document that lands between them (a reload) still knows Back and Forward here are page
- * changes (onPop). */
+/** The history entry of a change: a push marks and names both ends (the entry left keeps whatever state it had), and
+ * where the page left was is kept under its name, so a later document that lands between them (a reload) still knows
+ * Back and Forward here are page changes (onPop) and where each page was. Called with the page left still on screen. */
 function record(url: URL, mode: "push" | "pop"): void {
   if (mode === "push") {
     const leaving: unknown = window.history.state;
-    window.history.replaceState({ ...withScroll(leaving, scrollNow()), [MARK]: "in-place" }, "");
-    window.history.pushState({ [MARK]: "in-place" }, "", url.pathname + url.search + url.hash);
+    const left = entryOf(leaving) ?? newEntry();
+    const next = newEntry();
+    keepPlace(left, scrollNow());
+    window.history.replaceState({ ...(typeof leaving === "object" && leaving !== null ? leaving : {}), [MARK]: "in-place", [ENTRY]: left }, "");
+    window.history.pushState({ [MARK]: "in-place", [ENTRY]: next }, "", url.pathname + url.search + url.hash);
     pushed = true;
-  }
+    shownEntry = next;
+  } else shownEntry = entryOf(window.history.state);
   shownAt = here();
 }
 
@@ -377,19 +459,35 @@ function onClick(event: MouseEvent): void {
 
 function onPop(event: PopStateEvent): void {
   cancelSave();
-  // Back or Forward between entries of this one page (a #section) changes no page.
-  if (host === null || here() === shownAt) return;
+  if (host === null) return;
+  const address = window.location.pathname + window.location.search + window.location.hash;
+  if (here() === shownAt) {
+    // The address is at the page on screen (a #section of it, or Back and then Forward again): no page changes. A
+    // change still under way for another address is called off, so its page never lands under this one.
+    shownEntry = entryOf(event.state);
+    if (!(held && reading !== null && readingAt === shownAt)) callOff();
+    // A page read ahead whose confirming read was called off is read again: it never stays on screen unconfirmed.
+    if (held && reading === null) void follow(address, "pop", null);
+    return;
+  }
   // A page that keeps its own history (the Agents Live grid's runs): its own, as today. An entry an in-place change
   // made (in this document, or in one before a reload) is a page change even when this page is not in place: follow()
   // then loads it as a document, so the address bar never names one page over another's content.
   if (host.current().inPlace !== true && !pushed && !marked(event.state)) return;
-  void follow(window.location.pathname + window.location.search + window.location.hash, "pop", scrollOf(event.state));
+  // The page left is still on screen: where it is now is kept under its entry's name.
+  keepPlace(shownEntry, scrollNow());
+  void follow(address, "pop", placeOf(event.state));
+}
+/** A move to a #section of this page made a new entry: scrolls from now on belong to it. */
+function onHash(): void {
+  if (here() === shownAt) shownEntry = entryOf(window.history.state);
 }
 
 /** Start following links in place for this document; returns the stop. One host at a time. */
 export function installNavigation(next: InPlaceHost): () => void {
   host = next;
   shownAt = here();
+  shownEntry = entryOf(window.history.state);
   pushed = false;
   // A document starts out staying.
   leftAt = 0; onStay.clear(); held = false;
@@ -401,6 +499,7 @@ export function installNavigation(next: InPlaceHost): () => void {
   const stay = () => stayed();
   document.addEventListener("click", onClick);
   window.addEventListener("popstate", onPop);
+  window.addEventListener("hashchange", onHash);
   window.addEventListener("beforeunload", leaving);
   window.addEventListener("pageshow", stay);
   document.addEventListener("pointerdown", stay, true);
@@ -409,13 +508,12 @@ export function installNavigation(next: InPlaceHost): () => void {
   const stopPrefetch = installPrefetch(aheadOf);
   return () => {
     if (host === next) host = null;
-    reading?.abort();
-    reading = null;
-    loading(false);
+    callOff();
     cancelSave();
     stopPrefetch();
     document.removeEventListener("click", onClick);
     window.removeEventListener("popstate", onPop);
+    window.removeEventListener("hashchange", onHash);
     window.removeEventListener("beforeunload", leaving);
     window.removeEventListener("pageshow", stay);
     document.removeEventListener("pointerdown", stay, true);

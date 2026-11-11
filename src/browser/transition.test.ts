@@ -116,7 +116,7 @@ test("the shipped timings: 80 ms out, 160 ms in, 8px over 200 ms deeper and shal
     expect(Number(match[2]) + Number(match[3] ?? 0), match[0]).toBeLessThanOrEqual(220);
   }
   expect(all).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^@]*::view-transition-group\(\*\), ::view-transition-old\(\*\), ::view-transition-new\(\*\) \{ animation: none !important; \}/);
-  // The loading line is ink, never amber.
+  // The loading line is ink.
   const workspace = squash(readFileSync(join(import.meta.dirname, "workspace.css"), "utf8"));
   expect(workspace).toMatch(/\.so-main-column\[data-so-loading\]::before \{[^}]*height: 2px;[^}]*background: var\(--so-ink\);/);
 });

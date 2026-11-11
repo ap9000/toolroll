@@ -21,10 +21,12 @@ export const PREFETCH_TTL_MS = 10_000;
 export const PREFETCH_MAX_PAGES = 20;
 export const PREFETCH_MAX_READS = 2;
 
-/** The addresses the server reads ahead (server/in-place.ts PREFETCH_ROUTES); the server still decides. */
+/** The addresses the server reads ahead (server/in-place.ts PREFETCH_ROUTES); the server still decides. Never an
+ * opened agent (`/agents?run=`): opening one is an act (it is seen, or watched), so its page is never shown ahead. */
 const READ_AHEAD = [/^\/$/, /^\/tasks$/, /^\/t\/[^/]+$/, /^\/projects$/, /^\/agents$/, /^\/search$/];
 export function mayPrefetch(url: URL): boolean {
-  return READ_AHEAD.some(pattern => pattern.test(url.pathname)) && !(url.pathname === "/agents" && url.searchParams.get("view") === "live");
+  if (url.pathname === "/agents" && (url.searchParams.get("view") === "live" || url.searchParams.has("run"))) return false;
+  return READ_AHEAD.some(pattern => pattern.test(url.pathname));
 }
 
 /** One page's key: its path and query, without the hash or the parts a page read ignores. */
