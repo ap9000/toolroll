@@ -22,6 +22,9 @@ export type RequestFacts = {
   workspaceRead?: boolean;
   /** Why a `?format=workspace` GET was made (`x-toolroll-read`, readPurpose below): bookkeeping only, never authority. */
   readPurpose?: ReadPurpose;
+  /** A workspace read from an app that runs page work itself (`x-toolroll-work`, task-page-in-app.md §2): it picks
+   * which of two forms of the same page is sent, never what may be read. */
+  appWork?: boolean;
   /** The route table row that matched this request (route-table.ts ids), for the in-place allowlists (serve.ts). */
   routeId?: string;
   /** Receipt reconciliation, task and result reads (`request`, `task`, `result`): work is read afresh, never cached. */

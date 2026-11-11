@@ -28,6 +28,7 @@ const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-ori
 const BACKGROUND_CHECKS_MS = 30_000;
 const LOCAL_AGENTS_EVERY_MS = 2 * 60_000;
 import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+import { PAGE_WORK_HEADER,PAGE_WORK_VERSION } from './page-work-contract.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -949,6 +950,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
       readPurpose: purpose,
+      ...(workspaceRead && request.headers[PAGE_WORK_HEADER] === String(PAGE_WORK_VERSION) ? { appWork: true } : {}),
       ...(matchedRoute?.stage === 'console' ? { routeId: matchedRoute.id } : {}),
       freshWork: ["request", "task", "result"].some(name => url.searchParams.has(name)),
       ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
@@ -1645,12 +1647,25 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // guarded forms keep their current behavior after React inserts them.
       // A page with its own view keeps its script; the chat page runs the result script.
       // The exact page script the document would run: the JSON arm and the document arm read this one value.
-      const functional = conversation === null || extras.view ? (s.functional?.script ?? '') : RESULT_REVIEW_SCRIPT;
+      const ownScript = conversation === null || extras.view;
+      const pageScript = ownScript ? (s.functional?.script ?? '') : RESULT_REVIEW_SCRIPT;
+      const routeInPlace = inPlaceRoute(requestFacts.routeId, path);
+      // The app runs the page's behaviour itself (docs/plans/task-page-in-app.md §2) only when all of these hold: the
+      // app covers the WHOLE script, no password field (a password page keeps its string path), an in-place route, and a
+      // reader that can run it: a document load (its bundle is this server's, served no-store) or a workspace read that
+      // says so. Anything else is the page exactly as before: the string, no work, a document.
+      const covered = ownScript ? s.functional?.app : undefined;
+      const work = pageScript !== '' && covered !== undefined && covered.length > 0 && !sensitive && routeInPlace
+        && (!requestFacts.workspaceRead || requestFacts.appWork === true) ? covered : null;
+      const functional = work === null ? pageScript : '';
       // May replace another page without a document load (live-pages-and-home.md A1.1): an allowlisted route, no password
       // field, no page script (a page script runs once per document, so its page always loads as one).
-      const inPlace = inPlaceRoute(requestFacts.routeId, path) && !sensitive && functional === '';
+      const inPlace = routeInPlace && !sensitive && functional === '';
       const workspace: BrowserWorkspace = {
         version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive, inPlace,
+        ...(work === null ? {} : { work }),
+        // Said on the document that ships it: this document's page script listens for as long as the document lives.
+        ...(functional !== '' && !requestFacts.workspaceRead ? { scripted: true } : {}),
         // The project picker names the open project; the settings frame carries its breadcrumb.
         // Only a project this person may see now: never the raw saved path (settings-kit.ts openProjectFor).
         openProject: openProjectFor(requestFacts.openProject ?? null, s.chrome.project, s.chrome.projects ?? []),

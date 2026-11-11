@@ -38,7 +38,7 @@ const skipBuild = flag("--skip-build");
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
   console: { journeys: 16, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, putting old tasks away, projects and their network, knowledge, skills, tools, models, old routine links" },
-  pages: { journeys: 10, about: "Every main page on desktop and phone, settings, search, pages changing in place, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
+  pages: { journeys: 11, about: "Every main page on desktop and phone, settings, search, pages changing in place, a task with a question opened and answered in place, identity provider, the demo and its scripted lead, the release approval sheet, a running release check, signing out" },
   task: { journeys: 5, about: "A task from an idea to an accepted result, then sent back twice; the same by keyboard alone" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
@@ -937,9 +937,16 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
     const one = latestBuild(id);
     return one && !one.finished_at && rows(`SELECT provider_started_at FROM run WHERE id = ${one.id}`)[0]?.provider_started_at ? one : null;
   }, { timeoutMs: 180_000, everyMs: 250 });
-  await page.goto(`${base}/t/${id}`);
+  // A task with a running build opens in place from the Tasks list: the app runs that page's live progress itself
+  // (docs/plans/task-page-in-app.md), so no page loads, and Stop is there as on a loaded page.
+  await page.goto(`${base}/tasks?scope=all`);
+  const row = page.locator(`a[href="/t/${id}"]:visible`).first();
+  await row.waitFor({ timeout: 15_000 });
+  await page.evaluate(() => { window.__sameDocument = true; });
+  await row.click();
   const stop = page.locator("form.task-stop-form button");
   await stop.waitFor({ timeout: 15_000 });
+  if (new URL(page.url()).pathname !== `/t/${id}` || !(await page.evaluate(() => window.__sameDocument === true).catch(() => false))) throw new Error(`a task with a running build loaded a page: ${page.url()}`);
   await Promise.all([page.waitForNavigation(), stop.click()]);
   // While Toolroll stops it, the build is a wait, never Needs you (docs/plans/plain-toolroll.md P1.2). Read the list
   // first: a stop still unsettled after the read was unsettled during it.
@@ -1313,6 +1320,77 @@ await journey("pages", SCRIPTED, "The menu changes pages in place: Tasks and Pro
     // Nothing of the move is left behind.
     await until("the page change to settle", async () => page.evaluate(() => !/so-nav/.test(document.documentElement.className) && document.querySelector("[data-so-loading], [data-so-pressed]") === null), { timeoutMs: 5_000, everyMs: 200 });
   } finally { page.off("request", heard); }
+});
+
+await journey("pages", SCRIPTED, "A task with an open question opens in place, on desktop and on a phone, and its answer is sent in place; once it has a result it opens as a page of its own", [], async () => {
+  const id = "modulo";
+  // The first build stops on a question; the build the answer admits finishes.
+  script(
+    { role: "builder", when: [/modulo/], times: 1, answer: { park: { question: "Should modulo of a negative number be negative?", recap: "The plan doesn't say what modulo(-7, 3) is.",
+      options: [{ id: "a", label: "Keep the sign", consequence: "modulo(-7, 3) is -1.", reversible: true }, { id: "b", label: "Always positive", consequence: "modulo(-7, 3) is 2.", reversible: true }], recommendation: "a" } } },
+    { role: "builder", when: [/modulo/], answer: { files: {
+      "src/math.js": "export const add = (a, b) => a + b;\nexport const modulo = (a, b) => a % b;\n",
+      "test/math.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add, modulo } from '../src/math.js';\n\ntest('adds', () => assert.equal(add(2, 3), 5));\ntest('modulo keeps the sign', () => assert.equal(modulo(-7, 3), -1));\n",
+    }, conclusion: "Added modulo(a, b), which keeps the sign, with a test." } },
+  );
+  cli(["task", "add", "Add a modulo function", "--id", id, "--repo", repo, ...auth]);
+  cli(["task", "scope", id, "--goal", "Add modulo(a, b) to src/math.js with a test in test/math.test.js.", "--acceptance", "modulo works|check", ...auth]);
+  cli(["task", "approve", id, "--yes", "--digest", cli(["task", "show", id]).scope.digest, ...auth]);
+  const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 180_000, everyMs: 500 });
+  const list = `${base}/tasks?view=needs-you`;
+  const same = on => on.evaluate(() => window.__sameDocument === true).catch(() => false);
+  const says = async on => (await on.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 500);
+  const at = (on, path) => new URL(on.url()).pathname === path;
+  const card = on => on.locator(`[data-decision-id="${asked.id}"]`);
+  /** From the Tasks list, the task's row opens its page: the same document, the question on it, nothing held. */
+  const openFromList = async (on, who) => {
+    await on.goto(list);
+    const row = on.locator(`a.k-row-t[href="/t/${id}"]:visible`).first();
+    await waitFor(row, `${id} in the Tasks list (${who})`, { timeoutMs: 15_000, seen: () => says(on) });
+    // A mark on this document: a page load would lose it.
+    await on.evaluate(() => { window.__sameDocument = true; });
+    await row.click();
+    await until(`${id} to open (${who})`, async () => at(on, `/t/${id}`), { timeoutMs: 15_000, everyMs: 200, seen: () => says(on) });
+  };
+  const phone = await alexPhone();
+  for (const [who, on] of [["phone", phone], ["desktop", page]]) {
+    await openFromList(on, who);
+    await until(`the question on ${id}'s page, in place (${who})`, async () => await same(on) && await card(on).locator("form.decide-inline button").first().isVisible().catch(() => false)
+      && await on.evaluate(() => !document.getElementById("workspace-main")?.hasAttribute("data-so-provisional")), { timeoutMs: 15_000, everyMs: 200, seen: () => says(on) });
+    if (who === "phone") {
+      await on.goBack();
+      await until("Back to return to Tasks in place (phone)", async () => at(on, "/tasks") && await same(on), { timeoutMs: 10_000, everyMs: 200 });
+    }
+  }
+  await putPhoneDown();
+  await shot("task-question-in-place");
+  // The answer: one POST, the page stays, and the question is answered where it stood.
+  const posts = [];
+  const heard = request => { if (request.method() === "POST") posts.push(new URL(request.url()).pathname); };
+  page.on("request", heard);
+  try {
+    await card(page).locator("form.decide-inline button").first().click();
+    await until("the answer to be recorded", async () => rows(`SELECT state FROM decision WHERE id = ${asked.id}`)[0]?.state === "answered", { timeoutMs: 15_000, everyMs: 200, seen: () => says(page) });
+    // Its receipt replaces the form (the page's next read then moves the question into the conversation).
+    await until("the answer form to leave the page", async () => (await card(page).locator("form.decide-inline").count()) === 0, { timeoutMs: 15_000, everyMs: 200, seen: () => says(page) });
+    if (!(await same(page)) || !at(page, `/t/${id}`)) throw new Error(`answering the question loaded a page: ${page.url()}`);
+    const sent = posts.filter(one => one.startsWith("/d/"));
+    if (sent.length !== 1 || sent[0] !== `/d/${asked.id}/answer`) throw new Error(`answering posted: ${sent.join(", ") || "nothing"}`);
+  } finally { page.off("request", heard); }
+  const answered = rows(`SELECT answered_by, answered_via FROM decision WHERE id = ${asked.id}`)[0];
+  if (answered?.answered_by !== "alex" || answered.answered_via !== "web") throw new Error(`the answer wasn't recorded as yours: ${JSON.stringify(answered)}`);
+  await page.goBack();
+  await until("Back to return to Tasks in place", async () => at(page, "/tasks") && await same(page), { timeoutMs: 10_000, everyMs: 200 });
+  // The build the answer admits finishes. A task showing a result still runs that page's own script, so it opens as a
+  // page of its own (docs/plans/task-page-in-app.md, C2 moves it in).
+  await until(`${id} to be built`, async () => { const one = latestBuild(id); return one && one.id > asked.run && one.finished_at ? one.outcome === "built" : false; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(latestBuild(id)) });
+  await until(`${id}'s result on its page`, async () => { await page.goto(`${base}/t/${id}`); return (await page.locator("[data-result-decision]").count()) > 0; }, { timeoutMs: 120_000, everyMs: 2000 });
+  await page.goto(`${base}/tasks?scope=all`);
+  const row = page.locator(`a[href="/t/${id}"]:visible`).first();
+  await waitFor(row, `${id} in the Tasks list`, { timeoutMs: 15_000, seen: () => says(page) });
+  await page.evaluate(() => { window.__sameDocument = true; });
+  await row.click();
+  await until(`${id}'s result page to load as a document`, async () => at(page, `/t/${id}`) && !(await same(page)) && (await page.locator("[data-result-decision]").count()) > 0, { timeoutMs: 15_000, everyMs: 200, seen: () => says(page) });
 });
 
 // ------------------------------------------------------------------ code in flows

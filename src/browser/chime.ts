@@ -77,7 +77,7 @@ export function playChime(): void {
 /** Run `act` while holding this origin's chime lock (atomic across tabs); without Web Locks, run it as is. */
 async function exclusively(act: () => void): Promise<void> {
   const locks = (navigator as Navigator & { locks?: LockManager }).locks;
-  if (locks === undefined) { act(); return; }
+  if (locks === undefined || locks === null) { act(); return; }
   await locks.request(CHANNEL, () => { act(); });
 }
 

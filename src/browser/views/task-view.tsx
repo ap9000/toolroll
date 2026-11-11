@@ -900,7 +900,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     questions: stuckKey, "plan-revisions": decides ? stuckKey : "build" };
   const leadOf = (key: string) => rows === null ? [] : view.lead.filter(block => ATTACHED[block.key] === key && rows.some(row => row.key === key && row.opens));
   const unattached = view.lead.filter(block => rows === null || !rows.some(row => row.key === ATTACHED[block.key] && row.opens));
-  const leadCards = (blocks: readonly { key: string; html: string }[]) => blocks.map(block => <Html key={block.key} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />);
+  const leadCards = (blocks: readonly { key: string; html: string; instance?: string }[]) => blocks.map(block => <Html key={block.instance === undefined ? block.key : `${block.key}:${block.instance}`} html={block.html} className={`so-task-lead so-task-lead--${block.key}`} />);
   // Where the status box goes: the step happening now, else the last one reached.
   const statusKey = currentKey ?? rows?.find(row => row.open)?.key ?? null;
   const readyOpens = rows?.some(row => row.key === "ready" && row.opens) ?? false;
