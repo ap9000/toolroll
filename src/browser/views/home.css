@@ -1,35 +1,78 @@
-/* Home (UI revamp wave B; prototype app.css .hello, .counts, .triage, .ti, .tri-open, .home-ask). Tokens only. Every rule
- * is scoped under [data-view] and the page root so it outranks the views' scoped preflight (src/browser/tailwind.css). */
+/* Home (docs/plans/live-pages-and-home.md B1). Tokens only: ink marks what waits on you (the solid Needs-you
+ * chip, the 1px ink outline of the next card, the one ink button), blue only running, green only finished, red only
+ * what went wrong; hairlines, not boxes. Every rule is scoped under [data-view] and the page root so it outranks the
+ * views' scoped preflight (src/browser/tailwind.css). */
 [data-view]:has(> .so-home), [data-view]:has(> .so-search) { min-height: 0; }
 [data-view] .so-home { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-[data-view] .so-home .so-tri-g { margin: 0; padding: 14px var(--so-space-lg) 6px var(--so-space-lg); font: 500 12.5px/1 var(--so-font-sans); color: var(--so-muted); }
-[data-view] .so-home .so-ti { display: grid; gap: 6px; color: var(--so-ink); text-decoration: none; }
-[data-view] .so-home .so-ti-t { font: 500 13.5px/1.35 var(--so-font-sans); }
-[data-view] .so-home .so-hello { padding: var(--so-space-3xl) var(--so-space-3xl) 0; border-bottom: 1px solid var(--so-line); }
-[data-view] .so-home .so-say { margin: 0; font: 600 20px/1.3 var(--so-font-sans); letter-spacing: -0.015em; color: var(--so-ink); }
-[data-view] .so-home .so-hello-empty { padding-bottom: var(--so-space-3xl); display: grid; gap: var(--so-space-md); justify-items: start; border-bottom: 0; }
+
+/* The heading, said once, the quiet line under it, and the project filter with New task. */
+[data-view] .so-home .so-home-h { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: var(--so-space-2xl); padding: 22px 28px 18px; }
+[data-view] .so-home .so-home-hl { display: grid; gap: var(--so-space-xs); min-width: 0; }
+[data-view] .so-home .so-say { margin: 0; font: 600 22px/1.25 var(--so-font-sans); letter-spacing: -0.02em; color: var(--so-ink); }
 [data-view] .so-home .so-hello-x { margin: 0; color: var(--so-muted); font-size: 14px; line-height: 1.6; max-width: 60ch; }
-[data-view] .so-home .so-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); max-width: 760px; margin-top: var(--so-space-xl); border-top: 1px solid var(--so-line); }
-[data-view] .so-home .so-count { display: grid; gap: var(--so-space-sm); padding: 14px var(--so-space-lg) var(--so-space-lg) 0; color: var(--so-ink); text-decoration: none; }
-[data-view] .so-home .so-count + .so-count { padding-left: var(--so-space-lg); border-left: 1px solid var(--so-line); }
-[data-view] .so-home .so-count-k { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--so-muted); }
-[data-view] .so-home .so-count-v { font: 500 22px/1 var(--so-font-sans); letter-spacing: -0.02em; }
-[data-view] .so-home .so-count-v.zero { color: var(--so-muted); }
-[data-view] .so-home .so-triage { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-[data-view] .so-home .so-tri-list { min-height: 0; border-right: 1px solid var(--so-line); overflow: auto; padding: var(--so-space-xs) 0 var(--so-space-2xl); outline: none; }
-[data-view] .so-home .so-tri-list .so-ti { padding: 10px var(--so-space-lg) 10px 14px; border-left: 2px solid transparent; }
-[data-view] .so-home .so-tri-list .so-ti[aria-selected="true"] { background: var(--so-raised); border-left-color: var(--so-ink); }
-[data-view] .so-home .so-ti-d { font-size: 12.5px; color: var(--so-muted); }
-[data-view] .so-home .so-tri-none, [data-view] .so-home .so-tri-more { margin: 0; padding: 14px var(--so-space-lg); font-size: 13px; color: var(--so-muted); }
-[data-view] .so-home .so-tri-open { min-width: 0; min-height: 0; overflow: auto; padding: var(--so-space-2xl) 32px 40px; display: grid; gap: 14px; align-content: start; max-width: 820px; }
+[data-view] .so-home .so-home-h + .so-hello-x { padding: 0 28px 12px; }
+[data-view] .so-home .so-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); margin: 0; font-size: 13px; color: var(--so-nav-ink); }
+[data-view] .so-home .so-act .k-link { color: var(--so-nav-ink); }
+[data-view] .so-home .so-act-run { display: inline-flex; align-items: center; gap: 6px; }
+[data-view] .so-home .so-act-sep { color: var(--so-muted); }
+[data-view] .so-home .so-home-tools { flex: none; display: flex; align-items: center; gap: var(--so-space-sm); }
+[data-view] .so-home .so-mark { flex: none; display: inline-block; box-sizing: border-box; width: 8px; height: 8px; border-radius: 50%; }
+[data-view] .so-home .so-mark.live { background: var(--so-live); }
+[data-view] .so-home .so-mark.queued { border: 1.5px solid var(--so-field-line); }
+
+/* The list, grouped by what is asked, and the selected one beside it. */
+[data-view] .so-home .so-triage { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(280px, 400px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); border-top: 1px solid var(--so-line); }
+[data-view] .so-home .so-tri-list { min-height: 0; border-right: 1px solid var(--so-line); overflow: auto; padding: var(--so-space-xs) var(--so-space-sm) var(--so-space-2xl); outline: none; }
+[data-view] .so-home .so-tri-g { display: flex; gap: 6px; margin: 0; padding: 14px 12px 4px; font: 500 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
+[data-view] .so-home .so-tri-n { font-variant-numeric: tabular-nums; }
+[data-view] .so-home .so-ti { display: grid; gap: 0; padding: 9px 12px; border-radius: var(--so-radius-md); color: var(--so-ink); text-decoration: none; }
+[data-view] .so-home .so-ti-t { font: 500 13.5px/20px var(--so-font-sans); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+[data-view] .so-home .so-ti-m { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 18px; color: var(--so-muted); }
+[data-view] .so-home .so-ti-why { color: var(--so-danger); font-weight: 500; }
+[data-view] .so-home .so-ti-why::after { content: " · "; color: var(--so-muted); font-weight: 400; }
+[data-view] .so-home .so-tri-list .so-ti[aria-selected="true"] { background: var(--so-soft); }
+[data-view] .so-home .so-tri-more { display: block; padding: 6px 12px; font-size: 12.5px; color: var(--so-muted); }
+[data-view] .so-home .so-tri-open { min-width: 0; min-height: 0; overflow: auto; padding: 20px 32px 40px; display: grid; gap: var(--so-space-lg); align-content: start; max-width: 720px; }
 [data-view] .so-home .so-open-k { display: flex; align-items: center; gap: var(--so-space-sm); font-size: 12.5px; color: var(--so-muted); }
+[data-view] .so-home .so-open-k .k-link { color: var(--so-ink); font-weight: 500; }
 [data-view] .so-home .so-open-of { margin: 0; font-size: 12.5px; color: var(--so-muted); }
-[data-view] .so-home .so-open-t { margin: 0; font: 600 17px/1.35 var(--so-font-sans); letter-spacing: -0.01em; }
+[data-view] .so-home .so-open-t { margin: 0; font: 600 20px/1.25 var(--so-font-sans); letter-spacing: -0.02em; overflow-wrap: anywhere; }
 [data-view] .so-home .so-open-x { margin: 0; font-size: 14px; line-height: 1.65; max-width: 66ch; }
-[data-view] .so-home .so-open-chip { display: flex; align-items: center; gap: var(--so-space-sm); margin: 0; font-size: 13px; color: var(--so-muted); }
+[data-view] .so-home .so-open-chip { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 13px; color: var(--so-muted); }
 [data-view] .so-home .so-tri-open .k-radios { grid-template-columns: minmax(0, 1fr); max-width: 640px; }
-[data-view] .so-home .so-home-ask-dock { flex: none; padding: var(--so-space-md) var(--so-space-3xl) 14px; border-top: 1px solid var(--so-line); background: var(--so-paper); }
+[data-view] .so-home .so-next { display: none; }
+
+/* The bottom: the lead's last message as one line, then the filled message box. */
+[data-view] .so-home .so-home-bar { flex: none; padding: 12px 28px 16px; border-top: 1px solid var(--so-line); background: var(--so-paper); }
+[data-view] .so-home .so-home-bar-row { display: flex; align-items: center; gap: var(--so-space-sm); max-width: 760px; }
+[data-view] .so-home .so-home-bar-row > .so-home-ask { flex: 1; min-width: 0; }
+[data-view] .so-home .so-home-plus { display: none; }
 [data-view] .so-home .so-home-ask { max-width: 760px; margin: 0; padding: 0; border: 0; background: transparent; }
+[data-view] .so-home .so-lead { box-sizing: border-box; max-width: 760px; display: flex; align-items: baseline; gap: var(--so-space-sm); padding: 0 18px var(--so-space-sm); font-size: 12.5px; color: var(--so-nav-ink); text-decoration: none; }
+[data-view] .so-home .so-lead-who { flex: none; color: var(--so-ink); font-weight: 500; }
+[data-view] .so-home .so-lead-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-view] .so-home .so-lead-age { flex: none; color: var(--so-muted); }
+[data-view] .so-home .so-lead-open { flex: none; color: var(--so-ink); font-weight: 500; text-decoration: underline; text-decoration-color: var(--so-field-line); text-underline-offset: 3px; }
+
+/* Nothing waits on you: one centred column with the message box, what runs, and what finished today. */
+[data-view] .so-home-clear { overflow: auto; }
+[data-view] .so-home .so-clear { box-sizing: border-box; width: 100%; max-width: 680px; margin: 0 auto; padding: 44px 28px 40px; display: flex; flex-direction: column; gap: 32px; }
+[data-view] .so-home .so-clear .so-home-h { padding: 0; }
+[data-view] .so-home .so-clear .so-say { font-size: 26px; letter-spacing: -0.025em; }
+[data-view] .so-home .so-clear .so-hello-x { padding: 0; }
+[data-view] .so-home .so-clear-ask { display: grid; gap: var(--so-space-sm); }
+[data-view] .so-home .so-clear-ask .so-lead { max-width: none; padding-bottom: 0; }
+[data-view] .so-home .so-sec { display: flex; flex-direction: column; }
+[data-view] .so-home .so-sec-hr { display: flex; align-items: baseline; justify-content: space-between; gap: var(--so-space-lg); }
+[data-view] .so-home .so-sec-hr .k-link { font-size: 12.5px; color: var(--so-nav-ink); }
+[data-view] .so-home .so-sec-h { display: flex; gap: 6px; margin: 0 0 var(--so-space-xs); font: 500 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
+[data-view] .so-home .so-wrow { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--so-line); color: var(--so-ink); text-decoration: none; }
+[data-view] .so-home .so-wrow > .so-mark { margin: 0 4px; }
+[data-view] .so-home .so-wrow-check { flex: none; display: inline-grid; place-items: center; width: 16px; color: var(--so-success); }
+[data-view] .so-home .so-wrow-b { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+[data-view] .so-home .so-wrow-t { font: 500 13.5px/1.45 var(--so-font-sans); overflow-wrap: anywhere; }
+[data-view] .so-home .so-wrow-m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--so-muted); }
+[data-view] .so-home .so-wrow-age { flex: none; font-size: 12.5px; color: var(--so-muted); }
 
 /* The search page (views/search-view.tsx). */
 [data-view] .so-search { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -38,23 +81,48 @@
 [data-view] .so-search .so-search-note { margin: 0; padding: 10px var(--so-space-2xl); font-size: 12.5px; color: var(--so-muted); }
 
 @media (hover: hover) and (pointer: fine) {
-  [data-view] .so-home .so-count:hover .so-count-k { color: var(--so-ink); }
-  [data-view] .so-home .so-tri-list .so-ti:hover { background: var(--so-soft); }
-  [data-view] .so-home .so-tri-list .so-ti[aria-selected="true"]:hover { background: var(--so-raised); }
+  [data-view] .so-home .so-tri-list .so-ti:hover { background: var(--so-raised); }
+  [data-view] .so-home .so-tri-list .so-ti[aria-selected="true"]:hover { background: var(--so-soft); }
+  [data-view] .so-home .so-wrow:hover .so-wrow-t, [data-view] .so-home .so-lead:hover .so-lead-text { color: var(--so-ink); }
+  [data-view] .so-home .so-lead:hover .so-lead-open { text-decoration-color: var(--so-ink); }
 }
 @media (max-width: 760px) {
-  [data-view] .so-home .so-hello { padding: var(--so-phone-gutter) var(--so-phone-gutter) 0; }
-  [data-view] .so-home .so-say { font-size: 18px; }
-  [data-view] .so-home .so-counts { margin-top: var(--so-phone-block); }
-  [data-view] .so-home .so-count { padding: 10px var(--so-phone-row) var(--so-phone-card) 0; gap: 6px; }
-  [data-view] .so-home .so-count + .so-count { padding-left: 10px; }
-  [data-view] .so-home .so-count-v { font-size: 20px; }
-  [data-view] .so-home .so-triage { display: block; flex: none; }
   [data-view]:has(> .so-home) { min-height: auto; }
-  [data-view] .so-home .so-ti-t { font-size: 14px; }
-  [data-view] .so-home .so-tri-list { border-right: 0; }
-  [data-view] .so-home .so-tri-list .so-ti { padding: 10px var(--so-phone-gutter); border-left: 0; }
+  [data-view] .so-home .so-home-h { flex-wrap: wrap; align-items: center; gap: var(--so-space-sm) var(--so-space-lg); padding: var(--so-space-sm) var(--so-phone-gutter) 0; }
+  [data-view] .so-home .so-home-h + .so-hello-x { padding: var(--so-space-sm) var(--so-phone-gutter) 0; }
+  [data-view] .so-home .so-act { font-size: 13px; }
+  /* The next one, as a card with its one action. */
+  [data-view] .so-home .so-next { display: flex; flex-direction: column; gap: 10px; margin: var(--so-space-lg) var(--so-phone-gutter) 0; padding: 14px; border: 1px solid var(--so-needs); border-radius: 12px; }
+  [data-view] .so-home .so-next-k { display: flex; align-items: center; gap: var(--so-space-sm); margin: 0; min-width: 0; font-size: 13px; color: var(--so-muted); }
+  [data-view] .so-home .so-next-k > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  [data-view] .so-home .so-next-t { margin: 0; font: 600 16px/1.3 var(--so-font-sans); overflow-wrap: anywhere; }
+  [data-view] .so-home .so-next-x { margin: 0; color: var(--so-nav-ink); font-size: 14px; line-height: 1.45; }
+  [data-view] .so-home .so-next-act { width: 100%; justify-content: center; }
+  /* Then the rest of the list, rows between hairlines. */
+  [data-view] .so-home .so-triage { display: block; flex: none; border-top: 0; margin-top: var(--so-space-sm); }
+  [data-view] .so-home .so-tri-list { border-right: 0; overflow: visible; padding: 0 var(--so-phone-gutter) var(--so-space-lg); }
+  [data-view] .so-home .so-tri-g { padding: 14px 0 2px; font-size: 12.5px; }
+  [data-view] .so-home .so-tri-list .so-ti { padding: 10px 0; border-radius: 0; border-bottom: 1px solid var(--so-line); }
   [data-view] .so-home .so-tri-list .so-ti[aria-selected="true"] { background: transparent; }
+  [data-view] .so-home .so-ti-t { font-size: 14px; }
+  [data-view] .so-home .so-ti-m { font-size: 13px; line-height: 20px; }
+  [data-view] .so-home .so-tri-more { padding: 10px 0; }
+  [data-view] .so-home .so-tri-list .so-ti-next { display: none; }
+  [data-view] .so-home .so-tri-grp:not(:has(> .so-ti:not(.so-ti-next), > .so-tri-more)) { display: none; }
+  /* The bottom bar: the lead's line, the message box and the round New task, above everything else on the page. */
+  [data-view] .so-home .so-home-bar { position: sticky; bottom: 0; z-index: 12; margin-top: auto; padding: 0 12px calc(14px + env(safe-area-inset-bottom)); }
+  [data-view] .so-home .so-lead { min-height: 44px; align-items: center; padding: 0 4px; font-size: 13px; }
+  [data-view] .so-home .so-lead-age { display: none; }
+  [data-view] .so-home .so-lead-open { text-decoration: none; }
+  [data-view] .so-home .so-home-plus { display: inline-grid; place-items: center; flex: none; width: 46px; height: 46px; padding: 0; border-radius: 50%; }
+  /* Nothing waiting, on a phone. */
+  [data-view] .so-home .so-clear { padding: var(--so-space-lg) var(--so-phone-gutter) var(--so-space-2xl); gap: var(--so-space-2xl); }
+  [data-view] .so-home .so-clear .so-say { font-size: 22px; }
   [data-view] .so-search .so-search-bar { padding: var(--so-phone-card) var(--so-phone-gutter) 6px; }
   [data-view] .so-search .so-search-note { padding: 10px var(--so-phone-gutter); }
+}
+/* Home's own bar holds the message box and New task on a phone: the shell's dock steps aside there. */
+@media (max-width: 760px) {
+  .so-workspace:has(.so-home-bar) .so-dock { display: none; }
+  .so-workspace.so-workspace:has(.so-home-bar) .so-main-content { padding-bottom: 0; }
 }

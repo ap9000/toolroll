@@ -72,6 +72,8 @@ export function useNeedsRefresh(workspace: BrowserWorkspace, states: unknown): v
 }
 
 const NAV_ICONS: Record<string, KitIcon> = { Home: "home", Tasks: "tasks", Flows: "flows", Agents: "agents", Projects: "projects", Settings: "settings" };
+/** Chat's icon: a speech bubble, drawn like the kit's icons (the kit's set has none for it yet). */
+const ChatIcon = () => <svg className="k-i" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>;
 export const OPEN_SEARCH_EVENT = "so:open-search";
 export const openSearch = (trigger?: HTMLElement | null): void => { window.dispatchEvent(new CustomEvent(OPEN_SEARCH_EVENT, { detail: trigger ?? null })); };
 
@@ -84,7 +86,7 @@ function Destinations({ workspace, needs }: { workspace: BrowserWorkspace; needs
   return <>{workspace.navigation.map(item => {
     const counted = item.label === "Home" && needs.count > 0;
     return <a key={item.href} className="so-nav" href={item.href} aria-current={item.active ? "page" : undefined}>
-      <KIcon name={NAV_ICONS[item.label] ?? "more"} /><span className="so-nav-l">{item.label}</span>
+      {item.label === "Chat" ? <ChatIcon /> : <KIcon name={NAV_ICONS[item.label] ?? "more"} />}<span className="so-nav-l">{item.label}</span>
       {counted && <><span className="k-count ink" title={needs.label} data-needs-count>{needs.count}{needs.saturated ? "+" : ""}</span><span className="k-sr">{`, ${needs.label}`}</span></>}
     </a>;
   })}</>;
@@ -132,12 +134,13 @@ function Account({ workspace }: { workspace: BrowserWorkspace }) {
   </div>;
 }
 
-/** The desk rail: brand and New task, Search (⌘K), the six destinations, the projects, and the account. */
+/** The desk rail: the brand with New task as a plus beside it, Search (⌘K), the destinations (Chat under Home), the
+ * projects, and the account. */
 export function Rail({ workspace, states, current }: { workspace: BrowserWorkspace; states: BrowserProjectState[] | null; current: string | null }) {
   const needs = useNeeds(workspace);
   return <nav className="so-rail" aria-label="Main">
     <div className="so-rail-top"><Brand /><span className="k-grow" />
-      <a className="k-btn k-btn-ghost k-btn-sm k-btn-icon" href="/tasks/new" aria-label="New task" title="New task"><KIcon name="pen" /></a></div>
+      <a className="k-btn k-btn-ghost k-btn-sm k-btn-icon" href="/tasks/new" aria-label="New task" title="New task"><KIcon name="plus" /></a></div>
     {/* The search page is the fallback; the panel opens in place (never on a sensitive page, which has no palette). */}
     <a className="so-nav" href="/search" data-rail-search onClick={event => { if (workspace.sensitive || event.metaKey || event.ctrlKey) return; event.preventDefault(); openSearch(event.currentTarget); }}>
       <KIcon name="search" /><span className="so-nav-l">Search</span><kbd className="so-kbd" aria-hidden="true">⌘K</kbd></a>

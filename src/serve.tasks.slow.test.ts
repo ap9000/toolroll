@@ -528,7 +528,7 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     }
 
     // Every count reads the admitted projects alone: one asks, nothing of the hidden project runs or waits.
-    expect(homeView.say).toBe("1 needs you in main.");
+    expect(homeView.say).toBe("1 task needs you");
     expect(Object.fromEntries(homeView.counts.map(one => [one.key, one.value]))).toEqual({ needs: 1, running: 0, queued: 2, finished: 0 });
     expect(Object.fromEntries(tasksView.tabs.map(tab => [tab.key, tab.count]))).toMatchObject({ all: 3, "needs-you": 1, running: 0 });
     expect(workspaceOf(home).needsYou?.count).toBe(1);
@@ -2169,10 +2169,10 @@ describe("Home says when nothing will build (install review)", () => {
     const rowOf = async () => {
       const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
       const view = workspaceOf(home).view as BrowserHomeView;
-      return view.groups.flatMap(group => group.rows.map(row => ({ ...row, group: group.key }))).find(row => row.id === "t-idle");
+      return [...view.groups.flatMap(group => group.rows.map(row => ({ ...row, group: group.key as string }))), ...view.working.map(row => ({ ...row, group: "working" }))].find(row => row.id === "t-idle");
     };
     let row = await rowOf();
-    expect(row).toMatchObject({ group: "you", line: "No builder works on this project yet. Connect one so the task can start.", action: { label: "Connect a builder" } });
+    expect(row).toMatchObject({ group: "other", line: "No builder works on this project yet. Connect one so the task can start.", action: { label: "Connect a builder" } });
     const start = await (await fetch(`${base}${row!.action!.href}`, { headers: { cookie } })).text();
     expect(start).toContain("No builder is connected");
     expect(start).toContain("toolroll up");
@@ -2180,11 +2180,11 @@ describe("Home says when nothing will build (install review)", () => {
 
     register(store, { name: "old-1", host: "h", capacity: 1, repos: ["/repo/main"], now: new Date(Date.now() - 30 * 24 * 60 * 60_000), newToken: () => "tok-old" });
     row = await rowOf();
-    expect(row).toMatchObject({ group: "you", action: { label: "Start the builder" } });
+    expect(row).toMatchObject({ group: "other", action: { label: "Start the builder" } });
 
     store.touchRunner("old-1", new Date());
     row = await rowOf();
-    expect(row?.group).not.toBe("you");
+    expect(["working", undefined]).toContain(row?.group);
     expect(row?.action?.label ?? "").not.toMatch(/builder/i);
   });
 });

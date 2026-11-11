@@ -81,7 +81,7 @@ import { rereadBrowser } from "./live.js";
 import { homeView } from "./home.js";
 import { workIndexPage } from "../work-index.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow } = runtime;
+  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -216,10 +216,29 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       const door = consentDoorOf(scope, runtime.routeViewOf(taskId, store.lookupRef(taskId), scope, now, who));
       return door.open ? null : door;
     };
-    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat: chrome.chat === true, canAnswer: who.role === "approver", closedDoor }),
+    const chat = chrome.chat === true;
+    const view = { ...homeView({ store, now, access: workAccess(), evidenceRoot, project, projects, chat, canAnswer: who.role === "approver", closedDoor,
+      leadMessage: chat ? leadLastMessage(who, now) : null }),
       // Until the first result: the welcome's three steps stay one link away.
       setup: firstRunStepsNow(now) !== null ? "/welcome" : null };
     return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/tasks">Tasks</a></p></div>`, { chrome, workspace: { view } }));
+  }
+
+  /** The lead's last message in this person's main thread, for Home's one line above the message box. The thread is
+   * read only through the gate a docked conversation uses (serve.ts dockedConversation): an approver in a browser
+   * session, chat enabled, the approver's standing re-proved now (leadPrincipal), their lead session under the current
+   * ceiling and generation; and then through leadConversationRows, the very rows /chat renders, which keep only a thread
+   * under this person's current ceiling. Null at any refusal, and when the lead has said nothing yet. */
+  function leadLastMessage(who: Who & { via: "cookie" }, now: Date): { text: string; at: string } | null {
+    if (who.role !== "approver") return null;
+    const enabled = chatEnablement();
+    const principal = enabled.ok ? leadPrincipal(who) : null;
+    if (!enabled.ok || principal === null) return null;
+    const found = store.activeLeadSession(who.name);
+    const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
+    if (!notStarted && (found === null || found.ceilingDigest !== principal.ceilingDigest || found.approverGeneration !== principal.generation)) return null;
+    const said = leadConversationRows(who, principal, null, now, null).messages.filter(one => one.role === "assistant" && one.pending !== true).at(-1);
+    return said === undefined ? null : { text: said.text, at: said.createdAt };
   }
 
   // Search (UI revamp wave B): the ⌘K menu's "See all results". The places come from the page; the tasks here are the

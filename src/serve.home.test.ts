@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import type { Server } from "node:http";
 import type { BrowserHomeView, BrowserSearchView, BrowserTasksView, BrowserWorkspace } from "./browser-workspace.js";
 import { addApprover } from "./scope.js";
+import { ceilingDigestOf } from "./principal.js";
 import { makeDemoRepos, seedDemo } from "./demo.js";
 import { createDecisionServer } from "./serve.js";
 import { openStore, type Store } from "./store.js";
@@ -103,9 +104,11 @@ test("each of Home's counts equals the list its link opens (Queued included), on
     const read = async (path: string) => workspaceOf(await (await fetch(`${at}${path}`, { headers: { cookie } })).text());
     const home = (await read("/")).view as BrowserHomeView;
     // Each link opens its own filter (never All), whose count and rows are Home's figure.
-    // Each figure keeps the name of the list it opens (Waiting on you is the Needs you list, Done the Finished list).
-    expect(home.counts.map(one => one.label)).toEqual(["Waiting on you", "Running", "Queued", "Done"]);
-    expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ you: "Waiting on you", working: "Working", done: "Done" })[one.key]));
+    // Each figure keeps the name of the list it opens.
+    expect(home.counts.map(one => one.label)).toEqual(["Needs you", "Running", "Queued", "Finished"]);
+    // What needs you, grouped by what is asked: each group its own heading, and the groups' exact counts add up to the figure.
+    expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ approve: "Approve a plan", answer: "Answer a question", wrong: "Something went wrong", review: "Review a result", other: "Needs you" })[one.key]));
+    expect(home.groups.reduce((sum, one) => sum + one.count, 0)).toBe(home.counts[0]!.value);
     const labels: Record<string, string> = { needs: "Needs you", running: "Running", queued: "Queued", finished: "Finished" };
     for (const count of home.counts) {
       const list = (await read(count.href)).view as BrowserTasksView;
@@ -149,6 +152,24 @@ test("before anything is filed, Home is the first-run checklist in the chat; the
   expect(first.headers.get("location")).toBe("/chat");
   const chat = await fetch(url("/chat"), { headers: { cookie }, redirect: "manual" });
   expect(chat.status).toBe(200);
+});
+
+test("the lead's last message reaches Home as one plain line only through the chat's own check", async () => {
+  task("ship-webhooks", "Harden webhook delivery", repoA);
+  const cookie = await login();
+  const read = async () => (await page("/", cookie)).view as BrowserHomeView;
+  // The lead is off: no line.
+  expect((await read()).lastLead).toBeNull();
+  store.setChatConfig({ provider: "claude-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", new Date());
+  // A thread kept under another ceiling (another set of projects) is not what this person may read now.
+  const stale = store.openLeadThread("alex", ceilingDigestOf([repoA]), new Date()).thread;
+  store.appendLeadMessage({ thread: stale.id, turn: null, role: "assistant", text: "From an earlier set of projects." }, new Date());
+  expect((await read()).lastLead).toBeNull();
+  // Under the current ceiling: the lead's newest words (never the person's own), one plain line that opens the chat.
+  const thread = store.openLeadThread("alex", ceilingDigestOf([repoA, repoB]), new Date()).thread;
+  store.appendLeadMessage({ thread: thread.id, turn: null, role: "assistant", text: "The **build** is on step 2.\nI will tell you when it is ready." }, new Date());
+  store.appendLeadMessage({ thread: thread.id, turn: null, role: "operator", text: "thanks" }, new Date());
+  expect((await read()).lastLead).toMatchObject({ text: "The build is on step 2. I will tell you when it is ready.", href: "/chat" });
 });
 
 test("search finds tasks by title and id, and strips control characters from the words", async () => {
