@@ -36,6 +36,9 @@ export function flowDefinitionOf(flow: FlowRow): FlowDefinition | null {
 
 /** Where a card's link opens: the flow's canvas with the card selected. */
 export const flowCardHref = (flow: number, card: number) => `/flows/${flow}?card=${card}`;
+/** A reply wait that timed out with nowhere to send the card asks its owner (or the flow's owner) to move it on: the
+ * card's waiting words end with this (flows-ui.ts flowCardWaitsOn reads it). */
+export const NO_REPLY_MOVE_ON = "Move the card on when you're ready.";
 /** Where a confirmed flow action may point: a flow's canvas, maybe with one card open. */
 export const FLOW_HREF = /^\/flows\/[1-9][0-9]{0,9}(\?card=[1-9][0-9]{0,9})?$/;
 
@@ -155,7 +158,7 @@ function advanceCard(store: Store, flow: FlowRow, definition: FlowDefinition | n
         if (store.moveFlowCard(card.id, { to: stage.onFail, outcome: "moved", actor: "flow", historyNote: `No reply after ${words}`, expectEntry: card.entry }, now)) outcome.moved++;
         return;
       }
-      const waiting = `No reply after ${words}. Move the card on when you're ready.`;
+      const waiting = `No reply after ${words}. ${NO_REPLY_MOVE_ON}`;
       if (card.waiting !== waiting) {
         store.updateFlowCard(card.id, { waiting }, now);
         notifyPeople(store, card, [card.owner ?? flow.owner], null, { key: `no-reply:${card.entry}`, subject: `No reply to “${card.title}” after ${words}`, body: `It's waiting in ${stage.title}.`, attention: true }, now);

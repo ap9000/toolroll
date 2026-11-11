@@ -2435,7 +2435,9 @@ describe("the roll-up Home — every project, one ceiling, links only", () => {
       expect(html).not.toMatch(/<form[^>]*requeue/);
       // The badge counted 3 admitted approvals, never the secret one.
       expect(workspaceOf(html).needsYou?.count).toBe(3);
-      expect(homeRowsOf(html).map(one => one.id).sort()).toEqual(["t-free", "t-main", "t-side"]);
+      // Task rows only: this console has no builder, so Home also offers a "Finish setting up" row (id "setup:…").
+      expect(homeRowsOf(html).map(one => one.id).filter(id => !id.startsWith("setup:")).sort()).toEqual(["t-free", "t-main", "t-side"]);
+      expect(homeRowsOf(html).map(one => one.id)).toContain("setup:builder");
 
       // Tapping a row lands on the task itself — the roll-up hands off to
       // the detail, not to the project picker. The row's own ceiling check

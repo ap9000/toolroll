@@ -2622,6 +2622,32 @@ await journey("pages", SCRIPTED, "One-tap release approval: the push's locator o
   cli(["project", "check-access", "--repo", repo, "unsandboxed", ...auth]);
   cli(["task", "scope", id, "--candidate", candidate, "--goal", `Verify shop 1.0.1 (release/shop-1.0.1 at ${candidate}) passes the approved release check before it is deployed, merged, tagged and published.`,
     "--acceptance", "The approved release check passes on the candidate commit|check", "--release", "1.0.1:7:release/shop-1.0.1", ...auth]);
+  // Home (docs/plans/home-other-asks.md): the release waits in Approve a release and a flow card in an approval zone in
+  // Flow decisions, each group with its exact count, and each row's one link opens its own page; neither is decided here.
+  const purchases = await newFlow("Purchases", [
+    { id: "decide", title: "Anyone decides", kind: "approval", zone: zone(0), ...none, next: "done", onFail: null },
+    { id: "done", title: "Done", kind: "done", zone: zone(360), ...none, next: null, onFail: null },
+  ], "decide");
+  await addCard("Buy a label printer", "For the shipping desk.");
+  const printer = await until("the card to wait for a decision", async () => (await flowView(purchases)).cards.find(one => one.title === "Buy a label printer" && one.canDecide), { timeoutMs: 30_000 });
+  const homeGroup = async key => {
+    await page.goto(`${base}/`); await page.waitForSelector("[data-home]");
+    const group = page.locator(`[data-group="${key}"]`);
+    return { count: Number(await group.locator("[data-group-count]").innerText()), rows: await group.locator("[data-row]").evaluateAll(all => all.map(one => one.getAttribute("data-row"))) };
+  };
+  const releases = await homeGroup("release");
+  if (!releases.rows.includes(id) || releases.count !== releases.rows.length) throw new Error(`Home's Approve a release: ${JSON.stringify(releases)}`);
+  const decisions = await homeGroup("flow");
+  if (!decisions.rows.includes(`flow:${printer.id}`) || decisions.count !== decisions.rows.length) throw new Error(`Home's Flow decisions: ${JSON.stringify(decisions)}`);
+  if (await page.locator('[data-group="approve"] [data-row="' + id + '"]').count() > 0) throw new Error("Home lists the release as a plan too");
+  await shot("home-release-and-flow-decisions");
+  for (const [row, label, lands] of [[id, "Review the release", url => url.pathname === `/t/${id}/release`], [`flow:${printer.id}`, "Open the card", url => url.pathname === `/flows/${purchases}` && url.searchParams.get("card") === String(printer.id)]]) {
+    await page.goto(`${base}/`); await page.waitForSelector("[data-home]");
+    await page.locator(`[data-home] [data-row="${row}"]`).click();
+    const pane = page.locator(".so-tri-open");
+    if (await pane.locator("[data-home-approval], [data-home-approve]").count() > 0) throw new Error(`Home offers an approval for ${row}`);
+    await Promise.all([page.waitForURL(lands, { timeout: 15_000 }), pane.getByRole("link", { name: label }).click()]);
+  }
   // Held, so the worker leaves it alone once it is approved: this journey checks the approval, not the release.
   cli(["task", "hold", id, "--reason", "journey: approval only", ...auth]);
   const ref = rows(`SELECT id FROM task_ref WHERE external_id = '${id}'`)[0].id;

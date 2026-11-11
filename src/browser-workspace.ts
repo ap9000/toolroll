@@ -859,8 +859,9 @@ export type BrowserHomeView = {
   scopes: { key: string; label: string; href: string; active: boolean }[] | null;
   /** The work index totals, each with the Tasks list it opens. */
   counts: { key: 'needs' | 'running' | 'queued' | 'finished'; label: string; value: number; href: string }[];
-  /** What needs you, by what is asked, in this order: approve, answer, wrong, review, other (anything none of the four
-   * fits). `count` is the exact total for that ask, past the rows listed. */
+  /** What needs you, by what is asked, in this order: release, approve, answer, flow, wrong, review, setup, other
+   * (anything none of the others fits; docs/plans/home-other-asks.md). `count` is the exact total for that ask, past the
+   * rows listed. */
   groups: { key: BrowserHomeAsk; label: string; count: number; rows: BrowserHomeRow[] }[];
   /** What runs, then what waits its turn. */
   working: BrowserHomeRow[];
@@ -876,9 +877,10 @@ export type BrowserHomeView = {
   /** While the first run is open (no first result yet): the welcome's address, linked as Finish setup. */
   setup?: string | null;
 };
-/** What a waiting row asks (work-index.ts WorkAskGroup). */
-export type BrowserHomeAsk = 'approve' | 'answer' | 'wrong' | 'review' | 'other';
+/** What a waiting row asks (work-index.ts WorkAskGroup), plus a flow card waiting on you and a first-run step. */
+export type BrowserHomeAsk = 'release' | 'approve' | 'answer' | 'flow' | 'wrong' | 'review' | 'setup' | 'other';
 export type BrowserHomeRow = {
+  /** A task row's family id; a row that isn't a task is namespaced (`release:<task>`, `flow:<card>`, `setup:<step>`). */
   id: string; title: string; href: string; project: string | null; age: string;
   /** Which list it is in: it needs you, it runs, it waits its turn, or it finished. */
   state: 'needs' | 'running' | 'queued' | 'done';
@@ -888,7 +890,8 @@ export type BrowserHomeRow = {
   reason: string | null;
   /** One line: what it asks, or what the agent is doing now. */
   line: string | null;
-  /** The one act that resolves it (a link), or null. */
+  /** The one act that resolves it (a link), or null. A release, a flow card or a setup step is never acted on at
+   * Home: its one link opens its own page. */
   action: { label: string; href: string } | null;
   /** An agent's question, answered in place (POST /d/<id>/answer, one click); null when it must be answered on its page. */
   question: { id: number; text: string; recap: string; options: { id: string; label: string; consequence: string; recommended: boolean }[] } | null;

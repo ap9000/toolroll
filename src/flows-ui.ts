@@ -2,21 +2,21 @@
  * (the React view's data, plus a plain fallback page the view replaces). */
 import { liveAttemptOf, steerControlsFor } from "./steer-controls.js";
 import type { BrowserFlowCard, BrowserFlowTrigger, BrowserFlowView } from "./browser-workspace.js";
-import { draftFor, flowDefinitionOf } from "./flow-engine.js";
+import { draftFor, flowDefinitionOf, NO_REPLY_MOVE_ON } from "./flow-engine.js";
 import { describeStandingOrder } from "./flow-schedule.js";
 import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, senderOf, takesDeliveries, triggerConfigOf, type TriggerConfig } from "./flow-triggers.js";
 import { SENDER_WORDS } from "./webhook-signing.js";
 import { READER_CAPTURED } from "./webhook-readers.js";
 import { hostOf, linkWords, provedWords, snapshotOf } from "./task-source.js";
-import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
+import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS, type FlowStage } from "./flows.js";
 import { nightlyHealthWords } from "./nightly-check.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
 import { parseSortDecision, sortChip } from "./flow-sort.js";
 import { flowSecretNames, readEmailSettings, sendingReady } from "./flow-actions.js";
 import { projectToolsOf, secretsSetFor, toolStanding } from "./project-tools.js";
-import type { FlowCardRow, FlowRow, FlowTriggerRow, Store } from "./store.js";
+import type { FlowCardRow, FlowRow, FlowTriggerRow, Store, SubagentQuestionRow } from "./store.js";
 import { flowFingerprint } from "./flow-live.js";
-import { flowChoiceAt, readFlowSend, type FlowSendContent } from "./flow-send.js";
+import { flowChoiceAt, flowPersonOf, readFlowSend, type FlowSendContent } from "./flow-send.js";
 import { itemCaption, whyLines } from "./flow-items.js";
 import { FLOW_FILE_MAX_BYTES, type FlowFile, type FlowImportPlan } from "./flow-share.js";
 import { googleConnected } from "./google-mail.js";
@@ -234,6 +234,48 @@ const historyText = (event: { fromStage: string | null; toStage: string; outcome
   }
 };
 
+/** Why a card waits on this person now (docs/plans/home-other-asks.md part 4, v2.3): the one rule the flow page's
+ * Decide and Home's Flow decisions both read, so they never disagree. Each needs approver standing:
+ * - `decide`: an approval zone it is theirs to decide (the zone's decider, the flow's owner for "to owner", any approver
+ *   when none is named), and no subagent of the zone deciding it first;
+ * - `choose`: a "Person chooses" zone waiting on them (flow-send.ts flowChoiceAt);
+ * - `answer`: its subagent's open question or tool-call request asked of them;
+ * - `browser`: a check zone waiting for browser use, which only an approver with every project may allow;
+ * - `reply`: a reply wait that ran out with nowhere to go, asking the card's owner (else the flow's) to move it on.
+ * `reads` passes what the caller already read (a missing key is read here). */
+export type FlowCardWait = { decide: boolean; choose: boolean; answer: boolean; browser: boolean; reply: boolean };
+export function flowCardWaitsOn(store: Store, flow: FlowRow, card: FlowCardRow, viewer: { name: string; approver: boolean },
+  reads: { stage?: FlowStage | undefined; asked?: SubagentQuestionRow | null; choosing?: { person: string } | null; browser?: { status: string } | null } = {}): FlowCardWait {
+  const none: FlowCardWait = { decide: false, choose: false, answer: false, browser: false, reply: false };
+  if (!viewer.approver || card.state !== "active") return none;
+  const stage = "stage" in reads ? reads.stage : flowDefinitionOf(flow)?.stages.find(one => one.id === card.stage);
+  // Its subagent's open question is the person's to answer whatever zone it is in, even one since removed from the flow
+  // (the flow page shows it and takes the answer).
+  const asked = "asked" in reads ? reads.asked ?? null : store.openSubagentQuestionOn(card.id, card.entry);
+  const answer = asked !== null && asked.state === "open" && asked.askedOf === viewer.name && store.getSubagent(asked.subagent) !== null;
+  if (stage === undefined) return { ...none, answer };
+  const decider = stage.kind === "approval" ? deciderOf(stage, flow) : null;
+  // While its subagent is deciding (v92), the card isn't anyone else's to decide yet.
+  const subagentDeciding = stage.subagent !== undefined && card.waiting !== null && card.waiting.endsWith(" is deciding");
+  const choosing = stage.kind !== "choose" ? null : "choosing" in reads ? reads.choosing ?? null : flowChoiceAt(store, card.id, card.entry);
+  const browser = stage.kind !== "check" || stage.browser !== true ? null : "browser" in reads ? reads.browser ?? null : browserViewOf(store, flow);
+  const wait = stage.wait ?? { for: "reply" as const };
+  return {
+    decide: stage.kind === "approval" && (decider === null || decider === viewer.name) && !subagentDeciding,
+    choose: choosing !== null && choosing.person === viewer.name,
+    answer,
+    browser: browserWaitOn(card, stage, browser) && store.accountOf(viewer.name)?.projects === null,
+    reply: stage.kind === "wait" && wait.for === "reply" && card.waiting !== null && card.waiting.startsWith("No reply after ") && card.waiting.endsWith(NO_REPLY_MOVE_ON)
+      && flowPersonOf(card, flow) === viewer.name,
+  };
+}
+
+/** A check zone's card waiting for browser use (flow-browser.ts): the flow's browser isn't allowed and the card says so. */
+function browserWaitOn(card: Pick<FlowCardRow, "state" | "waiting">, stage: FlowStage | undefined, browser: { status: string } | null): boolean {
+  return card.state === "active" && stage?.kind === "check" && stage.browser === true && browser !== null && browser.status !== "allowed"
+    && card.waiting !== null && card.waiting.startsWith(`${stage.title} starts a browser`);
+}
+
 /** One flow's canvas for one person. */
 export function flowView(store: Store, flow: FlowRow, viewer: { name: string; approver: boolean }, selectedCard: number | null, setup: { dir: string | null; repos: readonly string[]; startTrigger?: number | null; sortReady?: boolean; toolHome?: string | undefined; now?: Date } = { dir: null, repos: [] }): BrowserFlowView {
   const definition = flowDefinitionOf(flow);
@@ -258,10 +300,12 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
     const canReadTask = taskRepo !== null && (taskRepo === flow.repo || (setup.repos.includes(taskRepo) && store.accountCanAccess(viewer.name, taskRepo)));
     const discussion = store.flowComments(card.id);
     const watchers = store.flowCardWatchers(card.id);
-    const decider = stage?.kind === "approval" ? deciderOf(stage, flow) : null;
-    // While its subagent is deciding (v92), the card isn't anyone else's to decide yet.
-    const subagentDeciding = stage?.subagent !== undefined && card.waiting !== null && card.waiting.endsWith(" is deciding");
-    const canDecide = viewer.approver && card.state === "active" && stage?.kind === "approval" && (decider === null || decider === viewer.name) && !subagentDeciding;
+    // Its open question: one of its own, or (v94) a tool call waiting for approval.
+    const asked = card.state === "active" ? store.openSubagentQuestionOn(card.id, card.entry) : null;
+    // "Person chooses" (flow-send.ts): what was sent, and the options, for the person it waits on; the latest send otherwise.
+    const choosing = card.state === "active" && stage?.kind === "choose" ? flowChoiceAt(store, card.id, card.entry) : null;
+    // Who may decide it here: the one rule Home reads too (flowCardWaitsOn).
+    const canDecide = flowCardWaitsOn(store, flow, card, viewer, { stage, asked, choosing, browser: browserNow }).decide;
     // History reads moves and ownership together, newest first.
     const owned = discussion.filter(one => one.kind === "owner").map(one => ({ text: one.body === "" ? `${one.author} left it without an owner` : one.body === one.author ? `${one.author} took it on` : `${one.author} made ${one.body} the owner`, at: one.at }));
     const moves = store.flowEvents(card.id).map(event => ({ text: historyText(event, title, sortZones), at: event.at }));
@@ -275,8 +319,6 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       at: until.toISOString(),
       label: stage!.wait !== undefined && stage!.wait.for !== "hours" ? (stage!.wait.for === "reply" ? "No reply by" : "Moves on at") : stage!.limit!.to !== null ? `Moves to ${title(stage!.limit!.to)} at` : "Reminder at",
     };
-    // Its open question: one of its own, or (v94) a tool call waiting for approval.
-    const asked = card.state === "active" ? store.openSubagentQuestionOn(card.id, card.entry) : null;
     const pending = asked?.toolCall == null ? null : store.subagentCall(asked.toolCall);
     // A decision its subagent handed over carries what the subagent said (v92).
     const turn = card.state === "active" && stage?.kind === "approval" && stage.subagent !== undefined ? store.flowStepRun(card.id, card.entry) : null;
@@ -289,8 +331,6 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       } catch { handoff = null; }
     }
     const asker = asked === null || asked.state !== "open" ? null : store.getSubagent(asked.subagent);
-    // "Person chooses" (flow-send.ts): what was sent, and the options, for the person it waits on; the latest send otherwise.
-    const choosing = card.state === "active" && stage?.kind === "choose" ? flowChoiceAt(store, card.id, card.entry) : null;
     const latest = store.flowSends(card.id)[0] ?? null;
     const sentContent = latest === null ? null : readFlowSend(latest.contentJson);
     // On the card itself: where it came from (the card's title is right above), and only the links the panel doesn't already have.
@@ -300,8 +340,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       // After research: the same numbered items the message carried, each beside its screenshot.
       ...(content.items === undefined ? {} : { items: content.items.map((item, index) => ({ number: index + 1, title: item.title, lines: whyLines(item.why), source: item.source, url: item.url,
         image: item.shot === null || content.shots === null ? null : { src: `/r/${content.shots.run}/evidence/${item.shot}`, caption: itemCaption(index + 1, item) } })) }) });
-    const browserWait = card.state === "active" && stage?.kind === "check" && stage.browser === true && browser !== null && browser.status !== "allowed"
-      && card.waiting !== null && card.waiting.startsWith(`${stage.title} starts a browser`);
+    const browserWait = browserWaitOn(card, stage, browser);
     return {
       id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state,
       waiting: card.state === "active" && card.task !== null && (stage?.kind === "task" || stage?.kind === "report")
