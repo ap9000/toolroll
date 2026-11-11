@@ -3313,6 +3313,8 @@ export function approveKitOf(input: ApprovalSheetInput, freshSince: string | nul
     ...(input.localOwner?.eligible === true ? { termsWords: "No password needed on this computer." } : {}),
     // What it signs: the plan sheet (the same parts as the chat's sheet, re-ordered), then the in-place editor.
     planHtml: htmlString(joinHtml([parts.sheet, parts.editor ?? "", parts.editorForm])),
+    // The plan sheet alone, with no editor and no form: what Home shows beside its one-click Approve (B2.1).
+    sheetHtml: htmlString(parts.sheet),
   };
 }
 
