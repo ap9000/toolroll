@@ -1250,8 +1250,9 @@ createInterface({ input: process.stdin }).on("line", line => {
 await journey("console", SCRIPTED, "Models: Check now reads the live model lists", [], async () => {
   await page.goto(`${base}/settings/models`);
   await Promise.all([page.waitForNavigation(), page.click('form[action="/settings/models/check"] button')]);
-  const said = await page.locator('p[role="status"]').first().innerText().catch(() => "");
-  if (!/^Checked\./.test(said)) throw new Error(`checking said: ${said}`);
+  // The page that loads draws its answer a moment after the load: wait for the line, don't read it once.
+  const line = () => page.locator('p[role="status"]').first().innerText().catch(() => "");
+  const said = await until("checking to say Checked", async () => { const text = await line(); return /^Checked\./.test(text) ? text : false; }, { timeoutMs: 15_000, everyMs: 200, seen: line });
   return { said };
 });
 
