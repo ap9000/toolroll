@@ -406,15 +406,15 @@ await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
     // The plan's own approval box: its one primary, and the password in its popover when it asks for one.
     const form = page.locator("form[data-task-approval]");
     await form.waitFor({ timeout: 15_000 });
-    const navigated = page.waitForNavigation({ timeout: 30_000 });
     await form.locator("button.k-btn-primary:visible").first().click();
     const pop = page.getByRole("dialog", { name: "Confirm with your password" });
     if (await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
       await pop.locator('input[name="token"]').fill(w.passwords.alex);
       await pop.locator('button[type="submit"]').click();
     }
-    await navigated;
-    if (!/You filed this task/.test(await page.locator("body").innerText())) throw new Error(`alex's own approval wasn't refused: ${(await page.locator("body").innerText()).slice(0, 300)}`);
+    // The refusal: on the page the native form loads, or said in place where the approval was one click.
+    await until("alex's own approval to be refused", async () => /You filed this task/.test(await page.locator("body").innerText().catch(() => "")), { timeoutMs: 30_000, everyMs: 300 })
+      .catch(async () => { throw new Error(`alex's own approval wasn't refused: ${(await page.locator("body").innerText()).slice(0, 300)}`); });
     if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by) throw new Error("alex approved their own task");
     await shot("approval-rules-refused");
     const digest = cli(["task", "show", id]).scope.digest;
@@ -623,18 +623,44 @@ async function plannerDrafted(id, what, ready = ref => ref?.plan === "drafted") 
 }
 /** Approve a task's scope on its page: the plan's approval box asks for the password only when the rules need it (a
  * popover), one click when a password is remembered on this computer; either way the server proves alex again. */
+/** Home never asks for a password: a plan that needs one shows one link, and the link loads the task page as a document
+ * with no live connection. */
+async function reviewFromHome(id) {
+  await page.goto(`${base}/`);
+  const row = page.locator(`[data-home] [data-row="${id}"]`).first();
+  await row.waitFor({ timeout: 15_000 });
+  await row.click();
+  const review = page.locator("[data-home-review][data-full-load]");
+  await review.waitFor({ timeout: 15_000 });
+  if (await page.locator("[data-home-approve]").count() > 0) throw new Error("Home offers Approve for a plan that needs a password");
+  if (await page.locator('[data-home] input[type="password"]').count() > 0) throw new Error("Home asks for a password");
+  await page.evaluate(() => { window.__sameDocument = true; });
+  const streams = [];
+  const heard = request => { if (request.resourceType() === "eventsource" || new URL(request.url()).pathname === "/live") streams.push(request.url()); };
+  page.on("request", heard);
+  try {
+    await Promise.all([page.waitForNavigation({ timeout: 30_000 }), review.click()]);
+    if (new URL(page.url()).pathname !== `/t/${id}`) throw new Error(`Review the plan opened ${page.url()}`);
+    if (await page.evaluate(() => window.__sameDocument === true).catch(() => false)) throw new Error("the password approval opened in place, not as a document");
+    await page.locator("form[data-task-approval]").waitFor({ timeout: 15_000 });
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
+    if (streams.length > 0) throw new Error(`the password approval's page opened a live connection: ${streams.join(", ")}`);
+  } finally { page.off("request", heard); }
+}
 async function approveOnPage(id) {
   await page.goto(`${base}/t/${id}`);
   const form = page.locator("form[data-task-approval]");
   await form.waitFor({ timeout: 15_000 });
-  const navigated = page.waitForNavigation({ timeout: 30_000 });
+  // A typed password posts the native form (a page load); a one-click approval is sent in place and the page stays.
+  const navigated = page.waitForNavigation({ timeout: 30_000 }).then(() => true, () => false);
   await form.locator(".k-slots button.k-btn-primary:visible, button.k-btn-primary:visible").first().click();
   const pop = page.getByRole("dialog", { name: "Confirm with your password" });
   if (await pop.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false)) {
     await pop.locator('input[name="token"]').fill(w.passwords.alex);
     await pop.locator('button[type="submit"]').click();
+    await navigated;
   }
-  await navigated;
+  await until(`${id} to be approved`, async () => rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by != null, { timeoutMs: 30_000, everyMs: 300 }).catch(() => undefined);
   const approved = rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0];
   if (approved?.approved_by !== "alex") throw new Error(`${id} wasn't approved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
 }
@@ -676,6 +702,7 @@ await journey("task", SCRIPTED, "File a task in the console; the planner (Claude
   const planned = await plannerDrafted(firstTask, "the planner's scope", ref => ref?.plan === "drafted" && rows(`SELECT 1 FROM task_scope WHERE task_id = '${firstTask}'`).length > 0);
   const scope = rows(`SELECT goal FROM task_scope WHERE task_id = '${firstTask}'`)[0];
   if (!/subtract/i.test(scope.goal)) throw new Error(`the planner's goal: ${scope.goal}`);
+  await reviewFromHome(firstTask);
   await approveOnPage(firstTask);
   await shot("task-approved");
   return { task: firstTask, plan: planned.plan, goal: scope.goal.slice(0, 160) };
@@ -3082,11 +3109,41 @@ async function approveLocally(on, base, id) {
   await waitFor(form, "the plan's approval", { timeoutMs: 30_000, seen: () => saysNow(on) });
   const terms = (await form.innerText()).replace(/\s+/g, " ");
   if (await form.locator('input[type="password"]').count() > 0 || !terms.includes("No password needed on this computer.")) throw new Error(`approving attended work on this computer asks for a password: ${terms.slice(0, 600)}`);
-  const navigated = on.waitForNavigation({ timeout: 30_000 });
+  // One click, sent in place: the page stays where it is and says Approved.
+  await on.evaluate(() => { window.__sameDocument = true; });
   await form.locator(".k-slots button.k-btn-primary:visible, button.k-btn-primary:visible").first().click();
   if (await on.getByRole("dialog", { name: "Confirm with your password" }).waitFor({ state: "visible", timeout: 2_000 }).then(() => true, () => false)) throw new Error("approving asked for a password");
-  await navigated;
   await until(`${id} to be approved`, async () => laptopTask(id)?.approved_by != null, { timeoutMs: 15_000, everyMs: 300, seen: () => saysNow(on) });
+  if (!(await on.evaluate(() => window.__sameDocument === true).catch(() => false))) throw new Error(`approving ${id} on its page loaded a page: ${on.url()}`);
+}
+/** Approve a laptop task's plan from Home as the local owner: the plan is read beside the list, one press sends the
+ * approval in place, and no password is asked anywhere. */
+async function approveFromHome(on, base, id) {
+  await until(`${id}'s plan`, async () => laptopRows(`SELECT 1 FROM task_scope WHERE task_id = '${id}'`).length > 0 && laptopRows(`SELECT plan FROM task_ref WHERE external_id = '${id}'`)[0]?.plan === "drafted",
+    { timeoutMs: 120_000, everyMs: 500, seen: () => JSON.stringify(laptopRows(`SELECT plan FROM task_ref WHERE external_id = '${id}'`)) });
+  await on.goto(`${base}/`);
+  const row = on.locator(`[data-home] [data-row="${id}"]`).first();
+  await waitFor(row, `${id} on Home`, { timeoutMs: 30_000, seen: () => saysNow(on) });
+  await row.click();
+  // The button takes no press for a moment after the plan is drawn.
+  const approve = on.locator("[data-home-approve]:not([aria-disabled])");
+  await waitFor(approve, "Approve beside the plan on Home", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  if (await on.locator("[data-home-terms]").count() !== 1) throw new Error(`Home doesn't show the terms beside Approve: ${await saysNow(on)}`);
+  const noPassword = async () => (await on.locator('[data-home] input[type="password"]').count()) === 0;
+  if (!(await noPassword())) throw new Error("Home asks for a password");
+  await on.evaluate(() => { window.__sameDocument = true; });
+  const posts = [];
+  const heard = request => { if (request.method() === "POST") posts.push(`${new URL(request.url()).pathname} ${request.headers()["x-toolroll-act"] ?? "-"}`); };
+  on.on("request", heard);
+  try {
+    await approve.click();
+    await until("Home to say Approved", async () => ((await on.locator("[data-home-approved]").textContent().catch(() => null)) ?? "").trim() === "Approved.", { timeoutMs: 15_000, everyMs: 200, seen: () => saysNow(on) });
+    await until(`${id} to be approved`, async () => laptopTask(id)?.approved_by != null, { timeoutMs: 15_000, everyMs: 300, seen: () => saysNow(on) });
+    if (!(await on.evaluate(() => window.__sameDocument === true).catch(() => false))) throw new Error(`approving ${id} from Home loaded a page: ${on.url()}`);
+    const sent = posts.filter(one => one.includes("/approve"));
+    if (sent.length !== 1 || sent[0] !== `/t/${encodeURIComponent(id)}/approve in-place`) throw new Error(`approving from Home posted: ${sent.join(", ") || "nothing"}`);
+    if (!(await noPassword())) throw new Error("Home asks for a password after approving");
+  } finally { on.off("request", heard); }
 }
 /** File a task from New task with these words; returns its id. */
 async function fileLocally(on, base, words) {
@@ -3270,7 +3327,7 @@ await journey("easy-start", SCRIPTED, "A revision with long words, then a build 
   const cap = await on.locator('form[action="/tasks/add"] textarea[name="title"]').getAttribute("maxlength");
   if (cap !== "200") throw new Error(`the New task box takes up to ${cap} characters, not a title's 200`);
   const failing = await fileLocally(on, install.base, longTitle);
-  await approveLocally(on, install.base, failing);
+  await approveFromHome(on, install.base, failing);
   await until(`${failing}'s build to fail`, async () => { const run = laptopBuild(failing); return run?.finished_at && run.outcome !== "built" ? run : null; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(laptopBuild(failing)) });
   await on.goto(`${install.base}/t/${encodeURIComponent(failing)}`);
   await waitFor(on.locator("[data-task-status]").first(), "the failed task's status", { timeoutMs: 30_000, seen: () => saysNow(on) });

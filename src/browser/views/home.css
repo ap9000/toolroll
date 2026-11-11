@@ -51,7 +51,7 @@
 [data-view] .so-home .so-home-plan { min-width: 0; padding-top: var(--so-space-lg); border-top: 1px solid var(--so-line); overflow-wrap: anywhere; }
 /* The terms and the Approve stay in view at the foot of the pane while a long plan scrolls behind them (the offset
  * is the pane's own bottom padding, which sticky positioning leaves out). */
-[data-view] .so-home .so-home-do { position: sticky; bottom: -40px; display: grid; gap: var(--so-space-md); padding: var(--so-space-md) 0 16px; border-top: 1px solid var(--so-line); background: var(--so-paper); min-width: 0; }
+[data-view] .so-home .so-home-do { position: sticky; bottom: -40px; display: grid; gap: var(--so-space-md); padding: var(--so-space-md) 0 var(--so-space-lg); border-top: 1px solid var(--so-line); background: var(--so-paper); min-width: 0; }
 [data-view] .so-home .so-home-terms { margin: 0; font-size: 13px; line-height: 1.55; color: var(--so-nav-ink); max-width: 66ch; }
 [data-view] .so-home .so-home-approval .k-acts { align-items: center; gap: var(--so-space-lg); }
 [data-view] .so-home .so-home-approval .k-acts .k-link { font-size: 13.5px; color: var(--so-ink); font-weight: 500; }
@@ -59,7 +59,7 @@
 [data-view] .so-home .so-home-reading { color: var(--so-muted); }
 [data-view] .so-home .so-home-said { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--so-ink); max-width: 66ch; }
 [data-view] .so-home .so-home-said.is-refused { color: var(--so-danger); }
-[data-view] .so-home .so-home-approved { margin: 0; padding: 10px 12px 4px; font: 500 13px/1.5 var(--so-font-sans); color: var(--so-ink); }
+[data-view] .so-home .so-home-approved { margin: 0; padding: 10px var(--so-space-md) var(--so-space-xs); font: 500 13px/1.5 var(--so-font-sans); color: var(--so-ink); }
 /* An approved row leaves the list: its height and opacity over 200 ms; with reduced motion it simply goes. */
 [data-view] .so-home .so-tri-list .so-ti-leave { overflow: hidden; pointer-events: none; animation: so-ti-leave 200ms ease-out forwards; }
 @keyframes so-ti-leave { from { opacity: 1; max-height: 96px; } to { opacity: 0; max-height: 0; padding-block: 0; } }
