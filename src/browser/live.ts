@@ -187,3 +187,7 @@ export function useLiveRoom(room: string | null, listener: LiveListener, keepWhe
     return hub.subscribe(room, (event, data) => current.current(event, data), keepWhenHidden);
   }, [room, keepWhenHidden]);
 }
+
+/** Join a room outside a component (the app's page work, page-work.ts): the listener hears the room's events and the
+ * ones no room names, until the function returned is called. */
+export function joinLiveRoom(room: string, listener: LiveListener): () => void { return hub.subscribe(room, listener); }

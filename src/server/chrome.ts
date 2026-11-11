@@ -4,7 +4,7 @@ import { APPROVAL_RULES_CSS } from "../approval-rules-ui.js";
 import { ASSIGNMENT_CSS } from "../assignment-ui.js";
 import { BACKUP_CSS } from "../backup-ui.js";
 import { BRAND_MARK_CSS } from "../brand-mark.js";
-import { type BrowserSignIn,type BrowserUpdateNotice,type BrowserWorkspace } from "../browser-workspace.js";
+import { type BrowserSignIn,type BrowserUpdateNotice,type BrowserWorkspace,type PageWork } from "../browser-workspace.js";
 import { CHAT_POLISH_CSS } from "../chat-polish.js";
 import { CHECK_SETTINGS_CSS } from "../check-levels-ui.js";
 import { CODING_SHIPPING_CSS } from "../coding-shipping-ui.js";
@@ -506,7 +506,10 @@ export type Screen = {
   /** The page's own executable behavior (a region poller, the push
    * enrollment script). fetches: true when it calls fetch — connect-src
    * is granted only then. */
-  functional?: { script: string; fetches?: boolean };
+  functional?: { script: string; fetches?: boolean;
+    /** The app's own version of this WHOLE script (task-page-in-app.md §1): where the app can run it, the document
+     * ships no script string and the page may change in place. Added to only through withScript. */
+    app?: readonly PageWork[] };
   refreshSeconds?: number;
   /** Render sensitive even when no password field is visible — one-time
    * secrets and judgment calls the classifier cannot see. */
@@ -978,4 +981,14 @@ export function boardTickScript(regionId = "board-region"): string {
     `run();setInterval(function(){if(!document.hidden)run();},1000);document.addEventListener("visibilitychange",function(){if(!document.hidden)run();});` +
     `if(region&&typeof MutationObserver==="function")new MutationObserver(run).observe(region,{childList:true});})();`
   );
+}
+
+/**
+ * A page's script with one more added (docs/plans/task-page-in-app.md §1). All or nothing: `app` survives only when
+ * every part has it, so a script the app does not cover keeps the whole page a document, and a page never gets half
+ * its behaviour from the string and half from the app.
+ */
+export function withScript(base: Screen["functional"], add: NonNullable<Screen["functional"]>): NonNullable<Screen["functional"]> {
+  const app = base === undefined ? add.app : base.app !== undefined && add.app !== undefined ? [...base.app, ...add.app] : undefined;
+  return { script: (base?.script ?? "") + add.script, fetches: (base?.fetches ?? false) || (add.fetches ?? false), ...(app === undefined ? {} : { app }) };
 }

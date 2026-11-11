@@ -65,7 +65,7 @@ import {
 approvalOf,
 type Scope
 } from "../scope.js";
-import { oneLineOf,refuse,screen,type Chrome,type Screen } from "./chrome.js";
+import { oneLineOf,refuse,screen,withScript,type Chrome,type Screen } from "./chrome.js";
 import { chatResultHref,reviewHref,taskChatHref,taskHref,type ServeOptions } from "./http.js";
 import { decisionsFor,type TaskChatFocus } from "./render-chat.js";
 import { type ProjectPeek,type WorkRow } from "./render-pages.js";
@@ -928,7 +928,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
       // The result's own script, as its result page ships it (a password form there keeps it too: Request changes and
       // the line notes need it).
-      page.functional = { script: `${page.functional?.script ?? ""}${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, fetches: page.functional?.fetches ?? false };
+      // The app has no version of it yet, so a task with a result stays a document (withScript drops `app`).
+      page.functional = withScript(page.functional, { script: `${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}` });
     }
     if (docked !== null) page.workspace = { ...page.workspace, ...(oneTaskView === undefined ? {} : { view: oneTaskView }), conversation: docked, pageHtml: page.body };
     else if (oneTaskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: oneTaskView };

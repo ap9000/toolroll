@@ -27,6 +27,7 @@ import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
 import { setLiveQuiet, useLiveRoom } from "./live.js";
+import { knownWork, usePageWork } from "./page-work.js";
 import { createChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import { isSettingsFrame } from "../settings-kit-script.js";
@@ -88,6 +89,9 @@ export type AcceptHow = "refresh" | "navigate" | "confirm";
  *    `next`, else a document load.
  * 3. A page that gains a page script on its own re-read (`inPlace` turns false under "refresh") is kept as today: no
  *    script runs until the next document load.
+ * 4. A document that ran a page script string never changes pages in place (docs/plans/task-page-in-app.md §3): its
+ *    listeners live as long as the document, so the next page gets a clean one.
+ * 5. A page whose work this app does not know (a newer server) is loaded as a document.
  * True: show `next`. False: a document load has started instead (`href`, else `next`'s own address), or, when this
  * document is already leaving (navigate.ts documentLeaving), nothing at all: a script never cancels the browser's own
  * navigation, and nothing of `next` is rendered either way.
@@ -96,7 +100,13 @@ export function acceptWorkspace(next: BrowserWorkspace, how: AcceptHow, href: st
   const startedAsThis = documentStart !== null && documentStart.sensitive && documentStart.path === next.path;
   if (next.sensitive && !startedAsThis) { loadDocument(href, replace); return false; }
   if (how !== "refresh" && (onScreen?.inPlace !== true || next.inPlace !== true)) { loadDocument(href, replace); return false; }
+  if (how !== "refresh" && (documentStart?.scripted === true || !knownWork(next.work))) { loadDocument(href, replace); return false; }
   return true;
+}
+/** Whether the app may run the work of the page on screen: never on a password page, in a document that ran a page
+ * script string (its listeners are still attached), or on a page shown ahead of its own read. */
+function mayRunWork(page: BrowserWorkspace): boolean {
+  return !page.sensitive && documentStart?.scripted !== true && !pageHeld();
 }
 
 export function useWorkspace(initial: BrowserWorkspace) {
@@ -797,6 +807,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const current = currentProjectOf(workspace)?.path ?? null;
   useEffect(notifyWorkspaceRendered, [epoch]);
   useWindowStaysPut(epoch);
+  usePageWork(epoch, workspace.work, () => mayRunWork(workspace));
   // Following links in place (navigate.ts): the page on screen, the one door, and the swap. The swap closes every open
   // sheet and panel (the phone drawer, Search, a dialog) and resets what belongs to the page left, in one render.
   const shown = useRef(workspace);

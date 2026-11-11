@@ -12,6 +12,7 @@ import type { Store } from './store.js';
 import type { WorkSummaryAccess } from './work-summary.js';
 import { workIndexPage } from './work-index.js';
 import type { StatusTone, StepRow } from './workspace-ui.js';
+import type { PageWork } from './page-work-contract.js';
 import type { Ask, AskChip } from './needs-you.js';
 import type { WorkIndexGroup } from './work-index.js';
 import type { AssignmentCard } from './assignment-ui.js';
@@ -284,7 +285,9 @@ export type BrowserTaskView = {
   record?: BrowserLink | null;
   earlier?: { summary: string; attempts: { label: string; href: string; text: string | null }[] } | null;
   /** Server cards that may need a person now (stop/resume, scope prompt, plan, live attempt). */
-  lead: { key: string; html: string }[];
+  /** `instance`: what the block is about now (the attempt card: its build). The page installs a block's HTML once;
+   * another instance replaces it. */
+  lead: { key: string; html: string; instance?: string }[];
   questions: string;
   facts: BrowserTaskFact[];
   sections: BrowserTaskSection[];
@@ -793,6 +796,12 @@ export type BrowserWorkspace = {
   /** True when this page may replace another without a document load (docs/plans/live-pages-and-home.md A1.1): the server
    * sets it on every workspace it sends; absent (an older server, a fixture) is false. */
   inPlace?: boolean;
+  /** What the app runs for this page in place of a page script (docs/plans/task-page-in-app.md): data, a closed list.
+   * Present only when the app covers the page's whole script; the document then ships no page script string. */
+  work?: readonly PageWork[];
+  /** This document ships a page script string (set on a document load only). Its listeners live as long as the
+   * document, so the app never changes pages in place from it, and never runs `work` in it. */
+  scripted?: boolean;
   /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
   passwordless?: boolean;
   /** The session's open project (its path), or null: the sidebar's project picker names it. */
@@ -992,3 +1001,5 @@ export type MergeReadyView = {
   answer: "yes" | "no" | "not-yet" | "merged"; sentence: string;
   rows: { key: string; label: string; mark: "yes" | "no" | "waiting" | "unknown" | "skip"; say: string; act: MergeReadyAct | null }[];
 };
+
+export type { PageWork } from './page-work-contract.js';

@@ -22,6 +22,7 @@ import { Window } from "happy-dom";
 import { presented, renderedHtmlOf, sealScopeFixture, T0, workspaceOf } from "../test/serve-kit.js";
 import type { BrowserHomeView, BrowserTaskView, BrowserTasksView } from "./browser-workspace.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
+import { decisionAnswerScript } from "./server/render-tasks.js";
 import { createDemoSandbox } from "./demo.js";
 
 describe("A2 — the live peek over real HTTP: guards, fence, and the names-only fragment", () => {
@@ -1396,8 +1397,14 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // panel reads the run's own guarded records window.
     expect(html).not.toContain('id="live-transcript"');
     expect((workspaceOf(html).view as BrowserTaskView).work).toEqual({ run, live: true, agent: expect.any(String), transcript: `/r/${run}?fragment=transcript&shape=records` });
-    expect(html).toContain(`"/r/${run}?fragment=peek"`);
-    expect(html).toContain(`"/r/${run}?fragment=check"`);
+    // The app keeps both regions current itself (docs/plans/task-page-in-app.md): the page names that work as data, each
+    // entry addressed to the run, and ships no page script for it — so this task opens in place.
+    const workspace = workspaceOf(html);
+    expect(workspace.work).toEqual([{ kind: "region", region: "check-progress", run }, { kind: "region", region: "run-peek", run }]);
+    expect(workspace.inPlace).toBe(true);
+    expect(workspace.scripted).toBeUndefined();
+    expect(html).not.toContain(`"/r/${run}?fragment=peek"`);
+    expect(html).not.toContain(`"/r/${run}?fragment=check"`);
     expect(html).toContain('id="check-progress"');
     expect(html).toContain("unit ✓ 191 · flows 12/18 · app 30/45");
     expect(html).not.toContain(`"/r/${run}"+"?fragment=transcript&from="`);
@@ -1438,6 +1445,96 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(pane).not.toContain(`/r/${run}?fragment=peek`);
   });
 
+  /** A question a build stopped on, as the store keeps it. */
+  const ask = (run: number): number => store.saveDecision(
+    {
+      run, urgency: "blocking", recap: "why it stopped", question: "Which way?",
+      options: [
+        { id: "keep", label: "Keep and backfill", consequence: "cleanup later", reversible: true },
+        { id: "drop", label: "Drop it", consequence: "gone", reversible: false },
+      ],
+      recommendation: "keep",
+    },
+    new Date(),
+  );
+  const readAs = async (path: string, cookie: string, headers: Record<string, string> = {}): Promise<import("./browser-workspace.js").BrowserWorkspace> =>
+    (await fetch(url(`${path}?format=workspace`), { headers: { cookie, accept: "application/json", ...headers } })).json() as Promise<import("./browser-workspace.js").BrowserWorkspace>;
+
+  test("page work: a reader that can run it gets the work as data; one that cannot keeps the document barrier", async () => {
+    const ref = seed("t-ask", "stopped on a question");
+    const run = live("t-ask", ref);
+    ask(run);
+    await boot({ localRunner: "night-shift-1" });
+    const cookie = await login();
+
+    // A document load: the app that boots from it runs the work, so no page script ships and the page opens in place.
+    const html = await (await fetch(url("/t/t-ask"), { headers: { cookie } })).text();
+    const loaded = workspaceOf(html);
+    expect(html).toContain("decide-inline");
+    expect(loaded.work).toEqual([{ kind: "region", region: "check-progress", run }, { kind: "region", region: "run-peek", run }, { kind: "answer" }]);
+    expect(loaded.inPlace).toBe(true);
+    expect(loaded.scripted).toBeUndefined();
+    // The answer script is not on the page beside the work (two handlers would send two answers). The marker is a
+    // piece of that script's own text, so this cannot pass by naming something the script never says.
+    const answerMark = "HTMLFormElement.prototype.getAttribute.call(f,";
+    expect(decisionAnswerScript()).toContain(answerMark);
+    expect(html).not.toContain(answerMark);
+    expect(html).not.toContain(decisionAnswerScript());
+    expect(html).not.toContain(`"/r/${run}?fragment=peek"`);
+    expect(html).not.toContain(`"/r/${run}?fragment=check"`);
+
+    // A tab that says it runs page work reads the same.
+    const current = await readAs("/t/t-ask", cookie, { "x-toolroll-work": "1" });
+    expect(current.work).toEqual(loaded.work);
+    expect(current.inPlace).toBe(true);
+
+    // A tab opened before this release sends no such word: it is told to load the page as a document, as before, and
+    // is handed no work it could mistake for done. A version this server does not speak reads the same.
+    for (const headers of [{}, { "x-toolroll-work": "2" }, { "x-toolroll-work": "true" }] as Record<string, string>[]) {
+      const old = await readAs("/t/t-ask", cookie, headers);
+      expect(old.inPlace).toBe(false);
+      expect(old.work).toBeUndefined();
+      expect(old.scripted).toBeUndefined();
+    }
+
+    // A task with no behaviour of its own is in place for every reader, as it was.
+    seed("t-plain", "nothing running");
+    expect((await readAs("/t/t-plain", cookie)).inPlace).toBe(true);
+    expect((await readAs("/t/t-plain", cookie)).work).toBeUndefined();
+  });
+
+  test("page work is all of a page's script or none: with a result on the page it stays a document, marked as scripted", async () => {
+    const ref = seed("t-mixed", "a result and a new build");
+    const failed = finished("t-mixed", ref, "failed", null);
+    const run = live("t-mixed", ref);
+    await boot({ localRunner: "night-shift-1" });
+    const cookie = await login();
+
+    // The task as it stands (a build running): all of its script is the app's, so it is work.
+    const now = workspaceOf(await (await fetch(url("/t/t-mixed"), { headers: { cookie } })).text());
+    expect(now.work).toEqual([{ kind: "region", region: "check-progress", run }, { kind: "region", region: "run-peek", run }]);
+    expect(now.scripted).toBeUndefined();
+
+    // The same task showing an earlier attempt's result: the result's own script is not the app's yet, so the whole
+    // script ships as a string, as before…
+    const html = await (await fetch(url(`/t/t-mixed?run=${failed}`), { headers: { cookie } })).text();
+    const loaded = workspaceOf(html);
+    expect(html).toContain('class="task-result-tab"');
+    expect(html).toContain(`"/r/${run}?fragment=peek"`);
+    expect(html).toContain(`"/r/${run}?fragment=check"`);
+    expect(loaded.work).toBeUndefined();
+    expect(loaded.inPlace).toBe(false);
+    // …and the document says it ran one: an app that booted from it never changes pages in place.
+    expect(loaded.scripted).toBe(true);
+    // No reader is offered that page in place, whatever it says it can run; a read is not a document, so it is not marked.
+    const read = await readAs(`/t/t-mixed`, cookie, { "x-toolroll-work": "1" });
+    expect(read.work).toEqual(now.work);
+    const result = await (await fetch(url(`/t/t-mixed?run=${failed}&format=workspace`), { headers: { cookie, accept: "application/json", "x-toolroll-work": "1" } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    expect(result.inPlace).toBe(false);
+    expect(result.work).toBeUndefined();
+    expect(result.scripted).toBeUndefined();
+  });
+
   test("sensitive composition: a password ceremony beside a live attempt — no poller, a static panel, link-only decisions", async () => {
     const ref = seed("t-both", "live and unsigned");
     const run = live("t-both", ref);
@@ -1469,6 +1566,9 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(html).not.toContain('id="live-transcript"');
     expect(html).not.toContain("?fragment=peek");
     expect(html).not.toContain("?fragment=transcript");
+    // A page that asks for a password names no work for the app either, and never opens in place.
+    expect(workspaceOf(html).work).toBeUndefined();
+    expect(workspaceOf(html).inPlace).toBe(false);
     // The work panel names no records window on a page that asks for a password.
     expect((workspaceOf(html).view as BrowserTaskView).work).toMatchObject({ run, live: true, transcript: null });
     // The decision renders link-only: the question and its road, no form

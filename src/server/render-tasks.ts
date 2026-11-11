@@ -21,7 +21,7 @@ import { type AssignmentCard,assignmentCardOf,assignmentStatusOf,assignmentSumma
 import { type AssignmentSnapshot } from "../assignment.js";
 import { holdOwnerWords } from "../board.js";
 import { baseStandingWords, type TaskBaseView } from "../task-base.js";
-import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskMore,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
+import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskMore,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView,type PageWork } from "../browser-workspace.js";
 import { permissionPlainWords } from "../chat-decide.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { type FormView } from "../contracts/console-api.js";
@@ -3120,7 +3120,7 @@ export function taskBodyParts(data: {
       { key: "fast-grown", html: data.fastGrown == null || data.csrf === "" ? "" : htmlString(html`<div class="card"><p>${data.fastGrown}</p>${postForm(`${taskHref(task.id)}/keep-grown`, btn("Approve it", { variant: "primary", type: "submit" }))}</div>`) },
       { key: "pull-request", html: fragmentString(pullRequestCard) },
       { key: "needs-scope", html: fragmentString(needsScopeCard) },
-      { key: "mirror", html: fragmentString(mirrorCard) }, { key: "attempt", html: fragmentString(attemptPanel) },
+      { key: "mirror", html: fragmentString(mirrorCard) }, { key: "attempt", html: fragmentString(attemptPanel), ...(liveRunId === null ? {} : { instance: String(liveRunId) }) },
     ].filter(one => one.html !== ""),
     // Open questions are a lead block (key "questions"), so they sit in the step that waits.
     questions: "",
@@ -3198,14 +3198,20 @@ export function taskPage(chrome: Chrome, data: Parameters<typeof taskBody>[0]): 
   }
   const liveRunId = data.liveRunId ?? null;
   const liveRun = liveRunId === null ? undefined : data.runs.find(one => one.id === liveRunId);
+  const answers = data.csrf !== "" && data.decisions.some(one => one.state === "open" || one.state === "expired");
   const script =
     (liveRun === undefined ? "" : regionScript("check-progress", "check", `/r/${liveRun.id}`)) +
     (liveRun !== undefined && data.peekable === true ? regionScript("run-peek", "peek", `/r/${liveRun.id}`) : "") +
-    (data.csrf !== "" && data.decisions.some(one => one.state === "open" || one.state === "expired") ? decisionAnswerScript() : "");
+    (answers ? decisionAnswerScript() : "");
+  // The same three, named for the app (task-page-in-app.md): it runs its own version of each where it can.
+  const app: PageWork[] = [];
+  if (liveRun !== undefined) app.push({ kind: "region", region: "check-progress", run: liveRun.id });
+  if (liveRun !== undefined && data.peekable === true) app.push({ kind: "region", region: "run-peek", run: liveRun.id });
+  if (answers) app.push({ kind: "answer" });
   return screen(`task \u00b7 ${data.task.id}`, first.html, {
     chrome,
     workspace: { view: first.view },
-    ...(script === "" ? {} : { functional: { script, fetches: true } }),
+    ...(script === "" ? {} : { functional: { script, fetches: true, app } }),
   });
 }
 

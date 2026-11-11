@@ -5,7 +5,9 @@
  * Back reads its entry the same way; every doubt is a document load; a sensitive workspace is never rendered by any of
  * the three roads; Home's row selection and the Search panel keep working with the listener installed; the phone
  * drawer closes; the message box keeps or restores its draft; a native form shown in place still posts with the key;
- * and what chromeScript binds once per document is either delegated or never drawn by the workspace.
+ * and what chromeScript binds once per document is either delegated or never drawn by the workspace. The page's own
+ * work, run by the app (docs/plans/task-page-in-app.md): a task with an open question opens and answers in place; a
+ * document that ran a page script, and work this app does not know, are document loads; a held page runs none.
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -22,7 +24,7 @@ import { chromeScript, KBD_HELP } from "../server/chrome.js";
 import { browserWorkspaceDocument } from "../browser-shell.js";
 import { KEY_FILL_SCRIPT } from "../server/mutation-key.js";
 import { html, htmlString } from "../html.js";
-import { T0 } from "../../test/serve-kit.js";
+import { presented, sealScopeFixture, T0 } from "../../test/serve-kit.js";
 import { acceptWorkspace, useWorkspace, WorkspaceApp } from "./app.js";
 import { follow, forgetPlaces, LEAVE_MS, linkToFollow, mayBeInPlace, pageHeld, setDocumentLoader } from "./navigate.js";
 import { mayPrefetch, prefetch, prefetchedKeys, PREFETCH_MAX_PAGES, PREFETCH_TTL_MS, setPrefetchClock, takePrefetched } from "./prefetch.js";
@@ -804,4 +806,179 @@ test("once the document is leaving, a followed link's late answer shows, pushes 
   expect(loads).toEqual([]);
   expect(window.location.pathname).toBe("/tasks");
   expect(LEAVE_MS).toBeLessThanOrEqual(10_000);
+});
+
+// ---- the page's own work, run by the app (docs/plans/task-page-in-app.md) ------------------------------------------
+
+/** A task whose build stopped on a question, as the console's own records keep it; the question's number. */
+function stoppedOnQuestion(id: string): number {
+  store.createTask({ id, title: `decide ${id}` }, T0);
+  const ref = store.refFor("built-in", id, "ours").id;
+  store.placeTask(ref, dirs[0]!);
+  sealScopeFixture(store, id, token);
+  const run = store.startRun({ taskRef: ref, leaseId: `lease-${id}`, runner: "b1", branch: `standing-orders/${id}`, worktree: `/pool/${id}`, now: T0, ...presented(store, ref, "builder") });
+  store.finishRun(run, { outcome: "parked", reason: "decision:1", now: T0 });
+  return store.saveDecision({
+    run, urgency: "blocking", recap: `why ${id} stopped`, question: "Which way?",
+    options: [
+      { id: "keep", label: "Keep and backfill", consequence: "reversible cleanup later", reversible: true },
+      { id: "drop", label: "Drop it", consequence: "it does not come back", reversible: false },
+    ],
+    recommendation: "keep",
+  }, T0);
+}
+
+/** A page as a tab that runs page work reads it (the app's own reads say so; `workspaceAt` reads as an older tab). */
+async function workAt(path: string): Promise<BrowserWorkspace> {
+  const page = await exchange("GET", `${path}${path.includes("?") ? "&" : "?"}format=workspace`, { cookie, accept: "application/json", "x-toolroll-work": "1" });
+  expect(page.status, path).toBe(200);
+  return JSON.parse(page.text) as BrowserWorkspace;
+}
+
+/** A POST answered as a browser's fetch answers it: the redirect followed, the answer naming the page it landed on. */
+async function followed(path: string, init: RequestInit): Promise<Response> {
+  const posted = await toConsole(path, init);
+  const to = posted.headers.get("location");
+  if (posted.status !== 303 || to === null) return posted;
+  const landed = await toConsole(to);
+  Object.defineProperty(landed, "url", { value: `${window.location.origin}${to}` });
+  return landed;
+}
+
+const submit = async (form: Element): Promise<Event> => {
+  const event = new Event("submit", { bubbles: true, cancelable: true });
+  await act(async () => { form.dispatchEvent(event); });
+  return event;
+};
+/** The menu's Tasks link as a task page draws it (it names the task's project). */
+const tasksLink = () => document.querySelector<HTMLAnchorElement>(`.so-rail a[href^="/tasks?project="]`)!;
+const answerForm = (decision: number) => document.querySelector<HTMLFormElement>(`[data-decision-id="${decision}"] form.decide-inline`);
+
+test("a task with an open question opens in place, and its answer acts in place: one POST, the receipt in its card", async () => {
+  const decision = stoppedOnQuestion("q-one");
+  // An older tab says nothing about page work: it is still told to load the page as a document, and handed none.
+  const old = await workspaceAt("/t/q-one");
+  expect(old.inPlace).toBe(false);
+  expect(old.work).toBeUndefined();
+  // This app's reads say it runs page work, so the page is the app's: no page script, in place.
+  const task = await workAt("/t/q-one");
+  expect(task.work).toEqual([{ kind: "answer" }]);
+  expect(task.inPlace).toBe(true);
+  expect(task.sensitive).not.toBe(true);
+
+  await open("/");
+  await act(async () => { await follow("/t/q-one", "push"); });
+  await arrivedAt("/t/q-one");
+  expect(loads).toEqual([]);
+  expect(window.location.pathname).toBe("/t/q-one");
+  expect(answerForm(decision)).not.toBeNull();
+
+  const posts: string[] = [];
+  override = (path, init) => { if (init.method !== "POST") return null; posts.push(`${path} ${String(init.body)}`); return followed(path, init); };
+  expect((await submit(answerForm(decision)!)).defaultPrevented).toBe(true);
+  await waitFor(() => document.querySelector(`[data-decision-id="${decision}"] .answered`) !== null);
+  expect(posts.length).toBe(1);
+  expect(posts[0]).toMatch(new RegExp(`^/d/${decision}/answer `));
+  expect(posts[0]).toContain("choice=keep");
+  expect(answerForm(decision)).toBeNull();
+  expect(store.getDecision(decision)?.answer).not.toBeNull();
+  expect(loads).toEqual([]);
+
+  // Another page, in place: the task's listener ended with it, so a form of that shape there is the browser's own.
+  const tasks = tasksLink().getAttribute("href")!;
+  click(tasksLink());
+  await arrivedAt(tasks);
+  expect(loads).toEqual([]);
+  expect(window.location.pathname).toBe("/tasks");
+  document.getElementById("workspace-main")!.insertAdjacentHTML("beforeend", `<div data-decision-id="99"><form class="decide-inline" method="post" action="/d/99/answer"><input type="hidden" name="choice" value="keep"></form></div>`);
+  expect((await submit(answerForm(99)!)).defaultPrevented).toBe(false);
+  await settle();
+  expect(posts.length).toBe(1);
+});
+
+test("a document that ran a page script never changes page in place, and the app runs no work beside that script", async () => {
+  const decision = stoppedOnQuestion("q-two");
+  const task = await workAt("/t/q-two");
+  // The document as a server would never send it (a script string and work at once): the string is what ran.
+  await open("/t/q-two", { ...task, scripted: true });
+  const posts: string[] = [];
+  override = (path, init) => { if (init.method !== "POST") return null; posts.push(path); return followed(path, init); };
+  expect((await submit(answerForm(decision)!)).defaultPrevented).toBe(false);
+  await settle();
+  expect(posts).toEqual([]);
+  // A followed link and a confirmation are document loads: the script's listeners last as long as the document.
+  const tasks = tasksLink().getAttribute("href")!;
+  click(tasksLink());
+  await arrivedAt(tasks);
+  expect(loads).toEqual([{ href: tasks, replace: false }]);
+  expect(window.location.pathname).toBe("/t/q-two");
+  loads = [];
+  expect(acceptWorkspace(await workspaceAt("/tasks"), "confirm", "/tasks")).toBe(false);
+  expect(loads).toEqual([{ href: "/tasks", replace: false }]);
+  // Its own re-read still shows.
+  loads = [];
+  expect(acceptWorkspace(task, "refresh")).toBe(true);
+  expect(loads).toEqual([]);
+});
+
+test("work this app does not know is a document load; a malformed list is no page at all", async () => {
+  await open("/");
+  const tasks = await workspaceAt("/tasks");
+  expect(tasks.inPlace).toBe(true);
+  // A newer server names work this app has no version of: showing the page without it would leave it half working.
+  override = path => path.startsWith("/tasks?") ? Promise.resolve(json({ ...tasks, work: [{ kind: "answer" }, { kind: "result" }] })) : null;
+  click(railLink("/tasks"));
+  await arrivedAt("/tasks");
+  expect(loads).toEqual([{ href: "/tasks", replace: false }]);
+  expect(window.location.pathname).toBe("/");
+  expect(document.querySelector("[data-home]")).not.toBeNull();
+  loads = [];
+  expect(acceptWorkspace({ ...tasks, work: [{ kind: "region", region: "run-peek", run: 0 }] } as BrowserWorkspace, "confirm", "/tasks")).toBe(false);
+  expect(acceptWorkspace({ ...tasks, work: [{ kind: "region", region: "board-region", run: 3 }] } as unknown as BrowserWorkspace, "navigate", "/tasks")).toBe(false);
+  expect(loads).toEqual([{ href: "/tasks", replace: false }, { href: "/tasks", replace: false }]);
+  // The page on screen re-reading itself is shown either way (the app starts none of the unknown work).
+  loads = [];
+  const home = await workspaceAt("/");
+  expect(acceptWorkspace({ ...home, work: [{ kind: "result" }] } as unknown as BrowserWorkspace, "refresh")).toBe(true);
+  expect(loads).toEqual([]);
+  // Work that is not a list of named entries fails the read itself.
+  for (const work of ["answer", [null], [{ kind: 7 }], { kind: "answer" }]) {
+    const read = await readPage("/tasks", "navigate", () => Promise.resolve(json({ ...tasks, work })));
+    expect(read, JSON.stringify(work)).toBeNull();
+  }
+  expect(await readPage("/tasks", "navigate", () => Promise.resolve(json({ ...tasks, scripted: "yes" })))).toBeNull();
+});
+
+test("a page shown ahead of its own read runs no work; the confirmed page does", async () => {
+  const decision = stoppedOnQuestion("q-held");
+  await open("/");
+  const link = document.createElement("a");
+  link.href = "/t/q-held";
+  link.textContent = "decide q-held";
+  document.querySelector(".so-rail")!.append(link);
+  rest(link);
+  await waitFor(() => prefetchedKeys().includes("/t/q-held"));
+  const confirming = gate();
+  const posts: string[] = [];
+  override = (path, init) => {
+    if (init.method === "POST") { posts.push(path); return followed(path, init); }
+    return path.startsWith("/t/q-held?") && purposeOf(init) === "navigate" ? confirming.wait(path, init) : null;
+  };
+  click(link);
+  await waitFor(() => window.location.pathname === "/t/q-held");
+  await settle();
+  expect(pageHeld()).toBe(true);
+  expect(answerForm(decision)).not.toBeNull();
+  // Held: a submit there is nobody's (the page is inert, and the app has started none of its work).
+  expect((await submit(answerForm(decision)!)).defaultPrevented).toBe(false);
+  await settle();
+  expect(posts).toEqual([]);
+  confirming.open();
+  await waitFor(() => !document.getElementById("workspace-main")!.hasAttribute("data-so-provisional"));
+  await settle();
+  expect(pageHeld()).toBe(false);
+  expect(loads).toEqual([]);
+  expect((await submit(answerForm(decision)!)).defaultPrevented).toBe(true);
+  await waitFor(() => document.querySelector(`[data-decision-id="${decision}"] .answered`) !== null);
+  expect(posts).toEqual([`/d/${decision}/answer`]);
 });

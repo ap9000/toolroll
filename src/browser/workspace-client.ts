@@ -1,4 +1,5 @@
 import type { BrowserWorkspace } from "../browser-workspace.js";
+import { PAGE_WORK_HEADER, PAGE_WORK_VERSION } from "../page-work-contract.js";
 import { keyed } from "./mutation-key.js";
 
 export const DRAFT_TTL = 86_400_000;
@@ -147,6 +148,9 @@ export function isWorkspace(value: unknown): value is BrowserWorkspace {
   // A rebuilt page's view model: its kind selects the component; the server
   // shapes the rest, and an unknown kind falls back to the page HTML.
   if (value.view !== undefined && value.view !== null && !(record(value.view) && typeof value.view.kind === "string")) return false;
+  // The page's work, as data: its kinds are checked at the door (page-work.ts knownWork), where an unknown one loads a document.
+  if (value.work !== undefined && !(Array.isArray(value.work) && value.work.every(item => record(item) && typeof item.kind === "string"))) return false;
+  if (value.scripted !== undefined && typeof value.scripted !== "boolean") return false;
   if (value.signIn !== undefined && !(Array.isArray(value.signIn) && value.signIn.every(item => record(item)
     && [item.provider, item.title, item.command, item.detail, item.resumeLabel, item.resumeHref].every(part => typeof part === "string") && String(item.resumeHref).startsWith("/")))) return false;
   if (value.firstRun !== undefined && !isFirstRun(value.firstRun)) return false;
@@ -182,6 +186,9 @@ function isMessage(item: unknown): boolean {
 
 export class WorkspaceAuthError extends Error {}
 
+/** Said on every read of a page the app may show: this app runs page work itself (task-page-in-app.md §2). */
+const APP_WORK = { [PAGE_WORK_HEADER]: String(PAGE_WORK_VERSION) };
+
 export type WorkspaceRead = { kind: "changed"; workspace: BrowserWorkspace; etag: string | null }
   | { kind: "unchanged"; etag: string };
 
@@ -192,7 +199,7 @@ export async function readWorkspace(workspace: BrowserWorkspace, request: string
   if (request) url.searchParams.set("request", request);
   else url.searchParams.delete("request");
   const etag = request || options.force ? null : options.etag;
-  const response = await fetcher(url.pathname + url.search, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json", ...(etag ? { "if-none-match": etag } : {}) }, signal: AbortSignal.timeout(12_000) });
+  const response = await fetcher(url.pathname + url.search, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json", ...APP_WORK, ...(etag ? { "if-none-match": etag } : {}) }, signal: AbortSignal.timeout(12_000) });
   if (response.status === 401 || response.status === 403 || response.redirected) throw new WorkspaceAuthError("Sign in again to reconnect. Your draft stays in this tab.");
   if (response.status === 304) {
     if (!etag) throw new Error("The update was incomplete. Your current view is preserved.");
@@ -269,7 +276,7 @@ export async function readPage(href: string, purpose: "navigate" | "prefetch", f
   if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
   try {
     const response = await fetcher(url.pathname + url.search, { credentials: "same-origin", cache: "no-store", redirect: "manual", signal: stop.signal,
-      headers: { accept: "application/json", "x-toolroll-read": purpose } });
+      headers: { accept: "application/json", "x-toolroll-read": purpose, ...APP_WORK } });
     if (response.status !== 200 || response.redirected || response.type === "opaqueredirect") return null;
     if (!(response.headers.get("content-type") ?? "").includes("application/json")) return null;
     const data: unknown = await response.json();
