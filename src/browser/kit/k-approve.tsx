@@ -51,7 +51,7 @@ export function KApprove({ kind, facts, label, terms, text, primary = true, dock
     <KButton variant={primary ? "primary" : "outline"} label={label} docked={docked === true} busy={busy && trigger === null ? busyLabel : false}
       aria-haspopup={ask === "password" ? "dialog" : undefined}
       {...(primary ? { "data-ink-approve": "" } : {})}
-      onClick={event => { if (pending.current || (check !== undefined && !check())) return; if (ask === "password") setTrigger(event.currentTarget); else void run(null); }} />
+      onClick={event => { if (!pressedByPerson(event) || pending.current || (check !== undefined && !check())) return; if (ask === "password") setTrigger(event.currentTarget); else void run(null); }} />
     {ask === "click" && refusal && <KNotice>{refusal}</KNotice>}
     {trigger && <KOverlay kind="popover" title="Confirm with your password" trigger={trigger} onClose={() => { setTrigger(null); setRefusal(null); }}>
       {text && <p>{text}</p>}
@@ -67,3 +67,12 @@ export function KApprove({ kind, facts, label, terms, text, primary = true, dock
     </KOverlay>}
   </>;
 }
+
+/**
+ * Whether a person made this press: a click the browser raised itself (pointer, touch, keyboard, assistive
+ * technology), never one a script dispatched (`button.click()`, `dispatchEvent`). Every browser says which
+ * (`isTrusted`, which a script cannot set); a DOM that does not say (the unit tests') counts as a person's. This keeps a
+ * script's click from standing in for a press. It proves nothing to the server, which proves the person again when the
+ * act arrives.
+ */
+export function pressedByPerson(event: { nativeEvent: { isTrusted?: boolean } }): boolean { return event.nativeEvent.isTrusted !== false; }

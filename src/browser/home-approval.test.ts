@@ -316,3 +316,73 @@ test("postInPlace reads only the route's exact answer", async () => {
   expect(await send(new TypeError("network"))).toEqual({ kind: "lost" });
   expect(await send(new Response("{", { status: 200, headers: { "content-type": "application/json" } }))).toEqual({ kind: "lost" });
 });
+
+test("a click a script made approves nothing: no read is minted and nothing is posted; a press the browser raised approves", async () => {
+  await mount(homeOf(["a", "b"]));
+  await settle();
+  // What every browser says of a click: `isTrusted` false for `button.click()` and a dispatched event, true for a press.
+  const click = (trusted: boolean) => Object.defineProperty(new MouseEvent("click", { bubbles: true, cancelable: true }), "isTrusted", { value: trusted });
+  await act(async () => { approveButton()!.dispatchEvent(click(false)); });
+  await wait(0); await wait(0);
+  expect(minting()).toHaveLength(0);
+  expect(posts()).toHaveLength(0);
+  expect(document.querySelector("[data-home-approved]")).toBeNull();
+  expect(document.querySelector('[data-row="a"]')).not.toBeNull();
+  await act(async () => { approveButton()!.dispatchEvent(click(true)); });
+  await wait(0); await wait(0);
+  expect(minting()).toHaveLength(1);
+  expect(posts()).toHaveLength(1);
+  expect(document.querySelector("[data-home-approved]")?.textContent).toBe("Approved.");
+  noPasswordField();
+});
+
+test("an answer that lands after the selection moved touches nothing in the pane shown now: no words, no plan of the old task, no load, no Approved", async () => {
+  const assign = vi.fn();
+  vi.spyOn(window.location, "assign").mockImplementation(assign);
+  const late: Array<[string, () => Response]> = [
+    ["refused", () => json({ outcome: "refused", words: "that approval form is stale — read it again" }, 409)],
+    ["elsewhere", () => new Response("<!doctype html><title>Sign in</title>", { status: 200, headers: { "content-type": "text/html" } })],
+    ["approved", () => json({ outcome: "approved", words: "Approved." })],
+    ["vote", () => json({ outcome: "vote", words: "your yes is recorded — one more approver is needed" })],
+    ["lost", () => new Response("{", { status: 200, headers: { "content-type": "application/json" } })],
+  ];
+  for (const [name, respond] of late) {
+    let release: (response: Response) => void = () => undefined;
+    answer = call => {
+      if (call.method === "POST") return new Promise<Response>(done => { release = done; });
+      const id = call.url.split("?")[0]!.slice(3);
+      const sheet = id === "b" ? SHEET.replace("Dedupe", "Second") : SHEET;
+      return json(workspaceOf(id, approveOf(id, { sheetHtml: sheet }, call.headers["x-toolroll-read"] === "prefetch" ? {} : { nonce: NONCE })));
+    };
+    let nudges = 0;
+    const nudged = () => { nudges += 1; };
+    window.addEventListener(WORKSPACE_NUDGE, nudged);
+    await mount(homeOf(["a", "b"]));
+    await settle();
+    await press();
+    expect(posts(), name).toHaveLength(1);
+    expect(posts()[0]!.url, name).toBe("/t/a/approve");
+    // The person moves to B while A's answer is on its way.
+    await act(async () => document.querySelector<HTMLAnchorElement>('[data-row="b"]')!.click());
+    await settle();
+    expect(pane().querySelector("[data-plan-sheet]")?.textContent, name).toBe("Second the listings.");
+    const readsBefore = reads().length;
+    await act(async () => { release(respond()); });
+    await wait(0); await wait(0);
+    // B's pane is B's: its title, its plan, its own Approve ready, nothing said, nothing read for A, no page loaded.
+    expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row"), name).toBe("b");
+    expect(pane().querySelector(".so-open-t")?.textContent, name).toBe("Task b");
+    expect(pane().querySelector("[data-plan-sheet]")?.textContent, name).toBe("Second the listings.");
+    expect(pane().querySelector("[data-home-said]"), name).toBeNull();
+    expect(pane().querySelector("[data-home-changed]"), name).toBeNull();
+    expect(document.querySelector("[data-home-approved]"), name).toBeNull();
+    expect(approveButton()?.getAttribute("aria-disabled"), name).toBeNull();
+    expect(reads().slice(readsBefore).filter(one => one.url.startsWith("/t/a")), name).toHaveLength(0);
+    expect(assign, name).not.toHaveBeenCalled();
+    // Home is told to read its list again: where A stands is the list's to say.
+    expect(nudges, name).toBe(1);
+    expect(posts(), name).toHaveLength(1);
+    window.removeEventListener(WORKSPACE_NUDGE, nudged);
+    await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
+  }
+});

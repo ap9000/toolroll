@@ -18,7 +18,7 @@ import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type { BrowserHomeRow, BrowserWorkspace } from "../../browser-workspace.js";
 import { mintedNonce, mintRead, offersApprove, postInPlace, REDRAW_HOLD_MS, selectionRead, sentence, snapshotOf, taskViewOf, type ApprovalSnapshot } from "../act.js";
 import { GuardedHtml } from "../guarded-html.js";
-import { KButton, KChip, KLinkButton } from "../kit/index.js";
+import { KButton, KChip, KLinkButton, pressedByPerson } from "../kit/index.js";
 import { isPhone } from "../kit/behavior.js";
 import { FormToken } from "../ui/index.js";
 
@@ -112,7 +112,8 @@ export function HomeApproval({ row, onApproved, onChanged }: {
     const mine = ++generation.current;
     // 1. Mint for exactly what is shown.
     const minted = await mintRead(href);
-    if (mine !== generation.current) { pressing.current = false; return; }
+    // The selection moved on: its own effect reset the latch, and a press there may hold it now. Nothing is touched.
+    if (mine !== generation.current) return;
     const latest = snapshotOf(minted);
     const nonce = mintedNonce(minted);
     if (minted === null) { finish(); setSaid({ tone: "refused", text: "Couldn’t read the plan just now. Nothing changed." }); void readAgain(); return; }
@@ -125,6 +126,9 @@ export function HomeApproval({ row, onApproved, onChanged }: {
     }
     // 2. Post in place: the snapshot's action, digest and rebuild; the nonce just minted; never a password.
     const answer = await postInPlace(snapshot, csrf, nonce);
+    // The selection moved while the answer was on its way: this pane is another task's now. Nothing of the old task is
+    // drawn, read or loaded here, whatever the answer; Home reads its list again, which says where that task stands.
+    if (mine !== generation.current) { onChanged(); return; }
     if (answer.kind === "elsewhere") { window.location.assign(href); return; }
     if (answer.kind === "answer" && answer.outcome === "approved") { onApproved(row.id); return; }
     if (answer.kind === "answer" && answer.outcome === "refused") {
@@ -165,7 +169,7 @@ export function HomeApproval({ row, onApproved, onChanged }: {
       <p className="so-home-terms" data-home-terms>{[snapshot.text, snapshot.termsWords].filter(Boolean).join(" ")}</p>
       <div className="k-acts">
         <KButton variant="primary" label="Approve" busy={busy === "sending" ? "Approving…" : busy === "checking" ? "Checking…" : false}
-          aria-disabled={!armed || busy !== null ? true : undefined} data-home-approve="" onClick={() => { void press(); }} />
+          aria-disabled={!armed || busy !== null ? true : undefined} data-home-approve="" onClick={event => { if (pressedByPerson(event)) void press(); }} />
         <a className="k-link" href={taskChatHref(snapshot.taskId)} data-home-changes="">Request changes</a>
       </div>
     </div> : shown.phase !== "reading" && <div className="k-acts">
