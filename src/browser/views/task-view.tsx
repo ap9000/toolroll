@@ -10,7 +10,8 @@ import { HEADLINE_TONE, HEADLINES, type Headline } from "../../task-status.js";
 import { FormToken, Passwordless, PostForm } from "../ui/post-form.js";
 import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskMore, BrowserTaskSection, BrowserTaskTab, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
-import { termsOf, type StepItem } from "../../design/kit.js";
+import { approvalAsk, termsOf, type StepItem } from "../../design/kit.js";
+import { postInPlace, sentence } from "../act.js";
 import type { JourneyStep } from "../../first-run.js";
 import type { StepRow } from "../../workspace-ui.js";
 import { GuardedHtml } from "../guarded-html.js";
@@ -22,7 +23,7 @@ import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
 import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
-import { ActivityLine, AlsoViewing, useLiveTask } from "../live-task.js";
+import { ActivityLine, AlsoViewing, useLiveTask, WORKSPACE_NUDGE } from "../live-task.js";
 import { cn } from "../kit/utils.js";
 import { HEADLINE_GLYPH, statusWhyLines } from "./status-summary.js";
 import type { GlyphKind } from "../components/ui/status-glyph.js";
@@ -255,26 +256,52 @@ function ApprovalBox({ approve, latest, onEdit, reject = false, inRow = false }:
   /** In the Approval row, which carries the Needs-you chip and the one outline itself. */
   inRow?: boolean }) {
   const ref = useRef<HTMLFormElement>(null);
+  const csrf = useContext(FormToken);
   const editing = usePlanEditing();
+  // What a one-click approval sent in place came to (live-pages-and-home.md B2.4). Its nonce is spent either way, so
+  // the box then offers Reload, never the same form again.
+  const [answered, setAnswered] = useState<{ words: string; done: boolean } | null>(null);
   const changed = latest == null || latest.fields["digest"] !== approve.fields["digest"];
   const until = approve.rememberedUntil === null ? null : new Date(approve.rememberedUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const facts = { ...approve.facts, rememberedUntil: until };
   const terms = approve.termsWords ?? termsOf(approve.kind, facts);
+  const taskPage = approve.action.replace(/\/approve$/, "");
+  /** One click, in place (B2.2 step 2 only): this box's own pinned snapshot already holds the nonce minted for the plan
+   * on screen, its digest and its rebuild. Never a password: the password case keeps the native form. */
+  const approveInPlace = async (): Promise<string | null> => {
+    const nonce = approve.fields["nonce"] ?? "";
+    const digest = approve.fields["digest"] ?? "";
+    if (!/^[0-9a-f]{32}$/.test(nonce) || digest === "") return "This form can’t approve: reload the page to read the plan again. Nothing changed.";
+    const answer = await postInPlace({ action: approve.action, digest, rebuild: approve.fields["rebuild"] ?? null }, csrf, nonce);
+    if (answer.kind === "elsewhere") { window.location.assign(taskPage); return new Promise(() => {}); }
+    if (answer.kind === "lost") {
+      // No answer proves nothing (the approval is written before the answer is sent): the page reads itself again.
+      setAnswered({ words: "Checking…", done: true });
+      window.location.reload();
+      return null;
+    }
+    if (answer.outcome === "approved") setAnswered({ words: "Approved.", done: true });
+    else setAnswered({ words: answer.outcome === "refused" ? `${sentence(answer.words)} Nothing changed.` : sentence(answer.words), done: false });
+    window.dispatchEvent(new CustomEvent(WORKSPACE_NUDGE));
+    return null;
+  };
   // Belt and braces: a press that lands while the editor opened is refused in place, never sent.
   const approveNow = (password: string | null) => editorOpen()
     ? Promise.resolve("Save or cancel your edit first: approving now would approve the plan as it was. Nothing changed.")
+    : password === null && approvalAsk(approve.kind, facts) === "click" ? approveInPlace()
     : submitNative(ref.current, password);
-  const live = !changed && !editing;
+  const live = !changed && !editing && answered === null;
   return <PostForm ref={ref} action={approve.action} className="k-approve" data-approval-kind={approve.kind} data-task-approval data-editing={editing ? "" : undefined}>
     {Object.entries(approve.fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
     <input type="hidden" name="token" value="" />
     <KSlots wait status={<>{!inRow && <KChip word="Needs you" tone="needs" />}<h2>{approve.heading}</h2></>} text={approve.text}
-      acts={changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
+      acts={answered !== null ? (answered.done ? null : <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />)
+        : changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
         : editing ? <KButton label="Back to the edit" onClick={() => onEdit?.()} />
         : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text} onApprove={approveNow} />
           {onEdit !== null && <KButton label="Request changes" onClick={onEdit} />}
           {reject && <KLinkButton variant="ghost" label="Reject" href="#cancel-task" data-approval-reject="" />}</>}
-      terms={changed ? "The plan changed since this page loaded. Reload to see the version you would approve."
+      terms={answered !== null ? answered.words : changed ? "The plan changed since this page loaded. Reload to see the version you would approve."
         : editing ? "You’re editing the plan. Save it (it then asks for approval again) or cancel the edit to approve this version." : terms} />
     {/* On a phone the one primary lives in the dock: the same act, the same form. */}
     {live && <KDock><KApprove kind={approve.kind} facts={facts} label={approve.label} terms={terms} text={approve.text} onApprove={approveNow} /></KDock>}

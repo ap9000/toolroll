@@ -501,3 +501,12 @@ export function refusalNext(method: string, url: URL): string {
   }
   return "/";
 }
+
+/**
+ * Whether an act asked for its answer in place (live-pages-and-home.md B2.3): `x-toolroll-act: in-place` turns the
+ * answer into a small JSON outcome (`{ outcome, words }`) instead of a page or a redirect. It chooses only the answer's
+ * shape: a handler reads it after every proof and authorisation decision is made, and no decision ever reads it.
+ */
+export function answersInPlace(request: IncomingMessage | null | undefined): boolean {
+  return request?.headers["x-toolroll-act"] === "in-place";
+}

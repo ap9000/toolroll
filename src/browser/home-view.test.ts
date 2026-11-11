@@ -71,7 +71,9 @@ test("what needs you is grouped by what is asked, each heading with its exact co
   const pane = document.querySelector(".so-tri-open")!;
   expect(pane.querySelector(".k-chip.needs")?.textContent).toBe("Needs you");
   expect(pane.textContent).toContain("Approve a plan");
-  expect(pane.querySelector(".k-btn-primary")?.getAttribute("href")).toBe("/t/a#approve");
+  // A plan waiting for approval is read beside the list (home-approval.test.ts): nothing to press until it is read.
+  expect(pane.querySelector("[data-home-approval]")?.getAttribute("data-home-approval")).toBe("reading");
+  expect(pane.querySelector("[data-home-approve]")).toBeNull();
   // The lead's last message, one line that opens the chat, above the filled message box that posts to /chat.
   const lead = document.querySelector<HTMLAnchorElement>("[data-home-lead]")!;
   expect(lead.getAttribute("href")).toBe("/chat");
