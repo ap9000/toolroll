@@ -6,11 +6,11 @@
 [data-view] .so-home { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* The heading, said once, the quiet line under it, and the project filter with New task. */
-[data-view] .so-home .so-home-h { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: var(--so-space-2xl); padding: 22px 28px 18px; }
+[data-view] .so-home .so-home-h { flex: none; display: flex; align-items: flex-start; justify-content: space-between; gap: var(--so-space-2xl); padding: 22px var(--so-space-3xl) 18px; }
 [data-view] .so-home .so-home-hl { display: grid; gap: var(--so-space-xs); min-width: 0; }
 [data-view] .so-home .so-say { margin: 0; font: 600 22px/1.25 var(--so-font-sans); letter-spacing: -0.02em; color: var(--so-ink); }
 [data-view] .so-home .so-hello-x { margin: 0; color: var(--so-muted); font-size: 14px; line-height: 1.6; max-width: 60ch; }
-[data-view] .so-home .so-home-h + .so-hello-x { padding: 0 28px 12px; }
+[data-view] .so-home .so-home-h + .so-hello-x { padding: 0 var(--so-space-3xl) var(--so-space-md); }
 [data-view] .so-home .so-act { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-sm); margin: 0; font-size: 13px; color: var(--so-nav-ink); }
 [data-view] .so-home .so-act .k-link { color: var(--so-nav-ink); }
 [data-view] .so-home .so-act-run { display: inline-flex; align-items: center; gap: 6px; }
@@ -26,16 +26,16 @@
 /* The list, grouped by what is asked, and the selected one beside it. */
 [data-view] .so-home .so-triage { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(280px, 400px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); border-top: 1px solid var(--so-line); }
 [data-view] .so-home .so-tri-list { min-height: 0; border-right: 1px solid var(--so-line); overflow: auto; padding: var(--so-space-xs) var(--so-space-sm) var(--so-space-2xl); outline: none; }
-[data-view] .so-home .so-tri-g { display: flex; gap: 6px; margin: 0; padding: 14px 12px 4px; font: 500 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
+[data-view] .so-home .so-tri-g { display: flex; gap: 6px; margin: 0; padding: 14px var(--so-space-md) var(--so-space-xs); font: 500 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
 [data-view] .so-home .so-tri-n { font-variant-numeric: tabular-nums; }
-[data-view] .so-home .so-ti { display: grid; gap: 0; padding: 9px 12px; border-radius: var(--so-radius-md); color: var(--so-ink); text-decoration: none; }
+[data-view] .so-home .so-ti { display: grid; gap: 0; padding: 9px var(--so-space-md); border-radius: var(--so-radius-md); color: var(--so-ink); text-decoration: none; }
 [data-view] .so-home .so-ti-t { font: 500 13.5px/20px var(--so-font-sans); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 [data-view] .so-home .so-ti-m { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 18px; color: var(--so-muted); }
 [data-view] .so-home .so-ti-why { color: var(--so-danger); font-weight: 500; }
 [data-view] .so-home .so-ti-why::after { content: " · "; color: var(--so-muted); font-weight: 400; }
 [data-view] .so-home .so-tri-list .so-ti[aria-selected="true"] { background: var(--so-soft); }
-[data-view] .so-home .so-tri-more { display: block; padding: 6px 12px; font-size: 12.5px; color: var(--so-muted); }
-[data-view] .so-home .so-tri-open { min-width: 0; min-height: 0; overflow: auto; padding: 20px 32px 40px; display: grid; gap: var(--so-space-lg); align-content: start; max-width: 720px; }
+[data-view] .so-home .so-tri-more { display: block; padding: 6px var(--so-space-md); font-size: 12.5px; color: var(--so-muted); }
+[data-view] .so-home .so-tri-open { min-width: 0; min-height: 0; overflow: auto; padding: var(--so-space-xl) 32px 40px; display: grid; gap: var(--so-space-lg); align-content: start; max-width: 720px; }
 [data-view] .so-home .so-open-k { display: flex; align-items: center; gap: var(--so-space-sm); font-size: 12.5px; color: var(--so-muted); }
 [data-view] .so-home .so-open-k .k-link { color: var(--so-ink); font-weight: 500; }
 [data-view] .so-home .so-open-of { margin: 0; font-size: 12.5px; color: var(--so-muted); }
@@ -46,7 +46,7 @@
 [data-view] .so-home .so-next { display: none; }
 
 /* The bottom: the lead's last message as one line, then the filled message box. */
-[data-view] .so-home .so-home-bar { flex: none; padding: 12px 28px 16px; border-top: 1px solid var(--so-line); background: var(--so-paper); }
+[data-view] .so-home .so-home-bar { flex: none; padding: var(--so-space-md) var(--so-space-3xl) var(--so-space-lg); border-top: 1px solid var(--so-line); background: var(--so-paper); }
 [data-view] .so-home .so-home-bar-row { display: flex; align-items: center; gap: var(--so-space-sm); max-width: 760px; }
 [data-view] .so-home .so-home-bar-row > .so-home-ask { flex: 1; min-width: 0; }
 [data-view] .so-home .so-home-plus { display: none; }
@@ -59,7 +59,7 @@
 
 /* Nothing waits on you: one centred column with the message box, what runs, and what finished today. */
 [data-view] .so-home-clear { overflow: auto; }
-[data-view] .so-home .so-clear { box-sizing: border-box; width: 100%; max-width: 680px; margin: 0 auto; padding: 44px 28px 40px; display: flex; flex-direction: column; gap: 32px; }
+[data-view] .so-home .so-clear { box-sizing: border-box; width: 100%; max-width: 680px; margin: 0 auto; padding: 44px var(--so-space-3xl) 40px; display: flex; flex-direction: column; gap: 32px; }
 [data-view] .so-home .so-clear .so-home-h { padding: 0; }
 [data-view] .so-home .so-clear .so-say { font-size: 26px; letter-spacing: -0.025em; }
 [data-view] .so-home .so-clear .so-hello-x { padding: 0; }
@@ -69,8 +69,8 @@
 [data-view] .so-home .so-sec-hr { display: flex; align-items: baseline; justify-content: space-between; gap: var(--so-space-lg); }
 [data-view] .so-home .so-sec-hr .k-link { font-size: 12.5px; color: var(--so-nav-ink); }
 [data-view] .so-home .so-sec-h { display: flex; gap: 6px; margin: 0 0 var(--so-space-xs); font: 500 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
-[data-view] .so-home .so-wrow { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--so-line); color: var(--so-ink); text-decoration: none; }
-[data-view] .so-home .so-wrow > .so-mark { margin: 0 4px; }
+[data-view] .so-home .so-wrow { display: flex; align-items: center; gap: var(--so-space-md); padding: 10px 0; border-top: 1px solid var(--so-line); color: var(--so-ink); text-decoration: none; }
+[data-view] .so-home .so-wrow > .so-mark { margin: 0 var(--so-space-xs); }
 [data-view] .so-home .so-wrow-check { flex: none; display: inline-grid; place-items: center; width: 16px; color: var(--so-success); }
 [data-view] .so-home .so-wrow-b { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 [data-view] .so-home .so-wrow-t { font: 500 13.5px/1.45 var(--so-font-sans); overflow-wrap: anywhere; }
@@ -95,7 +95,7 @@
   [data-view] .so-home .so-home-h + .so-hello-x { padding: var(--so-space-sm) var(--so-phone-gutter) 0; }
   [data-view] .so-home .so-act { font-size: 13px; }
   /* The next one, as a card with its one action. */
-  [data-view] .so-home .so-next { display: flex; flex-direction: column; gap: 10px; margin: var(--so-space-lg) var(--so-phone-gutter) 0; padding: 14px; border: 1px solid var(--so-needs); border-radius: 12px; }
+  [data-view] .so-home .so-next { display: flex; flex-direction: column; gap: 10px; margin: var(--so-space-lg) var(--so-phone-gutter) 0; padding: var(--so-phone-block); border: 1px solid var(--so-needs); border-radius: var(--so-radius-sheet); }
   [data-view] .so-home .so-next-k { display: flex; align-items: center; gap: var(--so-space-sm); margin: 0; min-width: 0; font-size: 13px; color: var(--so-muted); }
   [data-view] .so-home .so-next-k > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   [data-view] .so-home .so-next-t { margin: 0; font: 600 16px/1.3 var(--so-font-sans); overflow-wrap: anywhere; }
@@ -104,7 +104,7 @@
   /* Then the rest of the list, rows between hairlines. */
   [data-view] .so-home .so-triage { display: block; flex: none; border-top: 0; margin-top: var(--so-space-sm); }
   [data-view] .so-home .so-tri-list { border-right: 0; overflow: visible; padding: 0 var(--so-phone-gutter) var(--so-space-lg); }
-  [data-view] .so-home .so-tri-g { padding: 14px 0 2px; font-size: 12.5px; }
+  [data-view] .so-home .so-tri-g { padding: var(--so-phone-block) 0 2px; font-size: 12.5px; }
   [data-view] .so-home .so-tri-list .so-ti { padding: 10px 0; border-radius: 0; border-bottom: 1px solid var(--so-line); }
   [data-view] .so-home .so-tri-list .so-ti[aria-selected="true"] { background: transparent; }
   [data-view] .so-home .so-ti-t { font-size: 14px; }
@@ -113,8 +113,8 @@
   [data-view] .so-home .so-tri-list .so-ti-next { display: none; }
   [data-view] .so-home .so-tri-grp:not(:has(> .so-ti:not(.so-ti-next), > .so-tri-more)) { display: none; }
   /* The bottom bar: the lead's line, the message box and the round New task, above everything else on the page. */
-  [data-view] .so-home .so-home-bar { position: sticky; bottom: 0; z-index: 12; margin-top: auto; padding: 0 12px calc(14px + env(safe-area-inset-bottom)); }
-  [data-view] .so-home .so-lead { min-height: 44px; align-items: center; padding: 0 4px; font-size: 13px; }
+  [data-view] .so-home .so-home-bar { position: sticky; bottom: 0; z-index: 12; margin-top: auto; padding: 0 var(--so-phone-card) calc(var(--so-phone-block) + env(safe-area-inset-bottom)); }
+  [data-view] .so-home .so-lead { min-height: 44px; align-items: center; padding: 0 var(--so-space-xs); font-size: 13px; }
   [data-view] .so-home .so-lead-age { display: none; }
   [data-view] .so-home .so-lead-open { text-decoration: none; }
   [data-view] .so-home .so-home-plus { display: inline-grid; place-items: center; flex: none; width: 46px; height: 46px; padding: 0; border-radius: 50%; }
