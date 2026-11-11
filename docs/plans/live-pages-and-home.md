@@ -1,6 +1,7 @@
 # Pages that change in place, and a Home you can decide from
 
-Status: plan v1, 2026-11-10. Not built. Awaiting a read-only Codex review before any building.
+Status: plan v2, 2026-11-10. Not built. v1 was reviewed read-only by Codex (GO WITH CHANGES, 13 findings); all
+thirteen are folded in below and listed at the end.
 
 ## Why
 
@@ -10,358 +11,453 @@ and instant feeling together. And ok do 1 and 2 in parallel", and "Yes do the ap
 What is true today (read at `762e139a`):
 
 - Content already updates by itself: one `EventSource` per page (`GET /live`), rooms, and "change" hints that make a
-  part re-read itself (`src/browser/live.ts`).
+  part re-read itself (`src/browser/live.ts`). The stream is closed and reopened when the set of rooms changes.
 - What reloads is moving between pages (plain links) and most buttons (native `method="post"` forms that answer with
   a redirect).
 - One React app draws every chromed page (`WorkspaceApp` in `src/browser/app.tsx`; `ViewHost` picks the view; pages
-  the server draws arrive as `workspace.pageHtml`).
+  the server draws arrive as `workspace.pageHtml`, shown by `GuardedHtml`, which can refuse a replacement).
 - Every chromed page that is not a one-time-secret page can already be read as data: `GET <path>?format=workspace`
-  answers the `BrowserWorkspace` JSON (`src/serve.ts`, the `requestFacts.workspaceRead` arm), with an ETag.
+  answers the `BrowserWorkspace` JSON (`src/serve.ts`, the `requestFacts.workspaceRead` arm), with an ETag. These
+  reads do not extend the session (`src/serve.ts:872`).
+- A task page read mints an approval nonce every time it is read while a plan waits
+  (`src/server/task-views.ts:332`, `:861`). The nonce store is shared, capped at 500, 15 minutes each
+  (`src/server/session.ts:32`); at the cap the oldest is dropped whoever it belongs to (`src/serve.ts:784`).
 - A page that shows a password field is `sensitive`: it opens no live connection and runs one script only.
 - Some pages carry their own page script (`functional: { script }`: chat, flows, recipes, results, history, a task
-  page with a running check or an open question, some Settings pages, the queue). That script runs once per document.
-
-Two parts, built in parallel on two branches, both from `origin/main`.
-
-- **Part 1, `live-nav`**: pages change in place, with a transition, and feel instant.
-- **Part 2, `home-act`**: Home is rebuilt to the approved mock, and a plan is approved from Home without leaving it.
+  page with a running check or an open question, some Settings pages, the queue). It runs once per document
+  (`src/browser-shell.ts:51`).
 
 ## What a person notices
 
 | Before | After |
 | --- | --- |
-| Every click on a menu item or a row reloads the whole page. | The menu, the message box and the live connection stay. Only the middle changes, with a short fade and slide. |
+| Every click on a menu item or a row reloads the whole page. | The menu and the message box stay. Only the middle changes, with a short fade and slide. |
 | A click waits for the server before anything moves. | The clicked item is marked at once. The page is usually already fetched, so it shows at once. |
 | Back reloads and loses the scroll position. | Back shows the page at once, at the place it was left. |
 | Home lists what needs you. Each one opens another page. | Home shows the open step of the selected task. A plan is read and approved there, and the next one opens. |
 | Chat is not in the menu. New task is a pencil. | Chat is in the menu under Home. The lead's last message sits above the message box. New task is a plus. |
 
-Sign-in, password pages and pages with a one-time secret still load as their own page. So do pages that carry a page
-script, until that script is moved into the app (listed under "Later").
+Sign-in, password pages, first-run pages, the terminal and pages with a one-time secret still load as their own
+page. So do pages that carry a page script, until that script is moved into the app (listed under "Later").
+
+## Build order
+
+Two streams run side by side. Each stream is two pull requests.
+
+| | Stream A (navigation) | Stream B (Home) |
+| --- | --- | --- |
+| First | **A1 `live-nav`**: the shared base and in-place page changes, plain swap | **B1 `home-act`**: Home's data and layout to the mock, Chat in the menu, the plus. No approval change |
+| Then | **A2**: the transition, prefetch, Back with scroll | **B2**: approve in place, on Home and on the task page (needs A1 merged) |
+
+A1 and B1 touch different files. B2 starts when A1 is merged, and runs beside A2.
 
 ---
 
-## Part 1: pages change in place (`live-nav`)
+## A1: the shared base and in-place page changes
 
-### 1.1 The rule for which pages may change in place
+### A1.1 Which pages may change in place
 
-The server decides, never the client. `BrowserWorkspace` gains one field:
+The server decides. `BrowserWorkspace` gains:
 
 ```ts
-/** True when this page may replace another without a document load: it shows no password field or secret and carries no page script. */
+/** True when this page may replace another without a document load. */
 inPlace: boolean;
 ```
 
-Set in the one place the workspace is built (`src/serve.ts`, next to `sensitive`):
-`inPlace = !sensitive && functionalScript === ""` where `functionalScript` is the same value the document would run
-(`s.functional?.script ?? ""`, or `RESULT_REVIEW_SCRIPT` on the result arm). A `forceSensitive` page answers no
-workspace at all, as today.
+`inPlace = eligibleRoute && !sensitive && functionalScript === ""`, computed in the one place the workspace is
+built (`src/serve.ts`), where:
 
-The client follows a link in place only when **both** the page being left and the page being entered say
-`inPlace: true`. Anything else is a normal document load (`location.assign`). So a sensitive page is always its own
-document, on the way in and on the way out, and `setLiveQuiet` keeps its present meaning.
+- `eligibleRoute` is an explicit allowlist of route ids kept in one constant: Home, the Tasks list, the task page,
+  Projects, Agents (the list, not the Live grid), Search, and the Settings pages. Nothing is eligible by default.
+  `/welcome` and every first-run page, `/term` and its pages, sign-in pages and the release sheet are not on it.
+- `functionalScript` is the exact value the document would run. The expression that is computed today after the
+  JSON return (`src/serve.ts:1695`) is hoisted above it so both arms use one value, and it is taken after the task
+  page has appended its result scripts (`src/server/task-views.ts:925`).
+- A `forceSensitive` page answers no workspace at all, as today.
 
-### 1.2 Three kinds of workspace read
+### A1.2 One door for every new workspace
 
-Today every `?format=workspace` GET is passive (it does not extend the session, `src/serve.ts:872`). Part 1 names the
-purpose in a request header, `x-toolroll-read`:
+Today a workspace reaches the screen by three roads: the first render, the page's own re-read (`useWorkspace`
+`check()`), and nothing else. A1 adds navigation, so every road now goes through one function, `acceptWorkspace(next,
+how)` in `src/browser/app.tsx`, where `how` is `"refresh"` (same page re-read), `"navigate"` or `"confirm"` (A2).
+It enforces, before anything is rendered:
 
-| Value | Sent when | Extends the session | Mints an approval nonce | Other side effects |
-| --- | --- | --- | --- | --- |
-| absent or `poll` | the page re-reads itself (today's behaviour) | no | as today | as today |
-| `navigate` | a person clicked a link or pressed Back | yes, exactly like the HTML GET of the same URL | as the HTML GET does | as the HTML GET does |
-| `prefetch` | the pointer rests on a link, or a touch starts on it | no | no (`mintNonce: false`) | none |
+1. **Sensitive pages are their own document.** If `next.sensitive` is true and the document did not start as that
+   sensitive page, the browser loads `next`'s URL as a document (`location.assign`) and nothing of `next` is
+   rendered. This holds for all three `how` values, including a page that becomes sensitive on its own re-read.
+2. **In place only between eligible pages.** For `"navigate"` and `"confirm"`: both the page being left and `next`
+   must say `inPlace: true`, else a document load.
+3. A page that gains a page script on its own re-read (`inPlace` turns false under `"refresh"`) is kept as it is
+   today: no script runs until the next document load. This is deliberate, and it is today's behaviour.
 
-- `navigate` gives the JSON read the session effect of the HTML read of the same path, no more. The header never
-  changes who is signed in, which route answers, or what the route allows. Any other header value is treated as
-  `poll`.
-- `prefetch` is answered only for an allowlist of route ids proven free of side effects on GET: Home, the Tasks list,
-  Projects, Agents, Search, and the task page (with `mintNonce: false`). Every other route answers a prefetch with
-  `204` and the client simply does not have that page ready. The builder proves each allowlisted route by reading its
-  GET handler for writes (seen marks, one-time notices such as `receipt`, nonce mints) and adds one test per route
-  that a prefetch changes nothing in the store and does not move the session's idle time.
-- A page shown from a prefetch is always confirmed by one `navigate` read before it counts as current (1.4). A form
-  that needs a nonce is never sent with the `"unminted"` value: the approve control stays disabled until the
-  confirming read lands.
+`setLiveQuiet` keeps its meaning. No sensitive page is ever shown inside a document that ran another page's code.
 
-### 1.3 The navigator
+### A1.3 The shell stays, the page content is keyed
 
-A new file `src/browser/navigate.tsx`. The mount in `src/browser/app.tsx` renders `<Navigator initial={initial} />`
-instead of `<WorkspaceApp initial={initial} />`.
+`WorkspaceApp` is split:
 
-```tsx
-function Navigator({ initial }) {
-  const [page, setPage] = useState({ workspace: initial, epoch: 0 });
-  // …listeners, see below…
-  return <WorkspaceApp key={page.epoch} initial={page.workspace} />;
-}
-```
+- **Shell** (mounted once per document): `FormToken`/`Passwordless` providers, `Rail`, the phone header and drawer,
+  the message box, `NeedsDock`, `SearchMenu`, the notices line.
+- **Page** (`<Page key={epoch} …>`): the header, `#workspace-main` and the view, with every piece of state that
+  today derives from `initial` (live task, agents board, the rooms it follows, the approval snapshot in `TaskView`,
+  `GuardedHtml`'s accepted markup).
 
-A new page is a new `epoch`: `WorkspaceApp` remounts with the new workspace as its `initial`, so every piece of state
-that derives from `initial` (draft scope, live task, the rooms it follows, the CSRF value in `FormToken`) is correct
-by construction, with no partial-update paths. The live connection (`LiveHub`) lives outside React and stays open;
-rooms are left and joined by the unmount and mount effects that exist today.
+A navigation is a new `epoch`. The page remounts with the new workspace as its starting value, so page state is
+correct by construction and `GuardedHtml` gets a fresh instance instead of a refused replacement. The shell reads
+the current workspace through context and re-renders (new `navigation`, `crumbs`, `csrf`, `needsYou`).
 
-What must not blink on a remount (the builder checks each and keeps it stable): the sidebar's scroll and open groups,
-the message box text (it is already restored from the saved draft per scope), the phone header. If remounting the
-whole app makes the menu or the message box flicker, the fallback inside this plan is to lift `Rail` and the composer
-above the keyed part; the keyed remount of the content column stays.
+Shell rules:
 
-One capture-phase `click` listener on `document` decides. A click is handled in place only when all hold:
+- The message box keeps its text across a navigation when the conversation scope is the same, and uses the saved
+  draft for the new scope when it differs. Home's ask box (today local state only, `home-view.tsx:80`) is given the
+  same saved-draft handling.
+- The phone drawer closes on every navigation.
+- There is one live stream at a time. It may reconnect when the rooms change; nothing in this plan requires the
+  same connection to survive.
 
-- left button, no modifier key, `event.defaultPrevented` false;
-- the target is inside an `<a href>` with no `target`, no `download`, no `data-full-load`, no `rel="external"`;
+### A1.4 Read purposes
+
+A request header on workspace GETs, `x-toolroll-read`, names the purpose. It is a hint about bookkeeping, not proof
+that a person clicked, and no authorisation decision reads it.
+
+| Value | Sent when | Extends the session | Mints an approval nonce |
+| --- | --- | --- | --- |
+| absent, `poll`, or any unknown value | the page re-reads itself | no (today) | as today |
+| `navigate` | a link was followed or Back was pressed | yes, as the HTML GET of the same URL would | as the HTML GET does |
+| `prefetch` | a page is fetched ahead, or Home reads the selected task (B2) | no | no (`mintNonce: false`, the value is `"unminted"`) |
+
+- `navigate` applies only to `?format=workspace` GETs and only where the HTML GET of the same URL extends the
+  session. Every existing no-touch exception stays a no-touch exception whatever the header says (live rooms,
+  fragments in `NO_TOUCH_FRAGMENTS`, `/code/…/state`, `/term/state`, `/agents/live…`, `/agents?view=live`,
+  `src/serve.ts:873-875`). A same-origin script can already extend a session with an ordinary page GET, so this adds
+  no new ability; a test pins that the header does nothing on a non-workspace request.
+- `prefetch` is answered only for cookie sessions (any other caller gets `204` before authentication bookkeeping
+  such as token usage is written) and only for the prefetch allowlist: Home, the Tasks list, Projects, Agents (the
+  list), Search, the task page. Every other route answers `204`.
+- "A prefetch changes nothing" means: no business state written, no nonce minted or evicted, the session's last-seen
+  time unchanged. One test per allowlisted route proves it, including its query variants (`?project=`, paging).
+- A prefetched page is data only. It is never mounted, visibly or hidden, before the person goes there: mounting has
+  effects (the Agents detail marks a run seen and takes a watch, `agents-view.tsx:531`).
+
+### A1.5 Following a link
+
+A new file `src/browser/navigate.ts`. One `click` listener on `document` in the **bubble** phase, so every
+component's own handler has already run. (Home selects a row and prevents the default in its own handler,
+`home-view.tsx:143`; the menu's Search opens a panel, `shell.tsx:142`; both keep working.) A click is followed in
+place only when all hold:
+
+- `event.defaultPrevented` is false; left button; no modifier key;
+- the target is inside an `<a href>` with no `target`, no `download`, no `data-full-load`;
 - same origin, and not a hash-only change on the current path;
-- the path is not on a short deny list kept in one constant (`/sign-in`, `/sign-out`, `/login`, `/assets/`,
-  `/artifacts/`, `/terminal`, any path the server marks as a file download);
 - the current workspace says `inPlace: true`.
 
-Then: mark the clicked item pressed at once (1.5), read the page (`readPage(href, "navigate")` in
-`src/browser/workspace-client.ts`, which adds `format=workspace` and the header), and:
+Then: read the page (`readPage(href, "navigate")`, added at the end of `src/browser/workspace-client.ts`), and
 
-- JSON with `inPlace: true` → `history.pushState`, set `document.title`, swap inside a view transition (1.5), move
-  focus to `#workspace-main`, say the title in a polite live region, scroll to top;
-- anything else (redirected, not JSON, `inPlace: false`, 401/403, 5xx, network error, more than 8 s) →
-  `location.assign(href)`. The browser then does what it does today, including sign-in.
+- JSON that passes `acceptWorkspace(next, "navigate")` → `history.pushState`, `document.title`, new `epoch`, focus
+  to `#workspace-main`, the title said in a polite live region, scroll to top;
+- anything else (redirected, not JSON, refused by `acceptWorkspace`, 401/403, 5xx, network error, more than 8 s) →
+  `location.assign(href)`, and the browser does what it does today, including sign-in.
 
-Forms are not touched by Part 1. A native post still loads a document.
+Native forms are not touched by A1: a post still loads a document. Two clicks at once: the later one aborts the
+earlier read.
 
-Back and Forward: `popstate` reads the entry's URL the same way (from the cache when present) and swaps without
-`pushState`. `history.scrollRestoration = "manual"`; each entry's scroll offset of `#workspace-main` (and the
-window) is saved in `history.state` on the way out and restored after the swap. An entry that was a document load is
-handled by the browser as today.
+`popstate` reads the entry's URL the same way and swaps without `pushState`. (Scroll restore is A2.)
 
-Two navigations at once: a new click aborts the read in flight (`AbortController`) and skips a running transition
-(`transition.skipTransition()`); only the last click wins.
+### A1.6 Code that runs once per document
 
-### 1.4 Instant feel
+Found by the review, to be handled in A1, each with a test:
 
-- **Prefetch.** A link is prefetched when the pointer has rested on it for 65 ms, on `touchstart`, and on keyboard
-  focus. At most two prefetches run at once. Results live in memory only (a `Map` of at most 20 pages, each good for
-  10 seconds, never written to storage), and the whole map is dropped on any `change` hint for the `workspace` room
-  and on any in-place act (Part 2). `Save-Data` and a hidden tab turn prefetch off.
-- **Show, then confirm.** On click, a prefetched page is shown at once and the `navigate` read runs behind it; when it
-  lands, the page is replaced by the confirmed one without a transition (React keeps the same `epoch`; the workspace
-  goes through the existing "newer workspace" path in `useWorkspace`). Without a prefetch the click waits for the
-  `navigate` read.
-- **Never a blank wait.** The clicked menu item or row is marked the moment it is pressed. If the read takes longer
-  than 150 ms, a 2px ink line runs along the top of the content column until it lands. No spinner, no skeleton.
+- Kit behaviour already delegates and rescans inserted content (`src/browser/kit/behavior.ts:303`, `:374`). Keep.
+- The mutation-key fill for native forms already delegates (`src/server/mutation-key.ts:167`). Keep, and add a test
+  that a native form on a page shown in place posts with the key.
+- `chromeScript()` binds some nodes once at load (`src/server/chrome.ts:422`). The builder lists each binding and
+  either makes it delegate or moves it into the shell component, with cleanup. A page that needs a binding that
+  cannot be moved is taken off the eligible list.
+- `WORKSPACE_MOTION_SCRIPT` is not part of the React workspace document (`src/serve.ts:1700`); nothing to do.
+- The existing hash reveal and window-scroll correction (`src/browser/app.tsx:625`) runs per page mount, and must not
+  fight A2's scroll restore.
 
-### 1.5 The transition
+### A1.7 Files and tests
 
-Only the content column moves. The sidebar, the phone header and the message box hold still (they already have their
-own `view-transition-name` with `animation: none` in `src/server/console.css`).
-
-- Same level (menu item to menu item): old content fades out in 80 ms, new content fades in over 160 ms. No movement.
-- Going deeper (a list row to its page): new content fades in and moves 8px from the right over 200 ms,
-  `cubic-bezier(.2, .8, .2, 1)`; the old fades out in 80 ms. Back and Forward to a shallower page mirror it (from the
-  left). Depth is the number of path segments, decided in one small pure function with tests.
-- Done with `document.startViewTransition(() => flushSync(() => setPage(next)))`, with a class on `<html>` for the
-  direction (`so-nav-deeper`, `so-nav-back`, `so-nav-same`) that is removed when the transition finishes. The
-  existing cross-document rules (`@view-transition { navigation: auto }`, `so-page-leave`, `so-page-arrive`) stay for
-  document loads, and are retimed to the same numbers so an in-place change and a document load look alike.
-- `prefers-reduced-motion: reduce`: no animation at all (the existing rule is extended to the new classes). A browser
-  without `startViewTransition`: a plain swap.
-- A transition never delays input: the swap happens in the transition's first frame and the animation is under
-  220 ms in every case.
-
-### 1.6 Things the builder must verify, not assume
-
-1. Everything that runs once per document and serves the chrome (`chromeScript()`, `WORKSPACE_MOTION_SCRIPT`,
-   `installKitBehavior`, the mutation-key fill for forms) works for content that arrives later. Where a script binds
-   to elements at load instead of delegating, either it is made to delegate or pages that need it are not `inPlace`.
-   The mutation key in particular: a native form on a page shown in place must still carry `x-toolroll-key`'s form
-   equivalent on protected loopback installs; one test posts such a form after an in-place change.
-2. A page's `refreshUrl`, `csrf`, `notices` and `receipt` are the new page's, and a one-time `receipt` shows once.
-3. `/chat` keeps its own ETag validator; a `navigate` read of it is not confused with its poll.
-4. The phone layout: the phone header title, the bottom message bar above the keyboard, and the drawer menu closing
-   on an in-place change.
-5. The terminal page, the first-run pages and the sign-in pages are never entered in place.
-
-### 1.7 Files (Part 1 owns these)
-
-- new `src/browser/navigate.tsx`, `src/browser/navigate.test.ts`, `src/browser/nav-depth.ts` (+ test)
-- `src/browser/app.tsx`: the mount (last lines) and nothing else, unless 1.3's fallback is needed
-- `src/browser/workspace-client.ts`: `readPage` added at the end
-- `src/browser-workspace.ts`: the `inPlace` field only
-- `src/serve.ts`: the read-purpose fact, the session touch for `navigate`, the prefetch allowlist and `204`,
-  `inPlace`
-- `src/server/request-context.ts`: `readPurpose`
-- `src/server/task-views.ts` / the task route: `mintNonce: false` on a prefetch
-- `src/server/console.css`: the transition rules
-- tests: session-touch table (poll no, prefetch no, navigate yes), prefetch-changes-nothing per allowlisted route,
-  sensitive page never in place (both directions), fallback to document load on each listed doubt, Back restores
-  scroll, reduced motion.
+- new `src/browser/navigate.ts` (+ test); `src/browser/app.tsx` (the split, `acceptWorkspace`);
+  `src/browser/workspace-client.ts` (`readPage`); `src/browser-workspace.ts` (`inPlace` only); `src/serve.ts` (read
+  purpose, session touch, prefetch allowlist and `204`, `inPlace`, the hoisted script value);
+  `src/server/request-context.ts` (`readPurpose`); `src/server/task-views.ts` (`mintNonce: false` on a prefetch);
+  `src/server/chrome.ts` (bindings).
+- Tests: the session table (poll no, prefetch no, navigate yes, each no-touch exception still no); prefetch changes
+  nothing, per route; prefetch from a non-cookie caller is `204`; `/welcome` and `/term` are never `inPlace`; a
+  sensitive workspace is never rendered by any of the three roads; each listed doubt falls back to a document load;
+  Home's row selection and the Search panel still work with the listener installed; drafts across a navigation; the
+  drawer closes.
 
 ---
 
-## Part 2: Home you can decide from (`home-act`)
+## A2: the transition, prefetch, Back
 
-### 2.1 What Home shows (the approved mock)
+### A2.1 Prefetch, and showing a page before it is confirmed
+
+- A link to a prefetch-allowlisted page is fetched (`x-toolroll-read: prefetch`) when the pointer has rested on it
+  for 65 ms, on `touchstart`, and on keyboard focus. At most two at once. Results live in memory only (at most 20
+  pages, each good for 10 seconds), and all are dropped on a `change` hint for the `workspace` room and on
+  `WORKSPACE_NUDGE`. `Save-Data` and a hidden tab turn prefetch off.
+- On click, a prefetched page is shown at once with the page content `inert` (visible, not interactive), while the
+  `navigate` read runs. When it lands it goes through `acceptWorkspace(next, "confirm")` and the page content is
+  remounted from the confirmed workspace with no animation (a new `epoch`, scroll kept). Remounting, not patching,
+  is the point: `useWorkspace`'s state, the task view's pinned approval and `GuardedHtml` all start from the
+  confirmed data, so an `"unminted"` nonce is never left in a live form. If the confirming read fails any check, the
+  document loads instead.
+- Without a prefetch the click waits for the `navigate` read. The clicked menu item or row is marked the moment it
+  is pressed. If the read takes longer than 150 ms, a 2px ink line runs along the top of the content column until it
+  lands. No spinner, no skeleton.
+
+### A2.2 The transition
+
+Only the page content moves. The sidebar, the phone header and the message box hold still: the sidebar already has
+a `view-transition-name` with `animation: none` (`src/server/console.css:2668`); the phone header and the message
+box get the same.
+
+- Same level (menu item to menu item): old content fades out in 80 ms, new content fades in over 160 ms. No movement.
+- Going deeper (a list row to its page): new content fades in and moves 8px from the right over 200 ms,
+  `cubic-bezier(.2, .8, .2, 1)`; the old fades out in 80 ms. Going back to a shallower page mirrors it. Depth is the
+  number of path segments, in one small pure function with tests.
+- `document.startViewTransition(() => flushSync(() => setPage(next)))`, with a class on `<html>` for the direction
+  that is removed when the transition finishes. The cross-document rules that exist (`@view-transition { navigation:
+  auto }`, `so-page-leave`, `so-page-arrive`) are retimed to the same numbers, so a document load looks the same.
+- `prefers-reduced-motion: reduce`: no animation. A browser without `startViewTransition`: a plain swap. A new click
+  skips a running transition. Nothing animates longer than 220 ms.
+
+### A2.3 Back
+
+`history.scrollRestoration = "manual"`; the scroll offset of the page content and the window is saved in
+`history.state` on the way out and restored after the swap, after the hash-reveal correction has run. An entry that
+was a document load is handled by the browser as today.
+
+---
+
+## B1: Home's data and layout
+
+### B1.1 What Home shows (the approved mock)
 
 Desktop, something needs you:
 
 - Heading "N tasks need you" said once; under it one quiet line "1 building now · 1 queued".
 - One project filter (a select), not a row of tabs.
 - Left: the list, grouped by what is asked: **Approve a plan**, **Answer a question**, **Something went wrong**,
-  **Review a result**. A group heading carries its count. A row is one link: title, then project and age. Only a
-  failed row has a reason, in red. No chip per row.
-- Right: the open step of the selected task, the same block the task page shows, with its one action.
+  **Review a result**, and **Needs you** for any row that fits none of the four. A group heading carries its count.
+  A row is one link: title, then project and age. Only a failed row has a reason, in red. No chip per row.
+- Right: the selected task's summary and its one action, as today (B2 puts the plan and Approve there).
 - Bottom: the lead's last message as one line that links to the chat, then the filled rounded message box
   ("Message the lead").
-- Menu: **Chat** under Home. New task is a plus beside the brand.
+- Menu: **Chat** under Home; New task is a plus beside the brand.
 
 Nothing needs you: what is running, what finished today, and the message box in the middle of the page.
 
 Phone: the next one as a card with its one action, then the same grouped list; the last-message line and the message
 box at the bottom, with a round plus for New task.
 
-Colours: no amber anywhere. Ink marks what waits on the viewer (solid "Needs you" chip, 1px ink outline on the open
-step, one solid ink button). Blue only running, green only passed, red only failed. Hairlines, not nested boxes. No
-internal codes, paths or ISO times.
+No amber anywhere. Ink marks what waits on the viewer (solid "Needs you" chip, 1px ink outline, one solid ink
+button). Blue only running, green only passed, red only failed. Hairlines, not nested boxes. No internal codes, paths
+or ISO times.
 
-### 2.2 Data
+### B1.2 Data
 
-`src/server/home.ts` (`homeView`) gains, in `BrowserHomeView`:
+`BrowserHomeView` gains:
 
-- `groups: { key: "approve" | "answer" | "wrong" | "review"; label: string; count: number; rows: BrowserHomeRow[] }[]`
-  built from the same four `workIndexPage` reads as today; `count` is the group's true total, `rows` the first
-  `HOME_NEEDS_SHOWN` across groups as today.
-- on a row: `ask: "approve" | "answer" | "wrong" | "review"`, and `reason: string | null` (set only for a failed
-  row). The per-row chip is dropped from the view.
-- `lastLead: { text: string; age: string; href: string } | null`: the lead's last message in the viewer's main
-  thread, plain text, cut to one line server side. `null` when there is none or the viewer may not read it.
-- `finishedToday: BrowserHomeRow[]` for the clear state (from the existing completed read).
+- `groups: { key: "approve" | "answer" | "wrong" | "review" | "other"; label: string; count: number; rows }[]`.
+  `count` is the exact total. The work index counts approvals and questions together today (`decide`,
+  `src/work-index.ts:67`, `:405`), so it gains exact per-ask counts, computed before the page limit.
+- on a row: `ask` (the group key) and `reason: string | null` (a failed row only). The per-row chip leaves the view.
+- `lastLead: { text; age; href } | null`: the lead's last message in the viewer's main thread, plain text, one line,
+  cut server side; `null` when there is none or the viewer may not read it.
+- `finishedToday`: filtered to today **before** the limit is applied (today the completed read is cut to 8 first,
+  `src/server/home.ts:94`, `:120`).
 
-The menu's Chat item and the plus are in `Rail` (`src/browser/shell.tsx`), for every page.
+The menu: `browserNavigationOf` (`src/browser-workspace.ts:946`) gains a **Chat** item (`/chat`), and Home stops
+being the active item on `/chat`. `Rail` (`src/browser/shell.tsx`) draws the plus.
 
-### 2.3 The open step on Home
+### B1.3 Files and tests
 
-When a row is selected, Home reads that task's own page data: `GET /t/<id>?format=workspace` (the existing read, which
-mints the approval nonce today; "How the two parts stay apart, and meet" says how it is sent once Part 1 is merged).
-It renders the task view's open-step component from that data. The open-step component and `ApprovalBox`
-are exported from `src/browser/views/task-view.tsx` and reused unchanged, so Home and the task page cannot drift.
-
-Why read the task page instead of putting approval data in Home's rows: one source of truth for the plan, the digest
-and the nonce; no thirty nonces minted for thirty rows; every server rule that decides whether a plan can take a yes
-(`closedDoor`, the consent door, a broken revision) is the task page's rule, unchanged.
-
-**Home never shows a password field.** Home stays a live page. So:
-
-- If the task's data says the approval is one click (`approvalAsk(kind, facts)` is `"click"` or `"automatic"`: the
-  session is passwordless, or the password is remembered on this computer, or the local owner is eligible), Home
-  shows the plan and the solid **Approve** button.
-- If it says `"password"`, or the task's workspace is `sensitive`, Home shows the plan and one link, **Review the
-  plan**, to the task page, marked `data-full-load`. The password is asked there, as today.
-
-"Request changes" is a link to the task's chat (`taskChatHref`), as on the task page.
-
-### 2.4 Approving in place
-
-The client posts the same form the task page posts, with `fetch`:
-
-```
-POST /t/<id>/approve
-headers: keyed({ "x-toolroll-act": "in-place", accept: "application/json" })
-body:    csrf, nonce, digest, rebuild?, return=next
-```
-
-The server route, its scope (`step-up`), its freshness rule and every proof in `case "approve"`
-(`src/server/tasks.ts`) are unchanged: cookie session only, the nonce consumed once and bound to who saw which digest
-of which task, the digest equal to `approvalFormDigest(...)`, a password required unless the session is passwordless
-or fresh or the local owner is eligible, then `approveScope`. An in-place approve never carries a `token` field; if
-the server needs a password it answers the refusal it answers today.
-
-The only server change is the **shape of the answer** when `x-toolroll-act: in-place` is present on this route:
-
-- success → `200 {"ok":true}` instead of `303`;
-- a problem → the status it has today with `{"ok":false,"problem":"<the same words>"}` instead of a page or a
-  redirect that carries them.
-
-The header chooses the answer's shape only. It is read in one helper, `answersInPlace(request)`, added at the end of
-`src/server/http.ts`, and used in `approvalProblem` and at the success redirect. Anything the dispatcher answers
-before the handler (signed out, step-up needed, rate limited, CSRF or key refused) is answered as today; the client
-treats any answer that is not this JSON as "open the task page" and does a document load of `/t/<id>`.
-
-After a yes:
-
-- the row leaves the list (height and opacity over 200 ms; none with reduced motion), the next row is selected and
-  its step opens; a line "Approved. The build starts." shows through the existing `receipt`/notice path, not a new
-  toast;
-- Home re-reads itself (`WORKSPACE_NUDGE`) and drops any prefetched pages;
-- after a problem, the words show in place under the button with "Nothing changed.", and Home re-reads the task's
-  data for a fresh nonce. The button is disabled while a post is in flight, and a nonce is used for one post only.
-
-The task page's own approve button uses the same in-place post when the ask is one click (it stays on the task page
-and the step changes through the live path). The password case on the task page keeps its native form.
-
-Answering a question from Home works in place today (`/d/<id>/answer`) and is kept; its refusal words move to the
-same JSON shape only if that is a small change, otherwise it stays as it is.
-
-### 2.5 Files (Part 2 owns these)
-
-- `src/server/home.ts`, `src/browser/views/home-view.tsx` (+ tests), Home's CSS
-- `src/browser-workspace.ts`: `BrowserHomeView` and `BrowserHomeRow` only
-- `src/browser/shell.tsx`: `Rail` (Chat item, plus)
-- `src/browser/views/task-view.tsx`: export the open step and `ApprovalBox`; in-place post for the one-click case
-- new `src/browser/act.ts` (+ test): `postInPlace(action, fields)` → `{ ok: true } | { ok: false, problem } |
-  { ok: "elsewhere" }`
-- `src/server/http.ts`: `answersInPlace` at the end; `src/server/tasks.ts`: the two answer sites in `case "approve"`
-- tests: the approve route's proofs are identical with and without the header (same table run both ways: stale
-  nonce, wrong digest, wrong viewer, password needed, spent nonce, closed door); Home renders no `input
-  type="password"` in any state; a `"password"` ask renders the link with `data-full-load`; a refusal shows its
-  words and re-reads; the scripted journey approves a plan from Home.
+`src/server/home.ts`, `src/work-index.ts` (counts), `src/browser/views/home-view.tsx`, Home's CSS,
+`src/browser-workspace.ts` (`BrowserHomeView`, `BrowserHomeRow`, `browserNavigationOf`), `src/browser/shell.tsx`.
+Tests: group counts are exact past the page limit; the fallback group; finished today past eight; Chat is active on
+`/chat` and Home is not; no amber token in Home's CSS; the phone layout.
 
 ---
 
-## How the two parts stay apart, and meet
+## B2: approve in place
 
-- Different files, except `src/browser-workspace.ts` (different types) and CSS (different files). Whichever merges
-  second rebases.
-- Part 2 does not need Part 1: its acts use `fetch` and the existing nudge. Part 1 does not need Part 2.
-- Meeting points, fixed here so neither side guesses: the attribute `data-full-load` on a link (Part 1 honours it,
-  Part 2 sets it on the password link); the header names `x-toolroll-read` (Part 1) and `x-toolroll-act` (Part 2);
-  after an in-place act Part 2 dispatches the existing `WORKSPACE_NUDGE`, and Part 1's prefetch map listens for it.
-- With both merged, Home's read of the selected task is sent as a `prefetch` while the pointer moves down the list
-  and as a `navigate` read when a row is selected (that read mints the nonce the Approve button uses).
+### B2.1 What Home shows for the selected task
+
+A new component in `src/browser/views/home-approval.tsx`, written for Home, not the task page's open step reused
+whole (that block can hold server HTML and `KApprove` opens a password dialog when its facts say password,
+`k-approve.tsx:54`). It can render only: the plan, the terms line, one **Approve** button, one link.
+
+Home reads the selected task with `GET /t/<id>?format=workspace` and `x-toolroll-read: prefetch`: no nonce is
+minted and the session is not extended while a person arrows down the list. From that data it keeps one
+**snapshot**: `{ taskId, action, digest, rebuild, heading, text, termsWords, planHtml, kind, facts }`.
+
+- Every selection read carries a generation number. A response for a row that is no longer selected, or an older
+  generation, is dropped.
+- The snapshot on screen is replaced only by a newer read of the same selected task. If its `digest` differs from
+  the one shown, the plan area is redrawn and a line says "The plan changed. Read it again." The Approve button
+  takes no press for 600 ms after any redraw.
+
+What is offered:
+
+- `approvalAsk(kind, facts)` is `"click"` or `"automatic"` (passwordless session, a password remembered on this
+  computer, or an eligible local owner), the task's workspace is not `sensitive`, and `planHtml` holds no form
+  control (`<input|form|button|select|textarea`, checked before render) → the plan and the solid **Approve** button.
+- Anything else → the plan (or none, if it failed the check) and one link, **Review the plan**, to the task page
+  with `data-full-load`. The password is asked there, as today.
+
+Home has no `input type="password"` in any state. That is checked after every selection read and every re-read, and
+pinned by a test over every state.
+
+"Request changes" is a link to the task's chat (`taskChatHref`).
+
+### B2.2 The press
+
+One press on Approve (pointer or keyboard) does two requests, in order:
+
+1. **Mint for exactly what is shown.** `GET /t/<id>?format=workspace` with no read-purpose header (a minting read,
+   as the task page does today). If the answer's `approve.fields.digest` is not the snapshot's digest, or the ask is
+   no longer one click, or the page is `sensitive`: nothing is posted, the snapshot is replaced, and the line "The
+   plan changed. Read it again." shows. A newer digest is never approved by the press that discovered it.
+2. **Post** to the snapshot's `action` with `fetch`:
+   `headers: keyed({ "x-toolroll-act": "in-place", accept: "application/json" })`,
+   `body: csrf, nonce (from step 1), digest (the snapshot's), rebuild (the snapshot's, if any), return=next`.
+   No `token` field, ever.
+
+So a nonce is minted once per press, not per row looked at, which also keeps Home from pushing other people's
+nonces out of the capped store.
+
+The button is disabled from the press until an outcome is known.
+
+### B2.3 The server's answer
+
+The route, its scope (`step-up`), its freshness rule and every proof in `case "approve"` (`src/server/tasks.ts`)
+are unchanged: cookie session only; the nonce consumed once and bound to who saw which digest of which task; the
+digest equal to `approvalFormDigest(...)`; a password required unless the session is passwordless or fresh or the
+local owner is eligible; the revision brief re-verified; then `approveScope`.
+
+Only the **shape of the answer** changes, and only when `x-toolroll-act: in-place` is present, read in one helper
+`answersInPlace(request)` added at the end of `src/server/http.ts`, after authorisation is done. The handler names
+its outcome instead of leaving the client to guess from a status:
+
+| `outcome` | When (today's code) | Status | The task changed? |
+| --- | --- | --- | --- |
+| `approved` | the success redirect | 200 | yes |
+| `vote` | a first yes on protected work is recorded (`second-approver`), words from `gateWords` | 200 | yes, a vote |
+| `approved-not-rebuilt` | approved, but building again did not start (two message sites) | 200 | yes |
+| `refused` | every other `approvalProblem` (stale form, changed plan, policy, not allowed, blocked brief) | as today | no |
+
+Body: `{ "outcome": …, "words": "<the same words the page shows today>" }`. `approvalProblem` is given the outcome
+by each caller; none is inferred from the status.
+
+Anything the dispatcher answers before the handler (signed out, step-up needed, rate limited, CSRF or key refused)
+is answered as today. The client treats any answer that is not this JSON as `elsewhere` and loads the task page as
+a document.
+
+### B2.4 What the client does with it
+
+- `approved`: the row leaves the list (height and opacity over 200 ms; none with reduced motion), the next row is
+  selected, and a line "Approved." shows above the list until the next selection. Home re-reads itself
+  (`WORKSPACE_NUDGE`).
+- `vote`, `approved-not-rebuilt`: the server's words show in the pane; Home re-reads itself; the row stays or leaves
+  as the re-read says.
+- `refused`: the server's words show under the button with "Nothing changed."; the selection is read again.
+- **No answer** (network error, timeout, a response that could not be read): the client does not say it failed. It
+  shows "Checking…", reads the task again, and reports what the task now says (approved, or still waiting). The
+  button stays disabled until that read lands. The approval write happens before the response is sent, so a lost
+  answer proves nothing.
+
+Home's outcome line is Home's own state. `workspace.receipt` is about message delivery and is not used for this.
+
+The task page's approve button uses the same press (B2.2 step 2 only: it already holds a minted nonce in its pinned
+snapshot) when the ask is one click. Its password case keeps the native form.
+
+Answering a question from Home works in place today (`/d/<id>/answer`) and is left as it is.
+
+### B2.5 Files and tests
+
+- new `src/browser/views/home-approval.tsx`, `src/browser/act.ts` (`postInPlace`) (+ tests);
+  `src/browser/views/home-view.tsx`; `src/browser/views/task-view.tsx` (the one-click press);
+  `src/server/http.ts` (`answersInPlace` at the end); `src/server/tasks.ts` (`case "approve"` answer sites).
+- Tests: the approve route's proofs give the same result with and without the header (one table run both ways:
+  stale nonce, spent nonce, wrong digest, another viewer's nonce, password needed, closed door, blocked brief, first
+  vote, rebuild not started); each outcome's JSON; Home has no password input in any state; a `"password"` ask and a
+  plan with a form control both render the link with `data-full-load`; a late selection response is dropped; a
+  changed digest at step 1 posts nothing; a lost answer leads to a re-read, never to "failed"; arrowing through 600
+  rows mints nothing; the scripted journey approves a plan from Home and opens a password approval as a document.
+
+---
+
+## Where the streams meet
+
+Fixed here so neither side guesses:
+
+- `data-full-load` on a link: A1 honours it, B2 sets it.
+- `x-toolroll-read` is A1's; B2 only sends `prefetch` and the header-less minting read.
+- `x-toolroll-act` is B2's.
+- `WORKSPACE_NUDGE` after an in-place act (B2) also empties A2's prefetch map.
+- `src/browser-workspace.ts`: A1 adds `inPlace`; B1 changes Home's types and `browserNavigationOf`. `src/serve.ts`
+  is A1's. `src/browser/app.tsx` is A1's. `src/browser/shell.tsx` `Rail` is B1's; A1 changes how the shell is
+  mounted, not `Rail`. Whichever merges second rebases.
 
 ## Safety self-review (AGENTS.md list), answered for the plan
 
-- **Check and write together.** The approve route is unchanged: nonce consume, digest check, person proof and
-  `approveScope` run in the same handler as today. The in-place answer is written after them.
-- **Never widen implicitly.** `inPlace` is opt-in per page from the server and false for any page with a password
-  field or a page script. Prefetch is an allowlist of route ids; everything else answers `204`.
-- **Grant files, not folders.** Not applicable (no file access changes).
-- **Don't let input choose what's trusted.** `x-toolroll-read` chooses only session-touch-or-not (never more than the
-  HTML GET of the same URL gives) and mint-or-not (never more). `x-toolroll-act` chooses only the answer's shape.
-  Neither is read by any authorisation decision.
-- **Approvals mean a person's yes to exactly this.** The nonce is still minted when the person is shown this digest
-  of this task, used once, and bound to them. A prefetch mints nothing. Home shows the same plan block the task page
-  shows, from the same data, before the button can be pressed. No model and no script approves: the post is sent
-  only from a click on the Approve button.
+- **Check and write together.** The approve route is unchanged: nonce consume, digest check, person proof, brief
+  re-verification and `approveScope` run in one handler as today. The in-place answer is written after them.
+- **Never widen implicitly.** `inPlace` is an allowlist of routes and is false for any page with a password field or
+  a page script. Prefetch is an allowlist of routes and of callers (cookie sessions). Every existing no-touch
+  exception stays.
+- **Grant files, not folders.** Not applicable.
+- **Don't let input choose what's trusted.** `x-toolroll-read` chooses only whether a workspace read extends the
+  session (never more than the HTML GET of the same URL) and whether it mints (prefetch never does). `x-toolroll-act`
+  chooses only the answer's shape, after authorisation. Neither is read by any authorisation decision.
+- **Approvals mean a person's yes to exactly this.** The nonce is minted at the press, for the digest on screen, for
+  this viewer and this task, and used once. If the digest moved, nothing is approved and the person is told to read
+  again. The action, digest, nonce, rebuild target and terms all come from one snapshot. No script approves: the post
+  is sent only from a press on the button, which takes no press for 600 ms after the plan redraws.
 - **Credentials go only where they belong.** Home never renders a password field and an in-place post never carries
-  `token`. The password is typed only on the task page, a sensitive document with no live connection, as today.
-- **Tests never touch the person's real setup.** All tests use the fixture store and fixture sessions.
+  `token`. The password is typed only on the task page, a sensitive document that no in-place change can enter or
+  leave.
+- **Tests never touch the person's real setup.** Fixture store and fixture sessions only.
 - **Prove it against the real thing.** The scripted journey (`--journeys scripted`) gains: change pages in place and
-  check the live connection id is the same before and after; approve a plan from Home; open a password approval from
-  Home and check it is a document load with no live connection.
+  check one live stream is open after; approve a plan from Home; open a password approval from Home and check it is
+  a document load with no live connection.
 
 ## Later (not in this build)
 
-- Move the page scripts of the task page (`regionScript` check progress and peek, `decisionAnswerScript`) and of
-  Chat into the app, so those pages change in place too. Until then they load as documents with the same fade.
+- Move the page scripts of the task page (check progress, peek, answering a question) and of Chat into the app, so
+  those pages change in place too. Until then they load as documents with the same fade.
 - Other acts in place (accept a result, retry a failed build, queue acts), one route at a time with the same
-  answer-shape rule.
+  named-outcome rule.
 - Home's list carrying flow, release and setup decisions.
+- A per-viewer bound on the nonce store. (The task page still mints on each of its own re-reads, as today.)
 
-## Open questions for review
+## Review findings folded in (Codex, round 1)
 
-1. Is the keyed remount of `WorkspaceApp` the right cut, or should `Rail` and the composer sit above it from the
-   start?
-2. Is a request header the right carrier for the read purpose, given that `navigate` extends the session? Is there a
-   way a background script on an open tab could keep a session alive with it that the HTML GET does not already
-   allow?
-3. Does reading `/t/<id>?format=workspace` from Home (which mints a nonce per selection) put pressure on the nonce
-   store (cap 500, 15 minutes) with arrow-key browsing of a long list? Should selection reads be unminted, with one
-   minted read on pointer-down of the Approve button instead?
-4. Any GET in the prefetch allowlist with a side effect this plan missed.
+1. HIGH. A prefetched page cannot be confirmed through `useWorkspace`'s existing path → A2.1: shown `inert`, then
+   remounted from the confirmed workspace.
+2. HIGH. The sensitive boundary was only on link navigation → A1.2: one door for every workspace, with a document
+   load before a sensitive page is rendered; B2.1: Home has its own restricted component, not `KApprove`.
+3. HIGH. `{ok:false}` plus "Nothing changed" would be false for a recorded vote, for approved-but-not-rebuilt, and
+   for a lost answer → B2.3 named outcomes, B2.4 the no-answer rule; "The build starts." removed.
+4. HIGH. Home needs snapshot and selection identity → B2.1 snapshot and generations; B2.2 a moved digest is never
+   approved by the press that found it.
+5. HIGH. A capture-phase listener would take Home's row selection and the Search panel → A1.5 bubble phase.
+6. MEDIUM. The read header is a hint, not proof of a person → A1.4 wording, workspace GETs only, every no-touch
+   exception kept.
+7. MEDIUM. Selection reads minted and could evict another person's nonce → B2.1 unminted selection reads; B2.2 mint
+   at the press.
+8. MEDIUM. Prefetch purity must cover authentication and mounting → A1.4 cookie sessions only, never mounted; B2.4
+   Home's own outcome line, not `receipt`.
+9. MEDIUM. The `inPlace` predicate alone would admit `/welcome`; the terminal is `/term` → A1.1 route allowlist and
+   the hoisted script value.
+10. MEDIUM. A keyed remount of the whole app loses the shell → A1.3 shell stays, page is keyed; drafts; drawer; one
+    stream that may reconnect.
+11. MEDIUM. Once-per-document scripts need named work → A1.6.
+12. MEDIUM. The two parts were not independent → the build order: A1 carries the shared base, B1 runs beside it
+    with no shared files, B2 follows A1.
+13. LOW. Group totals and "finished today" → B1.2 exact per-ask counts, the fallback group, filter before limit.
