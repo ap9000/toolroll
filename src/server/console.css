@@ -2662,14 +2662,29 @@ button { min-height: 44px; }
    the same on both, swaps in place instead of fading (each shell names its
    own, so a page can never carry the name twice). */
 ::view-transition-old(root) { animation: so-page-leave 80ms ease-in both; }
-::view-transition-new(root) { animation: so-page-arrive 140ms ease-out 60ms both; }
+::view-transition-new(root) { animation: so-page-arrive 160ms ease-out 60ms both; }
 @keyframes so-page-leave { to { opacity: 0; } }
 @keyframes so-page-arrive { from { opacity: 0; } }
 .side { view-transition-name: so-nav-page; }
 .so-sidebar { view-transition-name: so-nav-app; }
-::view-transition-group(so-nav-page), ::view-transition-group(so-nav-app),
+.so-ph { view-transition-name: so-phone-header; }
+::view-transition-group(so-nav-page), ::view-transition-group(so-nav-app), ::view-transition-group(so-phone-header), ::view-transition-group(so-message-box),
 ::view-transition-old(so-nav-page), ::view-transition-new(so-nav-page),
-::view-transition-old(so-nav-app), ::view-transition-new(so-nav-app) { animation: none; }
+::view-transition-old(so-nav-app), ::view-transition-new(so-nav-app),
+::view-transition-old(so-phone-header), ::view-transition-new(so-phone-header),
+::view-transition-old(so-message-box), ::view-transition-new(so-message-box) { animation: none; }
+/* A page changed in place (docs/plans/live-pages-and-home.md A2.2, browser/transition.ts): only the page content
+   moves; everything else (the root, the sidebar, the phone header, the message box) swaps where it stands. The same
+   level fades through like a document load (80 ms out, 160 ms in); deeper, the new page also moves 8px in from the
+   right over 200 ms; shallower, from the left. Nothing runs past 220 ms. */
+html.so-nav #workspace-main { view-transition-name: so-page; }
+html.so-nav::view-transition-old(root), html.so-nav::view-transition-new(root), html.so-nav::view-transition-group(so-page) { animation: none; }
+html.so-nav::view-transition-old(so-page) { animation: so-page-leave 80ms ease-in both; }
+html.so-nav-same::view-transition-new(so-page) { animation: so-page-arrive 160ms ease-out 60ms both; }
+html.so-nav-deeper::view-transition-new(so-page) { animation: so-page-deeper 200ms cubic-bezier(.2, .8, .2, 1) both; }
+html.so-nav-shallower::view-transition-new(so-page) { animation: so-page-shallower 200ms cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes so-page-deeper { from { opacity: 0; transform: translateX(8px); } }
+@keyframes so-page-shallower { from { opacity: 0; transform: translateX(-8px); } }
 /* UI polish 2026-09-13 — the motion contract. Feedback transitions run
    140–200 ms on color, border, shadow, opacity, and transform only; an
    overlay's entrance is at most 220 ms of opacity + transform. Nothing
@@ -2699,7 +2714,7 @@ button { min-height: 44px; }
 @keyframes fade { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
-  ::view-transition-group(*), ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
   button:active, :is(.button-link, .side .new-task, .content .new-task, .result-feedback-link, .next-pager .skip):active { transform: none; }
   @media (hover: hover) and (pointer: fine) { button:hover, .side nav a:hover, .chat-project-card:hover, .lane-card:hover, .decide-card:hover, .menu-row:hover { transform: none; } }
 }

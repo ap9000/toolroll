@@ -1016,3 +1016,17 @@ details.result-request-open > summary::marker { content: ""; }
    ink-grey, never a ring on the textarea. */
 .so-task-composer-box:focus-within { border-color: color-mix(in srgb, var(--so-ink) 50%, var(--so-composer)) !important; }
 .so-first-run-setup { margin: 0; font-size: 13px; }
+
+/* Changing page in place (docs/plans/live-pages-and-home.md A2.1, browser/navigate.ts). The link pressed is marked at
+   once; a read that takes longer than 150 ms draws a 2px ink line along the top of the content column until the page
+   lands (no spinner, no skeleton); a page shown from a read ahead takes no input until its ordinary read confirms it
+   (each part is `inert`; this is the belt). */
+.so-nav[data-so-pressed] { background: var(--so-nav-hover); color: var(--so-ink); }
+.so-workspace a[data-so-pressed]:not(.so-nav, .k-btn) { background-color: var(--so-nav-hover); }
+.so-workspace .k-btn[data-so-pressed] { opacity: .8; }
+.so-main-column[data-so-loading]::before { content: ""; position: relative; z-index: 40; flex: none; display: block; height: 2px; margin-bottom: -2px; background: var(--so-ink); transform-origin: left center; animation: so-load-line 200ms cubic-bezier(.2, .8, .2, 1) both; pointer-events: none; }
+@keyframes so-load-line { from { transform: scaleX(0); } }
+#workspace-main[data-so-provisional] * { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .so-main-column[data-so-loading]::before { animation: none; }
+}
