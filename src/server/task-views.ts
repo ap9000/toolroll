@@ -1,3 +1,4 @@
+import { requestContext } from "./request-context.js";
 import { heldFindingCount } from "../findings.js";
 import { familyInWebReach } from "../findings.js";
 import { existsSync } from "node:fs";
@@ -858,7 +859,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const admittedFamily = runtime.familyOf(taskId);
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
       html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
-    const data = taskViewData(taskId, who, problem);
+    // A read ahead (x-toolroll-read: prefetch, live-pages-and-home.md A1.4) mints nothing: its plan form says "unminted".
+    const data = taskViewData(taskId, who, problem, { mintNonce: requestContext.getStore()?.readPurpose !== "prefetch" });
     if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
     const family = runtime.familyOf(taskId);
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,

@@ -20,6 +20,10 @@ export type RequestFacts = {
   timeline?: import("../latency-timeline.js").Timeline;
   browser?: boolean;
   workspaceRead?: boolean;
+  /** Why a `?format=workspace` GET was made (`x-toolroll-read`, readPurpose below): bookkeeping only, never authority. */
+  readPurpose?: ReadPurpose;
+  /** The route table row that matched this request (route-table.ts ids), for the in-place allowlists (serve.ts). */
+  routeId?: string;
   /** Receipt reconciliation, task and result reads (`request`, `task`, `result`): work is read afresh, never cached. */
   freshWork?: boolean;
   /** A workspace re-read's If-None-Match: the content validator it holds from its last read. */
@@ -58,4 +62,14 @@ providePasswordless(() => requestContext.getStore()?.passwordless === true);
 export function withFormToken<T>(csrf: string, render: () => T): T {
   const facts = requestContext.getStore();
   return requestContext.run({ ...(facts ?? { returnTo: "/" }), csrf }, render);
+}
+
+/**
+ * What a workspace read is for (docs/plans/live-pages-and-home.md A1.4), from its `x-toolroll-read` header. It is a hint
+ * about bookkeeping (does the read extend the session, does it mint an approval nonce), never proof that a person
+ * clicked, and no authorisation decision reads it. Absent, `poll` or anything unknown is today's re-read: `poll`.
+ */
+export type ReadPurpose = "poll" | "navigate" | "prefetch";
+export function readPurpose(header: string | string[] | undefined): ReadPurpose {
+  return header === "navigate" || header === "prefetch" ? header : "poll";
 }

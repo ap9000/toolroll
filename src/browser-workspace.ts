@@ -788,6 +788,9 @@ export type BrowserWorkspace = {
   /** The same Needs-you count for each project (`path` null: work with no project), from the same work index totals. */
   needsYouByProject?: { path: string | null; count: number }[];
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
+  /** True when this page may replace another without a document load (docs/plans/live-pages-and-home.md A1.1): the server
+   * sets it on every workspace it sends; absent (an older server, a fixture) is false. */
+  inPlace?: boolean;
   /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
   passwordless?: boolean;
   /** The session's open project (its path), or null: the sidebar's project picker names it. */
