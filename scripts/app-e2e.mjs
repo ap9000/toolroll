@@ -174,15 +174,17 @@ const { base, page, cli, rows, sql, check, shot, json, signIn, askLead, pendingC
 // A page that turns into one with a password on it loads its own address as a document (src/browser/app.tsx
 // acceptWorkspace): a task page does when its plan arrives. A journey that opens a page at that same moment has its own
 // load dropped by the browser (net::ERR_ABORTED), so it is made once more after the page's own load has finished. Any
-// other failure, and a second drop, still fail the journey.
-const openOnce = page.goto.bind(page);
-page.goto = async (url, options) => {
-  try { return await openOnce(url, options); } catch (error) {
-    if (!/ERR_ABORTED|interrupted by another navigation/.test(String(error?.message ?? error))) throw error;
-    await page.waitForLoadState("load").catch(() => {});
-    return openOnce(url, options);
-  }
-};
+// other failure, and a second drop, still fail the journey. A listing (--list) starts no browser and has no page.
+if (page !== null) {
+  const openOnce = page.goto.bind(page);
+  page.goto = async (url, options) => {
+    try { return await openOnce(url, options); } catch (error) {
+      if (!/ERR_ABORTED|interrupted by another navigation/.test(String(error?.message ?? error))) throw error;
+      await page.waitForLoadState("load").catch(() => {});
+      return openOnce(url, options);
+    }
+  };
+}
 /** A wait on a condition. In a scripted run it looks at least every half second: the scripted model answers at once and
  * the worker wakes on every change, so a look every 3 or 5 seconds only adds its own delay. A real-model run keeps each
  * wait's own pace. */
