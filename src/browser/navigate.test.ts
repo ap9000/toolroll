@@ -24,7 +24,8 @@ import { KEY_FILL_SCRIPT } from "../server/mutation-key.js";
 import { html, htmlString } from "../html.js";
 import { T0 } from "../../test/serve-kit.js";
 import { acceptWorkspace, useWorkspace, WorkspaceApp } from "./app.js";
-import { follow, linkToFollow, mayBeInPlace, setDocumentLoader } from "./navigate.js";
+import { follow, LEAVE_MS, linkToFollow, mayBeInPlace, setDocumentLoader } from "./navigate.js";
+import { mayPrefetch, prefetch, prefetchedKeys, PREFETCH_MAX_PAGES, PREFETCH_TTL_MS, setPrefetchClock, takePrefetched } from "./prefetch.js";
 import { askDraft, keepAskDraft, PAGE_READ_MS, readPage } from "./workspace-client.js";
 import { WORKSPACE_NUDGE } from "./live-task.js";
 
@@ -67,6 +68,12 @@ async function pageFetch(input: RequestInfo | URL, init: RequestInit = {}): Prom
   if (url.searchParams.get("format") === "workspace") reads.push({ path, purpose: headers.get("x-toolroll-read") });
   const replaced = override?.(path, init) ?? null;
   if (replaced !== null) return replaced;
+  return toConsole(path, init);
+}
+
+/** The console's own answer to one of the page's requests. */
+async function toConsole(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
   if (init.signal?.aborted) throw new DOMException("aborted", "AbortError");
   const flat: Record<string, string> = { cookie };
   headers.forEach((value, key) => { flat[key] = value; });
@@ -435,4 +442,232 @@ test("Home's ask box keeps its words in this tab, for this sign-in and project o
   expect(askDraft("csrf-one", "/r/shop")).toBe("");
   keepAskDraft("", null, "no sign-in");
   expect(askDraft("", null)).toBe("");
+});
+
+// ---- A2: reading ahead, the inert page and its confirmation, the pressed link, Back with its place -----------------
+
+const json = (body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json", ...headers } });
+const purposeOf = (init: RequestInit) => new Headers(init.headers).get("x-toolroll-read");
+/** A gate: the request waits until the test opens it, then is answered by `answer` (the console, by default). */
+function gate(): { open(answer?: () => Promise<Response>): void; wait(path: string, init: RequestInit): Promise<Response> } {
+  let release!: (answer: (() => Promise<Response>) | undefined) => void;
+  const opened = new Promise<(() => Promise<Response>) | undefined>(resolve => { release = resolve; });
+  return {
+    open: answer => release(answer),
+    wait: (path, init) => opened.then(answer => answer === undefined ? toConsole(path, init) : answer()),
+  };
+}
+async function waitFor(check: () => boolean, ms = 2_000): Promise<void> {
+  for (let waited = 0; waited < ms && !check(); waited += 10) await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+}
+const rest = (element: Element) => element.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+const mainParts = () => [...document.getElementById("workspace-main")!.children];
+
+test("a link the pointer rests on is read ahead, never minting or mounting; its click shows it at once, inert, then remounts it from the confirmed read", async () => {
+  await open("/");
+  rest(railLink("/tasks"));
+  await waitFor(() => prefetchedKeys().includes("/tasks"));
+  expect(reads.filter(one => one.purpose === "prefetch").map(one => one.path)).toEqual(["/tasks?format=workspace"]);
+  // Read ahead is data only: nothing of it is on screen.
+  expect(document.querySelector("[data-home]")).not.toBeNull();
+  const confirming = gate();
+  override = (path, init) => path.startsWith("/tasks?") && purposeOf(init) === "navigate" ? confirming.wait(path, init) : null;
+  click(railLink("/tasks"));
+  await waitFor(() => window.location.pathname === "/tasks");
+  await settle();
+  // Shown at once, before the ordinary read lands, and nothing of it takes input.
+  expect(document.querySelector("[data-home]")).toBeNull();
+  expect(mainParts().length).toBeGreaterThan(0);
+  expect(mainParts().every(part => part.hasAttribute("inert"))).toBe(true);
+  expect(document.getElementById("workspace-main")!.hasAttribute("data-so-provisional")).toBe(true);
+  expect(reads.at(-1)).toEqual({ path: "/tasks?format=workspace", purpose: "navigate" });
+  const shown = mainParts()[0];
+  confirming.open();
+  await waitFor(() => !document.getElementById("workspace-main")!.hasAttribute("data-so-provisional"));
+  await settle();
+  expect(loads).toEqual([]);
+  // Remounted from the confirmed page (a new instance), never patched, and interactive.
+  expect(mainParts()[0]).not.toBe(shown);
+  expect(mainParts().some(part => part.hasAttribute("inert"))).toBe(false);
+  expect(document.activeElement?.id).toBe("workspace-main");
+  // A page used once is not kept.
+  expect(prefetchedKeys()).not.toContain("/tasks");
+});
+
+test("a confirming read that fails any check loads the document over the same entry, and the page read ahead never takes input", async () => {
+  await open("/");
+  rest(railLink("/tasks"));
+  await waitFor(() => prefetchedKeys().includes("/tasks"));
+  const tasks = await workspaceAt("/tasks");
+  for (const [name, answer] of [
+    ["server error", () => Promise.resolve(new Response("no", { status: 500 }))],
+    ["no longer in place", () => Promise.resolve(json({ ...tasks, inPlace: false }))],
+  ] as const) {
+    loads = [];
+    override = (path, init) => path.startsWith("/tasks?") && purposeOf(init) === "navigate" ? answer() : null;
+    if (!prefetchedKeys().includes("/tasks")) { prefetch(new URL("/tasks", window.location.href)); await waitFor(() => prefetchedKeys().includes("/tasks")); }
+    await act(async () => { await follow("/tasks", "push"); });
+    expect(loads, name).toEqual([{ href: "/tasks", replace: true }]);
+    expect(mainParts().every(part => part.hasAttribute("inert")), name).toBe(true);
+  }
+});
+
+test("a sensitive page read ahead is never rendered: its click loads the document", async () => {
+  const sensitive = await workspaceAt("/t/a-one");
+  await open("/");
+  override = (path, init) => path.startsWith("/tasks?") && purposeOf(init) === "prefetch" ? Promise.resolve(json(sensitive)) : null;
+  rest(railLink("/tasks"));
+  await waitFor(() => prefetchedKeys().includes("/tasks"));
+  click(railLink("/tasks"));
+  await waitFor(() => loads.length > 0);
+  expect(loads).toEqual([{ href: "/tasks", replace: false }]);
+  expect(document.querySelector('input[type="password"]')).toBeNull();
+  expect(document.querySelector("[data-home]")).not.toBeNull();
+  expect(window.location.pathname).toBe("/");
+});
+
+test("reading ahead: two at once, twenty pages, ten seconds each, dropped on a change or a nudge, off when hidden or saving data", async () => {
+  await open("/");
+  const held = gate();
+  override = (path, init) => purposeOf(init) === "prefetch" ? held.wait(path, init) : null;
+  const at = (path: string) => new URL(path, window.location.href);
+  for (const path of ["/tasks", "/projects", "/agents"]) prefetch(at(path));
+  await settle();
+  expect(reads.filter(one => one.purpose === "prefetch").length).toBe(2);
+  held.open();
+  await waitFor(() => prefetchedKeys().length === 2);
+  // Only the pages the server reads ahead.
+  expect(["/", "/tasks", "/t/one", "/projects", "/agents", "/search"].every(path => mayPrefetch(at(path)))).toBe(true);
+  expect(["/settings", "/settings/models", "/agents?view=live", "/chat", "/welcome", "/term"].some(path => mayPrefetch(at(path)))).toBe(false);
+  // A change in the workspace's room, and a nudge, drop everything.
+  window.dispatchEvent(new CustomEvent("so:live", { detail: { room: "workspace", event: "change", data: {} } }));
+  expect(prefetchedKeys()).toEqual([]);
+  const tasks = await workspaceAt("/tasks");
+  override = (_path, init) => purposeOf(init) === "prefetch" ? Promise.resolve(json(tasks)) : null;
+  prefetch(at("/tasks"));
+  await waitFor(() => prefetchedKeys().length === 1);
+  window.dispatchEvent(new Event(WORKSPACE_NUDGE));
+  expect(prefetchedKeys()).toEqual([]);
+  // At most twenty pages, the oldest dropped first.
+  for (let i = 0; i < PREFETCH_MAX_PAGES + 5; i++) { prefetch(at(`/t/x${i}`)); await waitFor(() => prefetchedKeys().includes(`/t/x${i}`)); }
+  expect(prefetchedKeys().length).toBe(PREFETCH_MAX_PAGES);
+  expect(prefetchedKeys()).not.toContain("/t/x0");
+  // Ten seconds each.
+  let clock = Date.now();
+  const restoreClock = setPrefetchClock(() => clock);
+  try {
+    prefetch(at("/search"));
+    await waitFor(() => prefetchedKeys().includes("/search"));
+    clock += PREFETCH_TTL_MS + 1;
+    expect(takePrefetched(at("/search"))).toBeNull();
+  } finally { restoreClock(); }
+  // Off in a hidden tab, and when the browser asks to save data.
+  const readsBefore = reads.length;
+  Object.defineProperty(document, "hidden", { value: true, configurable: true });
+  prefetch(at("/projects"));
+  Object.defineProperty(document, "hidden", { value: false, configurable: true });
+  Object.defineProperty(navigator, "connection", { value: { saveData: true }, configurable: true });
+  prefetch(at("/projects"));
+  Object.defineProperty(navigator, "connection", { value: undefined, configurable: true });
+  await settle();
+  expect(reads.length).toBe(readsBefore);
+});
+
+test("without a page read ahead the pressed link is marked at once, and a slow read draws the line until it lands", async () => {
+  await open("/");
+  const slow = gate();
+  override = (path, init) => path.startsWith("/tasks?") && purposeOf(init) === "navigate" ? slow.wait(path, init) : null;
+  const link = railLink("/tasks");
+  click(link);
+  expect(link.hasAttribute("data-so-pressed")).toBe(true);
+  const column = document.querySelector(".so-main-column")!;
+  expect(column.hasAttribute("data-so-loading")).toBe(false);
+  await waitFor(() => column.hasAttribute("data-so-loading"), 1_000);
+  expect(column.hasAttribute("data-so-loading")).toBe(true);
+  slow.open();
+  await arrivedAt("/tasks");
+  expect(loads).toEqual([]);
+  expect(document.querySelector(".so-main-column")!.hasAttribute("data-so-loading")).toBe(false);
+  expect(document.querySelector("[data-so-pressed]")).toBeNull();
+});
+
+test("Back puts the page where it was left, keeping the in-place mark and every other key of the entry", async () => {
+  await open("/");
+  click(railLink("/tasks"));
+  await arrivedAt("/tasks");
+  window.history.replaceState({ ...window.history.state, kept: 1 }, "");
+  const pane = () => document.querySelector<HTMLElement>("#workspace-main .so-page-content")!;
+  pane().scrollTop = 120;
+  const written: unknown[] = [];
+  const replace = window.history.replaceState.bind(window.history);
+  const spy = vi.spyOn(window.history, "replaceState").mockImplementation((state, unused, url) => { written.push(state); replace(state, unused, url); });
+  await act(async () => { await follow("/projects", "push"); });
+  spy.mockRestore();
+  await settle();
+  const left = written.find(state => typeof state === "object" && state !== null && "toolrollScroll" in state) as Record<string, unknown> | undefined;
+  expect(left).toMatchObject({ toolroll: "in-place", kept: 1 });
+  expect(pane().scrollTop).toBe(0);
+  // Back to it.
+  window.history.replaceState(left, "", "/tasks");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: left }));
+  await arrivedAt("/tasks");
+  await waitFor(() => pane()?.scrollTop === 120);
+  expect(loads).toEqual([]);
+  expect(pane().scrollTop).toBe(120);
+});
+
+// ---- a navigation the browser began wins over one a script would start ----------------------------------------------
+
+test("once the document is leaving, a page that became sensitive on its own re-read loads nothing over it; if it stays, it reads again in full", async () => {
+  const sensitive = await workspaceAt("/t/a-one");
+  await open("/");
+  const asked: (string | null)[] = [];
+  override = (path, init) => {
+    if (!path.startsWith("/?")) return null;
+    asked.push(new Headers(init.headers).get("if-none-match"));
+    return Promise.resolve(json(sensitive, { etag: '"sensitive-1"' }));
+  };
+  window.dispatchEvent(new Event("beforeunload"));
+  await act(async () => { window.dispatchEvent(new Event(WORKSPACE_NUDGE)); });
+  await waitFor(() => asked.length > 0);
+  await settle();
+  expect(loads).toEqual([]);
+  expect(document.querySelector('input[type="password"]')).toBeNull();
+  expect(document.querySelector("[data-home]")).not.toBeNull();
+  // The door still refuses while leaving, on every road.
+  expect(acceptWorkspace(sensitive, "navigate", "/t/a-one")).toBe(false);
+  expect(loads).toEqual([]);
+  // The leave was cancelled (the person acts on the page again): it reads again, in full, and the door loads it.
+  document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  await waitFor(() => loads.length > 0);
+  expect(loads).toEqual([{ href: "/t/a-one", replace: false }]);
+  expect(asked.length).toBe(2);
+  expect(asked[1]).toBeNull();
+  expect(document.querySelector('input[type="password"]')).toBeNull();
+});
+
+test("once the document is leaving, a followed link's late answer shows, pushes and loads nothing; after a cancelled leave links work again", async () => {
+  await open("/");
+  const before = window.history.length;
+  for (const answer of [undefined, () => Promise.resolve(new Response("no", { status: 500 }))]) {
+    const late = gate();
+    override = (path, init) => path.startsWith("/tasks?") && purposeOf(init) === "navigate" ? late.wait(path, init) : null;
+    click(railLink("/tasks"));
+    await settle();
+    window.dispatchEvent(new Event("beforeunload"));
+    late.open(answer);
+    await settle();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    expect(loads).toEqual([]);
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.length).toBe(before);
+    expect(document.querySelector("[data-home]")).not.toBeNull();
+    document.body.dispatchEvent(new Event("keydown", { bubbles: true }));
+  }
+  override = null;
+  click(railLink("/tasks"));
+  await arrivedAt("/tasks");
+  expect(loads).toEqual([]);
+  expect(window.location.pathname).toBe("/tasks");
+  expect(LEAVE_MS).toBeLessThanOrEqual(10_000);
 });
