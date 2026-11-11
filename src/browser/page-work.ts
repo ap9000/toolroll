@@ -5,19 +5,20 @@
  * aborted, which is what lets such a page change in place.
  *
  * One controller per page shown. A re-read of the same page reconciles by key: an entry that is new starts; a region
- * whose entry left stops; `answer` is never restarted and stays until the page is replaced.
+ * whose entry left stops; `answer` and `result` are never restarted and stay until the page is replaced.
  */
 import { useEffect, useRef } from "react";
 import type { PageWork } from "../page-work-contract.js";
 import { answerWork } from "./work/answer.js";
 import { regionWork } from "./work/region.js";
+import { resultWork } from "./work/result.js";
 
 const REGIONS: ReadonlySet<string> = new Set(["check-progress", "run-peek"]);
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 function knownEntry(entry: unknown): entry is PageWork {
   if (!record(entry)) return false;
-  if (entry["kind"] === "answer") return true;
+  if (entry["kind"] === "answer" || entry["kind"] === "result") return true;
   return entry["kind"] === "region" && typeof entry["region"] === "string" && REGIONS.has(entry["region"])
     && typeof entry["run"] === "number" && Number.isSafeInteger(entry["run"]) && entry["run"] > 0;
 }
@@ -30,6 +31,7 @@ export const workKey = (entry: PageWork): string => entry.kind === "region" ? `r
 export type WorkStarter = (entry: PageWork, signal: AbortSignal) => void;
 const start: WorkStarter = (entry, signal) => {
   if (entry.kind === "answer") answerWork(signal);
+  else if (entry.kind === "result") resultWork(signal);
   else regionWork(entry, signal);
 };
 

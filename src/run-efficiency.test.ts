@@ -76,7 +76,11 @@ test("derived once and kept: a later view reads the saved row; an expired live f
   const run = finishedRun(new Date(T0.getTime() + 60_000));
   mkdirSync(join(root, "live"), { recursive: true });
   writeFileSync(join(root, "live", `${run}.jsonl`), steps("base", [{ k: "step", at: at(1), id: "s1", kind: "read" }, { k: "done", at: at(2), id: "s1", ok: true }]).map(one => `${serializeLiveRecord(one)}\n`).join(""));
+  // Asked not to save (a page read ahead of its link): the same answer, and no row.
+  const unsaved = runEfficiencyOf(store, root, run, new Date(T0.getTime() + 120_000), false)!;
+  expect(store.handle.prepare("SELECT steps FROM run_efficiency WHERE run = ?").get(run)).toBeUndefined();
   const first = runEfficiencyOf(store, root, run, new Date(T0.getTime() + 120_000))!;
+  expect(first).toEqual(unsaved);
   expect(first).toMatchObject({ turns: 6, usage: { in: 400, cacheShare: 0.75 }, steps: { state: "complete", total: 1 } });
   expect(store.handle.prepare("SELECT steps FROM run_efficiency WHERE run = ?").get(run)).toEqual({ steps: "complete" });
   // The live file goes (it is kept a day); the saved row still answers, unchanged.

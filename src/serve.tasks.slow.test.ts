@@ -23,6 +23,8 @@ import { presented, renderedHtmlOf, sealScopeFixture, T0, workspaceOf } from "..
 import type { BrowserHomeView, BrowserTaskView, BrowserTasksView } from "./browser-workspace.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { decisionAnswerScript } from "./server/render-tasks.js";
+import { PAGE_WORK_HEADER, PAGE_WORK_VERSION } from "./page-work-contract.js";
+import { RESULT_REVIEW_SCRIPT } from "./result-review.js";
 import { createDemoSandbox } from "./demo.js";
 
 describe("A2 — the live peek over real HTTP: guards, fence, and the names-only fragment", () => {
@@ -1457,6 +1459,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     },
     new Date(),
   );
+  /** What a tab that runs this version of page work says on its reads. */
+  const APP_WORK = { [PAGE_WORK_HEADER]: String(PAGE_WORK_VERSION) };
   const readAs = async (path: string, cookie: string, headers: Record<string, string> = {}): Promise<import("./browser-workspace.js").BrowserWorkspace> =>
     (await fetch(url(`${path}?format=workspace`), { headers: { cookie, accept: "application/json", ...headers } })).json() as Promise<import("./browser-workspace.js").BrowserWorkspace>;
 
@@ -1484,13 +1488,13 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(html).not.toContain(`"/r/${run}?fragment=check"`);
 
     // A tab that says it runs page work reads the same.
-    const current = await readAs("/t/t-ask", cookie, { "x-toolroll-work": "1" });
+    const current = await readAs("/t/t-ask", cookie, APP_WORK);
     expect(current.work).toEqual(loaded.work);
     expect(current.inPlace).toBe(true);
 
     // A tab opened before this release sends no such word: it is told to load the page as a document, as before, and
     // is handed no work it could mistake for done. A version this server does not speak reads the same.
-    for (const headers of [{}, { "x-toolroll-work": "2" }, { "x-toolroll-work": "true" }] as Record<string, string>[]) {
+    for (const headers of [{}, { "x-toolroll-work": String(PAGE_WORK_VERSION - 1) }, { "x-toolroll-work": String(PAGE_WORK_VERSION + 1) }, { "x-toolroll-work": "true" }] as Record<string, string>[]) {
       const old = await readAs("/t/t-ask", cookie, headers);
       expect(old.inPlace).toBe(false);
       expect(old.work).toBeUndefined();
@@ -1503,36 +1507,71 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect((await readAs("/t/t-plain", cookie)).work).toBeUndefined();
   });
 
-  test("page work is all of a page's script or none: with a result on the page it stays a document, marked as scripted", async () => {
+  test("page work covers a result: a task showing one opens in place with its review named as work, and no script string beside it", async () => {
     const ref = seed("t-mixed", "a result and a new build");
     const failed = finished("t-mixed", ref, "failed", null);
     const run = live("t-mixed", ref);
     await boot({ localRunner: "night-shift-1" });
     const cookie = await login();
+    const regions = [{ kind: "region", region: "check-progress", run }, { kind: "region", region: "run-peek", run }];
+    // A piece of the result script's own text, so its absence cannot pass by naming something the script never says.
+    const reviewMark = "var draftPrefix='standing-orders:review-draft:'";
+    expect(RESULT_REVIEW_SCRIPT).toContain(reviewMark);
 
-    // The task as it stands (a build running): all of its script is the app's, so it is work.
+    // The task as it stands (a build running): its regions are the app's work.
     const now = workspaceOf(await (await fetch(url("/t/t-mixed"), { headers: { cookie } })).text());
-    expect(now.work).toEqual([{ kind: "region", region: "check-progress", run }, { kind: "region", region: "run-peek", run }]);
+    expect(now.work).toEqual(regions);
     expect(now.scripted).toBeUndefined();
 
-    // The same task showing an earlier attempt's result: the result's own script is not the app's yet, so the whole
-    // script ships as a string, as before…
+    // The same task showing an earlier attempt's result: reviewing it is the app's too, so the whole page is work,
+    // nothing of the script ships, and the page opens in place.
     const html = await (await fetch(url(`/t/t-mixed?run=${failed}`), { headers: { cookie } })).text();
     const loaded = workspaceOf(html);
     expect(html).toContain('class="task-result-tab"');
-    expect(html).toContain(`"/r/${run}?fragment=peek"`);
-    expect(html).toContain(`"/r/${run}?fragment=check"`);
+    expect(loaded.work).toEqual([...regions, { kind: "result" }]);
+    expect(loaded.inPlace).toBe(true);
+    expect(loaded.scripted).toBeUndefined();
+    expect(html).not.toContain(reviewMark);
+    expect(html).not.toContain(`"/r/${run}?fragment=peek"`);
+    expect(html).not.toContain(`"/r/${run}?fragment=check"`);
+    // A tab that runs this version of page work reads the same.
+    const resultAs = async (headers: Record<string, string>): Promise<import("./browser-workspace.js").BrowserWorkspace> =>
+      (await fetch(url(`/t/t-mixed?run=${failed}&format=workspace`), { headers: { cookie, accept: "application/json", ...headers } })).json() as Promise<import("./browser-workspace.js").BrowserWorkspace>;
+    const current = await resultAs(APP_WORK);
+    expect(current.work).toEqual(loaded.work);
+    expect(current.inPlace).toBe(true);
+    // A tab from before results were the app's (it says version 1, and would start no review), or one that says
+    // nothing, is told to load the page as a document, and is handed no work it could mistake for done.
+    for (const headers of [{}, { "x-toolroll-work": "1" }]) {
+      const old = await resultAs(headers);
+      expect(old.inPlace).toBe(false);
+      expect(old.work).toBeUndefined();
+      expect(old.scripted).toBeUndefined();
+    }
+  });
+
+  test("a result on a page that asks for a password keeps its script string: no work, never in place", async () => {
+    const ref = seed("t-sealed", "a result and an unsigned change");
+    const failed = finished("t-sealed", ref, "failed", null);
+    // The scope is rewritten after the build: the approval no longer binds it, so the page grows its password form.
+    const signed = store.getScope("t-sealed");
+    if (signed === null) throw new Error("no scope");
+    store.saveScope({ ...signed, goal: "a wider goal", proposedAt: new Date().toISOString() });
+    await boot({ localRunner: "night-shift-1" });
+    const cookie = await login();
+    const html = await (await fetch(url(`/t/t-sealed?run=${failed}`), { headers: { cookie } })).text();
+    const loaded = workspaceOf(html);
+    expect(SENSITIVE_INPUT.test(html)).toBe(true);
+    expect(html).toContain('class="task-result-tab"');
+    // The whole string, as before: the document runs it, says so, and the app starts nothing beside it.
+    expect(html).toContain("var draftPrefix='standing-orders:review-draft:'");
     expect(loaded.work).toBeUndefined();
     expect(loaded.inPlace).toBe(false);
-    // …and the document says it ran one: an app that booted from it never changes pages in place.
     expect(loaded.scripted).toBe(true);
-    // No reader is offered that page in place, whatever it says it can run; a read is not a document, so it is not marked.
-    const read = await readAs(`/t/t-mixed`, cookie, { "x-toolroll-work": "1" });
-    expect(read.work).toEqual(now.work);
-    const result = await (await fetch(url(`/t/t-mixed?run=${failed}&format=workspace`), { headers: { cookie, accept: "application/json", "x-toolroll-work": "1" } })).json() as import("./browser-workspace.js").BrowserWorkspace;
-    expect(result.inPlace).toBe(false);
-    expect(result.work).toBeUndefined();
-    expect(result.scripted).toBeUndefined();
+    const read = await (await fetch(url(`/t/t-sealed?run=${failed}&format=workspace`), { headers: { cookie, accept: "application/json", ...APP_WORK } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    expect(read.sensitive).toBe(true);
+    expect(read.work).toBeUndefined();
+    expect(read.inPlace).toBe(false);
   });
 
   test("sensitive composition: a password ceremony beside a live attempt — no poller, a static panel, link-only decisions", async () => {

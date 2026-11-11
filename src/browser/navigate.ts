@@ -483,6 +483,20 @@ function onHash(): void {
   if (here() === shownAt) shownEntry = entryOf(window.history.state);
 }
 
+/**
+ * A page's own change to its address: a result section, a task tab (docs/plans/task-page-in-app.md §4). The same
+ * entry and the same page: `history.state` (the entry's name) is kept, and the address navigation compares against
+ * moves with it, so where the page is keeps being saved afterwards and Back to an earlier entry is still a page
+ * change. While the address bar names another page (Back was pressed and its page is still being read) nothing is
+ * written: that address is the other page's. Returns whether the address changed hands.
+ */
+export function replaceAddress(url: string): boolean {
+  if (host !== null && here() !== shownAt) return false;
+  try { window.history.replaceState(window.history.state, "", url); } catch { return false; }
+  if (host !== null) shownAt = here();
+  return true;
+}
+
 /** Start following links in place for this document; returns the stop. One host at a time. */
 export function installNavigation(next: InPlaceHost): () => void {
   host = next;

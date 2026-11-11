@@ -15,8 +15,15 @@ test("both parts covered: the work is both parts' work, in order", () => {
   expect(both).toEqual({ script: "a();b();", fetches: false, app: [{ kind: "region", region: "run-peek", run: 7 }, { kind: "answer" }] });
 });
 
+test("a task's running build, its question and its result are covered together", () => {
+  const live = withScript({ script: "a();", fetches: true, app: [{ kind: "region", region: "check-progress", run: 7 }, { kind: "answer" }] }, { script: "r();", app: [{ kind: "result" }] });
+  expect(live).toEqual({ script: "a();r();", fetches: true, app: [{ kind: "region", region: "check-progress", run: 7 }, { kind: "answer" }, { kind: "result" }] });
+  // A result alone on the page.
+  expect(withScript(undefined, { script: "r();", app: [{ kind: "result" }] }).app).toEqual([{ kind: "result" }]);
+});
+
 test("one part the app does not cover leaves the whole page a script", () => {
-  // A covered page gains an uncovered script (a task with a result, until the app has the result's behaviour).
+  // A covered page gains an uncovered script (any page script the app has no version of).
   expect(withScript({ script: "a();", app: [{ kind: "answer" }] }, { script: "b();" })).toEqual({ script: "a();b();", fetches: false });
   // An uncovered page gains a covered one: the string still carries both, so the app must run neither.
   expect(withScript({ script: "a();", fetches: true }, { script: "b();", app: [{ kind: "answer" }] })).toEqual({ script: "a();b();", fetches: true });

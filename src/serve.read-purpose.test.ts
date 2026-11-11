@@ -12,10 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mintApiToken } from "./api-tokens.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
+import { PAGE_WORK_HEADER, PAGE_WORK_VERSION } from "./page-work-contract.js";
 import { addApprover, propose } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { PersistentSessions } from "./server/session.js";
 import { openStore, type Store } from "./store.js";
+import { presented, sealScopeFixture } from "../test/serve-kit.js";
 
 const NOW = new Date("2026-11-10T12:00:00.000Z");
 let store: Store, server: Server, directory: string, repo: string, base: string, password: string;
@@ -115,6 +117,41 @@ test("a read ahead changes nothing, on every allowlisted page and its query vari
     const before = writes();
     const { moved, response } = await seenAfter(hash, () => read(cookie, address, "prefetch"));
     expect(response.status, path).toBe(200);
+    expect(writes(), `${path} wrote`).toBe(before);
+    expect(moved, `${path} extended the session`).toBe(false);
+  }
+});
+
+test("a read ahead of a task the app shows in place changes nothing: one stopped on a question, one showing a result", async () => {
+  // The two task pages the app runs itself (docs/plans/task-page-in-app.md): reading them ahead, as a tab that runs
+  // page work does, writes nothing: no answer, no result marked seen, no session time.
+  const run = (id: string): number => {
+    store.createTask({ id, title: `Task ${id}` }, NOW);
+    const ref = store.refFor("built-in", id, "ours").id;
+    store.placeTask(ref, repo);
+    sealScopeFixture(store, id, password, `goal of ${id}`);
+    const started = store.startRun({ taskRef: ref, leaseId: `lease-${id}`, runner: "runner-1", provider: "claude", branch: `standing-orders/${id}`, worktree: join(directory, id), now: NOW, ...presented(store, ref, "builder") });
+    store.stampProviderStart(started, NOW);
+    return started;
+  };
+  const asked = run("t-asked");
+  store.finishRun(asked, { outcome: "parked", reason: "decision:1", now: NOW });
+  store.saveDecision({ run: asked, urgency: "blocking", recap: "why it stopped", question: "Which way?",
+    options: [{ id: "keep", label: "Keep", consequence: "cleanup later", reversible: true }, { id: "drop", label: "Drop", consequence: "gone", reversible: false }], recommendation: "keep" }, NOW);
+  // A result is shown for the attempt the address names.
+  const done = run("t-done");
+  store.finishRun(done, { outcome: "failed", reason: "agent", now: NOW });
+  const { cookie, hash } = await login();
+  clockAt = Date.now();
+  const app = { [PAGE_WORK_HEADER]: String(PAGE_WORK_VERSION) };
+  for (const [path, kind] of [["/t/t-asked?format=workspace", "answer"], [`/t/t-done?run=${done}&format=workspace`, "result"]] as const) {
+    const before = writes();
+    const { moved, response } = await seenAfter(hash, () => read(cookie, path, "prefetch", app));
+    expect(response.status, path).toBe(200);
+    const page = await (await read(cookie, path, "prefetch", app)).json() as BrowserWorkspace;
+    // The page read is the one the app shows in place, with its work named.
+    expect(page.inPlace, path).toBe(true);
+    expect(page.work?.map(one => one.kind), path).toContain(kind);
     expect(writes(), `${path} wrote`).toBe(before);
     expect(moved, `${path} extended the session`).toBe(false);
   }

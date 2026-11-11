@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { BrowserWorkspace } from "../browser-workspace.js";
+import { PAGE_WORK_VERSION } from "../page-work-contract.js";
 import { addApprover, propose } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
 import { openStore, type Store } from "../store.js";
@@ -26,7 +27,7 @@ import { KEY_FILL_SCRIPT } from "../server/mutation-key.js";
 import { html, htmlString } from "../html.js";
 import { presented, sealScopeFixture, T0 } from "../../test/serve-kit.js";
 import { acceptWorkspace, useWorkspace, WorkspaceApp } from "./app.js";
-import { follow, forgetPlaces, LEAVE_MS, linkToFollow, mayBeInPlace, pageHeld, setDocumentLoader } from "./navigate.js";
+import { follow, forgetPlaces, LEAVE_MS, linkToFollow, mayBeInPlace, pageHeld, replaceAddress, setDocumentLoader } from "./navigate.js";
 import { mayPrefetch, prefetch, prefetchedKeys, PREFETCH_MAX_PAGES, PREFETCH_TTL_MS, setPrefetchClock, takePrefetched } from "./prefetch.js";
 import { askDraft, keepAskDraft, PAGE_READ_MS, readPage } from "./workspace-client.js";
 import { WORKSPACE_NUDGE } from "./live-task.js";
@@ -642,6 +643,46 @@ test("Back puts the page where it was left: kept in this tab, never written to h
   expect(pane().scrollTop).toBe(0);
 });
 
+test("a page's own change to its address keeps the entry: its place is still saved there, Back is still a page change, and another page's address is never written over", async () => {
+  await open("/");
+  click(railLink("/tasks"));
+  await arrivedAt("/tasks");
+  window.history.replaceState({ ...window.history.state, kept: 1 }, "");
+  const state = window.history.state as Record<string, unknown>;
+  const pane = () => document.querySelector<HTMLElement>("#workspace-main .so-page-content")!;
+  const placeKept = (): number[] => {
+    const kept = new Map(JSON.parse(sessionStorage.getItem("toolroll.places") ?? "[]") as [string, { parts: [string, number, number][] }][]);
+    return (kept.get(String(state.toolrollEntry))?.parts ?? []).map(part => part[1]);
+  };
+  const scrollTo = async (top: number): Promise<void> => {
+    pane().scrollTop = top;
+    pane().dispatchEvent(new Event("scroll"));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 220)); });
+  };
+  // The page names a section of its own (a result section, a task tab): the same entry, every key of its state kept.
+  expect(replaceAddress("/tasks?section=changes#top")).toBe(true);
+  expect(window.location.pathname + window.location.search + window.location.hash).toBe("/tasks?section=changes#top");
+  expect(window.history.state).toEqual(state);
+  await scrollTo(90);
+  expect(placeKept()).toContain(90);
+  // An address written past navigation is, as far as it knows, another page's: the place stops being saved. (What
+  // the task page did before, and why its own changes go through `replaceAddress`.)
+  window.history.replaceState(window.history.state, "", "/tasks?section=checks");
+  await scrollTo(40);
+  expect(placeKept()).not.toContain(40);
+  // And while the address names another page, this page writes nothing over it.
+  expect(replaceAddress("/tasks?section=summary")).toBe(false);
+  expect(window.location.search).toBe("?section=checks");
+  // Back under the page's own address, it is the page's to change again; Back to the entry before is a page change.
+  window.history.replaceState(window.history.state, "", "/tasks?section=changes");
+  expect(replaceAddress("/tasks?section=summary")).toBe(true);
+  expect(loads).toEqual([]);
+  window.history.replaceState({ toolroll: "in-place" }, "", "/");
+  window.dispatchEvent(new PopStateEvent("popstate", { state: { toolroll: "in-place" } }));
+  await arrivedAt("/");
+  expect(loads).toEqual([]);
+});
+
 test("Back and then Forward before the page is read: the page on screen stays under its own address, and the late answer shows nothing", async () => {
   await open("/");
   click(railLink("/tasks"));
@@ -830,7 +871,7 @@ function stoppedOnQuestion(id: string): number {
 
 /** A page as a tab that runs page work reads it (the app's own reads say so; `workspaceAt` reads as an older tab). */
 async function workAt(path: string): Promise<BrowserWorkspace> {
-  const page = await exchange("GET", `${path}${path.includes("?") ? "&" : "?"}format=workspace`, { cookie, accept: "application/json", "x-toolroll-work": "1" });
+  const page = await exchange("GET", `${path}${path.includes("?") ? "&" : "?"}format=workspace`, { cookie, accept: "application/json", "x-toolroll-work": String(PAGE_WORK_VERSION) });
   expect(page.status, path).toBe(200);
   return JSON.parse(page.text) as BrowserWorkspace;
 }
@@ -926,7 +967,7 @@ test("work this app does not know is a document load; a malformed list is no pag
   const tasks = await workspaceAt("/tasks");
   expect(tasks.inPlace).toBe(true);
   // A newer server names work this app has no version of: showing the page without it would leave it half working.
-  override = path => path.startsWith("/tasks?") ? Promise.resolve(json({ ...tasks, work: [{ kind: "answer" }, { kind: "result" }] })) : null;
+  override = path => path.startsWith("/tasks?") ? Promise.resolve(json({ ...tasks, work: [{ kind: "answer" }, { kind: "a-later-kind" }] })) : null;
   click(railLink("/tasks"));
   await arrivedAt("/tasks");
   expect(loads).toEqual([{ href: "/tasks", replace: false }]);
