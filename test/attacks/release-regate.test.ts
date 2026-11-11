@@ -133,7 +133,10 @@ describe("attack: a regate never stands in for different code, base or words", (
     expect(regateTask(f.store, f.taskId, LATER, alex(f))).toMatchObject({ ok: false, reason: "not-approved" });
     expect(f.store.getScope(f.taskId)).toMatchObject({ digest: changed.digest, candidate: moved, approvedDigest: before.digest });
     expect(f.store.getTask(f.taskId)?.state).toBe("done");
-    // Approved by the person after all: the failed attempt was under the old words, so the regate still refuses.
+    // Terms changed after an earlier yes: no approval road takes a new one (the release sheet's rule, in its words).
+    expect(approve(f.store, f.taskId, "alex", LATER, changed.digest, f.password)).toEqual({ ok: false, reason: "policy", message: "The release's terms changed after an earlier approval. Read them again." });
+    // Approved by the person after all (the earlier yes withdrawn first): the failed attempt was under the old words, so the regate still refuses.
+    f.store.handle.prepare("UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, approved_profile_json = NULL WHERE task_id = ?").run(f.taskId);
     expect(approve(f.store, f.taskId, "alex", LATER, changed.digest, f.password).ok).toBe(true);
     expect(regateTask(f.store, f.taskId, LATER, alex(f))).toMatchObject({ ok: false, reason: "not-approved" });
     expect(f.store.getTask(f.taskId)?.state).toBe("done");
@@ -143,6 +146,8 @@ describe("attack: a regate never stands in for different code, base or words", (
     const { f, built, before } = failedRelease();
     expect(regateTask(f.store, f.taskId, LATER, alex(f))).toMatchObject({ ok: true });
     propose(f.store, { taskId: f.taskId, goal: "Verify, reworded", candidate: f.approved, acceptance: before.acceptance, releaseTerms: before.releaseTerms ?? null, now: LATER });
+    // The earlier yes is withdrawn first: approve() refuses a release whose terms changed after an earlier approval.
+    f.store.handle.prepare("UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, approved_profile_json = NULL WHERE task_id = ?").run(f.taskId);
     expect(approve(f.store, f.taskId, "alex", LATER, f.store.getScope(f.taskId)!.digest, f.password).ok).toBe(true);
     const run = attempt(f, f.taskId, built, allPass, "no-change");
     // The build at that commit was under the old words: the rerun is not that build's check again.
