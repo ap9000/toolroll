@@ -15,7 +15,10 @@
 [data-view] .so-home .so-act .k-link { color: var(--so-nav-ink); }
 [data-view] .so-home .so-act-run { display: inline-flex; align-items: center; gap: 6px; }
 [data-view] .so-home .so-act-sep { color: var(--so-muted); }
-[data-view] .so-home .so-home-tools { flex: none; display: flex; align-items: center; gap: var(--so-space-sm); }
+[data-view] .so-home .so-home-tools { flex: none; min-width: 0; max-width: 100%; display: flex; align-items: center; gap: var(--so-space-sm); }
+/* The project filter stays compact: a long project name is cut short, never the page made wider. */
+[data-view] .so-home .so-home-scope { flex: 0 1 auto; width: auto; max-width: 220px; }
+[data-view] .so-home .so-home-scope .k-sel { width: 100%; max-width: 220px; }
 [data-view] .so-home .so-mark { flex: none; display: inline-block; box-sizing: border-box; width: 8px; height: 8px; border-radius: 50%; }
 [data-view] .so-home .so-mark.live { background: var(--so-live); }
 [data-view] .so-home .so-mark.queued { border: 1.5px solid var(--so-field-line); }
@@ -27,7 +30,7 @@
 [data-view] .so-home .so-tri-n { font-variant-numeric: tabular-nums; }
 [data-view] .so-home .so-ti { display: grid; gap: 0; padding: 9px 12px; border-radius: var(--so-radius-md); color: var(--so-ink); text-decoration: none; }
 [data-view] .so-home .so-ti-t { font: 500 13.5px/20px var(--so-font-sans); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-[data-view] .so-home .so-ti-m { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 18px; color: var(--so-muted); }
+[data-view] .so-home .so-ti-m { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; line-height: 18px; color: var(--so-muted); }
 [data-view] .so-home .so-ti-why { color: var(--so-danger); font-weight: 500; }
 [data-view] .so-home .so-ti-why::after { content: " · "; color: var(--so-muted); font-weight: 400; }
 [data-view] .so-home .so-tri-list .so-ti[aria-selected="true"] { background: var(--so-soft); }

@@ -8,6 +8,7 @@
  */
 import type { BrowserHomeAsk, BrowserHomeRow, BrowserHomeView } from "../browser-workspace.js";
 import { browserWorkActionHref } from "../browser-crew.js";
+import { NO_REASON_RECORDED } from "../needs-you.js";
 import { projectName } from "../project.js";
 import type { Store } from "../store.js";
 import { WORK_ASK_GROUPS, workIndexPage, type WorkIndexItem, type WorkIndexPage } from "../work-index.js";
@@ -85,7 +86,8 @@ function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, can
   const said = item.status.detail !== item.status.label ? item.status.detail : null;
   const line = state === "needs" && open ? decision.question : (item as { progress?: string }).progress ?? said;
   // Only a row where something went wrong says why, in one short line.
-  const reason = ask === "wrong" ? oneLineOf((said ?? item.status.label).replace(/[.\s]+$/, ""), 120) : null;
+  // With no reason on record, the row says what happened (its status) instead of a sentence about the missing reason.
+  const reason = ask === "wrong" ? oneLineOf((said !== null && said !== NO_REASON_RECORDED ? said : item.status.label).replace(/[.\s]+$/, ""), 120) : null;
   // A plan that can't take a yes never offers one: the reason, and the one act that opens it, as the task page says.
   const door = state === "needs" && action?.code === "approve-scope" ? closedDoor(action.target.taskId) : null;
   return {
