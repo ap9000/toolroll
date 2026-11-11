@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import type { FormEvent } from "react";
 import { createRoot } from "react-dom/client";
@@ -29,13 +30,14 @@ import { setLiveQuiet, useLiveRoom } from "./live.js";
 import { createChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
 import { isSettingsFrame } from "../settings-kit-script.js";
-import { installKitBehavior } from "./kit/behavior.js";
+import { closeAll, installKitBehavior } from "./kit/behavior.js";
 import { Icon } from "./icons.js";
 import { LeadChat, returnSends } from "./lead-chat.js";
 import { NeedsDock, PhoneHeader, Rail, useNeeds, useNeedsRefresh } from "./shell.js";
 import { SearchMenu } from "./search.js";
 import "./workspace.css";
 import { keyed, markAgentSeen } from "./mutation-key.js";
+import { installNavigation, loadDocument } from "./navigate.js";
 
 export { GuardedHtml, regionIsEditing };
 export { REPLACED_THREAD_DIVIDER, replyTook } from "./lead-chat.js";
@@ -55,23 +57,60 @@ function canRefreshWorkspace(): boolean { return !document.hidden && navigator.o
 
 const FULL_WIDTH_PAGES = new Set(["/tasks", "/tasks/archive", "/agents", "/code"]);
 
+/** The page's message box as it starts: the draft saved for its conversation, or the words a link started. */
+function startingDraft(page: BrowserWorkspace): ChatDraft {
+  const scope = scopeOf(page);
+  const restored = page.conversation && scope
+    ? restoreDraft(browserStorage(), scope, page.conversation.requestId, page.conversation.maxChars)
+    : emptyDraft("");
+  // A link may start a message for the person to finish (?draft=…); a draft they already have wins.
+  const started = page.conversation ? new URLSearchParams(window.location.search).get("draft") : null;
+  return started && restored.text === "" && restored.pending === null ? { ...restored, text: started.slice(0, page.conversation!.maxChars) } : restored;
+}
+
+function sameScope(a: DraftScope | null, b: DraftScope | null): boolean {
+  return a !== null && b !== null && a.user === b.user && a.session === b.session && a.task === b.task;
+}
+
+/** The workspace this document started as (its first render), and the one on screen now: acceptWorkspace reads them. */
+let documentStart: BrowserWorkspace | null = null;
+let onScreen: BrowserWorkspace | null = null;
+
+/** How a workspace reaches the screen: the page's own re-read, a followed link (or Back), or a shown prefetch confirmed (A2). */
+export type AcceptHow = "refresh" | "navigate" | "confirm";
+
+/**
+ * The one door for every workspace that reaches the screen (docs/plans/live-pages-and-home.md A1.2), checked before
+ * anything of `next` is rendered:
+ * 1. A sensitive page is its own document: shown only in the document that started as that sensitive page; anywhere
+ *    else the browser loads its address as a document and nothing of it is rendered here, for every road.
+ * 2. In place only between eligible pages: a followed link (or a confirmation) needs `inPlace` on the page left and on
+ *    `next`, else a document load.
+ * 3. A page that gains a page script on its own re-read (`inPlace` turns false under "refresh") is kept as today: no
+ *    script runs until the next document load.
+ * True: show `next`. False: a document load has started instead (`href`, else `next`'s own address).
+ */
+export function acceptWorkspace(next: BrowserWorkspace, how: AcceptHow, href: string = next.path, replace = false): boolean {
+  const startedAsThis = documentStart !== null && documentStart.sensitive && documentStart.path === next.path;
+  if (next.sensitive && !startedAsThis) { loadDocument(href, replace); return false; }
+  if (how !== "refresh" && (onScreen?.inPlace !== true || next.inPlace !== true)) { loadDocument(href, replace); return false; }
+  return true;
+}
+
 export function useWorkspace(initial: BrowserWorkspace) {
+  // Mounted once per document: what it first shows is the page this document started as.
+  useState(() => { documentStart = initial; onScreen = initial; return null; });
+  // The page on screen as it arrived (a document load or an in-place change); `epoch` counts the in-place changes.
+  const [page, setPage] = useState(initial);
+  const [epoch, setEpoch] = useState(0);
   const [workspace, setWorkspace] = useState(initial);
-  const scope = scopeOf(initial);
-  const [draft, setDraft] = useState<ChatDraft>(() => {
-    const restored = initial.conversation && scope
-      ? restoreDraft(browserStorage(), scope, initial.conversation.requestId, initial.conversation.maxChars)
-      : emptyDraft("");
-    // A link may start a message for the person to finish (?draft=…); a draft they already have wins.
-    const started = initial.conversation ? new URLSearchParams(window.location.search).get("draft") : null;
-    return started && restored.text === "" && restored.pending === null ? { ...restored, text: started.slice(0, initial.conversation!.maxChars) } : restored;
-  });
+  const [draft, setDraft] = useState<ChatDraft>(() => startingDraft(initial));
   useEffect(() => {
     const url = new URL(window.location.href);
     if (!url.searchParams.has("draft")) return;
     url.searchParams.delete("draft");
     window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
-  }, []);
+  }, [epoch]);
   const [notice, setNotice] = useState("");
   const [storageAvailable, setStorageAvailable] = useState(true);
   const [sending, setSending] = useState(false);
@@ -89,6 +128,9 @@ export function useWorkspace(initial: BrowserWorkspace) {
   }, []);
   const mounted = useRef(true);
   const sendLatch = useRef(false);
+  /** Moves with every in-place page change: a read or send begun for the page before lands on nothing. */
+  const generation = useRef(0);
+  useLayoutEffect(() => { onScreen = workspace; }, [workspace]);
 
   /** The conversation this page's own send started, by its acknowledgement (quiet page visits). */
   const startedBySend = useRef<number | null>(null);
@@ -101,12 +143,12 @@ export function useWorkspace(initial: BrowserWorkspace) {
   }, []);
 
   // A task page follows its task's room (live-task.tsx); a conversation or a live page follows the workspace's.
-  const liveTask = initial.view?.kind === "task" && initial.view.live != null && !initial.sensitive;
+  const liveTask = page.view?.kind === "task" && page.view.live != null && !page.sensitive;
   // The Agents board follows the workspace too, and its opened agent's own room nudges it (agents-view.tsx).
   // Home follows the workspace the same way: its counts and rows move as work does, and an answer given in place re-reads it.
-  const agentsBoard = (initial.view?.kind === "agents" || initial.view?.kind === "home") && !initial.sensitive;
+  const agentsBoard = (page.view?.kind === "agents" || page.view?.kind === "home") && !page.sensitive;
   // On a sensitive page no room opens at all (live.ts setLiveQuiet, set by WorkspaceApp), whatever this follows.
-  const followsWorkspace = Boolean(initial.conversation || initial.refreshSeconds || agentsBoard);
+  const followsWorkspace = Boolean(page.conversation || page.refreshSeconds || agentsBoard);
   const check = useCallback(async (force = true, retry = false): Promise<void> => {
     clearRefreshRetry();
     if (!mounted.current || state.current.stale || !(followsWorkspace || liveTask) || !canRefreshWorkspace()) return;
@@ -116,9 +158,10 @@ export function useWorkspace(initial: BrowserWorkspace) {
     refreshQueued.current = false;
     polling.current = true;
     const asked = state.current.draft.pending?.request ?? null;
+    const gen = generation.current;
     try {
       const read = await readWorkspace(state.current.workspace, asked, fetch, { etag: refreshTag.current, force });
-      if (!mounted.current) return;
+      if (!mounted.current || gen !== generation.current) return;
       // A receipt query is a different representation from the ordinary view.
       refreshTag.current = asked ? null : read.etag;
       if (read.kind === "unchanged") {
@@ -126,6 +169,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
         return;
       }
       const next = read.workspace;
+      // The one door (acceptWorkspace): a page that became sensitive loads as its own document, and this page stops.
+      if (!acceptWorkspace(next, "refresh")) { state.current.stale = true; setStale(true); return; }
       // A page that showed no conversation accepts the one its own send started: acknowledged, or holding its receipt.
       const started = startedBySend.current ?? (asked !== null && next.receipt?.request === asked && next.receipt.received ? next.conversation?.sessionId ?? null : null);
       if (!sameConversation(state.current.workspace, next, started)) {
@@ -147,7 +192,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
       setWorkspace(next);
       setNotice(received.pending ? "Delivery is not confirmed. Check again before sending another message." : "");
     } catch (error) {
-      if (!mounted.current) return;
+      if (!mounted.current || gen !== generation.current) return;
       if (error instanceof WorkspaceAuthError) { state.current.stale = true; setStale(true); }
       setNotice(error instanceof Error ? error.message : "Updates are unavailable. Your work is still saved.");
       // One failure-only retry: a server fingerprint may stay unchanged after this missed read.
@@ -156,13 +201,14 @@ export function useWorkspace(initial: BrowserWorkspace) {
         refreshRetry.current = setTimeout(() => { refreshRetry.current = null; void check(true, true); }, 2_000);
       }
     } finally {
-      polling.current = false;
-      if (refreshQueued.current && mounted.current && !state.current.stale && canRefreshWorkspace()) {
+      // A page changed in place meanwhile owns the latch now (adopt reset it).
+      if (gen === generation.current) polling.current = false;
+      if (gen === generation.current && refreshQueued.current && mounted.current && !state.current.stale && canRefreshWorkspace()) {
         refreshQueued.current = false;
         void check(true);
       }
     }
-  }, [initial, followsWorkspace, liveTask, updateDraft, clearRefreshRetry]);
+  }, [page, followsWorkspace, liveTask, updateDraft, clearRefreshRetry]);
 
   // The workspace's room says something changed: read again (an unchanged read is a 304). A stream the browser
   // gave up on reads once, so a lost sign-in or connection says so.
@@ -213,10 +259,12 @@ export function useWorkspace(initial: BrowserWorkspace) {
     setSending(true);
     updateDraft(next);
     setNotice("");
+    const gen = generation.current;
     try {
       const result = await sendMessage(current.workspace, next.pending, fetch, mode);
+      // Another page is on screen now: what became of this send is read there (its saved draft holds the receipt).
+      if (!mounted.current || gen !== generation.current) return result.refused ? "refused" : result.queued === true ? "queued" : "accepted";
       if (current.workspace.conversation?.sessionId === 0 && result.session !== undefined) startedBySend.current = result.session;
-      if (!mounted.current) return result.refused ? "refused" : result.queued === true ? "queued" : "accepted";
       if (result.refused) {
         updateDraft(rejectDraft(state.current.draft, next.pending.request));
         setNotice(result.message ?? "Message not sent. Your draft is saved.");
@@ -232,14 +280,16 @@ export function useWorkspace(initial: BrowserWorkspace) {
         return "accepted";
       }
     } catch (error) {
-      if (!mounted.current) return "unconfirmed";
+      if (!mounted.current || gen !== generation.current) return "unconfirmed";
       if (error instanceof WorkspaceAuthError) { state.current.stale = true; setStale(true); }
       setNotice(error instanceof WorkspaceAuthError ? error.message : "Delivery is not confirmed. Check again before sending another message.");
       void check();
       return "unconfirmed";
     } finally {
-      sendLatch.current = false;
-      if (mounted.current) setSending(false);
+      if (gen === generation.current) {
+        sendLatch.current = false;
+        if (mounted.current) setSending(false);
+      }
     }
   };
 
@@ -309,7 +359,22 @@ export function useWorkspace(initial: BrowserWorkspace) {
       : "The lead didn't take it. The note above the message box says why.";
   };
 
-  return { workspace, draft, notice, storageAvailable, sending, stale, offline, send, check, reconnect, steer,
+  /** Another page, changed in place (A1.3): every piece of state starts from it, as a document load would. The message
+   * box keeps its words when the conversation is the same one, and takes the saved draft for a different one. */
+  const adopt = useCallback((next: BrowserWorkspace) => {
+    generation.current += 1;
+    clearRefreshRetry();
+    polling.current = false; refreshQueued.current = false; refreshTag.current = null;
+    startedBySend.current = null; sendLatch.current = false;
+    const kept = sameScope(scopeOf(state.current.workspace), scopeOf(next));
+    const nextDraft = kept ? state.current.draft : startingDraft(next);
+    state.current = { workspace: next, draft: nextDraft, stale: false, sending: false, notice: "" };
+    setPage(next); setWorkspace(next); setDraft(nextDraft);
+    setNotice(""); setStale(false); setSending(false); setStorageAvailable(true);
+    setEpoch(value => value + 1);
+  }, [clearRefreshRetry]);
+
+  return { workspace, page, epoch, adopt, draft, notice, storageAvailable, sending, stale, offline, send, check, reconnect, steer,
     edit: (text: string) => updateDraft(editDraft(state.current.draft, text)) };
 }
 
@@ -622,7 +687,7 @@ function DemoNotice({ demo }: { demo: BrowserWorkspace["demo"] }) {
   </Alert>;
 }
 
-function useWindowStaysPut() {
+function useWindowStaysPut(epoch: number) {
   useEffect(() => {
     const settle = () => { if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0); };
     const reveal = () => {
@@ -637,7 +702,7 @@ function useWindowStaysPut() {
     window.addEventListener("scroll", settle, { passive: true });
     window.addEventListener("hashchange", reveal);
     return () => { cancelAnimationFrame(frame); window.removeEventListener("scroll", settle); window.removeEventListener("hashchange", reveal); };
-  }, []);
+  }, [epoch]);
 }
 
 /** The views built from the revamp kit; a server page says so with `data-kit-page` on its root, or by drawing the kit's
@@ -652,8 +717,15 @@ export function isKitPage(workspace: BrowserWorkspace): boolean {
   return !workspace.conversation && KIT_PAGE_MARK.test(workspace.pageHtml ?? "");
 }
 
+/**
+ * The workspace (docs/plans/live-pages-and-home.md A1.3): a shell mounted once per document (the providers, the rail,
+ * the phone header and its drawer, the notices, the Needs-you dock, Search) around the page, which is keyed by the
+ * page's epoch: an in-place change remounts the header's page parts, `#workspace-main` and the side panels from the new
+ * workspace, so page state (a live task, the agents board, a pinned approval, a guarded region) starts from it.
+ */
 export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const controller = useWorkspace(initial);
+  const epoch = controller.epoch;
   // Set before the parts' rooms settle (a layout effect runs before their passive ones); kept in step on a re-read.
   useLayoutEffect(() => { setLiveQuiet(controller.workspace.sensitive); }, [controller.workspace.sensitive]);
   const resultHost = useRef<HTMLDivElement>(null);
@@ -684,7 +756,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     const id = decodeURIComponent(window.location.hash.slice(1));
     if (id !== "" && document.getElementById(id)?.closest("[data-task-details]")) show();
     return () => window.removeEventListener("so:show-details", show);
-  }, [taskView === null]);
+  }, [taskView === null, epoch]);
   // The Tasks page already lists every task; the Crew panel would repeat it.
   // A flow's canvas needs the whole width.
   // Pages that are themselves a list of work, or need the width (the board's columns, a coding session), go without the side panel.
@@ -710,8 +782,24 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   const phone = isChat && workspace.conversation !== null && !docked && taskView === null && !phoneDismissed ? workspace.phone ?? null : null;
   const states = useProjectStates(workspace);
   const current = currentProjectOf(workspace)?.path ?? null;
-  useEffect(notifyWorkspaceRendered, []);
-  useWindowStaysPut();
+  useEffect(notifyWorkspaceRendered, [epoch]);
+  useWindowStaysPut(epoch);
+  // Following links in place (navigate.ts): the page on screen, the one door, and the swap. The swap closes every open
+  // sheet and panel (the phone drawer, Search, a dialog) and resets what belongs to the page left, in one render.
+  const shown = useRef(workspace);
+  shown.current = controller.workspace;
+  const adopt = controller.adopt;
+  useEffect(() => installNavigation({
+    current: () => shown.current,
+    accept: (next, href, replace) => acceptWorkspace(next, "navigate", href, replace),
+    show: next => flushSync(() => {
+      closeAll();
+      adopt(next);
+      setTeamSnapshot(next.team);
+      setPhoneView(next.result || next.focus ? "work" : "chat");
+      setPanelTab("chat");
+    }),
+  }), [adopt]);
   // On a phone the result opens as a sheet over the chat (workspace.css): the chat stays in view, dimmed, and out of
   // reach — no tab stop or tap lands under the sheet until it is put away.
   const mainColumn = useRef<HTMLDivElement>(null);
@@ -780,11 +868,11 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
           </PostForm>
         </Alert>}
       </div>}
-      <main id="workspace-main" className="so-main-content" tabIndex={-1}>
-        {workspace.team ? <TeamChat initial={workspace.team} user={workspace.user} csrf={workspace.csrf} onSnapshot={setTeamSnapshot} /> : workspace.conversation && !docked && taskView === null ? <LeadChat controller={controller} /> : <div className="so-page-content" data-workspace-page><DemoNotice demo={demo} />{isChat && workspace.firstRun && <FirstRun firstRun={workspace.firstRun} />}{workspace.view ? <ViewHost view={workspace.view} csrf={workspace.csrf} taskChat={taskChat} taskDetails={false} workspace={workspace} /> : <GuardedHtml html={initial.pageHtml ?? ""} immutable />}</div>}
-      </main>
+      <main id="workspace-main" className="so-main-content" tabIndex={-1}><Fragment key={epoch}>
+        {workspace.team ? <TeamChat initial={workspace.team} user={workspace.user} csrf={workspace.csrf} onSnapshot={setTeamSnapshot} /> : workspace.conversation && !docked && taskView === null ? <LeadChat controller={controller} /> : <div className="so-page-content" data-workspace-page><DemoNotice demo={demo} />{isChat && workspace.firstRun && <FirstRun firstRun={workspace.firstRun} />}{workspace.view ? <ViewHost view={workspace.view} csrf={workspace.csrf} taskChat={taskChat} taskDetails={false} workspace={workspace} /> : <GuardedHtml html={controller.page.pageHtml ?? ""} immutable />}</div>}
+      </Fragment></main>
     </div>
-    {docked && <aside className="so-supporting-panel so-ask-panel" data-workspace-detail aria-label="Ask">
+    {docked && <aside key={`ask-${epoch}`} className="so-supporting-panel so-ask-panel" data-workspace-detail aria-label="Ask">
       <div className="so-ask-header">
         <ViewButton variant="ghost" size="sm" className="so-phone-back min-[761px]:hidden max-[761px]:h-11 max-[761px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <div role="tablist" aria-label="Panel" className="so-ask-tabs">
@@ -795,14 +883,14 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
       <div className="so-ask-body" hidden={panelTab !== "chat"}><LeadChat controller={controller} docked={workspace.view?.kind ?? "task"} /></div>
       {panelTab === "crew" && <Crew workspace={workspace} />}
     </aside>}
-    {taskView !== null && !kitPage && <aside className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
+    {taskView !== null && !kitPage && <aside key={`details-${epoch}`} className="so-supporting-panel so-details-panel" data-workspace-detail aria-label="Task details">
       <div className="so-details-header">
         <ViewButton variant="ghost" size="sm" className="so-phone-back min-[761px]:hidden max-[761px]:h-11 max-[761px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />Back</ViewButton>
         <h2>Task details</h2>
       </div>
       <div data-view="task-details" className="w-full"><TaskDetails view={taskView} /></div>
     </aside>}
-    {!hidePanel && !docked && taskView === null && <aside className={`so-supporting-panel${hasWork ? " so-supporting-panel--detail" : ""}`} data-workspace-detail>
+    {!hidePanel && !docked && taskView === null && <aside key={`work-${epoch}`} className={`so-supporting-panel${hasWork ? " so-supporting-panel--detail" : ""}`} data-workspace-detail>
       <div className="so-work-panel-header"><ViewButton variant="ghost" size="sm" className="so-phone-back min-[761px]:hidden max-[761px]:h-11 max-[761px]:min-h-11" onClick={() => setPhoneView("chat")}><Icon name="arrow" />{isChat ? "Back to chat" : "Back"}</ViewButton>
         {hasWork && <><h2>{workspace.result ? "Result" : "Task"}</h2>{workspace.result && selectedTask && <HeadlineBadge label={selectedTask.label} tone={selectedTask.tone} className="so-current-task-state" data-workspace-current-task-state="" />}{workspace.result && <span className="so-work-run">run #{workspace.result.runId}</span>}<a href={teamSnapshot?.selected ? "/chat?conversation=" + encodeURIComponent(teamSnapshot.selected.id) : "/chat"} className="so-close-work" aria-label="Close work and return to the main chat"><Icon name="close" /></a></>}
       </div>
