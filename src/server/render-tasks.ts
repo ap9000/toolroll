@@ -1608,6 +1608,9 @@ export function taskBodyParts(data: {
   policyHold?: string | null;
   approvalRules?: { words: string; votes: string[]; needsTwo: boolean } | null;
   plan: "requested" | "drafted" | null;
+  /** Local-owner slice 2: the planning source this page read (local-owner-acts.ts planSourceOf), which the plan button
+   * posts so a local owner's request binds to exactly it. Null when it can't be read. */
+  planSource?: string | null;
   planDocument: string | null;
   planAuto?: boolean;
   /** Hash of the verified plan artifact currently shown. */
@@ -2606,7 +2609,7 @@ export function taskBodyParts(data: {
     stopControlsActive || cardRetries ? null : stalled && !data.claimed
       ? { html: act("requeue", "Retry, keeping the branch and workspace"), why: "Clears the repeated failures and queues the task again. The branch and workspace are kept.", whyClass: "retry" }
       : canPlan
-        ? { html: act("plan", "plan first"), why: "plan first sends an agent to read the project, ask you questions and propose a plan. Nothing builds until you approve it.", whyClass: "plan" }
+        ? { html: act("plan", "plan first", data.planSource == null ? {} : { source: data.planSource }), why: "plan first sends an agent to read the project, ask you questions and propose a plan. Nothing builds until you approve it.", whyClass: "plan" }
         : data.plan === "requested"
           ? null
         : task.state === "queued" && !data.claimed && (data.position?.position ?? 1) > 1

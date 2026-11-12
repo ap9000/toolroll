@@ -98,6 +98,22 @@ describe("terminal UI", () => {
     await vi.waitFor(() => expect(answers).toEqual([false]));
   });
 
+  it("p asks for a plan bound to the planning source the task read; with none to ask, it sends nothing and says so", async () => {
+    const base = sampleSource();
+    const source = scripted({ task: async id => { const task = await base.task(id); return task === null ? null : { ...task, plan: null, planAsk: id === "t1" ? null : { source: "s".repeat(64) } }; } });
+    const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Sample: upgrade the test runner");
+    await mounted();
+    app.stdin.write("p");
+    await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "plan", id: "t3", source: "s".repeat(64) }]));
+    app.stdin.write("j");
+    await shows("> Sample: fix the login redirect");
+    app.stdin.write("p");
+    await shows("This task can't be planned now.");
+    expect(source.acts).toHaveLength(1);
+  });
+
   it("a refused write shows its words and leads to a password", async () => {
     const source = scripted({ act: async () => ({ ok: false, message: "Set a password, or sign in with your password, to do this.", needsPassword: true }) });
     const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));

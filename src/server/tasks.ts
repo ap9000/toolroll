@@ -31,6 +31,7 @@ import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
 import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
+import { LOCAL_TASK_CHANGED, requestPlanAsLocalOwner } from "../local-owner-acts.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
@@ -1941,6 +1942,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         return redirect(response, taskHref(filed.id));
       }
       case "plan": {
+        // Local-owner slice 2: the laptop's local owner asks on its own road, bound to the planning source it read.
+        if (who.via === "cookie" && who.authority === "local-owner") {
+          const asked = localOwnerPlan(store, taskId, readForm(posted, CONSOLE_FORMS.taskPlan).get("source"), now);
+          return asked.ok ? redirect(response, taskHref(taskId)) : taskScreen(response, who, taskId, asked.message, asked.status);
+        }
         // The operator's explicit ask, refused transactionally when the
         // moment has passed — approved scope, live claim, or a plan
         // already under way (Codex planning review's requestPlan guard).
@@ -3264,4 +3270,15 @@ export type ApprovalOutcome = "approved" | "vote" | "approved-not-rebuilt" | "re
  * only after the approve route's proofs, by the caller that knows the outcome. */
 export function answerApprovalInPlace(response: ServerResponse, outcome: ApprovalOutcome, words: string, status: number): void {
   respond(response, status, "application/json; charset=utf-8", JSON.stringify({ outcome, words }));
+}
+
+/**
+ * The task page's plan button for the laptop's local owner (local-owner slice 2): bound to the planning source the page
+ * read (the form's hidden `source`), never the task as it is now; the writer (local-owner-acts.ts) proves the rest in one
+ * transaction. No mode pre-authorization and no pins: the full session's road above is never reached from here.
+ */
+export function localOwnerPlan(store: Store, taskId: string, source: string | null | undefined, now: Date): { ok: true } | { ok: false; status: number; message: string } {
+  if (typeof source !== "string" || !/^[a-f0-9]{64}$/.test(source)) return { ok: false, status: 409, message: LOCAL_TASK_CHANGED };
+  const done = requestPlanAsLocalOwner(store, taskId, source, now);
+  return done.ok ? { ok: true } : { ok: false, status: done.reason === "local-owner" || done.reason === "refused" ? 403 : 409, message: done.message };
 }

@@ -4790,6 +4790,11 @@ $ contract --commands --json → 0
           "name": "model",
           "takesValue": true,
           "meaning": "the pinned plan model, riding --provider"
+        },
+        {
+          "name": "digest",
+          "takesValue": true,
+          "meaning": "the terminal's local owner: the exact planning source read; required there, and --provider/--model are refused"
         }
       ],
       "notableReasons": [

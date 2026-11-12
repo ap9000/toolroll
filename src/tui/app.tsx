@@ -4,7 +4,7 @@
  * Screens: Setup (the welcome's steps, until the first task), Main (tasks | live output | what needs you), New task,
  * Task, the plan before approving it, the result before accepting it, a revision's words, and Needs password. Keys:
  * j/k move, Enter opens, n new task, a approve (the full plan first) or accept (the result first), c accept, b send back,
- * r retry, s stop, 1–9 answer a question, w browser, ? help, q quit. Every write goes through the TuiSource, which runs
+ * r retry, p ask for a plan, s stop, 1–9 answer a question, w browser, ? help, q quit. Every write goes through the TuiSource, which runs
  * it as the local owner; a refusal shows its own words.
  */
 import { keyWords, SHORTCUTS, type TuiShortcut } from "../keymap.js";
@@ -47,7 +47,7 @@ type Screen =
 /** The keys (keymap.ts is the one table the console shares): its keys as this screen does them, then the terminal's own. */
 const TUI_SAYS: Readonly<Record<TuiShortcut, string>> = {
   new: "new task", ink: "approve the plan (shows it in full first), or accept the result (shows it first)", "send-back": "send the result back",
-  retry: "retry", list: "back to the task list", help: "these keys",
+  retry: "retry", plan: "ask for a plan", list: "back to the task list", help: "these keys",
 };
 export const HELP_LINES = [
   "j / k or ↑ / ↓   move",
@@ -172,6 +172,11 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (answer.needsPassword) setScreen({ kind: "password", message: answer.message });
     else { setMessage(answer.message); setScreen({ kind: "main" }); }
   };
+  /** `p`: a plan for the task, bound to the planning source read now; the command refuses one that changed meanwhile. */
+  const askPlan = (id: string) => openTask(id, task => {
+    if (task.planAsk == null) setMessage("This task can't be planned now.");
+    else void act({ kind: "plan", id, source: task.planAsk.source });
+  });
   const stop = (id: string, runId: number | null) => {
     if (runId === null) { setMessage("Nothing is running on this task."); return; }
     void act({ kind: "stop", id, runId });
@@ -201,6 +206,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (input === "b") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
     if (input === "r") { void act({ kind: "retry", id }); return true; }
     if (input === "c") { void reviewResult(id); return true; }
+    if (input === "p") { void askPlan(id); return true; }
     return false;
   };
 
@@ -310,8 +316,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
 
   function hints(): string {
     switch (screen.kind) {
-      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · s stop · w browser · ? help · q quit";
-      case "task": return "a approve/accept · b send back · r retry · s stop · 1–9 answer · w browser · Esc back";
+      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · p plan · s stop · w browser · ? help · q quit";
+      case "task": return `a approve/accept · b send back · r retry${screen.task.planAsk == null ? "" : " · p plan it"} · s stop · 1–9 answer · w browser · Esc back`;
       case "approve": return "y approve · Esc cancel";
       case "accept": return !screen.result.ready ? "w open in the browser · Esc back"
         : screen.result.owed === "person-check" ? "y yes, it looks right · n no · w open in the browser · Esc cancel"

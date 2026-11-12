@@ -451,14 +451,21 @@ async function firstTaskInTerminal(inst, term, trace, text, { pickedIdea = false
   }
   await until("the task to be filed", async () => latestTask(inst), { timeoutMs: 30_000, everyMs: 250 });
   const id = latestTask(inst).id;
-  // Filed with `task add`, the task may wait for a plan nobody asked for: the terminal has no key that asks the planner.
-  const stuck = await until("the planner to start, or the task to wait for a plan", async () => {
+  // Filed with `task add`, the terminal asks for its plan at once (local-owner slice 2: "Filed. Planning: …"), with no
+  // password. Should it not, `p` asks; only if that fails too does the person go to the browser.
+  let stuck = await until("the planner to start, or the task to wait for a plan", async () => {
     if (planState(inst, id) !== null) return "planning";
     return /Say what the task should do so it can be planned|Needs a plan/.test(term.text()) ? "needs-scope" : null;
   }, { timeoutMs: 20_000, everyMs: 250 }).catch(() => "unknown");
+  if (stuck !== "planning") {
+    trace.decision("Ask for the plan (p)", { screen: term.text() });
+    term.press("p");
+    trace.interaction("Press p (plan it)", { keys: "p" });
+    stuck = await until("the plan to be asked for", async () => planState(inst, id) !== null ? "planning" : null, { timeoutMs: 10_000, everyMs: 250 }).catch(() => stuck);
+  }
   if (stuck === "needs-scope") {
     const said = term.text();
-    trace.notPossible("Get a plan in the terminal: it says “Say what the task should do so it can be planned.” and no key asks the planner",
+    trace.notPossible("Get a plan in the terminal: neither filing nor p asked the planner",
       "press w and ask the planner on the task's page in the browser", { screen: said });
     const on = await toBrowser(inst, term, trace, "ask the planner for a plan");
     await on.goto(`${inst.base}/t/${encodeURIComponent(id)}`);
@@ -618,6 +625,7 @@ async function terminalInRepo({ trace, criterion, note }, { planRoad = false } =
       note(`stopped: no plan without a password (${blocked})`);
       return { road, blocked };
     }
+    if (road === "plan") criterion("B1.2", "a first task on the plan road reaches a plan without a password", true, "planned and approved in the terminal");
     watch.tick();
     const id = watch.facts.task ?? latestTask(inst)?.id;
     if (!id) throw new Error("no task was filed");

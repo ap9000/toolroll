@@ -94,6 +94,7 @@ import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
 import { pullRequestLines, runLocalCompletion, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { requestPlanAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -9458,6 +9459,9 @@ function taskAction(
     case "failing-first":
       return failingFirstCommand(rest, followThroughContext(context, flags));
     case "plan":
+      // Local-owner slice 2: the terminal's local owner asks for a plan on its own road (no password, no pins, no mode
+      // pre-authorization); chosen only inside its chain, where an owner that no longer stands is refused there.
+      if (currentLocalOwner() !== null) return localPlanCommand(rest, flags, context);
       return planTaskCommand(rest, flags, context);
     case "review":
       return reviewTaskCommand(rest, flags, context);
@@ -14608,4 +14612,31 @@ function releaseToQueue(store: Store, lease: string, now: Date): FenceResult {
     if (store.getTask(ref.externalId)?.state === "running") store.setTaskState(ref.externalId, "queued", now);
     return result;
   });
+}
+
+// ---- Local owner, slice 2 (docs/plans/local-owner-acts.md §1): ask for a plan in the terminal. Kept last.
+
+/**
+ * `task plan <id> --digest <planning source>` for the laptop's local owner (the terminal UI's `p`, and `n` on a bigger
+ * task): its own road, which never reaches a password check. The digest is the planning source the screen read
+ * (local-owner-acts.ts planSourceOf), required and only compared. No plan pins (`--provider`, `--model`): choosing which
+ * agent plans needs a password. requestPlanAsLocalOwner proves the rest in one transaction.
+ */
+async function localPlanCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = "task plan";
+  if (flags.has("provider") || flags.has("model")) {
+    const passwordSet = store.accountOf(currentLocalOwner()?.account ?? "")?.passwordSet === true;
+    return fail(write, json, command, "local-owner", `Choosing which agent plans needs your password. ${passwordSet ? "Sign in with your password to do this." : "Set a password first: run \`toolroll password set\`."}`, EXIT.refused);
+  }
+  for (const name of flags.keys()) if (!["json", "db", "digest"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0], digest = flags.get("digest");
+  const usage = "Use task plan <task> --digest <the plan source you read>.";
+  if (positional.length !== 1 || !id || id.length > 64 || /[\x00-\x1f]/.test(id)) return fail(write, json, command, "usage", usage, EXIT.usage);
+  if (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) return fail(write, json, command, "usage", `--digest needs the exact task you read. ${usage}`, EXIT.usage);
+  const done = requestPlanAsLocalOwner(store, id, digest, clock());
+  if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+  return succeed(write, json, command, { id, replayed: done.replayed, autoPlan: false }, () => [
+    done.replayed ? `${id} · Already asked for a plan.` : `${id} · Asked for a plan. You approve the plan before anything is built.`,
+  ]);
 }

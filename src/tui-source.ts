@@ -26,6 +26,7 @@ import { homeGroupOf } from "./home-groups.js";
 import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiResult, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
+import { planSourceOf } from "./local-owner-acts.js";
 
 export type TuiSourceOptions = {
   databaseFile: string;
@@ -124,6 +125,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       return {
         id, title: shown(task["title"], id), status: shown(status["label"], words(work["state"])), detail: shown(status["detail"]),
         plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions, ready,
+        planAsk: store === null ? null : planAskOf(store, id),
       };
     },
 
@@ -141,7 +143,9 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       let argv: string[];
       let done: string;
       switch (act.kind) {
-        case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed. Its plan will be ready for you to approve."; break;
+        // A task too big to build straight away: filed, then its plan asked for at once (local-owner slice 2), below.
+        case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed."; break;
+        case "plan": argv = ["task", "plan", act.id, "--digest", act.source]; done = "Asked for a plan. You'll approve it before anything is built."; break;
         case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. A builder starts it next."; break;
         case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
@@ -158,7 +162,16 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const answer = await command(argv);
       if (answer.ok !== true) return refusalOf(answer);
       if (act.kind === "complete" && answer["replayed"] === true) return { ok: true, message: "Already accepted. The task is done." };
+      if (act.kind === "plan" && answer["replayed"] === true) return { ok: true, message: "Already asked for a plan." };
       const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : act.kind === "build" ? words(answer["task"]) : "";
+      // Filed in a project: ask for its plan now, bound to the task just filed (the screen promised a plan).
+      if (act.kind === "new" && filed !== "" && act.repo !== null) {
+        const store = read();
+        const ask = store === null ? null : planAskOf(store, filed);
+        const asked = ask === null ? null : await command(["task", "plan", filed, "--digest", ask.source]);
+        const message = asked?.ok === true ? "Filed. Planning: you'll approve the plan before anything is built." : `Filed. It wasn't sent for a plan: ${shown(asked?.message, "it can't be planned now.")}`;
+        return { ok: true, message, id: filed };
+      }
       return { ok: true, message: done, ...(filed === "" ? {} : { id: filed }) };
     },
 
@@ -237,4 +250,14 @@ function resultOf(store: Store, id: string, now: Date, evidenceRoot: string): Tu
     requirements: (receipt.proof?.matrix ?? []).map(row => ({ word: requirementWordOf(row, receipt.proof?.verdict ?? null, backing), statement: terminalText(row.statement ?? row.id ?? "") })),
     checks, owed,
   };
+}
+
+/** Whether a plan can be asked for this task now, and the planning source a request binds to (local-owner slice 2): a
+ * queued task with no plan asked or drafted and no approved plan. What the screen offers only; the command decides. */
+function planAskOf(store: Store, id: string): { source: string } | null {
+  const ref = store.lookupRef(id);
+  const scope = store.getScope(id);
+  if (ref === null || ref.plan !== null || store.getTask(id)?.state !== "queued" || (scope !== null && scope.approvedAt !== null && scope.approvedDigest === scope.digest)) return null;
+  const source = planSourceOf(store, id);
+  return source === null ? null : { source };
 }

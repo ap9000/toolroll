@@ -317,7 +317,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag, keyFlag,
       { name: "provider", takesValue: true, meaning: "pin which provider plans THIS task (plan phase only)" },
-      { name: "model", takesValue: true, meaning: "the pinned plan model, riding --provider" }],
+      { name: "model", takesValue: true, meaning: "the pinned plan model, riding --provider" },
+      // Local-owner slice 2: the terminal UI's plan request, for the laptop's local owner only (no password, no pins).
+      { name: "digest", takesValue: true, meaning: "the terminal's local owner: the exact planning source read; required there, and --provider/--model are refused" }],
     notableReasons: ["unknown-task"] },
   { invocation: "task hold", synopsis: "park a task with a reason", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
@@ -618,6 +620,8 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "task continue": "resume-run",
   "task unhold": "resume-run",
   "task complete": "complete-task",
+  // Local-owner slice 2: its own road (operate.ts localPlanCommand); the writer checks this exact act.
+  "task plan": "request-plan",
   "task revise": "request-revision",
   "task archive": "archive-task",
   "task restore": "archive-task",

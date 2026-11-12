@@ -48,7 +48,8 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['task continue', args('id:task', 'request key', { run: 'run' })],
   ['task assign', args('id:task', 'key runner anyone')],
   ['task scope', args('id:task', 'key goal not touches budget-usd risk acceptance candidate model provider repair-model')],
-  ['task plan', args('id:task', 'key provider model')],
+  // --digest is the terminal's local owner's own (its plan request binds to the source it read): refused remotely.
+  ['task plan', args('id:task', 'key provider model', { digest: 'refused' })],
   ['task hold', args('id:task', 'key reason until')],
   ['task unhold', args('id:task', 'key')],
   ['task require', args('id:task', 'key cap require')],

@@ -39,6 +39,8 @@ export type TuiTask = {
   readonly decisions: readonly TuiDecision[];
   /** "Can I merge?" (merge-checklist.ts, `toolroll task ready`'s lines): the answer, then each check. Empty: no result. */
   readonly ready?: readonly string[];
+  /** `p` (local-owner slice 2): the planning source read now, which the request binds to; null when no plan can be asked. */
+  readonly planAsk?: { readonly source: string } | null;
 };
 
 /** The welcome's steps, as lines (welcome-facts.ts). */
@@ -67,6 +69,8 @@ export type TuiAct =
    * explicit yes to their own check, or an exception's reason, when the result owes one. */
   | { readonly kind: "complete"; readonly id: string; readonly runId: number; readonly digest: string; readonly checked: boolean; readonly reason: string | null }
   | { readonly kind: "retry"; readonly id: string }
+  /** Plan it: exactly the planning source the screen read (the command refuses a task that changed meanwhile). */
+  | { readonly kind: "plan"; readonly id: string; readonly source: string }
   | { readonly kind: "answer"; readonly decision: number; readonly option: string };
 
 /** What Build would approve: the same lines every approval surface reads. */
