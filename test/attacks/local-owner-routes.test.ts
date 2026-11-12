@@ -11,6 +11,9 @@ import { loadPtySpawn, TerminalHost } from "../../src/live-terminal.js";
 import { openLocalWorld, LOCAL_T0, type LocalWorld } from "../local-owner-world.js";
 import { enrollOwnerPassword } from "../../src/store.js";
 import { hashPassword } from "../../src/scope.js";
+import { networkInterfaces } from "node:os";
+import { request as httpRequest } from "node:http";
+import { LOCAL_OWNER_ELSEWHERE } from "../../src/local-owner.js";
 
 let world: LocalWorld;
 afterEach(async () => { await world.close(); });
@@ -101,6 +104,90 @@ describe("the console's rows, as a local owner", () => {
     expect(page.status).toBe(303);
     expect(page.headers["location"]).toBe(`/login?return=${encodeURIComponent(next)}`);
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM oauth_code").get()?.["n"]).toBe(0);
+  });
+});
+
+// Local-owner slice 0 (Codex finding c): "this computer" is checked on every request a local owner's session makes, not
+// only when the session is made. From another address, through a proxy, or at a tailnet or LAN name, the cookie signs in
+// no one: reads and acts alike are refused in plain words and nothing changes (not even the session's last use).
+describe("a local owner's session from anywhere but this computer", () => {
+  const TAILNET = "laptop.example.ts.net";
+  /** Representative rows: reads (a page, a workspace read, a task) and the owner's own acts (filing, choosing a project,
+   * completing, stopping). */
+  const tried = (repo: string, csrf: string): [string, string, Record<string, string>][] => [
+    ["GET", "/chat", {}], ["GET", "/chat?format=workspace", {}], ["GET", "/t/one", {}],
+    ["POST", "/tasks/add", { csrf, repo, title: "From elsewhere" }], ["POST", "/projects/select", { csrf, path: repo }],
+    ["POST", "/t/one/complete", { csrf, receipt: "0".repeat(64), run: "1" }], ["POST", "/t/one/stop", { csrf, run: "1" }],
+  ];
+  const unchanged = () => JSON.stringify([world.store.handle.prepare("SELECT id, title, state FROM task ORDER BY id").all(),
+    world.store.webSessions("alex"), world.store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger").get()]);
+  const expectRefused = (answer: { status: number; body: string; headers: Record<string, unknown> }, what: string) => {
+    expect(answer.status, what).toBe(403);
+    expect(answer.headers["x-toolroll-refused"], what).toBe("local-owner-elsewhere");
+    expect(answer.body, what).toBe(LOCAL_OWNER_ELSEWHERE);
+  };
+  const form = (fields: Record<string, string>) => new URLSearchParams(fields).toString();
+
+  test("through a proxy: any forwarding header refuses every row, GET and POST; the same from this computer works", async () => {
+    world = await openLocalWorld();
+    const { cookie, csrf } = await world.localSession();
+    const before = unchanged();
+    for (const proxy of [{ "x-forwarded-for": "100.64.0.7" }, { forwarded: "for=100.64.0.7;proto=https" }, { "x-forwarded-host": TAILNET }, { "x-real-ip": "100.64.0.7" }, { via: "1.1 proxy" }]) {
+      for (const [method, path, fields] of tried(world.repo, csrf)) {
+        const answer = method === "GET" ? await world.send(path, "GET", { cookie, ...proxy })
+          : await world.send(path, "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", ...proxy }, form(fields));
+        expectRefused(answer, `${method} ${path} ${Object.keys(proxy)[0]}`);
+      }
+    }
+    expect(unchanged()).toBe(before);
+    // The sign-in page still answers there (a password signs in), as signed out.
+    expect((await world.send("/login", "GET", { cookie, "x-forwarded-for": "100.64.0.7" })).status).toBe(200);
+    // …and the first password can't be set through it: the session names no one there.
+    const set = await world.send("/password/set", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-forwarded-for": "100.64.0.7" },
+      form({ csrf, password: "a long enough password", again: "a long enough password" }));
+    expect(set.status).toBe(303);
+    expect(world.store.accountOf("alex")!.passwordSet).toBe(false);
+    // The same session from this computer: reads and the owner's own act run.
+    expect((await world.send("/chat", "GET", { cookie })).status).toBe(200);
+    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, title: "From here" });
+    expect(filed.status).toBe(303);
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE title = 'From here'").get()?.["n"]).toBe(1);
+  });
+
+  test("at a tailnet name the console admits: refused, GET and POST, and nothing changes", async () => {
+    world = await openLocalWorld({ allowedHosts: [TAILNET] });
+    const { cookie, csrf } = await world.localSession();
+    const before = unchanged();
+    for (const [method, path, fields] of tried(world.repo, csrf)) {
+      const answer = method === "GET" ? await world.send(path, "GET", { cookie, host: TAILNET })
+        : await world.send(path, "POST", { cookie, host: TAILNET, origin: `http://${TAILNET}`, "content-type": "application/x-www-form-urlencoded" }, form(fields));
+      expectRefused(answer, `${method} ${path}`);
+    }
+    expect(unchanged()).toBe(before);
+    expect((await world.send("/chat", "GET", { cookie })).status).toBe(200);
+  });
+
+  // Another device on the LAN, played by this machine's own network address (the peer is then not loopback).
+  const lan = Object.values(networkInterfaces()).flat().find(one => one !== undefined && one.family === "IPv4" && !one.internal)?.address;
+  test.skipIf(lan === undefined)("from another address (a LAN peer naming this computer's loopback Host): refused, and nothing changes", async () => {
+    world = await openLocalWorld({}, "0.0.0.0");
+    const { cookie, csrf } = await world.localSession();
+    const viaLan = (path: string, method: string, headers: Record<string, string>, body?: string) => new Promise<{ status: number; body: string; headers: Record<string, unknown> }>((resolve, reject) => {
+      const sent = httpRequest({ host: lan, port: world.port, path, method, headers: { host: `127.0.0.1:${world.port}`, connection: "close", ...headers } }, response => {
+        let text = "";
+        response.setEncoding("utf8"); response.on("data", chunk => { text += chunk; });
+        response.on("end", () => resolve({ status: response.statusCode!, body: text, headers: response.headers }));
+      });
+      sent.on("error", reject); sent.end(body);
+    });
+    const before = unchanged();
+    for (const [method, path, fields] of tried(world.repo, csrf)) {
+      const answer = method === "GET" ? await viaLan(path, "GET", { cookie })
+        : await viaLan(path, "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded" }, form(fields));
+      expectRefused(answer, `${method} ${path}`);
+    }
+    expect(unchanged()).toBe(before);
+    expect((await world.send("/chat", "GET", { cookie })).status).toBe(200);
   });
 });
 

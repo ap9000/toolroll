@@ -3,7 +3,7 @@
  * inventory, and whether a result that changed protected files may go out.
  * Completion and publication share this so neither can be the gap.
  */
-import type { Store } from "./store.js";
+import type { Run, Store } from "./store.js";
 import { readVerifiedArtifact } from "./evidence.js";
 
 /** The ledger action a person's (or lead's) completion of a result writes. */
@@ -49,19 +49,25 @@ export function changedFilesOf(store: Store, runId: number, root: string): strin
 
 /** Everything a result's branch carries: this build's changes and every build of every task it revises (a
  * revision builds on its source's head, so its branch holds the source's commits too). null when any of
- * them can't be read whole. */
-export function familyChangedFiles(store: Store, taskId: string, runId: number, root: string): string[] | null {
+ * them can't be read whole. An earlier build with no recorded diff is skipped by default; with
+ * `missing: "unknown"` (the local owner's boundary) it is skipped only when its run record proves it committed
+ * nothing, and any other one makes the whole answer unknown. */
+export function familyChangedFiles(store: Store, taskId: string, runId: number, root: string, options: { missing?: "skip" | "unknown" } = {}): string[] | null {
   const files = new Set<string>();
-  const runs = new Set<number>([runId]);
+  const runs = new Map<number, Run | null>([[runId, null]]);
   const chain = store.revisionAncestryStatus(taskId).chain;
   for (const id of chain.length === 0 ? [taskId] : chain) {
     const ref = store.lookupRef(id);
     if (ref === null) continue;
-    for (const run of store.runsFor(ref.id)) if ((run.role === "builder" || run.role === "repair") && (id !== taskId || run.id === runId)) runs.add(run.id);
+    for (const run of store.runsFor(ref.id)) if ((run.role === "builder" || run.role === "repair") && (id !== taskId || run.id === runId)) runs.set(run.id, run);
   }
-  for (const id of runs) {
+  for (const [id, run] of runs) {
     // A build that never recorded a diff contributed nothing to the branch; one whose diff can't be read counts as protected.
-    if (!store.artifactsFor(id).some(one => one.kind === "diff-stat") && id !== runId) continue;
+    // Under "unknown", a missing inventory proves nothing by itself: only a finished run that committed nothing is skipped.
+    if (!store.artifactsFor(id).some(one => one.kind === "diff-stat") && id !== runId) {
+      if (options.missing !== "unknown" || (run?.committed === false && run.finishedAt !== null)) continue;
+      return null;
+    }
     const changed = changedFilesOf(store, id, root);
     if (changed === null) return null;
     for (const file of changed) files.add(file);

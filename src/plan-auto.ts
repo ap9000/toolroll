@@ -1,6 +1,7 @@
 import type { Store } from "./store.js";
 import { releaseUnattendedRun, reserveUnattendedRun, unattendedGrantStands, type UnattendedGrant } from "./flow-unattended.js";
 import { modeTermsFromJson } from "./modes.js";
+import { currentLocalOwner } from "./local-owner.js";
 import { plannerContractOf, plannerSourceDigest } from "./planner-source.js";
 import { modeFilingCoverage, propose, quarantinedAuthor } from "./scope.js";
 
@@ -39,6 +40,9 @@ export function applyModeToNewFiling(store: Store, taskId: string, actor: string
  * planner text. Rewrites, mode renewal, expiry and revocation fail closed. */
 export function authorizePlanUnderMode(store: Store, taskId: string, actor: string, now: Date): boolean {
   return store.transact(() => {
+    // A laptop's local owner (no password) never pre-authorizes a plan under a mode, on any road (filing, the plan
+    // button, chat, the terminal): its plan waits for its own approval (local-owner slice 0).
+    if (currentLocalOwner() !== null) return false;
     const ref = store.lookupRef(taskId);
     if (ref === null || ref.repo === null || ref.plan !== "requested" || !plainPlan(store, taskId) || store.hasLiveClaim(ref.id, now)) return false;
     const mode = store.activeMode(ref.repo, now);

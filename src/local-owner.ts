@@ -285,3 +285,6 @@ export function localOwnerStandsNow(store: Pick<Store, "handle" | "accountOf" | 
 export const LOCAL_OWNER_LAPSED = "This local sign-in no longer stands. Run `toolroll open` to sign in again.";
 /** What widening a launch's confinement hears while local mode is on (plan C5). */
 export const LOCAL_MODE_CONFINES = "Turn off local mode first.";
+/** What a local owner's browser session hears from anywhere but this computer (another address, a proxy, a tailnet or
+ * LAN name): it works only on the computer running Toolroll (local-owner slice 0). */
+export const LOCAL_OWNER_ELSEWHERE = "This sign-in works only on the computer running Toolroll. To use Toolroll from here, set a password on that computer (run `toolroll password set`) and sign in with it.";

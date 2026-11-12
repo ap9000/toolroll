@@ -1916,11 +1916,12 @@ function describeApproval(approval: Approval): string {
 
 export { personProof } from "./person-proof.js";
 import { personProof } from "./person-proof.js";
+import { isProtectedWork, protectedChanges } from "./approval-policy.js";
 import { permissionPlainWords } from "./chat-terms.js";
 import { limitRecognised } from "./exhaustion.js";
 import { SUBSCRIPTION_CAPABLE } from "./keys.js";
 import { releaseCheckPurposeDigest, releaseTermsDigest, type ReleaseCheckPurpose, type ReleaseTerms } from "./contracts/release-terms.js";
-import { CHECK_ACCESS_WIDTH, autoEvidenceOf, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseAutoApproves, releaseSealProblem, releaseStateAt, type AutoEvidence, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
+import { CHECK_ACCESS_WIDTH, autoEvidenceOf, belongsToRelease, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseAutoApproves, releaseSealProblem, releaseStateAt, type AutoEvidence, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
 
 /** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
 export const machineActing = (): boolean => currentActor()?.lead === true || activeRemote() !== null;
@@ -2166,22 +2167,8 @@ const LOCAL_APPROVAL_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
  * a scout proposed are allowed.
  */
 export function localApprovalEligible(store: Store, by: string, taskId: string): { ok: true } | { ok: false; reason: LocalApprovalRefusal; message: string } {
-  const no = (reason: LocalApprovalRefusal) => ({ ok: false as const, reason, message: LOCAL_APPROVAL_WORDS[reason] });
-  if (!localModeOn(store)) return no("local-mode-off");
-  const owner = store.handle.prepare("SELECT owner FROM local_mode WHERE id = 1").get()?.["owner"];
-  if (owner !== by) return no("not-owner");
-  const scope = store.getScope(taskId);
-  if (scope === null) return no("no-scope");
-  if (deployGateScope(scope) || releaseCheckScope(scope)) return no("release");
-  const gate = store.approvalGate(taskId, by, "person");
-  if (gate.verdict !== "seal" || gate.protectedWork) return no("protected");
-  if (scope.profile == null || levelOfProfile(scope.profile) === "escalated") return no("escalated");
-  const ref = store.handle.prepare("SELECT repo, coordinator_cid FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
-  if (ref === undefined || ref["coordinator_cid"] != null) return no("coordinator");
-  // The stored level, never the launch cap: a project saved as unsandboxed is refused even though local mode confines it.
-  const stored = ref["repo"] == null ? undefined : store.handle.prepare("SELECT level FROM project_check_access WHERE repo = ?").get(ref["repo"])?.["level"];
-  if (stored === "unsandboxed" || scope.profile.checkAccess === "unsandboxed") return no("unsandboxed");
-  return { ok: true };
+  // The one rule, shared with completing a result (localWorkEligible, below).
+  return localWorkEligible(store, by, taskId, { act: "approve" });
 }
 
 // ---- Fallback chains (fallback.ts). Kept last too.
@@ -2209,4 +2196,60 @@ export function chainTermsLines(scope: Pick<Scope, "proposedChainJson">): string
       return `${at + 1}. ${CHAIN_AGENT_NAMES[entry.profile.provider] ?? entry.profile.provider} ${entry.profile.model}, ${paid ? "on an API key, which spends money, and only while the project allows paid fallback" : "its plan"}; ${permissionPlainWords(entry.profile) ?? "agent permissions not known"}. ${last ? "Last in the chain." : limitRecognised(entry.profile.provider, entry.authMode) ? "Moves on when its plan runs out." : "Won't move on: Toolroll can't yet recognise this agent running out."}`;
     }),
   ];
+}
+
+// ---- Local owner, slice 0 (docs/plans/local-owner-acts.md): one work rule for a no-password act. Kept last.
+
+/** What a local owner hears when a result isn't one it may accept without a password. */
+const LOCAL_COMPLETION_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
+  "local-mode-off": "Local mode is off, so accepting this result needs your password.",
+  "not-owner": "Only this computer's owner accepts results here without a password.",
+  "no-scope": "This task has no plan, so accepting its result needs your password.",
+  release: "Accepting a release needs your password.",
+  protected: "This result is protected work, so accepting it needs your password and a second person.",
+  escalated: "Work with wider permissions needs your password.",
+  coordinator: "Work a coordinator filed needs your password to accept.",
+  unsandboxed: "This project's checks run without a sandbox, so accepting needs your password.",
+};
+
+/** The act a local owner's work rule is read for: approving a plan, or completing (accepting) a result whose build
+ * changed `changed` (the build's own diff; null when it can't be read, which counts as protected). */
+export type LocalWorkPurpose = { act: "approve" } | { act: "complete"; changed: readonly string[] | null };
+
+/**
+ * Whether the local owner may do this act on this task without a password: ONE rule (easy-start C5, split out for
+ * local-owner slice 0), read inside the act's own transaction. Both acts refuse: local mode off or another person;
+ * release or deploy work; protected or two-person work; work a coordinator filed (or a task with no built-in record).
+ * Approving also refuses no plan, an escalated profile and a project stored as unsandboxed (what a build may do, which
+ * is what an approval agrees to). Completing reads release work from the release records too, and protected work from
+ * what the result actually changed as well as what its scope declared (v102's rule: declared paths are only a promise).
+ */
+export function localWorkEligible(store: Store, by: string, taskId: string, purpose: LocalWorkPurpose): { ok: true } | { ok: false; reason: LocalApprovalRefusal; message: string } {
+  const words = purpose.act === "approve" ? LOCAL_APPROVAL_WORDS : LOCAL_COMPLETION_WORDS;
+  const no = (reason: LocalApprovalRefusal) => ({ ok: false as const, reason, message: words[reason] });
+  if (!localModeOn(store)) return no("local-mode-off");
+  const owner = store.handle.prepare("SELECT owner FROM local_mode WHERE id = 1").get()?.["owner"];
+  if (owner !== by) return no("not-owner");
+  const scope = store.getScope(taskId);
+  if (purpose.act === "approve" && scope === null) return no("no-scope");
+  if (scope !== null && (deployGateScope(scope) || releaseCheckScope(scope))) return no("release");
+  if (purpose.act === "complete" && (belongsToRelease(store, taskId) || releaseAuthorityOfTask(store, taskId) !== null)) return no("release");
+  const ref = store.handle.prepare("SELECT repo, coordinator_cid FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
+  if (purpose.act === "approve") {
+    const gate = store.approvalGate(taskId, by, "person");
+    if (gate.verdict !== "seal" || gate.protectedWork) return no("protected");
+    if (scope!.profile == null || levelOfProfile(scope!.profile) === "escalated") return no("escalated");
+  } else if (ref !== undefined && ref["repo"] != null) {
+    // Declared (no declared paths counts as protected) or actually changed (an unreadable diff counts as changed).
+    const rules = store.approvalRules(String(ref["repo"]));
+    if ((rules.protectProject || rules.protectedPaths.length > 0)
+      && (isProtectedWork(rules, scope?.touches ?? []) || purpose.changed === null || protectedChanges(rules, purpose.changed).length > 0)) return no("protected");
+  }
+  if (ref === undefined || ref["coordinator_cid"] != null) return no("coordinator");
+  // What the build may do was agreed at its approval; a result already built is judged by what it is and changed.
+  if (purpose.act === "complete") return { ok: true };
+  // The stored level, never the launch cap: a project saved as unsandboxed is refused even though local mode confines it.
+  const stored = ref["repo"] == null ? undefined : store.handle.prepare("SELECT level FROM project_check_access WHERE repo = ?").get(ref["repo"])?.["level"];
+  if (stored === "unsandboxed" || scope!.profile!.checkAccess === "unsandboxed") return no("unsandboxed");
+  return { ok: true };
 }

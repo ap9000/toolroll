@@ -291,3 +291,33 @@ test("a revision's branch carries its source's changes, so the family's diffs de
   store.recordScopeAuthor("source", "any-digest", "sam", now);
   expect(store.requestersOf("revision").has("sam")).toBe(true);
 });
+
+test("an earlier build with no diff inventory is unknown at the local owner's boundary, unless its record proves it committed nothing", () => {
+  const root = join(dir, "evidence");
+  const now = new Date();
+  const legacy = { route: { routeDigest: "legacy", phase: "build" as const, provider: "claude", model: null, chosen: "legacy" as const } };
+  const start = (taskId: string) => store.startRun({ taskRef: store.lookupRef(taskId)!.id, leaseId: `lease-${taskId}`, runner: "b1", branch: `b-${taskId}`, worktree: `/w/${taskId}`, ...legacy, now });
+  store.createTask({ id: "quiet", title: "quiet" }, now);
+  const quiet = start("quiet");
+  const brief = storeEvidence(store, root, quiet, "revision-brief", "brief.json", Buffer.from("{}"), "revision brief", now, { captureStatus: "ok" });
+  store.createTask({ id: "after-quiet", title: "after quiet" }, now);
+  store.markRevision(store.lookupRef("after-quiet")!.id, "quiet", brief);
+  const run = start("after-quiet");
+  storeEvidence(store, root, run, "diff-stat", "terminal-diff-stat.json", Buffer.from(JSON.stringify({ filesTruncated: false, files: [{ path: "docs/x.md", added: 1, deleted: 0 }] })), "git diff --numstat", now, { captureStatus: "ok" });
+  const unknown = () => familyChangedFiles(store, "after-quiet", run, root, { missing: "unknown" });
+  // By default the missing inventory is skipped, as protected publication and the two-person rule have always read it.
+  expect(familyChangedFiles(store, "after-quiet", run, root)).toEqual(["docs/x.md"]);
+  expect(familyChangedFiles(store, "after-quiet", run, root, { missing: "skip" })).toEqual(["docs/x.md"]);
+  // Unfinished, finished without saying, or committed: what it added to the branch is unknown.
+  expect(unknown()).toBeNull();
+  store.finishRun(quiet, { outcome: "built", now });
+  expect(store.getRun(quiet)?.committed).toBeNull();
+  expect(unknown()).toBeNull();
+  store.handle.prepare("UPDATE run SET committed = 1 WHERE id = ?").run(quiet);
+  expect(unknown()).toBeNull();
+  // Only a finished run that committed nothing is skipped.
+  store.handle.prepare("UPDATE run SET committed = 0 WHERE id = ?").run(quiet);
+  expect(unknown()).toEqual(["docs/x.md"]);
+  store.handle.prepare("UPDATE run SET finished_at = NULL WHERE id = ?").run(quiet);
+  expect(unknown()).toBeNull();
+});

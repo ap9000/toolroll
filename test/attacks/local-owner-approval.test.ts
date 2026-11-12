@@ -23,6 +23,8 @@ import { fencedCommands } from "../../src/invoke.js";
 import { run as runCommand } from "../../src/exec.js";
 import { checkAccessRunsAs } from "../../src/check-access.js";
 import { withActor } from "../../src/actor.js";
+import { authorizePlanUnderMode } from "../../src/plan-auto.js";
+import { modeDigestOf, modeTermsJson, presetTerms } from "../../src/modes.js";
 
 const now = new Date("2026-11-03T12:00:00Z");
 let root: string, repo: string, store: Store, who: VerifiedApprover, thread: number, session: number, serial = 0;
@@ -179,6 +181,29 @@ describe("a local owner's approval", () => {
     expect(localApprovalEligible(store, "alex", id)).toMatchObject({ ok: false, reason: "coordinator" });
     expect(asLocalOwner(owner("approve-plan"), () => approve(store, id, "alex", now, store.getScope(id)!.digest, ""))).toMatchObject({ ok: false, reason: "policy" });
     expect(localApprovalEligible(store, "robin", id)).toMatchObject({ ok: false, reason: "not-owner" });
+  });
+});
+
+describe("plan pre-authorization under a mode (local-owner slice 0, Codex finding d)", () => {
+  test("a local owner's chain never pre-authorizes a plan, whatever its act; outside it the mode's signer still does", () => {
+    // A mode alex signed earlier (with a password) that approves filings and their unchanged plans by itself.
+    const terms = { ...presetTerms("standard", new Date(now.getTime() + 86_400_000).toISOString()), autoApproveFiling: true, planAuto: true };
+    store.signMode({ repo, name: terms.name, signedBy: "alex", digest: modeDigestOf(terms), termsJson: modeTermsJson(terms), publication: terms.publication, absoluteExpiry: terms.absoluteExpiry }, now);
+    const id = task();
+    propose(store, { now, taskId: id, goal: "Make the footer link work.", touches: ["src/footer.ts"], acceptance: [{ id: "c1", statement: "The link works.", how: null, evidence: ["check"] }] });
+    expect(store.requestPlan(store.lookupRef(id)!.id, now).ok).toBe(true);
+    const armed = () => store.handle.prepare("SELECT COUNT(*) AS n FROM plan_authorization WHERE task_id = ?").get(id)?.["n"];
+    // Every act a local owner's request or terminal command can carry: filing (the road a browser filing takes), the
+    // plan's own approval, and a read.
+    for (const act of ["file-task", "approve-plan", "build-now", "read"] as const) {
+      for (const transport of ["browser", "terminal"] as const) {
+        expect(asLocalOwner(owner(act, transport), () => authorizePlanUnderMode(store, id, "alex", now)), `${act} ${transport}`).toBe(false);
+      }
+    }
+    expect(armed()).toBe(0);
+    // The same call from the mode's signer outside any local owner's chain (a password session): armed.
+    expect(authorizePlanUnderMode(store, id, "alex", now)).toBe(true);
+    expect(armed()).toBe(1);
   });
 });
 

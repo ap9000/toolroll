@@ -8,7 +8,8 @@ import { replacedWords } from "./task-status.js";
 import { COMPLETER_ACTOR, COMPLETION_ACTION, COMPLETION_BY_MACHINE, COMPLETION_BY_PERSON, familyChangedFiles, landedReasonOf, personCompletionOwed } from "./result-completion.js";
 import { homedir } from "node:os";
 import { readSchemaVersion, refArchived, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
-import { approvalOf, liveReleaseOf, machineActing } from "./scope.js";
+import { approvalOf, liveReleaseOf, localWorkEligible, machineActing } from "./scope.js";
+import { LOCAL_OWNER_LAPSED, currentLocalOwner, localOwnerInFlight, localOwnerRefusal, localOwnerStandsNow } from "./local-owner.js";
 import { openWorkDecisionOf, taskWorkSummaryOf, workDecisionAction, type WorkAction, type WorkSummaryAccess } from "./work-summary.js";
 import { evidenceRoot, readVerifiedArtifact, readVerifiedReport, verifyArtifact } from "./evidence.js";
 import { sweepIfMoved } from "./sweep-gate.js";
@@ -512,6 +513,10 @@ function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDi
   // A release task completes only while its release approval stands for it (release-once.md, liveReleaseOf).
   const release = liveReleaseOf(store, current.receipt!.taskId, "complete", now);
   if (release.applies && !release.ok) return { ok: false, reason: "release", message: `This release can't be completed: ${release.why}.` };
+  // A laptop's local owner (no password) completes ordinary work only: its exact act, still standing, and the one work
+  // rule (scope.ts localWorkEligible), read here in the completion's own transaction, on every road that completes.
+  const local = localCompletionRefusal(store, actor, [receipt.taskId, current.rootId], receipt.runId, root);
+  if (local !== null) return local;
   // Who is completing, from trusted context (approval policy §1.7a): a person, or a machine credential (the lead's
   // token, a remote API run) that may complete ordinary work but is never the second person on protected work.
   const person = actor.startsWith("operator:") && !machineActing() ? actor.slice("operator:".length) : null;
@@ -612,6 +617,9 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
       if (receipt === null || (input.runId !== null && receipt.runId !== input.runId) || !/^[a-f0-9]{64}$/.test(input.receiptDigest) || receipt.digest !== input.receiptDigest) {
         return { ok: false, reason: "stale", message: "This result changed. Open the current result before accepting it." };
       }
+      // A local owner's acceptance: the same rule as its completion, before any acceptance is written.
+      const local = localCompletionRefusal(store, `operator:${who.name}`, [receipt.taskId, taskId, before.rootId], receipt.runId, root);
+      if (local !== null) return local;
       // Already complete, or nothing owed: the plain completion of the receipt as read.
       const owed = before.state === "ready-to-check" ? owedAcceptance(receipt, before.readiness?.blockers ?? []) : null;
       // An exception is accepted only with its reason: never a completion that skips it.
@@ -691,3 +699,27 @@ export function assignmentUpdates(store: Store, now: Date, access: AssignmentAcc
 
 /** The waits of a build Toolroll is still proving stopped by itself (needs-you.ts processNeedOf). */
 const STOP_WAITS: ReadonlySet<string> = new Set(["build-finishing", "build-checking", "build-stopping"]);
+
+/**
+ * Local-owner slice 0 (docs/plans/local-owner-acts.md): when a laptop's local owner (no password) is the one completing
+ * or accepting, the refusal it hears, or null (anyone else, or an ordinary result it may complete). The owner must be
+ * in flight, still standing, acting as exactly `complete-task`, completing as itself; and every task named (the result's
+ * own and its family's root) must pass the shared work rule — no release, no protected work (declared or actually
+ * changed), nothing a coordinator filed. Read inside the completion's transaction.
+ */
+function localCompletionRefusal(store: Store, actor: string, taskIds: readonly string[], runId: number, root: string): { ok: false; reason: string; message: string } | null {
+  const local = currentLocalOwner();
+  if (local === null) return null;
+  if (!localOwnerInFlight(local) || !localOwnerStandsNow(store, local)) return { ok: false, reason: "local-owner", message: LOCAL_OWNER_LAPSED };
+  const instead = localOwnerRefusal(store.accountOf(local.account)?.passwordSet === true, "/");
+  const then = instead.action === "Set a password" ? "Set a password first: run `toolroll password set`." : instead.message;
+  if (local.act !== "complete-task" || actor !== `operator:${local.account}`) return { ok: false, reason: "local-owner", message: `This needs your password. ${then}` };
+  // An earlier build in the family whose inventory is missing, and that its record doesn't prove committed nothing, is
+  // unknown here, and unknown counts as protected (localWorkEligible).
+  const changed = familyChangedFiles(store, taskIds[0]!, runId, root, { missing: "unknown" });
+  for (const taskId of new Set(taskIds)) {
+    const eligible = localWorkEligible(store, local.account, taskId, { act: "complete", changed });
+    if (!eligible.ok) return { ok: false, reason: "local-owner", message: `${eligible.message} ${then}` };
+  }
+  return null;
+}

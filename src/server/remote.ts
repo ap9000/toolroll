@@ -20,7 +20,7 @@ import { respond,type ServeOptions } from "./http.js";
 import { type Who } from "./session.js";
 
 export interface RemoteRuntime {
-  identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; }) => Who | null;
+  identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; elsewhere?: boolean; }) => Who | null;
   store: Store;
   admitPasswordSource: (request: IncomingMessage) => Admission;
   admitBearer: (request: IncomingMessage, actor: { name: string; principal?: Principal; }) => Admission;

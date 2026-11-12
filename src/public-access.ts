@@ -112,3 +112,17 @@ export function plainHttpRefusal(transport: Transport, pathname: string, authori
 export function hstsFor(publicHost: string | null, host: string | undefined, transport: Transport): string | null {
   return publicHost !== null && host === publicHost && transport.https ? HSTS_VALUE : null;
 }
+
+/** Any forwarding header at all (Forwarded, X-Forwarded-*, X-Real-IP, Via, …): a sign of a proxy in front. */
+const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
+
+/** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no sign of a proxy —
+ * any forwarding header at all disqualifies the request. serve.ts's fromThisComputer, and guards.ts's check on every
+ * request a local owner's session makes (local-owner slice 0), read it here. */
+export function requestFromThisComputer(request: { socket: { remoteAddress?: string | undefined }; headers: Record<string, string | string[] | undefined> }): boolean {
+  const peer = request.socket.remoteAddress ?? "";
+  if (!LOOPBACK_PEERS.has(peer)) return false;
+  for (const name of Object.keys(request.headers)) if (PROXY_HEADER.test(name)) return false;
+  const host = request.headers["host"];
+  return /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(typeof host === "string" ? host : "");
+}

@@ -21,8 +21,6 @@ import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
 import { accessKey, countsKey, indexKey, projectSummaryOf, RevisionCache, summaryKey } from './console-chrome.js';
 import { usageChipOf } from './limits-ui.js';
-/** Any header a proxy adds: a request carrying one is never "from this computer" (password freshness, one-time links). */
-const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
 /** How often the background checks look at what is due (docs/plans/get-side-effects.md), and how often this
  * computer's agent sign-ins are asked again. */
 const BACKGROUND_CHECKS_MS = 30_000;
@@ -156,7 +154,7 @@ rowVisible
 import { noteSignInProbe,signInNotices } from "./provider-auth.js";
 import { createConnectionChecker,type ProviderConnection } from "./provider-connection.js";
 import { ALL_CREDENTIAL_ENV,type ProviderId } from "./provider.js";
-import { hstsFor,LOOPBACK_PEERS,plainHttpRefusal,transportOf } from "./public-access.js";
+import { hstsFor,LOOPBACK_PEERS,plainHttpRefusal,requestFromThisComputer,transportOf } from "./public-access.js";
 import { attachReadExecutor,defaultReadWorkers,ReadExecutor } from "./read-executor.js";
 import { cachedRelease,isNewer,runnerVersions,updateChecksOff,type Release } from "./releases.js";
 import { limitWords,FLUSH_MS as REQUEST_BUDGET_FLUSH_MS,RequestBudget,SOURCE_BUDGET_DEFAULTS,SourceAdmission,type Admission } from "./request-budget.js";
@@ -188,7 +186,7 @@ import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
 import { readPurpose, requestContext } from "./server/request-context.js";
 import { inPlaceRoute, prefetchRoute } from "./server/in-place.js";
-import { asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
+import { LOCAL_OWNER_ELSEWHERE,asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
 import { defaultAgentOf,fillDefaultRouting } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
 import { BODY_CAP,form,loginHref,passwordSetNext,refusalNext,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
@@ -405,13 +403,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** v147: this console start's key epoch (easy-start C2): the browser-key wave binds each session's mutation key to it. */
   const keyEpoch = options.keyEpoch ?? randomBytes(16).toString("hex");
   /** This computer, and nothing in front of it: a loopback peer that names a loopback address, with no sign of a proxy —
-   * any forwarding header at all (Forwarded, X-Forwarded-*, X-Real-IP, Via, …) disqualifies the request. */
-  const fromThisComputer = (request: IncomingMessage): boolean => {
-    const peer = request.socket.remoteAddress ?? "";
-    if (!LOOPBACK_PEERS.has(peer)) return false;
-    for (const name of Object.keys(request.headers)) if (PROXY_HEADER.test(name)) return false;
-    return /^(localhost|127\.0\.0\.1|\[::1\]):[0-9]{1,5}$/.test(request.headers.host ?? "");
-  };
+   * any forwarding header at all (Forwarded, X-Forwarded-*, X-Real-IP, Via, …) disqualifies the request. The one reading
+   * (public-access.ts), which guards.ts also applies to every request a local owner's session makes. */
+  const fromThisComputer = (request: IncomingMessage): boolean => requestFromThisComputer(request);
   /**
    * Cockpit B2: a request's password-freshness facts — the one place they are made (scope.ts honours them). Every
    * reader looks at the session as it is at the moment of the act, never a snapshot taken before the body arrived:
@@ -897,9 +891,17 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     };
     // One source charge before password proof and one account/token charge after it, including GET /login.
     if (refuseBudget(admitPasswordSource(request))) return;
-    const refusedToken: { principal?: Principal } = {};
+    const refusedToken: { principal?: Principal; elsewhere?: boolean } = {};
     const who = identify(request, touch, edgeRoute?.domain === 'live', refusedToken);
     timeline.mark("signed in");
+    // Local-owner slice 0: a local owner's session presented from anywhere but this computer (another address, a
+    // proxy, a tailnet or LAN name) signs in no one and changes nothing. Sign-in pages still answer (a password signs
+    // in there); everything else is refused in plain words.
+    if (refusedToken.elsewhere === true && edgeRoute?.domain !== 'people') {
+      request.resume();
+      response.setHeader("x-toolroll-refused", "local-owner-elsewhere");
+      return respond(response, 403, "text/plain; charset=utf-8", LOCAL_OWNER_ELSEWHERE);
+    }
     if (refusedToken.principal !== undefined) {
       if (refuseBudget(requestBudget.admit(refusedToken.principal.tokenId, "api"))) return;
       if (method === "POST") {

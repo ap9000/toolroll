@@ -28,6 +28,7 @@ import { requestContext } from "./request-context.js";
 import { refuse } from "./chrome.js";
 import { matchTaskPath } from "./http.js";
 import { PersistentSessions,SESSION_COOKIE,sessionWithinLifetime,type Session,type Who } from "./session.js";
+import { requestFromThisComputer } from "../public-access.js";
 /** Shared browser, credential and project guards. Runtime access is lazy to preserve server initialization order. */
 export interface GuardsRuntime {
   store: Store;
@@ -300,7 +301,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
 
   // ---- identity ------------------------------------------------------------
 
-  function identify(request: IncomingMessage, touch = true, limited = false, refusedToken?: { principal?: Principal }): Who | null {
+  function identify(request: IncomingMessage, touch = true, limited = false, refusedToken?: { principal?: Principal; elsewhere?: boolean }): Who | null {
     // v101: an API token. Wrong ones spend the address's tries like a wrong password; expired or revoked ones, and a removed account's, name no one.
     const presented = /^Bearer (so_\S+)$/.exec(request.headers.authorization ?? "")?.[1];
     if (presented !== undefined) {
@@ -338,7 +339,15 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const cookies = request.headers.cookie ?? "";
     const match = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([0-9a-f]{64})`).exec(cookies);
     if (match === null) return null;
-    const session = lookupSession(match[1] as string, touch);
+    // Local-owner slice 0: a local owner's session works only from this computer — a loopback peer naming a loopback
+    // Host, with no forwarding header — on every request, not only when it was made. From anywhere else it signs in
+    // no one, and is not touched (refusedToken.elsewhere says why, for the refusal).
+    const found = lookupSession(match[1] as string, false);
+    if (found !== null && found.authority !== "full" && !requestFromThisComputer(request)) {
+      if (refusedToken !== undefined) refusedToken.elsewhere = true;
+      return null;
+    }
+    const session = touch && found !== null ? lookupSession(match[1] as string, true) : found;
     return session === null ? null : { name: session.name, via: "cookie", session, role: session.role, authority: session.authority };
   }
 
