@@ -44,11 +44,12 @@ toolroll
 ```
 
 Toolroll opens in your terminal and runs while that window is open. No
-password and no login file: on your own computer you're already in. Pick an
-agent, a project (or the sample one) and a first task; approve the plan, and
-the result comes back **Ready**. Press `w` for the browser, or run
-`toolroll --web`. To look around first, `toolroll demo` opens a seeded
-sandbox with no model calls and no spend.
+password and no login file: on your own computer you're already in. Started
+in a git repository, that repository is your project; press `n` for a first
+task, approve the plan, and the result comes back **Ready**. Elsewhere, add a
+project with `toolroll repos add <folder>`, or open the browser (press `w`, or
+run `toolroll --web`), which also offers a sample project. To look around
+first, `toolroll demo` opens a seeded sandbox with no model calls and no spend.
 
 **Letting agents work on their own.** Approving work you start on this
 computer needs no password. Hands-off modes, merging, releasing and most
