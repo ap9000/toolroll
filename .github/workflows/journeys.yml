@@ -45,14 +45,39 @@ jobs:
           cache: npm
       # The Linux fence's tools, as the unit shards set them up (agents in the journeys run fenced), and sqlite3 for the
       # journeys' own database reads.
-      - timeout-minutes: 8
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep sqlite3
+      # Ubuntu's mirrors fail for minutes at a time (86% of failed CI jobs in Oct–Nov 2026 were this step). Bounded
+      # retries inside the step's limit: the image's package lists first, then up to three refresh-and-install attempts,
+      # each under `timeout`. The tools are checked here, so a missing one fails setup, not a test. Kept inline (no
+      # composite action): it runs as root, and a local action would come from the change's own checkout.
+      - name: Linux tools, with bounded retries
+        timeout-minutes: 8
+        run: |
+          pkgs="bubblewrap socat ripgrep sqlite3"
+          have() { for b in bwrap socat rg sqlite3; do command -v "$b" >/dev/null || return 1; done; }
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          have || timeout 60 $apt install -y --no-install-recommends $pkgs || true
+          for attempt in 1 2 3; do
+            have && break
+            sudo dpkg --configure -a || true
+            timeout 60 $apt update || echo "::warning::Linux tools: refreshing the package lists failed, trying the install anyway"
+            timeout 60 $apt install -y --no-install-recommends $pkgs && break
+            echo "::warning::Linux tools: attempt $attempt failed, retrying"; sleep 10
+          done
+          have || { echo "::error::Linux tools could not be installed: Ubuntu's package servers did not answer"; exit 1; }
+          bwrap --version && socat -V | head -2 | tail -1 && rg --version | head -1
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build
       # Playwright isn't a dependency (scripts/e2e-kit.mjs loadPlaywright finds npx's copy): pinned, with its Chromium.
-      - timeout-minutes: 8
-        run: npx -y playwright@1.64.1 install --with-deps chromium
+      # The same bounded retries: `--with-deps` also goes to Ubuntu's mirrors.
+      - name: Playwright's Chromium, with bounded retries
+        timeout-minutes: 8
+        run: |
+          for attempt in 1 2 3; do
+            timeout 140 npx -y playwright@1.64.1 install --with-deps chromium && exit 0
+            echo "::warning::Playwright install: attempt $attempt failed, retrying"; sleep 10
+          done
+          exit 1
       # Scripted failures are final (no retry hides one) and one failed group stops no other, as in the release check.
       # Every group with scripted journeys of its own runs here, the same groups the release check runs on a Mac: the
       # mail group's GreenMail runs in this runner's Docker, and onboarding drives util-linux's `script` (app-e2e.mjs

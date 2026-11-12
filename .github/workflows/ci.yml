@@ -84,8 +84,26 @@ jobs:
           cache: npm
       # The sandbox runtime's tools, and unprivileged user namespaces (ubuntu-24.04's AppArmor default refuses them),
       # as the linux fence job sets them up: flows' scripts and tools' servers run in the real Linux fence here.
-      - timeout-minutes: 8
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
+      # Ubuntu's mirrors fail for minutes at a time (86% of failed CI jobs in Oct–Nov 2026 were this step). Bounded
+      # retries inside the step's limit: the image's package lists first, then up to three refresh-and-install attempts,
+      # each under `timeout`. The tools are checked here, so a missing one fails setup, not a test. Kept inline (no
+      # composite action): it runs as root, and a local action would come from the change's own checkout.
+      - name: Linux tools, with bounded retries
+        timeout-minutes: 8
+        run: |
+          pkgs="bubblewrap socat ripgrep"
+          have() { for b in bwrap socat rg; do command -v "$b" >/dev/null || return 1; done; }
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          have || timeout 60 $apt install -y --no-install-recommends $pkgs || true
+          for attempt in 1 2 3; do
+            have && break
+            sudo dpkg --configure -a || true
+            timeout 60 $apt update || echo "::warning::Linux tools: refreshing the package lists failed, trying the install anyway"
+            timeout 60 $apt install -y --no-install-recommends $pkgs && break
+            echo "::warning::Linux tools: attempt $attempt failed, retrying"; sleep 10
+          done
+          have || { echo "::error::Linux tools could not be installed: Ubuntu's package servers did not answer"; exit 1; }
+          bwrap --version && socat -V | head -2 | tail -1 && rg --version | head -1
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # docs/plans/trusted-release-reports.md, H1: every phase that loads the candidate's code (install, typecheck, the
       # build's Tailwind plugins, the tests) runs as a user of its own, with no sudo, in a copy of the checkout.
