@@ -227,6 +227,8 @@ export function releaseBaselineRecord(store: Store, repo: string): { recorded: f
   return { recorded: true, sha: typeof ref === "string" && SHA.test(ref) ? ref : null };
 }
 
+/** How long the change list's settings check may take before the list is unread. */
+export const CONFIG_LIST_MS = 60_000;
 /** The commits after `from` up to `to`, as verified Git objects only, from the project's recorded Git directory: the
  * release coordinator's checkout config allowlist first, then commit-extract's verified range (every commit hashed here,
  * a shallow boundary, grafts or replacement refs refused, and the range proved to stop only in the last release's own
@@ -242,9 +244,12 @@ export function readCommitsBetween(repo: string, from: string, to: string): { ok
   } catch { return { ok: false, why: "the project's Git folder can't be read" }; }
   const tools = releaseTools();
   const env = { ...releaseGitEnv(), PATH: RELEASE_PATH };
-  const listing = spawnSync(tools.git, [`--git-dir=${gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env, encoding: "utf8", timeout: 15_000 });
+  // The list's first Git call took over 15 s on GitHub's busy macOS runners (2026-11-12, "timed out after 15 s"; the
+  // same call takes 0.1 s on an idle Mac), and the card lost its change list; the verified range's own Git calls allow
+  // far longer. One minute, then the list is unread, as before.
+  const listing = spawnSync(tools.git, [`--git-dir=${gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env, encoding: "utf8", timeout: CONFIG_LIST_MS });
   if (listing.status !== 0) {
-    const how = (listing.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ? "timed out after 15 s"
+    const how = (listing.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ? `timed out after ${CONFIG_LIST_MS / 1000} s`
       : listing.signal !== null ? `stopped by ${listing.signal}` : listing.error !== undefined ? "couldn't start" : `exited ${listing.status}`;
     return { ok: false, why: `Git couldn't list the project's settings (${how})` };
   }
