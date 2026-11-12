@@ -34,7 +34,8 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['task list', args('', 'state view limit cursor')],
   ['task show', args('id:task')],
   ['task wait', args('id:task', 'timeout')],
-  ['task complete', args('task:task', 'digest', { run: 'run', 'pull-request': 'refused' })],
+  // --checked and --reason are the terminal's local owner's own (a person's check is never an API token's): refused.
+  ['task complete', args('task:task', 'digest', { run: 'run', 'pull-request': 'refused', checked: 'refused', reason: 'refused' })],
   ['task revise', args('task:task', 'feedback source key', { run: 'run' })],
   ['task state', args('id:task state', 'key reason', { 'replaced-by': 'task' })],
   ['task block', args('id:task', 'key', { on: 'task' })],
@@ -47,7 +48,8 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['task continue', args('id:task', 'request key', { run: 'run' })],
   ['task assign', args('id:task', 'key runner anyone')],
   ['task scope', args('id:task', 'key goal not touches budget-usd risk acceptance candidate model provider repair-model')],
-  ['task plan', args('id:task', 'key provider model')],
+  // --digest is the terminal's local owner's own (its plan request binds to the source it read): refused remotely.
+  ['task plan', args('id:task', 'key provider model', { digest: 'refused' })],
   ['task hold', args('id:task', 'key reason until')],
   ['task unhold', args('id:task', 'key')],
   ['task require', args('id:task', 'key cap require')],

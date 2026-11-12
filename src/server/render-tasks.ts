@@ -1608,6 +1608,12 @@ export function taskBodyParts(data: {
   policyHold?: string | null;
   approvalRules?: { words: string; votes: string[]; needsTwo: boolean } | null;
   plan: "requested" | "drafted" | null;
+  /** Local-owner slice 2: the planning source this page read (local-owner-acts.ts planSourceOf), which the plan button
+   * posts so a local owner's request binds to exactly it. Null when it can't be read. */
+  planSource?: string | null;
+  /** Local-owner slice 3: the build and approved plan this page read (local-owner-acts.ts retryPinsOf), which Retry posts
+   * so a local owner's retry binds to exactly them. */
+  retryPins?: { run: number; digest: string } | null;
   planDocument: string | null;
   planAuto?: boolean;
   /** Hash of the verified plan artifact currently shown. */
@@ -2604,9 +2610,9 @@ export function taskBodyParts(data: {
   const cardRetries = task.state === "failed" && data.assignment != null && data.csrf !== "";
   const primaryAct =
     stopControlsActive || cardRetries ? null : stalled && !data.claimed
-      ? { html: act("requeue", "Retry, keeping the branch and workspace"), why: "Clears the repeated failures and queues the task again. The branch and workspace are kept.", whyClass: "retry" }
+      ? { html: act("requeue", "Retry, keeping the branch and workspace", data.retryPins == null ? {} : { run: String(data.retryPins.run), digest: data.retryPins.digest }), why: "Clears the repeated failures and queues the task again. The branch and workspace are kept.", whyClass: "retry" }
       : canPlan
-        ? { html: act("plan", "plan first"), why: "plan first sends an agent to read the project, ask you questions and propose a plan. Nothing builds until you approve it.", whyClass: "plan" }
+        ? { html: act("plan", "plan first", data.planSource == null ? {} : { source: data.planSource }), why: "plan first sends an agent to read the project, ask you questions and propose a plan. Nothing builds until you approve it.", whyClass: "plan" }
         : data.plan === "requested"
           ? null
         : task.state === "queued" && !data.claimed && (data.position?.position ?? 1) > 1
@@ -2987,9 +2993,9 @@ export function taskBodyParts(data: {
   };
   // Build again, in place, names its form after the card's own act.
   const rebuild = data.csrf !== "" && data.assignment?.primaryAction?.code === "retry-task" && data.assignment.need != null && "key" in data.assignment.need && data.assignment.need.key === "rebuild"
-    ? { action: `${taskHref(data.assignment.rootId)}/requeue` } : null;
+    ? { action: `${taskHref(data.assignment.rootId)}/requeue`, pins: data.retryPins ?? null } : null;
   const retry = failedCard && task.state === "failed" && !data.claimed && !stopControlsActive && data.csrf !== ""
-    ? { action: `${taskHref(task.id)}/requeue`, ...(data.failure == null ? {} : { note: retryNoteOf(data.failure.suggestion) }) } : null;
+    ? { action: `${taskHref(task.id)}/requeue`, pins: data.retryPins ?? null, ...(data.failure == null ? {} : { note: retryNoteOf(data.failure.suggestion) }) } : null;
   // Run checks happens in place: a status row's Run checks posts here and comes back; with nothing to run, the row offers nothing.
   const runChecks = data.runChecks ?? null;
   // A row's link to a result in Chat opens that result's own page instead: Chat would only lead back here.

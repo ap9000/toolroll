@@ -497,7 +497,7 @@ export type ReviewCockpitView = {
   /** The demo database: no check runs here, and the Checks row says so. */
   demo?: boolean;
   /** A build that didn't deliver a result: what it missed, the suggestion, and Retry when the task can be retried here. */
-  failure?: (FailureExplanation & { retry: { action: string; note: string } | null; acceptAnyway?: { action: string; run: number } | null }) | null;
+  failure?: (FailureExplanation & { retry: { action: string; note: string; pins?: { run: number; digest: string } | null } | null; acceptAnyway?: { action: string; run: number } | null }) | null;
 };
 
 /** The receipt's own proof-state word, so the cockpit and the task page

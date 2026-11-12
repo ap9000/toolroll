@@ -2146,7 +2146,7 @@ export function freshUntil(at: string): string | null {
 
 // ---- easy-start C5: what a local owner may approve ------------------------------------------------------------------
 
-export type LocalApprovalRefusal = "local-mode-off" | "not-owner" | "no-scope" | "release" | "protected" | "escalated" | "coordinator" | "unsandboxed";
+export type LocalApprovalRefusal = "local-mode-off" | "not-owner" | "no-scope" | "release" | "protected" | "escalated" | "coordinator" | "unsandboxed" | "imported";
 const LOCAL_APPROVAL_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
   "local-mode-off": "Local mode is off: approve with your password.",
   "not-owner": "Only this computer's owner approves here without a password.",
@@ -2156,6 +2156,8 @@ const LOCAL_APPROVAL_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
   escalated: "Work with wider permissions needs your password.",
   coordinator: "Work a coordinator filed needs your password.",
   unsandboxed: "This project's checks run without a sandbox, so approving needs your password.",
+  // Not an approve refusal (approve keeps today's rule); the type needs words for it.
+  imported: "A task from outside needs your password.",
 };
 
 /**
@@ -2210,11 +2212,37 @@ const LOCAL_COMPLETION_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
   escalated: "Work with wider permissions needs your password.",
   coordinator: "Work a coordinator filed needs your password to accept.",
   unsandboxed: "This project's checks run without a sandbox, so accepting needs your password.",
+  // Not a completion refusal (completion keeps slice 0's rule); the type needs words for it.
+  imported: "A task from outside needs your password to accept.",
+};
+/** What a local owner hears when a task isn't one it may ask a plan for without a password (local-owner slice 2). */
+const LOCAL_PLAN_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
+  "local-mode-off": "Local mode is off, so asking for a plan needs your password.",
+  "not-owner": "Only this computer's owner asks for plans here without a password.",
+  "no-scope": "This task has nothing to plan yet.",
+  release: "Planning a release needs your password.",
+  protected: "This is protected work, so planning it needs your password.",
+  escalated: "Work with wider permissions needs your password to plan.",
+  coordinator: "Work a coordinator filed needs your password to plan.",
+  unsandboxed: "This project's checks run without a sandbox, so planning needs your password.",
+  imported: "A task from outside needs your password to plan.",
+};
+/** What a local owner hears when a build isn't one it may retry without a password (local-owner slice 3). */
+const LOCAL_RETRY_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
+  "local-mode-off": "Local mode is off, so retrying needs your password.",
+  "not-owner": "Only this computer's owner retries builds here without a password.",
+  "no-scope": "This task has no approved plan to build again.",
+  release: "Retrying a release needs your password.",
+  protected: "This is protected work, so retrying it needs your password.",
+  escalated: "Work with wider permissions needs your password to retry.",
+  coordinator: "Work a coordinator filed needs your password to retry.",
+  unsandboxed: "This project's checks run without a sandbox, so retrying needs your password.",
+  imported: "A task from outside needs your password to retry.",
 };
 
 /** The act a local owner's work rule is read for: approving a plan, or completing (accepting) a result whose build
  * changed `changed` (the build's own diff; null when it can't be read, which counts as protected). */
-export type LocalWorkPurpose = { act: "approve" } | { act: "complete"; changed: readonly string[] | null };
+export type LocalWorkPurpose = { act: "approve" } | { act: "complete"; changed: readonly string[] | null } | { act: "plan" } | { act: "retry" };
 
 /**
  * Whether the local owner may do this act on this task without a password: ONE rule (easy-start C5, split out for
@@ -2223,22 +2251,33 @@ export type LocalWorkPurpose = { act: "approve" } | { act: "complete"; changed: 
  * Approving also refuses no plan, an escalated profile and a project stored as unsandboxed (what a build may do, which
  * is what an approval agrees to). Completing reads release work from the release records too, and protected work from
  * what the result actually changed as well as what its scope declared (v102's rule: declared paths are only a promise).
+ * Asking for a plan (local-owner slice 2) reads approve's rule for a task that may have no scope yet (no declared paths
+ * count as protected; the task's own permission mode counts as escalated), the release records too, and also refuses a
+ * task from outside (an imported issue): a new act, so no existing act changes. Retrying (slice 3) is approve's rule
+ * exactly (work the owner could approve again now), plus the release records and a task from outside.
  */
 export function localWorkEligible(store: Store, by: string, taskId: string, purpose: LocalWorkPurpose): { ok: true } | { ok: false; reason: LocalApprovalRefusal; message: string } {
-  const words = purpose.act === "approve" ? LOCAL_APPROVAL_WORDS : LOCAL_COMPLETION_WORDS;
+  const words = purpose.act === "approve" ? LOCAL_APPROVAL_WORDS : purpose.act === "complete" ? LOCAL_COMPLETION_WORDS : purpose.act === "plan" ? LOCAL_PLAN_WORDS : LOCAL_RETRY_WORDS;
   const no = (reason: LocalApprovalRefusal) => ({ ok: false as const, reason, message: words[reason] });
   if (!localModeOn(store)) return no("local-mode-off");
   const owner = store.handle.prepare("SELECT owner FROM local_mode WHERE id = 1").get()?.["owner"];
   if (owner !== by) return no("not-owner");
   const scope = store.getScope(taskId);
-  if (purpose.act === "approve" && scope === null) return no("no-scope");
+  if ((purpose.act === "approve" || purpose.act === "retry") && scope === null) return no("no-scope");
   if (scope !== null && (deployGateScope(scope) || releaseCheckScope(scope))) return no("release");
-  if (purpose.act === "complete" && (belongsToRelease(store, taskId) || releaseAuthorityOfTask(store, taskId) !== null)) return no("release");
-  const ref = store.handle.prepare("SELECT repo, coordinator_cid FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
-  if (purpose.act === "approve") {
+  if (purpose.act !== "approve" && (belongsToRelease(store, taskId) || releaseAuthorityOfTask(store, taskId) !== null)) return no("release");
+  const ref = store.handle.prepare("SELECT repo, coordinator_cid, permission_mode FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
+  // Retrying spends again under an existing yes: only on work the owner could approve again now (approve's own rule).
+  if (purpose.act === "approve" || purpose.act === "retry") {
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict !== "seal" || gate.protectedWork) return no("protected");
     if (scope!.profile == null || levelOfProfile(scope!.profile) === "escalated") return no("escalated");
+  } else if (purpose.act === "plan") {
+    // Approve's rule, read for a task that may have no scope yet: protected or two-person work (no declared paths count
+    // as protected), and an escalated profile or task-level permission mode.
+    const gate = store.approvalGate(taskId, by, "person");
+    if (gate.verdict !== "seal" || gate.protectedWork) return no("protected");
+    if ((scope?.profile != null && levelOfProfile(scope.profile) === "escalated") || ref?.["permission_mode"] === "bypassPermissions") return no("escalated");
   } else if (ref !== undefined && ref["repo"] != null) {
     // Declared (no declared paths counts as protected) or actually changed (an unreadable diff counts as changed).
     const rules = store.approvalRules(String(ref["repo"]));
@@ -2248,8 +2287,10 @@ export function localWorkEligible(store: Store, by: string, taskId: string, purp
   if (ref === undefined || ref["coordinator_cid"] != null) return no("coordinator");
   // What the build may do was agreed at its approval; a result already built is judged by what it is and changed.
   if (purpose.act === "complete") return { ok: true };
+  // Asking for a plan (a new act, so no behaviour changes): never a task from outside (a GitHub import, or a revision of one).
+  if ((purpose.act === "plan" || purpose.act === "retry") && issueImported(store, taskId)) return no("imported");
   // The stored level, never the launch cap: a project saved as unsandboxed is refused even though local mode confines it.
   const stored = ref["repo"] == null ? undefined : store.handle.prepare("SELECT level FROM project_check_access WHERE repo = ?").get(ref["repo"])?.["level"];
-  if (stored === "unsandboxed" || scope!.profile!.checkAccess === "unsandboxed") return no("unsandboxed");
+  if (stored === "unsandboxed" || scope?.profile?.checkAccess === "unsandboxed") return no("unsandboxed");
   return { ok: true };
 }

@@ -238,7 +238,11 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: 'token-env', takesValue: true, meaning: 'scoped coordinator credential environment variable' },
       { name: 'token-file', takesValue: true, meaning: 'scoped coordinator credential file; defaults to selected project reference' },
       ...(action === 'complete' ? [{ name: 'digest', takesValue: true, meaning: 'exact receipt from assignment show; required for JSON or scoped agents' },
-        { name: 'pull-request', takesValue: false, meaning: "also open the result's pull request from that commit, as the console's Complete does; an approver's sign-in (--as/--token), never a scoped credential; refuses with pull-requests-off and the setup command" }]
+        { name: 'pull-request', takesValue: false, meaning: "also open the result's pull request from that commit, as the console's Complete does; an approver's sign-in (--as/--token), never a scoped credential; refuses with pull-requests-off and the setup command" },
+        // Local-owner slice 1: the terminal UI's Accept, for the laptop's local owner only (no password).
+        { name: 'run', takesValue: true, meaning: "the terminal's local owner: the exact build of the result read; required there with --digest" },
+        { name: 'checked', takesValue: false, meaning: "the terminal's local owner: you checked the result yourself; required when it owes your own check" },
+        { name: 'reason', takesValue: true, meaning: "the terminal's local owner: why you accept a result whose requirement isn't shown; required for an exception" }]
         : [{ name: 'feedback', takesValue: true, meaning: 'specific requested change' }, { name: 'run', takesValue: true, meaning: 'exact result run; defaults to current result' }, { name: 'source', takesValue: true, meaning: 'exact scope digest; defaults to current terms' }, { name: 'key', takesValue: true, meaning: '32 hexadecimal characters for exact replay; defaults to a stable feedback identity' }]),
     ],
   })),
@@ -313,7 +317,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
     positionals: [{ name: "id", required: true, meaning: "the task" }],
     flags: [jsonFlag, dbFlag, keyFlag,
       { name: "provider", takesValue: true, meaning: "pin which provider plans THIS task (plan phase only)" },
-      { name: "model", takesValue: true, meaning: "the pinned plan model, riding --provider" }],
+      { name: "model", takesValue: true, meaning: "the pinned plan model, riding --provider" },
+      // Local-owner slice 2: the terminal UI's plan request, for the laptop's local owner only (no password, no pins).
+      { name: "digest", takesValue: true, meaning: "the terminal's local owner: the exact planning source read; required there, and --provider/--model are refused" }],
     notableReasons: ["unknown-task"] },
   { invocation: "task hold", synopsis: "park a task with a reason", audience: "agent", agentMayInvoke: true, mutation: "keyed",
     positionals: [{ name: "id", required: true, meaning: "the task" }],
@@ -614,6 +620,10 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "task continue": "resume-run",
   "task unhold": "resume-run",
   "task complete": "complete-task",
+  // Local-owner slice 2: its own road (operate.ts localPlanCommand); the writer checks this exact act.
+  "task plan": "request-plan",
+  // Local-owner slice 3: its own road (operate.ts localRetryCommand); the writer checks this exact act.
+  "task requeue": "retry-build",
   "task revise": "request-revision",
   "task archive": "archive-task",
   "task restore": "archive-task",

@@ -2,9 +2,10 @@
  * The terminal UI (easy-start plan E): this computer's tasks, what each agent is doing now, and the everyday acts.
  *
  * Screens: Setup (the welcome's steps, until the first task), Main (tasks | live output | what needs you), New task,
- * Task, the plan before approving it, a revision's words, and Needs password. Keys: j/k move, Enter opens, n new task,
- * a approve (the full plan first) or accept, c accept, b send back, r retry, s stop, 1–9 answer a question, w browser, ? help,
- * q quit. Every write goes through the TuiSource, which runs it as the local owner; a refusal shows its own words.
+ * Task, the plan before approving it, the result before accepting it, a revision's words, and Needs password. Keys:
+ * j/k move, Enter opens, n new task, a approve (the full plan first) or accept (the result first), c accept, b send back,
+ * r retry, p ask for a plan, s stop, 1–9 answer a question, w browser, ? help, q quit. Every write goes through the TuiSource, which runs
+ * it as the local owner; a refusal shows its own words.
  */
 import { keyWords, SHORTCUTS, type TuiShortcut } from "../keymap.js";
 import { Box, Text, useApp, useInput, type Key } from "ink";
@@ -12,7 +13,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { terminalText } from "../terminal-text.js";
 import { HOME_GROUP_LABEL, HOME_GROUPS } from "../home-groups.js";
-import type { TuiAct, TuiExit, TuiFastTerms, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
+import type { TuiAct, TuiExit, TuiFastTerms, TuiResult, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./data.js";
 
 /** Text that came from outside this screen (an agent, a person, a project), as the terminal shows it: escapes and
  * controls never reach it (terminal-text.ts). The source cleans it first; this is the second layer. */
@@ -33,6 +34,11 @@ type Screen =
   | { kind: "main" }
   | { kind: "task"; task: TuiTask }
   | { kind: "approve"; task: TuiTask }
+  /** Retry this build? The build and approved plan as read when it opened (what the yes names). */
+  | { kind: "retry"; task: TuiTask; retry: { runId: number; digest: string } }
+  /** Accept this result? The result as read when it opened (its build and receipt are what the answer names); `reason`:
+   * an exception's words being typed; `changed`: the result changed meanwhile, and this is the new one. */
+  | { kind: "accept"; result: TuiResult; reason: string; changed: boolean }
   | { kind: "compose"; purpose: "new" | "revise"; id: string | null; text: string; project: number }
   | { kind: "build"; terms: TuiFastTerms; text: string; repo: string | null }
   | { kind: "password"; message: string }
@@ -42,14 +48,14 @@ type Screen =
 
 /** The keys (keymap.ts is the one table the console shares): its keys as this screen does them, then the terminal's own. */
 const TUI_SAYS: Readonly<Record<TuiShortcut, string>> = {
-  new: "new task", ink: "approve the plan (shows it in full first), or accept the result", "send-back": "send the result back",
-  retry: "retry", list: "back to the task list", help: "these keys",
+  new: "new task", ink: "approve the plan (shows it in full first), or accept the result (shows it first)", "send-back": "send the result back",
+  retry: "retry", plan: "ask for a plan", list: "back to the task list", help: "these keys",
 };
 export const HELP_LINES = [
   "j / k or ↑ / ↓   move",
   "Enter            open the task",
   ...SHORTCUTS.filter(one => typeof one.tui === "string").map(one => `${keyWords(one.keys).padEnd(17)}${TUI_SAYS[one.tui as TuiShortcut]}`),
-  "c                accept the result",
+  "c                accept the result (shows it first)",
   "s                stop the running attempt",
   "1–9              answer the task's question",
   "w                open in the browser",
@@ -146,11 +152,37 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (task.plan === null) setMessage("No plan is waiting for your approval on this task.");
     else setScreen({ kind: "approve", task });
   });
-  /** `a`: the task's own ink act — its plan (shown in full first), or else its finished result. */
+  /** `c`, and `a` on a result: the result, read once and pinned, before anything is accepted. */
+  const reviewResult = async (id: string, changed = false) => {
+    const result = await source.result(id);
+    if (result === null) { setMessage("This task has no finished result to accept."); return; }
+    setScreen({ kind: "accept", result, reason: "", changed });
+  };
+  /** `a`: the task's own ink act — its plan (shown in full first), or else its finished result (shown first too). */
   const approveOrAccept = (id: string) => openTask(id, task => {
     if (task.plan !== null) setScreen({ kind: "approve", task });
-    else if (task.hasResult) void act({ kind: "complete", id });
+    else if (task.hasResult) void reviewResult(id);
     else setMessage("No plan or result is waiting for you on this task.");
+  });
+  /** The answer on the Accept screen: exactly the result it shows. A result that changed meanwhile is shown again, new. */
+  const accept = async (result: TuiResult, checked: boolean, reason: string | null) => {
+    setBusy("Working…");
+    let answer;
+    try { answer = await source.act({ kind: "complete", id: result.id, runId: result.runId, digest: result.digest, checked, reason }); } finally { setBusy(null); }
+    if (answer.ok) { setMessage(answer.message); setScreen({ kind: "main" }); await refresh(); return; }
+    if (answer.changed === true) { setScreen({ kind: "main" }); setMessage("This result changed while you were reading it. Nothing was accepted."); await reviewResult(result.id, true); return; }
+    if (answer.needsPassword) setScreen({ kind: "password", message: answer.message });
+    else { setMessage(answer.message); setScreen({ kind: "main" }); }
+  };
+  /** `r`: the build to retry, read once and pinned, before anything is sent. */
+  const askRetry = (id: string) => openTask(id, task => {
+    if (task.retry == null) setMessage("Nothing to retry on this task.");
+    else setScreen({ kind: "retry", task, retry: task.retry });
+  });
+  /** `p`: a plan for the task, bound to the planning source read now; the command refuses one that changed meanwhile. */
+  const askPlan = (id: string) => openTask(id, task => {
+    if (task.planAsk == null) setMessage("This task can't be planned now.");
+    else void act({ kind: "plan", id, source: task.planAsk.source });
   });
   const stop = (id: string, runId: number | null) => {
     if (runId === null) { setMessage("Nothing is running on this task."); return; }
@@ -179,8 +211,9 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (input === "a") { void approveOrAccept(id); return true; }
     if (input === "s") { stop(id, runId); return true; }
     if (input === "b") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
-    if (input === "r") { void act({ kind: "retry", id }); return true; }
-    if (input === "c") { void act({ kind: "complete", id }); return true; }
+    if (input === "r") { void askRetry(id); return true; }
+    if (input === "c") { void reviewResult(id); return true; }
+    if (input === "p") { void askPlan(id); return true; }
     return false;
   };
 
@@ -207,6 +240,29 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       case "approve": {
         if (key.escape || input === "n") { setScreen({ kind: "main" }); setMessage("Nothing approved."); return; }
         if (input === "y") { const { task } = screen; void act({ kind: "approve", id: task.id, digest: task.plan!.digest }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
+        return;
+      }
+      case "retry": {
+        if (key.escape || input === "n") { setScreen({ kind: "main" }); setMessage("Nothing retried."); return; }
+        if (input === "y") { const { task, retry } = screen; void act({ kind: "retry", id: task.id, runId: retry.runId, digest: retry.digest }).then(() => setScreen(now => now.kind === "retry" ? { kind: "main" } : now)); }
+        return;
+      }
+      case "accept": {
+        const { result } = screen;
+        const cancel = () => { setScreen({ kind: "main" }); setMessage("Nothing accepted."); };
+        if (key.escape) { cancel(); return; }
+        if (!result.ready || result.owed !== "exception") {
+          if (input === "w") { browser(); return; }
+          if (!result.ready) { if (input === "n" || input === "q") cancel(); return; }
+          if (input === "n") { cancel(); return; }
+          if (input === "y") void accept(result, result.owed === "person-check", null);
+          return;
+        }
+        // An exception: its reason, typed on the screen; Enter accepts with it (never with nothing said).
+        if (key.backspace || key.delete) { setScreen({ ...screen, reason: screen.reason.slice(0, -1) }); return; }
+        if (key.return) { const reason = screen.reason.trim(); if (reason !== "") void accept(result, false, reason); return; }
+        const more = typed(input);
+        if (more !== "") setScreen({ ...screen, reason: screen.reason + more });
         return;
       }
       case "build": {
@@ -272,9 +328,13 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
 
   function hints(): string {
     switch (screen.kind) {
-      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · s stop · w browser · ? help · q quit";
-      case "task": return "a approve/accept · b send back · r retry · s stop · 1–9 answer · w browser · Esc back";
+      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · p plan · s stop · w browser · ? help · q quit";
+      case "task": return `a approve/accept · b send back · r retry${screen.task.planAsk == null ? "" : " · p plan it"} · s stop · 1–9 answer · w browser · Esc back`;
       case "approve": return "y approve · Esc cancel";
+      case "retry": return "y retry · Esc cancel";
+      case "accept": return !screen.result.ready ? "w open in the browser · Esc back"
+        : screen.result.owed === "person-check" ? "y yes, it looks right · n no · w open in the browser · Esc cancel"
+        : screen.result.owed === "exception" ? "Enter accept · Esc cancel" : "y accept · w open in the browser · Esc cancel";
       case "build": return "Enter Build · p plan it first · Esc cancel";
       case "compose": return screen.purpose === "new" && (snapshot?.projects.length ?? 0) > 1 ? "Enter send · Tab project · Esc cancel" : "Enter send · Esc cancel";
       case "quit": return "s stop · b background · Esc cancel";
@@ -322,6 +382,43 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
           </Box>
         );
       }
+      case "accept": {
+        const { result } = screen;
+        return (
+          <Box flexDirection="column" borderStyle="single" paddingX={1}>
+            <SafeText bold>{`Accept this result? ${result.title}`}</SafeText>
+            <SafeText dimColor>{`Build #${result.runId}`}</SafeText>
+            {screen.changed ? <Text bold>This result changed while you were reading it. This is the new one.</Text> : null}
+            {result.summary.length === 0 ? null : <Box flexDirection="column" marginTop={1}>{result.summary.map((line, index) => <SafeText key={index}>{line}</SafeText>)}</Box>}
+            <Box flexDirection="column" marginTop={1}>
+              <Text bold>Changed files</Text>
+              {result.files === null ? <Text>The changed files couldn't be read. Press w to see them in the browser.</Text>
+                : result.files.names.length === 0 ? <Text>None.</Text>
+                : <>{result.files.names.map(name => <SafeText key={name}>{`  ${name}`}</SafeText>)}{result.files.more > 0 ? <Text>{`  and ${result.files.more} more`}</Text> : null}</>}
+            </Box>
+            {result.requirements.length === 0 ? null : (
+              <Box flexDirection="column" marginTop={1}>
+                <Text bold>Requirements</Text>
+                {result.requirements.map((one, index) => <SafeText key={index}>{`  ${one.word}: ${one.statement}`}</SafeText>)}
+              </Box>
+            )}
+            {result.checks.length === 0 ? null : <Box flexDirection="column" marginTop={1}>{result.checks.map((line, index) => <SafeText key={index} {...(index === 0 ? { bold: true } : {})}>{line}</SafeText>)}</Box>}
+            <Box flexDirection="column" marginTop={1}>
+              {!result.ready ? <><Text bold>You can't accept it yet.</Text>{result.blockers.map((line, index) => <SafeText key={index}>{line}</SafeText>)}</>
+                : result.owed === "person-check" ? <Text bold>Did you check it yourself? (y/n)</Text>
+                : result.owed === "exception" ? <><Text bold>Say why you accept it anyway:</Text><Text><SafeText>{screen.reason}</SafeText><Text inverse> </Text></Text></>
+                : <Text bold>Accept it and mark the task done? (y/n)</Text>}
+            </Box>
+          </Box>
+        );
+      }
+      case "retry":
+        return (
+          <Box flexDirection="column" borderStyle="single" paddingX={1}>
+            <SafeText bold>{`Retry build #${screen.retry.runId}? ${screen.task.title}`}</SafeText>
+            <Text>Same plan, same agent. Its branch and workspace are kept.</Text>
+          </Box>
+        );
       case "approve":
         return (
           <Box flexDirection="column" borderStyle="single" paddingX={1}>

@@ -6,7 +6,7 @@
 /** What a key does in the console. `press`: the first visible, enabled control matching these, in order. */
 export type WebShortcut = { kind: "go"; href: string } | { kind: "press"; selectors: readonly string[] } | { kind: "search" } | { kind: "help" };
 /** What a key does in the terminal UI, or null with the reason it has none there (a named gap). */
-export type TuiShortcut = "new" | "ink" | "send-back" | "retry" | "list" | "help";
+export type TuiShortcut = "new" | "ink" | "send-back" | "retry" | "plan" | "list" | "help";
 export type Shortcut = { keys: string; says: string; web: WebShortcut; tui: TuiShortcut | { none: string } };
 
 /** The page's ink act: Approve (the approve control itself, password popover and all) or Accept. */
@@ -15,12 +15,15 @@ export const INK_ACT_SELECTORS = ["[data-ink-approve]", '[data-ink-act="accept"]
 export const SEND_BACK_SELECTORS = ['[data-act="request-changes"]', '[data-act="revise"]', 'a.result-feedback-link[href="#request-changes"]'] as const;
 /** Retry: the result's Retry, or the failed box's own Retry form. */
 export const RETRY_SELECTORS = ['[data-act="retry"]', 'form[data-retry] button[type="submit"]', 'form[data-rebuild] button[type="submit"]'] as const;
+/** Plan it: the task page's own plan button (local-owner slice 2). */
+export const PLAN_SELECTORS = ['form[action$="/plan"] button[type="submit"]'] as const;
 
 export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "n", says: "new task", web: { kind: "go", href: "/tasks/new" }, tui: "new" },
   { keys: "a", says: "Approve or Accept (presses the button on the page)", web: { kind: "press", selectors: INK_ACT_SELECTORS }, tui: "ink" },
   { keys: "b", says: "Send back (opens its note)", web: { kind: "press", selectors: SEND_BACK_SELECTORS }, tui: "send-back" },
   { keys: "r", says: "Retry (presses the button on the page)", web: { kind: "press", selectors: RETRY_SELECTORS }, tui: "retry" },
+  { keys: "p", says: "Ask for a plan (presses the button on the page)", web: { kind: "press", selectors: PLAN_SELECTORS }, tui: "plan" },
   { keys: "/", says: "search", web: { kind: "search" }, tui: { none: "The terminal has no search; press w to open the console." } },
   { keys: "g h", says: "go Home", web: { kind: "go", href: "/" }, tui: "list" },
   { keys: "g t", says: "go to Tasks", web: { kind: "go", href: "/tasks" }, tui: "list" },

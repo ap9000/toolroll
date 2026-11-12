@@ -7,6 +7,8 @@
  * Types and pure helpers only: enforcement (route marks, the chat confirm gate, the prover's order) reads these.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { currentActor } from "./actor.js";
+import { activeRemote } from "./remote-run.js";
 import type { LeadProposalKind, Store } from "./store.js";
 import type { ChatAction } from "./chat-actions.js";
 import type { ChatTaskAction } from "./chat-task-actions.js";
@@ -54,6 +56,12 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Learning loops (D3): deciding a lesson note or a clean-up of project memory. The writers (memory-pass.ts decideProposal,
   // memory-tidy.ts) check this exact act; instruction proposals stay with full authority.
   "memory-review",
+  // Local-owner slice 2 (docs/plans/local-owner-acts.md §1): ask for a plan. It approves nothing, pins no agent and is
+  // never pre-authorized under a mode; the writer (local-owner-acts.ts requestPlanAsLocalOwner) checks this exact act.
+  "request-plan",
+  // Local-owner slice 3 (§2): retry the owner's own approved build after it stopped. Only the owner's own person yes,
+  // on work it could approve again now, three times per seal; the writer (local-owner-acts.ts retryAsLocalOwner) checks it.
+  "retry-build",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
@@ -288,3 +296,17 @@ export const LOCAL_MODE_CONFINES = "Turn off local mode first.";
 /** What a local owner's browser session hears from anywhere but this computer (another address, a proxy, a tailnet or
  * LAN name): it works only on the computer running Toolroll (local-owner slice 0). */
 export const LOCAL_OWNER_ELSEWHERE = "This sign-in works only on the computer running Toolroll. To use Toolroll from here, set a password on that computer (run `toolroll password set`) and sign in with it.";
+
+/**
+ * The local owner acting now as exactly `act` (local-owner slice 1, `localActNow`), or null: the one in flight (its
+ * terminal command, or its browser request not yet answered), still standing (re-read here, so call it inside the
+ * write's own transaction), with exactly this act. A lead's token or a remote API run in the chain is never the local
+ * owner, so it is null there too. Every password-free writer that needs one act calls this; none relies on
+ * `proveAccountNow` saying yes to any act.
+ */
+export function localActNow(store: Pick<Store, "handle" | "accountOf" | "webSession">, act: LocalOwnerAct): LocalPrincipal | null {
+  if (activeRemote() !== null || currentActor()?.lead === true) return null;
+  const local = currentLocalOwner();
+  if (local === null || local.act !== act || !localOwnerInFlight(local) || !localOwnerStandsNow(store, local)) return null;
+  return local;
+}

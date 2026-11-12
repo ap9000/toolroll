@@ -26,6 +26,7 @@ import { assignmentOf,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";
 import { failedAttemptSentence,failingCheckSuggestion,GENERAL_SUGGESTION,isInternalErrorReason,latestFinishedAttempt,missedRequirementLine,missedRequirementSuggestion,NO_REASON_RECORDED,stopSuggestionOf,type FailureExplanation } from '../needs-you.js';
 import { planAutoPending } from "../plan-auto.js";
+import { planSourceOf, retryPinsOf } from "../local-owner-acts.js";
 import { readKnowledgeSnapshot } from "../project-knowledge.js";
 import { learningView } from "../project-learning.js";
 import { readSkillsSnapshot,skillTestResult } from "../project-skills.js";
@@ -427,6 +428,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         })(),
         plan: ref?.plan ?? null,
         planAuto: planAutoPending(runtime.store, taskId, now),
+        planSource: planSourceOf(runtime.store, taskId),
+        retryPins: retryPinsOf(runtime.store, taskId),
         planDocument: planView?.document ?? null,
         planSha: planView?.sha256 ?? null,
         planContract: ref === null || planView === null ? null : planContractViewOf(ref.id, scope),

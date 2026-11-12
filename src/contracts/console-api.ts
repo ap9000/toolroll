@@ -262,7 +262,10 @@ export const CONSOLE_FORMS = {
   taskRepairDependency: formContract("POST /t/<task>/repair-dependency", ["blocker", "operation", "replacement"]),
   taskNext: formContract("POST /t/<task>/next", ["undo"]),
   taskReopen: formContract("POST /t/<task>/reopen", ["token"]),
-  taskRequeue: formContract("POST /t/<task>/requeue", ["note", "return"]),
+  // Local-owner slice 3: the build and approved plan the page read (`run`, `digest`), read only for the laptop's local owner.
+  taskRequeue: formContract("POST /t/<task>/requeue", ["note", "return", "run", "digest"]),
+  // Local-owner slice 2: the planning source the page read (planner-source.ts), read only for the laptop's local owner.
+  taskPlan: formContract("POST /t/<task>/plan", ["source"]),
   taskFollowUp: formContract("POST /t/<task>/follow-up", ["index"]),
   taskPlanEdit: formContract("POST /t/<task>/plan-edit", ["saw-plan", "plan-document"]),
   taskRevision: formContract("POST /t/<task>/accept-revision|reject-revision", ["revision-id", "token"]),
@@ -293,7 +296,6 @@ export const BODILESS_POSTS = [
   "POST /logout",
   "POST /t/<task>/unhold",
   "POST /t/<task>/stop-carrying",
-  "POST /t/<task>/plan",
   "POST /t/<task>/retry-review",
   // Check now and its kin (docs/plans/get-side-effects.md): the form token only, no fields read.
   "POST /settings/updates/check",

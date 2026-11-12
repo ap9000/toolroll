@@ -451,14 +451,21 @@ async function firstTaskInTerminal(inst, term, trace, text, { pickedIdea = false
   }
   await until("the task to be filed", async () => latestTask(inst), { timeoutMs: 30_000, everyMs: 250 });
   const id = latestTask(inst).id;
-  // Filed with `task add`, the task may wait for a plan nobody asked for: the terminal has no key that asks the planner.
-  const stuck = await until("the planner to start, or the task to wait for a plan", async () => {
+  // Filed with `task add`, the terminal asks for its plan at once (local-owner slice 2: "Filed. Planning: …"), with no
+  // password. Should it not, `p` asks; only if that fails too does the person go to the browser.
+  let stuck = await until("the planner to start, or the task to wait for a plan", async () => {
     if (planState(inst, id) !== null) return "planning";
     return /Say what the task should do so it can be planned|Needs a plan/.test(term.text()) ? "needs-scope" : null;
   }, { timeoutMs: 20_000, everyMs: 250 }).catch(() => "unknown");
+  if (stuck !== "planning") {
+    trace.decision("Ask for the plan (p)", { screen: term.text() });
+    term.press("p");
+    trace.interaction("Press p (plan it)", { keys: "p" });
+    stuck = await until("the plan to be asked for", async () => planState(inst, id) !== null ? "planning" : null, { timeoutMs: 10_000, everyMs: 250 }).catch(() => stuck);
+  }
   if (stuck === "needs-scope") {
     const said = term.text();
-    trace.notPossible("Get a plan in the terminal: it says “Say what the task should do so it can be planned.” and no key asks the planner",
+    trace.notPossible("Get a plan in the terminal: neither filing nor p asked the planner",
       "press w and ask the planner on the task's page in the browser", { screen: said });
     const on = await toBrowser(inst, term, trace, "ask the planner for a plan");
     await on.goto(`${inst.base}/t/${encodeURIComponent(id)}`);
@@ -539,13 +546,33 @@ async function acceptInTerminal(inst, term, trace, id) {
   const footerBefore = footerOf(term.text());
   term.press("c");
   trace.interaction("Press c (accept)", { keys: "c" });
-  // Its answer is the line above the key hints: "Accepted.", or the refusal's own words.
+  // Accept this result? (local-owner slice 1): the result read once and pinned, then the one question it owes.
+  const review = await term.waitFor(screen => /Accept this result\?/.test(screen) || footerOf(screen) !== footerBefore, "the Accept screen", { timeoutMs: 20_000 }).catch(() => term.text());
+  if (/Accept this result\?/.test(review)) {
+    trace.note("Accept this result?", { screen: review });
+    if (/Did you check it yourself\?/.test(review)) {
+      trace.decision("Did you check it yourself? (the result owes the person's own check)", { screen: review });
+      term.press("y");
+      trace.interaction("Press y (yes, it looks right)", { keys: "y" });
+    } else if (/Say why you accept it anyway/.test(review)) {
+      trace.decision("Say why it can be accepted (a reason is owed)", { screen: review });
+      const why = "I read the change and its test passes.";
+      term.press(why);
+      trace.interaction("Type the reason", { keys: `${why.length} characters` });
+      term.press("\r");
+      trace.interaction("Press Enter (accept)", { keys: "Enter" });
+    } else if (/\(y\/n\)/.test(review)) {
+      term.press("y");
+      trace.interaction("Press y (accept)", { keys: "y" });
+    }
+  }
+  // Its answer is the line above the key hints: "Accepted. The task is done.", or the refusal's own words.
   const answer = await until("the accept's answer", async () => {
     if (accepted(inst, id)) return "accepted";
     const footer = footerOf(term.text());
     return footer !== footerBefore && footer !== "Working…" && footer !== "" ? footer : null;
   }, { timeoutMs: 20_000, everyMs: 200, seen: () => term.text().slice(-600) }).catch(() => null);
-  if (accepted(inst, id) || answer === "accepted" || answer === "Accepted.") {
+  if (accepted(inst, id) || answer === "accepted" || /^Accepted\./.test(answer ?? "")) {
     await until(`${id} to be accepted`, async () => accepted(inst, id), { timeoutMs: 10_000, everyMs: 250 });
     trace.mark("accepted");
     trace.note("Accepted in the terminal", { screen: term.text() });
@@ -598,6 +625,7 @@ async function terminalInRepo({ trace, criterion, note }, { planRoad = false } =
       note(`stopped: no plan without a password (${blocked})`);
       return { road, blocked };
     }
+    if (road === "plan") criterion("B1.2", "a first task on the plan road reaches a plan without a password", true, "planned and approved in the terminal");
     watch.tick();
     const id = watch.facts.task ?? latestTask(inst)?.id;
     if (!id) throw new Error("no task was filed");
@@ -792,15 +820,22 @@ function useUp(ids, times) {
 const startedBy = (inst, id, afterId, ms) => until("a build to start by itself", async () => builds(inst, id).find(one => one.id > afterId && one.provider_started_at) ?? null, { timeoutMs: ms, everyMs: 250 }).catch(() => null);
 
 /**
- * Retry a stopped or failed build as the person would: r in the terminal; where the terminal can't (it asks for a
- * password the local owner doesn't have), the trace says so and the person presses Retry on the task's page in the
- * browser. Returns the build that started again, or null (with the reason in the trace).
+ * Retry a stopped or failed build as the person would: r in the terminal, which shows the build first ("Retry build
+ * #N?"), then y (local-owner slice 3: the owner's own approved build, no password). Where the terminal can't, the trace
+ * says so and the person presses Retry on the task's page in the browser. Returns the build that started again, or null
+ * (with the reason in the trace).
  */
 async function retryByHand(inst, term, trace, criterion, id, afterId, rule = "B1.6") {
   trace.decision("Retry", { screen: term.text() });
   const before = footerOf(term.text());
   term.press("r");
   trace.interaction("Press r (retry)", { keys: "r" });
+  const shownFirst = await term.waitFor(screen => /Retry build #\d+\?/.test(screen) || footerOf(screen) !== before, "the build to retry", { timeoutMs: 15_000 }).catch(() => term.text());
+  if (/Retry build #\d+\?/.test(shownFirst)) {
+    trace.decision("Retry this build? (same plan, same agent)", { screen: shownFirst });
+    term.press("y");
+    trace.interaction("Press y (retry)", { keys: "y" });
+  }
   const said = await until("r's answer", async () => {
     const text = term.text();
     if (/This needs your password/.test(text)) return boxLines(text, /password/i);
@@ -914,11 +949,11 @@ async function restartRecovery({ trace, criterion, note }) {
       itself !== null ? `${Math.round((Date.parse(itself.provider_started_at) - screenAt) / 100) / 10} s` : `no build in 30 s; the screen says: ${boxLines(again.text(), /Failed|Retry|stopped|Building|Waiting/) || footerOf(again.text())}`);
     const retried = itself ?? await retryByHand(inst, again, trace, criterion, id, running.id, "B1.5");
     if (retried === null) {
-      // Recovery isn't possible without a password today: what can still be proved is that nothing ran twice.
+      // Recovery didn't happen (by itself, or from r in the terminal): what can still be proved is that nothing ran twice.
       const scope = scopeOf(inst, id);
       criterion("B1.5", "the same scope after the restart (its digest and approval unchanged)", scope?.digest === scopeBefore?.digest && scope?.approved_digest === scopeBefore?.approved_digest, `${scopeBefore?.digest?.slice(0, 12)} → ${scope?.digest?.slice(0, 12)}`);
       criterion("B1.5", "no duplicate active build", watch.facts.maxActive <= 1, `at most ${watch.facts.maxActive} unfinished at once`);
-      criterion("B1.5", "the task reaches Ready", false, "not without a password");
+      criterion("B1.5", "the task reaches Ready", false, "no retry started");
       if (watch.facts.maxActive > 1) throw new Error(`${watch.facts.maxActive} builds were unfinished at once`);
       return { killed: running.id, recovered: false };
     }

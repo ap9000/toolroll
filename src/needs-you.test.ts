@@ -460,7 +460,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     expect(result.need).toMatchObject({ label: "Retry", href: null, rebuild: { action: "/t/unverified/requeue" } });
     expect(result.canRequest).toBe(true);
     const task = workspaceOf(await page("/t/unverified")).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
-    expect(task.rebuild).toEqual({ action: "/t/unverified/requeue" });
+    expect(task.rebuild).toEqual({ action: "/t/unverified/requeue", pins: { run: expect.any(Number), digest: expect.stringMatching(/^[a-f0-9]{32}$/) } });
     expect(task.status?.action?.label).toBe("Retry");
     expect(task.status?.action?.href).not.toContain("/review");
 

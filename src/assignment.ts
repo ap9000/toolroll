@@ -9,12 +9,12 @@ import { COMPLETER_ACTOR, COMPLETION_ACTION, COMPLETION_BY_MACHINE, COMPLETION_B
 import { homedir } from "node:os";
 import { readSchemaVersion, refArchived, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
 import { approvalOf, liveReleaseOf, localWorkEligible, machineActing } from "./scope.js";
-import { LOCAL_OWNER_LAPSED, currentLocalOwner, localOwnerInFlight, localOwnerRefusal, localOwnerStandsNow } from "./local-owner.js";
+import { LOCAL_OWNER_LAPSED, currentLocalOwner, localActNow, localOwnerInFlight, localOwnerRefusal, localOwnerStandsNow } from "./local-owner.js";
 import { openWorkDecisionOf, taskWorkSummaryOf, workDecisionAction, type WorkAction, type WorkSummaryAccess } from "./work-summary.js";
 import { evidenceRoot, readVerifiedArtifact, readVerifiedReport, verifyArtifact } from "./evidence.js";
 import { sweepIfMoved } from "./sweep-gate.js";
 import { verificationEvidence } from "./verification-evidence.js";
-import { reproveApprover, type VerifiedApprover } from "./principal.js";
+import { reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { noteAssignmentStatus } from "./assignment-status.js";
 import { historicalAssessmentReason } from "./assignment-presentation.js";
 import { manualReviewOnly, shownVerdictOf, type ProofVerdict } from "./proof.js";
@@ -608,7 +608,9 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
   who: VerifiedApprover, now: Date, root = evidenceRoot(homedir()),
   finish: (digest: string) => Finished = digest => checkAssignmentAsOperator(store, taskId, digest, who, now, root)): Finished {
   try {
-    return withActor(currentActor() ?? { account: who.name, lead: false }, () => store.transact((): Finished => {
+    // A savepoint inside the transaction: a refused completion takes its acceptance back with it even when a caller's
+    // own transaction holds this one (the terminal's local accept, a chat tap), not only when this one is outermost.
+    return withActor(currentActor() ?? { account: who.name, lead: false }, () => store.transact(() => store.savepoint((): Finished => {
       if (!reproveApprover(store, who).ok) return { ok: false, reason: "unauthenticated", message: "Sign in again before accepting this result." };
       const access: AssignmentAccess = { principal: "operator", repos: who.repos };
       const before = assignmentOf(store, taskId, now, access, root);
@@ -624,6 +626,9 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
       const owed = before.state === "ready-to-check" ? owedAcceptance(receipt, before.readiness?.blockers ?? []) : null;
       // An exception is accepted only with its reason: never a completion that skips it.
       if (owed === "exception" && input.note === null) return { ok: false, reason: "needs-reason", message: `${ACCEPT_NEEDS_REASON}.` };
+      // A person's own check is a person's, whoever holds the approver: never the lead's token or a remote API token in
+      // this chain (local-owner plan v2, item 4), whatever the caller decided before calling.
+      if (owed === "person-check" && machineActing()) return { ok: false, reason: "person-required", message: MACHINE_CANT_CHECK };
       let digest = receipt.digest;
       if (owed !== null) {
         store.acceptProof(receipt.runId, who.name, input.note, now);
@@ -635,7 +640,7 @@ export function acceptAndCompleteAsOperator(store: Store, taskId: string, input:
       const done = finish(digest);
       if (!done.ok) throw new Undone(done);
       return done;
-    }));
+    })));
   } catch (error) {
     if (error instanceof Undone) return error.result;
     throw error;
@@ -722,4 +727,90 @@ function localCompletionRefusal(store: Store, actor: string, taskIds: readonly s
     if (!eligible.ok) return { ok: false, reason: "local-owner", message: `${eligible.message} ${then}` };
   }
   return null;
+}
+
+// ---- Local owner, slice 1 (docs/plans/local-owner-acts.md §3): accept a result in the terminal. Kept last.
+
+/** What a machine caller hears when the result owes a person's own check. */
+export const MACHINE_CANT_CHECK = "Only a person can say they checked this result. Open it in Toolroll and accept it there.";
+/** The terminal's accept, as the ledger keeps it: the exact request (run and receipt as read) and the receipt it made. */
+export const LOCAL_ACCEPT_ACTION = "task complete (local owner)";
+
+/** What the terminal's accept answers: done (or done already, by this same request), or why not. */
+export type LocalAcceptance =
+  | { ok: true; replayed: boolean; accepted: "person-check" | "exception" | null; assignment: AssignmentSnapshot }
+  | { ok: false; reason: string; message: string };
+
+const LOCAL_STALE = { ok: false as const, reason: "stale", message: "This result changed. Look at the new one before accepting it." };
+
+/** This owner's earlier terminal accept of exactly this run and receipt, from its ledger binding; null when none. */
+function localAcceptanceOf(store: Store, rootId: string, account: string, runId: number, digest: string, request: { checked: boolean; reason: string | null }):
+  { completed: string; accepted: "person-check" | "exception" | null; same: boolean } | null {
+  const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE action = ? AND task_id = ? AND actor = ? AND run_id = ? ORDER BY id DESC")
+    .all(LOCAL_ACCEPT_ACTION, rootId, `operator:${account}`, runId);
+  for (const row of rows) {
+    let detail: unknown;
+    try { detail = JSON.parse(String(row["detail"] ?? "")); } catch { continue; }
+    const bound = detail as { v?: unknown; digest?: unknown; completed?: unknown; checked?: unknown; reason?: unknown };
+    if (bound.v !== 1 || bound.digest !== digest || typeof bound.completed !== "string") continue;
+    const outcome = String(row["outcome"]);
+    // A replay is the whole request again (Codex review 3, finding 2): the same pins, the same "I checked it", the same
+    // reason. Anything else about an accepted result is a different request, never reported as saved.
+    const same = bound.checked === request.checked && (bound.reason ?? null) === request.reason;
+    return { completed: bound.completed, accepted: outcome === "person-check" || outcome === "exception" ? outcome : null, same };
+  }
+  return null;
+}
+
+/**
+ * The terminal's Accept (local-owner plan §3, slice 1): the laptop's local owner, with no password, accepts the exact
+ * result its screen read (`runId` and `receiptDigest`, pinned when the screen opened) and completes it, in one
+ * transaction. Never a password check: the owner is the one in flight now, acting as exactly `complete-task`, still
+ * standing (local mode on at its generation, the account at its generation), and the approver is minted from that,
+ * then re-proved by `acceptAndCompleteAsOperator`, which keeps every rule a completion has (exact receipt and run,
+ * project access, slice 0's work rule, failed-check and protected-work blockers, rollback of the acceptance if the
+ * completion is refused). What is owed decides what the request must carry: a person's own check needs `checked`, an
+ * exception needs `reason` (already trimmed and validated by the command). The request and the receipt it produced are
+ * recorded; the same request again answers "already" after re-proving the owner, and writes nothing.
+ */
+export function completeAsLocalOwner(store: Store, taskId: string, input: { runId: number; receiptDigest: string; checked: boolean; reason: string | null },
+  now: Date, root = evidenceRoot(homedir())): LocalAcceptance {
+  try {
+    return store.transact((): LocalAcceptance => {
+      const local = localActNow(store, "complete-task");
+      if (local === null) return { ok: false, reason: "local-owner", message: LOCAL_OWNER_LAPSED };
+      const standing = verifyApproverStanding(store, local.account, local.accountGeneration, store.knownRepos().filter(repo => store.accountCanAccess(local.account, repo)));
+      if (!standing.ok) return { ok: false, reason: "local-owner", message: LOCAL_OWNER_LAPSED };
+      const who = standing.who;
+      const access: AssignmentAccess = { principal: "operator", repos: who.repos };
+      const before = assignmentOf(store, taskId, now, access, root);
+      if (before === null || !store.accountCanAccess(who.name, before.repo)) return { ok: false, reason: "not-found", message: "That task is unavailable in your projects." };
+      // The same request again: recognised from its binding and the receipt it produced, with the owner proved above.
+      const bound = localAcceptanceOf(store, before.rootId, who.name, input.runId, input.receiptDigest, { checked: input.checked, reason: input.reason });
+      if (bound !== null && !bound.same) return { ok: false, reason: "already-complete", message: "This result is already accepted." };
+      if (bound !== null) {
+        return before.state === "complete" && before.receipt?.runId === input.runId && before.receipt.digest === bound.completed
+          ? { ok: true, replayed: true, accepted: bound.accepted, assignment: before } : LOCAL_STALE;
+      }
+      const receipt = before.receipt;
+      if (receipt === null || receipt.runId !== input.runId || receipt.digest !== input.receiptDigest) return LOCAL_STALE;
+      if (before.state === "complete") return { ok: false, reason: "already-complete", message: "This result is already accepted." };
+      const owed = before.state === "ready-to-check" ? owedAcceptance(receipt, before.readiness?.blockers ?? []) : null;
+      if (owed === "person-check" && !input.checked) return { ok: false, reason: "needs-check", message: "This result needs your own check. Look at it, then say you checked it." };
+      if (owed === "exception" && input.reason === null) return { ok: false, reason: "needs-reason", message: `${ACCEPT_NEEDS_REASON}.` };
+      const done = acceptAndCompleteAsOperator(store, taskId, { runId: input.runId, receiptDigest: input.receiptDigest, note: owed === null ? null : input.reason }, who, now, root);
+      if (!done.ok) throw new Undone(done);
+      const after = assignmentOf(store, taskId, now, access, root);
+      if (after === null || after.state !== "complete" || after.receipt?.runId !== input.runId) throw new Undone(LOCAL_STALE);
+      store.recordAction({ at: now.toISOString(), actor: `operator:${who.name}`, repo: after.repo, taskId: after.rootId, runId: input.runId, action: LOCAL_ACCEPT_ACTION,
+        outcome: owed ?? "completed", source: "request",
+        detail: JSON.stringify({ v: 1, digest: input.receiptDigest, completed: after.receipt.digest, checked: input.checked, reason: input.reason, via: local.transport }) });
+      return { ok: true, replayed: false, accepted: owed, assignment: after };
+    });
+  } catch (error) {
+    if (error instanceof Undone) return error.result;
+    // Store.transact's own re-check found the bound owner no longer standing: the same refusal, said, never a crash.
+    if (error instanceof Error && error.message === LOCAL_OWNER_LAPSED) return { ok: false, reason: "local-owner", message: LOCAL_OWNER_LAPSED };
+    throw error;
+  }
 }

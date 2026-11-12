@@ -11,7 +11,7 @@ import { HELP_LINES } from "./tui/app.js";
 
 describe("one table", () => {
   test("the plan's keys, each with a console act and a terminal act or a named gap", () => {
-    expect(SHORTCUTS.map(one => one.keys)).toEqual(["n", "a", "b", "r", "/", "g h", "g t", "?"]);
+    expect(SHORTCUTS.map(one => one.keys)).toEqual(["n", "a", "b", "r", "p", "/", "g h", "g t", "?"]);
     for (const one of SHORTCUTS) {
       expect(one.web.kind, one.keys).toMatch(/^(go|press|search|help)$/);
       if (typeof one.tui !== "string") expect(one.tui.none, one.keys).not.toBe("");

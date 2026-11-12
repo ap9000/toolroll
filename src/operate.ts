@@ -93,7 +93,8 @@ import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
 import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
-import { pullRequestLines, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -987,6 +988,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "saved",
   // task complete: also open the result's pull request.
   "pull-request",
+  // task complete as the terminal's local owner: the person says they checked the result themselves.
+  "checked",
   // storage clean --landed: work already in main.
   "landed",
   // up: the exact start-up details (containment) in the terminal too.
@@ -9371,6 +9374,9 @@ function taskAction(
   switch (action) {
     case "complete":
     case "revise":
+      // Local-owner slice 1: the terminal's local owner accepts on its own road, which never checks a password; chosen
+      // only inside its chain, where an owner that no longer stands is refused there, never sent down the road below.
+      if (action === "complete" && currentLocalOwner() !== null) return runLocalCompletion(rest, flags, context);
       return runTaskOutcomeCommand(action, rest, flags, { ...context, operator: async () => {
         const acting = await askCredentials(flags, context);
         if (acting === null) return null;
@@ -9443,6 +9449,9 @@ function taskAction(
     case "require":
       return requireTask(rest, flags, context);
     case "requeue":
+      // Local-owner slice 3: the terminal's local owner retries its own approved build on its own road (no password);
+      // chosen only inside its chain, where an owner that no longer stands is refused there.
+      if (currentLocalOwner() !== null) return localRetryCommand(rest, flags, context);
       return requeueTask(rest, flags, context);
     case "regate":
       return regateTaskCommand(rest, flags, context);
@@ -9453,6 +9462,9 @@ function taskAction(
     case "failing-first":
       return failingFirstCommand(rest, followThroughContext(context, flags));
     case "plan":
+      // Local-owner slice 2: the terminal's local owner asks for a plan on its own road (no password, no pins, no mode
+      // pre-authorization); chosen only inside its chain, where an owner that no longer stands is refused there.
+      if (currentLocalOwner() !== null) return localPlanCommand(rest, flags, context);
       return planTaskCommand(rest, flags, context);
     case "review":
       return reviewTaskCommand(rest, flags, context);
@@ -14603,4 +14615,57 @@ function releaseToQueue(store: Store, lease: string, now: Date): FenceResult {
     if (store.getTask(ref.externalId)?.state === "running") store.setTaskState(ref.externalId, "queued", now);
     return result;
   });
+}
+
+// ---- Local owner, slice 2 (docs/plans/local-owner-acts.md §1): ask for a plan in the terminal. Kept last.
+
+/**
+ * `task plan <id> --digest <planning source>` for the laptop's local owner (the terminal UI's `p`, and `n` on a bigger
+ * task): its own road, which never reaches a password check. The digest is the planning source the screen read
+ * (local-owner-acts.ts planSourceOf), required and only compared. No plan pins (`--provider`, `--model`): choosing which
+ * agent plans needs a password. requestPlanAsLocalOwner proves the rest in one transaction.
+ */
+async function localPlanCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = "task plan";
+  if (flags.has("provider") || flags.has("model")) {
+    const passwordSet = store.accountOf(currentLocalOwner()?.account ?? "")?.passwordSet === true;
+    return fail(write, json, command, "local-owner", `Choosing which agent plans needs your password. ${passwordSet ? "Sign in with your password to do this." : "Set a password first: run \`toolroll password set\`."}`, EXIT.refused);
+  }
+  for (const name of flags.keys()) if (!["json", "db", "digest"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0], digest = flags.get("digest");
+  const usage = "Use task plan <task> --digest <the plan source you read>.";
+  if (positional.length !== 1 || !id || id.length > 64 || /[\x00-\x1f]/.test(id)) return fail(write, json, command, "usage", usage, EXIT.usage);
+  if (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) return fail(write, json, command, "usage", `--digest needs the exact task you read. ${usage}`, EXIT.usage);
+  const done = requestPlanAsLocalOwner(store, id, digest, clock());
+  if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+  return succeed(write, json, command, { id, replayed: done.replayed, autoPlan: false }, () => [
+    done.replayed ? `${id} · Already asked for a plan.` : `${id} · Asked for a plan. You approve the plan before anything is built.`,
+  ]);
+}
+
+// ---- Local owner, slice 3 (docs/plans/local-owner-acts.md §2): retry its own approved build in the terminal. Kept last.
+
+/**
+ * `task requeue <id> --run <build> --digest <scope digest>` (and its alias `task retry`) for the laptop's local owner (the
+ * terminal UI's `r`): its own road, which never reaches a password check. Both pins are required and only compared:
+ * the failed build and the approved scope the screen read. Toolroll's own stop proof runs first, as every completion
+ * does; retryAsLocalOwner then proves everything again in one transaction.
+ */
+async function localRetryCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = "task requeue";
+  for (const name of flags.keys()) if (!["json", "db", "run", "digest"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0], run = flags.get("run"), digest = flags.get("digest");
+  const usage = "Use task requeue <task> --run <the build you read> --digest <its approved plan>.";
+  if (positional.length !== 1 || !id || id.length > 64 || /[\x00-\x1f]/.test(id)) return fail(write, json, command, "usage", usage, EXIT.usage);
+  if (typeof run !== "string" || !/^[1-9]\d{0,14}$/.test(run)) return fail(write, json, command, "usage", `--run needs the exact build you read. ${usage}`, EXIT.usage);
+  // A scope digest (scope.ts digestOf): 32 hexadecimal characters.
+  if (typeof digest !== "string" || !/^[a-f0-9]{32}$/.test(digest)) return fail(write, json, command, "usage", `--digest needs the exact plan you read. ${usage}`, EXIT.usage);
+  await proveTaskBuildsStopped(store, id, clock);
+  const done = retryAsLocalOwner(store, id, { run: Number(run), digest }, clock());
+  if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+  return succeed(write, json, command, { id, replayed: done.replayed, retries: done.retries }, () => [
+    done.replayed ? `${id} · Already retrying build #${run}.` : `${id} · Retrying build #${run}. A builder starts it next.`,
+  ]);
 }

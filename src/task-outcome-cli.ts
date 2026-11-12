@@ -1,6 +1,8 @@
 /** Everyday task verbs over the existing completion and revision boundaries. */
 import { createHash } from 'node:crypto';
-import { assignmentOf, checkAssignmentAsOperator } from './assignment.js';
+import { assignmentOf, checkAssignmentAsOperator, completeAsLocalOwner } from './assignment.js';
+import { currentLocalOwner } from './local-owner.js';
+import { validateNote } from './decision.js';
 import { assignmentForCoordinator, coordinatorToken } from './assignment-adapters.js';
 import { authenticateCoordinator } from './coordinator.js';
 import { reproveApprover, type VerifiedApprover } from './principal.js';
@@ -157,7 +159,7 @@ export function pullRequestLines(view: PullRequestView | null): string[] {
 
 /** Toolroll's own stop proof for every finished build of a task's family whose stop it can prove here. Best effort: a
  * failure leaves the completion's own refusal to say what is still unproven. */
-async function proveTaskBuildsStopped(store: Store, task: string, clock: () => Date): Promise<void> {
+export async function proveTaskBuildsStopped(store: Store, task: string, clock: () => Date): Promise<void> {
   try {
     const family = store.taskFamilyOf(task, null, true);
     const refs = family === null ? [store.lookupRef(task)?.id].filter((one): one is number => one !== undefined) : family.versions.map(version => version.refId);
@@ -165,4 +167,53 @@ async function proveTaskBuildsStopped(store: Store, task: string, clock: () => D
       if (run.outcome !== null && store.stopQuiescenceFact(run.id)?.cause !== undefined) await proveRunStopped(store, run.id, clock);
     }
   } catch { /* the completion below refuses with what is still unproven */ }
+}
+
+/**
+ * `task complete` for the laptop's local owner (local-owner slice 1; the terminal UI's Accept): the exact result the
+ * screen read, accepted and completed with no password. Its own road: it never reaches a password check (so it never
+ * moves the sign-in guard), and is chosen only inside the local owner's chain; there, an owner who no longer stands is
+ * refused, never handed to another road. Everything is pinned: `--run` and `--digest` are required (never defaulted
+ * to the current result), `--checked` is the person's explicit yes to a check they made, and `--reason` (trimmed, not
+ * empty) is an exception's why. No pull request: that needs a password.
+ */
+export async function runLocalCompletion(positional: readonly string[], flags: Map<string, string | true>, context: {
+  store: Store; evidenceRoot: string; json: boolean; write: (line: string) => void; now: Date;
+}): Promise<number> {
+  const command = 'task complete';
+  const emit = (result: { ok: boolean; reason?: string; message?: string; [key: string]: unknown }, lines?: string[]) => {
+    context.write(context.json ? envelopeJson({ ...result, command }) : result.ok ? (lines ?? []).join('\n') : result.message ?? 'The action was refused.');
+    return result.ok ? 0 : result.reason === 'usage' ? 2 : 3;
+  };
+  const fail = (reason: string, message: string) => emit({ ok: false, reason, message });
+  const usage = 'Use task complete <task> --run <build> --digest <result> [--checked] [--reason "why"].';
+  const allowed = new Set(['json', 'db', 'run', 'digest', 'checked', 'reason', 'pull-request']);
+  for (const key of flags.keys()) if (!allowed.has(key)) return fail('usage', `--${key} is not a ${command} option.`);
+  if (flags.has('pull-request')) return fail('local-owner', `Opening a pull request needs your password. ${context.store.accountOf(currentLocalOwner()?.account ?? '')?.passwordSet === true ? 'Sign in with your password to do this.' : 'Set a password first: run `toolroll password set`.'}`);
+  const task = positional[0];
+  if (positional.length !== 1 || !task || task.length > 64 || /[\x00-\x1f]/.test(task)) return fail('usage', usage);
+  const run = flags.get('run'), digest = flags.get('digest'), checked = flags.get('checked'), reason = flags.get('reason');
+  if (typeof run !== 'string' || !/^[1-9]\d{0,14}$/.test(run)) return fail('usage', `--run needs the exact build number of the result you read. ${usage}`);
+  if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) return fail('usage', `--digest needs the exact result you read. ${usage}`);
+  if (checked !== undefined && checked !== true) return fail('usage', '--checked takes no value.');
+  let why: string | null = null;
+  if (reason !== undefined) {
+    // An exception's reason says something: trimmed here, at the command's edge, and never empty or only spaces.
+    if (typeof reason !== 'string' || reason.trim() === '') return fail('usage', 'Say why you accept it anyway: --reason "<why>".');
+    const validated = validateNote(reason);
+    if (!validated.ok) return fail('usage', `--reason: ${validated.problem}.`);
+    why = validated.note;
+  }
+  const { store, now, evidenceRoot } = context;
+  // Toolroll's own stop proof first, as every completion (a build it hasn't proven stopped is refused below).
+  await proveTaskBuildsStopped(store, task, () => now);
+  const done = completeAsLocalOwner(store, task, { runId: Number(run), receiptDigest: digest, checked: checked === true, reason: why }, now, evidenceRoot);
+  if (!done.ok) return emit(done);
+  const { assignment } = done;
+  const receipt = assignment.receipt!;
+  return emit({ ok: true, replayed: done.replayed, accepted: done.accepted, result: assignment }, [
+    `${assignment.rootId} · ${done.replayed ? 'Already accepted' : 'Accepted'}`,
+    `Result: ${receipt.taskId} · build #${receipt.runId} · ${receipt.head?.slice(0, 7) ?? 'no commit'}`,
+    ...(assignment.readiness?.checksOff ? [] : [receipt.checks.detail]),
+  ]);
 }

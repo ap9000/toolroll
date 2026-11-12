@@ -5,7 +5,7 @@ import { cleanup, render } from "ink-testing-library";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./app.js";
-import { sampleSession, sampleSource, type TuiAct, type TuiSession, type TuiSource } from "./data.js";
+import { sampleSession, sampleSource, type TuiAct, type TuiResult, type TuiSession, type TuiSource } from "./data.js";
 
 /** Lets Ink run the mount effects (useInput subscribes in one) before the first keypress. */
 const mounted = () => new Promise(resolve => setImmediate(resolve));
@@ -98,15 +98,161 @@ describe("terminal UI", () => {
     await vi.waitFor(() => expect(answers).toEqual([false]));
   });
 
+  it("p asks for a plan bound to the planning source the task read; with none to ask, it sends nothing and says so", async () => {
+    const base = sampleSource();
+    const source = scripted({ task: async id => { const task = await base.task(id); return task === null ? null : { ...task, plan: null, planAsk: id === "t1" ? null : { source: "s".repeat(64) } }; } });
+    const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Sample: upgrade the test runner");
+    await mounted();
+    app.stdin.write("p");
+    await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "plan", id: "t3", source: "s".repeat(64) }]));
+    app.stdin.write("j");
+    await shows("> Sample: fix the login redirect");
+    app.stdin.write("p");
+    await shows("This task can't be planned now.");
+    expect(source.acts).toHaveLength(1);
+  });
+
+  it("r shows the build to retry first; y sends exactly the build and plan read; Esc sends nothing; nothing to retry says so", async () => {
+    const base = sampleSource();
+    const source = scripted({ task: async id => { const task = await base.task(id); return task === null ? null : { ...task, retry: id === "t3" ? { runId: 7, digest: "d".repeat(32) } : null }; } });
+    const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Sample: upgrade the test runner");
+    await mounted();
+    app.stdin.write("r");
+    await shows("Retry build #7?");
+    app.stdin.write("\u001b");
+    await shows("Nothing retried.");
+    expect(source.acts).toEqual([]);
+    app.stdin.write("r");
+    await shows("Retry build #7?");
+    app.stdin.write("y");
+    await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "retry", id: "t3", runId: 7, digest: "d".repeat(32) }]));
+    await shows("j/k move");
+    app.stdin.write("j");
+    await shows("> Sample: fix the login redirect");
+    app.stdin.write("r");
+    await shows("Nothing to retry on this task.");
+    expect(source.acts).toHaveLength(1);
+  });
+
   it("a refused write shows its words and leads to a password", async () => {
     const source = scripted({ act: async () => ({ ok: false, message: "Set a password, or sign in with your password, to do this.", needsPassword: true }) });
     const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
     const shows = show(app);
     await shows("> Sample");
     await mounted();
+    app.stdin.write("j"); app.stdin.write("j");
+    await shows("> Sample: add CSV export");
     app.stdin.write("c");
+    await shows("Did you check it yourself? (y/n)");
+    app.stdin.write("y");
     await shows("Set a password, or sign in with your password, to do this.");
     await shows("Set a password: run `toolroll password set`");
+  });
+
+  describe("Accept this result?", () => {
+    const sample = (over: Partial<TuiResult> = {}): TuiResult => ({ id: "t2", runId: 2, digest: "d".repeat(64), title: "Sample: add CSV export", ready: true, blockers: [],
+      summary: ["Added a CSV export button to the orders page."], files: { names: Array.from({ length: 12 }, (_, i) => `src/file-${i + 1}.ts`).slice(0, 10), more: 2 },
+      requirements: [{ word: "Met", statement: "Orders export as CSV." }, { word: "You check", statement: "The CSV opens in a spreadsheet." }],
+      checks: ["Can I merge? Not yet", "✓ Project checks passed on this commit"], owed: "person-check", ...over });
+    async function onResult(source: TuiSource & { acts: TuiAct[] }) {
+      const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+      const shows = show(app);
+      await shows("> Sample");
+      await mounted();
+      app.stdin.write("j"); app.stdin.write("j");
+      await shows("> Sample: add CSV export");
+      return { app, shows };
+    }
+
+    it("c and a open it, pinned when it opens: the summary, changed files, requirements and checks; y sends exactly those pins with the person's yes", async () => {
+      for (const key of ["c", "a"]) {
+        let reads = 0;
+        const source = scripted({ result: async () => { reads += 1; return sample(); } });
+        const { app, shows } = await onResult(source);
+        app.stdin.write(key);
+        await shows("Accept this result? Sample: add CSV export");
+        for (const line of ["Added a CSV export button", "src/file-10.ts", "and 2 more", "Met: Orders export as CSV.", "You check: The CSV opens in a spreadsheet.", "Can I merge? Not yet", "Did you check it yourself? (y/n)"]) await shows(line);
+        expect(source.acts).toEqual([]);
+        app.stdin.write("y");
+        await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "complete", id: "t2", runId: 2, digest: "d".repeat(64), checked: true, reason: null }]));
+        expect(reads).toBe(1);
+        cleanup();
+      }
+    });
+
+    it("Esc and n accept nothing", async () => {
+      const source = scripted({ result: async () => sample() });
+      const { app, shows } = await onResult(source);
+      app.stdin.write("c");
+      await shows("Did you check it yourself? (y/n)");
+      app.stdin.write("n");
+      await shows("Nothing accepted.");
+      app.stdin.write("c");
+      await shows("Did you check it yourself? (y/n)");
+      app.stdin.write("\u001b");
+      await shows("Nothing accepted.");
+      expect(source.acts).toEqual([]);
+    });
+
+    it("an exception asks why: empty or spaces send nothing; the words typed are sent with the pins", async () => {
+      const source = scripted({ result: async () => sample({ owed: "exception", requirements: [{ word: "Not shown yet", statement: "A screenshot of the export." }] }) });
+      const { app, shows } = await onResult(source);
+      app.stdin.write("c");
+      await shows("Say why you accept it anyway:");
+      app.stdin.write("\r");
+      app.stdin.write("   ");
+      app.stdin.write("\r");
+      await new Promise(resolve => setTimeout(resolve, 60));
+      expect(source.acts).toEqual([]);
+      app.stdin.write("The export button is unchanged");
+      await shows("The export button is unchanged");
+      app.stdin.write("\r");
+      await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "complete", id: "t2", runId: 2, digest: "d".repeat(64), checked: false, reason: "The export button is unchanged" }]));
+    });
+
+    it("nothing owed: y accepts without claiming a check; a result that can't be accepted yet says why and offers no yes", async () => {
+      const plain = scripted({ result: async () => sample({ owed: null }) });
+      const first = await onResult(plain);
+      first.app.stdin.write("c");
+      await first.shows("Accept it and mark the task done? (y/n)");
+      first.app.stdin.write("y");
+      await vi.waitFor(() => expect(plain.acts).toEqual([{ kind: "complete", id: "t2", runId: 2, digest: "d".repeat(64), checked: false, reason: null }]));
+      cleanup();
+      const blocked = scripted({ result: async () => sample({ ready: false, blockers: ["Checks failed (exit 1). Fix them and run checks again, or send it back."] }) });
+      const second = await onResult(blocked);
+      second.app.stdin.write("c");
+      await second.shows("You can't accept it yet.");
+      await second.shows("Checks failed (exit 1).");
+      second.app.stdin.write("y");
+      await new Promise(resolve => setTimeout(resolve, 60));
+      expect(blocked.acts).toEqual([]);
+    });
+
+    it("the result changed meanwhile: refused, said plainly, and the new one shown; its own pins are what the next yes sends", async () => {
+      let reads = 0;
+      const acts: TuiAct[] = [];
+      const source = scripted({
+        result: async () => (reads++ === 0 ? sample() : sample({ runId: 3, digest: "e".repeat(64), summary: ["Added the CSV export, with a header row."] })),
+        act: async one => { acts.push(one); return acts.length === 1 ? { ok: false, message: "This result changed. Look at the new one before accepting it.", needsPassword: false, changed: true } : { ok: true, message: "Accepted. The task is done." }; },
+      });
+      const { app, shows } = await onResult(source);
+      app.stdin.write("c");
+      await shows("Did you check it yourself? (y/n)");
+      app.stdin.write("y");
+      await shows("This result changed while you were reading it. This is the new one.");
+      await shows("Build #3");
+      await shows("Added the CSV export, with a header row.");
+      app.stdin.write("y");
+      await shows("Accepted. The task is done.");
+      expect(acts).toEqual([
+        { kind: "complete", id: "t2", runId: 2, digest: "d".repeat(64), checked: true, reason: null },
+        { kind: "complete", id: "t2", runId: 3, digest: "e".repeat(64), checked: true, reason: null },
+      ]);
+    });
   });
 
   it("q with agents this terminal started asks: stop them, or keep them running in the background", async () => {
