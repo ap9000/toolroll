@@ -1,5 +1,5 @@
 
- RUN  v4.1.10 /Users/alekseypelletier/Developer/standing-orders-process-tracking
+ RUN  v4.1.10 ~/Developer/standing-orders-process-tracking
 
  ✓ src/restart-certification.test.ts > restart certification > c6: the baseline records boot, runtime, service, containment and live custody — and never a credential 470ms
  ✓ src/restart-certification.test.ts > restart certification > c6: after a VERIFIED boot change the old boot's custody settles by the controller's own rules, and a fresh heartbeat plus a running service pass 232ms

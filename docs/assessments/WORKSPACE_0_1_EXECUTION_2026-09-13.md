@@ -24,7 +24,7 @@ The sections below are chronological records. Earlier “pending” statements a
 
 - Task: `workspace-0-verifier-20260913` — Resolve repository verification discrepancy before workspace redesign.
 - Exact approved scope: `44461243aa89a575268b604f078bafda`, approved by the existing saved operator login at 21:46:46 UTC.
-- Real build: **1542**, on the existing `alexsmacstudio-localdomain` worker.
+- Real build: **1542**, on the existing local worker.
 - Actual builder: Claude Opus. Existing route/permission settings and optional dollar maximum were retained; no global setting was changed.
 - The normal task branch was seeded from `d12d776897e3d4a0bb329737e8f09f624285f467` before dispatch. The run's recorded base confirms that revision, preserving the previous UI pass.
 - Scope: diagnose the serial-test discrepancy, measure database operation separately from assertion overhead, apply only an evidence-backed fix, preserve timeout/no-partial-write guarantees, and run the exact approved command twice consecutively.

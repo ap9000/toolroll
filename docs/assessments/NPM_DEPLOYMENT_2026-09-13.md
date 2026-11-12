@@ -29,7 +29,7 @@ replacement, live service switch or permission change was performed.
 The disposable job `com.standing-orders.browser-preflight.pry2qz` ran the
 packaged `checkDesktopProjects` implementation under:
 
-`/Users/alekseypelletier/.nvm/versions/node/v22.22.0/bin/node`
+`~/.nvm/versions/node/v22.22.0/bin/node`
 
 It had no native app association, no provider calls, no task database writes
 and no access grants. Each project probe uses the existing bounded child and

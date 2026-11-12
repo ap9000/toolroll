@@ -295,7 +295,7 @@ describe("the shared runner-name rule", () => {
     expect(validRunnerName("")).toBe(false);
     expect(validRunnerName("a".repeat(RUNNER_NAME_MAX + 1))).toBe(false);
     expect(validRunnerName("hasbell")).toBe(false);
-    expect(normalizeRunnerName("Alekseys-MacBook.Pro.local")).toBe("alekseys-macbook-pro-local");
+    expect(normalizeRunnerName("Office-MacBook.Pro.local")).toBe("office-macbook-pro-local");
     expect(normalizeRunnerName("!!!")).toBe("worker");
     expect(normalizeRunnerName("x".repeat(90)).length).toBe(RUNNER_NAME_MAX);
   });

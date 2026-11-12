@@ -69,7 +69,7 @@
     "Project and knowledge screens reuse existing native forms within the new shell; richer source previews and recent-chat history are subsequent component migrations."
   ],
   "detector": {
-    "command": "sh /Users/alekseypelletier/.codex/skills/impeccable/scripts/impeccable detect src/browser",
+    "command": "sh ~/.codex/skills/impeccable/scripts/impeccable detect src/browser",
     "exitCode": 0,
     "findings": 0
   }

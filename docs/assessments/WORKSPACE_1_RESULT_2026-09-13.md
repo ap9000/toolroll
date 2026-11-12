@@ -357,7 +357,7 @@ and chat surfaces of the published result).
 
 | Command | Result |
 | --- | --- |
-| `node /Users/alekseypelletier/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs <this checkout>` (the reviewer's script) | before: checks 1 and 2 failed; after: 4/4 pass (201 selected → 200 rows with the bound; 501 foreign → 200 admitted rows, no empty claim; member Work/run 200/200; 201 unplaced → member's assigned task visible, none unplaced) |
+| `node ~/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs <this checkout>` (the reviewer's script) | before: checks 1 and 2 failed; after: 4/4 pass (201 selected → 200 rows with the bound; 501 foreign → 200 admitted rows, no empty claim; member Work/run 200/200; 201 unplaced → member's assigned task visible, none unplaced) |
 | `npx vitest run src/workspace-ui.test.ts src/dispatch.test.ts src/telegram-status.test.ts` | 40 passed |
 | `npx vitest run src/serve.test.ts` | 271 passed (2 new tests; 6 wording assertions updated, none dropped) |
 | `npx vitest run src/reviewer.test.ts src/board.test.ts src/tick.test.ts src/builder.test.ts src/telegram-status.test.ts src/dispatch.test.ts src/workspace-ui.test.ts src/cli.test.ts src/converse.test.ts` | 386 passed |
@@ -465,7 +465,7 @@ unchanged.
 
 | Command | Result |
 | --- | --- |
-| `node /Users/alekseypelletier/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs <this checkout>` | before: 4/5 (case 5 `shown: 0`, `limitedScanNotice: true`); after: 5/5, exit 0 — case 5 `shown: 17`, `assignedTaskVisible: true`, `limitedScanNotice: false` |
+| `node ~/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs <this checkout>` | before: 4/5 (case 5 `shown: 0`, `limitedScanNotice: true`); after: 5/5, exit 0 — case 5 `shown: 17`, `assignedTaskVisible: true`, `limitedScanNotice: false` |
 | `npx vitest run src/workspace-query.test.ts` | 6 passed |
 | `npx vitest run src/serve.test.ts src/workspace-query.test.ts src/workspace-ui.test.ts src/dispatch.test.ts src/store.test.ts` | 5 files, 400 passed |
 | `npm run typecheck` | clean |
