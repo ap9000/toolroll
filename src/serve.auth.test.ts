@@ -723,7 +723,9 @@ describe("the first run: three plain steps to a first result", () => {
     register(store, { name: "builder-1", host: hostname(), capacity: 1, repos: ["/repo/main"], now: new Date(), newToken: () => "tok-builder-1" });
     await boot({ repo: "/repo/main", connectionProbe: signedIn });
     const cookie = await login();
-    await vi.waitFor(async () => expect(await agentStep(cookie)).not.toContain("claude auth login"));
+    // The background sign-in check answers on its own schedule: on a loaded CI runner (2026-11-11, PR #358) it took
+    // longer than vi.waitFor's 1 s default. The wait is for that answer, so it gets the time a loaded machine needs.
+    await vi.waitFor(async () => expect(await agentStep(cookie)).not.toContain("claude auth login"), { timeout: 10_000, interval: 50 });
   });
 
   test("with no worker registered yet, the background check asks this machine, and pages show the step as checking until it answers", async () => {
@@ -742,7 +744,7 @@ describe("the first run: three plain steps to a first result", () => {
     expect(chat.firstRun!.sandbox).toBeNull();
     expect(probe).toHaveBeenCalled();
     answer!();
-    await vi.waitFor(async () => expect(await agentStep(cookie)).toContain("done"));
+    await vi.waitFor(async () => expect(await agentStep(cookie)).toContain("done"), { timeout: 10_000, interval: 50 });
     expect(await agentStep(cookie)).not.toContain("checking…");
   });
 
