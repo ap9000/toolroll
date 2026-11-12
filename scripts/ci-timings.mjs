@@ -7,12 +7,14 @@
  * and the shard count, so every shard job of a run computes the same plan; the shards' join still checks that together
  * they ran every file once (scripts/ci-shards.mjs), so a plan that went wrong fails, it never drops a file.
  *
- *   node scripts/ci-timings.mjs refresh [--run <ci.yml run id>] [--from <downloaded artifacts folder>] [--repo <owner/name>]
+ *   node scripts/ci-timings.mjs refresh [--run <ci.yml run id>]... [--from <downloaded artifacts folder>] [--repo <owner/name>]
  *   node scripts/ci-timings.mjs plan [--platform linux|darwin] [--shards <K>] [--lane all|macos]
  *
  * `refresh` reads the shard reports a CI run uploaded (Vitest's JSON, one per shard, Linux and macOS) and writes
- * test/timings.json: each file's own time in seconds, per platform. Run it on a recent green run of main or a pull
- * request when the shards drift apart (`plan` prints what each shard would take).
+ * test/timings.json: each file's own time in seconds, per platform. Run it on recent green runs of main or pull
+ * requests when the shards drift apart (`plan` prints what each shard would take). Several `--run`s give each file the
+ * median of its times: one Mac runner can take half as long as another on the same files, so a single run's times are
+ * noisy.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -27,6 +29,13 @@ export const TIMINGS_FILE = join(ROOT, "test", "timings.json");
 export const PLAN_WORKERS = { linux: 3, darwin: 2 };
 /** What a file nobody has timed yet weighs: a typical file, never zero (a new file still costs its shard something). */
 const UNKNOWN_SECONDS = 2;
+/**
+ * What every file costs its shard beyond its own time: Vitest's transform, setup and import of it, which the reports'
+ * per-file times leave out. Measured on ci.yml run 43154559868's Duration lines: 1.4–2.1 s of worker time per file on
+ * Linux, 1.6–2.1 s on macOS. Without it the plan saw a 0.1 s file as free and piled small files on the shards without a
+ * slow one: Linux shards 1 and 2 got 199 and 232 files to the others' ~94, and shard 2 ran 7–12 minutes.
+ */
+export const FILE_OVERHEAD_SECONDS = 1.8;
 
 /** test/timings.json, or empty timings when it is missing or unreadable (the plan then weighs every file alike). */
 export function readTimings(file = TIMINGS_FILE) {
@@ -45,14 +54,15 @@ export function weightOf(file, timings, platform) {
 
 /**
  * The shard (0-based) each file goes to: longest first, each to the shard whose estimated finish — its longest file,
- * or its total over `workers` — stays lowest (ties: the lower total, then the lower index). Files of equal weight are
- * ordered by path, so the plan is the same for the same inputs everywhere.
+ * or its total over `workers` — stays lowest (ties: the lower total, then the lower index). A file costs its time plus
+ * FILE_OVERHEAD_SECONDS. Files of equal weight are ordered by path, so the plan is the same for the same inputs
+ * everywhere.
  */
 export function planShards(files, timings, count, { platform = "linux", workers = PLAN_WORKERS[platform === "darwin" ? "darwin" : "linux"] } = {}) {
   if (!Number.isSafeInteger(count) || count < 1) throw new Error("no shard count");
   const shards = Array.from({ length: count }, () => ({ total: 0, longest: 0 }));
   const finish = (one, extra) => Math.max(one.longest, extra, (one.total + extra) / workers);
-  const order = [...new Set(files)].map(file => ({ file, weight: weightOf(file, timings, platform) }))
+  const order = [...new Set(files)].map(file => ({ file, weight: weightOf(file, timings, platform) + FILE_OVERHEAD_SECONDS }))
     .sort((a, b) => b.weight - a.weight || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   const plan = new Map();
   for (const { file, weight } of order) {
@@ -82,6 +92,17 @@ export function timesFromReports(reports) {
   return times;
 }
 
+/** Each file's median over several runs' times (timesFromReports of each), rounded as they are. */
+export function medianTimes(runs) {
+  const seen = new Map();
+  for (const times of runs) for (const [file, seconds] of Object.entries(times)) seen.set(file, [...(seen.get(file) ?? []), seconds]);
+  const median = values => {
+    const sorted = [...values].sort((a, b) => a - b), mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 1 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) * 5) / 10;
+  };
+  return Object.fromEntries([...seen].map(([file, values]) => [file, median(values)]));
+}
+
 /** The shard reports in a folder laid out as `gh run download` leaves it: `<artifact>/shard-report.json`. */
 function reportsIn(folder) {
   const found = { linux: [], darwin: [] };
@@ -96,21 +117,30 @@ function reportsIn(folder) {
 
 const sorted = table => Object.fromEntries(Object.entries(table).sort(([a], [b]) => (a < b ? -1 : 1)));
 const flag = (args, name) => { const at = args.indexOf(`--${name}`); return at === -1 ? undefined : args[at + 1]; };
+const flags = (args, name) => args.flatMap((arg, at) => (arg === `--${name}` && at + 1 < args.length ? [args[at + 1]] : []));
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [command, ...args] = process.argv.slice(2);
   if (command === "refresh") {
-    const run = flag(args, "run"), given = flag(args, "from"), repo = flag(args, "repo") ?? "ap9000/toolroll";
-    if (run === undefined && given === undefined) { console.error("refresh needs --run <id> or --from <folder>"); process.exit(2); }
+    const runs = flags(args, "run"), given = flag(args, "from"), repo = flag(args, "repo") ?? "ap9000/toolroll";
+    if (runs.length === 0 && given === undefined) { console.error("refresh needs --run <id> (one or more) or --from <folder>"); process.exit(2); }
+    if (runs.some(run => !/^\d+$/.test(run))) { console.error("--run takes a run id"); process.exit(2); }
     const folder = given ?? mkdtempSync(join(tmpdir(), "ci-timings-"));
     try {
-      if (given === undefined) execFileSync("gh", ["run", "download", String(run), "-R", repo, "-D", folder], { stdio: "inherit" });
-      const reports = reportsIn(folder);
+      const sets = [];
+      if (given !== undefined) sets.push(reportsIn(folder));
+      else for (const run of runs) {
+        const into = join(folder, run);
+        execFileSync("gh", ["run", "download", run, "-R", repo, "-D", into], { stdio: "inherit" });
+        sets.push(reportsIn(into));
+      }
       const previous = readTimings();
       // A lane that ran only some files (macOS runs its platform lane) keeps the earlier times of the rest.
-      const linux = { ...previous.linux, ...timesFromReports(reports.linux) }, darwin = { ...previous.darwin, ...timesFromReports(reports.darwin) };
+      const measured = platform => medianTimes(sets.map(set => timesFromReports(set[platform])));
+      const linux = { ...previous.linux, ...measured("linux") }, darwin = { ...previous.darwin, ...measured("darwin") };
       if (Object.keys(linux).length === 0) throw new Error("no Linux shard reports found");
-      writeFileSync(TIMINGS_FILE, JSON.stringify({ source: run === undefined ? "local reports" : `ci.yml run ${run}`, linux: sorted(linux), darwin: sorted(darwin) }, null, 1) + "\n");
+      const source = runs.length === 0 ? "local reports" : `ci.yml run${runs.length === 1 ? "" : "s"} ${runs.join(", ")}${runs.length === 1 ? "" : " (each file's median)"}`;
+      writeFileSync(TIMINGS_FILE, JSON.stringify({ source, linux: sorted(linux), darwin: sorted(darwin) }, null, 2) + "\n");
       console.log(`test/timings.json: ${Object.keys(linux).length} Linux and ${Object.keys(darwin).length} macOS files`);
     } finally { if (given === undefined) rmSync(folder, { recursive: true, force: true }); }
   } else if (command === "plan") {
@@ -119,5 +149,5 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     const files = lane === "all" ? inventory(ROOT) : laneFiles(ROOT, lane);
     const { shards } = planShards(files, readTimings(), count, { platform });
     shards.forEach((one, at) => console.log(`shard ${at + 1}/${count}: ${one.total.toFixed(0)} s of files, about ${one.estimate.toFixed(0)} s on ${PLAN_WORKERS[platform]} workers (longest file ${one.longest.toFixed(0)} s)`));
-  } else { console.error("usage: ci-timings.mjs refresh --run <id> | plan [--platform linux|darwin] [--shards <K>] [--lane all|macos]"); process.exit(2); }
+  } else { console.error("usage: ci-timings.mjs refresh --run <id> [--run <id>]... | plan [--platform linux|darwin] [--shards <K>] [--lane all|macos]"); process.exit(2); }
 }

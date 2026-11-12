@@ -160,7 +160,8 @@ a Mac, plus a smoke set; `scripts/ci-shards.mjs` LANES) in three, joined by the
 required `node 24 · ubuntu-latest` and `node 24 · macos-latest` checks (the
 nightly runs every file on macOS too). Shards are balanced by each file's
 measured time (`test/timings.json`; refresh it with `node scripts/ci-timings.mjs
-refresh --run <ci run id>`, see what each shard would take with `node
+refresh --run <ci run id> [--run <id>]...`, each file's median over the runs,
+see what each shard would take with `node
 scripts/ci-timings.mjs plan`), and a newer push to a pull request cancels the
 older run (never a `release-*` branch's). `journeys.yml` runs the scripted
 journeys on every pull request, advisory (see `docs/plans/ci-speed.md`). The

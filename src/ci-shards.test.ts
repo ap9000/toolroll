@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
 import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
-import { planShards } from "../scripts/ci-timings.mjs";
+import { FILE_OVERHEAD_SECONDS, medianTimes, planShards } from "../scripts/ci-timings.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "ci-shards-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -201,9 +201,28 @@ describe("ci-speed item 1: timing-balanced shards", () => {
   test("a file timed on one platform only weighs the same on the other; one never timed weighs a typical file", () => {
     const linux = planShards(["a.test.ts", "b.test.ts"], timings, 2, { platform: "linux" }).shards;
     const darwin = planShards(["a.test.ts", "b.test.ts"], timings, 2, { platform: "darwin" }).shards;
-    expect(Math.max(...linux.map(one => one.longest))).toBe(100);
-    expect(Math.max(...darwin.map(one => one.longest))).toBe(300);
+    expect(Math.max(...linux.map(one => one.longest))).toBe(100 + FILE_OVERHEAD_SECONDS);
+    expect(Math.max(...darwin.map(one => one.longest))).toBe(300 + FILE_OVERHEAD_SECONDS);
     expect(planShards(["z.test.ts"], timings, 1).shards[0]!.total).toBeGreaterThan(0);
+  });
+
+  test("every file costs its shard its load as well as its own time, so small files don't pile onto one shard", () => {
+    // Vitest's transform, setup and import of a file aren't in the reports' per-file times (ci.yml run 43154559868:
+    // Linux shard 2 got 232 files to the others' ~94 and ran longest). Here 60 files of 0.1 s against one of 30 s: by
+    // their own times alone the 60 all go beside the slow file's shard; with their load they split evenly.
+    const small = Array.from({ length: 60 }, (_, at) => `s${String(at).padStart(2, "0")}.test.ts`);
+    const light = { linux: { "slow.test.ts": 30, ...Object.fromEntries(small.map(file => [file, 0.1])) }, darwin: {} };
+    const { plan, shards } = planShards(["slow.test.ts", ...small], light, 2, { workers: 1 });
+    const counts = [0, 1].map(at => [...plan.values()].filter(shard => shard === at).length);
+    expect(Math.abs(counts[0]! - counts[1]!)).toBeLessThanOrEqual(Math.ceil(30 / FILE_OVERHEAD_SECONDS));
+    expect(Math.min(...counts)).toBeGreaterThan(10);
+    expect(shards.reduce((sum, one) => sum + one.total, 0)).toBeCloseTo(30 + 60 * 0.1 + 61 * FILE_OVERHEAD_SECONDS, 6);
+  });
+
+  test("a refresh over several runs takes each file's median, so one fast or slow runner doesn't set the plan", () => {
+    expect(medianTimes([{ "a.test.ts": 10, "b.test.ts": 1 }, { "a.test.ts": 30, "c.test.ts": 4 }, { "a.test.ts": 12, "b.test.ts": 2 }]))
+      .toEqual({ "a.test.ts": 12, "b.test.ts": 1.5, "c.test.ts": 4 });
+    expect(medianTimes([])).toEqual({});
   });
 
   test("the committed timings cover this checkout's suite", () => {

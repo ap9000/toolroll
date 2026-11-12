@@ -25,6 +25,14 @@ PR run 41634514443 (ui-waves-bcd), from the jobs API and the shards' uploaded Vi
    list, the timings and the shard count, so every shard job computes the same one; the join still checks every file
    ran exactly once, so a plan that went wrong fails, it never drops a file. Linux: 6 shards (the estimate falls from
    about 420 s to about 225 s per shard; 8 would save little more for two more jobs' setup).
+   2026-11-11 (ci-shard-balance): every file also costs its shard `FILE_OVERHEAD_SECONDS` (1.8 s: Vitest's transform,
+   setup and import of it, which the reports' per-file times leave out; Duration lines of run 43154559868 measured
+   1.4–2.1 s per file), and `refresh` takes several `--run`s and keeps each file's median. Without the overhead the
+   plan saw small files as free: Linux shards 1 and 2 got 199 and 232 files to the others' ~94, and shard 2 ran
+   longest in 7 of 8 recent pull request runs (7.3–12.1 min of tests); the stale macOS timings had no time for the newer slow
+   attack files, so macOS shard 3 drew both of the two slowest. Replayed on five recent runs' per-file times
+   (each run held out from the timings it is judged by): the slowest Linux shard 521 → 412 s on average, the slowest
+   macOS shard 576 → 516 s.
 2. **The slowest files.** `auto-approve-green.test.ts` is split in two files (`auto-approve-green-scope.test.ts`
    holds codex r1 #2's change classes, about half its time) over a shared world, `test/auto-approve-world.ts`: the
    same 244 tests and 287 assertions. Its per-test cost is the plane's own verified git reads (about 40 git processes
