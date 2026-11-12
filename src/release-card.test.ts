@@ -194,6 +194,20 @@ describe("the release card", () => {
     expect(decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)?.rows.flat().some(one => "act" in one && one.act === "approve") ?? false).toBe(false);
   });
 
+  test.each([
+    ["a recorded release commit this repository doesn't have", () => { store.handle.prepare("UPDATE release_operation SET external_ref = ? WHERE external_ref = ?").run("d".repeat(40), baseline); }, /^the commits between the releases couldn't be listed$/],
+    ["no Git folder", () => { rmSync(join(repo, ".git"), { recursive: true, force: true }); }, /^the project's Git folder can't be read$/],
+    ["a setting the release read refuses", () => { git("config", "core.sshCommand", "\u001b[2Jevil"); }, /^the project's Git settings hold an entry a release read refuses$/],
+  ] as const)("a change list that can't be read says why, in Toolroll's own words (%s)", (_, setUp, why) => {
+    const taskId = fileGate();
+    setUp();
+    const card = releaseCardOf(store, store.getScope(taskId)!, "form", { profile: () => null });
+    expect(card.changes.commits).toBeNull();
+    expect(card.changes.why).toMatch(why);
+    // One plain line, never the repository's own text.
+    expect(card.changes.why).not.toMatch(/[\x00-\x1f\x7f]|evil/);
+  });
+
   test("the change list runs the release path's own Git by its absolute path, never one a PATH names first", () => {
     const taskId = fileGate();
     const bin = join(dir, "planted-bin"), ran = join(dir, "planted-ran");

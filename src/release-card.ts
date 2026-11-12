@@ -230,22 +230,35 @@ export function releaseBaselineRecord(store: Store, repo: string): { recorded: f
 /** The commits after `from` up to `to`, as verified Git objects only, from the project's recorded Git directory: the
  * release coordinator's checkout config allowlist first, then commit-extract's verified range (every commit hashed here,
  * a shallow boundary, grafts or replacement refs refused, and the range proved to stop only in the last release's own
- * history). Null when they can't be read, so a card never shows a shortened list. */
-export function commitsBetween(repo: string, from: string, to: string): { sha: string; subject: string }[] | null {
-  if (!SHA.test(from) || !SHA.test(to)) return null;
+ * history). When they can't be read, why, in Toolroll's own fixed words (never the repository's text), so a card says
+ * why it shows no list rather than a shortened one. */
+export function readCommitsBetween(repo: string, from: string, to: string): { ok: true; commits: { sha: string; subject: string }[] } | { ok: false; why: string } {
+  if (!SHA.test(from) || !SHA.test(to)) return { ok: false, why: "a commit id isn't a full id" };
   let gitDir: string;
   try {
     const named = join(realpathSync(repo), ".git");
-    if (!lstatSync(named).isDirectory()) return null;
+    if (!lstatSync(named).isDirectory()) return { ok: false, why: "the project has no Git folder of its own" };
     gitDir = realpathSync(named);
-  } catch { return null; }
+  } catch { return { ok: false, why: "the project's Git folder can't be read" }; }
   const tools = releaseTools();
   const env = { ...releaseGitEnv(), PATH: RELEASE_PATH };
   const listing = spawnSync(tools.git, [`--git-dir=${gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env, encoding: "utf8", timeout: 15_000 });
-  if (listing.status !== 0 || releaseConfigProblem(listing.stdout) !== null) return null;
+  if (listing.status !== 0) {
+    const how = (listing.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ? "timed out after 15 s"
+      : listing.signal !== null ? `stopped by ${listing.signal}` : listing.error !== undefined ? "couldn't start" : `exited ${listing.status}`;
+    return { ok: false, why: `Git couldn't list the project's settings (${how})` };
+  }
+  // The key is the repository's own text: named only by kind, never echoed.
+  if (releaseConfigProblem(listing.stdout) !== null) return { ok: false, why: "the project's Git settings hold an entry a release read refuses" };
   const range = verifiedRange(gitDir, from, to, { git: tools.git, env });
-  if (!range.ok) return null;
-  return range.value.map(one => ({ sha: one.id, subject: subjectText(one.message) }));
+  // commit-extract's own words, made one control-free line like any shown text, in the card's lower-case clause form.
+  if (!range.ok) { const said = subjectText(range.message).replace(/\.$/, ""); return { ok: false, why: /^[A-Z][a-z]/.test(said) ? said[0]!.toLowerCase() + said.slice(1) : said }; }
+  return { ok: true, commits: range.value.map(one => ({ sha: one.id, subject: subjectText(one.message) })) };
+}
+/** readCommitsBetween's list, or null when it can't be read. */
+export function commitsBetween(repo: string, from: string, to: string): { sha: string; subject: string }[] | null {
+  const read = readCommitsBetween(repo, from, to);
+  return read.ok ? read.commits : null;
 }
 
 /** GitHub lists at most this many of a pull request's commits; a longer one is never shown as complete. */
@@ -352,7 +365,9 @@ export function releaseChangeList(store: Store, terms: Pick<ReleaseTerms, "repo"
   let source: ChangeList["source"];
   let why: string | undefined;
   if (baseline !== null) {
-    commits = commitsBetween(terms.repo, baseline, terms.approvedSha);
+    const read = readCommitsBetween(terms.repo, baseline, terms.approvedSha);
+    commits = read.ok ? read.commits : null;
+    if (!read.ok) why = read.why;
     source = commits === null ? "unread" : "recorded";
   } else {
     const remote = store.projectRemote(terms.repo);
