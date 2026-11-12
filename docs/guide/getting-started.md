@@ -32,14 +32,19 @@ each agent is doing and what needs you.
 - **No password.** A new install on your own computer signs you in as its
   owner. There is no login file to find. You can watch and drive your work,
   approve plans and add projects without one.
-- **Three steps to a first result.** Pick the agent (Claude Code or Codex;
-  each shows the command that signs it in), a project (a folder, one of your
-  GitHub repositories, or a small sample project), and a first task from a
-  few starters. `toolroll welcome` shows the same steps; in the browser they
-  are on the welcome page.
-- **Approve and collect.** The plan shows in full; approve it with `a`, with
-  no password. The result comes back **Ready**: mark it Complete with `c`, or
-  ask for a revision with `r`. `?` lists every key.
+- **Three steps to a first result.** Until your first task, the terminal
+  lists three steps and what each still needs: an agent (Claude Code or
+  Codex; it shows the command that signs one in), a project, and a first
+  task. The terminal shows these steps but does not pick the agent or add a
+  project for you: add a project with `toolroll repos add <folder>`, or press
+  `w` and use the browser's welcome page to choose the agent and add a
+  folder, one of your GitHub repositories, or a small sample project. Then
+  press `n` to write the first task; the steps suggest a few starters.
+  `toolroll welcome` prints the same steps.
+- **Approve and collect.** `a` shows the plan in full, and `y` approves it,
+  with no password. The result comes back **Ready**: mark it Complete with
+  `c`, or send it back for a revision with `b` (it asks what to change). `r`
+  retries a build that failed. `?` lists every key.
 - **The browser.** Press `w`, or run `toolroll --web`. It opens signed in.
   `toolroll open` gets you back in from any terminal, signed in again.
 - **Quitting.** `q` asks whether to stop the agents (running work is saved)

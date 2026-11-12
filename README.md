@@ -8,7 +8,7 @@
 ### Your agents build. You decide.
 
 For Claude Code, Codex and Gemini, on your own machine.<br>
-Approve the exact scope once. Get results back Ready with the diff, the passing check and screenshots.
+Approve the exact scope once. Get results back Ready with the diff, the check status and screenshots.
 
 [![npm](https://img.shields.io/npm/v/toolroll?color=171717)](https://www.npmjs.com/package/toolroll)
 [![CI](https://github.com/ap9000/toolroll/actions/workflows/ci.yml/badge.svg)](https://github.com/ap9000/toolroll/actions/workflows/ci.yml)
@@ -100,8 +100,9 @@ the CLI or MCP. Every act lands in one ledger.
 
 - **You approve scope once.** The approval binds to the exact goal, bounds,
   criteria, agent and model. No model sits in any approval path.
-- **Evidence, not trust.** Ready means the check ran on that commit. A failed
-  check stays failed.
+- **Evidence, not trust.** Ready shows the result and its check status;
+  merging needs the project's required check to pass on that exact result. A
+  failed check stays failed.
 - **Your machine, your logins.** Agents use the Claude and Codex subscriptions
   you already have. An OS-level fence keeps them away from Toolroll's secrets.
 - **Any agent.** Claude Code, Codex, Gemini and OpenRouter, routed per phase.

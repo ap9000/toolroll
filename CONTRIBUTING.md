@@ -8,12 +8,18 @@ Contributions that fit that shape are very welcome.
 ## Getting set up
 
 ```sh
-git clone https://github.com/ap9000/toolroll && cd standing-orders
+git clone https://github.com/ap9000/toolroll && cd toolroll
 npm install
-npm test              # the fast unit tier (npm run test:all adds the slow one)
-npm run typecheck
+npm run check:quick   # typecheck plus the tests named after the files you changed
 npm run dev -- --help # run the CLI from source
 ```
+
+`npm run check:quick` is the loop to use while you work: it runs the
+typecheck and only the tests named after your changed files
+(`src/foo.ts` runs `src/foo.test.ts` and `src/foo.*.test.ts`), plus the
+attack suite when a security-critical file changed. `npm test` runs the
+whole fast unit tier, `npm run test:all` adds the slow one, and
+`npm run typecheck` is the typecheck alone.
 
 There is nothing else — no services to start, no env file to copy. Tests
 create their own temporary databases and repositories and clean up after
@@ -22,7 +28,7 @@ themselves.
 ## What makes a change land
 
 **Every promise is a test.** Security rules, migrations, data integrity and
-contracts each have one (docs/testing.md says which kinds are kept); a fix that
+contracts each have one ([docs/TESTING.md](docs/TESTING.md) says which kinds are kept); a fix that
 breaks one of them adds a case to that rule's table, and wording or layout gets
 none. Fakes are preferred over mocks — most
 of the suite drives real SQLite databases and real git repositories in temp
@@ -34,9 +40,10 @@ why, rather than guessing. A new adapter that cannot verify an endpoint
 should refuse the operation, visibly — see how the GitHub adapter treats
 `addEdge`.
 
-**No new runtime dependencies** without a conversation first. Node's standard
-library (including `node:sqlite`, global `fetch`, and `WebSocket`) has been
-enough so far.
+**No new runtime dependency** without a conversation first. There are 13
+today, plus one optional (`@lydell/node-pty`), listed in `package.json`;
+Node's standard library (`node:sqlite`, global `fetch`, `WebSocket`) covers
+the rest, and a new one has to earn its place over it.
 
 **Security-sensitive paths need care.** Approval nonces are minted only on
 screens that restate the digest-bound terms; credentials never appear in
