@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { join } from "node:path";
-import { openLocalWorld, type LocalWorld } from "../local-owner-world.js";
+import { openLocalWorld, type LocalWorld, LOCAL_WORLD_SETUP_MS } from "../local-owner-world.js";
 import { RESULT_T0, resultFixtures, type Kind } from "../local-owner-results.js";
 import { runOperate } from "../../src/operate.js";
 import { asLocalOwner, runAsLocalOwner, type LocalOwnerAct, type LocalPrincipal } from "../../src/local-owner.js";
@@ -33,7 +33,7 @@ beforeEach(async () => {
   evidence = join(world.configDir, "evidence");
   fx = resultFixtures(world, evidence);
   fx.prepare();
-});
+}, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { vi.restoreAllMocks(); await world.close(); });
 
 /** `task complete` exactly as the terminal UI sends it: as the local owner, with --json, on the laptop's database. */
@@ -180,6 +180,25 @@ describe("accepting in the terminal, as the local owner", () => {
     // The same request again once the owner no longer stands: re-proved first, so refused.
     expect(setLocalModeOff(world.store, { name: "alex", authority: "full" }, T0)).toMatchObject({ ok: true });
     expect((await terminal(result.id, [...pins(result), "--checked"])).envelope).toMatchObject({ ok: false });
+  });
+
+  test("a replay is the whole request: the same pins with a different check answer or reason is never reported as saved", async () => {
+    // Codex review 3, finding 2: pins alone recognised a replay, so a different answer was reported as accepted.
+    const checked = fx.ready("ordinary", { owed: "person-check" });
+    expect((await terminal(checked.id, [...pins(checked), "--checked"])).envelope).toMatchObject({ ok: true, replayed: false });
+    const afterChecked = fx.stateOf(checked.id, checked.runId);
+    expect((await terminal(checked.id, pins(checked))).envelope).toMatchObject({ ok: false, reason: "already-complete" });
+    expect((await terminal(checked.id, [...pins(checked), "--checked"])).envelope).toMatchObject({ ok: true, replayed: true });
+    expect(fx.stateOf(checked.id, checked.runId)).toBe(afterChecked);
+
+    const excepted = fx.ready("ordinary", { owed: "exception" });
+    expect((await terminal(excepted.id, [...pins(excepted), "--reason", "Reviewed the diff by hand."])).envelope).toMatchObject({ ok: true, replayed: false, accepted: "exception" });
+    const afterExcepted = fx.stateOf(excepted.id, excepted.runId);
+    expect((await terminal(excepted.id, [...pins(excepted), "--reason", "Something else."])).envelope).toMatchObject({ ok: false, reason: "already-complete" });
+    expect((await terminal(excepted.id, [...pins(excepted), "--reason", "Something else.", "--checked"])).envelope).toMatchObject({ ok: false, reason: "already-complete" });
+    expect((await terminal(excepted.id, [...pins(excepted), "--reason", "Reviewed the diff by hand."])).envelope).toMatchObject({ ok: true, replayed: true, accepted: "exception" });
+    expect(fx.stateOf(excepted.id, excepted.runId)).toBe(afterExcepted);
+    expect(acceptance(excepted.runId)).toHaveLength(1);
   });
 
   test("a refused completion keeps no acceptance: a person's check on a result whose check failed, from the terminal", async () => {

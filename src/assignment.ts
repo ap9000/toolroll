@@ -744,16 +744,20 @@ export type LocalAcceptance =
 const LOCAL_STALE = { ok: false as const, reason: "stale", message: "This result changed. Look at the new one before accepting it." };
 
 /** This owner's earlier terminal accept of exactly this run and receipt, from its ledger binding; null when none. */
-function localAcceptanceOf(store: Store, rootId: string, account: string, runId: number, digest: string): { completed: string; accepted: "person-check" | "exception" | null } | null {
+function localAcceptanceOf(store: Store, rootId: string, account: string, runId: number, digest: string, request: { checked: boolean; reason: string | null }):
+  { completed: string; accepted: "person-check" | "exception" | null; same: boolean } | null {
   const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE action = ? AND task_id = ? AND actor = ? AND run_id = ? ORDER BY id DESC")
     .all(LOCAL_ACCEPT_ACTION, rootId, `operator:${account}`, runId);
   for (const row of rows) {
     let detail: unknown;
     try { detail = JSON.parse(String(row["detail"] ?? "")); } catch { continue; }
-    const bound = detail as { v?: unknown; digest?: unknown; completed?: unknown };
+    const bound = detail as { v?: unknown; digest?: unknown; completed?: unknown; checked?: unknown; reason?: unknown };
     if (bound.v !== 1 || bound.digest !== digest || typeof bound.completed !== "string") continue;
     const outcome = String(row["outcome"]);
-    return { completed: bound.completed, accepted: outcome === "person-check" || outcome === "exception" ? outcome : null };
+    // A replay is the whole request again (Codex review 3, finding 2): the same pins, the same "I checked it", the same
+    // reason. Anything else about an accepted result is a different request, never reported as saved.
+    const same = bound.checked === request.checked && (bound.reason ?? null) === request.reason;
+    return { completed: bound.completed, accepted: outcome === "person-check" || outcome === "exception" ? outcome : null, same };
   }
   return null;
 }
@@ -782,7 +786,8 @@ export function completeAsLocalOwner(store: Store, taskId: string, input: { runI
       const before = assignmentOf(store, taskId, now, access, root);
       if (before === null || !store.accountCanAccess(who.name, before.repo)) return { ok: false, reason: "not-found", message: "That task is unavailable in your projects." };
       // The same request again: recognised from its binding and the receipt it produced, with the owner proved above.
-      const bound = localAcceptanceOf(store, before.rootId, who.name, input.runId, input.receiptDigest);
+      const bound = localAcceptanceOf(store, before.rootId, who.name, input.runId, input.receiptDigest, { checked: input.checked, reason: input.reason });
+      if (bound !== null && !bound.same) return { ok: false, reason: "already-complete", message: "This result is already accepted." };
       if (bound !== null) {
         return before.state === "complete" && before.receipt?.runId === input.runId && before.receipt.digest === bound.completed
           ? { ok: true, replayed: true, accepted: bound.accepted, assignment: before } : LOCAL_STALE;
@@ -799,7 +804,7 @@ export function completeAsLocalOwner(store: Store, taskId: string, input: { runI
       if (after === null || after.state !== "complete" || after.receipt?.runId !== input.runId) throw new Undone(LOCAL_STALE);
       store.recordAction({ at: now.toISOString(), actor: `operator:${who.name}`, repo: after.repo, taskId: after.rootId, runId: input.runId, action: LOCAL_ACCEPT_ACTION,
         outcome: owed ?? "completed", source: "request",
-        detail: JSON.stringify({ v: 1, digest: input.receiptDigest, completed: after.receipt.digest, checked: input.checked, via: local.transport }) });
+        detail: JSON.stringify({ v: 1, digest: input.receiptDigest, completed: after.receipt.digest, checked: input.checked, reason: input.reason, via: local.transport }) });
       return { ok: true, replayed: false, accepted: owed, assignment: after };
     });
   } catch (error) {

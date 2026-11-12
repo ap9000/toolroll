@@ -58,10 +58,9 @@ export function requestPlanAsLocalOwner(store: Store, taskId: string, source: st
         return { ok: false, reason: "refused", message: "This task names its own planning agent, so planning it needs your password." };
       }
       if (planSourceOf(store, taskId) !== source) return { ok: false, reason: "stale", message: LOCAL_TASK_CHANGED };
-      // Asked already (by anyone), with nothing about the task changed: the same answer, and nothing written.
-      if (ref.plan === "requested" || ref.plan === "drafted") return { ok: true, replayed: true };
-      // An unchanged-plan pre-authorization left on the task (a mode or a flow's grant armed it on an earlier request)
-      // is never inherited by this one: withdrawn here, in the same transaction, and said in the ledger.
+      // An unchanged-plan pre-authorization on the task (a mode or a flow's grant armed it on this or an earlier request)
+      // never stands behind the local owner's "you'll approve it before anything is built": withdrawn here, in the same
+      // transaction and before the "already asked" answer below, and said in the ledger.
       const armed = store.handle.prepare("SELECT signed_by, basis FROM plan_authorization WHERE task_id = ?").get(taskId);
       if (armed !== undefined) {
         store.handle.prepare("DELETE FROM plan_authorization WHERE task_id = ?").run(taskId);
@@ -69,6 +68,8 @@ export function requestPlanAsLocalOwner(store: Store, taskId: string, source: st
           action: "unchanged plan pre-authorization withdrawn", outcome: "withdrawn",
           detail: JSON.stringify({ v: 1, signedBy: String(armed["signed_by"]), basis: String(armed["basis"]), why: "the local owner asked for the plan" }) });
       }
+      // Asked already (by anyone), with nothing about the task changed: the same answer, and nothing else written.
+      if (ref.plan === "requested" || ref.plan === "drafted") return { ok: true, replayed: true };
       const asked = store.requestPlan(ref.id, now);
       if (!asked.ok) throw new Undone({ ok: false, reason: "refused", message: `This task can't be planned now: ${asked.reason}.` });
       store.recordAction({ at: now.toISOString(), actor: `operator:${local.account}`, repo: ref.repo, taskId, runId: null, action: LOCAL_PLAN_ACTION,

@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { join } from "node:path";
-import { openLocalWorld, LOCAL_T0, type LocalWorld } from "../local-owner-world.js";
+import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { runOperate } from "../../src/operate.js";
 import { asLocalOwner, runAsLocalOwner, type LocalOwnerAct, type LocalPrincipal } from "../../src/local-owner.js";
 import { LOCAL_PLAN_ACTION, LOCAL_RETRY_ACTION, LOCAL_RETRY_SPENT, planSourceOf, requestPlanAsLocalOwner, retryAsLocalOwner, retryPinsOf } from "../../src/local-owner-acts.js";
@@ -29,7 +29,7 @@ let world: LocalWorld, file: string, serial = 0;
 beforeEach(async () => {
   world = await openLocalWorld();
   file = join(world.configDir, "state.db");
-});
+}, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { vi.restoreAllMocks(); await world.close(); });
 
 /** A command exactly as the terminal UI sends it: as the local owner, with --json, on the laptop's database. */
@@ -97,6 +97,23 @@ describe("asking for a plan, as the local owner", () => {
     expect((await ask(id)).envelope).toMatchObject({ ok: true });
     expect(armed(id)).toEqual([]);
     expect(rows("SELECT actor, outcome FROM action_ledger WHERE action = 'unchanged plan pre-authorization withdrawn' AND task_id = ?", id)).toEqual([{ actor: "operator:alex", outcome: "withdrawn" }]);
+  });
+
+  test("a plan already asked for and pre-authorized (the normal order): the local owner's ask withdraws the authorization before answering \"already\"", async () => {
+    const id = plannable();
+    // Asked with a password, then armed as a mode does on that request (Codex review 3, finding 1).
+    expect(world.store.requestPlan(world.store.lookupRef(id)!.id, T0).ok).toBe(true);
+    const scope = world.store.getScope(id)!;
+    world.store.handle.prepare("INSERT INTO plan_authorization (task_id, source_digest, scope_digest, mode_digest, signed_by, created_at, basis) VALUES (?, ?, ?, 'm', 'alex', ?, 'mode')")
+      .run(id, planSourceOf(world.store, id)!, scope.digest, T0.toISOString());
+    expect(armed(id)).toHaveLength(1);
+    expect((await ask(id)).envelope).toMatchObject({ ok: true });
+    expect(plan(id)).toBe("requested");
+    expect(armed(id)).toEqual([]);
+    expect(rows("SELECT actor, outcome FROM action_ledger WHERE action = 'unchanged plan pre-authorization withdrawn' AND task_id = ?", id)).toEqual([{ actor: "operator:alex", outcome: "withdrawn" }]);
+    // Asked again: still "already", and nothing more written.
+    expect((await ask(id)).envelope).toMatchObject({ ok: true });
+    expect(rows("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'unchanged plan pre-authorization withdrawn' AND task_id = ?", id)).toEqual([{ n: 1 }]);
   });
 
   test("saved plan pins refuse (a local request never plans with an agent someone chose); naming pins refuses too", async () => {
