@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.103 — 2026-11-11
+
+- **Home shows releases, flow decisions and setup.** Home's list gains three groups. **Approve a release** lists releases waiting for your yes and releases whose publishing is held for you; the button opens the release page, where the approval happens. **Flow decisions** lists flow cards that wait on you (to decide, choose, answer a question, allow the browser, or move on after no reply); the button opens the card on its flow page. **Finish setting up** lists first-run steps you have not done yet, each with its own button. The top line now reads like "3 tasks and 2 other things need you"; the Tasks count in the menu stays a task count.
+- **A release can only be approved under the release rules.** Before, approving a release from the plain task page, from Home or with `toolroll task approve` skipped some of the release page's checks. Now every approval road refuses a release for the same reasons the release page does: CI failed, the release check failed on this commit, the terms changed after an earlier approval, or the task was put away.
+
 ## 0.9.102 — 2026-11-11
 
 - **Pages change in place.** Moving between Home, Tasks, a task page, Projects, Agents, Search and Settings no longer reloads the whole page. The menu stays put and the page changes with a short cross-fade: going deeper slides in, going back slides out (off when your system asks for reduced motion). Resting the pointer on a link reads its page ahead, so the click shows it at once. Back and Forward change the page the same way and return you to the spot you left. The link you pressed is marked, and a thin loading line shows when a page is slow.
