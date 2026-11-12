@@ -12,7 +12,7 @@ import { propose } from "../../src/scope.js";
 import { storeEvidence } from "../../src/evidence.js";
 import { sealVerificationReceipt } from "../../src/verification-evidence.js";
 import { verifyApproverStanding, type VerifiedApprover } from "../../src/principal.js";
-import { acceptAndCompleteAsOperator, assignmentOf, checkAssignmentAsOperator } from "../../src/assignment.js";
+import { acceptAndCompleteAsOperator, assignmentOf, checkAssignmentAsOperator, owedAcceptance } from "../../src/assignment.js";
 import { register } from "../../src/runner.js";
 import { COMPLETION_ACTION } from "../../src/result-completion.js";
 import { completeAndOpenPullRequest, savePublishing } from "../../src/pull-request-flow.js";
@@ -38,17 +38,47 @@ beforeEach(async () => {
 });
 afterEach(async () => { await world.close(); });
 
-type Kind = "ordinary" | "release" | "declared-protected" | "changed-protected" | "coordinator";
+type Kind = "ordinary" | "release" | "release-record" | "declared-protected" | "changed-protected" | "coordinator";
+/** What the person still owes before the result finishes: nothing (its proof verified), their own check of a
+ * manual-review requirement, or an exception (a requirement not shown) they accept with a reason. */
+type Owed = "nothing" | "person-check" | "exception";
+/** A revision's source build that saved no diff inventory: its run record either doesn't say whether it committed
+ * ("unknown") or proves it committed nothing ("nothing"). */
+type Inherited = "unknown" | "nothing";
+const MANUAL = (id: string) => `criterion "${id}" requires manual-review evidence — an operator must accept it before this can verify`;
+
 /** A finished, checked result on its own branch, Ready, with its exact receipt: the kind of work it is decides the rest. */
-function ready(kind: Kind): { id: string; runId: number; digest: string } {
+function ready(kind: Kind, { owed = "nothing", inherited }: { owed?: Owed; inherited?: Inherited } = {}): { id: string; runId: number; digest: string } {
   const store = world.store, id = `result-${++serial}`;
-  store.createTask({ id, title: "Fix the checkout total" }, T0);
+  // Nothing protected until this result's own approval is sealed (an earlier fixture may have protected infra/).
+  store.setApprovalRules(world.repo, { notRequester: false, protectProject: false, protectedPaths: [] }, "alex", T0);
+  // A revision builds on its source's head: the source's build is part of what the result's branch carries.
+  if (inherited !== undefined) {
+    const source = `${id}-source`;
+    store.createTask({ id: source, title: "Fix the checkout total" }, T0);
+    store.placeTask(store.refFor("built-in", source).id, world.repo, {}, T0);
+    propose(store, { taskId: source, goal: "Fix the checkout total", touches: ["src/total.ts"],
+      acceptance: [{ id: "c1", statement: "Totals add up.", how: null, evidence: ["check"] }], now: T0 });
+    if (!store.sealScopeApproval(source, "alex", T0)) throw Error("seal source");
+    const sourceRef = store.lookupRef(source)!.id;
+    const route = store.routeAuthorityFor(sourceRef, "builder");
+    if (!route?.ok) throw Error("source route fixture");
+    const sourceRun = store.startRun({ taskRef: sourceRef, leaseId: `l-${source}`, runner: "worker-1", branch: `toolroll/${source}`, worktree: `/pool/${source}`, route: route.stamp, now: T0 });
+    // No diff inventory was saved for it. Its record either can't say whether it committed, or proves it didn't.
+    store.finishRun(sourceRun, inherited === "nothing" ? { outcome: "no-change", committed: false, now: T0 } : { outcome: "built", now: T0 });
+    store.setTaskState(source, "done", T0);
+    const brief = storeEvidence(store, evidence(), sourceRun, "revision-brief", "revision.json", Buffer.from("{}"), "revision brief", T0, { captureStatus: "ok" });
+    store.createTask({ id, title: "Fix the checkout total" }, T0);
+    store.markRevision(store.refFor("built-in", id).id, source, brief);
+  } else store.createTask({ id, title: "Fix the checkout total" }, T0);
   store.placeTask(store.refFor("built-in", id).id, world.repo, {}, T0);
   // A release's check purpose, signed in its scope (pipeline-speed.md P0): the scope alone says this is release work.
   const releaseCheck: ReleaseCheckPurpose | undefined = kind !== "release" ? undefined : { version: 1, purpose: "release-check", repo: world.repo, packageVersion: "1.2.3",
     branch: "release/1.2.3", pr: 7, base: "main", approvedSha: "c".repeat(40), approvedTree: "d".repeat(40), grant: { id: 1, digest: "g" }, access: "sandboxed" } as ReleaseCheckPurpose;
+  // The owed acceptance is a second requirement: a person's own look, or a screenshot the build never showed.
+  const extra = owed === "nothing" ? [] : [{ id: "c2", statement: "The receipt reads well on a phone.", how: null, evidence: [owed === "person-check" ? "manual-review" as const : "screenshot" as const] }];
   propose(store, { taskId: id, goal: "Fix the checkout total", touches: [kind === "declared-protected" ? "infra/main.tf" : "src/total.ts"],
-    acceptance: [{ id: "c1", statement: "Totals add up.", how: null, evidence: ["check"] }], now: T0, ...(releaseCheck === undefined ? {} : { releaseCheck }) });
+    acceptance: [{ id: "c1", statement: "Totals add up.", how: null, evidence: ["check"] }, ...extra], now: T0, ...(releaseCheck === undefined ? {} : { releaseCheck }) });
   if (kind === "coordinator") {
     store.handle.exec("PRAGMA foreign_keys = OFF");
     store.handle.prepare("UPDATE task_ref SET coordinator_cid = 'c-1' WHERE external_id = ?").run(id);
@@ -56,9 +86,10 @@ function ready(kind: Kind): { id: string; runId: number; digest: string } {
   }
   // A person approved it with a password, earlier (the local owner could not have).
   if (!store.sealScopeApproval(id, "alex", T0)) throw Error(`seal ${kind}`);
-  if (kind === "declared-protected" || kind === "changed-protected") {
+  if (kind === "declared-protected" || kind === "changed-protected" || inherited !== undefined) {
     // The project protects infra/ (since the seal): its scope declares infra/ ("declared"), or only its build changed
     // it ("changed"), where a second person's yes on record makes today's two-person rule let the owner complete it.
+    // A revision's own build touches no protected file, so what its source's build changed is what decides.
     store.setApprovalRules(world.repo, { notRequester: false, protectProject: false, protectedPaths: ["infra/"] }, "alex", T0);
     if (kind === "changed-protected") store.recordApprovalVote(id, store.getScope(id)!.digest, "robin", T0, "password-now");
   }
@@ -70,15 +101,32 @@ function ready(kind: Kind): { id: string; runId: number; digest: string } {
   store.recordOutcomeFacts(runId, { headRevision: HEAD, handoff: "Totals now include tax." });
   store.finishRun(runId, { outcome: "built", committed: true, now: T0 });
   store.setTaskState(id, "done", T0);
-  store.saveProofVerdict(runId, "verified", [], T0, [{ id: "c1", statement: "Totals add up.", requiredEvidence: ["check"], state: "pass", detail: [], answered: [], review: null }] as never, "verified");
+  const c1 = { id: "c1", statement: "Totals add up.", requiredEvidence: ["check"], state: "pass", detail: [], answered: [], review: null };
+  if (owed === "nothing") store.saveProofVerdict(runId, "verified", [], T0, [c1] as never, "verified");
+  else if (owed === "person-check") store.saveProofVerdict(runId, "short", [MANUAL("c2")], T0, [c1, { id: "c2", statement: "The receipt reads well on a phone.", requiredEvidence: ["manual-review"],
+    state: "manual-review", detail: [MANUAL("c2")], answered: [{ kind: "manual-review", ref: "Looked at it on a phone" }], review: null }] as never, "short");
+  else store.saveProofVerdict(runId, "short", ["no proof for c2"], T0, [c1, { id: "c2", statement: "The receipt reads well on a phone.", requiredEvidence: ["screenshot"],
+    state: "missing", detail: ["no screenshot"], answered: [], review: null }] as never, "short");
   // What the build actually changed: a protected file only in the "changed" case, whatever the scope declared.
   const changed = kind === "changed-protected" ? "infra/main.tf" : "src/total.ts";
   storeEvidence(store, evidence(), runId, "terminal-diff", "diff.patch", Buffer.from(`--- a/${changed}\n+++ b/${changed}\n`), "git diff (exit 0)", T0, { captureStatus: "ok" });
   storeEvidence(store, evidence(), runId, "diff-stat", "diff-stat.json", Buffer.from(JSON.stringify({ filesTruncated: false, files: [{ path: changed }] })), "git diff --numstat (exit 0)", T0, { captureStatus: "ok" });
   storeEvidence(store, evidence(), runId, "check-log", "checks.txt", Buffer.from("1 test passed"), "npm test", T0, { captureStatus: "ok" });
   sealVerificationReceipt(store, evidence(), runId, HEAD, store.liveVerifyCommand(world.repo)!, { configured: true, ran: true, exitCode: 0 }, T0);
+  if (kind === "release-record") {
+    // It belongs to a release through the release records alone (this task anchors a release approval), not its scope.
+    store.handle.exec("PRAGMA foreign_keys = OFF");
+    store.handle.prepare(`INSERT INTO release_authority (repo, generation, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree,
+        tip_sha, tip_task, policy_json, policy_digest, verify_command, verify_digest, access_digest, state, expires_at, created_at)
+      VALUES (?, 1, '1.2.3', ?, 'release/1.2.3', 'main', ?, ?, ?, ?, ?, ?, '{}', 'pd', 1, 'vd', 'sandboxed', 'open', '2026-11-04T12:00:00.000Z', ?)`)
+      .run(world.repo, serial, id, store.getScope(id)!.digest, HEAD, "d".repeat(40), HEAD, id, T0.toISOString());
+    store.handle.exec("PRAGMA foreign_keys = ON");
+  }
   const current = assignmentOf(store, id, T0, { principal: "operator", repos: [world.repo] }, evidence())!;
   if (current.state !== "ready-to-check" || current.receipt?.runId !== runId) throw Error(`${kind}: ${current.state} ${current.detail}`);
+  // The fixture owes exactly what it says: Accept and finish reaches the acceptance write for it.
+  const due = owedAcceptance(current.receipt, current.readiness?.blockers ?? []);
+  if (due !== (owed === "nothing" ? null : owed)) throw Error(`${kind} ${owed}: owes ${due}`);
   return { id, runId, digest: current.receipt.digest };
 }
 
@@ -223,5 +271,147 @@ describe("chat's Accept card, as the local owner", () => {
     const { id, runId } = ready("ordinary");
     expect(confirm(proposal("result_accept", { task: id, run: runId }))).toMatchObject({ ok: true });
     expect(completed(runId)).toBe(1);
+  });
+
+  test("with the person's own check owed, a release, release-record, protected or coordinator card writes no acceptance; an ordinary one records the owner's", () => {
+    for (const kind of [...REFUSED, "release-record"] as const) {
+      const { id, runId } = ready(kind, { owed: "person-check" });
+      const card = proposal("result_accept", { task: id, run: runId });
+      const before = stateOf(id, runId);
+      expect(confirm(card), kind).toMatchObject({ ok: false });
+      expect(stateOf(id, runId)).toBe(before);
+      expect(world.store.proofAcceptance(runId)).toBeNull();
+    }
+    const { id, runId } = ready("ordinary", { owed: "person-check" });
+    expect(confirm(proposal("result_accept", { task: id, run: runId }))).toMatchObject({ ok: true });
+    expect(world.store.proofAcceptance(runId)).toMatchObject({ approver: "alex" });
+    expect(completed(runId)).toBe(1);
+  });
+
+  test("a revision whose source's changes are unknown is refused; one whose source proves it committed nothing is accepted", () => {
+    for (const owed of ["nothing", "person-check"] as const) {
+      const { id, runId } = ready("ordinary", { inherited: "unknown", owed });
+      const card = proposal("result_accept", { task: id, run: runId });
+      const before = stateOf(id, runId);
+      expect(confirm(card), owed).toMatchObject({ ok: false });
+      expect(stateOf(id, runId)).toBe(before);
+    }
+    const { id, runId } = ready("ordinary", { inherited: "nothing", owed: "person-check" });
+    expect(confirm(proposal("result_accept", { task: id, run: runId }))).toMatchObject({ ok: true });
+    expect(completed(runId)).toBe(1);
+  });
+});
+
+/** What the person's acceptance of a result recorded: who accepted it and with what reason. */
+const acceptance = (runId: number) => world.store.handle.prepare("SELECT approver, note FROM proof_acceptance WHERE run = ?").all(runId);
+
+describe("an owed acceptance, as the local owner", () => {
+  // Each owed acceptance with the form Accept and finish posts for it: an exception is only ever accepted with its reason.
+  const OWED = { "person-check": {}, exception: { note: "The phone layout is unchanged by this fix." } } as const;
+  const ACCEPTING = { "Accept and finish": { accept: "1" }, "Accept and finish, with a pull request": { accept: "1", publish: "1" } } as const;
+  const KINDS: readonly Kind[] = [...REFUSED, "release-record"];
+
+  for (const [owed, reason] of Object.entries(OWED) as [keyof typeof OWED, (typeof OWED)[keyof typeof OWED]][]) {
+    for (const [branch, extra] of Object.entries(ACCEPTING)) {
+      for (const kind of KINDS) {
+        test(`${branch}, owing a ${owed}: a ${kind} result is refused before any acceptance is written`, async () => {
+          const { cookie, csrf } = await world.localSession();
+          const { id, runId, digest } = ready(kind, { owed });
+          const before = stateOf(id, runId);
+          const answer = await world.post(`/t/${id}/complete`, cookie, { csrf, receipt: digest, run: String(runId), ...extra, ...reason });
+          expect(answer.status).toBe(409);
+          expect(answer.body).toContain("toolroll password set");
+          expect(stateOf(id, runId)).toBe(before);
+          expect(acceptance(runId)).toEqual([]);
+          expect(completed(runId)).toBe(0);
+        });
+      }
+    }
+  }
+
+  test("the shared boundary refuses each kind with its acceptance owed, and writes nothing", () => {
+    const who = person(), root = evidence();
+    for (const owed of ["person-check", "exception"] as const) {
+      for (const kind of KINDS) {
+        const { id, runId, digest } = ready(kind, { owed });
+        const before = stateOf(id, runId);
+        const note = owed === "exception" ? "The phone layout is unchanged by this fix." : null;
+        expect(asLocalOwner(owner("complete-task"), () => acceptAndCompleteAsOperator(world.store, id, { runId, receiptDigest: digest, note }, who, T0, root)), `${kind} ${owed}`)
+          .toMatchObject({ ok: false, reason: "local-owner" });
+        expect(asLocalOwner(owner("complete-task"), () => acceptAndCompleteAsOperator(world.store, id, { runId, receiptDigest: digest, note }, who, T0, root,
+          accepted => completeAndOpenPullRequest(world.store, { taskId: id, digest: accepted, runId, who, root }, T0)))).toMatchObject({ ok: false, reason: "local-owner" });
+        expect(stateOf(id, runId)).toBe(before);
+        expect(acceptance(runId)).toEqual([]);
+      }
+    }
+  });
+
+  test("a result that belongs to a release through its release records, not its scope, is refused on every road", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const who = person(), root = evidence();
+    for (const extra of Object.values(BRANCHES)) {
+      const { id, runId, digest } = ready("release-record");
+      const before = stateOf(id, runId);
+      const answer = await world.post(`/t/${id}/complete`, cookie, { csrf, receipt: digest, run: String(runId), ...extra });
+      expect(answer.status).toBe(409);
+      expect(stateOf(id, runId)).toBe(before);
+      expect(completed(runId)).toBe(0);
+    }
+    const { id, runId, digest } = ready("release-record");
+    const before = stateOf(id, runId);
+    expect(asLocalOwner(owner("complete-task"), () => acceptAndCompleteAsOperator(world.store, id, { runId, receiptDigest: digest, note: null }, who, T0, root)))
+      .toMatchObject({ ok: false, reason: "local-owner", message: expect.stringContaining("release") });
+    expect(asLocalOwner(owner("complete-task"), () => checkAssignmentAsOperator(world.store, id, digest, who, T0, root))).toMatchObject({ ok: false });
+    expect(stateOf(id, runId)).toBe(before);
+  });
+
+  test("an ordinary result owing the person's own check is accepted by the local owner, and the acceptance is theirs", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const { id, runId, digest } = ready("ordinary", { owed: "person-check" });
+    const answer = await world.post(`/t/${id}/complete`, cookie, { csrf, receipt: digest, run: String(runId), accept: "1" });
+    expect(answer.status).toBe(303);
+    expect(acceptance(runId)).toEqual([{ approver: "alex", note: null }]);
+    expect(completed(runId)).toBe(1);
+    // An exception is accepted with its reason, the same way.
+    const exception = ready("ordinary", { owed: "exception" });
+    const reasoned = await world.post(`/t/${exception.id}/complete`, cookie, { csrf, receipt: exception.digest, run: String(exception.runId), accept: "1", note: "The phone layout is unchanged by this fix." });
+    expect(reasoned.status).toBe(303);
+    expect(acceptance(exception.runId)).toEqual([{ approver: "alex", note: "The phone layout is unchanged by this fix." }]);
+    expect(completed(exception.runId)).toBe(1);
+  });
+});
+
+describe("a revision whose source build saved no diff inventory, as the local owner", () => {
+  test("when the source's record doesn't prove it committed nothing, its changes are unknown: refused on every branch, and nothing changes", async () => {
+    const { cookie, csrf } = await world.localSession();
+    for (const extra of Object.values(BRANCHES)) {
+      const { id, runId, digest } = ready("ordinary", { inherited: "unknown" });
+      const before = stateOf(id, runId);
+      const answer = await world.post(`/t/${id}/complete`, cookie, { csrf, receipt: digest, run: String(runId), ...extra });
+      expect(answer.status, JSON.stringify(extra)).toBe(409);
+      expect(answer.body).toContain("toolroll password set");
+      expect(stateOf(id, runId)).toBe(before);
+      expect(completed(runId)).toBe(0);
+    }
+    const who = person(), root = evidence();
+    for (const owed of ["nothing", "person-check"] as const) {
+      const { id, runId, digest } = ready("ordinary", { inherited: "unknown", owed });
+      const before = stateOf(id, runId);
+      expect(asLocalOwner(owner("complete-task"), () => checkAssignmentAsOperator(world.store, id, digest, who, T0, root))).toMatchObject({ ok: false, reason: "local-owner" });
+      expect(asLocalOwner(owner("complete-task"), () => acceptAndCompleteAsOperator(world.store, id, { runId, receiptDigest: digest, note: null }, who, T0, root))).toMatchObject({ ok: false, reason: "local-owner" });
+      expect(stateOf(id, runId)).toBe(before);
+      expect(acceptance(runId)).toEqual([]);
+    }
+  });
+
+  test("when the source's record proves it committed nothing, the result is ordinary and the local owner completes it", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const plain = ready("ordinary", { inherited: "nothing" });
+    expect((await world.post(`/t/${plain.id}/complete`, cookie, { csrf, receipt: plain.digest, run: String(plain.runId) })).status).toBe(303);
+    expect(completed(plain.runId)).toBe(1);
+    const accepted = ready("ordinary", { inherited: "nothing", owed: "person-check" });
+    expect((await world.post(`/t/${accepted.id}/complete`, cookie, { csrf, receipt: accepted.digest, run: String(accepted.runId), accept: "1" })).status).toBe(303);
+    expect(acceptance(accepted.runId)).toEqual([{ approver: "alex", note: null }]);
+    expect(completed(accepted.runId)).toBe(1);
   });
 });

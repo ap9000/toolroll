@@ -714,7 +714,9 @@ function localCompletionRefusal(store: Store, actor: string, taskIds: readonly s
   const instead = localOwnerRefusal(store.accountOf(local.account)?.passwordSet === true, "/");
   const then = instead.action === "Set a password" ? "Set a password first: run `toolroll password set`." : instead.message;
   if (local.act !== "complete-task" || actor !== `operator:${local.account}`) return { ok: false, reason: "local-owner", message: `This needs your password. ${then}` };
-  const changed = familyChangedFiles(store, taskIds[0]!, runId, root);
+  // An earlier build in the family whose inventory is missing, and that its record doesn't prove committed nothing, is
+  // unknown here, and unknown counts as protected (localWorkEligible).
+  const changed = familyChangedFiles(store, taskIds[0]!, runId, root, { missing: "unknown" });
   for (const taskId of new Set(taskIds)) {
     const eligible = localWorkEligible(store, local.account, taskId, { act: "complete", changed });
     if (!eligible.ok) return { ok: false, reason: "local-owner", message: `${eligible.message} ${then}` };
