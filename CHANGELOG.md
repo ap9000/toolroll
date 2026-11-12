@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.104 — 2026-11-12
+
+- **Accept, plan and retry from the terminal, without a password.** On your own computer (laptop mode), pressing `c` on a Ready result opens "Accept this result?": the summary, the changed files, each requirement and the real check status. You answer "Did you check it yourself?", give a reason for an exception, or just say yes. The answer is tied to the result you read; if it changed meanwhile, you're shown the new one. A bigger first task now asks for its plan straight away, and `p` asks for one; you still approve the plan before anything is built. After a crash or a model error, `r` retries your own approved build, up to 3 times per approval, with the same plan, agent and limits. Merging, releasing, hands-off modes and settings still need your password; API tokens, the lead and chat bots can't do any of this.
+- **Password-free mode is tighter.** The password-free session now has to come from this computer on every request, not only when it starts. It can no longer accept release, protected or coordinator results, or open pull requests; those need your password.
+- **The release page says why it couldn't read what changed.** "What changed couldn't be read" now gives the reason, and a slow machine no longer drops the list after 15 seconds.
+- **No security warning on first start.** discord.js is updated to 14.28.1, so `npx toolroll` no longer opens with npm's deprecation warning.
+- **Docs match the app.** The getting-started guide, CONTRIBUTING and the README describe the terminal's first run as it is (`b` sends back, `r` retries), and Ready is described as showing the check status.
+
 ## 0.9.103 — 2026-11-11
 
 - **Home shows releases, flow decisions and setup.** Home's list gains three groups. **Approve a release** lists releases waiting for your yes and releases whose publishing is held for you; the button opens the release page, where the approval happens. **Flow decisions** lists flow cards that wait on you (to decide, choose, answer a question, allow the browser, or move on after no reply); the button opens the card on its flow page. **Finish setting up** lists first-run steps you have not done yet, each with its own button. The top line now reads like "3 tasks and 2 other things need you"; the Tasks count in the menu stays a task count.
