@@ -1948,7 +1948,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (!asked.ok) {
           return taskScreen(response, who, taskId, `not planned: ${asked.reason}`, 409);
         }
-        if (who.via === "cookie") authorizePlanUnderMode(store, taskId, who.name, now);
+        // Only a full session: a local owner never pre-authorizes (plan-auto.ts refuses it there too).
+        if (who.via === "cookie" && who.authority === "full") authorizePlanUnderMode(store, taskId, who.name, now);
         return redirect(response, taskHref(taskId));
       }
       case "plan-edit": {

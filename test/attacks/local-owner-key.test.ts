@@ -79,6 +79,20 @@ test("the welcome's acts: \"Use this one\" chooses the agent with the key, and n
   expect(String(sample.headers["location"])).toMatch(/^\/welcome\?sample=/);
 });
 
+test("the key doesn't carry a session elsewhere: a keyed act through a proxy is refused and writes nothing (local-owner slice 0)", async () => {
+  const { cookie, csrf, key } = await keyedLocalSession();
+  for (const proxy of [{ "x-forwarded-for": "100.64.0.7" }, { forwarded: "for=100.64.0.7" }]) {
+    const relayed = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": key, ...proxy },
+      new URLSearchParams({ csrf, repo: world.repo, title: "Relayed" }).toString());
+    expect(relayed.status).toBe(403);
+    expect(relayed.headers["x-toolroll-refused"]).toBe("local-owner-elsewhere");
+  }
+  expect(filed("Relayed")).toBe(0);
+  // From this computer, the same keyed act runs.
+  expect((await post("/tasks/add", cookie, { csrf, repo: world.repo, title: "Here" }, key)).status).toBe(303);
+  expect(filed("Here")).toBe(1);
+});
+
 test("local mode turned off after the key was delivered: the keyed act is refused and writes nothing", async () => {
   const { cookie, csrf, key } = await keyedLocalSession();
   world.store.handle.prepare("UPDATE local_mode SET enabled = 0, generation = generation + 1 WHERE id = 1").run();

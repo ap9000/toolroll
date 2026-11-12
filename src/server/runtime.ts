@@ -87,7 +87,7 @@ export interface ServerRuntime {
   familyTasksInView: (project: string | null, state?: TaskState, limit?: number) => (Task & { repo: string | null; })[];
   clock: () => Date;
   taskRooms: TaskRooms;
-  identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; }) => Who | null;
+  identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; elsewhere?: boolean; }) => Who | null;
   liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
   /** Project identities without reading folders on the console's thread (project-identity.ts). */
   identities: ProjectIdentities;

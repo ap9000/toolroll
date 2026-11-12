@@ -24,6 +24,7 @@ import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import { authenticateApprover, personProof } from "./scope.js";
+import { currentLocalOwner } from "./local-owner.js";
 import { BRANCH_PREFIX, headWithin } from "./names.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { Publication, Store } from "./store.js";
@@ -179,6 +180,10 @@ export function completeAndOpenPullRequest(
   now: Date,
 ): Result<{ publication: Publication }> {
   return store.transact(() => {
+    // A laptop's local owner (no password) never opens a pull request: it publishes outside this computer. Refused
+    // before anything is read or written, whatever the result (local-owner slice 0).
+    const local = currentLocalOwner();
+    if (local !== null) return refuse("local-owner", `Opening a pull request needs your password. ${store.accountOf(local.account)?.passwordSet === true ? "Sign in with your password to do this." : "Set a password first: run \`toolroll password set\`."}`);
     const current = assignmentOf(store, input.taskId, now, { principal: "operator", repos: input.who.repos }, input.root);
     const receipt = current?.receipt ?? null;
     if (current === null || receipt === null || receipt.runId !== input.runId || receipt.digest !== input.digest) {
@@ -201,6 +206,8 @@ export function completeAndOpenPullRequest(
  */
 export function owePullRequest(store: Store, runId: number, actor: string, flowCard: number | null, now: Date): Publication {
   return store.transact(() => {
+    // The belt under every road that owes one: a local owner's chain never does (local-owner slice 0).
+    if (currentLocalOwner() !== null) throw new Error("Opening a pull request needs your password.");
     const run = store.getRun(runId)!;
     const ref = store.refById(run.taskRef)!;
     const grant = publicationGrantOf(store, run.taskRef).grant!;

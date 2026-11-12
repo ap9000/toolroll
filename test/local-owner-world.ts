@@ -19,7 +19,9 @@ export const LOCAL_T0 = new Date("2026-11-03T12:00:00.000Z");
 export type LocalWorld = Awaited<ReturnType<typeof openLocalWorld>>;
 
 /** `extra` may be a function of the world's own folder (for options that name it, like projectRoots). */
-export async function openLocalWorld(more: Partial<ServeOptions> | ((root: string) => Partial<ServeOptions>) = {}) {
+/** `listenOn`: the address the console listens on (default loopback only; "0.0.0.0" lets a test reach it from this
+ * machine's own network address, as another device on the LAN would). */
+export async function openLocalWorld(more: Partial<ServeOptions> | ((root: string) => Partial<ServeOptions>) = {}, listenOn = "127.0.0.1") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "so-local-")));
   const repo = join(root, "repo"); mkdirSync(repo);
   const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -49,7 +51,7 @@ export async function openLocalWorld(more: Partial<ServeOptions> | ((root: strin
     subscriptionChatRunner: async () => { throw new Error("no model in this test"); },
     ...extra,
   });
-  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>(resolve => server.listen(0, listenOn, resolve));
   const port = (server.address() as { port: number }).port;
   const origin = `http://127.0.0.1:${port}`;
 
