@@ -6,11 +6,11 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { ROUTES } from "../../src/server/route-table.js";
 import { setPasswordless } from "../../src/passwordless.js";
-import { openLocalWorld, LOCAL_T0, type LocalWorld } from "../local-owner-world.js";
+import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { LOCAL_OWNER_ELSEWHERE } from "../../src/local-owner.js";
 
 let world: LocalWorld;
-beforeEach(async () => { world = await openLocalWorld(); });
+beforeEach(async () => { world = await openLocalWorld(); }, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { await world.close(); });
 
 for (const passwordless of [false, true]) {

@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { join } from "node:path";
 import { installFilingSizer } from "./task-sizing.js";
-import { openLocalWorld, type LocalWorld } from "../test/local-owner-world.js";
+import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../test/local-owner-world.js";
 import { runOperate, EXIT } from "./operate.js";
 import { fastStarted } from "./fast-start.js";
 import { fileGithubItem } from "./github-import.js";
@@ -14,7 +14,7 @@ import { approvalOf } from "./scope.js";
 
 let world: LocalWorld;
 let drop: () => void;
-beforeEach(async () => { world = await openLocalWorld(); drop = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); });
+beforeEach(async () => { world = await openLocalWorld(); drop = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); }, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { drop(); await world.close(); });
 
 const fieldOf = (html: string, name: string): string => new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1] ?? "";

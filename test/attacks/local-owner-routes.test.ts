@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
 import { join } from "node:path";
 import { loadPtySpawn, TerminalHost } from "../../src/live-terminal.js";
-import { openLocalWorld, LOCAL_T0, type LocalWorld } from "../local-owner-world.js";
+import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { enrollOwnerPassword } from "../../src/store.js";
 import { hashPassword } from "../../src/scope.js";
 import { networkInterfaces } from "node:os";
@@ -19,7 +19,7 @@ let world: LocalWorld;
 afterEach(async () => { await world.close(); });
 
 describe("the console's rows, as a local owner", () => {
-  beforeEach(async () => { world = await openLocalWorld(); });
+  beforeEach(async () => { world = await openLocalWorld(); }, LOCAL_WORLD_SETUP_MS);
 
   test("a refused act changes nothing: settings, people and tokens stay as they were", async () => {
     const { cookie, csrf } = await world.localSession();

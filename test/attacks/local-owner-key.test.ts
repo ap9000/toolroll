@@ -6,7 +6,7 @@
  * owner's, with the key.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { openLocalWorld, type LocalWorld } from "../local-owner-world.js";
+import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { cookieOf, deliveredKey, KEY_REFUSED } from "../loopback-key-kit.js";
 
 let world: LocalWorld;
@@ -16,7 +16,7 @@ beforeEach(async () => {
     // Claude Code reads as signed in on this computer, so "Use this one" can choose it.
     connectionProbe: async () => ({ code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }), stderr: "", timedOut: false, notFound: false }),
   });
-});
+}, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { await world.close(); });
 
 async function keyedLocalSession(): Promise<{ cookie: string; csrf: string; key: string }> {
