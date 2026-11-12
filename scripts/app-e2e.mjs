@@ -172,16 +172,59 @@ const w = await world(group === null ? "app" : `app-${group}`, {
 });
 const { base, page, cli, rows, sql, check, shot, json, signIn, askLead, pendingCard, confirmCard, auth, repo, script } = w;
 // A page that turns into one with a password on it loads its own address as a document (src/browser/app.tsx
-// acceptWorkspace): a task page does when its plan arrives. A journey that opens a page at that same moment has its own
-// load dropped by the browser (net::ERR_ABORTED), so it is made once more after the page's own load has finished. Any
-// other failure, and a second drop, still fail the journey. A listing (--list) starts no browser and has no page.
+// acceptWorkspace): a task page does when its plan arrives. A journey that opens a page at that moment races the page's
+// own load. Seen in CI (2026-11-11/12) and reproduced locally (2 to 3 in 20 task-group runs, 5 worlds at once), with
+// the browser's record of who started each load (the app's acceptWorkspace → loadDocument, ~150 ms before the journey's
+// goto) and a probe showing the server answering in milliseconds throughout. Three shapes, all handled here:
+// - The page's load commits after the journey's begins: Playwright says "interrupted by another navigation to X" (or
+//   the browser drops the journey's, net::ERR_ABORTED). The journey waits for X's own load, then goes again.
+// - Both end on the same page (a revision's /t/<id> redirects to /t/<task>?version=<id>, the address the page is
+//   reloading): the browser merges them (once it never sent the journey's request at all), and Playwright waits for a
+//   commit of its own that never comes. Seen with the page already there and loaded. So on a timeout, the server is
+//   asked where the journey's address leads (no redirects followed); a page already there and loaded has arrived.
+// - Waiting for "load" after an interruption waited for the old document's load, long done: so each goto waits for its
+//   own commit, then for the load of whatever document is then on screen.
+// At most three tries; any other failure fails the journey, as does a third. A listing (--list) has no page.
 if (page !== null) {
   const openOnce = page.goto.bind(page);
-  page.goto = async (url, options) => {
-    try { return await openOnce(url, options); } catch (error) {
-      if (!/ERR_ABORTED|interrupted by another navigation/.test(String(error?.message ?? error))) throw error;
-      await page.waitForLoadState("load").catch(() => {});
-      return openOnce(url, options);
+  /** Where `url` ends after its redirects, asked of the server with this browser's cookies (a GET, as the page's own). */
+  const endOf = async url => {
+    let at = url;
+    for (let hop = 0; hop < 5; hop += 1) {
+      const answer = await page.context().request.get(at, { maxRedirects: 0, timeout: 10_000 }).catch(() => null);
+      const location = answer === null || answer.status() < 300 || answer.status() >= 400 ? null : answer.headers()["location"];
+      if (!location) return at;
+      at = new URL(location, at).href;
+    }
+    return at;
+  };
+  /** The journey's page is already where `url` leads, and loaded: the page's own load of that same page took the
+   * journey's place (the browser merged the two, and Playwright never saw a commit of its own). */
+  const arrived = async url => page.url() === await endOf(url) && await page.evaluate(() => document.readyState).catch(() => null) === "complete";
+  page.goto = async (url, options = {}) => {
+    const until = options.waitUntil ?? "load";
+    const absolute = new URL(url, page.url() === "about:blank" ? undefined : page.url()).href;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const opened = await openOnce(url, { ...options, waitUntil: "commit", timeout: Math.min(options.timeout ?? 30_000, 15_000) });
+        if (until !== "commit") await page.waitForLoadState(until, { timeout: options.timeout ?? 30_000 });
+        return opened;
+      } catch (error) {
+        const message = String(error?.message ?? error);
+        const to = /interrupted by another navigation to "([^"]+)"/.exec(message)?.[1] ?? null;
+        const timedOut = /Timeout \d+ms exceeded/.test(message);
+        if (timedOut) {
+          if (await arrived(absolute)) {
+            console.log(`  (the journey's ${url.replace(/^https?:\/\/[^/]+/, "")} and the page's own load ended on the same page)`);
+            if (until !== "commit") await page.waitForLoadState(until, { timeout: options.timeout ?? 30_000 });
+            return null;
+          }
+        }
+        if (attempt >= 3 || (to === null && !timedOut && !/ERR_ABORTED/.test(message))) throw error;
+        console.log(`  (the page's own load ${to === null ? (timedOut ? "held up" : "dropped") : `of ${to.replace(/^https?:\/\/[^/]+/, "")} won over`} the journey's; going to ${url.replace(/^https?:\/\/[^/]+/, "")} again)`);
+        if (to !== null) await page.waitForURL(to, { waitUntil: "load", timeout: 15_000 }).catch(() => {});
+        else await page.waitForLoadState("load").catch(() => {});
+      }
     }
   };
 }
