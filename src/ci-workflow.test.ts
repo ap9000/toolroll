@@ -127,6 +127,41 @@ describe("the CI workflows", () => {
     }
   });
 
+  test("the Linux tools step is one sturdy step everywhere: bounded retries, checked tools, inline as root", () => {
+    // Oct–Nov 2026: 97 of 113 failed CI jobs were `apt-get update` failing to reach Ubuntu's mirrors, once for 3 hours.
+    const steps = ["ci.yml", "release-candidate.yml", "native-lanes.yml", "journeys.yml"].flatMap(file =>
+      Object.values(workflow(file).jobs).flatMap(job => (job.steps ?? []).filter(step => (step.run ?? "").includes("apt-get")).map(step => ({ file, step }))));
+    expect(new Set(steps.map(one => one.file)).size).toBe(4);
+    // One shape, differing only in the package and binary lists.
+    const shape = (run: string) => run.replace(/^pkgs=".*"$/m, "pkgs=…").replace(/for b in [^;]+;/, "for b in …;");
+    expect(new Set(steps.map(one => shape(one.step.run!))).size).toBe(1);
+    for (const { file, step } of steps) {
+      const run = step.run!;
+      expect(step.uses, file).toBeUndefined();
+      expect((step as { "timeout-minutes"?: unknown })["timeout-minutes"], file).toBeLessThanOrEqual(10);
+      expect(run, file).toMatch(/for attempt in 1 2 3; do/);
+      // The pinned packages: this repository's own ci-tools release, every file's SHA-256 checked before dpkg sees it,
+      // and a failed pinned install falls through to Ubuntu's mirrors (never the end of the step).
+      expect(run, file).toContain('pinned="https://github.com/ap9000/toolroll/releases/download/ci-tools-noble-1"');
+      expect(run.match(/\b[0-9a-f]{64} [a-z0-9._~+-]+_amd64\.deb\b/g)?.length, file).toBe(3);
+      expect(run, file).toMatch(/sha256sum --strict -c -\) && sudo dpkg -i "\$debs"\/\*\.deb; then/);
+      expect(run.indexOf("sudo dpkg -i"), file).toBeLessThan(run.indexOf("for attempt in 1 2 3"));
+      expect(run, file).toMatch(/timeout 60 curl -fsSL/);
+      // Every network call is capped, so the whole step fits its limit (60 + 60 + 3 × (60 + 60 + 10) s = 8.5 min).
+      expect(run.match(/\$apt (update|install)/g)?.length, file).toBe(3);
+      expect(run.match(/timeout 60 \$apt (update|install)/g)?.length, file).toBe(3);
+      expect(run, file).toContain("Acquire::Retries=3");
+      // A missing tool fails here, by name, not later inside a test.
+      expect(run, file).toMatch(/have \|\| \{ echo "::error::/);
+      expect(run, file).toContain("bwrap --version");
+      expect(run, file).not.toMatch(/\|\| true\s*$/);
+    }
+    // Playwright's --with-deps also reaches Ubuntu's mirrors: the same bounded retries, and a failure still fails.
+    const playwright = (workflow("journeys.yml").jobs["journeys"]?.steps ?? []).find(step => (step.run ?? "").includes("playwright@"))!;
+    expect(playwright.run).toMatch(/for attempt in 1 2 3; do\n\s+timeout 140 npx -y playwright@[0-9.]+ install --with-deps chromium && exit 0/);
+    expect(playwright.run!.trim().endsWith("exit 1")).toBe(true);
+  });
+
   test("every required check reports under its exact name on an ordinary pull request, run or skipped", () => {
     // 0.9.80: release-candidate.yml's skipped Node 22 jobs reported "node ${{ matrix.node }} · …", so main's protection
     // never saw "node 22 · ubuntu-latest" and blocked every pull request not from a release-* branch.
