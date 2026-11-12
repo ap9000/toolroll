@@ -137,7 +137,7 @@
     "@slack/socket-mode": "3.1.1",
     "@xterm/addon-serialize": "0.14.0",
     "@xterm/headless": "6.0.0",
-    "discord.js": "14.28.0",
+    "discord.js": "14.28.1",
     "imapflow": "2.10.0",
     "mailparser": "3.14.1",
     "nodemailer": "10.3.1",
