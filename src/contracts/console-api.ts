@@ -262,7 +262,8 @@ export const CONSOLE_FORMS = {
   taskRepairDependency: formContract("POST /t/<task>/repair-dependency", ["blocker", "operation", "replacement"]),
   taskNext: formContract("POST /t/<task>/next", ["undo"]),
   taskReopen: formContract("POST /t/<task>/reopen", ["token"]),
-  taskRequeue: formContract("POST /t/<task>/requeue", ["note", "return"]),
+  // Local-owner slice 3: the build and approved plan the page read (`run`, `digest`), read only for the laptop's local owner.
+  taskRequeue: formContract("POST /t/<task>/requeue", ["note", "return", "run", "digest"]),
   // Local-owner slice 2: the planning source the page read (planner-source.ts), read only for the laptop's local owner.
   taskPlan: formContract("POST /t/<task>/plan", ["source"]),
   taskFollowUp: formContract("POST /t/<task>/follow-up", ["index"]),

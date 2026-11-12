@@ -93,8 +93,8 @@ import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
 import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
-import { pullRequestLines, runLocalCompletion, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
-import { requestPlanAsLocalOwner } from "./local-owner-acts.js";
+import { proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -9449,6 +9449,9 @@ function taskAction(
     case "require":
       return requireTask(rest, flags, context);
     case "requeue":
+      // Local-owner slice 3: the terminal's local owner retries its own approved build on its own road (no password);
+      // chosen only inside its chain, where an owner that no longer stands is refused there.
+      if (currentLocalOwner() !== null) return localRetryCommand(rest, flags, context);
       return requeueTask(rest, flags, context);
     case "regate":
       return regateTaskCommand(rest, flags, context);
@@ -14638,5 +14641,31 @@ async function localPlanCommand(positional: readonly string[], flags: Map<string
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
   return succeed(write, json, command, { id, replayed: done.replayed, autoPlan: false }, () => [
     done.replayed ? `${id} · Already asked for a plan.` : `${id} · Asked for a plan. You approve the plan before anything is built.`,
+  ]);
+}
+
+// ---- Local owner, slice 3 (docs/plans/local-owner-acts.md §2): retry its own approved build in the terminal. Kept last.
+
+/**
+ * `task requeue <id> --run <build> --digest <scope digest>` (and its alias `task retry`) for the laptop's local owner (the
+ * terminal UI's `r`): its own road, which never reaches a password check. Both pins are required and only compared:
+ * the failed build and the approved scope the screen read. Toolroll's own stop proof runs first, as every completion
+ * does; retryAsLocalOwner then proves everything again in one transaction.
+ */
+async function localRetryCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = "task requeue";
+  for (const name of flags.keys()) if (!["json", "db", "run", "digest"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
+  const id = positional[0], run = flags.get("run"), digest = flags.get("digest");
+  const usage = "Use task requeue <task> --run <the build you read> --digest <its approved plan>.";
+  if (positional.length !== 1 || !id || id.length > 64 || /[\x00-\x1f]/.test(id)) return fail(write, json, command, "usage", usage, EXIT.usage);
+  if (typeof run !== "string" || !/^[1-9]\d{0,14}$/.test(run)) return fail(write, json, command, "usage", `--run needs the exact build you read. ${usage}`, EXIT.usage);
+  // A scope digest (scope.ts digestOf): 32 hexadecimal characters.
+  if (typeof digest !== "string" || !/^[a-f0-9]{32}$/.test(digest)) return fail(write, json, command, "usage", `--digest needs the exact plan you read. ${usage}`, EXIT.usage);
+  await proveTaskBuildsStopped(store, id, clock);
+  const done = retryAsLocalOwner(store, id, { run: Number(run), digest }, clock());
+  if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+  return succeed(write, json, command, { id, replayed: done.replayed, retries: done.retries }, () => [
+    done.replayed ? `${id} · Already retrying build #${run}.` : `${id} · Retrying build #${run}. A builder starts it next.`,
   ]);
 }

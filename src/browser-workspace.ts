@@ -245,12 +245,13 @@ export type BrowserTaskView = {
   /** Check again (a build Toolroll could not prove stopped from this computer), when the status asks for it. */
   recheckStopped?: { action: string; run: number } | null;
   /** Build again, in place, when the status asks for it (a result built to an earlier plan). */
-  rebuild?: { action: string } | null;
+  /** `pins`: the build and approved plan the page read, which a local owner's Retry binds to (local-owner slice 3). */
+  rebuild?: { action: string; pins?: { run: number; digest: string } | null } | null;
   /** What a failed task missed, in one line (the requirement it missed, the failing check's error line, or the stop
    * reason), the evidence line behind it, one suggestion of what to change, and where to see it (its build's result
    * page, or that exact check-log line); and Retry itself, its note starting with the suggestion. */
   failure?: BrowserFailure | null;
-  retry?: { action: string; note?: string } | null;
+  retry?: { action: string; note?: string; pins?: { run: number; digest: string } | null } | null;
   /** Run checks in place, on a status row that offers it: posts and comes back to this page. */
   runChecks?: BrowserRunChecks | null;
   /** A live build: the step it is on (or stuck on, with the act that helps), and the earlier attempts that stopped
@@ -469,7 +470,7 @@ export type BrowserResultView = {
     runChecks: BrowserRunChecks | null;
     /** A failed build's result: what it missed and the suggestion Retry's note starts with; Retry itself when the task
      * can be retried from here. Null for every other result. */
-    failure?: (BrowserFailure & { retry: { action: string; note: string } | null;
+    failure?: (BrowserFailure & { retry: { action: string; note: string; pins?: { run: number; digest: string } | null } | null;
       /** A failed task's delivered result, accepted only in outline with a reason (the task's accept-proof). */
       acceptAnyway?: { action: string; run: number; returnTo: string } | null }) | null;
     /** The raw run record, under Details: its facts and the full record. */

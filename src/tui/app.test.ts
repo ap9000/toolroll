@@ -114,6 +114,30 @@ describe("terminal UI", () => {
     expect(source.acts).toHaveLength(1);
   });
 
+  it("r shows the build to retry first; y sends exactly the build and plan read; Esc sends nothing; nothing to retry says so", async () => {
+    const base = sampleSource();
+    const source = scripted({ task: async id => { const task = await base.task(id); return task === null ? null : { ...task, retry: id === "t3" ? { runId: 7, digest: "d".repeat(32) } : null }; } });
+    const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Sample: upgrade the test runner");
+    await mounted();
+    app.stdin.write("r");
+    await shows("Retry build #7?");
+    app.stdin.write("\u001b");
+    await shows("Nothing retried.");
+    expect(source.acts).toEqual([]);
+    app.stdin.write("r");
+    await shows("Retry build #7?");
+    app.stdin.write("y");
+    await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "retry", id: "t3", runId: 7, digest: "d".repeat(32) }]));
+    await shows("j/k move");
+    app.stdin.write("j");
+    await shows("> Sample: fix the login redirect");
+    app.stdin.write("r");
+    await shows("Nothing to retry on this task.");
+    expect(source.acts).toHaveLength(1);
+  });
+
   it("a refused write shows its words and leads to a password", async () => {
     const source = scripted({ act: async () => ({ ok: false, message: "Set a password, or sign in with your password, to do this.", needsPassword: true }) });
     const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));

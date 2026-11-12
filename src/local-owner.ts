@@ -59,6 +59,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Local-owner slice 2 (docs/plans/local-owner-acts.md §1): ask for a plan. It approves nothing, pins no agent and is
   // never pre-authorized under a mode; the writer (local-owner-acts.ts requestPlanAsLocalOwner) checks this exact act.
   "request-plan",
+  // Local-owner slice 3 (§2): retry the owner's own approved build after it stopped. Only the owner's own person yes,
+  // on work it could approve again now, three times per seal; the writer (local-owner-acts.ts retryAsLocalOwner) checks it.
+  "retry-build",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);

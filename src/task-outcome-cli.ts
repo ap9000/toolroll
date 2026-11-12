@@ -159,7 +159,7 @@ export function pullRequestLines(view: PullRequestView | null): string[] {
 
 /** Toolroll's own stop proof for every finished build of a task's family whose stop it can prove here. Best effort: a
  * failure leaves the completion's own refusal to say what is still unproven. */
-async function proveTaskBuildsStopped(store: Store, task: string, clock: () => Date): Promise<void> {
+export async function proveTaskBuildsStopped(store: Store, task: string, clock: () => Date): Promise<void> {
   try {
     const family = store.taskFamilyOf(task, null, true);
     const refs = family === null ? [store.lookupRef(task)?.id].filter((one): one is number => one !== undefined) : family.versions.map(version => version.refId);

@@ -34,6 +34,8 @@ type Screen =
   | { kind: "main" }
   | { kind: "task"; task: TuiTask }
   | { kind: "approve"; task: TuiTask }
+  /** Retry this build? The build and approved plan as read when it opened (what the yes names). */
+  | { kind: "retry"; task: TuiTask; retry: { runId: number; digest: string } }
   /** Accept this result? The result as read when it opened (its build and receipt are what the answer names); `reason`:
    * an exception's words being typed; `changed`: the result changed meanwhile, and this is the new one. */
   | { kind: "accept"; result: TuiResult; reason: string; changed: boolean }
@@ -172,6 +174,11 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (answer.needsPassword) setScreen({ kind: "password", message: answer.message });
     else { setMessage(answer.message); setScreen({ kind: "main" }); }
   };
+  /** `r`: the build to retry, read once and pinned, before anything is sent. */
+  const askRetry = (id: string) => openTask(id, task => {
+    if (task.retry == null) setMessage("Nothing to retry on this task.");
+    else setScreen({ kind: "retry", task, retry: task.retry });
+  });
   /** `p`: a plan for the task, bound to the planning source read now; the command refuses one that changed meanwhile. */
   const askPlan = (id: string) => openTask(id, task => {
     if (task.planAsk == null) setMessage("This task can't be planned now.");
@@ -204,7 +211,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (input === "a") { void approveOrAccept(id); return true; }
     if (input === "s") { stop(id, runId); return true; }
     if (input === "b") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
-    if (input === "r") { void act({ kind: "retry", id }); return true; }
+    if (input === "r") { void askRetry(id); return true; }
     if (input === "c") { void reviewResult(id); return true; }
     if (input === "p") { void askPlan(id); return true; }
     return false;
@@ -233,6 +240,11 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       case "approve": {
         if (key.escape || input === "n") { setScreen({ kind: "main" }); setMessage("Nothing approved."); return; }
         if (input === "y") { const { task } = screen; void act({ kind: "approve", id: task.id, digest: task.plan!.digest }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
+        return;
+      }
+      case "retry": {
+        if (key.escape || input === "n") { setScreen({ kind: "main" }); setMessage("Nothing retried."); return; }
+        if (input === "y") { const { task, retry } = screen; void act({ kind: "retry", id: task.id, runId: retry.runId, digest: retry.digest }).then(() => setScreen(now => now.kind === "retry" ? { kind: "main" } : now)); }
         return;
       }
       case "accept": {
@@ -319,6 +331,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · p plan · s stop · w browser · ? help · q quit";
       case "task": return `a approve/accept · b send back · r retry${screen.task.planAsk == null ? "" : " · p plan it"} · s stop · 1–9 answer · w browser · Esc back`;
       case "approve": return "y approve · Esc cancel";
+      case "retry": return "y retry · Esc cancel";
       case "accept": return !screen.result.ready ? "w open in the browser · Esc back"
         : screen.result.owed === "person-check" ? "y yes, it looks right · n no · w open in the browser · Esc cancel"
         : screen.result.owed === "exception" ? "Enter accept · Esc cancel" : "y accept · w open in the browser · Esc cancel";
@@ -399,6 +412,13 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
           </Box>
         );
       }
+      case "retry":
+        return (
+          <Box flexDirection="column" borderStyle="single" paddingX={1}>
+            <SafeText bold>{`Retry build #${screen.retry.runId}? ${screen.task.title}`}</SafeText>
+            <Text>Same plan, same agent. Its branch and workspace are kept.</Text>
+          </Box>
+        );
       case "approve":
         return (
           <Box flexDirection="column" borderStyle="single" paddingX={1}>

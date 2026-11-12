@@ -31,7 +31,7 @@ import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
 import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
-import { LOCAL_TASK_CHANGED, requestPlanAsLocalOwner } from "../local-owner-acts.js";
+import { LOCAL_TASK_CHANGED, requestPlanAsLocalOwner, retryAsLocalOwner, retryPinsOf } from "../local-owner-acts.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
 import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions,withBuilderStep } from "../first-run.js";
@@ -295,7 +295,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const latest = latestFinishedAttempt(runs);
       // Retry from here only when the task failed, nothing holds it, and this is its latest attempt or a result it delivered.
       const retry = failedTask?.state === "failed" && (latest?.id === selected.run.id || delivered) && csrf !== "" && who.role === "approver" && store.currentLiveLease(attemptRun!.taskRef, now) === null
-        ? { action: `${taskHref(selected.taskId)}/requeue` } : null;
+        ? { action: `${taskHref(selected.taskId)}/requeue`, pins: retryPinsOf(store, selected.taskId) } : null;
       // Accept anyway: the same acceptance this task's latest result takes, never for an older one or one already accepted.
       const family = delivered ? familyOf(selected.taskId) : null;
       const acceptAnyway = delivered && csrf !== "" && who.role === "approver" && family?.current.id === selected.taskId && family.problem === null &&
@@ -1887,11 +1887,20 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const note = (body.get("note") ?? "").trim();
         if (note !== "" && who.via !== "cookie") return refuse(response, who, 403, "steering is a browser session's act");
         if (note !== "" && !validateNote(note).ok) return taskScreen(response, who, taskId, "that note will not store, so nothing was retried", 400);
-        const requeued = store.requeueTask(taskId, who.name, now);
-        if (!requeued.ok) {
-          return taskScreen(response, who, taskId, `not requeued: ${requeued.reason}`, 409);
+        // Local-owner slice 3: the laptop's local owner retries its own approved build on its own road, bound to the
+        // build and plan the page read. The same request again files no second note.
+        let replayed = false;
+        if (who.via === "cookie" && who.authority === "local-owner") {
+          const retried = localOwnerRetry(store, taskId, body.get("run"), body.get("digest"), now);
+          if (!retried.ok) return taskScreen(response, who, taskId, retried.message, retried.status);
+          replayed = retried.replayed;
+        } else {
+          const requeued = store.requeueTask(taskId, who.name, now);
+          if (!requeued.ok) {
+            return taskScreen(response, who, taskId, `not requeued: ${requeued.reason}`, 409);
+          }
         }
-        if (note !== "") {
+        if (note !== "" && !replayed) {
           const filed = store.fileSteerNote(taskId, verifiedAuthor(who.name), note, now);
           if (!filed.ok) return taskScreen(response, who, taskId, "Retried. The note wasn't saved; add it under Steering.", 409);
         }
@@ -3281,4 +3290,15 @@ export function localOwnerPlan(store: Store, taskId: string, source: string | nu
   if (typeof source !== "string" || !/^[a-f0-9]{64}$/.test(source)) return { ok: false, status: 409, message: LOCAL_TASK_CHANGED };
   const done = requestPlanAsLocalOwner(store, taskId, source, now);
   return done.ok ? { ok: true } : { ok: false, status: done.reason === "local-owner" || done.reason === "refused" ? 403 : 409, message: done.message };
+}
+
+/**
+ * Retry for the laptop's local owner (local-owner slice 3): bound to the build and the approved plan the page read (the
+ * form's hidden `run` and `digest`), never the task as it is now; the writer proves the rest in one transaction. A form
+ * that carries neither (an older page) is refused, never bound to whatever is current.
+ */
+export function localOwnerRetry(store: Store, taskId: string, run: string | null | undefined, digest: string | null | undefined, now: Date): { ok: true; replayed: boolean } | { ok: false; status: number; message: string } {
+  if (typeof run !== "string" || !/^[1-9][0-9]{0,14}$/.test(run) || typeof digest !== "string" || !/^[a-f0-9]{32}$/.test(digest)) return { ok: false, status: 409, message: LOCAL_TASK_CHANGED };
+  const done = retryAsLocalOwner(store, taskId, { run: Number(run), digest }, now);
+  return done.ok ? { ok: true, replayed: done.replayed } : { ok: false, status: done.reason === "local-owner" || done.reason === "refused" || done.reason === "limit" ? 403 : 409, message: done.message };
 }

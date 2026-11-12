@@ -1757,7 +1757,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(view.failure).toEqual({ line: said, evidence: null, suggestion, link: { label: `See build #${failedRun}`, href: `/t/t-broke?tab=result&run=${failedRun}` } });
     expect(renderedHtmlOf(html)).not.toMatch(/“acceptance”|recorded reason “/);
     // Retry stays the one ink act, its note already holding the suggestion.
-    expect(view.retry).toEqual({ action: "/t/t-broke/requeue", note: suggestion });
+    // The build and plan it was read against ride along (a local owner's Retry binds to them).
+    expect(view.retry).toEqual({ action: "/t/t-broke/requeue", note: suggestion, pins: { run: expect.any(Number), digest: expect.stringMatching(/^[a-f0-9]{32}$/) } });
     // That build's page works: its result page, not Not found, and /r/<id> opens it.
     expect((await fetch(url(`/review?result=t-broke&run=${failedRun}`), { headers: { cookie } })).status).toBe(200);
     expect((await fetch(url(`/r/${failedRun}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/review?result=t-broke&run=${failedRun}`);

@@ -41,6 +41,9 @@ export type TuiTask = {
   readonly ready?: readonly string[];
   /** `p` (local-owner slice 2): the planning source read now, which the request binds to; null when no plan can be asked. */
   readonly planAsk?: { readonly source: string } | null;
+  /** `r` (local-owner slice 3): the latest finished build and the approved plan read now, which a retry binds to; null
+   * when there is nothing to retry. */
+  readonly retry?: { readonly runId: number; readonly digest: string } | null;
 };
 
 /** The welcome's steps, as lines (welcome-facts.ts). */
@@ -68,7 +71,8 @@ export type TuiAct =
   /** Accept: exactly the result the Accept screen read (its build and receipt, pinned when it opened), with the person's
    * explicit yes to their own check, or an exception's reason, when the result owes one. */
   | { readonly kind: "complete"; readonly id: string; readonly runId: number; readonly digest: string; readonly checked: boolean; readonly reason: string | null }
-  | { readonly kind: "retry"; readonly id: string }
+  /** Retry: exactly the build and approved plan the screen read (the command refuses a task that changed meanwhile). */
+  | { readonly kind: "retry"; readonly id: string; readonly runId: number; readonly digest: string }
   /** Plan it: exactly the planning source the screen read (the command refuses a task that changed meanwhile). */
   | { readonly kind: "plan"; readonly id: string; readonly source: string }
   | { readonly kind: "answer"; readonly decision: number; readonly option: string };

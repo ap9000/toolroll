@@ -61,12 +61,14 @@ describe("CLI commands as the local owner", () => {
       // Slice 1: the terminal's Accept is this row's own road (task-outcome-cli.ts runLocalCompletion), never the password road.
       "task complete": "complete-task", "task revise": "request-revision",
       // Slice 2: asking for a plan is its own road (operate.ts localPlanCommand): no password, no pins, no pre-authorization.
-      "task plan": "request-plan", "task archive": "archive-task", "task restore": "archive-task", "repos add": "add-project",
+      "task plan": "request-plan",
+      // Slice 3: retrying its own approved build is its own road too (operate.ts localRetryCommand).
+      "task requeue": "retry-build", "task archive": "archive-task", "task restore": "archive-task", "repos add": "add-project",
       "models suggestions": "read", "models turn-off": "routing-turn-off", "models dismiss": "dismiss-suggestion", "models stop": "trial-stop",
       "map on": "code-map-switch", "map off": "code-map-switch",
     });
-    // Not the local owner's (slice 3 decides retrying): Accept's other spelling and merging.
-    for (const invocation of ["task requeue", "task accept", "task merge"]) expect(LOCAL_POLICY.get(invocation), invocation).toEqual({ local: "deny" });
+    // Not the local owner's: Accept's other spelling, merging, and re-running a check.
+    for (const invocation of ["task accept", "task merge", "task regate"]) expect(LOCAL_POLICY.get(invocation), invocation).toEqual({ local: "deny" });
   });
 
   test("an unknown or undeclared command is refused too", async () => {
@@ -80,6 +82,7 @@ describe("CLI commands as the local owner", () => {
       // The terminal's Accept too: its road never takes a credential, so naming one refuses before any of it runs.
       expect((await asOwner("task complete one", ["--run", "1", "--digest", "a".repeat(64), "--checked", ...flags])).envelope, `complete ${flags[0]}`).toMatchObject({ ok: false, reason: "refused" });
       expect((await asOwner("task plan one", ["--digest", "a".repeat(64), ...flags])).envelope, `plan ${flags[0]}`).toMatchObject({ ok: false, reason: "refused" });
+      expect((await asOwner("task requeue one", ["--run", "1", "--digest", "a".repeat(32), ...flags])).envelope, `requeue ${flags[0]}`).toMatchObject({ ok: false, reason: "refused" });
     }
     // Adding a project is the local owner's; naming its trusted remote (whose main may complete landed work) is not.
     expect((await asOwner("repos add", [root, "--remote", "https://github.com/someone/else.git"])).envelope).toMatchObject({ ok: false, reason: "refused" });

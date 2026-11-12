@@ -622,6 +622,8 @@ const LOCAL_ALLOW: Readonly<Record<string, LocalOwnerAct>> = {
   "task complete": "complete-task",
   // Local-owner slice 2: its own road (operate.ts localPlanCommand); the writer checks this exact act.
   "task plan": "request-plan",
+  // Local-owner slice 3: its own road (operate.ts localRetryCommand); the writer checks this exact act.
+  "task requeue": "retry-build",
   "task revise": "request-revision",
   "task archive": "archive-task",
   "task restore": "archive-task",

@@ -820,15 +820,22 @@ function useUp(ids, times) {
 const startedBy = (inst, id, afterId, ms) => until("a build to start by itself", async () => builds(inst, id).find(one => one.id > afterId && one.provider_started_at) ?? null, { timeoutMs: ms, everyMs: 250 }).catch(() => null);
 
 /**
- * Retry a stopped or failed build as the person would: r in the terminal; where the terminal can't (it asks for a
- * password the local owner doesn't have), the trace says so and the person presses Retry on the task's page in the
- * browser. Returns the build that started again, or null (with the reason in the trace).
+ * Retry a stopped or failed build as the person would: r in the terminal, which shows the build first ("Retry build
+ * #N?"), then y (local-owner slice 3: the owner's own approved build, no password). Where the terminal can't, the trace
+ * says so and the person presses Retry on the task's page in the browser. Returns the build that started again, or null
+ * (with the reason in the trace).
  */
 async function retryByHand(inst, term, trace, criterion, id, afterId, rule = "B1.6") {
   trace.decision("Retry", { screen: term.text() });
   const before = footerOf(term.text());
   term.press("r");
   trace.interaction("Press r (retry)", { keys: "r" });
+  const shownFirst = await term.waitFor(screen => /Retry build #\d+\?/.test(screen) || footerOf(screen) !== before, "the build to retry", { timeoutMs: 15_000 }).catch(() => term.text());
+  if (/Retry build #\d+\?/.test(shownFirst)) {
+    trace.decision("Retry this build? (same plan, same agent)", { screen: shownFirst });
+    term.press("y");
+    trace.interaction("Press y (retry)", { keys: "y" });
+  }
   const said = await until("r's answer", async () => {
     const text = term.text();
     if (/This needs your password/.test(text)) return boxLines(text, /password/i);
@@ -942,11 +949,11 @@ async function restartRecovery({ trace, criterion, note }) {
       itself !== null ? `${Math.round((Date.parse(itself.provider_started_at) - screenAt) / 100) / 10} s` : `no build in 30 s; the screen says: ${boxLines(again.text(), /Failed|Retry|stopped|Building|Waiting/) || footerOf(again.text())}`);
     const retried = itself ?? await retryByHand(inst, again, trace, criterion, id, running.id, "B1.5");
     if (retried === null) {
-      // Recovery isn't possible without a password today: what can still be proved is that nothing ran twice.
+      // Recovery didn't happen (by itself, or from r in the terminal): what can still be proved is that nothing ran twice.
       const scope = scopeOf(inst, id);
       criterion("B1.5", "the same scope after the restart (its digest and approval unchanged)", scope?.digest === scopeBefore?.digest && scope?.approved_digest === scopeBefore?.approved_digest, `${scopeBefore?.digest?.slice(0, 12)} → ${scope?.digest?.slice(0, 12)}`);
       criterion("B1.5", "no duplicate active build", watch.facts.maxActive <= 1, `at most ${watch.facts.maxActive} unfinished at once`);
-      criterion("B1.5", "the task reaches Ready", false, "not without a password");
+      criterion("B1.5", "the task reaches Ready", false, "no retry started");
       if (watch.facts.maxActive > 1) throw new Error(`${watch.facts.maxActive} builds were unfinished at once`);
       return { killed: running.id, recovered: false };
     }

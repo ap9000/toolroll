@@ -261,7 +261,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
     const wide = "min-h-11 phone:w-full";
     switch (kind) {
       case "retry":
-        return selected.failure?.retry == null ? null : <RetryForm key={kind} action={selected.failure.retry.action} csrf={csrf} note={selected.failure.retry.note} variant={variant === "attention" ? "attention" : "default"} />;
+        return selected.failure?.retry == null ? null : <RetryForm key={kind} action={selected.failure.retry.action} csrf={csrf} note={selected.failure.retry.note} pins={selected.failure.retry.pins} variant={variant === "attention" ? "attention" : "default"} />;
       case "accept": {
         if (decision === null) return null;
         const form = complete ?? accept;

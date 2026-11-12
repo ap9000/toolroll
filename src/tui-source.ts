@@ -26,7 +26,7 @@ import { homeGroupOf } from "./home-groups.js";
 import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiResult, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
-import { planSourceOf } from "./local-owner-acts.js";
+import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 
 export type TuiSourceOptions = {
   databaseFile: string;
@@ -126,6 +126,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         id, title: shown(task["title"], id), status: shown(status["label"], words(work["state"])), detail: shown(status["detail"]),
         plan, liveRunId: typeof work["liveRunId"] === "number" ? work["liveRunId"] : null, hasResult, decisions, ready,
         planAsk: store === null ? null : planAskOf(store, id),
+        retry: (() => { const pins = store === null ? null : retryPinsOf(store, id); return pins === null ? null : { runId: pins.run, digest: pins.digest }; })(),
       };
     },
 
@@ -151,8 +152,8 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
         case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
-        // Retry is today's requeue (the console's Retry), the same command and the same refusals.
-        case "retry": argv = ["task", "retry", act.id]; done = "Queued again. A builder starts it next."; break;
+        // Retry: exactly the build and approved plan the screen read (local-owner slice 3), never the current ones.
+        case "retry": argv = ["task", "requeue", act.id, "--run", String(act.runId), "--digest", act.digest]; done = "Retrying. A builder starts it next."; break;
         // Accept: exactly the result the Accept screen read, never the one current when this is sent (the command
         // refuses a result that changed meanwhile). The person's yes to their own check, or a reason, only when given.
         case "complete":
@@ -163,6 +164,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       if (answer.ok !== true) return refusalOf(answer);
       if (act.kind === "complete" && answer["replayed"] === true) return { ok: true, message: "Already accepted. The task is done." };
       if (act.kind === "plan" && answer["replayed"] === true) return { ok: true, message: "Already asked for a plan." };
+      if (act.kind === "retry" && answer["replayed"] === true) return { ok: true, message: "Already retrying. A builder starts it next." };
       const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : act.kind === "build" ? words(answer["task"]) : "";
       // Filed in a project: ask for its plan now, bound to the task just filed (the screen promised a plan).
       if (act.kind === "new" && filed !== "" && act.repo !== null) {

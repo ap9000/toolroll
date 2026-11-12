@@ -117,8 +117,16 @@ export function RecheckStoppedForm({ form, csrf, label = "Check again" }: { form
 
 /** Build again, for a result built to an earlier plan: one filled button, the
  * task page's requeue (it runs again on the same filing, under the current plan). */
-export function RebuildForm({ action, csrf, label = "Retry", className }: { action: string; csrf: string; label?: string; className?: string }) {
+export function RebuildForm({ action, csrf, label = "Retry", className, pins }: { action: string; csrf: string; label?: string; className?: string; pins?: RetryPins | null | undefined }) {
   return <PostForm action={action} data-rebuild className="phone:w-full">
+    <RetryPinFields pins={pins} />
     <Button type="submit" variant="attention" className={cn("phone:w-full", className)} data-primary-action>{label}</Button>
   </PostForm>;
+}
+
+/** The build and approved plan a Retry was read against (local-owner slice 3). */
+export type RetryPins = { run: number; digest: string };
+/** A Retry's hidden pins: a local owner's retry binds to exactly these, never to whatever is current when it posts. */
+export function RetryPinFields({ pins }: { pins?: RetryPins | null | undefined }) {
+  return pins == null ? null : <><input type="hidden" name="run" value={pins.run} /><input type="hidden" name="digest" value={pins.digest} /></>;
 }

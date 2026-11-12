@@ -1190,7 +1190,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(task.failure).toEqual({ line: `Missed a requirement: ${statement}`, evidence: "The agent's own note says: src/admin.ts still reads LEGACY for the override toggle.",
       suggestion, link: { label: `See build #${run}`, href: `/t/t-fail?tab=result&run=${run}` } });
     expect(task.result).toMatchObject({ selected: { build: run, failure: { line: `Missed a requirement: ${statement}` } } });
-    expect(task.retry).toEqual({ action: "/t/t-fail/requeue", note: suggestion });
+    expect(task.retry).toEqual({ action: "/t/t-fail/requeue", note: suggestion, pins: { run: expect.any(Number), digest: expect.stringMatching(/^[a-f0-9]{32}$/) } });
     // No status row leads to Chat: Run checks is in place, posting here and coming back here.
     expect(JSON.stringify(task.status)).not.toContain("/chat?");
     expect(task.runChecks).toEqual({ action: `/r/${run}/checks`, level: "full", returnTo: "/t/t-fail" });
@@ -1206,7 +1206,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(selected.panel!.status).toMatchObject({ headline: "Failed", sentence: `Missed a requirement: ${statement}` });
     // What it missed is said once, plainly: the recorded wording isn't repeated as a caveat.
     expect(selected.panel!.attention.join(" ")).not.toContain("caveat 1 admits");
-    expect(selected.failure).toEqual({ line: `Missed a requirement: ${statement}`, evidence: task.failure!.evidence, suggestion, link: null, retry: { action: "/t/t-fail/requeue", note: suggestion } });
+    expect(selected.failure).toEqual({ line: `Missed a requirement: ${statement}`, evidence: task.failure!.evidence, suggestion, link: null, retry: { action: "/t/t-fail/requeue", note: suggestion, pins: { run: expect.any(Number), digest: expect.stringMatching(/^[a-f0-9]{32}$/) } } });
     // The Requirements row says what failed, in a count: never "Unverified".
     expect(selected.panel!.status!.details.find(one => one.key === "requirements")).toMatchObject({ text: "1 missed", mark: "failed" });
     // Run checks is the Checks row's own act, never the act row's (P1.3); it stays reachable there.
@@ -1259,7 +1259,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(selected.status.label).toBe("Failed");
     expect(selected.panel!.status).toMatchObject({ headline: "Failed", sentence: selected.failure!.line });
     expect(selected.failure!.line).not.toBe("");
-    expect(selected.failure!.retry).toEqual({ action: "/t/t-builtfail/requeue", note: selected.failure!.suggestion });
+    expect(selected.failure!.retry).toEqual({ action: "/t/t-builtfail/requeue", note: selected.failure!.suggestion, pins: { run: expect.any(Number), digest: expect.stringMatching(/^[a-f0-9]{32}$/) } });
     // Retry is the ink act; Accept is only the outline Accept anyway, posting this exact result with a reason.
     expect(selected.acts).toEqual({ primary: "retry", secondary: "accept-anyway", line: null });
     expect(selected.decision).toBeNull();

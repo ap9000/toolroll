@@ -174,6 +174,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.complete": "complete-task",
   // Local-owner slice 2: the plan button, on its own road (tasks.ts localOwnerPlan; the writer checks this exact act).
   "task.act.plan": "request-plan",
+  // Local-owner slice 3: Retry, on its own road (tasks.ts localOwnerRetry; the writer checks this exact act).
+  "task.act.requeue": "retry-build",
   "run.act.revise": "request-revision",
   "run.act.note": "request-revision",
   "run.act.comment": "request-revision",

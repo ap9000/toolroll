@@ -26,7 +26,7 @@ import { pausedWords } from "../../steer-status.js";
 import { fullWhen, shortWhen, viewerZone } from "../../when-html.js";
 import { ActivityLine, AlsoViewing, useLiveTask, WORKSPACE_NUDGE } from "../live-task.js";
 import { cn } from "../kit/utils.js";
-import { HEADLINE_GLYPH, statusWhyLines } from "./status-summary.js";
+import { HEADLINE_GLYPH, RetryPinFields, statusWhyLines, type RetryPins } from "./status-summary.js";
 import type { GlyphKind } from "../components/ui/status-glyph.js";
 
 /** Bring an element of this page into view: open the step row or the Activity panel that holds it (bodies stay
@@ -138,8 +138,9 @@ export function Html({ html, className }: { html: string; className?: string }) 
 
 /** Retry itself, on the failed box: the task page's requeue (branch and workspace kept), its note for the next
  * attempt starting with the one suggestion of what to change, ready to edit. */
-export function RetryForm({ action, note }: { action: string; csrf?: string; note?: string | undefined; variant?: "default" | "attention" }) {
+export function RetryForm({ action, note, pins }: { action: string; csrf?: string; note?: string | undefined; variant?: "default" | "attention"; pins?: RetryPins | null | undefined }) {
   return <PostForm action={action} data-retry className="k-field">
+    <RetryPinFields pins={pins} />
     <label htmlFor="retry-note" className="k-label">What to change next time</label>
     <KTextarea id="retry-note" name="note" maxLength={RETRY_NOTE_LIMIT} rows={2} defaultValue={note ?? ""} placeholder="Note for the next attempt (optional)" data-retry-note="" />
     <div className="k-acts"><KButton type="submit" variant="primary" label="Retry" data-primary-action="" title="Keeps the branch and workspace" /></div>
@@ -354,6 +355,7 @@ function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["m
           <KButton type="submit" sm label="Run checks" />
         </PostForm>}
         {row.act?.kind === "retry" && retry != null && <PostForm action={retry.action} className="inline" data-merge-act="retry">
+          <RetryPinFields pins={retry.pins} />
           <KButton type="submit" sm label="Retry" />
         </PostForm>}
         {row.act?.kind === "fix" && <KDisclose summary="Ask the agent to fix">
@@ -421,8 +423,8 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
   const waits = card.status.headline === "Needs you" || card.status.headline === "Ready for review";
   const acts: ReactNode = confirm != null && csrf !== "" ? <RecheckStopped form={confirm} label={card.action?.label ?? "Check again"} />
-    : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><KButton type="submit" variant="primary" label={card.action?.label ?? "Retry"} data-primary-action="" /></PostForm>
-    : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} />
+    : rebuild != null && csrf !== "" ? <PostForm action={rebuild.action} data-rebuild><RetryPinFields pins={rebuild.pins} /><KButton type="submit" variant="primary" label={card.action?.label ?? "Retry"} data-primary-action="" /></PostForm>
+    : retrying ? <RetryForm action={retry.action} note={retry.note ?? failure?.suggestion} pins={retry.pins} />
     : <>
       {stuck?.action != null ? <KLinkButton label={stuck.action.label} href={stuck.action.href} data-stuck-action="" />
         : card.action !== null && !(resultHere && (card.action.openResult || /[?&]tab=result\b/.test(card.action.href))) && <KLinkButton variant={waits ? "primary" : "outline"} className={waits ? "k-docked" : undefined} label={card.action.label} href={card.action.href} data-primary-action=""
