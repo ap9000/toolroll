@@ -3,7 +3,7 @@
  * ("local-owner")` is true, so the holdout write refuses that basis by name; refresh has no act at all, on any surface.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { openLocalWorld, type LocalWorld } from "../local-owner-world.js";
+import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { codeMapOn, readRefresh } from "../../src/code-map-store.js";
 import { runAsLocalOwner } from "../../src/local-owner.js";
 import { runOperate } from "../../src/operate.js";
@@ -14,7 +14,7 @@ beforeEach(async () => {
   world = await openLocalWorld();
   world.store.upsertProject(world.repo, "repo", new Date(), { remoteUrl: "https://git.example/repo.git" });
   world.store.handle.prepare("UPDATE project SET code_map_enroll_until = '2099-01-01T00:00:00.000Z'").run();
-});
+}, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { await world.close(); });
 const until = () => world.store.handle.prepare("SELECT code_map_enroll_until AS u FROM project WHERE path = ?").get(world.repo)!["u"];
 

@@ -16,6 +16,10 @@ import { setLimitOverride } from "../src/request-budget.js";
 
 export const LOCAL_T0 = new Date("2026-11-03T12:00:00.000Z");
 
+/** The timeout for a hook that opens a world. About 0.6 s on an idle machine (a fresh database's whole schema is ~0.4 s
+ * of CPU, then git and a listening console), but a loaded CI runner has taken longer than Vitest's 10 s hook default. */
+export const LOCAL_WORLD_SETUP_MS = 60_000;
+
 export type LocalWorld = Awaited<ReturnType<typeof openLocalWorld>>;
 
 /** `extra` may be a function of the world's own folder (for options that name it, like projectRoots). */

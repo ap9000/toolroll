@@ -65,7 +65,8 @@ beforeEach(() => {
   databaseFile = join(dir, "s", "orders.db");
   store = openStore(databaseFile, { createdBy: "laptop" });
   if (!initLocalMode(store, { owner: "alex", fenceAvailable: true, now }).ok) throw Error("local mode");
-});
+  // A fresh database's whole schema is ~0.5 s of CPU on an idle machine; a loaded CI runner took over the 10 s default.
+}, 60_000);
 afterEach(async () => {
   for (const close of closers.splice(0).reverse()) await close();
   store.close();

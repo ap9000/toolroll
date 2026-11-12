@@ -7,7 +7,7 @@
  * a pull request; a person outside the local owner's chain still can. An ordinary result is still completed.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { openLocalWorld, type LocalWorld } from "../local-owner-world.js";
+import { openLocalWorld, type LocalWorld, LOCAL_WORLD_SETUP_MS } from "../local-owner-world.js";
 import { propose } from "../../src/scope.js";
 import { storeEvidence } from "../../src/evidence.js";
 import { sealVerificationReceipt } from "../../src/verification-evidence.js";
@@ -35,7 +35,7 @@ beforeEach(async () => {
   // (Written straight in: on a laptop nobody vouches for another approver without a password.)
   world.store.handle.prepare("INSERT INTO approver (name, credential_hash, added_at) VALUES ('robin', 'x', ?)").run(T0.toISOString());
   savePublishing(world.store, { repo: world.repo, githubRepo: "alex/shop", remote: "origin", base: "main", account: "alex" }, "alex", {}, T0);
-});
+}, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { await world.close(); });
 
 type Kind = "ordinary" | "release" | "release-record" | "declared-protected" | "changed-protected" | "coordinator";

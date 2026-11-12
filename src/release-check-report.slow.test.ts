@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { reportFromOutput } from "./check-report.js";
 import { buildReport, checkDeadline, failureExcerpt, parseHandshake, reportLine } from "../scripts/release-check.mjs";
+import { descendants } from "../scripts/suite-lifecycle.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const script = join(ROOT, "scripts", "release-check.mjs");
@@ -22,6 +23,13 @@ const cleanEnv = (extra: Record<string, string> = {}) => {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !/^VITEST|^NODE_OPTIONS$|^TOOLROLL_CHECK_RESULTS_FD$/.test(key)) env[key] = value;
   return { ...env, TOOLROLL_RELEASE_LOCAL_TAGS: "1", TOOLROLL_CHECK_CORES: "8", TOOLROLL_CHECK_LOAD: "0", TOOLROLL_UPGRADE_WORKERS: "", TOOLROLL_CHECK_GATE: "", ...extra };
+};
+
+/** Still a process that can act: it exists and is not a zombie waiting for whoever adopted it to reap it. */
+const running = (pid: number): boolean => {
+  try { process.kill(pid, 0); } catch { return false; }
+  const state = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+  return state.status === 0 && !state.stdout.trim().startsWith("Z");
 };
 
 describe("the release check's report (phase A)", () => {
@@ -181,8 +189,22 @@ describe("the release check's report (phase A)", () => {
     const closed = new Promise<number | null>(done => child.on("close", (_code, signal) => done(signal === null ? 0 : 1)));
     // Kill only once both journeys wait AND typecheck has ended (a slow macOS runner can still be type-checking).
     for (let n = 0; n < 600 && !(stdout.includes("flows | flows: waiting on the worker") && stdout.includes("app | app: waiting on the worker") && stderr.includes("== typecheck ended:")); n++) await new Promise(done => setTimeout(done, 100));
+    // The check runs each part in a process group of its own (scripts/suite-lifecycle.mjs), outside the check's group, and
+    // a SIGKILLed check cannot stop them: left running, they kept working in the fixture while afterEach removed it
+    // (ENOTEMPTY). Freeze the check so it starts nothing more, name everything under it, kill the check's group and each
+    // of theirs, and wait until every one is gone. Only this test's own processes: the check and what descends from it.
+    process.kill(-child.pid!, "SIGSTOP");
+    const tree = descendants(child.pid!);
     process.kill(-child.pid!, "SIGKILL");
+    for (const pid of tree) {
+      try { process.kill(-pid, "SIGKILL"); } catch { /* not a group leader, or gone */ }
+      try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    }
     await closed;
+    for (const deadline = Date.now() + 30_000; tree.some(running);) {
+      if (Date.now() > deadline) throw Error(`the check's processes outlived it: ${tree.filter(running).join(", ")}`);
+      await new Promise(done => setTimeout(done, 50));
+    }
     expect(stdout).toContain("flows | flows: step one done\n");
     expect(stdout).toContain("flows | flows: waiting on the worker\n");
     expect(stdout).toContain("app | app: waiting on the worker\n");

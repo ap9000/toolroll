@@ -61,18 +61,32 @@ const envelope = (): Record<string, unknown> => JSON.parse(lines.join("\n")) as 
 
 describe("toolroll up", () => {
   test("cold start: mints the login durably, registers a worker, watches, retires cleanly", async () => {
-    let observed = false;
-    const code = await up([], PORT, () => {
-      const store = openStore(db);
-      try {
-        expect(store.handle.prepare("SELECT 1 FROM watch_lease WHERE expires_at > ?").get(new Date().toISOString())).toBeDefined();
-        expect(sweepServiceRunning(store, new Date())).toBe(false);
-        observed = true;
-      } finally { store.close(); }
-    });
+    // While `up` runs, the database is looked at every 20 ms: some moment must show a live watch lease, and no moment
+    // may show a sweep service. Checking only when the envelope line came out raced the worker's own --for 1200: on a
+    // loaded runner the envelope can reach this process after the bounded watch has already given its lease back.
+    // (runOperate opens and migrates the database before its first await, so the poller never sees a half-made one.)
+    const running = up();
+    const watcher = openStore(db);
+    const leases: { owner: string; runner: string; repo: string }[] = [];
+    const sweeps: string[] = [];
+    const look = (): void => {
+      const now = new Date();
+      leases.push(...watcher.handle.prepare("SELECT owner, runner, repo FROM watch_lease WHERE expires_at > ?").all(now.toISOString()) as { owner: string; runner: string; repo: string }[]);
+      if (sweepServiceRunning(watcher, now)) sweeps.push(now.toISOString());
+    };
+    const poller = setInterval(look, 20);
+    let code: number;
+    try { code = await running; } finally { clearInterval(poller); watcher.close(); }
     expect(code).toBe(0);
-    expect(observed).toBe(true);
+    expect(sweeps).toEqual([]);
     const answer = envelope();
+    // The lease seen live was this start's own worker watching this project, as a bounded watch (never a service's).
+    expect(leases.length).toBeGreaterThan(0);
+    expect(leases[0]).toMatchObject({ runner: String(answer["runner"]), repo: (answer["repos"] as string[])[0] });
+    expect(leases[0]!.owner.startsWith("toolroll-service:")).toBe(false);
+    // And the watch gave it back on the way out: no lease is live once `up` has returned.
+    const after = openStore(db);
+    try { expect(after.handle.prepare("SELECT 1 FROM watch_lease WHERE expires_at > ?").get(new Date().toISOString())).toBeUndefined(); } finally { after.close(); }
     expect(answer).toMatchObject({ ok: true, command: "up" });
     expect(String(answer["url"])).toContain(`:${PORT}`);
     expect((answer["repos"] as string[])[0]).toBeTruthy();

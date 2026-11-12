@@ -43,7 +43,8 @@ afterEach(async () => {
     if (child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await exited(child, 20_000).catch(() => child.kill("SIGKILL")); }
   }
   rmSync(base, { recursive: true, force: true });
-});
+  // Each child left running gets up to 20 s to drain (up to three a test): far past Vitest's 10 s hook default.
+}, 90_000);
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function exited(child: ChildProcess, ms: number): Promise<void> {
