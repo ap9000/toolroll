@@ -138,9 +138,16 @@ describe("the CI workflows", () => {
     for (const { file, step } of steps) {
       const run = step.run!;
       expect(step.uses, file).toBeUndefined();
-      expect((step as { "timeout-minutes"?: unknown })["timeout-minutes"], file).toBeLessThanOrEqual(8);
+      expect((step as { "timeout-minutes"?: unknown })["timeout-minutes"], file).toBeLessThanOrEqual(10);
       expect(run, file).toMatch(/for attempt in 1 2 3; do/);
-      // Every network call is capped, so three attempts fit the step's limit (60 + 3 × (60 + 60 + 10) s = 7.5 min).
+      // The pinned packages: this repository's own ci-tools release, every file's SHA-256 checked before dpkg sees it,
+      // and a failed pinned install falls through to Ubuntu's mirrors (never the end of the step).
+      expect(run, file).toContain('pinned="https://github.com/ap9000/toolroll/releases/download/ci-tools-noble-1"');
+      expect(run.match(/\b[0-9a-f]{64} [a-z0-9._~+-]+_amd64\.deb\b/g)?.length, file).toBe(3);
+      expect(run, file).toMatch(/sha256sum --strict -c -\) && sudo dpkg -i "\$debs"\/\*\.deb; then/);
+      expect(run.indexOf("sudo dpkg -i"), file).toBeLessThan(run.indexOf("for attempt in 1 2 3"));
+      expect(run, file).toMatch(/timeout 60 curl -fsSL/);
+      // Every network call is capped, so the whole step fits its limit (60 + 60 + 3 × (60 + 60 + 10) s = 8.5 min).
       expect(run.match(/\$apt (update|install)/g)?.length, file).toBe(3);
       expect(run.match(/timeout 60 \$apt (update|install)/g)?.length, file).toBe(3);
       expect(run, file).toContain("Acquire::Retries=3");

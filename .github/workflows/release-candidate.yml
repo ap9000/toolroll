@@ -68,16 +68,36 @@ jobs:
           cache: npm
       # The sandbox runtime's tools, and unprivileged user namespaces (ubuntu-24.04's AppArmor default refuses them),
       # as the linux fence job sets them up: flows' scripts and tools' servers run in the real Linux fence here.
-      # Ubuntu's mirrors fail for minutes at a time (86% of failed CI jobs in Oct–Nov 2026 were this step). Bounded
-      # retries inside the step's limit: the image's package lists first, then up to three refresh-and-install attempts,
-      # each under `timeout`. The tools are checked here, so a missing one fails setup, not a test. Kept inline (no
+      # Ubuntu's mirrors fail for minutes, once for hours (86% of failed CI jobs in Oct–Nov 2026 were this step). The
+      # pinned packages first, then bounded retries inside the step's limit: the image's package lists, then up to three
+      # refresh-and-install attempts, each under `timeout`. The tools are checked here, so a missing one fails setup, not a test. Kept inline (no
       # composite action): it runs as root, and a local action would come from the change's own checkout.
-      - name: Linux tools, with bounded retries
-        timeout-minutes: 8
+      - name: Linux tools, pinned packages first, then Ubuntu's mirrors with bounded retries
+        timeout-minutes: 10
         run: |
           pkgs="bubblewrap socat ripgrep"
           have() { for b in bwrap socat rg; do command -v "$b" >/dev/null || return 1; done; }
           apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          # First the pinned packages from this repository's ci-tools release (GitHub's own hosts: they answer when
+          # Ubuntu's mirrors don't), each file checked against its SHA-256 before anything installs it; Ubuntu's mirrors
+          # only when they don't install (a newer image can outgrow them). The release notes say how the files were
+          # fetched and checked; refresh them with a new release tag and new hashes here, never by replacing files.
+          pinned="https://github.com/ap9000/toolroll/releases/download/ci-tools-noble-1"
+          debs="$RUNNER_TEMP/ci-tools"; mkdir -p "$debs"
+          if ! have; then
+            if (cd "$debs" && timeout 60 curl -fsSL --retry 2 --retry-delay 3 --remote-name-all \
+                  "$pinned/bubblewrap_0.9.0-1ubuntu0.3_amd64.deb" "$pinned/ripgrep_14.1.0-1_amd64.deb" "$pinned/socat_1.8.0.0-4ubuntu0.1_amd64.deb" &&
+                printf '%s  %s\n' \
+                  2461f1beee9cb04c8942739fe1a2b37e7b7c2a3d518f0779dc75f9245baa3094 bubblewrap_0.9.0-1ubuntu0.3_amd64.deb \
+                  c5ae63c7bee915b1cfc9f0bd07c55b4ce7f2bcd1133cba4da56719aac26101a4 ripgrep_14.1.0-1_amd64.deb \
+                  46e854289b6b1c97e28be5d9293bea61e8633d00d6a65d9513f019c7232696fe socat_1.8.0.0-4ubuntu0.1_amd64.deb |
+                  sha256sum --strict -c -) && sudo dpkg -i "$debs"/*.deb; then
+              :
+            else
+              echo "::warning::Linux tools: the pinned packages did not install, using Ubuntu's mirrors"
+              sudo dpkg -r bubblewrap socat ripgrep >/dev/null 2>&1 || true
+            fi
+          fi
           have || timeout 60 $apt install -y --no-install-recommends $pkgs || true
           for attempt in 1 2 3; do
             have && break
