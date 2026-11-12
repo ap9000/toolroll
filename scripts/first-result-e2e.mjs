@@ -539,13 +539,33 @@ async function acceptInTerminal(inst, term, trace, id) {
   const footerBefore = footerOf(term.text());
   term.press("c");
   trace.interaction("Press c (accept)", { keys: "c" });
-  // Its answer is the line above the key hints: "Accepted.", or the refusal's own words.
+  // Accept this result? (local-owner slice 1): the result read once and pinned, then the one question it owes.
+  const review = await term.waitFor(screen => /Accept this result\?/.test(screen) || footerOf(screen) !== footerBefore, "the Accept screen", { timeoutMs: 20_000 }).catch(() => term.text());
+  if (/Accept this result\?/.test(review)) {
+    trace.note("Accept this result?", { screen: review });
+    if (/Did you check it yourself\?/.test(review)) {
+      trace.decision("Did you check it yourself? (the result owes the person's own check)", { screen: review });
+      term.press("y");
+      trace.interaction("Press y (yes, it looks right)", { keys: "y" });
+    } else if (/Say why you accept it anyway/.test(review)) {
+      trace.decision("Say why it can be accepted (a reason is owed)", { screen: review });
+      const why = "I read the change and its test passes.";
+      term.press(why);
+      trace.interaction("Type the reason", { keys: `${why.length} characters` });
+      term.press("\r");
+      trace.interaction("Press Enter (accept)", { keys: "Enter" });
+    } else if (/\(y\/n\)/.test(review)) {
+      term.press("y");
+      trace.interaction("Press y (accept)", { keys: "y" });
+    }
+  }
+  // Its answer is the line above the key hints: "Accepted. The task is done.", or the refusal's own words.
   const answer = await until("the accept's answer", async () => {
     if (accepted(inst, id)) return "accepted";
     const footer = footerOf(term.text());
     return footer !== footerBefore && footer !== "Working…" && footer !== "" ? footer : null;
   }, { timeoutMs: 20_000, everyMs: 200, seen: () => term.text().slice(-600) }).catch(() => null);
-  if (accepted(inst, id) || answer === "accepted" || answer === "Accepted.") {
+  if (accepted(inst, id) || answer === "accepted" || /^Accepted\./.test(answer ?? "")) {
     await until(`${id} to be accepted`, async () => accepted(inst, id), { timeoutMs: 10_000, everyMs: 250 });
     trace.mark("accepted");
     trace.note("Accepted in the terminal", { screen: term.text() });

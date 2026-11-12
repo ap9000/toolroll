@@ -8,7 +8,9 @@
  * nothing ever prompts on the terminal the screen owns.
  */
 import { dirname, join } from "node:path";
-import { assignmentOf } from "./assignment.js";
+import { assignmentOf, owedAcceptance } from "./assignment.js";
+import { familyChangedFiles } from "./result-completion.js";
+import { checkBackingOf, receiptChecksOf, requirementWordOf } from "./task-status.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { runAsLocalOwner } from "./local-owner.js";
 import type { OperateOptions } from "./operate.js";
@@ -21,7 +23,7 @@ import { routeChangeOf } from "./route-change.js";
 import { flakyCount } from "./flaky.js";
 import { memoryWaiting } from "./lesson-notes.js";
 import { homeGroupOf } from "./home-groups.js";
-import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
+import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiResult, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
 import { welcomeHere, welcomeLines } from "./welcome-facts.js";
 
@@ -41,9 +43,11 @@ const words = (value: unknown, fallback = ""): string => typeof value === "strin
  * terminal (terminal-text.ts). Every displayed string below goes through here; ids and digests are only acted on. */
 const shown = (value: unknown, fallback = ""): string => terminalText(words(value, fallback));
 
-/** What a refused write says, and whether it is a local-owner refusal (the screen then leads to a password). */
+/** What a refused write says, and whether it is a local-owner refusal (the screen then leads to a password), or a
+ * result that changed since the screen read it. */
 function refusalOf(envelope: Envelope): TuiActResult {
   const message = shown(envelope.message, "That was refused.");
+  if (envelope.reason === "stale") return { ok: false, message, needsPassword: false, changed: true };
   return { ok: false, message, needsPassword: envelope.reason === "refused" || envelope.reason === "machine-proof" || envelope.reason === "person-required" || /password/i.test(message) };
 }
 
@@ -145,18 +149,23 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
         // Retry is today's requeue (the console's Retry), the same command and the same refusals.
         case "retry": argv = ["task", "retry", act.id]; done = "Queued again. A builder starts it next."; break;
-        case "complete": {
-          const store = read();
-          let digest: string | undefined;
-          try { digest = store === null ? undefined : assignmentOf(store, act.id, clock(), { principal: "operator", repos: null })?.receipt?.digest; } catch { digest = undefined; }
-          if (digest === undefined) return { ok: false, message: "This task has no finished result to accept.", needsPassword: false };
-          argv = ["task", "complete", act.id, "--digest", digest]; done = "Accepted."; break;
-        }
+        // Accept: exactly the result the Accept screen read, never the one current when this is sent (the command
+        // refuses a result that changed meanwhile). The person's yes to their own check, or a reason, only when given.
+        case "complete":
+          argv = ["task", "complete", act.id, "--run", String(act.runId), "--digest", act.digest, ...(act.checked ? ["--checked"] : []), ...(act.reason === null ? [] : ["--reason", act.reason])];
+          done = "Accepted. The task is done."; break;
       }
       const answer = await command(argv);
       if (answer.ok !== true) return refusalOf(answer);
+      if (act.kind === "complete" && answer["replayed"] === true) return { ok: true, message: "Already accepted. The task is done." };
       const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : act.kind === "build" ? words(answer["task"]) : "";
       return { ok: true, message: done, ...(filed === "" ? {} : { id: filed }) };
+    },
+
+    async result(id: string): Promise<TuiResult | null> {
+      const store = read();
+      if (store === null) return null;
+      try { return resultOf(store, id, clock(), evidenceRoot); } catch { return null; }
     },
 
     async fastTerms(text: string, repo: string | null): Promise<TuiFastTerms | null> {
@@ -202,4 +211,30 @@ function learningLine(store: Store, repos: readonly string[], now: Date): string
   } catch { return null; }
   const parts = [flaky === 0 ? "" : `${flaky} flaky test${flaky === 1 ? "" : "s"}: open the project's Flaky tests in the browser`, memory === 0 ? "" : `${memory} project memory suggestion${memory === 1 ? "" : "s"}: open Settings → Knowledge`].filter(Boolean);
   return parts.length === 0 ? null : parts.join(" · ");
+}
+
+/** The Accept screen's one read of a task's current result (local-owner slice 1): which build and receipt it pins, and
+ * what the result page would show about it — the agent's summary, the files changed, each requirement and how it is
+ * shown, the actual check status, and what accepting it needs from the person. Text from outside is cleaned here. */
+function resultOf(store: Store, id: string, now: Date, evidenceRoot: string): TuiResult | null {
+  const assignment = assignmentOf(store, id, now, { principal: "operator", repos: null }, evidenceRoot);
+  const receipt = assignment?.receipt ?? null;
+  if (assignment === null || receipt === null) return null;
+  const blockers = assignment.readiness?.blockers ?? [];
+  const owed = assignment.state === "ready-to-check" ? owedAcceptance(receipt, blockers) : null;
+  // An exception's own blocker is what its reason answers; any other one stands in the way of accepting.
+  const standing = blockers.filter(one => !(owed === "exception" && one.key === "criteria")).map(one => terminalText(one.message));
+  const notNow = assignment.state === "complete" ? "This result is already accepted." : assignment.state === "ready-to-check" ? null : terminalText(assignment.detail || "This result isn't ready to accept.");
+  const changed = familyChangedFiles(store, receipt.taskId, receipt.runId, evidenceRoot);
+  const backing = checkBackingOf(receiptChecksOf(receipt));
+  let checks: string[] = [];
+  try { const list = mergeChecklistOf(store, id, now, { principal: "operator", repos: null }, evidenceRoot); checks = list === null ? [] : checklistLines(list).map(line => terminalText(line)); } catch { checks = []; }
+  return {
+    id, runId: receipt.runId, digest: receipt.digest, title: terminalText(assignment.title),
+    ready: notNow === null && standing.length === 0, blockers: notNow === null ? standing : [notNow],
+    summary: (receipt.agentReport ?? "").split("\n").map(line => terminalText(line).trimEnd()).filter(line => line.trim() !== "").slice(0, 8),
+    files: changed === null ? null : { names: changed.slice(0, 10).map(name => terminalText(name)), more: Math.max(0, changed.length - 10) },
+    requirements: (receipt.proof?.matrix ?? []).map(row => ({ word: requirementWordOf(row, receipt.proof?.verdict ?? null, backing), statement: terminalText(row.statement ?? row.id ?? "") })),
+    checks, owed,
+  };
 }

@@ -238,7 +238,11 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: 'token-env', takesValue: true, meaning: 'scoped coordinator credential environment variable' },
       { name: 'token-file', takesValue: true, meaning: 'scoped coordinator credential file; defaults to selected project reference' },
       ...(action === 'complete' ? [{ name: 'digest', takesValue: true, meaning: 'exact receipt from assignment show; required for JSON or scoped agents' },
-        { name: 'pull-request', takesValue: false, meaning: "also open the result's pull request from that commit, as the console's Complete does; an approver's sign-in (--as/--token), never a scoped credential; refuses with pull-requests-off and the setup command" }]
+        { name: 'pull-request', takesValue: false, meaning: "also open the result's pull request from that commit, as the console's Complete does; an approver's sign-in (--as/--token), never a scoped credential; refuses with pull-requests-off and the setup command" },
+        // Local-owner slice 1: the terminal UI's Accept, for the laptop's local owner only (no password).
+        { name: 'run', takesValue: true, meaning: "the terminal's local owner: the exact build of the result read; required there with --digest" },
+        { name: 'checked', takesValue: false, meaning: "the terminal's local owner: you checked the result yourself; required when it owes your own check" },
+        { name: 'reason', takesValue: true, meaning: "the terminal's local owner: why you accept a result whose requirement isn't shown; required for an exception" }]
         : [{ name: 'feedback', takesValue: true, meaning: 'specific requested change' }, { name: 'run', takesValue: true, meaning: 'exact result run; defaults to current result' }, { name: 'source', takesValue: true, meaning: 'exact scope digest; defaults to current terms' }, { name: 'key', takesValue: true, meaning: '32 hexadecimal characters for exact replay; defaults to a stable feedback identity' }]),
     ],
   })),

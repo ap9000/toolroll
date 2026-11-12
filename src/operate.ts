@@ -93,7 +93,7 @@ import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
 import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
-import { pullRequestLines, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { pullRequestLines, runLocalCompletion, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
 import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
@@ -987,6 +987,8 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "saved",
   // task complete: also open the result's pull request.
   "pull-request",
+  // task complete as the terminal's local owner: the person says they checked the result themselves.
+  "checked",
   // storage clean --landed: work already in main.
   "landed",
   // up: the exact start-up details (containment) in the terminal too.
@@ -9371,6 +9373,9 @@ function taskAction(
   switch (action) {
     case "complete":
     case "revise":
+      // Local-owner slice 1: the terminal's local owner accepts on its own road, which never checks a password; chosen
+      // only inside its chain, where an owner that no longer stands is refused there, never sent down the road below.
+      if (action === "complete" && currentLocalOwner() !== null) return runLocalCompletion(rest, flags, context);
       return runTaskOutcomeCommand(action, rest, flags, { ...context, operator: async () => {
         const acting = await askCredentials(flags, context);
         if (acting === null) return null;

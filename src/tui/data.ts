@@ -3,7 +3,7 @@
  * TuiSession. The real ones are the CLI's (tui-source.ts, easy-start.ts); the sample here is for running the bundle on
  * its own (`node dist/tui.js`), its rows labelled as samples so nobody mistakes them for real agent output.
  */
-export type { TuiAct, TuiActResult, TuiDecision, TuiExit, TuiFastTerms, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "../tui-contract.js";
+export type { TuiAct, TuiActResult, TuiDecision, TuiExit, TuiFastTerms, TuiResult, TuiRow, TuiSession, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "../tui-contract.js";
 import type { TuiRow, TuiSession, TuiSource, TuiTask } from "../tui-contract.js";
 
 /** A sample plane that changes nothing: every write is refused with words that say so. */
@@ -26,6 +26,9 @@ export function sampleSource(): TuiSource {
     live: id => (id === "t1" ? ["Editing src/auth.ts (sample)"] : []),
     changed: () => 0,
     act: async () => ({ ok: false, message: "This is a sample: nothing changes.", needsPassword: false }),
+    result: async id => id !== "t2" ? null : { id, runId: 2, digest: "sample", title: "Sample: add CSV export", ready: true, blockers: [],
+      summary: ["Added a CSV export button to the orders page (sample)."], files: { names: ["src/export.ts (sample)"], more: 0 },
+      requirements: [{ word: "You check", statement: "The CSV opens in a spreadsheet (sample)." }], checks: ["Sample: checks are not real here."], owed: "person-check" },
     setup: async () => null,
   };
 }

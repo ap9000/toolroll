@@ -63,15 +63,40 @@ export type TuiAct =
   | { readonly kind: "approve"; readonly id: string; readonly digest: string }
   | { readonly kind: "stop"; readonly id: string; readonly runId: number }
   | { readonly kind: "revise"; readonly id: string; readonly text: string }
-  | { readonly kind: "complete"; readonly id: string }
+  /** Accept: exactly the result the Accept screen read (its build and receipt, pinned when it opened), with the person's
+   * explicit yes to their own check, or an exception's reason, when the result owes one. */
+  | { readonly kind: "complete"; readonly id: string; readonly runId: number; readonly digest: string; readonly checked: boolean; readonly reason: string | null }
   | { readonly kind: "retry"; readonly id: string }
   | { readonly kind: "answer"; readonly decision: number; readonly option: string };
 
 /** What Build would approve: the same lines every approval surface reads. */
 export type TuiFastTerms = { readonly preview: string; readonly digest: string; readonly terms: readonly { readonly label: string; readonly words: string }[] };
 
-/** A write's answer: its words. `needsPassword`: refused because the local owner may not do it. */
-export type TuiActResult = { readonly ok: true; readonly message: string; readonly id?: string } | { readonly ok: false; readonly message: string; readonly needsPassword: boolean };
+/** A write's answer: its words. `needsPassword`: refused because the local owner may not do it. `changed`: refused
+ * because what it named (a result) changed since the screen read it. */
+export type TuiActResult = { readonly ok: true; readonly message: string; readonly id?: string } | { readonly ok: false; readonly message: string; readonly needsPassword: boolean; readonly changed?: boolean };
+
+/** A finished result as the Accept screen reads it once and pins: which build and receipt, and what it shows. */
+export type TuiResult = {
+  /** The task Accept names, and the exact result: what the answer submits, never read again before it is sent. */
+  readonly id: string;
+  readonly runId: number;
+  readonly digest: string;
+  readonly title: string;
+  /** Ready to accept now; when not, why not (a failed check, a build not yet proven stopped), and no Accept is offered. */
+  readonly ready: boolean;
+  readonly blockers: readonly string[];
+  /** The agent's own summary of what it did (empty when it left none). */
+  readonly summary: readonly string[];
+  /** The files the result changed (the first ten), how many more, or null when they can't be read. */
+  readonly files: { readonly names: readonly string[]; readonly more: number } | null;
+  /** Each requirement and how it is shown ("Met", "You check", "Not shown yet"…). */
+  readonly requirements: readonly { readonly word: string; readonly statement: string }[];
+  /** "Can I merge?": the actual check status, the same lines as `toolroll task ready`. */
+  readonly checks: readonly string[];
+  /** What accepting it needs from the person: their own check, a reason, or nothing more. */
+  readonly owed: "person-check" | "exception" | null;
+};
 
 /** The plane, as the screen sees it. */
 export interface TuiSource {
@@ -82,6 +107,8 @@ export interface TuiSource {
   /** A counter that moves when the plane's work changes (the store's wake sequence). */
   changed(): number;
   act(act: TuiAct): Promise<TuiActResult>;
+  /** The task's current finished result, read once for the Accept screen; null when it has none. */
+  result(id: string): Promise<TuiResult | null>;
   /** A small task's exact terms, or null when it takes the ordinary road (New task then files it). */
   fastTerms(text: string, repo: string | null): Promise<TuiFastTerms | null>;
   /** The welcome's steps, or null once setup is done. */

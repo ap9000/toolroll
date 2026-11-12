@@ -49,6 +49,24 @@ describe("CLI commands as the local owner", () => {
     expect(wrong).toEqual([]);
   }, 60_000);
 
+  test("the allowed set is exactly this, each with its act: a new row for the local owner is a reviewed change here", () => {
+    const allowed = Object.fromEntries([...LOCAL_POLICY].flatMap(([invocation, mark]) => mark.local === "allow" ? [[invocation, mark.act]] : []));
+    expect(allowed).toEqual({
+      pulls: "read", graph: "read", repos: "read", map: "read", "map area": "read", "map file": "read", "map search": "read", status: "read", ready: "read", gaps: "read",
+      contract: "read", "skills list": "read", "skills get": "read", "flaky list": "read", "flaky show": "read", card: "read", "memory review": "read", "memory status": "read",
+      "memory decisions": "read", "memory show": "read", "memory apply": "memory-review", "memory tidy": "memory-review", "memory restore": "memory-review",
+      "memory unmerge": "memory-review", "task list": "read", "task show": "read", "task state": "read", "task wait": "read", "check-progress": "read", "review show": "read",
+      welcome: "read", "task add": "file-task", "task new": "build-now", chat: "lead-send", "task steer": "lead-send", "task approve": "approve-plan", decide: "answer-question",
+      "task stop": "stop-run", "task pause": "pause-run", "task hold": "pause-run", "task resume": "resume-run", "task continue": "resume-run", "task unhold": "resume-run",
+      // Slice 1: the terminal's Accept is this row's own road (task-outcome-cli.ts runLocalCompletion), never the password road.
+      "task complete": "complete-task", "task revise": "request-revision", "task archive": "archive-task", "task restore": "archive-task", "repos add": "add-project",
+      "models suggestions": "read", "models turn-off": "routing-turn-off", "models dismiss": "dismiss-suggestion", "models stop": "trial-stop",
+      "map on": "code-map-switch", "map off": "code-map-switch",
+    });
+    // Not the local owner's (slices 2 and 3 will decide them): asking for a plan, retrying, and Accept's other spelling.
+    for (const invocation of ["task plan", "task requeue", "task accept", "task merge"]) expect(LOCAL_POLICY.get(invocation), invocation).toEqual({ local: "deny" });
+  });
+
   test("an unknown or undeclared command is refused too", async () => {
     expect((await asOwner("not-a-command")).envelope).toMatchObject({ ok: false, reason: "refused" });
     expect((await asOwner("tokens create")).envelope).toMatchObject({ ok: false, reason: "refused" });
@@ -57,6 +75,8 @@ describe("CLI commands as the local owner", () => {
   test("credentials named on the command line are refused: the local owner's authority is its own", async () => {
     for (const flags of [["--token", "so_x"], ["--as", "alex"], ["--token-file", join(root, "t")], ["--token-env", "X"]]) {
       expect((await asOwner("task list", flags)).envelope, flags[0]).toMatchObject({ ok: false, reason: "refused" });
+      // The terminal's Accept too: its road never takes a credential, so naming one refuses before any of it runs.
+      expect((await asOwner("task complete one", ["--run", "1", "--digest", "a".repeat(64), "--checked", ...flags])).envelope, `complete ${flags[0]}`).toMatchObject({ ok: false, reason: "refused" });
     }
     // Adding a project is the local owner's; naming its trusted remote (whose main may complete landed work) is not.
     expect((await asOwner("repos add", [root, "--remote", "https://github.com/someone/else.git"])).envelope).toMatchObject({ ok: false, reason: "refused" });

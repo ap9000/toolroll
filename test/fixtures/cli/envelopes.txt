@@ -4049,6 +4049,21 @@ $ contract --commands --json → 0
           "name": "pull-request",
           "takesValue": false,
           "meaning": "also open the result's pull request from that commit, as the console's Complete does; an approver's sign-in (--as/--token), never a scoped credential; refuses with pull-requests-off and the setup command"
+        },
+        {
+          "name": "run",
+          "takesValue": true,
+          "meaning": "the terminal's local owner: the exact build of the result read; required there with --digest"
+        },
+        {
+          "name": "checked",
+          "takesValue": false,
+          "meaning": "the terminal's local owner: you checked the result yourself; required when it owes your own check"
+        },
+        {
+          "name": "reason",
+          "takesValue": true,
+          "meaning": "the terminal's local owner: why you accept a result whose requirement isn't shown; required for an exception"
         }
       ],
       "remote": "yes"

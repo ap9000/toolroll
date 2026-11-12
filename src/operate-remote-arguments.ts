@@ -34,7 +34,8 @@ export const REMOTE_ARGUMENTS: ReadonlyMap<string, RemoteArguments> = new Map([
   ['task list', args('', 'state view limit cursor')],
   ['task show', args('id:task')],
   ['task wait', args('id:task', 'timeout')],
-  ['task complete', args('task:task', 'digest', { run: 'run', 'pull-request': 'refused' })],
+  // --checked and --reason are the terminal's local owner's own (a person's check is never an API token's): refused.
+  ['task complete', args('task:task', 'digest', { run: 'run', 'pull-request': 'refused', checked: 'refused', reason: 'refused' })],
   ['task revise', args('task:task', 'feedback source key', { run: 'run' })],
   ['task state', args('id:task state', 'key reason', { 'replaced-by': 'task' })],
   ['task block', args('id:task', 'key', { on: 'task' })],
