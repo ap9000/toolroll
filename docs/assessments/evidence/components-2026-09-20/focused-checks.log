@@ -1,6 +1,6 @@
 --- serve-tests-final.log ---
 
- RUN  v4.1.10 /Users/alekseypelletier/Developer/standing-orders-components
+ RUN  v4.1.10 ~/Developer/standing-orders-components
 
 (node:43768) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
@@ -13,7 +13,7 @@
 
 --- serve-project-filter.log ---
 
- RUN  v4.1.10 /Users/alekseypelletier/Developer/standing-orders-components
+ RUN  v4.1.10 ~/Developer/standing-orders-components
 
 
 > standing-orders@0.4.3 build
@@ -36,7 +36,7 @@ Build source: unavailable (no clean Git checkout)
 
 --- component-tests-final.log ---
 
- RUN  v4.1.10 /Users/alekseypelletier/Developer/standing-orders-components
+ RUN  v4.1.10 ~/Developer/standing-orders-components
 
 (node:12289) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)

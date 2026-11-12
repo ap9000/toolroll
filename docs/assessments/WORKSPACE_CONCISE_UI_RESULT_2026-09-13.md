@@ -106,7 +106,7 @@ Commands, run from this checkout on the final tree:
 | `npx vitest run src/serve.test.ts src/chat-continuity.test.ts src/workspace-ui.test.ts src/dispatch.test.ts` | 4 files, 295 passed (1 new test, assertions added or updated as listed below), exit 0 |
 | `npm run build && node scripts/workspace-proof.mjs --out output/playwright/concise-ui/after/workspace --strict` | 197/197 checks, 29 screenshots, exit 0 (167/167 on the base before the change) |
 | `node scripts/ui-polish-proof.mjs --out output/playwright/concise-ui/after/ui-polish --strict` | 76/76 checks, 21 screenshots, exit 0 (75/75 on the base) |
-| `node /Users/alekseypelletier/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs "$PWD"` (the reviewer's independent five-case boundary script, outside the source tree) | all five cases `ok: true`, exit 0 |
+| `node ~/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs "$PWD"` (the reviewer's independent five-case boundary script, outside the source tree) | all five cases `ok: true`, exit 0 |
 | `npm run typecheck` | exit 0 |
 | `npm run typecheck && npm test -- --run --reporter=dot --no-file-parallelism && npm run build` (the unchanged approved verifier) | **pending** — runs once through the machine-owned sealing gate after this handoff; not duplicated here |
 
@@ -352,7 +352,7 @@ continuity test passes unchanged.
 | `npm run build && node scripts/workspace-proof.mjs --out output/playwright/concise-ui-revision/after/workspace --strict` | 227/227 checks, 46 screenshots, exit 0 |
 | `node scripts/workspace-proof.mjs --density-only --rev a626e87 --out output/playwright/concise-ui-revision/before/workspace` and the same with `--rev 2ebfbd6 … /source/workspace` | 14 screenshots each, exit 0 (the before / source columns above) |
 | `node scripts/ui-polish-proof.mjs --out output/playwright/concise-ui-revision/after/ui-polish --strict` | 76/76 checks, 21 screenshots, exit 0 |
-| `node /Users/alekseypelletier/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs "$PWD"` (the reviewer's five-case boundary script) | all five `ok: true`, exit 0 |
+| `node ~/Documents/standing-orders/output/playwright/workspace-boundary-review.mjs "$PWD"` (the reviewer's five-case boundary script) | all five `ok: true`, exit 0 |
 | `npm run typecheck` | exit 0 |
 | `npm run typecheck && npm test -- --run --reporter=dot --no-file-parallelism && npm run build` (the unchanged approved verifier) | **pending** — runs once through the machine-owned sealing gate; not duplicated here |
 

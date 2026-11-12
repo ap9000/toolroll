@@ -28,7 +28,7 @@ The [research brief](WORKSPACE_4_RESEARCH_2026-09-14.md) records the actual logg
 
 ## Evidence and checks
 
-Environment: Apple M2 Ultra, macOS 26.5.2; headed Chromium via Playwright CLI. `scripts/ui-polish-fixture.mjs` supplied in-memory tasks, throwaway repositories, synthetic credentials, scripted replies and deliberately damaged evidence. No paid model calls or real tasks were used.
+Environment: a desktop Mac, macOS 26.5.2; headed Chromium via Playwright CLI. `scripts/ui-polish-fixture.mjs` supplied in-memory tasks, throwaway repositories, synthetic credentials, scripted replies and deliberately damaged evidence. No paid model calls or real tasks were used.
 
 - `npm run typecheck` and `npm run build` passed.
 - `npx vitest run src/serve.test.ts src/chat-continuity.test.ts src/mobile-viewport.test.ts src/style-asset.test.ts --reporter=dot --no-file-parallelism`: **318 passed**, 18.94s. Log: `output/playwright/workspace4-focused-tests.log`.

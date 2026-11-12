@@ -1,5 +1,5 @@
 
- RUN  v4.1.10 /Users/alekseypelletier/Developer/standing-orders-impeccable
+ RUN  v4.1.10 ~/Developer/standing-orders-impeccable
 
 (node:32721) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 (Use `node --trace-warnings ...` to show where the warning was created)
@@ -14,7 +14,7 @@
 
 Additional existing workspace-interface tests after updating its stale red-warning assertion:
 
- RUN  v4.1.10 /Users/alekseypelletier/Developer/standing-orders-impeccable
+ RUN  v4.1.10 ~/Developer/standing-orders-impeccable
 
 
  Test Files  1 passed (1)

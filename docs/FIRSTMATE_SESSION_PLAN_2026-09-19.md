@@ -20,11 +20,11 @@ Inspected on September 19, 2026, around 22:16 America/Los_Angeles:
 
 | Surface | Current state |
 | --- | --- |
-| Canonical checkout | `/Users/alekseypelletier/Developer/standing-orders`, clean `main`, fetched `origin/main` at `9de2053` |
+| Canonical checkout | `~/Developer/standing-orders`, clean `main`, fetched `origin/main` at `9de2053` |
 | Running UI and worker | Verified candidate `f1f35d4d5cfa9f6db12cb7251c2d6301e95df597`; both processes use the same staged runtime |
 | Source equivalence | Main and the deployed candidate have the identical Git tree `633877cca26bb2d73fbce87ef2f70b804fb0188a` |
 | Latest committed development | `codex/standalone-workspace-20260919` at `b431d625946b0e651f2ccc4ebc7424c1865bb35a`, native coding foundation on main |
-| Planning checkout | `/Users/alekseypelletier/Developer/standing-orders-firstmate`, branch `codex/firstmate-session-plan-20260919`, based on that foundation |
+| Planning checkout | `~/Developer/standing-orders-firstmate`, branch `codex/firstmate-session-plan-20260919`, based on that foundation |
 | Preserved work | Original Documents checkout and standalone checkout contain unfinished edits; neither was reset, stashed, or switched |
 
 The deployment is already current with main. No replacement or restart was

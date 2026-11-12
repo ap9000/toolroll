@@ -4345,7 +4345,7 @@ suite) with badges; CONTRIBUTING.md (fail-closed rules, the adapter
 contract as the contribution surface); issue forms that ask for `--json`
 output and warn against pasting tokens; repo topics; and a README
 restructure — hero with an animated SVG of the unattended stretch
-(docs/media/demo.svg, hand-built, no GIF tooling), a three-line npx
+(hand-built, no GIF tooling; since removed), a three-line npx
 quickstart, and the status wall moved to its own section above Milestones
 so the first screen is proof, not prose. npm publish remains the
 operator's act; the README now ships as the registry front page when it

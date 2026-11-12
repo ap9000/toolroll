@@ -1,6 +1,6 @@
 # Fast, deterministic unit tests (2026-10-01)
 
-Measured on the 24-core M2 Ultra that also runs the release check. Other
+Measured on the desktop Mac that also runs the release check. Other
 builds were running on the machine throughout (load average 9–28), so each
 before/after pair below was run back to back at the same load. Treat small
 differences as noise.

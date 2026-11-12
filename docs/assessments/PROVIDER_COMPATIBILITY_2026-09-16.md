@@ -56,7 +56,7 @@ Local artifacts: `/tmp/standing-orders-provider-audit-ZPsedJ`.
 - `claude-subscription-chat.json`, `codex-subscription-chat.json`: successful tool envelope and Unicode requests after stdin change.
 - `claude-review-smoke.json`, `codex-review-smoke.json`: synthetic image and exact-session resume, both true. These are not product review verdicts.
 - `focused-final.log`: 176 tests; `stdin-before.log`: reproduced regression failures before runner support.
-- Native baseline receipt: `/Users/alekseypelletier/.config/standing-orders/evidence/1665/verification-receipt.json`.
+- Native baseline receipt: `~/.config/standing-orders/evidence/1665/verification-receipt.json`.
 
 Temporary artifacts are retained locally, not published. The reusable canary is committed; reruns require local credentials and disposable state, not production projects.
 

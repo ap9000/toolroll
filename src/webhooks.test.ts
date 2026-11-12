@@ -84,7 +84,7 @@ describe("the phone origin: the same console-url setting, held to an https origi
       for (const local of ["https://localhost.", "https://app.localhost."]) {
         expect(phoneOrigin({ [CONSOLE_URL_ENV]: local }, dir), local).toBeNull();
       }
-      expect(phoneOrigin({ [CONSOLE_URL_ENV]: "https://server.tailae758.ts.net" }, dir)).toBe("https://server.tailae758.ts.net");
+      expect(phoneOrigin({ [CONSOLE_URL_ENV]: "https://server.tail1234.ts.net" }, dir)).toBe("https://server.tail1234.ts.net");
       // A public address embedded the same way is not loopback, and neither is a routable literal.
       expect(phoneOrigin({ [CONSOLE_URL_ENV]: "https://[::ffff:203.0.113.9]" }, dir)).toBe("https://[::ffff:cb00:7109]");
       expect(phoneOrigin({ [CONSOLE_URL_ENV]: "https://[2001:db8::10]:8443" }, dir)).toBe("https://[2001:db8::10]:8443");
