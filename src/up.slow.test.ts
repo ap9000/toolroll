@@ -10,8 +10,8 @@ import { mkdirSync, mkdtempSync, rmSync, existsSync, statSync, readFileSync, wri
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
-import { execFileSync } from "node:child_process";
-import { consoleSignInLink, runOperate, parseOperateArgs, upLinkRequest, upNarrowDeferred } from "./operate.js";
+import { execFileSync, spawn } from "node:child_process";
+import { consoleSignInLink, easyStartInitLocalMode, runOperate, parseOperateArgs, upLinkRequest, upNarrowDeferred } from "./operate.js";
 import { run as execRun } from "./exec.js";
 import { type Runner as CommandRunner } from "./builder.js";
 import { sweepServiceRunning } from "./storage-sweep-schedule.js";
@@ -997,6 +997,62 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       // The first start ends on its own (--for): `stop` would signal this very process, which runs it.
       expect(await running, ownLines.join("\n")).toBe(0);
     } finally { foreign.close(); rmSync(short, { recursive: true, force: true }); }
+  });
+
+  test("eight W2 (Codex #377 finding 2): a standalone `serve` running on an accountless database is never stepped past or made password-free", async () => {
+    const file = join(base, "served.db");
+    expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
+    const home = join(base, "home");
+    mkdirSync(home, { recursive: true });
+    // `serve` as a person runs it: its own process (it stops on a signal), from source.
+    const served = spawn(process.execPath, ["--import", "tsx", "src/bin.ts", "serve", "--db", file, "--port", String(PORT + 74), "--json"], {
+      cwd: process.cwd(), env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let said = "";
+    served.stdout!.on("data", chunk => { said += String(chunk); });
+    served.stderr!.on("data", chunk => { said += String(chunk); });
+    const exited = new Promise<void>(resolve => served.once("exit", () => resolve()));
+    try {
+      for (const deadline = Date.now() + 60_000; !said.includes('"port"');) {
+        if (served.exitCode !== null || Date.now() > deadline) throw Error(`serve never started:\n${said}`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const localRows = (): number => { const store = openStore(file); try { return Number(store.handle.prepare("SELECT count(*) AS n FROM local_mode").get()!["n"]); } finally { store.close(); } };
+      // A person's laptop start with no --port, the served port first in line: refused, nothing bound or made.
+      lines = [];
+      const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
+        databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 74, PORT + 75] },
+      });
+      expect(code, lines.join("\n")).not.toBe(0);
+      // The served port carries this database's console lifecycle row: never stepped past (the ordinary port-taken words).
+      expect(lines.join("\n")).toContain(`port ${PORT + 74} is taken`);
+      expect(localRows()).toBe(0);
+      const probe = createServer();
+      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 75, "127.0.0.1", () => resolve()); });
+      probe.close();
+      // `serve` on a port not in line, another program holding the first one: still never stepped past to a second console.
+      const foreign = createServer();
+      await new Promise<void>(resolve => foreign.listen(PORT + 76, "127.0.0.1", () => resolve()));
+      try {
+        lines = [];
+        const beside = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
+          databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 76, PORT + 77] },
+        });
+        expect(beside, lines.join("\n")).not.toBe(0);
+        expect(lines.join("\n")).toContain(`Toolroll is already running at http://127.0.0.1:${PORT + 74}`);
+        expect(localRows()).toBe(0);
+      } finally { foreign.close(); }
+      // Bare `toolroll`'s initialisation at the terminal refuses too, while `serve` runs.
+      const person = { stdin: true, stdout: true, agent: false, json: false, remote: false };
+      expect(easyStartInitLocalMode(file, person, { fence: () => true, owner: "sam" })).toBe(false);
+      expect(localRows()).toBe(0);
+      // Once `serve` has stopped, the same database may become password-free.
+      served.kill("SIGTERM");
+      await exited;
+      expect(easyStartInitLocalMode(file, person, { fence: () => true, owner: "sam" })).toBe(true);
+    } finally {
+      if (served.exitCode === null && served.signalCode === null) served.kill("SIGKILL");
+    }
   });
 
   test("the console mints only the kind of link its own start was authorised for; a request of another kind gets none", () => {

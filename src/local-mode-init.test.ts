@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { easyStartInitLocalMode, initLocalModeForPerson, personMayInitLocalMode, type LocalInitCaller } from "./operate.js";
 import { localModeRead } from "./easy-start.js";
-import { initLocalMode, installationCreatedBy, localModeCandidate, localModeOf, openStore, setLocalModeOff, type Store } from "./store.js";
+import { initLocalMode, installationCreatedBy, localModeCandidate, localModeOf, openStore, reportLifecycle, setLocalModeOff, type Store } from "./store.js";
 
 const NOW = new Date("2026-11-13T12:00:00.000Z");
 const PERSON: LocalInitCaller = { stdin: true, stdout: true, agent: false, json: false, remote: false };
@@ -85,6 +85,26 @@ describe("which databases may still become password-free", () => {
     expect(localRows(store)).toBe(0);
     expect(store.listApprovers().map(one => one.name)).toEqual(["robin"]);
     expect(Number(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = 'local mode on'").get()!["n"])).toBe(0);
+  });
+});
+
+describe("never under a console serving the database (Codex #377 finding 2: a standalone `serve` claims no instance)", () => {
+  test.each([
+    ["serving now (beaten just now)", "started", 0, false],
+    ["draining now", "draining", 0, false],
+    ["its last beat over a minute ago (it died)", "started", 61_000, true],
+    ["stopped", "stopped", 0, true],
+  ] as const)("a console %s (row %s, %s ms old): initialised %s", (_label, state, ageMs, initialised) => {
+    const { store, file } = madeFirstByAnotherCommand();
+    const at = new Date(NOW.getTime() - ageMs);
+    reportLifecycle(store, "console:4351", "started", "serve:1:abc", at, { pid: 1 });
+    if (state !== "started") reportLifecycle(store, "console:4351", state, "serve:1:abc", at);
+    const result = initLocalMode(store, { owner: "sam", fenceAvailable: true, now: NOW });
+    expect(result.ok).toBe(initialised);
+    if (!initialised) expect(result).toEqual({ ok: false, reason: "console-running" });
+    expect(localRows(store)).toBe(initialised ? 1 : 0);
+    expect(accounts(store)).toBe(initialised ? 1 : 0);
+    if (!initialised) expect(easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(false);
   });
 });
 

@@ -26685,7 +26685,7 @@ export function installationCreatedBy(store: Store): string | null {
 
 export type InitLocalModeResult =
   | { ok: true; owner: string; generation: number }
-  | { ok: false; reason: "no-fence" | "has-accounts" | "already" };
+  | { ok: false; reason: "no-fence" | "has-accounts" | "already" | "console-running" };
 
 /**
  * Turn local mode on for a database with no account, once (plan F; eight W2: however the database was made — `up
@@ -26704,6 +26704,9 @@ export function initLocalMode(store: Store, input: { owner: string; fenceAvailab
   const unusable = hashPassword(randomBytes(32).toString("hex"));
   return store.transact((): InitLocalModeResult => {
     if (store.handle.prepare("SELECT 1 FROM local_mode").get() !== undefined) return { ok: false, reason: "already" };
+    // A console serving this database right now (a standalone `serve` claims no instance record): never turned
+    // password-free underneath it (Codex review of #377, finding 2).
+    if (consoleServingNow(store, input.now) !== null) return { ok: false, reason: "console-running" };
     const stamp = input.now.toISOString();
     const made = store.handle.prepare(`INSERT INTO approver (name, credential_hash, added_at, generation, password_set)
       SELECT ?, ?, ?, 1, 0 WHERE NOT EXISTS (SELECT 1 FROM approver) AND NOT EXISTS (SELECT 1 FROM local_mode)`).run(input.owner, unusable, stamp);
@@ -27191,4 +27194,22 @@ export function checkCleanupTaskOf(store: Store, checkId: number, runner: string
 export function localModeCandidate(store: Store): boolean {
   const row = store.handle.prepare("SELECT (SELECT count(*) FROM approver) AS accounts, (SELECT count(*) FROM local_mode) AS local").get();
   return row !== undefined && Number(row["accounts"]) === 0 && Number(row["local"]) === 0;
+}
+
+/** How long a console's lifecycle heartbeat (every 15 s) stays proof that it is serving: three beats and a margin. */
+export const CONSOLE_BEAT_FRESH_MS = 60_000;
+
+/**
+ * Codex review of #377, finding 2: a console serving this database now, by its lifecycle row (`console:<port>`, started
+ * or draining, beaten within CONSOLE_BEAT_FRESH_MS) — `up`'s console and a standalone `serve` both write one. Null when
+ * none. A row that can't be read is reported as serving (fail closed).
+ */
+export function consoleServingNow(store: Store, now: Date): { port: number | null } | null {
+  try {
+    const row = store.handle.prepare(`SELECT component FROM service_lifecycle WHERE component LIKE 'console:%' AND state IN ('started','draining')
+      AND beat_at > ? ORDER BY beat_at DESC LIMIT 1`).get(new Date(now.getTime() - CONSOLE_BEAT_FRESH_MS).toISOString());
+    if (row === undefined) return null;
+    const port = Number(String(row["component"]).slice("console:".length));
+    return { port: Number.isInteger(port) ? port : null };
+  } catch { return { port: null }; }
 }

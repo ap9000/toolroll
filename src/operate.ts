@@ -130,7 +130,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
+  requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, consoleServingNow, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket, proveLiveConsole } from "./console-instance.js";
@@ -4676,11 +4676,13 @@ async function serveCommand(
     write("Ctrl-C stops it.");
   }
 
+  const serveLifecycle = serveConsoleLifecycle(store, actual, context.clock);
   await new Promise<void>(resolve => {
     const stop = () => server.close(() => resolve());
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
   });
+  serveLifecycle();
   return EXIT.ok;
 }
 
@@ -7969,6 +7971,10 @@ async function upCommand(
       try { ours = await proveLiveConsole(context.databaseFile, store, packageVersion()); } catch { ours = null; }
       if (ours?.ok === true) return fail(write, json, "up", "already-running", `Toolroll is already running at ${ours.url}`, EXIT.refused);
       if (ours === null || ours.state !== "none") break;
+      // A standalone `serve` on this database claims no instance record, but it beats its lifecycle row: never stepped
+      // past either (Codex review of #377, finding 2).
+      const serving = consoleServingNow(store, clock());
+      if (serving !== null) return fail(write, json, "up", "already-running", serving.port === null ? "Toolroll's console is already serving this database" : `Toolroll is already running at http://127.0.0.1:${serving.port}`, EXIT.refused);
     }
     probe = createNetServer();
     port = candidate;
@@ -14742,4 +14748,20 @@ export function easyStartInitLocalMode(databaseFile: string, caller: LocalInitCa
     initLocalModeForPerson(store, caller, { owner, fence: () => true, now: options.now ?? new Date() });
     return localOwnerBinding(store) !== null;
   } catch { return false; } finally { store.close(); }
+}
+
+/**
+ * Codex review of #377, finding 2: a standalone `serve` claims no instance record, so it reports its console's lifecycle
+ * (`console:<port>`) as `up`'s console does and beats it while it serves. `up` never steps past its port and local mode
+ * is never turned on under it (store.ts consoleServingNow). Returns the stop: the row says stopped.
+ */
+function serveConsoleLifecycle(store: Store, port: number, clock: () => Date): () => void {
+  const component = `console:${port}`, holder = `serve:${process.pid}:${randomUUID().slice(0, 8)}`;
+  try { reportLifecycle(store, component, "started", holder, clock(), { pid: process.pid }); } catch { /* reporting never stops the console */ }
+  const beat = setInterval(() => { try { beatLifecycle(store, component, holder, clock()); } catch { /* the next beat tries again */ } }, RUNNER_HEARTBEAT_MS);
+  beat.unref?.();
+  return () => {
+    clearInterval(beat);
+    try { reportLifecycle(store, component, "stopped", holder, clock()); } catch { /* a stale row lapses with its heartbeat */ }
+  };
 }
