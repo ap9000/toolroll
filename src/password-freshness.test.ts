@@ -644,6 +644,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // authenticates anyone; a proof only retires a holder whose every process has exited (reviewed new sites).
     "src/laptop-background.ts#<module>": 1,
     "src/operate.ts#recordRunnerProcess@184": 4,
+    // l1: startOverWords checks the saved login still verifies the one account (read only; it grants nothing, it only
+    // decides whether to print how to start over by hand).
+    "src/operate.ts#startOverWords@253": 1,
     "src/operate.ts#upCommand@67": 1,
     "src/operate.ts#upCommand@67>roleSpawned@22": 1,
     "src/runner-process.ts#credentialDigest@4": 2,
@@ -942,6 +945,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#flakyCommand@228": 1,
   },
   "verifyCredential": {
+    // l1: the import, and startOverWords's read-only check (above).
+    "src/operate.ts#<module>": 2,
+    "src/operate.ts#startOverWords@253": 1,
     "src/scope.ts#authenticateAccount@32": 2,
     "src/scope.ts#verifyCredential@4": 1,
   },
