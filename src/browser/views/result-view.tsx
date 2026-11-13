@@ -9,7 +9,8 @@
  * attributes and ids it always has. */
 import { PostForm } from "../ui/index.js";
 import { AlertTriangle, Check, ChevronDown, ChevronRight } from "lucide-react";
-import { useState, type MouseEvent, type ReactNode } from "react";
+import { useContext, useState, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { BrowserCheckItem, BrowserResultPanel, BrowserResultView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
@@ -18,7 +19,7 @@ import {
 import { ACCEPT_NEEDS_REASON, acceptWithChecksOf, requirementsWordsOf, resultActsOf, type ResultActKind, type ResultActs } from "../../result-acts.js";
 import { toneOf } from "./tone.js";
 import { RecheckStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
-import { Html, RetryForm, threadWhen, whenTitle } from "./task-view.js";
+import { Html, ResultStatusAct, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 import { KButton, KInput, KLinkButton } from "../kit/index.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
@@ -194,6 +195,14 @@ function checkItemsOf(panel: BrowserResultPanel | null) {
 }
 const wordsOf = (item: { statement: string; words: string }): string => item.statement === "" ? item.words : item.statement;
 
+/** Bring the decision into view, its first act ready to press. */
+function goToDecision() {
+  const decision = document.getElementById("result-decision");
+  if (decision === null) return;
+  decision.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+  decision.querySelector<HTMLElement>("[data-result-acts] :is(button, a)")?.focus({ preventScroll: true });
+}
+
 /** Bring an unanswered check into view, its Looks right ready to press. */
 function goToCheck(id: string) {
   const item = document.querySelector<HTMLElement>(`[data-check-item="${CSS.escape(id)}"]`);
@@ -240,7 +249,9 @@ function CheckItems({ panel, chatHref, answers, answer }: { panel: BrowserResult
  * can't be accepted says why in one line first. Under them, what accepting does. Accept and finish is one
  * request: the acceptance a person owes (their own checks, or a reason) and the completion together. On a
  * phone it docks at the bottom, compact: the ink act and More, which opens the rest. */
-function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selected: Selected; csrf: string; acts: ResultActs; decision: Selected["decision"]; firstUnanswered: string | null }) {
+function Decision({ selected, csrf, acts: chosen, decision, firstUnanswered, statusSlot = null }: { selected: Selected; csrf: string; acts: ResultActs; decision: Selected["decision"]; firstUnanswered: string | null;
+  /** On a task page, the Ready status box's act slot (ResultStatusAct): the status's one act goes there. */
+  statusSlot?: HTMLElement | null }) {
   const { next } = selected;
   const [more, setMore] = useState(false);
   const complete = selected.complete;
@@ -248,14 +259,26 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
   const youCheck = selected.panel?.youCheck ?? null;
   // Nothing here can finish it: the acceptance alone, as the Needs you act (or the person's own checks) has it.
   const accept = complete === null ? need?.accept ?? (youCheck?.accept == null ? null : { ...youCheck.accept, note: null }) : null;
-  const shown = [acts.primary, acts.secondary].filter((one): one is ResultActKind => one !== null);
+  const shown = [chosen.primary, chosen.secondary].filter((one): one is ResultActKind => one !== null);
   const why = shown.includes("accept") ? decision?.why ?? null : null;
   // The words over the reason field an acceptance asks for, when it does.
   const reason = !shown.includes("accept") ? null : complete !== null ? complete.accept?.note ?? null : accept?.note ?? null;
   // "Accepting needs a reason" labels the reason field when that field is here; it isn't said twice.
   const reasonHere = reason !== null || shown.includes("accept-anyway");
-  const line = acts.line === ACCEPT_NEEDS_REASON && reasonHere ? null : acts.line ?? why;
-  const act = (kind: ResultActKind, ink: boolean): ReactNode => {
+  const line = chosen.line === ACCEPT_NEEDS_REASON && reasonHere ? null : chosen.line ?? why;
+  // The status box's one act (a task page's Ready row). Mark complete is this result's own Accept form, moved up, only
+  // when that path already completes it with nothing owed: every requirement met, checks passed, no acceptance or reason
+  // to record. Otherwise, while Accept waits in outline (a check of yours unanswered, checks not run), Review and accept
+  // takes the person to their check, or to the decision; it never posts. Anything else keeps its ink act down here.
+  const markComplete = statusSlot !== null && chosen.primary === "accept" && reason === null && decision?.ready === true && complete !== null && complete.accept == null;
+  const reviewFirst = statusSlot !== null && chosen.primary === null && chosen.secondary === "accept";
+  const statusAct: ReactNode = markComplete ? act("accept", true, "Mark complete")
+    : reviewFirst ? <KLinkButton variant="primary" label="Review and accept" href={firstUnanswered !== null ? "#you-check-title" : "#result-decision"} data-review-and-accept=""
+        onClick={(event: MouseEvent<HTMLAnchorElement>) => { event.preventDefault(); if (firstUnanswered !== null) goToCheck(firstUnanswered); else goToDecision(); }} />
+    : null;
+  // Moved up, it isn't here twice.
+  const acts: ResultActs = markComplete ? { ...chosen, primary: null } : chosen;
+  function act(kind: ResultActKind, ink: boolean, label?: string): ReactNode {
     const variant = ink ? "attention" as const : "outline" as const;
     const mark = { "data-act": kind, ...(ink ? { "data-ink-act": kind, "data-primary-action": "" } : {}) };
     const wide = "min-h-11 phone:w-full";
@@ -278,7 +301,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
             <label htmlFor="accept-reason" className="k-label" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
             <KInput id="accept-reason" type="text" name="note" maxLength={500} required placeholder={reason} />
           </>}
-          <KButton type="submit" variant={ink ? "primary" : "outline"} label={decision.label} {...mark} data-accept-result="" />
+          <KButton type="submit" variant={ink ? "primary" : "outline"} label={label ?? decision.label} {...mark} data-accept-result="" />
         </PostForm>;
       }
       case "accept-anyway": {
@@ -315,15 +338,17 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
       case "draft-repair":
         return next === null ? null : <Html key={kind} html={next.control} className="so-result-next phone:w-full" />;
     }
-  };
-  if (shown.length === 0 && next === null && selected.failure == null) return null;
-  const effect = decision !== null && shown.includes("accept") ? decision.effect : null;
+  }
+  const lifted = statusSlot !== null && statusAct !== null ? createPortal(statusAct, statusSlot) : null;
+  if (acts.primary === null && acts.secondary === null && next === null && selected.failure == null) return lifted;
+  const here = [acts.primary, acts.secondary].filter((one): one is ResultActKind => one !== null);
+  const effect = decision !== null && here.includes("accept") ? decision.effect : null;
   // On a phone the dock shows one row, the ink act and More; More opens the line, the outline act and what accepting does.
   const tucked = acts.primary !== null ? acts.secondary : null;
   const hasMore = tucked !== null || line !== null || next !== null || effect !== null;
   const rest = more ? "" : "phone:hidden";
   // The decision is the result's approval box (src/design/KIT.md slots): waiting on you while Accept is its act.
-  return <section data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
+  return <>{lifted}<section id="result-decision" data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
     className={cn("k-slots so-result-decision", acts.primary === "accept" && "wait")}>
     {line !== null && <p className={cn("flex max-w-[75ch] gap-2 text-body", rest)} data-decision-why {...(acts.line === null ? {} : { "data-cant-accept": "" })}>
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />{line}</p>}
@@ -332,13 +357,13 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
     {/* What comes next (notes ready, CI failing, no build): one line, whatever the acts. */}
     {next !== null && <p className={cn("max-w-[75ch] text-body", rest)} data-next-action={next.kind}>
       <span className="font-semibold">{next.title}.</span> <span className="text-muted-foreground">{next.detail}</span></p>}
-    {shown.length > 0 && <div className={cn("flex flex-wrap items-center gap-2 phone:flex-nowrap phone:items-stretch", reason !== null && "flex-col items-start gap-3 phone:flex-row phone:items-stretch phone:gap-2", more && "phone:flex-wrap")} data-result-acts>
+    {here.length > 0 && <div className={cn("flex flex-wrap items-center gap-2 phone:flex-nowrap phone:items-stretch", reason !== null && "flex-col items-start gap-3 phone:flex-row phone:items-stretch phone:gap-2", more && "phone:flex-wrap")} data-result-acts>
       <div className="contents phone:flex phone:min-w-0 phone:flex-1 phone:flex-col">{acts.primary !== null ? act(acts.primary, true) : acts.secondary !== null && act(acts.secondary, false)}</div>
       {tucked !== null && <div className={cn("contents phone:order-last phone:basis-full phone:flex-col", more ? "phone:flex" : "phone:hidden")}>{act(tucked, false)}</div>}
       {hasMore && <KButton variant="ghost" className="k-phone-only" aria-expanded={more} label={more ? "Less" : "More"} data-dock-more="" onClick={() => setMore(open => !open)} />}
     </div>}
     {effect !== null && <p className={cn("k-slot-terms", rest)} data-decision-effect>{effect}</p>}
-  </section>;
+  </section></>;
 }
 
 /** Summary / Changes / Checks. The tab links keep the page script's
@@ -414,6 +439,11 @@ export function efficiencyLine(one: Efficiency): string {
     .filter((part): part is string => part !== null).join(" · ");
 }
 
+/** Whether the run recorded anything to show under How it ran: a row of dashes says nothing, so it isn't shown. */
+export function efficiencyRecorded(one: Efficiency): boolean {
+  return one.time.agentMs !== null || one.turns !== null || one.usage.in !== null || one.usage.out !== null || one.steps.total !== null;
+}
+
 /** How it ran (docs/plans/run-efficiency.md): where the time went, what the agent did, what it repeated — only what was
  * recorded, each block saying when its source can't say more. */
 function EfficiencyBody({ one }: { one: Efficiency }) {
@@ -466,7 +496,7 @@ function Details({ selected }: { selected: Selected }) {
       body: <ul className="flex flex-col gap-1 text-body text-muted-foreground">{panel.limits.map(one => <li key={one}>{one}</li>)}</ul> }]),
     ...(panel?.reviewHistory == null ? [] : [{ id: "review-history", title: "Review history", hint: null,
       body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
-    ...(selected.efficiency == null ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
+    ...(selected.efficiency == null || !efficiencyRecorded(selected.efficiency) ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
     ...(selected.network == null ? [] : [{ id: "network", title: "Network", hint: networkLine(selected.network), body: <NetworkBody one={selected.network} /> }]),
     ...(selected.timing == null || selected.timing.length === 0 ? [] : [{ id: "timing", title: "Where the time went", hint: selected.timing.map(one => `${one.title} ${one.total}`).join(" · "), body: <TimingBody groups={selected.timing} /> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,
@@ -527,7 +557,9 @@ export function SelectedResult({ selected, csrf, inTask }: { selected: Selected;
   const owned = (kind: ResultActKind | null): ResultActKind | null => inTask?.current === true && kind !== null && HEADER_OWNED.has(kind) ? null : kind;
   const acts = inTask?.current === true ? { ...chosen, primary: owned(chosen.primary), secondary: owned(chosen.secondary) } : chosen;
   const checks = selected.panel?.youCheck != null ? <CheckItems panel={selected.panel} chatHref={selected.chatHref} answers={answers} answer={answer} /> : null;
-  const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} />;
+  // A task page's Ready status box takes the status's one act (task-view.tsx ResultStatusAct); only for the current result.
+  const slot = useContext(ResultStatusAct);
+  const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} statusSlot={inTask?.current === true ? slot : null} />;
   return <>
     <StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the

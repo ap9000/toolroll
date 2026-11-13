@@ -99,7 +99,7 @@ export const ASKS: readonly Ask[] = ["decide", "review", "unblock"];
 export const ASK_LABEL: Readonly<Record<Ask, string>> = { decide: "Decide", review: "Review", unblock: "Unblock" };
 /** A waiting row's chip: the specific thing asked, never its group's own word (no "Decide" chip under Decide).
  * Null: the group heading and the row's sentence already say it, so the row wears no chip. */
-export type AskChip = "Plan" | "Result" | "Mismatch" | "Plan changed" | "Failed" | "Builder offline" | "Question" | "On hold" | "Stopped" | "Sign in";
+export type AskChip = "Plan" | "Result" | "Mismatch" | "Plan changed" | "Failed" | "Builder offline" | "Question" | "On hold" | "Blocked" | "Stopped" | "Sign in";
 /** `mismatch`: the saved report doesn't match its changes; `planChanged`: the plan changed after it was built. */
 export function askChipOf(read: { headline: string; need?: NeedKey | null; mismatch?: boolean; planChanged?: boolean; ask?: Ask | null }): AskChip | null {
   if (read.headline === "Failed") return "Failed";
@@ -110,6 +110,7 @@ export function askChipOf(read: { headline: string; need?: NeedKey | null; misma
   if (read.need === "start-builder" || read.need === "connect-builder") return "Builder offline";
   if (read.need === "answer" || read.need === "questions") return "Question";
   if (read.need === "hold") return "On hold";
+  if (read.need === "fix-dependency") return "Blocked";
   if (read.need === "vanished" || read.need === "stop-unproven") return "Stopped";
   if (read.need === "sign-in") return "Sign in";
   return null;

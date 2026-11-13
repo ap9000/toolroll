@@ -257,7 +257,7 @@ The kit added these System tokens to Signal 1.0.0's (in `src/design/system/token
 | Token | Light / dark | For |
 |---|---|---|
 | `--so-needs`, `--so-needs-soft` | the signal ink and its wash (no hue) | what waits on this person, only |
-| `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of an outline button, switch track or radio card (audit F6); never a text field's |
+| `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of a text field, select, outline button, switch track or radio card (audit F6; fields since the 2026-11 pages audit) |
 | `--so-field` | `#ececec` / `#232323` | the filled surface of every text field, select and secondary text box |
 | `--so-composer` | `#f2f2f2` / `#242424` | the composer's filled surface, one step off the page |
 | `--so-composer-control` | `#dcdcdc` / `#333333` | the filled circles and pills inside a composer (+, chips, the empty send) |
@@ -428,12 +428,11 @@ Every place a person types or picks is one field family, server HTML, React and 
 pages' bare `input`, `select` and `textarea` take the same look from `console.css`, the workspace's from
 `workspace.css` and the shadcn `Input`, `Textarea` and `Select`):
 
-- **One surface.** The control is one filled `--so-field` surface, radius 12px, no outline at rest (a transparent 1px
-  border keeps its edge in forced colours). Never a box inside a box: a field never sits in another outlined box,
-  and nothing outlined sits inside a field or a composer.
+- **One surface.** The control is one filled `--so-field` surface, radius 12px, with a 1px `--so-field-line` boundary
+  (3:1 or better on paper in both themes, WCAG 1.4.11): a person sees where to type before reading a label. Never a
+  box inside a box: a field never sits in another outlined box, and nothing outlined sits inside a field or a composer.
 - **Label above, words below.** A small dim label (500 12.5px `--so-muted`) above; one hint line, then the error
-  (`k-err`), below. The label names the field, so a field at rest needs no outline; never a placeholder instead of a
-  label.
+  (`k-err`), below. The label names the field; never a placeholder instead of a label.
 - **Focus** is the 2px ink ring (`--so-ring`, 3:1 or better in both themes); hover deepens the fill a step.
 - **Sizes.** 36px at a desk (`sm` select 28px, a pill), 44px and 16px text on a phone (no iOS zoom).
 - **Textareas** grow with their words (`field-sizing: content`, to 360px, then scroll); no resize grip.
@@ -600,7 +599,7 @@ AGENTS.md block from them; never edit those by hand.
 | KDock | `import { KDock } from "<relative path to src/browser/kit>";` | — | The phone dock: the screen's one primary (the same act its card hides on a phone). |
 | KEmpty | `import { KEmpty } from "<relative path to src/browser/kit>";` | — | The one empty state: a sentence and one action. |
 | KFacts | `import { KFacts } from "<relative path to src/browser/kit>";` | — | Facts: a key/value list (task details, a run's record, an audit entry). |
-| KField | `import { KField, KInput, KTextarea } from "<relative path to src/browser/kit>";` | — | A field in the one field family: dim label above, one filled surface (no outline, 12px radius, textareas auto-grow), hint and error below, tied to the control. |
+| KField | `import { KField, KInput, KTextarea } from "<relative path to src/browser/kit>";` | — | A field in the one field family: dim label above, one filled surface with a 3:1 field-line boundary (12px radius, textareas auto-grow), hint and error below, tied to the control. |
 | KFilter | `import { KFilter } from "<relative path to src/browser/kit>";` | — | A list's text filter: a search field with its icon that narrows the rows already shown. |
 | KFormRow | `import { KFormRow } from "<relative path to src/browser/kit>";` | variant: |inline|top|wide | The two-column settings row: label and one muted line | the control; stacks on a phone. |
 | KIcon | `import { KIcon } from "<relative path to src/browser/kit>";` | name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|home|tasks|flows|agents|projects|settings|pen|arrow|list|board|panel | One 24×24 stroke icon from the kit set, drawn in currentColor. |

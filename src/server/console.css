@@ -265,13 +265,13 @@
   .project-card .project-name:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: .375rem; }
 
   label { display: block; font-size: 0.8125rem; font-weight: 500; margin: .75rem 0 0; color: var(--foreground); }
-  /* The kit's field family (src/design/KIT.md "Fields"): one filled surface, no outline, 12px radius; the label above
-     names the field and focus draws the ink ring. A transparent border keeps the edge in forced colours. Textareas
-     grow with their words (no resize grip); selects draw the kit's chevron. */
+  /* The kit's field family (src/design/KIT.md "Fields"): one filled surface with a 3:1 --so-field-line boundary, 12px
+     radius; the label above names the field and focus draws the ink ring. Textareas grow with their words (no resize
+     grip); selects draw the kit's chevron. */
   :where(input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], input:not([type]), textarea, select) {
     width: 100%; margin: .35rem 0 0; padding: .5rem .75rem;
     color: var(--foreground); background-color: var(--so-field); min-height: 2.25rem;
-    border: 1px solid transparent; border-radius: var(--so-radius-sheet); box-shadow: none;
+    border: 1px solid var(--so-field-line); border-radius: var(--so-radius-sheet); box-shadow: none;
     transition: background-color .12s;
   }
   :where(textarea) { resize: none; field-sizing: content; min-height: 4.75rem; max-height: 22rem; overflow-y: auto; line-height: 1.5; }
