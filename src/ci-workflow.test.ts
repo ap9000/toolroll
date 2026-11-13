@@ -16,7 +16,7 @@ import { areaLanes, diffEntries, docsPath, parseNameStatus } from "../scripts/ci
 import { pullRequestChanges, upgradeScope } from "../scripts/ci-upgrade-scope.mjs";
 import { laneVerdict, NATIVE_JOBS, NATIVE_WORKFLOW, standingRun } from "../scripts/ci-native-wait.mjs";
 import { parseRequired, PROOF_EVENTS, proofProblem } from "../scripts/release-proof.mjs";
-import { ADVISORY_PR_CHECKS, RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
+import { ADVISORY_PR_CHECKS, prChecksVerdict, RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, type CheckRun } from "./release.js";
 import { GIT_FLOOR_WORDS } from "./git-floor.js";
 
 type Step = { uses?: string; with?: Record<string, unknown>; name?: string; run?: string; if?: unknown; env?: Record<string, unknown>; id?: string; "continue-on-error"?: unknown };
@@ -109,6 +109,8 @@ const REPEAT = "Windows Job Object containment · c2 repeat";
 /** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
  * drift, but a release never waits for it). */
 const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path"];
+/** install-smoke.yml: advisory too, but only on pull requests that change what gets packed or installed. */
+const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
@@ -198,8 +200,8 @@ describe("the CI workflows", () => {
     expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
     // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
     expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort());
-    // A release candidate's pull request runs everything.
-    expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual(all);
+    // A release candidate's pull request runs everything, and its package.json change runs the install smoke.
+    expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual([...all, ...INSTALL_SMOKE].sort());
     // The macOS suite runs on the candidate before it merges, sharded; its joins run on Linux.
     const macos = reported(change).filter(one => /macos/.test(one.runner));
     expect(macos.map(one => one.name).sort()).toEqual([...shardNames("24").filter(name => name.includes("macos shard")), skippedShards[1]!].sort());
@@ -220,7 +222,45 @@ describe("the CI workflows", () => {
     // The release verdict leaves out exactly this job, from exactly this workflow (release.ts ADVISORY_PR_CHECKS;
     // release.slow.test.ts proves a failed or pending run of it neither fails nor holds a release).
     expect(ADVISORY_PR_CHECKS[ui.name!]).toBe(".github/workflows/youiyoux.yml");
-    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY].sort());
+    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY, ...INSTALL_SMOKE].sort());
+  });
+
+  test("W7: the install smoke runs on Linux and macOS for a pull request that changes what gets packed or installed, by hand, never on a tag, and never holds or fails a release", () => {
+    const smoke = workflow("install-smoke.yml");
+    expect(Object.keys(smoke.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
+    expect(smoke.permissions).toEqual({ contents: "read" });
+    for (const paths of [["package.json"], ["package-lock.json"], ["install.sh"], ["scripts/install-smoke.mjs"], ["src/bin.ts"], ["src/demo.ts"], [".github/workflows/install-smoke.yml"]]) {
+      expect(executed(pr(paths)).filter(name => INSTALL_SMOKE.includes(name)), paths[0]).toEqual([...INSTALL_SMOKE].sort());
+    }
+    for (const paths of [["src/release.ts"], ["docs/a.md"], ["README.md"], ["src/server/pages.ts"]]) {
+      expect(names(pr(paths)).filter(name => INSTALL_SMOKE.includes(name)), paths[0]).toEqual([]);
+    }
+    expect(names({ kind: "push", tag: "v0.9.80" }).filter(name => INSTALL_SMOKE.includes(name))).toEqual([]);
+    expect(executed({ kind: "workflow_dispatch" }).filter(name => INSTALL_SMOKE.includes(name))).toEqual([...INSTALL_SMOKE].sort());
+    expect(reported(pr(["install.sh"])).filter(one => INSTALL_SMOKE.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-latest", "ubuntu-24.04"]);
+    const job = smoke.jobs["smoke"]!;
+    expect(job.if).toBeUndefined();
+    expect((job as { "timeout-minutes"?: number })["timeout-minutes"]).toBeLessThanOrEqual(15);
+    // The same script a person runs locally, on the commit under test; no secret reaches any step.
+    expect(runsOf(job)).toContain("node scripts/install-smoke.mjs");
+    expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
+    expect(readFileSync(join(folder, "install-smoke.yml"), "utf8")).not.toMatch(/secrets\.|github\.token/);
+    // Advisory: never required, left out of the release verdict only from its own workflow.
+    expect(INSTALL_SMOKE.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
+    const SHA = "a".repeat(40), INSTALL_YML = ".github/workflows/install-smoke.yml";
+    const required = REQUIRED_PR_CHECKS.map((name, i): CheckRun => {
+      const file = REQUIRED_PR_CHECKS_WORKFLOW[name]!;
+      return { id: 100 + i, name, status: "completed", conclusion: "success", app: "github-actions", head: SHA, suite: file === CI ? 5 : 6, workflow: file === CI ? 1 : 2, workflowPath: file };
+    });
+    for (const name of INSTALL_SMOKE) {
+      expect(ADVISORY_PR_CHECKS[name]).toBe(INSTALL_YML);
+      const failed: CheckRun = { id: 400, name, status: "completed", conclusion: "failure", app: "github-actions", head: SHA, suite: 10, workflow: 4, workflowPath: INSTALL_YML };
+      const verdict = (extra: CheckRun[]) => prChecksVerdict([...required, ...extra], SHA, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+      expect(verdict([failed])).toMatchObject({ state: "passed", failures: [] });
+      expect(verdict([{ ...failed, status: "in_progress", conclusion: null }])).toMatchObject({ state: "passed" });
+      // The same name from another workflow is an ordinary check: it fails the verdict.
+      expect(verdict([{ ...failed, workflowPath: CI, workflow: 1, suite: 5 }])).toMatchObject({ state: "failed" });
+    }
   });
 
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {
