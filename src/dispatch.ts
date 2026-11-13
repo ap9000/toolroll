@@ -15,6 +15,7 @@ import { approvalOf, type ExecutionProfile } from "./scope.js";
 import { plannerSourceProblemOf } from "./planner-source.js";
 import { authPauseOf, authWaitOf, messageCommand, providerName, signInReason, type AuthPause } from "./provider-auth.js";
 import { signInCommandFor } from "./first-run.js";
+import { LOGIN_PROBE, PATH_PROBE } from "./phase-routing.js";
 import { REVIEW_TOKENS, resultStatusOf, reviewFactsOf } from "./workspace-ui.js";
 import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
@@ -446,10 +447,6 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       { action: "start-worker", role },
     );
   }
-  // No coding agent signed in where this would run (a first run before `claude auth login`): say so and the one
-  // command, never a routing hint. It starts by itself once a builder sees an agent signed in.
-  const agentless = agentlessSignIn(store, alive.map(one => one.name));
-  if (agentless !== null) return answer("signed-out", "waiting", NO_AGENT_TITLE, agentless.words, { role });
   const available = alive.filter(one => store.liveClaimCount(one.name, now) < one.capacity);
   if (available.length === 0) return answer("worker-at-capacity", "retrying", "Waiting its turn", "Builders are busy; it starts when one is free.", { role });
 
@@ -470,6 +467,11 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
   if (signedOut !== null) {
     return answer("signed-out", "waiting", signInReason(signedOut), signInAgainWords(signedOut), { role });
   }
+
+  // The first run before any agent is signed in (agentlessFirstRun: planning, nothing routed, no agent): say so and the
+  // one command, never a routing hint. It starts by itself once a builder sees an agent signed in.
+  const agentless = agentlessFirstRun(store, ref, role === "planner", alive.map(one => one.name));
+  if (agentless !== null) return answer("signed-out", "waiting", NO_AGENT_TITLE, agentless.words, { role });
 
   const openDecisions = store.countUnanswered();
   if (openDecisions >= DEFAULT_MAX_OPEN_DECISIONS && (role === "planner" || ref.parkRate > 0)) {
@@ -521,13 +523,12 @@ export const NO_AGENT_TITLE = "No coding agent is signed in";
 /** The one line after it: the command, and that nothing else is needed. */
 export const noAgentWords = (command: string): string => `${NO_AGENT_TITLE}. Run \`${command}\`, then it starts by itself.`;
 
-/** Readiness as the sign-in command reads it: an agent whose login check said no is installed; any other answer that
- * isn't ready (not on PATH, its version check failed) is treated as not installed. */
 type AgentReadiness = { provider: string; state: string; probe: string };
-function agentStates(seen: readonly AgentReadiness[]): { claude: "signed-out" | "not-installed"; codex: "signed-out" | "not-installed" } {
-  const installed = (provider: string) => seen.some(one => one.provider === provider && one.state === "unavailable" && one.probe === "identity");
-  return { claude: installed("claude") ? "signed-out" : "not-installed", codex: installed("codex") ? "signed-out" : "not-installed" };
-}
+/** Not on the builder's PATH at all (runner.ts PATH_PROBE). */
+const notInstalled = (one: AgentReadiness): boolean => one.state === "unavailable" && one.probe === PATH_PROBE;
+/** Its own login check said plainly that it is not signed in: Claude Code's `claude auth status` (LOGIN_PROBE), or
+ * Codex's `codex login status`. A version failure, a timeout or an unreadable answer proves neither. */
+const signedOut = (one: AgentReadiness): boolean => one.state === "unavailable" && (one.probe === LOGIN_PROBE || (one.provider === "codex" && one.probe === "identity"));
 
 /** The sign-in command for an install with no agent: `claude auth login` when Claude Code is there, `codex login` when
  * only Codex is, else install Claude Code and sign in (first-run.ts signInCommandFor, the welcome's own rule). */
@@ -536,24 +537,41 @@ export function agentlessCommand(claudeInstalled: boolean, codexInstalled: boole
 }
 
 /**
- * Whether no coding agent is signed in on any of these builders: every one has reported its agents, Claude Code and
- * Codex included (runner.ts observeProviderReadiness), and not one agent is ready or unknown there. Null while any agent
- * could run, a builder hasn't reported both (a test's fake agent, an older builder), or there is no builder: then other
- * answers apply.
- * Only words: the claim gate (claim.ts, the routed provider's readiness) still decides what may run.
+ * Whether no coding agent is signed in on any of these builders: on every one, Claude Code and Codex were each
+ * observed (runner.ts observeProviderReadiness) specifically not installed or not signed in, and no agent at all is
+ * ready or unknown there. Null otherwise: any agent could run, an observation doesn't prove sign-out (a version check
+ * failed, a probe timed out), a builder hasn't reported both (a test's fake agent, an older builder), or there is no
+ * builder — then the other, more specific answers apply.
  */
 export function agentlessSignIn(store: Store, runners: readonly string[], platform: NodeJS.Platform = process.platform): { command: string; words: string } | null {
   if (runners.length === 0) return null;
-  const seen: AgentReadiness[] = [];
+  let claudeInstalled = false, codexInstalled = false;
   for (const name of runners) {
     const reported = store.providerReadiness(name);
-    // A full report names both agents the welcome offers; a partial one (an older builder, a test) says nothing here.
-    if (!reported.some(one => one.provider === "claude") || !reported.some(one => one.provider === "codex") || reported.some(one => one.state !== "unavailable")) return null;
-    seen.push(...reported);
+    const claude = reported.find(one => one.provider === "claude"), codex = reported.find(one => one.provider === "codex");
+    if (claude === undefined || codex === undefined || reported.some(one => one.state !== "unavailable")) return null;
+    if (!(notInstalled(claude) || signedOut(claude)) || !(notInstalled(codex) || signedOut(codex))) return null;
+    claudeInstalled ||= signedOut(claude);
+    codexInstalled ||= signedOut(codex);
   }
-  const states = agentStates(seen);
-  const command = agentlessCommand(states.claude === "signed-out", states.codex === "signed-out", platform);
+  const command = agentlessCommand(claudeInstalled, codexInstalled, platform);
   return { command, words: noAgentWords(command) };
+}
+
+/** No models chosen anywhere here: no role row, tier row or other-provider candidate, at the installation or any
+ * project (the same test as model-choices.ts fillDefaultRouting's "nothing set"). */
+export function modelsUnset(store: Store): boolean {
+  return store.handle.prepare("SELECT 1 FROM phase_config UNION ALL SELECT 1 FROM phase_tier_config UNION ALL SELECT 1 FROM phase_tier_alternate LIMIT 1").get() === undefined;
+}
+
+/**
+ * The first run's one wait, said as such: a task waiting for its plan, with no planner pinned and no models chosen
+ * anywhere (so nothing else can be its blocker), on builders where no coding agent is signed in (agentlessSignIn).
+ * Null for anything with a route of its own: its routed provider's own blocker (quota, key, sign-in, version) applies.
+ */
+export function agentlessFirstRun(store: Store, ref: { planProvider: string | null }, planning: boolean, runners: readonly string[], platform: NodeJS.Platform = process.platform): { command: string; words: string } | null {
+  if (!planning || ref.planProvider !== null || !modelsUnset(store)) return null;
+  return agentlessSignIn(store, runners, platform);
 }
 
 /** An expired sign-in's line: what happened, the command, and that the task starts again by itself once it works. */

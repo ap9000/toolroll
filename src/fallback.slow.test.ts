@@ -397,6 +397,20 @@ describe("a chain, against real git", () => {
     vi.unstubAllEnvs();
   });
 
+  test("a pinned API-key entry still runs while the builder sees Claude Code's subscription login signed out", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-test-not-real");
+    await setUp("claude:opus:api-key", true);
+    await file("t-1"); await approve("t-1");
+    await tick(byModel({ sonnet: exhausted(false), opus: finishes }), T0);
+    expect(walks()).toMatchObject([{ cursor: 1, state: "open" }]);
+    // The builder's next look: the subscription login is gone. It says nothing about the API key the entry spends.
+    withStore(store => store.recordProviderReadiness("builder-1", [{ provider: "claude", state: "unavailable", reason: "`claude auth status` says not logged in", probe: "login" }], later(1)));
+    await tick(byModel({ sonnet: exhausted(false), opus: finishes }), later(2));
+    expect(outcomeOf("t-1"), lines.join("\n")).toMatchObject({ outcome: "built" });
+    expect(runs.map(one => one.model)).toEqual(["sonnet", "opus"]);
+    vi.unstubAllEnvs();
+  });
+
   test("a machine can't change the chain or the grant, or approve a paid one; a chain approved earlier keeps its own terms", async () => {
     await setUp("claude:opus:plan");
     await file("t-1"); await approve("t-1");

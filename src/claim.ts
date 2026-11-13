@@ -55,7 +55,7 @@ import { digestOf } from "./scope.js";
 import type { ParsedPlan } from "./plan.js";
 import { parseExecutionPlanDocument } from "./plan.js";
 import { sealUnchangedPlanUnderMode } from "./plan-auto.js";
-import { routeFromJson } from "./phase-routing.js";
+import { readinessRefuses, routeFromJson } from "./phase-routing.js";
 import {
   contractChangesOf,
   decodePlannerSource,
@@ -509,8 +509,10 @@ export function acquireIfReady(
     // transaction: a provider THIS runner has reported unavailable never
     // claims — no substitution, no second-best. Unknown passes; only a
     // recorded unavailable refuses, and it says what was observed.
+    // A subscription login's observation speaks for that credential only: an API-key spend (a pinned fallback entry)
+    // is not stopped by it (phase-routing.ts readinessRefuses).
     const readiness = store.runnerReadinessOf(runner, options.provider ?? "claude");
-    if (readiness !== null && readiness.state === "unavailable") {
+    if (readiness !== null && readinessRefuses(readiness, options.authMode ?? "subscription")) {
       return {
         ok: false as const,
         reason: "provider-unavailable" as const,

@@ -1776,4 +1776,14 @@ describe("provider readiness, at the claim (v47): an unavailable provider never 
     expect(store.runnerReadinessOf("runner-a", "claude")?.state).toBe("unknown");
     expect(acquireIfReady(store, a, "runner-a", { token: tok("runner-a"), now: later(3_000), provider: "claude" })).toMatchObject({ ok: true });
   });
+
+  test("a subscription login seen signed out stops only subscription spends: an API-key claim (a pinned fallback entry) still claims; a missing command stops both", () => {
+    store.recordProviderReadiness("runner-a", [{ provider: "claude", state: "unavailable", reason: "`claude auth status` says not logged in", probe: "login" }], T0);
+    expect(acquireIfReady(store, a, "runner-a", { token: tok("runner-a"), now: later(1_000), provider: "claude", model: "opus" })).toMatchObject({ ok: false, reason: "provider-unavailable" });
+    expect(acquireIfReady(store, a, "runner-a", { token: tok("runner-a"), now: later(1_000), provider: "claude", model: "opus", authMode: "subscription" })).toMatchObject({ ok: false, reason: "provider-unavailable" });
+    expect(acquireIfReady(store, a, "runner-a", { token: tok("runner-a"), now: later(2_000), provider: "claude", model: "opus", authMode: "api-key" })).toMatchObject({ ok: true });
+    release(store, currentClaim(store, a, later(2_000))!.leaseId, later(3_000));
+    store.recordProviderReadiness("runner-a", [{ provider: "claude", state: "unavailable", reason: "`claude` is not installed on this runner's PATH", probe: "path" }], later(4_000));
+    expect(acquireIfReady(store, a, "runner-a", { token: tok("runner-a"), now: later(5_000), provider: "claude", model: "opus", authMode: "api-key" })).toMatchObject({ ok: false, reason: "provider-unavailable" });
+  });
 });

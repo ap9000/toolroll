@@ -323,12 +323,12 @@ describe("sign-in pauses", () => {
     store.requestPlan(ref, T0);
     const report = (claude: "missing" | "signed-out" | "ready", codex: "missing" | "signed-out" = "missing") => store.recordProviderReadiness(RUNNER, [
       claude === "ready" ? { provider: "claude", state: "ready", reason: "installed (2.1.300); logged in", probe: "identity" }
-        : claude === "signed-out" ? { provider: "claude", state: "unavailable", reason: "`claude auth status` says not logged in", probe: "identity" }
-        : { provider: "claude", state: "unavailable", reason: "`claude` is not installed on this runner's PATH", probe: "version" },
+        : claude === "signed-out" ? { provider: "claude", state: "unavailable", reason: "`claude auth status` says not logged in", probe: "login" }
+        : { provider: "claude", state: "unavailable", reason: "`claude` is not installed on this runner's PATH", probe: "path" },
       codex === "signed-out" ? { provider: "codex", state: "unavailable", reason: "`codex login status` says not logged in", probe: "identity" }
-        : { provider: "codex", state: "unavailable", reason: "`codex` is not installed on this runner's PATH", probe: "version" },
+        : { provider: "codex", state: "unavailable", reason: "`codex` is not installed on this runner's PATH", probe: "path" },
       { provider: "openrouter", state: "unavailable", reason: "OPENROUTER_API_KEY is absent from this runner's environment", probe: "key" },
-      { provider: "gemini", state: "unavailable", reason: "`gemini` is not installed on this runner's PATH", probe: "version" },
+      { provider: "gemini", state: "unavailable", reason: "`gemini` is not installed on this runner's PATH", probe: "path" },
     ], T0);
     const now = at(2_000);
     const statusOf = () => workIndexPage(store, now, { principal: "operator", repos: null, includeUnplaced: true }).items.find(one => one.activeTaskId === "t-first")?.status;
@@ -361,7 +361,7 @@ describe("sign-in pauses", () => {
         : { ...auth, stderr: "", notFound: false, timedOut: false };
     const claudeOf = async (auth: { code: number; stdout: string }, mode: "subscription" | "api-key" = "subscription") =>
       (await observeProviderReadiness(answers(auth), {}, ["claude"], undefined, () => mode))[0];
-    expect(await claudeOf({ code: 1, stdout: JSON.stringify({ loggedIn: false }) })).toMatchObject({ state: "unavailable", probe: "identity" });
+    expect(await claudeOf({ code: 1, stdout: JSON.stringify({ loggedIn: false }) })).toMatchObject({ state: "unavailable", probe: "login" });
     expect(await claudeOf({ code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }) })).toMatchObject({ state: "unknown" });
     // An unreadable answer is not a "no": it stays unknown, as before.
     expect(await claudeOf({ code: 2, stdout: "something else" })).toMatchObject({ state: "unknown" });

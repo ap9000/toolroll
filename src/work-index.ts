@@ -245,16 +245,16 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     (SELECT COUNT(*) FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner)) worker_count,
     (SELECT COUNT(*) FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive) online_count,
     (SELECT COUNT(*) FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive AND w.occupied<w.capacity) available_count,
-    -- No coding agent signed in on any live builder for it (dispatch.ts agentlessSignIn): each has reported its agents,
-    -- Claude Code and Codex included, and none is ready or unknown. 2: Claude Code is installed there, 3: only Codex is, 1: neither.
-    CASE WHEN EXISTS(SELECT 1 FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive)
-      AND NOT EXISTS(SELECT 1 FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive
-        AND (NOT EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.provider='claude') OR NOT EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.provider='codex')
-          OR EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.state<>'unavailable')))
-    THEN CASE WHEN EXISTS(SELECT 1 FROM workers w JOIN provider_readiness pr ON pr.runner=w.name WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner)
-        AND w.heartbeat_at>$alive AND pr.provider='claude' AND pr.probe='identity') THEN 2
-      WHEN EXISTS(SELECT 1 FROM workers w JOIN provider_readiness pr ON pr.runner=w.name WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner)
-        AND w.heartbeat_at>$alive AND pr.provider='codex' AND pr.probe='identity') THEN 3 ELSE 1 END ELSE 0 END no_agent,
+    -- The first run with no coding agent signed in (dispatch.ts agentlessFirstRun): no planner pinned, no models chosen
+    -- anywhere, and on every live builder for it Claude Code and Codex were each seen not installed or not signed in,
+    -- with no agent ready or unknown. 2: Claude Code is installed there, 3: only Codex is, 1: neither. Read only while
+    -- the task waits for its plan (classified below).
+    CASE WHEN (SELECT plan_provider FROM task_ref WHERE id=c.ref_id) IS NULL
+      AND NOT EXISTS(SELECT 1 FROM phase_config) AND NOT EXISTS(SELECT 1 FROM phase_tier_config) AND NOT EXISTS(SELECT 1 FROM phase_tier_alternate)
+      AND EXISTS(SELECT 1 FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive)
+      AND NOT EXISTS(SELECT 1 FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive AND NOT (EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.provider='claude' AND pr.state='unavailable' AND pr.probe IN ('path','login')) AND EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.provider='codex' AND pr.state='unavailable' AND pr.probe IN ('path','identity')) AND NOT EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.state<>'unavailable')))
+    THEN CASE WHEN EXISTS(SELECT 1 FROM workers w JOIN provider_readiness pr ON pr.runner=w.name WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive AND pr.provider='claude' AND pr.probe='login') THEN 2
+      WHEN EXISTS(SELECT 1 FROM workers w JOIN provider_readiness pr ON pr.runner=w.name WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive AND pr.provider='codex' AND pr.probe='identity') THEN 3 ELSE 1 END ELSE 0 END no_agent,
     CASE WHEN NOT json_valid(c.capability_requirements) THEN 1 ELSE EXISTS(
       SELECT 1 FROM json_each(c.capability_requirements) req WHERE req.type<>'text' OR instr(req.value,':')<2
         OR NOT EXISTS(SELECT 1 FROM capability cap WHERE cap.repo=c.repo AND cap.kind=substr(req.value,1,instr(req.value,':')-1)
@@ -326,9 +326,9 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     WHEN question_id IS NOT NULL THEN 'waiting-decision'
     WHEN worker_count=0 THEN 'no-worker-registered'
     WHEN online_count=0 THEN 'no-worker-online'
-    WHEN no_agent>0 THEN 'signed-out'
     WHEN available_count=0 THEN 'worker-at-capacity'
     WHEN signed_out IS NOT NULL AND (gate_signed_out OR NOT (plan='requested' AND NOT COALESCE(approved AND dispatch_approval,0))) THEN 'signed-out'
+    WHEN no_agent>0 AND plan='requested' AND NOT COALESCE(approved AND dispatch_approval,0) THEN 'signed-out'
     WHEN (plan='requested' OR park_rate>0) AND (SELECT COUNT(*) FROM decision WHERE state<>'answered' AND answered_at IS NULL)>=5 THEN 'decision-queue'
     WHEN plan='requested' AND NOT COALESCE(approved AND dispatch_approval,0) THEN 'planning-ready'
     WHEN deliverable='report' THEN 'scouting-ready'
@@ -739,7 +739,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     : code === 'vanished-run' ? { build: n(row, 'unfinished') || null }
     : code === 'earlier-active' ? { task: s(row, 'earlier_id') }
     : code === 'waiting-dependency' ? { task: s(row, 'dependency_id') } : {};
-  if (code === 'signed-out' && n(row, 'no_agent') > 0) {
+  if (code === 'signed-out' && n(row, 'no_agent') > 0 && s(row, 'signed_out') === null) {
     label = NO_AGENT_TITLE;
     detail = noAgentWords(agentlessCommand(n(row, 'no_agent') === 2, n(row, 'no_agent') === 3));
   } else if (code === 'signed-out') {
@@ -768,7 +768,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
   if (code === 'result-needs-attention' && ['built', 'no-change'].includes(s(row, 'result_outcome') ?? '')) { actionCode = 'open-result'; actionLabel = 'Open result'; }
   // Toolroll proves a build stopped itself; only a stop it can't prove from here offers "Check again", never a vouch.
   if (process !== null && 'need' in process) { actionCode = 'recheck-stopped'; actionLabel = NEEDS[process.need].action.label; }
-  if (code === 'signed-out') { actionCode = 'sign-in'; actionLabel = n(row, 'no_agent') > 0 ? 'Sign in' : NEEDS['sign-in'].action.label; }
+  if (code === 'signed-out') { actionCode = 'sign-in'; actionLabel = n(row, 'no_agent') > 0 && s(row, 'signed_out') === null ? 'Sign in' : NEEDS['sign-in'].action.label; }
   if (actionCode === null) { actionCode = code === 'running' ? 'inspect-run' : 'inspect-task'; actionLabel = code === 'running' ? 'Watch the build' : 'View task details'; }
   const read = actionCode !== null && ['inspect-task', 'inspect-findings', 'inspect-run', 'inspect-stop', 'inspect-decisions', 'open-result'].includes(actionCode);
   const primaryAction: WorkAction | null = actionCode === null ? null : { code: actionCode, label: actionLabel,

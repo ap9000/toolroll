@@ -31,7 +31,7 @@ import { canonicalProject } from "./project.js";
 import { lifecycleOf, reportLifecycle, type Store, type Mutation } from "./store.js";
 import { ALL_CREDENTIAL_ENV, PROVIDER_IDS, inspectionOf, type ProviderId } from "./provider.js";
 import { attestationOf, versionInRange } from "./attest.js";
-import type { ReadinessObservation } from "./phase-routing.js";
+import { LOGIN_PROBE, PATH_PROBE, type ReadinessObservation } from "./phase-routing.js";
 import { homedir } from "node:os";
 import { readAuthMode, type AuthMode } from "./keys.js";
 import { signInFacts } from "./provider-connection.js";
@@ -585,7 +585,7 @@ export async function observeProviderReadiness(
       const facts = inspectionOf(provider);
       const version = await probe(facts.binary, ["--version"], { timeoutMs: READINESS_PROBE_TIMEOUT_MS, omitEnv: ALL_CREDENTIAL_ENV });
       if (version.notFound) {
-        return { provider, state: "unavailable" as const, reason: `\`${facts.binary}\` is not installed on this runner's PATH`, probe: "version" };
+        return { provider, state: "unavailable" as const, reason: `\`${facts.binary}\` is not installed on this runner's PATH`, probe: PATH_PROBE };
       }
       if (version.timedOut || version.code !== 0) {
         return { provider, state: "unavailable" as const, reason: `\`${facts.binary} --version\` ${version.timedOut ? "timed out" : `exited ${version.code}`}`, probe: "version" };
@@ -618,7 +618,8 @@ export async function observeProviderReadiness(
       if (provider === "claude" && claudeMode() === "subscription") {
         const status = await probe(facts.binary, ["auth", "status", "--json"], { timeoutMs: READINESS_PROBE_TIMEOUT_MS, omitEnv: ALL_CREDENTIAL_ENV });
         if (signInFacts("claude", status).state === "signed-out") {
-          return { provider, state: "unavailable" as const, reason: "`claude auth status` says not logged in", probe: "identity" };
+          // The subscription login only (LOGIN_PROBE): a run on an API key is not stopped by it (phase-routing.ts readinessRefuses).
+          return { provider, state: "unavailable" as const, reason: "`claude auth status` says not logged in", probe: LOGIN_PROBE };
         }
       }
       return { provider, state: "unknown" as const, reason: `installed (${installed}); no non-spending login check exists — a real run is the proof`, probe: "version" };

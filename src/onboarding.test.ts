@@ -361,3 +361,23 @@ test("a laptop install whose lead was already settled when no agent was signed i
   expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
   expect(store.getChatConfig()).toBeNull();
 }, 20_000);
+
+test("models a person chose and then cleared stay cleared through the whole sign-in check: the lead turns on, the models don't come back", async () => {
+  store.close();
+  store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
+  expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: new Date() }).ok).toBe(true);
+  // Chosen in Settings → Models, then cleared, before any coding agent was signed in here.
+  store.setPhaseConfig("installation", "build", "claude", "claude-sonnet-5-5", "alex", new Date());
+  expect(store.clearPhaseConfig("installation", "build")).toBe(true);
+  await start({ leadByDefault: true, backgroundChecks: true, backgroundChecksMs: 50 });
+  await new Promise(done => setTimeout(done, 300));
+  // The person signs in: the console's check turns the lead on by default (leadByDefault) and asks for models too.
+  signedIn = "claude";
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.now() + 31_000);
+  await until(() => store.getChatConfig() !== null);
+  await new Promise(done => setTimeout(done, 300));
+  expect(store.getChatConfig()?.provider).toBe("claude-subscription");
+  for (const phase of ["plan", "build", "review"]) expect(store.phaseConfig("installation", phase), phase).toBeNull();
+  expect(store.handle.prepare("SELECT COUNT(*) n FROM phase_tier_config").get()?.["n"]).toBe(0);
+}, 20_000);

@@ -202,7 +202,7 @@ function planContractLines(store: Store, evidenceRoot: string, taskId: string): 
 import { verdictWords as proofVerdictWords, matrixWords, plainReasonWords, semanticCoverage, coverageWords } from "./proof.js";
 import { probeRepo } from "./probe.js";
 import {
-  agentlessSignIn,
+  agentlessFirstRun,
   diagnoseTaskDispatch,
   diagnosisIsDispatchable,
   NO_AGENT_TITLE,
@@ -326,7 +326,7 @@ import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODEL
 import { clearFallbackChain, dispatchEntryOf, entryMovesOnWords, entryWords, fallbackSettingOf, parseEntry, reconcileWalks, setFallbackChain, setPaidGrant, type FallbackEntry } from "./fallback.js";
 import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
 import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
-import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
+import { isTaskSize, legOf, projectRoute, readinessRefuses, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { retryVanishedWhenStopped } from "./vanished-retry.js";
 import { requestMissingRechecks } from "./check-only.js";
@@ -2939,9 +2939,10 @@ async function tickCommand(
       dispatched.push({ id, outcome: "skipped", reason: "unapproved" });
       continue;
     }
-    // No coding agent signed in on this builder (a first run before the sign-in): skipped in those words and the one
-    // command, never the routing hint empty models would give. Its next pass after the sign-in starts it.
-    const agentless = agentlessSignIn(store, [runner]);
+    // The first run before any agent is signed in on this builder (a planner, nothing routed: dispatch.ts
+    // agentlessFirstRun): skipped in those words and the one command, never the routing hint empty models would give.
+    // Its next pass after the sign-in starts it. Anything with a route of its own keeps its provider's own blocker.
+    const agentless = agentlessFirstRun(store, ref, wantsPlan, [runner]);
     if (agentless !== null) {
       dispatched.push({ id, outcome: "skipped", reason: "signed-out", detail: agentless.words });
       continue;
@@ -3105,8 +3106,9 @@ async function tickCommand(
     // second-best; the skip names the observation and the ways out.
     // Unknown readiness passes (every existing gate still applies).
     {
+      // Keyed to the credential this run spends under: a fallback entry's pinned mode, else the provider's own.
       const unavailable = store.runnerReadinessOf(runner, spec.provider);
-      if (unavailable !== null && unavailable.state === "unavailable") {
+      if (unavailable !== null && readinessRefuses(unavailable, fallback?.entry.authMode ?? (brokenMode.ok ? brokenMode.mode : "subscription"))) {
         const observed = `${unavailable.provider} is reported unavailable on ${runner} (${unavailable.reason}; observed ${unavailable.observedAt})`;
         dispatched.push({
           id,

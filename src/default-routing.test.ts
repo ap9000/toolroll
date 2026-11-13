@@ -160,6 +160,8 @@ describe("an agent signed in after the first start (W1)", () => {
     expect(store.clearPhaseConfig(INSTALLATION_SCOPE, "build")).toBe(true);
     expect(nothingSet()).toBe(true);
     expect(fillRoutingOnSignIn(store, connected("connected"), T0)).toMatchObject({ filled: false, reason: "already-set" });
+    // The same guard on every automatic fill: the first start's own door (the lead by default) too.
+    expect(fillDefaultRouting(store, "claude", "toolroll", { kind: "first-start" }, T0)).toMatchObject({ filled: false, reason: "already-set" });
     expect(nothingSet()).toBe(true);
     // Filled once by itself, then cleared by a person: the same.
     const again = openStore(join(dir, "again.db"), { createdBy: "laptop" });
