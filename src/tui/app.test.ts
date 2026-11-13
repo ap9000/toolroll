@@ -93,9 +93,32 @@ describe("terminal UI", () => {
     await shows("Add a dark mode");
     app.stdin.write("\r");
     await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "new", text: "Add a dark mode", repo: null }]));
-    await shows("Keep Toolroll running in the background? (Y/n)");
+    await shows("Start Toolroll when you log in, so tasks keep going? (y/N)");
     app.stdin.write("n");
     await vi.waitFor(() => expect(answers).toEqual([false]));
+  });
+
+  it("the login-item question defaults to no: Enter adds nothing; only y does", async () => {
+    const source = scripted();
+    let asked = 0;
+    const answers: boolean[] = [];
+    const session: TuiSession = { ...sampleSession(), owned: () => true, shouldAskBackground: () => asked++ < 2, answerBackground: async yes => { answers.push(yes); return "Okay."; } };
+    const app = render(createElement(App, { source, session, pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Sample");
+    await mounted();
+    for (const [text, answer] of [["First task", "\r"], ["Second task", "y"]] as const) {
+      app.stdin.write("n");
+      await shows("New task");
+      app.stdin.write(text);
+      await shows(text);
+      app.stdin.write("\r");
+      await shows("Start Toolroll when you log in, so tasks keep going? (y/N)");
+      app.stdin.write(answer);
+      await vi.waitFor(() => expect(answers).toHaveLength(text === "First task" ? 1 : 2));
+      await shows("Okay.");
+    }
+    expect(answers).toEqual([false, true]);
   });
 
   it("p asks for a plan bound to the planning source the task read; with none to ask, it sends nothing and says so", async () => {
