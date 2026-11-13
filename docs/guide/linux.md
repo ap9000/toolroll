@@ -8,8 +8,10 @@ The installer works the same as on macOS:
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 ```
 
-It needs Node.js 22.13 or newer (from nodejs.org, your package manager, or
-`fnm install 22`) and git. If npm says permission denied, give it a folder
+It needs Node.js 22.13 or newer and git. Your distribution's own `nodejs`
+package is usually too old (Ubuntu 24.04's is 18): install Node from
+https://nodejs.org/en/download (choose nvm, then `nvm install 22`) or from
+[NodeSource](https://github.com/nodesource/distributions). If npm says permission denied, give it a folder
 you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally
 
 ## Install the sandbox tools

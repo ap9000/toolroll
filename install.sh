@@ -21,15 +21,22 @@ case "$(uname -s)" in
   *) stop "this installer is for macOS and Linux. On Windows, use WSL, or run: npx toolroll up" ;;
 esac
 
+# How to get a new enough Node, said the same way whether none was found or it is too old. On Linux, the
+# distribution's own nodejs package is usually older than 22 (Ubuntu 24.04's is 18), so it points at nvm or NodeSource.
+if [ "$(uname -s)" = "Linux" ]; then
+  node_how="Install it from https://nodejs.org/en/download (choose nvm: \`nvm install 22\`), or from NodeSource (https://github.com/nodesource/distributions); \`apt install nodejs\` is usually too old"
+else
+  node_how="Install it from https://nodejs.org/en/download, or with \`brew install node\`"
+fi
 if ! command -v node >/dev/null 2>&1; then
-  stop "it needs Node.js 22.13 or newer, and none was found. Install it (https://nodejs.org, \`brew install node\`, or \`fnm install 22\`), then run this again."
+  stop "it needs Node.js 22.13 or newer, and none was found. $node_how. Then run this again."
 fi
 version=$(node -p 'process.versions.node')
 major=${version%%.*}
 rest=${version#*.}
 minor=${rest%%.*}
 if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 13 ]; }; then
-  stop "it needs Node.js 22.13 or newer; this computer has $version. Update Node, then run this again."
+  stop "it needs Node.js 22.13 or newer; this computer has $version. $node_how. Then run this again."
 fi
 command -v git >/dev/null 2>&1 || stop "it needs git 2.41 or newer. Install it, then run this again."
 # "git version 2.39.5 (Apple Git-154)" -> 2 39. A version it can't read is not refused here.

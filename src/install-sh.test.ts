@@ -243,6 +243,24 @@ describe("install.sh on Linux", () => {
     expect(existsSync(record)).toBe(false);
   });
 
+  test("Node missing or too old: both say how to get one (nodejs.org's nvm, or NodeSource), never brew on Linux", async () => {
+    rmSync(join(stubs, "node"));
+    const none = await linux({});
+    expect(none.code).toBe(1);
+    expect(none.out).toContain("it needs Node.js 22.13 or newer, and none was found. Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
+    writeFileSync(join(stubs, "node"), "#!/bin/sh\necho 18.19.1\n");
+    chmodSync(join(stubs, "node"), 0o755);
+    const old = await linux({});
+    expect(old.code).toBe(1);
+    expect(old.out).toContain("this computer has 18.19.1. Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
+    for (const out of [none.out, old.out]) expect(out).not.toContain("brew");
+    // On a Mac, brew is one of the ways.
+    writeFileSync(join(stubs, "uname"), "#!/bin/sh\necho Darwin\n");
+    const mac = await linux({});
+    expect(mac.out).toContain("this computer has 18.19.1. Install it from https://nodejs.org/en/download, or with `brew install node`.");
+    expect(existsSync(join(base, "npm-installed"))).toBe(false);
+  });
+
   test("with all of them there, no word about them, and it starts", async () => {
     for (const name of ["bwrap", "socat", "rg"]) { writeFileSync(join(stubs, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(stubs, name), 0o755); }
     const repo = join(base, "shop");
