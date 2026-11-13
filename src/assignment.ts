@@ -712,6 +712,14 @@ const STOP_WAITS: ReadonlySet<string> = new Set(["build-finishing", "build-check
  * own and its family's root) must pass the shared work rule — no release, no protected work (declared or actually
  * changed), nothing a coordinator filed. Read inside the completion's transaction.
  */
+/** What refuses this person's completion of this exact result for who they are, read as acknowledgeCurrent reads it:
+ * a fast start that grew (or no person acting), or protected work this person may not complete. The result page reads
+ * it before it offers Accept or Mark complete, so it never offers a completion the server refuses. Words only here:
+ * acknowledgeCurrent still checks both at the write. */
+export function personCompletionRefusal(store: Store, taskId: string, runId: number, person: string | null, root: string): string | null {
+  return fastCompletionProblem(store, taskId, runId, person) ?? store.protectedResultProblem(taskId, familyChangedFiles(store, taskId, runId, root), person);
+}
+
 function localCompletionRefusal(store: Store, actor: string, taskIds: readonly string[], runId: number, root: string): { ok: false; reason: string; message: string } | null {
   const local = currentLocalOwner();
   if (local === null) return null;

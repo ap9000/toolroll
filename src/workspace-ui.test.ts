@@ -38,16 +38,26 @@ describe("the result's Accept words", () => {
   });
 });
 
-describe("a result with no project check set says where to set one", () => {
-  const attested = (checkLevel?: "quick" | "full" | "off" | null) => resultStatusOf({ runId: 7, role: "builder", outcome: "built", verdict: "attested", reasons: [], accepted: false, ...(checkLevel === undefined ? {} : { checkLevel }) });
-  test("the task card names Settings → Projects → Checks, never a pass", () => {
-    expect(attested()).toMatchObject({ token: "agent-attested", label: "Ready · no project check set up",
-      detail: `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}` });
+describe("a result built with no project check: what it says depends on whether one is set now", () => {
+  const attested = (checkSet?: boolean, checkLevel?: "quick" | "full" | "off" | null) => resultStatusOf({ runId: 7, role: "builder", outcome: "built", verdict: "attested", reasons: [], accepted: false,
+    ...(checkLevel === undefined ? {} : { checkLevel }), ...(checkSet === undefined ? {} : { checkSet }) });
+  test("none set now: the task card names Settings → Projects → Checks, never a pass", () => {
+    expect(attested(false)).toMatchObject({ token: "agent-attested", label: "Ready · no project check set up",
+      detail: `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}`, action: { kind: "open-result" } });
     expect(SET_A_CHECK).toBe("Set one in Settings → Projects → Checks.");
-    expect(attested("full").detail).not.toMatch(/passed|ran on/i);
+    expect(attested(false, "full").detail).not.toMatch(/passed|ran on/i);
   });
-  test("checks deliberately Off aren't told to set one", () => {
-    expect(attested("off").detail).not.toContain(SET_A_CHECK);
+  test("one is set now: it says to run it, and the act is Run checks, never Set one", () => {
+    expect(attested(true, "full")).toMatchObject({ token: "agent-attested", label: "Ready · checks didn't run",
+      detail: "No project check was set when this was built, so the checks listed are the agent's own report. A check is set now: run it on this result.",
+      action: { label: "Run checks", kind: "open-review" } });
+    expect(attested(true).detail).not.toContain(SET_A_CHECK);
+  });
+  test("checks deliberately Off, or a caller that didn't read it, aren't told to set one", () => {
+    expect(attested(false, "off").detail).not.toContain(SET_A_CHECK);
+    expect(attested(true, "off").detail).not.toContain(SET_A_CHECK);
+    expect(attested(true, "off").label).toBe("Ready · no project check set up");
+    expect(attested().detail).toBe("No project check is set up, so the checks listed are the agent's own report.");
   });
 });
 

@@ -72,6 +72,9 @@ export type ResultFacts = {
    * passed only when this reading does. Undefined: the caller read no check (a list or dispatch read), so the words
    * name only what the verdict recorded when the build finished. */
   checks?: ChecksFact | null;
+  /** Whether the project has a check command now (check-levels.ts projectCheckSet). Undefined: the caller didn't read
+   * it, so the words say nothing about setting one. */
+  checkSet?: boolean;
 };
 
 /** The result's review facts as `reviewRetryStateOf` records them, plus
@@ -343,12 +346,23 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
         tone: "problem", action: { label: "Open the check", kind: "open-review" } };
   }
   if (result.verdict === "attested" && !passedNow(check)) {
+    // Built with no check, and one is set now (and checks aren't Off): it just didn't run on this result, so Run checks.
+    if (result.checkSet === true && result.checkLevel !== "off") {
+      return {
+        token: "agent-attested",
+        label: "Ready · checks didn't run",
+        detail: withPublication("No project check was set when this was built, so the checks listed are the agent's own report. A check is set now: run it on this result."),
+        tone: "neutral",
+        action: { label: "Run checks", kind: "open-review" },
+      };
+    }
     return {
       token: "agent-attested",
       label: "Ready · no project check set up",
-      // Off is a choice with a command kept for release: no "set one" there.
-      detail: withPublication(result.checkLevel === "off" ? "No project check is set up, so the checks listed are the agent's own report."
-        : `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}`),
+      // "Set one" only when the project has none now; Off is a choice, and unread says nothing either way.
+      detail: withPublication(result.checkSet === false && result.checkLevel !== "off"
+        ? `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}`
+        : "No project check is set up, so the checks listed are the agent's own report."),
       tone: "neutral",
       action: { label: OPEN_RESULT, kind: "open-result" },
     };
