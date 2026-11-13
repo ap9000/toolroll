@@ -380,7 +380,7 @@ function headingOf(card: AssignmentCard): string {
   switch (card.status.headline) {
     case "Needs you":
       return need === "approval" ? "Plan ready" : need === "answer" || need === "questions" ? "A question for you" : need === "hold" ? "On hold"
-        : need === "stop-unproven" || need === "vanished" ? "The build stopped" : need === "sign-in" ? "Sign in again"
+        : need === "stop-unproven" || need === "vanished" ? "The build stopped" : need === "sign-in" ? (card.status.sentence.startsWith("No coding agent") ? "Sign in" : "Sign in again")
         : need === "start-builder" || need === "connect-builder" ? "No builder is running" : need === "rebuild" || need === "replan" ? "The plan changed"
         : need === "review-result" ? "Ready for your review" : "Waiting on you";
     case "Ready for review": return "Ready for your review";
@@ -447,7 +447,7 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
     <KSlots wait={waits} status={<>{headingOf(card) !== card.status.headline && <KHeadlineChip headline={card.status.headline} />}<h2>{headingOf(card)}</h2></>}
       text={<>
         <span {...(failed ? { "data-failure-reason": "" } : {})} {...(view.progress != null ? { "data-build-progress": "" } : {})} {...(stuck !== null ? { "data-build-stuck": stuck.step } : {})}>
-          {pausedLine !== null ? <span role="status" data-live-pause={pause!.state}>{pausedLine}</span> : card.status.sentence}
+          {pausedLine !== null ? <span role="status" data-live-pause={pause!.state}>{pausedLine}</span> : <WithCode text={card.status.sentence} />}
         </span>
         {view.activity != null && <ActivityLine activity={view.activity} />}
         {failed && failure != null && <FailureEvidence failure={failure} />}
@@ -1016,3 +1016,9 @@ export const useFormToken = (): string => useContext(FormToken);
  * its own Accept form as Mark complete when nothing more is owed, else Review and accept, which takes the person to
  * their check or the decision. Null anywhere else (the result page alone, tests): the result keeps its acts below. */
 export const ResultStatusAct = createContext<HTMLElement | null>(null);
+
+/** A sentence whose `backticked` parts are commands to type (a sign-in's `claude auth login`): those parts as code. */
+function WithCode({ text }: { text: string }) {
+  const parts = text.split(/`([^`\n]+)`/);
+  return <>{parts.map((part, index) => index % 2 === 1 ? <code key={index} className="k-mono">{part}</code> : part === "" ? null : <span key={index}>{part}</span>)}</>;
+}

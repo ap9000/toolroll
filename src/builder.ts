@@ -3260,10 +3260,12 @@ async function stoppedWords(captured: CapturedBuild): Promise<string> {
       `# work in ${worktree} when Toolroll stopped\n# kept ${captured.clock().toISOString()}\n`);
   const kept = changes !== null && changes.length === 0 ? "It had not changed any files yet"
     : saved !== null && saved.ok ? `Its work is kept in ${worktree} and saved as ${saved.file}` : `Its work is kept uncommitted in ${worktree}`;
-  return `${SERVICE_STOP_WORDS} ${kept}; the task is back in the queue and resumes from it when the builder runs again.`;
+  return `${SERVICE_STOP_WORDS} ${kept}; the task is back in the queue and continues from there. ${RUN_AGAIN_WORDS}`;
 }
 
 export const SERVICE_STOP_WORDS = "Toolroll stopped while this task was building.";
+/** What a person does after Toolroll stopped: work continues only while Toolroll runs (or keeps running in the background). */
+export const RUN_AGAIN_WORDS = "Run `toolroll` again to continue.";
 
 /**
  * The attempt ended without a handoff, even after any resumed turn. When it

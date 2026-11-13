@@ -95,7 +95,8 @@ ${listed.length === 0 ? "" : html`<div class="welcome-rows">${listed}</div>`}${m
 
   const taskLeads = lead === "task";
   if (taskLeads) primary = btn("Write a task", { variant: "primary", href: "/tasks/new" });
-  const taskBody = model.task.done ? html`<p class="k-note">Filed. Its plan waits for your approval in <a class="k-link" href="/tasks">Tasks</a>.</p>`
+  const taskBody = model.task.done ? !model.agent.done && !model.agent.checking ? html`<p class="k-note">Filed. It starts by itself once an agent is signed in (step 1).</p>`
+    : html`<p class="k-note">Filed. Its plan waits for your approval in <a class="k-link" href="/tasks">Tasks</a>.</p>`
     : !model.task.open ? html`<p class="k-note">Add a project first.</p>`
       : html`<p class="k-note">Describe a change in a sentence or two. Nothing starts until you approve its plan.</p>\
 ${model.task.starters.length === 0 ? "" : html`<div class="k-ideas" aria-label="Ideas to start from" data-starters>${model.task.starters.map(one => html`<a class="k-btn k-btn-outline k-idea" href="${one.href}">${one.label}</a>`)}</div>`}\

@@ -9,6 +9,7 @@
  */
 import { dirname, join } from "node:path";
 import { assignmentOf, owedAcceptance } from "./assignment.js";
+import { agentlessFirstRun, buildersFor } from "./dispatch.js";
 import { familyChangedFiles } from "./result-completion.js";
 import { checkBackingOf, receiptChecksOf, requirementWordOf } from "./task-status.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
@@ -171,7 +172,13 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         const store = read();
         const ask = store === null ? null : planAskOf(store, filed);
         const asked = ask === null ? null : await command(["task", "plan", filed, "--digest", ask.source]);
-        const message = asked?.ok === true ? "Filed. Planning: you'll approve the plan before anything is built." : `Filed. It wasn't sent for a plan: ${shown(asked?.message, "it can't be planned now.")}`;
+        // No coding agent signed in on this computer yet: the plan waits for it, and the one command says how.
+        const filedRef = store === null ? null : store.lookupRef(filed);
+        const agentless = store === null || filedRef === null || asked?.ok !== true ? null
+          : agentlessFirstRun(store, filedRef, true, buildersFor(store, act.repo, clock()).alive.map(one => one.name));
+        const message = asked?.ok !== true ? `Filed. It wasn't sent for a plan: ${shown(asked?.message, "it can't be planned now.")}`
+          : agentless !== null ? `Filed. ${agentless.words}`
+          : "Filed. Planning: you'll approve the plan before anything is built.";
         return { ok: true, message, id: filed };
       }
       return { ok: true, message: done, ...(filed === "" ? {} : { id: filed }) };

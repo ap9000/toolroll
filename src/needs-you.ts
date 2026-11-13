@@ -52,7 +52,7 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   card: { sentence: () => "This card is waiting for your approval.", action: { code: "approve-card", label: "Approve card" } },
   answer: { sentence: () => "Answer the question so the work can continue.", action: { code: "answer-decision", label: "Answer the question" }, useReason: always },
   questions: { sentence: () => "Too many questions are open. Answer one so this task can start.", action: { code: "inspect-decisions", label: "Answer questions" } },
-  "sign-in": { sentence: context => `${context.provider ?? "Your agent"} needs you to sign in again. The task starts on its own after.`, action: { code: "sign-in", label: "Sign in again" }, useReason: reason => /sign in|API key/i.test(reason) },
+  "sign-in": { sentence: context => `${context.provider ?? "Your agent"} needs you to sign in again. The task starts on its own after.`, action: { code: "sign-in", label: "Sign in again" }, useReason: reason => /sign(?:ed)? in|API key/i.test(reason) },
   // Toolroll proves a build stopped itself (stop-proof.ts); nobody is asked to vouch for it. Only when this computer
   // can't look, or something Toolroll didn't start is using the build's folder, is the work held: the person can close
   // what's theirs and have it look again, nothing more.

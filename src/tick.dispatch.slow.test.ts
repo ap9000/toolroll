@@ -9,7 +9,8 @@
  */
 
 import { allowWhereUnfenced } from "./unfenced-test-support.js";
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { setAuthMode } from "./keys.js";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { delimiter } from "node:path";
@@ -550,7 +551,7 @@ describe("tick, against real git", () => {
     expect(payload().runs[0]).toMatchObject({ outcome: "failed", reason: "auth-expired" });
     expect(payload().dispatch).toMatchObject({ code: "signed-out", summary: "Claude needs you to sign in again" });
     await run(["task", "show", failedId]);
-    expect(lines.join("\n")).toContain("dispatch: Claude needs you to sign in again — This task starts again on its own once Claude works.");
+    expect(lines.join("\n")).toContain("dispatch: Claude needs you to sign in again. Run `claude auth login`, then it starts again by itself.");
     const store = allowWhereUnfenced(openStore(db));
     try {
       expect(store.lookupRef(failedId)?.strikes).toBe(0);
@@ -608,6 +609,25 @@ describe("tick, against real git", () => {
     expect(payload().dispatched).toMatchObject([{ id: "t-1", outcome: "built" }]);
   });
 
+  test("an ordinary task on Claude's API key builds while the builder sees Claude Code's subscription login signed out", async () => {
+    // This test's own HOME (test/setup-state.ts): Claude Code spends on an API key here.
+    expect(setAuthMode("claude", "api-key")).toEqual({ ok: true });
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-test-not-real");
+    try {
+      const { runnerToken, approverToken } = await credentials();
+      await queueApproved("t-key", approverToken);
+      const store = allowWhereUnfenced(openStore(db));
+      try {
+        store.recordProviderReadiness("builder-1", [{ provider: "claude", state: "unavailable", reason: "`claude auth status` says not logged in", probe: "login" }], T0);
+      } finally { store.close(); }
+      await tick(runnerToken);
+      expect(payload().dispatched, lines.join("\n")).toMatchObject([{ id: "t-key", outcome: "built" }]);
+    } finally {
+      setAuthMode("claude", "subscription");
+      vi.unstubAllEnvs();
+    }
+  });
+
   test("a sign-in trial whose task is skipped before its claim is given back, so the next pass still has it", async () => {
     const { runnerToken, approverToken } = await credentials();
     await queueApproved("t-1", approverToken);
@@ -653,7 +673,7 @@ describe("tick, against real git", () => {
     try {
       const items = workIndexPage(after, T0, { principal: "operator", repos: null, includeUnplaced: true }).items;
       for (const id of skipped) {
-        expect(items.find(one => one.activeTaskId === id)?.status).toMatchObject({ label: "Needs you", detail: "Claude needs you to sign in again. It starts again on its own once Claude works." });
+        expect(items.find(one => one.activeTaskId === id)?.status).toMatchObject({ label: "Needs you", detail: "Claude needs you to sign in again. Run `claude auth login`, then it starts again by itself." });
       }
     } finally { after.close(); }
     await run(["task", "show", "t-plan", "--json"]);

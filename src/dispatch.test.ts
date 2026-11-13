@@ -291,6 +291,38 @@ describe("Never Stuck dispatch diagnosis", () => {
     expect(diagnoseTaskDispatch(store, "t-quota", after)?.code).toBe("ready");
     expect(store.handle.prepare("SELECT state FROM quota").get()?.["state"]).toBe("exhausted");
   });
+
+  test("\"No coding agent is signed in\" is only the first run's wait: anything routed, or an observation that proves no sign-out, keeps its own answer", () => {
+    // A first run: no models chosen yet, ever (this file's fixture sets some; a fresh install has none).
+    store.handle.exec("DELETE FROM phase_config; DELETE FROM models_generation;");
+    enroll(store);
+    const seen = (claude: { reason: string; probe: string }) => store.recordProviderReadiness("worker", [
+      { provider: "claude", state: "unavailable", ...claude },
+      { provider: "codex", state: "unavailable", reason: "`codex` is not installed on this runner's PATH", probe: "path" },
+    ], T0);
+    const missing = { reason: "`claude` is not installed on this runner's PATH", probe: "path" };
+    store.createTask({ id: "t-first", title: "first" }, T0);
+    const first = store.refFor("built-in", "t-first").id;
+    store.placeTask(first, REPO);
+    store.requestPlan(first, T0);
+    seen(missing);
+    expect(diagnoseTaskDispatch(store, "t-first", T0)?.summary).toBe("No coding agent is signed in");
+    seen({ reason: "`claude auth status` says not logged in", probe: "login" });
+    expect(diagnoseTaskDispatch(store, "t-first", T0)?.detail).toBe("No coding agent is signed in. Run `claude auth login`, then it starts by itself.");
+    // A version check that failed or timed out, or an attested range missed, proves nothing about a sign-in.
+    for (const reason of ["`claude --version` exited 1", "`claude --version` timed out", "installed claude 9.0.0 is outside this build's attested range"]) {
+      seen({ reason, probe: "version" });
+      expect(diagnoseTaskDispatch(store, "t-first", T0), reason).toMatchObject({ code: "planning-ready" });
+    }
+    seen(missing);
+    // Models chosen: the planner has a route, and its provider's own blocker answers, never this one.
+    for (const phase of ["build", "plan", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", T0);
+    expect(diagnoseTaskDispatch(store, "t-first", T0)?.summary).not.toBe("No coding agent is signed in");
+    // An approved build keeps its own wait: here, the usage limit with its reset.
+    file(store, "t-quota");
+    store.stampQuota({ runner: "worker", provider: "claude", scope: "sonnet", reason: "membership window", resetAt: new Date(T0.getTime() + 60_000) }, T0);
+    expect(diagnoseTaskDispatch(store, "t-quota", T0)).toMatchObject({ code: "provider-quota", summary: "Claude's usage limit is reached" });
+  });
 });
 
 describe("retryWhenWords: when a backed-off task tries again, in words", () => {

@@ -14665,6 +14665,7 @@ export class Store {
    * per provider. Callers authenticate the runner first (runner.ts). */
   recordProviderReadiness(runner: string, observations: readonly Omit<ReadinessObservation, "runner" | "observedAt">[], now: Date): void {
     this.transact(() => {
+      let changed = false;
       for (const one of observations) {
         // The same observation again only renews its time: a quiet write that moves no workspace revision.
         const renewed = this.db.prepare("UPDATE provider_readiness SET observed_at = ? WHERE runner = ? AND provider = ? AND state = ? AND reason = ? AND probe IS ?")
@@ -14677,7 +14678,10 @@ export class Store {
                                                           probe = excluded.probe, observed_at = excluded.observed_at`,
           )
           .run(runner, one.provider, one.state, one.reason, one.probe, now.toISOString());
+        changed = true;
       }
+      // A changed answer (an agent signed in since the last look) is a readiness change: the watch passes again now.
+      if (changed) this.bumpWake();
     });
   }
 

@@ -202,8 +202,10 @@ function planContractLines(store: Store, evidenceRoot: string, taskId: string): 
 import { verdictWords as proofVerdictWords, matrixWords, plainReasonWords, semanticCoverage, coverageWords } from "./proof.js";
 import { probeRepo } from "./probe.js";
 import {
+  agentlessFirstRun,
   diagnoseTaskDispatch,
   diagnosisIsDispatchable,
+  NO_AGENT_TITLE,
   scopeApprovedForDispatch,
 } from "./dispatch.js";
 
@@ -324,7 +326,7 @@ import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODEL
 import { clearFallbackChain, dispatchEntryOf, entryMovesOnWords, entryWords, fallbackSettingOf, parseEntry, reconcileWalks, setFallbackChain, setPaidGrant, type FallbackEntry } from "./fallback.js";
 import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
 import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
-import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
+import { isTaskSize, legOf, projectRoute, readinessRefuses, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { retryVanishedWhenStopped } from "./vanished-retry.js";
 import { requestMissingRechecks } from "./check-only.js";
@@ -2937,6 +2939,14 @@ async function tickCommand(
       dispatched.push({ id, outcome: "skipped", reason: "unapproved" });
       continue;
     }
+    // The first run before any agent is signed in on this builder (a planner, nothing routed: dispatch.ts
+    // agentlessFirstRun): skipped in those words and the one command, never the routing hint empty models would give.
+    // Its next pass after the sign-in starts it. Anything with a route of its own keeps its provider's own blocker.
+    const agentless = agentlessFirstRun(store, ref, wantsPlan, [runner]);
+    if (agentless !== null) {
+      dispatched.push({ id, outcome: "skipped", reason: "signed-out", detail: agentless.words });
+      continue;
+    }
     // The phase agent, resolved BEFORE anything is claimed and snapshotted
     // into the run: pin > flags > project > installation > default. Planner
     // flags fall back to the pass flags, which is exactly today's behavior
@@ -3096,8 +3106,9 @@ async function tickCommand(
     // second-best; the skip names the observation and the ways out.
     // Unknown readiness passes (every existing gate still applies).
     {
+      // Keyed to the credential this run spends under: a fallback entry's pinned mode, else the provider's own.
       const unavailable = store.runnerReadinessOf(runner, spec.provider);
-      if (unavailable !== null && unavailable.state === "unavailable") {
+      if (unavailable !== null && readinessRefuses(unavailable, fallback?.entry.authMode ?? (brokenMode.ok ? brokenMode.mode : "subscription"))) {
         const observed = `${unavailable.provider} is reported unavailable on ${runner} (${unavailable.reason}; observed ${unavailable.observedAt})`;
         dispatched.push({
           id,
@@ -3193,7 +3204,9 @@ async function tickCommand(
       repo,
       provider: spec.provider,
       ...(spec.model === null ? {} : { model: spec.model }),
-      ...(fallback === null ? {} : { authMode: fallback.entry.authMode }),
+      // The credential this run spends under, for the claim's quota and readiness: a fallback entry's pinned mode, else
+      // the provider's own (an API-key Claude isn't stopped by a subscription login seen signed out).
+      ...(fallback !== null ? { authMode: fallback.entry.authMode } : brokenMode.ok && (brokenMode.mode === "api-key" || brokenMode.mode === "subscription") ? { authMode: brokenMode.mode } : {}),
       ...(text(flags, "incarnation") === undefined ? {} : { incarnation: text(flags, "incarnation") as string }),
       ...(text(flags, "max-open-decisions") === undefined
         ? {}
@@ -7458,7 +7471,7 @@ async function watchCommand(
   const hardStop = () => {
     const terminated = terminateLiveProviders();
     if (terminated > 0) {
-      progress(`Hard stop: ${terminated} provider process group(s) terminated. Their work is saved and kept in each checkout, and each task resumes from it when the builder runs again; fences keep late output out of every commit.`);
+      progress(`Hard stop: ${terminated} provider process group(s) terminated. Their work is saved and kept in each checkout, and each task continues from it; fences keep late output out of every commit. Run \`toolroll\` again to continue.`);
     }
   };
   const stop = () => {
@@ -10032,7 +10045,8 @@ function showTask(positional: readonly string[], context: Context): number {
     ...(detail.hold === null ? [] : [`  held: ${detail.hold.reason}`]),
     ...detail.steering.slice(-5).map(one => `  note #${one.id} to the agent: ${one.words}`),
     ...(detail.claim === null ? [] : [`  claimed by ${detail.claim.runner} until ${detail.claim.expiresAt}`]),
-    ...(detail.dispatch === null ? [] : [`  dispatch: ${detail.dispatch.summary} — ${detail.dispatch.detail}`]),
+    // A detail that already starts with its summary (a sign-in's own sentence) is said once.
+    ...(detail.dispatch === null ? [] : [`  dispatch: ${detail.dispatch.detail.startsWith(detail.dispatch.summary) ? detail.dispatch.detail : `${detail.dispatch.summary} — ${detail.dispatch.detail}`}`]),
     ...(detail.control.kind === "none"
       ? []
       : detail.control.kind === "stop"
@@ -10049,7 +10063,7 @@ function showTask(positional: readonly string[], context: Context): number {
     ...planContractLines(store, context.evidenceRoot, id),
     // The route's standing (v47): sealed, proposed, legacy, or unreadable —
     // the projection itself is in describeScope's lines above.
-    ...taskRouteStandingLines(id, routed),
+    ...taskRouteStandingLines(id, routed, detail.dispatch?.summary === NO_AGENT_TITLE),
     // Provenance per run (v47): the actual provider and model each phase
     // spent as, and the route it spent under.
     ...detail.runs
@@ -10091,8 +10105,10 @@ function taskRouteView(routed: TaskRoute | null, readiness: ReadinessLookup): Re
   return { kind: "unreadable", source: null, problem: routed.problem };
 }
 
-function taskRouteStandingLines(id: string, routed: TaskRoute | null): string[] {
+function taskRouteStandingLines(id: string, routed: TaskRoute | null, agentless = false): string[] {
   if (routed === null) return [];
+  // No coding agent signed in yet: the sign-in comes first (a laptop install then chooses its models by itself, serve.ts routingOnSignIn).
+  if (agentless && routed.kind === "unreadable" && routed.problem.includes("has no exact model")) return ["  agents       not chosen yet: sign in a coding agent first"];
   if (routed.kind === "route") {
     return [`  agents       ${routed.source === "approved" ? "approved with the plan — a configuration change never moves them" : routed.source === "proposed" ? "proposed — approving the plan approves them" : "recommended now — no plan filed yet"}`];
   }
@@ -13356,18 +13372,30 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     await launching;
   }
 
-  // Provider readiness (v47): this machine's non-spending observations, recorded under its own runner name ONCE at
-  // start — so every route projection can say ready / unavailable / unknown per provider, and the dispatch gate can
-  // halt a leg this machine cannot run. Production only: a test's injected agent runner is a fake, and its readiness
-  // would be a fiction.
+  // Provider readiness (v47): this machine's non-spending observations, recorded under its own runner name at start
+  // and again every two minutes — so every route projection can say ready / unavailable / unknown per provider, the
+  // dispatch gate can halt a leg this machine cannot run, and an agent signed in after the start (a first run: install
+  // Toolroll, then `claude auth login`) is seen without a restart and its waiting tasks start. Production only: a
+  // test's injected agent runner is a fake, and its readiness would be a fiction.
+  let readinessTimer: ReturnType<typeof setInterval> | undefined;
   if (context.agentRunner === undefined) {
-    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
-      .then(observed => {
-        if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
-      })
-      .catch(() => {
-        // A probe that cannot run leaves readiness unknown — never a fiction.
-      });
+    const READINESS_EVERY_MS = 2 * 60_000;
+    let observing = false;
+    const observeReadiness = (): void => {
+      if (observing || stopping) return;
+      observing = true;
+      void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
+        .then(observed => {
+          if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
+        })
+        .catch(() => {
+          // A probe that cannot run leaves readiness as it was — never a fiction.
+        })
+        .finally(() => { observing = false; });
+    };
+    observeReadiness();
+    readinessTimer = setInterval(observeReadiness, READINESS_EVERY_MS);
+    readinessTimer.unref?.();
   }
   try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
   recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
@@ -13381,6 +13409,7 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
   if (fatal === null && !stopping) port.send({ type: "ready", role: "worker", build, pid: process.pid, url: null, port: null });
 
   await stopped;
+  if (readinessTimer !== undefined) clearInterval(readinessTimer);
   await registrySupervisor;
   await Promise.all([...loopResults.values()]);
   await stopLiveBackups?.();
