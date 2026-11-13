@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BrowserProjectRow, BrowserProjectsView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import { PostForm } from "../ui/index.js";
-import { KButton, KCount, KDock, KEmpty, KGroup, KInfoLine, KLinkButton, KNotice, KOverlay, KPageHeader, KRow, KStatus } from "../kit/index.js";
+import { KButton, KChip, KCount, KDock, KEmpty, KGroup, KInfoLine, KLinkButton, KNotice, KOverlay, KPageHeader, KRow, KStatus } from "../kit/index.js";
 import { threadWhen } from "./task-view.js";
 
 /** In words people use: today, yesterday, or the date, by the one formatter in the viewer's zone. */
@@ -40,9 +40,11 @@ function OpenForm({ path, destination, label }: { path: string; destination: str
 function Row({ row, returnTo, choosing }: { row: BrowserProjectRow; returnTo: string; choosing: boolean }) {
   const path = middlePath(row.shortPath, 36);
   const when = row.open ? "Open now" : row.openedAt === null ? "" : openedWords(row.openedAt);
-  return <KRow href={row.href} chip={row.status === null ? null : <KStatus status={row.status} />} title={row.name} wait={row.status === "needs"}
+  // What waits on you: "2 waiting on you" in the soft ask tone (DESIGN.md "Peek chips"), never a solid chip on every row.
+  const chip = row.status === null ? null : row.status === "needs" ? <KChip word={`${row.waiting} waiting on you`} tone="ask" /> : <KStatus status={row.status} />;
+  return <KRow href={row.href} chip={chip} title={row.name} wait={row.status === "needs"}
     desc={<span className="k-mono" title={row.path}>{path.head}{path.tail}</span>}
-    meta={<><span>{row.summary ?? "Not scanned"}</span>{when !== "" && <span>{when}</span>}</>}
+    meta={<>{row.summary !== "" && <span>{row.summary ?? "Not scanned"}</span>}{when !== "" && <span>{when}</span>}</>}
     action={choosing || !row.open
       ? <OpenForm path={row.path} destination={returnTo} label={choosing ? "Choose" : "Open"} />
       : <KLinkButton sm href="/tasks/new" label="New task" />} />;
@@ -72,11 +74,11 @@ export function ProjectsView({ view }: { view: BrowserProjectsView; csrf: string
       {view.said !== null && <KInfoLine>{view.said}</KInfoLine>}
     </div>}
     {view.add.review !== null && <div className="k-doc"><GuardedHtml html={view.add.review} immutable /></div>}
-    {view.recent.length > 0 && <section aria-label="Projects">
+    {view.recent.length > 0 && <section aria-label="Projects" data-project-list="">
       <KGroup label="Projects" count={<KCount n={view.recent.length} />} />
       {view.recent.map(row => <Row key={row.path} row={row} returnTo={view.returnTo} choosing={view.choosing} />)}
     </section>}
-    {view.available.length > 0 && <section aria-label="Available">
+    {view.available.length > 0 && <section aria-label="Available" data-project-list="">
       <KGroup label="Available" count={<KCount n={view.available.length} />} />
       {view.available.map(row => <Row key={row.path} row={row} returnTo={view.returnTo} choosing={view.choosing} />)}
     </section>}

@@ -4,7 +4,7 @@
 import { checkRepairsOfTask, checkRepairWords } from "../check-repair.js";
 import { evidencePairsOf, evidenceWords, failingFirstOf, failingFirstWords } from "../evidence-pair.js";
 import { findingLine, findingFromWords, findingsOfTask, findingStandingWords, type Finding } from "../findings.js";
-import { handoverLines, handoverNoteOf } from "../handover-note.js";
+import { handoverHasContent, handoverLines, handoverNoteOf } from "../handover-note.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { providerCaptures, type ProviderCapture } from "../provider-capture.js";
 import type { Store } from "../store.js";
@@ -77,6 +77,7 @@ export function followThroughView(store: Store, root: string, taskId: string, ta
       canAct ? act(taskHref, step === null ? "failing-first-on" : "failing-first-off", step === null ? "Ask for a failing test first" : "Turn off failing test first") : "",
       captures.length === 0 ? "" : disclose("What the provider said", html`<ul class="result-changes">${captures.map(one => captureRow(one, taskHref, canAct))}</ul>`),
     ]),
-    handover: note1 === null ? "" : html`<pre class="mono handover-note">${handoverLines(note1).join("\n")}</pre>`,
+    // Nothing to hand over yet (no revision, no decisions): no section at all. Otherwise the raw note waits one tap away.
+    handover: note1 === null || !handoverHasContent(note1) ? "" : disclose("Show the note", html`<pre class="mono handover-note">${handoverLines(note1).join("\n")}</pre>`),
   };
 }

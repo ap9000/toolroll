@@ -817,7 +817,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
       action: primaryAction === null ? null : { label: actionLabel, kind: actionCode === 'open-result' ? 'open-result' : 'open-task' }, views, rank: n(row, 'rank') },
     ask: need ? ASKS[n(row, 'ask_rank')] ?? 'unblock' : null,
     askGroup: need ? WORK_ASK_GROUPS.find(group => group === s(row, 'ask_group')) ?? 'other' : null,
-    chip: need ? askChipOf({ headline: shared.headline, need: shared.need?.key ?? null, planChanged, mismatch: verdict === 'refuted' && n(row, 'proof_failed_check') !== 1, ask: ASKS[n(row, 'ask_rank')] ?? 'unblock' }) : null,
+    chip: need ? askChipOf({ headline: shared.headline, need: shared.need?.key ?? meaning?.need ?? null, planChanged, mismatch: verdict === 'refuted' && n(row, 'proof_failed_check') !== 1, ask: ASKS[n(row, 'ask_rank')] ?? 'unblock' }) : null,
     primaryAction, completion: code === 'complete' ? { actor: String(row['checked_actor']), at: String(row['checked_at']), digest: String(row['checked_digest']), ...(landed === null ? {} : { landed }) } : null,
     evidence: 'recorded', ...(lead === 'on-it' ? { lead: leadOnIt(leadName) } : {}), ...(archived === null ? {} : { archived }) };
 }

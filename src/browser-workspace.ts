@@ -362,6 +362,8 @@ export type BrowserProjectRow = {
   openedAt: string | null;
   /** The row's chip: something waits on this person, or runs; null for neither. */
   status: 'needs' | 'running' | null;
+  /** How many of its tasks wait on this person (the chip's "2 waiting on you"); 0 when none or not scanned. */
+  waiting: number;
   /** Its counts in words ("2 need you · 1 running"); null when not scanned. */
   summary: string | null;
 };

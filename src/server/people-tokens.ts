@@ -275,7 +275,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       return page(response, 403, loginPage("That sign-in link works only in a browser on the computer running Toolroll. Sign in with your password.", "/chat", ssoOffer()));
     }
     if (held === undefined || held.expires < Date.now()) {
-      return page(response, 410, loginPage("That sign-in link has been used or has expired. Sign in with your password, or run toolroll up again.", "/chat", ssoOffer()));
+      return page(response, 410, loginPage(html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
     }
     const account = store.accountOf(held.account);
     if (account === null || account.role !== "approver" || account.revokedAt !== null) return page(response, 403, loginPage("That account can't sign in here any more.", "/chat", ssoOffer()));
@@ -294,7 +294,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         sessions.set(id, { ...base, generation: now.accountGeneration, authority: "local-owner", localGeneration: now.localGeneration, ...keyed.fields });
         return true;
       });
-      if (!made) return page(response, 410, loginPage("That sign-in link no longer works. Run toolroll again to open Toolroll.", "/chat", ssoOffer()));
+      if (!made) return page(response, 410, loginPage(html`That sign-in link has been used or has expired. Run <code>toolroll</code> again to open Toolroll.`, "/chat", ssoOffer()));
       recordSignIn(held.account, "signed in", "local link");
     } else {
       sessions.set(id, { ...base, ...FULL_SESSION, ...keyed.fields });

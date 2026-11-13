@@ -12,7 +12,7 @@ import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { isRevisionFeedback } from "./result-review.js";
 import { approvalOf, deployGateScope } from "./scope.js";
 import { shipChecksForTask, type Store } from "./store.js";
-import { approvedCheckStateOf } from "./task-status.js";
+import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
 
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
 export type ChecklistKey = (typeof CHECKLIST_KEYS)[number];
@@ -95,7 +95,13 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   if (receipt === null) row("requirements", "waiting", "Waits for a build.");
   else if (criteria.length > 0) row("requirements", "no", criteria[0]!.message, { kind: "fix", run: receipt.runId, note: criteria.map(one => one.message).join("\n") });
   else if (assignment.readiness?.verdict === "refuted") row("requirements", "no", "The result doesn't match its plan.", { kind: "fix", run: receipt.runId, note: "The result doesn't match its plan. Fix it so it does." });
-  else row("requirements", "yes", "Every requirement is met.");
+  else {
+    // A requirement only a person can confirm, not yet confirmed (no acceptance of this result): it waits on them.
+    const yours = receipt.proofAcceptance !== null ? 0
+      : (receipt.proof?.matrix ?? []).filter(one => requirementWordOf(one, receipt.proof?.verdict ?? null) === "You check").length;
+    if (yours > 0) row("requirements", "waiting", `You check ${yours} requirement${yours === 1 ? "" : "s"}.`);
+    else row("requirements", "yes", "Every requirement is met.");
+  }
 
   // The pull request and its CI, as the task's pull request row reads them.
   const view = run === null ? null : pullRequestViewOf(store, run);

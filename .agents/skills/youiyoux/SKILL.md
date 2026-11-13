@@ -64,7 +64,7 @@ Each finding names its rule, the file:line and a suggestion. The suggested token
 - **KDock**: The phone dock: the screen's one primary (the same act its card hides on a phone).
 - **KEmpty**: The one empty state: a sentence and one action.
 - **KFacts**: Facts: a key/value list (task details, a run's record, an audit entry).
-- **KField**: A field in the one field family: dim label above, one filled surface (no outline, 12px radius, textareas auto-grow), hint and error below, tied to the control.
+- **KField**: A field in the one field family: dim label above, one filled surface with a 3:1 field-line boundary (12px radius, textareas auto-grow), hint and error below, tied to the control.
 - **KFilter**: A list's text filter: a search field with its icon that narrows the rows already shown.
 - **KFormRow**: The two-column settings row: label and one muted line | the control; stacks on a phone. (variant: |inline|top|wide)
 - **KIcon**: One 24×24 stroke icon from the kit set, drawn in currentColor. (name: plus|send|stop|x|back|menu|search|chevron|check|alert|more|file|minus|fit|bolt|code|home|tasks|flows|agents|projects|settings|pen|arrow|list|board|panel)

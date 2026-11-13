@@ -468,11 +468,12 @@ export type WorkRow = WorkFacts & { assignment?: AssignmentSnapshot | null; assi
 
 export const TASK_GROUP_LABEL: Readonly<Record<WorkIndexGroup, string>> = { ...ASK_LABEL, building: 'Building', rest: 'Recent' };
 
-/** A list row's chip (src/design/KIT.md): a waiting row names its ask ("Plan", "Result") in the ask tone, or says
- * Needs you; every other row wears its headline in the tone of the status it belongs to. */
+/** A list row's chip (src/design/KIT.md): a waiting row names its ask ("Plan", "Result", "On hold") in the ask tone,
+ * or, with no word of its own, says Needs you in that same soft tone (the solid chip is never on every row of a list);
+ * every other row wears its headline in the tone of the status it belongs to. */
 export function workRowChip(row: Pick<WorkIndexItem, 'ask' | 'chip' | 'status' | 'archived'>): { word: string; tone: ChipTone } {
   if (row.archived !== undefined) return { word: 'Archived', tone: '' };
-  if (row.ask !== null) return row.chip === null ? { word: 'Needs you', tone: 'needs' } : { word: row.chip, tone: 'ask' };
+  if (row.ask !== null) return { word: row.chip ?? 'Needs you', tone: 'ask' };
   const label = row.status.label;
   if ((HEADLINES as readonly string[]).includes(label)) { const chip = chipOfHeadline(label as Headline); return { word: chip.word, tone: chip.tone }; }
   const tone = row.status.tone;

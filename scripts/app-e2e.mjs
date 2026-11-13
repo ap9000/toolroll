@@ -707,6 +707,21 @@ async function approveOnPage(id) {
   const approved = rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0];
   if (approved?.approved_by !== "alex") throw new Error(`${id} wasn't approved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
 }
+/** A result's completion on its task page: its one exact-receipt /complete form, wherever the page puts it — the Ready
+ * status box's Mark complete when nothing more is owed, else the decision's Accept. Waits until there is exactly one, its
+ * button showing; returns the form, the button, where it is and its words. */
+async function theCompletion(on, id, what = "the completion") {
+  const form = on.locator(`form[action="/t/${id}/complete"]`);
+  const button = form.locator("button[data-accept-result]");
+  await until(`exactly one /complete form (${what})`, async () => (await form.count()) === 1 && await button.isVisible().catch(() => false),
+    { timeoutMs: 30_000, everyMs: 200, seen: async () => `${await form.count()} /complete forms` });
+  const place = (await on.locator(`[data-task-status] form[action="/t/${id}/complete"]`).count()) === 1 ? "status box" : "decision";
+  const label = ((await button.textContent()) ?? "").trim();
+  // Mark complete only ever stands in the status box, and the status box never offers anything else that posts.
+  if ((place === "status box") !== (label === "Mark complete")) throw new Error(`the completion reads "${label}" in the ${place}`);
+  return { form, button, place, label };
+}
+
 /** Wait for a task's build to finish with its checks passed; returns the run. */
 /** `after`: a build that ended before (a stopped one) is not the answer; wait for a later one. */
 async function builtAndChecked(id, timeoutMs = 600_000, after = 0) {
@@ -777,9 +792,17 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   if (!/Passed/.test(status)) throw new Error(`the task's checks say: ${status.slice(0, 200)}`);
   const checks = "passed";
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
-  for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
-  const decision = await page.locator("[data-result-decision]").first().innerText();
-  if (!/^Accept( without checks)?$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
+  const mine = await page.locator("[data-check-item] button[data-looks-right]").all();
+  // While one of yours waits, the status box only points to it: it never offers the completion yet.
+  if (mine.length > 0 && (await page.locator(`[data-task-status] form[action="/t/${firstTask}/complete"]`).count()) !== 0) throw new Error("the status box offered the completion before your own check was answered");
+  for (const looks of mine) await looks.click();
+  // The completion, once: checks passed and nothing more owed, it is the status box's Mark complete; an acceptance still
+  // owed (your check, recorded with it) keeps it the decision's Accept, which says what accepting does.
+  const completion = await theCompletion(page, firstTask, "after your checks");
+  if (completion.place === "decision") {
+    const decision = await page.locator("[data-result-decision]").first().innerText();
+    if (!/^Accept( without checks)?$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
+  } else if (mine.length > 0) throw new Error("an acceptance of your check moved up as Mark complete");
   await page.locator('a[data-result-tab="changes"]').click();
   await until("the changed files", async () => /src\/math\.js/.test(await page.locator("body").innerText()), { timeoutMs: 10_000, everyMs: 500 });
   await shot("result-changes");
@@ -787,7 +810,7 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   const posts = [];
   const counted = request => { if (request.method() === "POST") posts.push(new URL(request.url()).pathname); };
   page.on("request", counted);
-  await Promise.all([page.waitForNavigation(), page.locator(`[data-result-decision] form[action="/t/${firstTask}/complete"] button[data-accept-result]`).click()]);
+  await Promise.all([page.waitForNavigation(), completion.button.click()]);
   page.off("request", counted);
   if (posts.length !== 1 || posts[0] !== `/t/${firstTask}/complete`) throw new Error(`accepting took ${posts.length} requests: ${posts.join(", ")}`);
   // Back on the task's own Result tab, which now reads complete.
@@ -795,7 +818,7 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   await until("the task to read complete", async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
   const ledger = rows(`SELECT action, source FROM action_ledger WHERE task_id = '${firstTask}' AND action = 'assignment handoff checked'`);
   if (ledger.length !== 1) throw new Error(`the ledger has ${ledger.length} completion rows`);
-  return { run: run.id, checks };
+  return { run: run.id, checks, completedFrom: { place: completion.place, label: completion.label, yourChecks: mine.length } };
 });
 
 /** On a result page, send the work back with a note; returns the new revision's id once the planner has updated its plan. */
@@ -918,9 +941,10 @@ await journey("task", SCRIPTED, "Keyboard only: n opens New task, a sleeps on th
   await approveOnPage(id);
   await builtAndChecked(id);
   await page.goto(`${base}/t/${encodeURIComponent(id)}?tab=result`);
-  await page.locator("[data-result-decision]").first().waitFor({ timeout: 20_000 });
+  await page.locator("[data-result-panel]").first().waitFor({ timeout: 20_000 });
   for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
-  // a: presses Accept, one request.
+  // a: presses the one completion (Mark complete in the status box, or the decision's Accept), one request.
+  await theCompletion(page, id, "before pressing a");
   const accepted = page.waitForNavigation({ timeout: 30_000 });
   const posts = await pressKey("a");
   await accepted;
@@ -1464,17 +1488,28 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
   await page.reload();
   await kept("a reload");
   if (await same(page)) throw new Error("the reload kept the document");
-  // Leaving through one of the result's own forms is an ordinary form post: Accept finishes the task.
+  // Leaving through one of the result's own forms is an ordinary form post: Accept finishes the task. The completion is
+  // the result's one exact-receipt /complete form, wherever the task page puts it: the Ready status box's Mark complete
+  // when nothing more is owed, else the decision's Accept. Never two; never in the status box while a check of yours waits.
   await page.evaluate(() => { window.__sameDocument = true; });
-  for (const looks of await page.locator("[data-check-item] button[data-looks-right]:visible").all()) await looks.click();
+  const looksRight = await page.locator("[data-check-item] button[data-looks-right]:visible").all();
+  if (looksRight.length > 0) {
+    if ((await page.locator(`[data-task-status] form[action="/t/${id}/complete"]`).count()) !== 0) throw new Error("the status box offered the completion before your own check was answered");
+    const lead = page.locator("[data-task-status] [data-review-and-accept]");
+    if ((await lead.count()) > 0 && !(await lead.getAttribute("href") ?? "").startsWith("#")) throw new Error("Review and accept leaves the page instead of going to your check");
+  }
+  for (const looks of looksRight) await looks.click();
+  const done = await theCompletion(page, id, "after your checks");
+  const completedFrom = { place: done.place, label: done.label, yourChecks: looksRight.length };
   const posts2 = [];
   const counted = request => { if (request.method() === "POST") posts2.push(new URL(request.url()).pathname); };
   page.on("request", counted);
   try {
-    await Promise.all([page.waitForNavigation(), page.locator(`[data-result-decision] form[action="/t/${id}/complete"] button[data-accept-result]`).click()]);
+    await Promise.all([page.waitForNavigation(), done.button.click()]);
   } finally { page.off("request", counted); }
   if (!posts2.includes(`/t/${id}/complete`)) throw new Error(`accepting posted: ${posts2.join(", ") || "nothing"}`);
   await until(`${id} to read complete`, async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500, seen: () => says(page) });
+  return { completedFrom };
 });
 
 // ------------------------------------------------------------------ code in flows
@@ -3459,8 +3494,7 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const run = await laptopReady(id);
   // The Ready row is open on the result (docs/plans/task-page-steps.md): its decision is right there.
   await on.goto(`${install.base}/t/${encodeURIComponent(id)}`);
-  const accept = on.locator(`[data-result-decision] form[action="/t/${id}/complete"] button[data-accept-result]`);
-  await waitFor(accept, "Accept on the result", { timeoutMs: 30_000, seen: () => saysNow(on) });
+  await waitFor(on.locator(`form[action="/t/${id}/complete"] button[data-accept-result]`).first(), "the completion on the result", { timeoutMs: 30_000, seen: () => saysNow(on) });
   // How it was approved, in its own words (never "password typed"): the Approval row says it when opened.
   await on.locator('[data-step-row="approve"] button.k-steprow-head').click();
   const approvedLine = (await on.locator('[data-step-row="approve"]').first().innerText()).replace(/\s+/g, " ");
@@ -3471,9 +3505,10 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const checksLine = ((await on.locator('[data-step-row="checks"]').first().textContent()) ?? "").replace(/\s+/g, " ");
   if (!/Project checks ?Passed/.test(checksLine)) throw new Error(`the sample's checks didn't read passed: ${checksLine.slice(0, 300)}`);
   for (const looks of await on.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
-  const reason = on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]');
+  const completion = await theCompletion(on, id, "the fast start's result");
+  const reason = completion.form.locator('input[name="note"]');
   if (await reason.count() > 0) await reason.fill("I read the diff and the test passes.");
-  await Promise.all([on.waitForNavigation(), accept.click()]);
+  await Promise.all([on.waitForNavigation(), completion.button.click()]);
   await until("the task to read complete", async () => (await on.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500, seen: () => saysNow(on) });
   await bothSizes(on, "5-complete", "easy-start");
   return { task: id, run: run.id, approval: proof?.detail ?? null };

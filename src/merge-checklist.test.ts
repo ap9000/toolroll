@@ -33,7 +33,7 @@ function filed(id: string, at: Date, approved = true): number {
   }
   return ref;
 }
-function built(id: string, at: Date, kind: "verified" | "refuted" | "failed" | "unchecked" = "verified"): number {
+function built(id: string, at: Date, kind: "verified" | "refuted" | "failed" | "unchecked" | "person" = "verified"): number {
   const ref = filed(id, at);
   const authority = store.routeAuthorityFor(ref, "builder");
   if (!authority?.ok) throw new Error("route");
@@ -49,8 +49,10 @@ function built(id: string, at: Date, kind: "verified" | "refuted" | "failed" | "
   store.recordOutcomeFacts(run, { headRevision: head, handoff: "Changed the footer." });
   store.finishRun(run, { outcome: "built", committed: true, now: at });
   store.setTaskState(id, "done", at);
-  const reasons = kind === "refuted" ? ["claimed changed path not in the sealed diff: src/other.ts"] : [];
-  store.saveProofVerdict(run, kind === "refuted" ? "refuted" : "verified", reasons, at, [{ id: "c1", statement: "The footer link opens.", requiredEvidence: ["check"], state: kind === "refuted" ? "failed" : "pass", detail: [], answered: [], review: null }] as never, kind === "refuted" ? "refuted" : "verified");
+  const reasons = kind === "refuted" ? ["claimed changed path not in the sealed diff: src/other.ts"]
+    : kind === "person" ? ['criterion "c1" requires manual-review evidence — an operator must accept it before this can verify'] : [];
+  const verdict = kind === "refuted" ? "refuted" : kind === "person" ? "short" : "verified";
+  store.saveProofVerdict(run, verdict, reasons, at, [{ id: "c1", statement: "The footer link opens.", requiredEvidence: ["check"], state: kind === "refuted" ? "failed" : kind === "person" ? "manual-review" : "pass", detail: [], answered: [], review: null }] as never, verdict);
   storeEvidence(store, ev, run, "terminal-diff", "diff.patch", Buffer.from("diff --git a/src/footer.ts b/src/footer.ts\n--- a/src/footer.ts\n+++ b/src/footer.ts\n@@ -1 +1 @@\n-a\n+b\n"), "git diff (exit 0)", at, { captureStatus: "ok" });
   if (kind !== "unchecked") {
     storeEvidence(store, ev, run, "check-log", "checks.txt", Buffer.from("12 passed\n"), "npm test", at, { captureStatus: "ok" });
@@ -90,6 +92,7 @@ beforeAll(async () => {
   built("refuted", ago(50), "refuted");
   built("unchecked", ago(45), "unchecked");
   built("noted", ago(40));
+  built("person", ago(35), "person");
   server = createDecisionServer({ store, evidenceRoot: ev, repo: REPO, clock: () => NOW });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const address = server.address();
@@ -141,6 +144,14 @@ describe("each row reads its one source", () => {
     expect(row.act).toMatchObject({ kind: "fix", run: runs["refuted"] });
     expect(row.act?.kind === "fix" ? row.act.note : "").not.toBe("");
     expect(rowOf("refuted", "checks").mark).toBe("yes");
+  });
+
+  test("the requirements: one only a person can confirm, not confirmed yet, waits on them; checks passing don't make it met", () => {
+    expect(rowOf("person", "checks").mark).toBe("yes");
+    expect(rowOf("person", "requirements")).toMatchObject({ mark: "waiting", say: "You check 1 requirement.", act: null });
+    const list = listOf("person");
+    expect(list.answer).toBe("not-yet");
+    expect(list.sentence).toBe("Not yet: requirements met — You check 1 requirement.");
   });
 
   test("review comments: a saved note not sent back yet is in the way, and only that row changes", () => {

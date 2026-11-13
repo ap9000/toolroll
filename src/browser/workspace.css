@@ -125,7 +125,18 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-workspace--kit .so-page-content { padding: 0; display: flex; flex-direction: column; flex: 1; }
 .so-workspace--kit .so-page-content > [data-view] { flex: 1; display: flex; flex-direction: column; }
 .so-workspace--kit [data-kit-page] { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.so-workspace--kit .so-page-content > .so-demo-notice { margin: var(--so-space-md) var(--so-space-xl) 0; }
+.so-workspace--kit .so-page-content > .so-demo-notice { margin: var(--so-space-md) var(--so-space-xl) 0; flex: none; }
+/* The Tasks list is left-aligned and capped at 960px (DESIGN.md "Content widths"), so a row's chip, title and action stay together. */
+.so-workspace--kit [data-task-list] { max-width: 960px; }
+/* Projects: the chip column fits "12 waiting on you" (DESIGN.md "Peek chips"), the same width on every row. */
+@media (min-width: 761px) { [data-project-list] .k-row { grid-template-columns: 136px minmax(160px, 30%) minmax(0, 1fr) auto minmax(124px, max-content); } }
+/* The Ready status box's act slot (task-view.tsx ResultStatusAct): nothing in it, no empty acts row. */
+.k-slot-acts:has(> [data-result-status-act]:empty):not(:has(> :not([data-result-status-act]))) { display: none; }
+/* A link in running text on a task or result page is still a 44px target on a phone, without growing its line. */
+@media (max-width: 760px) {
+  [data-result-status-act] > :is(form, a), [data-result-status-act] > form > .k-btn { flex: 1 1 100%; width: 100%; }
+  .so-workspace--kit :is(.result-files-lead, .so-task-fold p.meta) a { display: inline-flex; align-items: center; min-height: 44px; }
+}
 .so-workspace--kit .k-ph { display: none; }
 @media (min-width: 761px) {
   .so-workspace--kit .so-workspace-header { display: none; }
@@ -285,7 +296,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-native-region :where(.card, .pane) { box-shadow: none; border-radius: var(--so-radius); }
 .so-native-region .card { background: var(--so-paper); color: var(--so-ink); }
 .so-workspace .so-native-region .button-link { color: var(--primary-foreground); }
-.so-native-region :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="hidden"]), textarea, select) { color: var(--so-ink); background-color: var(--so-field); border-color: transparent; }
+.so-native-region :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="submit"], [type="button"], [type="hidden"]), textarea, select) { color: var(--so-ink); background-color: var(--so-field); border-color: var(--so-field-line); }
 .so-native-region :where(input, textarea)::placeholder { color: var(--so-muted); }
 .so-page-content .chat-workspace, .so-page-content .chat-workspace.projects-hidden { display: block; grid-template-columns: minmax(0, 1fr); }
 .so-page-content :where(#chat-project-panel, .chat-project-toggle, .chat-head h1) { display: none; }
@@ -466,7 +477,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-team-audience li > span:nth-child(2) { color: var(--so-muted); font-size: 12px; }
 .so-team-form { display: grid; gap: 14px; margin: var(--so-space-lg) 0 var(--so-space-2xl); }
 .so-team-form > label { display: grid; gap: 6px; font-size: 13px; font-weight: 550; }
-.so-team-form select { min-width: 0; width: 100%; min-height: 44px; border: 1px solid transparent; border-radius: var(--so-radius-sheet); background-color: var(--so-field); color: var(--so-ink); padding: var(--so-space-sm) 2.1rem var(--so-space-sm) var(--so-space-md); }
+.so-team-form select { min-width: 0; width: 100%; min-height: 44px; border: 1px solid var(--so-field-line); border-radius: var(--so-radius-sheet); background-color: var(--so-field); color: var(--so-ink); padding: var(--so-space-sm) 2.1rem var(--so-space-sm) var(--so-space-md); }
 .so-team-projects { border: 0; padding: 0; margin: 0; min-width: 0; }
 .so-team-projects legend { font-weight: 550; font-size: 13px; margin-bottom: 6px; }
 .so-team-projects label { display: flex; align-items: center; gap: 9px; min-height: 44px; overflow-wrap: anywhere; }
@@ -497,7 +508,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-team-chat textarea, .so-team-chat input, .so-team-chat select { font-size: 16px; }
 }
 .so-team-lead-select { max-width: 40%; min-width: 0; }
-.so-team-lead-select select { max-width: 100%; min-height: 44px; border: 1px solid transparent; border-radius: var(--so-radius-sheet); background-color: var(--so-field); color: var(--so-ink); padding: var(--so-space-sm) 2.1rem var(--so-space-sm) var(--so-space-md); }
+.so-team-lead-select select { max-width: 100%; min-height: 44px; border: 1px solid var(--so-field-line); border-radius: var(--so-radius-sheet); background-color: var(--so-field); color: var(--so-ink); padding: var(--so-space-sm) 2.1rem var(--so-space-sm) var(--so-space-md); }
 .so-team-consent { margin-bottom: 14px; font-size: 12px; }
 .so-team-consent p { margin: 0 0 var(--so-space-sm); }
 .so-team-proposals { margin-bottom: var(--so-space-xl); overflow-wrap: anywhere; }

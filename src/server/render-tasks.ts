@@ -2593,8 +2593,9 @@ export function taskBodyParts(data: {
       : postForm(`${taskHref(task.id)}/block`, html`<select name="on" aria-label="task to wait for">${
           candidates.map(one => html`<option value="${one.id}">${one.id} — ${one.title}</option>`)
         }</select><button type="submit">Wait for this task</button><span class="meta"> — this task starts only after it finishes</span>`, { attrs: { class: "row" } });
+  // Once a build has finished (Ready, or done) the task no longer waits its turn: the queue's controls are leftovers.
   const waitsForCard =
-    waitRows === "" && waitAdd === ""
+    task.state === "done" || task.state === "cancelled" || (waitRows === "" && waitAdd === "")
       ? ""
       : html`<h2>Waits for</h2>${waitRows === "" ? html`<p class="meta">Nothing. It starts when a builder is free.</p>` : waitRows}${waitAdd}`;
 

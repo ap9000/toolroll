@@ -1,7 +1,7 @@
 /** Sign-in, sign-up, join and wrong-host pages: pages outside the shell, built from the kit (server/kit.ts outPage).
  * They carry no script and no session; every refusal names the field it is about. */
 import { BRAND_HTML,shell } from "./chrome.js";
-import { html, joinHtml, postForm, replaceMarkup, type Html } from "../html.js";
+import { html, joinHtml, postForm, replaceMarkup, type Html, type HtmlValue } from "../html.js";
 import { btn, disclose, facts, notice, outField, outPage } from "./kit.js";
 import { projectName } from "../project.js";
 
@@ -86,7 +86,7 @@ function expiryWords(iso: string): string {
   return at.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-export function loginPage(problem: string | null, returnTo = "/", sso: { label: string; operatorsOnly: boolean } | null = null): Html {
+export function loginPage(problem: HtmlValue | null, returnTo = "/", sso: { label: string; operatorsOnly: boolean } | null = null): Html {
   const form = postForm("/login", joinHtml([
     outField({ id: "login-name", label: "Username", name: "name", attrs: { autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true, ...(sso === null ? { autofocus: true } : {}) } }),
     outField({ id: "login-password", label: "Password", name: "token", type: "password", attrs: { autocomplete: "current-password" } }),
@@ -102,7 +102,7 @@ export function loginPage(problem: string | null, returnTo = "/", sso: { label: 
       ]);
   return shell("Sign in · Toolroll", outPage({
     brand: BRAND_HTML, brandHref: "/login", title: "Sign in", body,
-    foot: html`${sso === null ? html`Forgot it? Your first login was shown when Toolroll started, and saved beside its database in <code>.toolroll-secrets/up-login.txt</code> on the computer running it.<br>` : ""}No account? Ask whoever runs this Toolroll for an invite link.`,
+    foot: html`${sso === null ? html`Forgot it? Your first login was shown when Toolroll started, and saved beside its database in <code class="k-nowrap">.toolroll-secrets/up-login.txt</code> on the computer running it.<br>` : ""}No account? Ask whoever runs this Toolroll for an invite link.`,
   }), { nav: false });
 }
 

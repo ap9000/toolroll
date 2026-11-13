@@ -4,7 +4,7 @@
  * holds the one action, a step not reached is one grey line. Under the rows, "More about this task". Forms, ceremonies
  * and ledgers stay the server's own HTML (same ids, same page scripts); this page only frames them. A task with no
  * road (cancelled) keeps its status block. */
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import { freshDraft, loadDraft, saveDraft, SteerNote, UnsentNote, type SteerDraft } from "./steer-composer.js";
 import { HEADLINE_TONE, HEADLINES, type Headline } from "../../task-status.js";
 import { FormToken, Passwordless, PostForm } from "../ui/post-form.js";
@@ -404,7 +404,7 @@ function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): stri
  * slots). A live build says the step it is on, or the step it is stuck on with the act that helps; Pause, Resume and
  * Stop sit beside it. A failed task says what it missed and offers Retry with its note. The recorded reasons sit
  * under More. */
-function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false, unsent = true }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
+function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false, unsent = true, resultAct = null }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
   /** An unsent note shows here (the work panel, when open, shows it instead: one place at a time). */
   unsent?: boolean;
   /** "Watch the work": opens the Activity panel beside the live build's acts. */
@@ -412,7 +412,9 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
   /** The Checks row shows the project checks fact itself. */
   checksElsewhere?: boolean;
   /** The result is right under this box (the Ready row): its link to the result is not offered again. */
-  resultHere?: boolean }) {
+  resultHere?: boolean;
+  /** Where the result below puts this box's one act (ResultStatusAct): Mark complete, or Review and accept. */
+  resultAct?: ((node: HTMLElement | null) => void) | null }) {
   const failed = card.status.headline === "Failed";
   const confirm = view.recheckStopped ?? null, rebuild = view.rebuild ?? null, retry = view.retry ?? null, failure = view.failure ?? null;
   const stuck = view.progress?.stuck ?? null;
@@ -434,6 +436,8 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
       {pause !== null && !steering && <KButton label={pause.state === "paused" ? "Continue with a note" : "Pause and steer"} onClick={() => setSteering(true)} data-pause-steer="" />}
       {view.stop != null && csrf !== "" && <StopForm stop={view.stop} />}
       {watch !== null && <KButton label="Watch the work" onClick={watch} data-watch-work="" />}
+      {/* The result below fills this with the status's one act, kept in step with the person's own checks. */}
+      {resultHere && waits && resultAct !== null && <span className="contents" data-result-status-act="" ref={resultAct} />}
     </>;
   const terms: ReactNode = failed && failure != null && !retrying ? <span data-failure-suggestion>What to change: {failure.suggestion}</span>
     : view.record != null ? <a className="k-link" href={view.record.href} data-build-record>{view.record.label}</a>
@@ -773,6 +777,8 @@ function WorkPanel({ view, chat, csrf, open, onClose, onClick }: { view: Browser
  * part (the plan, the approval and the plan it signs, the build and its attempts, the checks, the result); then More
  * about this task, and the Activity panel. Details opens as a drawer. */
 export function TaskView({ view, chat = null, csrf = "", result }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string; result?: ResultSlot }) {
+  // The Ready status box's act slot: the result below renders its one act there (ResultStatusAct).
+  const [statusAct, setStatusAct] = useState<HTMLElement | null>(null);
   // The result the page loaded with (a later one is announced in its row, never swapped in).
   const loadedResult = useRef(view.result ?? null);
   const hasResult = loadedResult.current !== null;
@@ -920,7 +926,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   const statusBox = (key: string | null) => approve !== null ? null : view.status !== null
     // In a row, the Approval row says who approved: the status box doesn't repeat it.
     ? <StatusBox view={view} card={view.status} csrf={csrf} approved={key === null ? view.approved ?? null : null} watch={key === "build" && view.stop != null ? openActivity : null} unsent={!activity}
-      checksElsewhere={checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} />
+      checksElsewhere={checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} resultAct={setStatusAct} />
     : <Html html={view.statusHtml} />;
   const bodyOf = (row: StepRow): ReactNode => {
     const here = row.key === statusKey;
@@ -962,7 +968,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       at: row.at, when: row.at === null ? "" : threadWhen(row.at), body: row.opens || here ? bodyOf(row) : undefined,
       toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
   });
-  return <div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
+  return <ResultStatusAct.Provider value={statusAct}><div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
@@ -1000,8 +1006,13 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     <WorkPanel view={view} chat={chat} csrf={csrf} open={activity} onClose={closeActivity} onClick={inPage} />
     {details !== null && <KOverlay kind="drawer" title="Details" trigger={details} onClose={() => setDetails(null)}><TaskDetails view={view} /></KOverlay>}
     {primary !== null && <KDock>{primary}</KDock>}
-  </div>;
+  </div></ResultStatusAct.Provider>;
 }
 
 /** The form token React builds into its own forms (PostForm adds it); exported for the result view's native forms. */
 export const useFormToken = (): string => useContext(FormToken);
+
+/** The Ready status box's act slot on a task page: the current result (result-view.tsx) puts the status's one act there —
+ * its own Accept form as Mark complete when nothing more is owed, else Review and accept, which takes the person to
+ * their check or the decision. Null anywhere else (the result page alone, tests): the result keeps its acts below. */
+export const ResultStatusAct = createContext<HTMLElement | null>(null);
