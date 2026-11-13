@@ -25,7 +25,7 @@ import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskF
 import { permissionPlainWords } from "../chat-decide.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { type FormView } from "../contracts/console-api.js";
-import { type DispatchDiagnosis } from "../dispatch.js";
+import { NO_AGENT_TITLE, type DispatchDiagnosis } from "../dispatch.js";
 import { type ReportView } from "../evidence.js";
 import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
@@ -2199,11 +2199,15 @@ export function taskBodyParts(data: {
     data.planDocument === null
       ? data.plan === "requested"
         // A request the planner cannot be given waits on a person; the status card above already says what to shorten.
-        ? data.dispatch?.code === "planner-source"
+        // A request the planner cannot be given, or one waiting on a sign-in: the status card above says what to do.
+        ? data.dispatch?.code === "planner-source" || data.dispatch?.code === "signed-out"
           ? ""
           : data.revision != null && !("problem" in data.revision)
           ? html`<div class="card planner-status"><span class="planner-orb" aria-hidden="true"></span><p><strong>Updating the plan</strong><span class="meta">Adding your notes to the plan. You approve any change before it builds.</span></p></div>`
-          : html`<div class="card planner-status"><span class="planner-orb" aria-hidden="true"></span><p><strong>Planning requested</strong><span class="meta">${data.planAuto ? "Automatic approval is enabled for a verified plan that preserves your filed contract. Amendments and unanswered questions still pause." : "The agent is inspecting the repository and drafting the goal, acceptance criteria, and approach. It will ask only if a missing answer changes the work."}</span></p></div>`
+          : html`<div class="card planner-status"><span class="planner-orb" aria-hidden="true"></span><p><strong>Planning requested</strong><span class="meta">${data.planAuto ? "Automatic approval is enabled for a verified plan that preserves your filed contract. Amendments and unanswered questions still pause."
+            // Inspecting only while a planner actually runs; until then it waits for one to start.
+            : data.dispatch?.code === "running" ? "The agent is inspecting the repository and drafting the goal, acceptance criteria, and approach. It will ask only if a missing answer changes the work."
+            : "It waits for an agent to start on it."}</span></p></div>`
         : ""
       : joinHtml([
         approval.approved ? html`<details class="card planner-plan planner-plan-collapsed"><summary class="execution-plan-head">` : html`<section class="card planner-plan"><div class="execution-plan-head">`,
@@ -2751,7 +2755,7 @@ export function taskBodyParts(data: {
   const optionsHtml = html`${identity}${dispatchStatus}${dependencyChoiceNeeded ? "" : actsBar}`;
   const optionsOpen = data.assignment?.primaryAction?.code === "unhold" || data.assignment?.primaryAction?.code === "retry-task";
   // The Plan section after its scope card: the release, the recipe and audit links, the agents, the edit form.
-  const scopeRest: (Html | "")[] = [releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), html`<p class="meta">${data.repo !== null && data.scope !== null ? html`<a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a> · ` : ""}<a href="${taskHref(data.rootId ?? task.id)}/evidence">Audit record →</a></p>`, agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm];
+  const scopeRest: (Html | "")[] = [releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), html`<p class="meta">${data.repo !== null && data.scope !== null ? html`<a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this plan as a recipe →</a> · ` : ""}<a href="${taskHref(data.rootId ?? task.id)}/evidence">Audit record →</a></p>`, agentsCardHtml(task.id, agentlessRoute(data.dispatch ?? null, data.route) ? null : data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm];
   // The page's sections, built once and in order (each `section` also records its part for the rebuilt page).
   const layoutTail = joinHtml([
     html`<div class="task-layout"><div class="task-main">`,
@@ -3343,4 +3347,10 @@ export function approvedKitOf(scope: Scope, approval: { approved: true; at: stri
 /** The plan version, in Details: a short handle a person can compare, never on the approval line itself. */
 export function planVersionDetailsHtml(digest: string): Html {
   return html`<details class="scope-version"><summary class="meta">Details</summary><p class="meta"><span class="mono">${planVersionWords(digest)}</span></p></details>`;
+}
+
+/** No coding agent signed in yet, and so no models chosen: the status card says the one thing to do (sign in), so the
+ * agents card's "cannot be read" and its `config set` hint stay out of the way until an agent is signed in. */
+function agentlessRoute(dispatch: { summary: string } | null, route: RouteView | null | undefined): boolean {
+  return dispatch?.summary === NO_AGENT_TITLE && route?.kind === "unreadable" && (route.problem ?? "").includes("has no exact model");
 }

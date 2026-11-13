@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initLocalMode, openStore, type Store } from "./store.js";
+import { initLocalMode, openStore, setLocalModeOff, type Store } from "./store.js";
 import { INSTALLATION_SCOPE } from "./agentconfig.js";
 import { asLocalOwner, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
-import { agentPresetChange, ALL_SLOTS, applyModelChoices, checkScope, CODEX_FRONTIER, CODEX_SMALL, CODEX_WORKHORSE, fillDefaultRouting, HAIKU, OPUS, presetChange, presetInUse, rowAt, slotKey, SONNET } from "./model-choices.js";
+import { agentPresetChange, ALL_SLOTS, applyModelChoices, checkScope, CODEX_FRONTIER, CODEX_SMALL, CODEX_WORKHORSE, fillDefaultRouting, fillRoutingOnSignIn, HAIKU, OPUS, presetChange, presetInUse, rowAt, slotKey, SONNET } from "./model-choices.js";
 import { addApprover } from "./scope.js";
 
 const T0 = new Date("2026-11-04T12:00:00.000Z");
@@ -119,6 +119,69 @@ describe("the local owner may only make this narrow fill", () => {
       if (!addApprover(full, "sam", T0).ok) throw new Error("sam");
       expect(fillDefaultRouting(full, "claude", "toolroll", { kind: "first-start" }, T0)).toMatchObject({ filled: false, reason: "authority" });
       expect(fillDefaultRouting(full, "claude", "sam", { kind: "local-owner" }, T0)).toMatchObject({ filled: false, reason: "authority" });
+    } finally { full.close(); }
+  });
+});
+
+describe("an agent signed in after the first start (W1)", () => {
+  const connected = (claude: string, codex = "not-installed") => ({ claude, codex });
+
+  test("no agent then: the later sign-in fills that agent's default preset, Claude Code first, else Codex", () => {
+    expect(fillRoutingOnSignIn(store, null, T0)).toBeNull();
+    expect(fillRoutingOnSignIn(store, connected("not-installed"), T0)).toBeNull();
+    // Signed out, or only an API key: not an agent chosen by its account, so nothing fills (the first start's rule).
+    expect(fillRoutingOnSignIn(store, connected("signed-out", "key-works"), T0)).toBeNull();
+    expect(nothingSet()).toBe(true);
+    expect(fillRoutingOnSignIn(store, connected("connected", "connected"), T0)).toEqual({ filled: true, rows: 7 });
+    expect(rows()).toMatchObject({ plan: { provider: "claude", model: OPUS }, build: { provider: "claude", model: SONNET } });
+    const other = openStore(join(dir, "codex.db"), { createdBy: "laptop" });
+    try {
+      if (!initLocalMode(other, { owner: "alex", fenceAvailable: true, now: T0 }).ok) throw new Error("local mode");
+      expect(fillRoutingOnSignIn(other, connected("signed-out", "connected"), T0)).toEqual({ filled: true, rows: 7 });
+      expect(rowAt(other, INSTALLATION_SCOPE, ALL_SLOTS.find(slot => slotKey(slot) === "build")!)).toMatchObject({ provider: "codex", model: CODEX_WORKHORSE });
+    } finally { other.close(); }
+  });
+
+  test("it never touches the lead: a lead turned off stays off", () => {
+    expect(store.getChatConfig()).toBeNull();
+    fillRoutingOnSignIn(store, connected("connected"), T0);
+    expect(store.getChatConfig()).toBeNull();
+  });
+
+  test("a person's own models win: set before the sign-in is seen, nothing changes", () => {
+    store.setPhaseConfig(INSTALLATION_SCOPE, "build", "codex", CODEX_WORKHORSE, "alex", T0);
+    const before = rows();
+    expect(fillRoutingOnSignIn(store, connected("connected"), T0)).toMatchObject({ filled: false, reason: "already-set" });
+    expect(rows()).toEqual(before);
+  });
+
+  test("models a person cleared stay cleared: once anything was chosen here, a sign-in never fills again", () => {
+    store.setPhaseConfig(INSTALLATION_SCOPE, "build", "claude", SONNET, "alex", T0);
+    expect(store.clearPhaseConfig(INSTALLATION_SCOPE, "build")).toBe(true);
+    expect(nothingSet()).toBe(true);
+    expect(fillRoutingOnSignIn(store, connected("connected"), T0)).toMatchObject({ filled: false, reason: "already-set" });
+    expect(nothingSet()).toBe(true);
+    // Filled once by itself, then cleared by a person: the same.
+    const again = openStore(join(dir, "again.db"), { createdBy: "laptop" });
+    try {
+      if (!initLocalMode(again, { owner: "alex", fenceAvailable: true, now: T0 }).ok) throw new Error("local mode");
+      expect(fillRoutingOnSignIn(again, connected("connected"), T0)).toMatchObject({ filled: true });
+      for (const phase of ["plan", "build", "review"]) again.clearPhaseConfig(INSTALLATION_SCOPE, phase);
+      again.handle.exec("DELETE FROM phase_tier_config");
+      expect(ALL_SLOTS.every(slot => rowAt(again, INSTALLATION_SCOPE, slot) === null)).toBe(true);
+      expect(fillRoutingOnSignIn(again, connected("connected"), T0)).toMatchObject({ filled: false, reason: "already-set" });
+    } finally { again.close(); }
+  });
+
+  test("local mode off (revoked, or never on): nothing is written", () => {
+    expect(setLocalModeOff(store, { name: "alex", authority: "full" }, T0)).toMatchObject({ ok: true });
+    expect(fillRoutingOnSignIn(store, connected("connected"), T0)).toMatchObject({ filled: false, reason: "authority" });
+    expect(nothingSet()).toBe(true);
+    const full = openStore(join(dir, "full2.db"));
+    try {
+      if (!addApprover(full, "sam", T0).ok) throw new Error("sam");
+      expect(fillRoutingOnSignIn(full, connected("connected"), T0)).toMatchObject({ filled: false, reason: "authority" });
+      expect(ALL_SLOTS.every(slot => rowAt(full, INSTALLATION_SCOPE, slot) === null)).toBe(true);
     } finally { full.close(); }
   });
 });

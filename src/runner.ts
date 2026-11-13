@@ -32,6 +32,9 @@ import { lifecycleOf, reportLifecycle, type Store, type Mutation } from "./store
 import { ALL_CREDENTIAL_ENV, PROVIDER_IDS, inspectionOf, type ProviderId } from "./provider.js";
 import { attestationOf, versionInRange } from "./attest.js";
 import type { ReadinessObservation } from "./phase-routing.js";
+import { homedir } from "node:os";
+import { readAuthMode, type AuthMode } from "./keys.js";
+import { signInFacts } from "./provider-connection.js";
 
 /** A runner's repo binding, in the same canonical form task filing uses —
  * the claim gate compares these by equality, so both sides must resolve
@@ -536,8 +539,9 @@ function sameDigest(left: string, right: string): boolean {
  * (codex, openrouter: `login status`) whether it is logged in; where a key
  * env var is required (openrouter) whether it is present; and, for an
  * attested provider (gemini), whether the installed version is inside the
- * range this build proved. Claude has no non-spending login check, so an
- * installed claude is UNKNOWN — stated, never upgraded to ready.
+ * range this build proved. An installed claude is UNKNOWN — stated, never
+ * upgraded to ready — unless, on a subscription, its own login check says
+ * plainly that it is not logged in: then it is unavailable.
  *
  * Every answer carries the probe's own words. The observation is the
  * runner's and is recorded under its name only through the authenticated
@@ -557,6 +561,8 @@ export async function observeProviderReadiness(
   providers: readonly ProviderId[] = PROVIDER_IDS,
   /** An ACP agent's live check on this runner (store.acpAttestationFor), when the caller can read one. */
   acpChecked?: (provider: AcpProviderId) => AcpAttestation | null,
+  /** How Claude Code signs in here (keys.ts readAuthMode); its login check is asked only on a subscription. */
+  claudeMode: () => AuthMode = () => readAuthMode("claude", homedir()),
 ): Promise<Omit<ReadinessObservation, "runner" | "observedAt">[]> {
   return Promise.all(
     providers.map(async provider => {
@@ -605,6 +611,15 @@ export async function observeProviderReadiness(
         }
         const who = identity.stdout.trim().split("\n")[0] ?? "";
         return { provider, state: "ready" as const, reason: `installed (${installed}); ${who === "" ? "logged in" : who}`, probe: "identity" };
+      }
+      // Claude Code on a subscription: its own login check (`claude auth status --json`, no model, the welcome's same
+      // reading, provider-connection.ts signInFacts). Only a clear "not logged in" is unavailable, so a first run says
+      // to sign in and nothing claims for a run that would fail; any other answer stays unknown — a real run is the proof.
+      if (provider === "claude" && claudeMode() === "subscription") {
+        const status = await probe(facts.binary, ["auth", "status", "--json"], { timeoutMs: READINESS_PROBE_TIMEOUT_MS, omitEnv: ALL_CREDENTIAL_ENV });
+        if (signInFacts("claude", status).state === "signed-out") {
+          return { provider, state: "unavailable" as const, reason: "`claude auth status` says not logged in", probe: "identity" };
+        }
       }
       return { provider, state: "unknown" as const, reason: `installed (${installed}); no non-spending login check exists — a real run is the proof`, probe: "version" };
     }),

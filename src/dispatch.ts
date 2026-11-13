@@ -13,7 +13,8 @@ import { isAlive, type Runner } from "./runner.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { approvalOf, type ExecutionProfile } from "./scope.js";
 import { plannerSourceProblemOf } from "./planner-source.js";
-import { authPauseOf, authWaitOf, providerName, signInReason } from "./provider-auth.js";
+import { authPauseOf, authWaitOf, messageCommand, providerName, signInReason, type AuthPause } from "./provider-auth.js";
+import { signInCommandFor } from "./first-run.js";
 import { REVIEW_TOKENS, resultStatusOf, reviewFactsOf } from "./workspace-ui.js";
 import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
@@ -22,7 +23,7 @@ import { vanishedStopOf, vanishedStopSentence } from "./vanished-retry.js";
 import { routeChangeOf } from "./route-change.js";
 import { wasInterrupted } from "./run-ending.js";
 import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
-import { shortWhen } from "./when-html.js";
+import { shortWhen, viewerZone } from "./when-html.js";
 
 export const DEFAULT_MAX_OPEN_DECISIONS = 5;
 
@@ -445,6 +446,10 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       { action: "start-worker", role },
     );
   }
+  // No coding agent signed in where this would run (a first run before `claude auth login`): say so and the one
+  // command, never a routing hint. It starts by itself once a builder sees an agent signed in.
+  const agentless = agentlessSignIn(store, alive.map(one => one.name));
+  if (agentless !== null) return answer("signed-out", "waiting", NO_AGENT_TITLE, agentless.words, { role });
   const available = alive.filter(one => store.liveClaimCount(one.name, now) < one.capacity);
   if (available.length === 0) return answer("worker-at-capacity", "retrying", "Waiting its turn", "Builders are busy; it starts when one is free.", { role });
 
@@ -454,7 +459,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     if (exhausted.length === available.length) {
       const resets = exhausted.map(one => one?.resetAt ?? null).filter((one): one is string => one !== null).sort();
       const nextAt = resets[0] ?? null;
-      return answer("provider-quota", "retrying", "Provider quota exhausted", nextAt === null ? "The provider gave no reset time. Choose another agent, or wait for the limit to reset." : `The next recorded reset is ${nextAt}.`, { action: nextAt === null ? "select-agent" : null, nextAt, role });
+      return answer("provider-quota", "retrying", `${providerName(profile.provider)}'s usage limit is reached`, nextAt === null ? "It gave no reset time. Choose another agent, or wait for the limit to reset." : `It resets ${resetWhenWords(nextAt, now)}, then the task starts again by itself.`, { action: nextAt === null ? "select-agent" : null, nextAt, role });
     }
   }
 
@@ -463,7 +468,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
   const provider = profile?.provider ?? (role === "planner" ? ref.planProvider : null) ?? null;
   const signedOut = authWaitOf(store, ref.id) ?? (provider === null ? null : authPauseOf(store, provider));
   if (signedOut !== null) {
-    return answer("signed-out", "waiting", signInReason(signedOut), `This task starts again on its own once ${providerName(signedOut.provider)} works.`, { role });
+    return answer("signed-out", "waiting", signInReason(signedOut), signInAgainWords(signedOut), { role });
   }
 
   const openDecisions = store.countUnanswered();
@@ -507,4 +512,61 @@ export function retryWhenWords(until: string, now: Date): string {
   if (/^\d/.test(at)) return `at ${at} UTC`;
   if (at.startsWith("Tomorrow ")) return `tomorrow at ${at.slice("Tomorrow ".length)} UTC`;
   return `on ${at} UTC`;
+}
+
+// ---- a first run with no coding agent signed in (W1) ---------------------------------------------------------------
+
+/** The title every surface shows while no coding agent is signed in where the work would run. */
+export const NO_AGENT_TITLE = "No coding agent is signed in";
+/** The one line after it: the command, and that nothing else is needed. */
+export const noAgentWords = (command: string): string => `${NO_AGENT_TITLE}. Run \`${command}\`, then it starts by itself.`;
+
+/** Readiness as the sign-in command reads it: an agent whose login check said no is installed; any other answer that
+ * isn't ready (not on PATH, its version check failed) is treated as not installed. */
+type AgentReadiness = { provider: string; state: string; probe: string };
+function agentStates(seen: readonly AgentReadiness[]): { claude: "signed-out" | "not-installed"; codex: "signed-out" | "not-installed" } {
+  const installed = (provider: string) => seen.some(one => one.provider === provider && one.state === "unavailable" && one.probe === "identity");
+  return { claude: installed("claude") ? "signed-out" : "not-installed", codex: installed("codex") ? "signed-out" : "not-installed" };
+}
+
+/** The sign-in command for an install with no agent: `claude auth login` when Claude Code is there, `codex login` when
+ * only Codex is, else install Claude Code and sign in (first-run.ts signInCommandFor, the welcome's own rule). */
+export function agentlessCommand(claudeInstalled: boolean, codexInstalled: boolean, platform: NodeJS.Platform = process.platform): string {
+  return signInCommandFor({ claude: claudeInstalled ? "signed-out" : "not-installed", codex: codexInstalled ? "signed-out" : "not-installed" }, platform);
+}
+
+/**
+ * Whether no coding agent is signed in on any of these builders: every one has reported its agents, Claude Code and
+ * Codex included (runner.ts observeProviderReadiness), and not one agent is ready or unknown there. Null while any agent
+ * could run, a builder hasn't reported both (a test's fake agent, an older builder), or there is no builder: then other
+ * answers apply.
+ * Only words: the claim gate (claim.ts, the routed provider's readiness) still decides what may run.
+ */
+export function agentlessSignIn(store: Store, runners: readonly string[], platform: NodeJS.Platform = process.platform): { command: string; words: string } | null {
+  if (runners.length === 0) return null;
+  const seen: AgentReadiness[] = [];
+  for (const name of runners) {
+    const reported = store.providerReadiness(name);
+    // A full report names both agents the welcome offers; a partial one (an older builder, a test) says nothing here.
+    if (!reported.some(one => one.provider === "claude") || !reported.some(one => one.provider === "codex") || reported.some(one => one.state !== "unavailable")) return null;
+    seen.push(...reported);
+  }
+  const states = agentStates(seen);
+  const command = agentlessCommand(states.claude === "signed-out", states.codex === "signed-out", platform);
+  return { command, words: noAgentWords(command) };
+}
+
+/** An expired sign-in's line: what happened, the command, and that the task starts again by itself once it works. */
+export function signInAgainWords(pause: Pick<AuthPause, "provider" | "authMode">): string {
+  return `${signInReason(pause)}. Run \`${messageCommand(pause)}\`, then it starts again by itself.`;
+}
+
+/** When a usage limit resets, in this computer's own time: "at 16:40", "tomorrow at 09:00", "on Nov 14 09:00". */
+export function resetWhenWords(at: string, now: Date, zone: string = viewerZone()): string {
+  const words = shortWhen(at, now, zone, true);
+  if (words === at) return "later";
+  if (/^\d/.test(words)) return `at ${words}`;
+  if (words.startsWith("Tomorrow ")) return `tomorrow at ${words.slice("Tomorrow ".length)}`;
+  if (words.startsWith("Yesterday ")) return "now";
+  return `on ${words}`;
 }

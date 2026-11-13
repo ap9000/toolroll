@@ -380,7 +380,7 @@ function headingOf(card: AssignmentCard): string {
   switch (card.status.headline) {
     case "Needs you":
       return need === "approval" ? "Plan ready" : need === "answer" || need === "questions" ? "A question for you" : need === "hold" ? "On hold"
-        : need === "stop-unproven" || need === "vanished" ? "The build stopped" : need === "sign-in" ? "Sign in again"
+        : need === "stop-unproven" || need === "vanished" ? "The build stopped" : need === "sign-in" ? (card.status.sentence.startsWith("No coding agent") ? "Sign in" : "Sign in again")
         : need === "start-builder" || need === "connect-builder" ? "No builder is running" : need === "rebuild" || need === "replan" ? "The plan changed"
         : need === "review-result" ? "Ready for your review" : "Waiting on you";
     case "Ready for review": return "Ready for your review";

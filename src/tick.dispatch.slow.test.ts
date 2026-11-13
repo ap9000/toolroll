@@ -550,7 +550,7 @@ describe("tick, against real git", () => {
     expect(payload().runs[0]).toMatchObject({ outcome: "failed", reason: "auth-expired" });
     expect(payload().dispatch).toMatchObject({ code: "signed-out", summary: "Claude needs you to sign in again" });
     await run(["task", "show", failedId]);
-    expect(lines.join("\n")).toContain("dispatch: Claude needs you to sign in again — This task starts again on its own once Claude works.");
+    expect(lines.join("\n")).toContain("dispatch: Claude needs you to sign in again. Run `claude auth login`, then it starts again by itself.");
     const store = allowWhereUnfenced(openStore(db));
     try {
       expect(store.lookupRef(failedId)?.strikes).toBe(0);
@@ -653,7 +653,7 @@ describe("tick, against real git", () => {
     try {
       const items = workIndexPage(after, T0, { principal: "operator", repos: null, includeUnplaced: true }).items;
       for (const id of skipped) {
-        expect(items.find(one => one.activeTaskId === id)?.status).toMatchObject({ label: "Needs you", detail: "Claude needs you to sign in again. It starts again on its own once Claude works." });
+        expect(items.find(one => one.activeTaskId === id)?.status).toMatchObject({ label: "Needs you", detail: "Claude needs you to sign in again. Run `claude auth login`, then it starts again by itself." });
       }
     } finally { after.close(); }
     await run(["task", "show", "t-plan", "--json"]);

@@ -530,3 +530,25 @@ export function fillDefaultRouting(store: Store, agent: DefaultAgent, actor: str
     }
   });
 }
+
+// ---- an agent signed in after the first start (W1) --------------------------------------------------------------
+
+/**
+ * An agent signed in after the first start (no agent then, `claude auth login` later): the background check that sees
+ * it fills the default routing with exactly the first start's policy — the agent signed in with an account (Claude
+ * Code first, else Codex), its default preset, the first-start door (local mode on, nothing set at the installation
+ * or any project, checked and written in one transaction, each row ledgered). Narrower still: only while models were
+ * never chosen or cleared here (no models generation at all), so a person's choice, clearing them included, is never
+ * overwritten or undone. It never touches the lead. Called only from the console's own sign-in check (serve.ts), never
+ * from a page read.
+ */
+export function fillRoutingOnSignIn(store: Store, states: Readonly<Record<"claude" | "codex", string>> | null, now: Date): DefaultRoutingResult | null {
+  const agent: DefaultAgent | null = states?.claude === "connected" ? "claude" : states?.codex === "connected" ? "codex" : null;
+  if (agent === null) return null;
+  return store.transact(() => {
+    if (store.handle.prepare("SELECT 1 FROM models_generation LIMIT 1").get() !== undefined) {
+      return { filled: false as const, reason: "already-set" as const, problem: "Models were chosen here before." };
+    }
+    return fillDefaultRouting(store, agent, "toolroll", { kind: "first-start" }, now);
+  });
+}

@@ -187,7 +187,7 @@ import { createSettingsHandlers } from './server/settings.js';
 import { readPurpose, requestContext } from "./server/request-context.js";
 import { inPlaceRoute, prefetchRoute } from "./server/in-place.js";
 import { LOCAL_OWNER_ELSEWHERE,asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
-import { defaultAgentOf,fillDefaultRouting } from "./model-choices.js";
+import { defaultAgentOf,fillDefaultRouting,fillRoutingOnSignIn } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
 import { BODY_CAP,form,loginHref,passwordSetNext,refusalNext,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
 import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
@@ -1216,6 +1216,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       .then(([claude, codex]) => {
         localSignIn = { at: Date.now(), signedIn: [claude, codex].some(state => state === "connected" || state === "key-works" || state === "key-present"), states: { claude: claude!, codex: codex! } };
         leadByDefault();
+        // Models for an agent signed in after the first start (model-choices.ts fillRoutingOnSignIn): the first start's
+        // policy and door, only while no models were ever chosen here, never touching the lead (one turned off stays
+        // off). From this computer's sign-in check only (the background pass, or a person's Check now), never a GET.
+        if (options.leadByDefault === true && !store.isDemo()) fillRoutingOnSignIn(store, localSignIn.states, clock());
       })
       .catch(() => {})
       .finally(() => { localSignInChecking = null; });
