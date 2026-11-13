@@ -518,7 +518,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const body = (checkSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange: who.role === "approver" && !store.isDemo(),
       level: projectCheckLevel(store, repo).level, full: store.liveVerifyCommand(repo), quick, suggestion: quick === null ? suggestQuickCommand(repo) : null,
       review: (({ on, source }) => ({ on, source }))(store.reviewSwitch(repo, clock())), batch: { on: projectBatchChecks(store, repo).on }, fast: { on: fastStartOn(store, repo) },
-      said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
+      said: url.searchParams.get("said"), problem: url.searchParams.get("problem"),
+      // Words only: a password-free local owner is told the command line asks for a password first.
+      needsPassword: who.authority === "local-owner" && store.accountOf(who.name)?.passwordSet !== true }));
     return sendScreen(response, 200, screen("Checks", settingsSubPage("projects", "Checks", html`${body}`), { chrome: chromeFor(project, "projects") }));
   }
   // Sprint 8: Settings → Backups, how the last backup went and the schedule. An instance operator's page.

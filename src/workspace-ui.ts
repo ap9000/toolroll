@@ -241,6 +241,9 @@ const passedNow = (check: ChecksFact | null | undefined): boolean => {
   return state === "passed" || (state === "running" && check?.status === "passed");
 };
 
+/** Where a person sets a project's check, said the same wherever no check is set. */
+export const SET_A_CHECK = "Set one in Settings → Projects → Checks.";
+
 /** A result whose check this surface didn't read: no pass is claimed, the result page says. */
 const UNREAD_CHECK = "Open the result to see its checks.";
 
@@ -343,7 +346,9 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
     return {
       token: "agent-attested",
       label: "Ready · no project check set up",
-      detail: withPublication("No project check is set up, so the checks listed are the agent's own report."),
+      // Off is a choice with a command kept for release: no "set one" there.
+      detail: withPublication(result.checkLevel === "off" ? "No project check is set up, so the checks listed are the agent's own report."
+        : `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}`),
       tone: "neutral",
       action: { label: OPEN_RESULT, kind: "open-result" },
     };

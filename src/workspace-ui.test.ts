@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { acceptWordsOf, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
+import { acceptWordsOf, resultStatusOf, SET_A_CHECK, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
 import { taskRoad } from "./first-run.js";
 import { failedAttemptSentence, INTERNAL_ERROR, isInternalErrorReason, latestFinishedAttempt, missedRequirementLine, missedRequirementSuggestion, RETRY_NOTE_LIMIT, retryNoteOf, RUN_REASON_WORDS } from "./needs-you.js";
 
@@ -35,6 +35,19 @@ describe("the result's Accept words", () => {
   test("an acceptance that can't finish the task never says it does, nor that a second step follows", () => {
     expect(acceptWordsOf({ checks: "failed", unmet: 0, action: "accept", publishing: "pull-request", proof: true }))
       .toEqual({ label: "Accept without checks", ready: false, why: "Checks failed.", effect: "Records that you accept it. The task stays open." });
+  });
+});
+
+describe("a result with no project check set says where to set one", () => {
+  const attested = (checkLevel?: "quick" | "full" | "off" | null) => resultStatusOf({ runId: 7, role: "builder", outcome: "built", verdict: "attested", reasons: [], accepted: false, ...(checkLevel === undefined ? {} : { checkLevel }) });
+  test("the task card names Settings → Projects → Checks, never a pass", () => {
+    expect(attested()).toMatchObject({ token: "agent-attested", label: "Ready · no project check set up",
+      detail: `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}` });
+    expect(SET_A_CHECK).toBe("Set one in Settings → Projects → Checks.");
+    expect(attested("full").detail).not.toMatch(/passed|ran on/i);
+  });
+  test("checks deliberately Off aren't told to set one", () => {
+    expect(attested("off").detail).not.toContain(SET_A_CHECK);
   });
 });
 

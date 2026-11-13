@@ -13,6 +13,8 @@ import { isRevisionFeedback } from "./result-review.js";
 import { approvalOf, deployGateScope } from "./scope.js";
 import { shipChecksForTask, type Store } from "./store.js";
 import { approvedCheckStateOf } from "./task-status.js";
+import { liveQuickCommand } from "./check-levels.js";
+import { projectName } from "./project.js";
 
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
 export type ChecklistKey = (typeof CHECKLIST_KEYS)[number];
@@ -48,6 +50,8 @@ export const NOT_RECORDED = "Toolroll doesn't record this. The pull request on G
 export const CHECKLIST_ACT_LABELS: Readonly<Record<ChecklistAct["kind"], string>> = { "run-checks": "Run checks", retry: "Retry", fix: "Ask the agent to fix" };
 
 const short = (sha: string | null | undefined): string => sha == null ? "this commit" : sha.slice(0, 7);
+/** A project with no check command: where a person sets one (Settings → Projects → the project → Checks). */
+export const noCheckSetWords = (repo: string): string => `No check is set for ${projectName(repo)}. Set one in Settings → Projects → ${projectName(repo)} → Checks.`;
 
 /** The checklist for a task's current result, as `access` may see it; null when the task isn't visible there. */
 export function mergeChecklistOf(store: Store, taskId: string, now: Date, access: AssignmentAccess, root?: string): MergeChecklist | null {
@@ -86,6 +90,10 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
     { kind: "fix", run: receipt.runId, note: `The project checks failed on ${short(head)}${receipt.checks.exitCode === null ? "" : ` (exit ${receipt.checks.exitCode})`}. Fix them so they pass.` });
   else if (check === "running") row("checks", "waiting", "Running now.");
   else if (check === "off") row("checks", "waiting", "Checks are off for this project; they run at release.");
+  // No check command at all: Run checks could only refuse, so the row says how to set one instead.
+  else if (check === "not-run" && assignment.repo !== null && store.liveVerifyCommand(assignment.repo) === null && liveQuickCommand(store, assignment.repo) === null) {
+    row("checks", "no", noCheckSetWords(assignment.repo));
+  }
   else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });
 
   // Requirements: the result's own blockers, as Accept reads them.
