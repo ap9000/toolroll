@@ -20,7 +20,7 @@ Approve each plan once. Get results back Ready with the diff, the check status a
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/ui/tasks-dark.png">
-  <img src="docs/media/ui/tasks-light.png" alt="The Toolroll console's Tasks view: every task with what it needs from you and the one action that settles it." width="920">
+  <img src="docs/media/ui/tasks-light.png" alt="The Tasks page in Toolroll: tasks grouped by what they need from you (approve a plan, open a result, unblock), each with one button." width="920">
 </picture>
 
 <sub>Every task across every project, and the one thing each needs from you. (Demo workspace.)</sub>
