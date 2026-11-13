@@ -3021,7 +3021,7 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   if (await on.locator('a[href="/settings/lead"]', { hasText: "Change" }).count() !== 1) throw new Error("no Change link to Settings → Lead");
   // How it works is the empty chat's own sentence now (lead-chat.tsx ChatEmpty), above the first tasks.
   const intro = await on.locator("[data-chat-empty] > p").first().innerText();
-  if (!intro.startsWith("Ask for a change. The lead writes a short plan; you approve it;")) throw new Error(`how it works: ${intro}`);
+  if (!intro.startsWith("Ask for a change. You approve a short plan;")) throw new Error(`how it works: ${intro}`);
   const firstTasks = on.locator("[data-first-tasks] button");
   if (await firstTasks.count() !== 3) throw new Error(`${await firstTasks.count()} first tasks`);
   if (await on.locator('input[type="password"], form[action="/chat/config"]').count() > 0) throw new Error("Chat asks for a password or shows the setup form");
