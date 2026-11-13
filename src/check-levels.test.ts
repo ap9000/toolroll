@@ -35,6 +35,9 @@ import {
 import { followUpChecksOf, fullCheckGate, requestFollowUpChecks, runFollowUpCheck, withFollowUps } from "./result-follow-ups.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
 import { mixedCheckScreenshot } from "../test/status-evidence-fixture.js";
+import { checkSettingsHtml } from "./check-levels-ui.js";
+import { htmlString } from "./html.js";
+import { openLocalWorld } from "../test/local-owner-world.js";
 
 const NOW = new Date("2026-10-01T12:00:00.000Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
@@ -431,6 +434,34 @@ describe("Settings → Projects → Checks", () => {
     expect(store.liveVerifyCommand(quickVerifyKey(REPO))).toMatchObject({ command: "npm run typecheck", timeoutMs: 120_000, approvedBy: "sam" });
     await post("/settings/checks", { csrf, repo: REPO, act: "level", level: "full", password });
   });
+});
+
+describe("Settings → Projects → Checks with no full check: the exact command line, and what it needs first", () => {
+  const plain = (markup: string): string => markup.replace(/<[^>]+>/g, " ").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ");
+  const view = (repo: string, needsPassword?: boolean) => htmlString(checkSettingsHtml({ repo, name: "shop", csrf: "c", canChange: false, level: "full", full: null, quick: null, suggestion: null,
+    said: null, problem: null, ...(needsPassword === undefined ? {} : { needsPassword }) }));
+
+  test("the line names this project's own path, quoted for the shell when it must be; a password-free owner is told to set a password first", () => {
+    expect(plain(view("/Users/sam/shop"))).toContain(`toolroll verify set --repo /Users/sam/shop --command "npm test"`);
+    expect(plain(view("/Users/sam/my shop"))).toContain(`toolroll verify set --repo '/Users/sam/my shop' --command "npm test"`);
+    expect(plain(view("/Users/sam/sam's shop"))).toContain(`toolroll verify set --repo '/Users/sam/sam'\\''s shop' --command "npm test"`);
+    expect(plain(view("/Users/sam/shop"))).not.toContain("--repo …");
+    expect(plain(view("/Users/sam/shop", true))).toContain("Setting a check needs a password. Run toolroll password set first.");
+    expect(plain(view("/Users/sam/shop", false))).not.toContain("password set");
+  });
+
+  test("the local owner with no password sees the note on the page itself; nothing on the page changes what it may do", async () => {
+    const world = await openLocalWorld();
+    try {
+      const { cookie } = await world.localSession();
+      const got = await world.send(`/settings/checks?repo=${encodeURIComponent(world.repo)}`, "GET", { cookie });
+      expect(got.status).toBe(200);
+      const text = plain(got.body);
+      expect(text).toContain(`toolroll verify set --repo ${world.repo} --command "npm test"`);
+      expect(text).toContain("Setting a check needs a password. Run toolroll password set first.");
+      expect(world.store.liveVerifyCommand(world.repo)).toBeNull();
+    } finally { await world.close(); }
+  }, 60_000);
 });
 
 describe("upgrade: a result completed before check levels stays complete", () => {

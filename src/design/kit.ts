@@ -212,7 +212,7 @@ export type KitIcon = keyof typeof KIT_ICONS;
 
 // ---- settings frame ---------------------------------------------------------------------------------------------
 
-/** The eight Settings groups, in order: [label, slug, href]. */
+/** The Settings groups, in order: [label, slug, href]. */
 export const SETTINGS_GROUPS: ReadonlyArray<readonly [label: string, slug: string, href: string]> = [
   ["General", "general", "/settings/general"],
   ["Agents and models", "agents", "/settings/agents"],
@@ -222,11 +222,13 @@ export const SETTINGS_GROUPS: ReadonlyArray<readonly [label: string, slug: strin
   ["People and sign-in", "access", "/settings/access"],
   ["Spend", "spend", "/spend"],
   ["System", "system", "/settings/system"],
+  // Settings → Advanced (the eight plan, W4): the person's own "Show advanced features" and every advanced page.
+  ["Advanced", "advanced", "/settings/advanced"],
 ];
 
 /** Each group's icon on the Settings overview (wave D). */
 export const SETTINGS_GROUP_ICONS: Readonly<Record<string, KitIcon>> = {
-  general: "sun", agents: "cpu", alerts: "bell", approval: "shield", projects: "folder", access: "people", spend: "coin", system: "monitor",
+  general: "sun", agents: "cpu", alerts: "bell", approval: "shield", projects: "folder", access: "people", spend: "coin", system: "monitor", advanced: "settings",
 };
 
 /** How a Settings row says what waits on this person: "1 item needs you", "2 items need you". */

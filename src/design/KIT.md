@@ -33,7 +33,7 @@ The kit added these System tokens to Signal 1.0.0's (in `src/design/system/token
 | Token | Light / dark | For |
 |---|---|---|
 | `--so-needs`, `--so-needs-soft` | the signal ink and its wash (no hue) | what waits on this person, only |
-| `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of an outline button, switch track or radio card (audit F6); never a text field's |
+| `--so-field-line` | `#8f8f8f` / `#6b6b6b` (3:1 on paper) | the boundary of a text field, select, outline button, switch track or radio card (audit F6; fields since the 2026-11 pages audit) |
 | `--so-field` | `#ececec` / `#232323` | the filled surface of every text field, select and secondary text box |
 | `--so-composer` | `#f2f2f2` / `#242424` | the composer's filled surface, one step off the page |
 | `--so-composer-control` | `#dcdcdc` / `#333333` | the filled circles and pills inside a composer (+, chips, the empty send) |
@@ -204,12 +204,11 @@ Every place a person types or picks is one field family, server HTML, React and 
 pages' bare `input`, `select` and `textarea` take the same look from `console.css`, the workspace's from
 `workspace.css` and the shadcn `Input`, `Textarea` and `Select`):
 
-- **One surface.** The control is one filled `--so-field` surface, radius 12px, no outline at rest (a transparent 1px
-  border keeps its edge in forced colours). Never a box inside a box: a field never sits in another outlined box,
-  and nothing outlined sits inside a field or a composer.
+- **One surface.** The control is one filled `--so-field` surface, radius 12px, with a 1px `--so-field-line` boundary
+  (3:1 or better on paper in both themes, WCAG 1.4.11): a person sees where to type before reading a label. Never a
+  box inside a box: a field never sits in another outlined box, and nothing outlined sits inside a field or a composer.
 - **Label above, words below.** A small dim label (500 12.5px `--so-muted`) above; one hint line, then the error
-  (`k-err`), below. The label names the field, so a field at rest needs no outline; never a placeholder instead of a
-  label.
+  (`k-err`), below. The label names the field; never a placeholder instead of a label.
 - **Focus** is the 2px ink ring (`--so-ring`, 3:1 or better in both themes); hover deepens the fill a step.
 - **Sizes.** 36px at a desk (`sm` select 28px, a pill), 44px and 16px text on a phone (no iOS zoom).
 - **Textareas** grow with their words (`field-sizing: content`, to 360px, then scroll); no resize grip.

@@ -8,6 +8,7 @@
  * (src/browser/kit/behavior.ts), which wires any kit markup the workspace places; every control here still works
  * as plain HTML without it.
  */
+import { advancedShownNow } from "../advanced-view.js";
 import { attributes, html, htmlString, joinHtml, passwordlessRendering, postForm, type AttributeValue, type Html, type HtmlValue, type PostFormOptions } from "../html.js";
 import {
   KIT_ICONS, NOT_FOUND, SETTINGS_GROUPS, STATUS, STEP_ROW_WORDS, STEP_WORDS, stepRowBodyId, TIMING_WORDS, approvalAsk, chipOfHeadline, dur, needsWords, stepsFill, termsOf, timingBars,
@@ -297,7 +298,7 @@ export function settingsShell(options: { group: string; title: string; lead?: st
   const own = SETTINGS_GROUPS.find(([, slug]) => slug === options.group);
   const hub = options.group === "hub" || own === undefined;
   const nav = html`<a class="k-nav k-nav-top" href="/settings"${hub ? html` aria-current="page"` : ""}><span class="k-nav-l">Overview</span></a>\
-${SETTINGS_GROUPS.map(([label, slug, href]) => html`<a class="k-nav" href="${href}"${slug === options.group ? html` aria-current="page"` : ""}><span class="k-nav-l">${label}</span>${flags[slug] ? html`<span class="k-nav-flag" aria-hidden="true"></span><span class="k-sr"> (needs you)</span>` : ""}</a>`)}`;
+${SETTINGS_GROUPS.filter(([, slug]) => slug !== "spend" || advancedShownNow()).map(([label, slug, href]) => html`<a class="k-nav" href="${href}"${slug === options.group ? html` aria-current="page"` : ""}><span class="k-nav-l">${label}</span>${flags[slug] ? html`<span class="k-nav-flag" aria-hidden="true"></span><span class="k-sr"> (needs you)</span>` : ""}</a>`)}`;
   const back = options.back ?? (hub ? undefined : options.sub ? own![2] : "/settings");
   const crumbs = hub ? html`` : options.sub
     ? html`<nav class="k-tb-ctx k-crumbs" aria-label="Breadcrumb"><a href="${own![2]}">${own![0]}</a><span class="k-sep" aria-hidden="true">/</span><b aria-current="page">${options.title}</b></nav>`

@@ -13,7 +13,9 @@ import { isAlive, type Runner } from "./runner.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { approvalOf, type ExecutionProfile } from "./scope.js";
 import { plannerSourceProblemOf } from "./planner-source.js";
-import { authPauseOf, authWaitOf, providerName, signInReason } from "./provider-auth.js";
+import { authPauseOf, authWaitOf, messageCommand, providerName, signInReason, type AuthPause } from "./provider-auth.js";
+import { signInCommandFor } from "./first-run.js";
+import { LOGIN_PROBE, PATH_PROBE } from "./phase-routing.js";
 import { REVIEW_TOKENS, resultStatusOf, reviewFactsOf } from "./workspace-ui.js";
 import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
@@ -22,7 +24,7 @@ import { vanishedStopOf, vanishedStopSentence } from "./vanished-retry.js";
 import { routeChangeOf } from "./route-change.js";
 import { wasInterrupted } from "./run-ending.js";
 import { BUILT_IN, refArchived, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
-import { shortWhen } from "./when-html.js";
+import { shortWhen, viewerZone } from "./when-html.js";
 
 export const DEFAULT_MAX_OPEN_DECISIONS = 5;
 
@@ -454,7 +456,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
     if (exhausted.length === available.length) {
       const resets = exhausted.map(one => one?.resetAt ?? null).filter((one): one is string => one !== null).sort();
       const nextAt = resets[0] ?? null;
-      return answer("provider-quota", "retrying", "Provider quota exhausted", nextAt === null ? "The provider gave no reset time. Choose another agent, or wait for the limit to reset." : `The next recorded reset is ${nextAt}.`, { action: nextAt === null ? "select-agent" : null, nextAt, role });
+      return answer("provider-quota", "retrying", `${providerName(profile.provider)}'s usage limit is reached`, nextAt === null ? "It gave no reset time. Choose another agent, or wait for the limit to reset." : `It resets ${resetWhenWords(nextAt, now)}, then the task starts again by itself.`, { action: nextAt === null ? "select-agent" : null, nextAt, role });
     }
   }
 
@@ -463,8 +465,13 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
   const provider = profile?.provider ?? (role === "planner" ? ref.planProvider : null) ?? null;
   const signedOut = authWaitOf(store, ref.id) ?? (provider === null ? null : authPauseOf(store, provider));
   if (signedOut !== null) {
-    return answer("signed-out", "waiting", signInReason(signedOut), `This task starts again on its own once ${providerName(signedOut.provider)} works.`, { role });
+    return answer("signed-out", "waiting", signInReason(signedOut), signInAgainWords(signedOut), { role });
   }
+
+  // The first run before any agent is signed in (agentlessFirstRun: planning, nothing routed, no agent): say so and the
+  // one command, never a routing hint. It starts by itself once a builder sees an agent signed in.
+  const agentless = agentlessFirstRun(store, ref, role === "planner", alive.map(one => one.name));
+  if (agentless !== null) return answer("signed-out", "waiting", NO_AGENT_TITLE, agentless.words, { role });
 
   const openDecisions = store.countUnanswered();
   if (openDecisions >= DEFAULT_MAX_OPEN_DECISIONS && (role === "planner" || ref.parkRate > 0)) {
@@ -507,4 +514,86 @@ export function retryWhenWords(until: string, now: Date): string {
   if (/^\d/.test(at)) return `at ${at} UTC`;
   if (at.startsWith("Tomorrow ")) return `tomorrow at ${at.slice("Tomorrow ".length)} UTC`;
   return `on ${at} UTC`;
+}
+
+// ---- a first run with no coding agent signed in (W1) ---------------------------------------------------------------
+
+/** The title every surface shows while no coding agent is signed in where the work would run. */
+export const NO_AGENT_TITLE = "No coding agent is signed in";
+/** The one line after it: the command, and that nothing else is needed. */
+export const noAgentWords = (command: string, modelsCleared = false): string => modelsCleared
+  // Models were chosen here once and then cleared: a sign-in never fills them again (model-choices.ts
+  // fillDefaultRouting), so nothing promises a start by itself; the person chooses them.
+  ? `${NO_AGENT_TITLE}. Run \`${command}\`, then choose its models in Settings → Models.`
+  : `${NO_AGENT_TITLE}. Run \`${command}\`, then it starts by itself.`;
+/** Whether models were ever chosen or cleared here (a models generation exists): no automatic fill will run. */
+export function modelsEverChosen(store: Store): boolean {
+  return store.handle.prepare("SELECT 1 FROM models_generation LIMIT 1").get() !== undefined;
+}
+
+type AgentReadiness = { provider: string; state: string; probe: string };
+/** Not on the builder's PATH at all (runner.ts PATH_PROBE). */
+const notInstalled = (one: AgentReadiness): boolean => one.state === "unavailable" && one.probe === PATH_PROBE;
+/** Its own login check said plainly that it is not signed in: Claude Code's `claude auth status` (LOGIN_PROBE), or
+ * Codex's `codex login status`. A version failure, a timeout or an unreadable answer proves neither. */
+const signedOut = (one: AgentReadiness): boolean => one.state === "unavailable" && (one.probe === LOGIN_PROBE || (one.provider === "codex" && one.probe === "identity"));
+// (A login check that timed out or failed some other way is recorded as IDENTITY_FAILED_PROBE: never a sign-out.)
+
+/** The sign-in command for an install with no agent: `claude auth login` when Claude Code is there, `codex login` when
+ * only Codex is, else install Claude Code and sign in (first-run.ts signInCommandFor, the welcome's own rule). */
+export function agentlessCommand(claudeInstalled: boolean, codexInstalled: boolean, platform: NodeJS.Platform = process.platform): string {
+  return signInCommandFor({ claude: claudeInstalled ? "signed-out" : "not-installed", codex: codexInstalled ? "signed-out" : "not-installed" }, platform);
+}
+
+/**
+ * Whether no coding agent is signed in on any of these builders: on every one, Claude Code and Codex were each
+ * observed (runner.ts observeProviderReadiness) specifically not installed or not signed in, and no agent at all is
+ * ready or unknown there. Null otherwise: any agent could run, an observation doesn't prove sign-out (a version check
+ * failed, a probe timed out), a builder hasn't reported both (a test's fake agent, an older builder), or there is no
+ * builder — then the other, more specific answers apply.
+ */
+export function agentlessSignIn(store: Store, runners: readonly string[], platform: NodeJS.Platform = process.platform): { command: string; words: string } | null {
+  if (runners.length === 0) return null;
+  let claudeInstalled = false, codexInstalled = false;
+  for (const name of runners) {
+    const reported = store.providerReadiness(name);
+    const claude = reported.find(one => one.provider === "claude"), codex = reported.find(one => one.provider === "codex");
+    if (claude === undefined || codex === undefined || reported.some(one => one.state !== "unavailable")) return null;
+    if (!(notInstalled(claude) || signedOut(claude)) || !(notInstalled(codex) || signedOut(codex))) return null;
+    claudeInstalled ||= signedOut(claude);
+    codexInstalled ||= signedOut(codex);
+  }
+  const command = agentlessCommand(claudeInstalled, codexInstalled, platform);
+  return { command, words: noAgentWords(command, modelsEverChosen(store)) };
+}
+
+/** No models chosen anywhere here: no role row, tier row or other-provider candidate, at the installation or any
+ * project (the same test as model-choices.ts fillDefaultRouting's "nothing set"). */
+export function modelsUnset(store: Store): boolean {
+  return store.handle.prepare("SELECT 1 FROM phase_config UNION ALL SELECT 1 FROM phase_tier_config UNION ALL SELECT 1 FROM phase_tier_alternate LIMIT 1").get() === undefined;
+}
+
+/**
+ * The first run's one wait, said as such: a task waiting for its plan, with no planner pinned and no models chosen
+ * anywhere (so nothing else can be its blocker), on builders where no coding agent is signed in (agentlessSignIn).
+ * Null for anything with a route of its own: its routed provider's own blocker (quota, key, sign-in, version) applies.
+ */
+export function agentlessFirstRun(store: Store, ref: { planProvider: string | null }, planning: boolean, runners: readonly string[], platform: NodeJS.Platform = process.platform): { command: string; words: string } | null {
+  if (!planning || ref.planProvider !== null || !modelsUnset(store)) return null;
+  return agentlessSignIn(store, runners, platform);
+}
+
+/** An expired sign-in's line: what happened, the command, and that the task starts again by itself once it works. */
+export function signInAgainWords(pause: Pick<AuthPause, "provider" | "authMode">): string {
+  return `${signInReason(pause)}. Run \`${messageCommand(pause)}\`, then it starts again by itself.`;
+}
+
+/** When a usage limit resets, in this computer's own time: "at 16:40", "tomorrow at 09:00", "on Nov 14 09:00". */
+export function resetWhenWords(at: string, now: Date, zone: string = viewerZone()): string {
+  const words = shortWhen(at, now, zone, true);
+  if (words === at) return "later";
+  if (/^\d/.test(words)) return `at ${words}`;
+  if (words.startsWith("Tomorrow ")) return `tomorrow at ${words.slice("Tomorrow ".length)}`;
+  if (words.startsWith("Yesterday ")) return "now";
+  return `on ${words}`;
 }

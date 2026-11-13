@@ -1,9 +1,12 @@
 {
-  // The published build: same compiler, no source maps — the tarball ships
-  // dist JavaScript and declarations only (see the files allowlist).
+  // The published build: same compiler, no source maps, no declarations and no comments — the tarball ships dist
+  // JavaScript only (see the files allowlist). Nothing reads types from the package (it has no "types" or "exports"),
+  // and nothing reads its own built source; third-party licences ship in THIRD_PARTY_NOTICES.md.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "sourceMap": false,
-    "declarationMap": false
+    "declaration": false,
+    "declarationMap": false,
+    "removeComments": true
   }
 }

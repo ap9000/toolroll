@@ -66,7 +66,7 @@ More: [Getting started](docs/guide/getting-started.md).
 3. **Approve** once. Nothing spends until you do; changing the terms asks again.
 4. **Build.** An agent works on its own branch. A judgement call
    becomes a question for you, not a guess.
-5. **Check.** Your project's own check runs on the exact commit.
+5. **Check.** Once you set your project's check, it runs on the exact commit.
 6. **Ready.** The diff, the check log and screenshots. Mark it Complete, send
    it back with what to change, or merge through the pull request.
 
@@ -76,8 +76,9 @@ merging, releasing and most settings ask you to set one first: `toolroll passwor
 ## Use cases
 
 **Clear the backlog overnight.** Queue the tasks you never get to. Each builds
-under its approved scope, in parallel, and recovers by itself after a
-restart. You wake up to results, not transcripts.
+under its approved scope, in parallel, while Toolroll keeps running. If it
+stops, run `toolroll` again and each task continues from its saved work. You
+wake up to results, not transcripts.
 
 **Ship behind a real check.** Your project's command decides what passes, on
 the exact commit being released. A deploy refuses anything that wasn't

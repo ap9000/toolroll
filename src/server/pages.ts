@@ -1,3 +1,4 @@
+import { advancedShownNow } from "../advanced-view.js";
 import { projectOutcomes } from '../project-outcomes.js';
 import { steerControlsFor } from "../steer-controls.js";
 import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
@@ -527,8 +528,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const section = (label: string, rows: NavRow[]): Html =>
       html`<h2 class="menu-group-label">${label}</h2><div class="menu-list">${joinHtml(rows.map(row => html`<a class="menu-row" href="${row.href}"><strong>${row.label}</strong><span class="meta">${row.hint}</span></a>`), "\n")}</div>`;
     return sendScreen(response, 200, screen("Workspace tools", joinHtml([
-      section("Work tools", workToolRows(chrome.projectScoped, chrome.chat, chrome.code)),
-      section("Settings", settingsRows(chrome.projectScoped, chrome.settings)),
+      section("Work tools", workToolRows(chrome.projectScoped, chrome.chat, chrome.code, advancedShownNow())),
+      section("Settings", settingsRows(chrome.projectScoped, chrome.settings, advancedShownNow())),
     ], "\n"), { chrome }));
   }
 

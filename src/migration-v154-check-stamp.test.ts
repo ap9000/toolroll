@@ -22,7 +22,7 @@ const fresh = (name = "s.db"): Store => { dir ??= mkdtempSync(join(tmpdir(), "so
 describe("v154", () => {
   test("a fresh database has the table; a v151 one gains it and changes no saved row; and it may update in place", () => {
     const store = fresh();
-    expect(SCHEMA_VERSION).toBe(159);
+    expect(SCHEMA_VERSION).toBe(160);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(154);
     expect(V154_STEPS).toEqual(["check-stamps"]);
     store.close();
@@ -32,7 +32,7 @@ describe("v154", () => {
     db.close();
     const upgraded = openStore(join(dir!, "s.db"));
     open.push(upgraded);
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     expect(upgraded.handle.prepare("SELECT COUNT(*) AS n FROM check_stamp").get()?.["n"]).toBe(0);
   });
 });

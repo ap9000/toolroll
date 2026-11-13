@@ -8,7 +8,9 @@
  * nothing ever prompts on the terminal the screen owns.
  */
 import { dirname, join } from "node:path";
+import { advancedShownFor } from "./advanced.js";
 import { assignmentOf, owedAcceptance } from "./assignment.js";
+import { agentlessFirstRun, buildersFor } from "./dispatch.js";
 import { familyChangedFiles } from "./result-completion.js";
 import { checkBackingOf, receiptChecksOf, requirementWordOf } from "./task-status.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
@@ -102,7 +104,10 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const store = read();
       const mode = store === null ? null : localModeOf(store);
       const passwordSet = store !== null && mode !== null && store.accountOf(mode.owner)?.passwordSet === true;
-      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock()) };
+      // Settings → Advanced: flaky tests are an advanced feature; the local owner's own switch decides (no local mode: no
+      // one person to ask, so it shows as before). Memory suggestions wait on a person, so they show whatever the switch.
+      const advanced = store === null || mode === null || advancedShownFor(store, mode.owner);
+      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock(), advanced) };
     },
 
     async task(id: string): Promise<TuiTask | null> {
@@ -171,7 +176,13 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         const store = read();
         const ask = store === null ? null : planAskOf(store, filed);
         const asked = ask === null ? null : await command(["task", "plan", filed, "--digest", ask.source]);
-        const message = asked?.ok === true ? "Filed. Planning: you'll approve the plan before anything is built." : `Filed. It wasn't sent for a plan: ${shown(asked?.message, "it can't be planned now.")}`;
+        // No coding agent signed in on this computer yet: the plan waits for it, and the one command says how.
+        const filedRef = store === null ? null : store.lookupRef(filed);
+        const agentless = store === null || filedRef === null || asked?.ok !== true ? null
+          : agentlessFirstRun(store, filedRef, true, buildersFor(store, act.repo, clock()).alive.map(one => one.name));
+        const message = asked?.ok !== true ? `Filed. It wasn't sent for a plan: ${shown(asked?.message, "it can't be planned now.")}`
+          : agentless !== null ? `Filed. ${agentless.words}`
+          : "Filed. Planning: you'll approve the plan before anything is built.";
         return { ok: true, message, id: filed };
       }
       return { ok: true, message: done, ...(filed === "" ? {} : { id: filed }) };
@@ -214,12 +225,14 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
   };
 }
 
-/** The screen's one line about the learning loops: flaky tests and what waits in project memory, each with its command. */
-function learningLine(store: Store, repos: readonly string[], now: Date): string | null {
+/** The screen's one line about the learning loops: flaky tests and what waits in project memory, each with its command.
+ * `advanced` false (Settings → Advanced off) leaves out flaky tests only: memory suggestions wait on a person and always
+ * show. */
+export function learningLine(store: Store, repos: readonly string[], now: Date, advanced = true): string | null {
   let flaky = 0, memory = 0;
   try {
     for (const repo of repos) {
-      flaky += flakyCount(store, repo, now);
+      if (advanced) flaky += flakyCount(store, repo, now);
       const waiting = memoryWaiting(store, repo);
       memory += waiting.notes + waiting.cleanups;
     }

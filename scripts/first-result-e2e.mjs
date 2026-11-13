@@ -515,20 +515,25 @@ async function buildToReady(inst, term, trace, id, { surface = "terminal", scree
 /** Review the result and accept it in the browser: Looks right on each requirement, a reason when one is owed, Accept. */
 async function acceptInBrowser(inst, on, trace, id) {
   await on.goto(`${inst.base}/t/${encodeURIComponent(id)}`);
-  const accept = on.locator(`[data-result-decision] form[action="/t/${id}/complete"] button[data-accept-result]`);
-  await waitFor(accept, "Accept on the result", { timeoutMs: 30_000, seen: () => pageText(on) });
+  // The result's one exact-receipt /complete form, wherever the task page puts it: the Ready status box's Mark complete
+  // when nothing more is owed, else the decision's Accept. Never two.
+  const completion = on.locator(`form[action="/t/${id}/complete"]`);
+  const accept = completion.locator("button[data-accept-result]");
+  await waitFor(accept.first(), "Accept on the result", { timeoutMs: 30_000, seen: () => pageText(on) });
   trace.decision("Review the result (the change, its checks, its requirements)", { surface: "browser", screen: await pageText(on), note: "reading is in the allowance" });
   for (const looks of await on.locator("[data-check-item] button[data-looks-right]").all()) {
     trace.decision("Does this requirement look right?", { surface: "browser" });
     await looks.click();
     trace.interaction("Click Looks right", { surface: "browser" });
   }
-  const reason = on.locator('[data-result-decision] form[action$="/complete"] input[name="note"]');
+  const reason = completion.locator('input[name="note"]');
   if (await reason.count() > 0) {
     trace.decision("Say why it can be accepted (a reason is owed)", { surface: "browser" });
     await reason.fill("I read the change and its test passes.");
     trace.interaction("Type the reason", { surface: "browser" });
   }
+  await until("exactly one completion form on the task page", async () => (await completion.count()) === 1 && await accept.isVisible(),
+    { timeoutMs: 10_000, everyMs: 200, seen: async () => `${await completion.count()} /complete forms` });
   await Promise.all([on.waitForNavigation({ timeout: 30_000 }).catch(() => undefined), accept.click()]);
   trace.interaction("Click Accept", { surface: "browser" });
   await until(`${id} to be accepted`, async () => accepted(inst, id), { timeoutMs: 30_000, everyMs: 250, seen: () => pageText(on) });

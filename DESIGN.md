@@ -474,7 +474,7 @@ Quiet, compact, and ink by default. The colour is saved for the one verb that se
 - **Internal Padding:** 20px (14px on phones), with a 16px gap between blocks (12px on phones). Grouped folds (task details, Manage) are one card with zero padding, divided by hairlines, each fold with a 15px / 600 summary and a rotating chevron.
 
 ### Inputs / Fields
-- **Style:** a paper fill, a 1px control-line border, 8px corners, 32px tall, 10px side padding and 13px text. Placeholders are muted.
+- **Style:** a filled surface (`--so-field`) with a 1px boundary in `--so-field-line` (#8f8f8f / #6b6b6b, 3:1 or better on paper in both themes), 12px corners, 36px tall at a desk, 12px side padding and 13.5px text (src/design/KIT.md "Fields"). Placeholders are muted.
 - **Focus:** the border turns accent with a 3px accent-wash halo (shell and server fields, the composer). The shadcn inputs and selects show a 2px accent ring. The caret is accent everywhere.
 - **Error / Disabled:** an error is a vermilion alert (a vermilion wash fill, 8px corners, 13px text), never a red border alone. Disabled controls are dimmed with a not-allowed cursor.
 - **Touch:** 44px tall with 16px text below the phone breakpoint.

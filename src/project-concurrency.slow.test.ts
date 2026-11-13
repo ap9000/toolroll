@@ -268,7 +268,7 @@ describe("parallel builds from the service's builder", () => {
       expect(readFileSync(patch, "utf8")).toContain("half.ts");
       // It says so, in plain words.
       const said = store.handle.prepare("SELECT handoff FROM run WHERE id = ?").get(attempt!.id);
-      expect(String(said?.["handoff"])).toMatch(/^Toolroll stopped while this task was building\. Its work is kept in .* and saved as .*; the task is back in the queue and resumes from it when the builder runs again\.$/);
+      expect(String(said?.["handoff"])).toMatch(/^Toolroll stopped while this task was building\. Its work is kept in .* and saved as .*; the task is back in the queue and continues from there\. Run `toolroll` again to continue\.$/);
       // Handed back, not failed: queued, no strike, no hold.
       expect(store.getTask("t-stop")?.state).toBe("queued");
       expect(store.handle.prepare("SELECT strikes FROM task_ref WHERE id = ?").get(ref)).toMatchObject({ strikes: 0 });

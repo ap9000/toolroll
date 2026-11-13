@@ -16,6 +16,7 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { openStore, type Store } from "./store.js";
 import { presented, T0, workspaceOf } from "../test/serve-kit.js";
+import { advancedOnForEveryone } from "../test/advanced-on.js";
 
 let store: Store, server: Server, base: string, evidenceRoot: string, repoA: string, repoB: string, worktree: string;
 let alexToken: string, robinToken: string;
@@ -303,6 +304,7 @@ describe("the sidebar's project states", () => {
   });
 
   test("the usage chip is an operator's, and never on a password page", async () => {
+    advancedOnForEveryone(store); // the usage chip is an advanced entry point (W4); robin still sees none: operators only
     store.handle.prepare("INSERT INTO provider_limit (provider, window, used_percent, window_minutes, resets_at, reached, plan, observed_at) VALUES ('claude','five_hour',82,300,?,0,NULL,?)")
       .run(new Date(Date.now() + 3 * 3_600_000).toISOString(), new Date().toISOString());
     const alex = await login("alex", alexToken);

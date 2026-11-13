@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { acceptWordsOf, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
+import { acceptWordsOf, resultStatusOf, SET_A_CHECK, buildProgressOf, lastErrorLineOf, missedRequirementOf, reportMismatchesOf, stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
 import { taskRoad } from "./first-run.js";
 import { failedAttemptSentence, INTERNAL_ERROR, isInternalErrorReason, latestFinishedAttempt, missedRequirementLine, missedRequirementSuggestion, RETRY_NOTE_LIMIT, retryNoteOf, RUN_REASON_WORDS } from "./needs-you.js";
 
@@ -10,25 +10,54 @@ describe("the result's Accept words", () => {
     expect(acceptWordsOf({ checks: "passed", unmet: 0, action: "complete", publishing: "other", proof: true }).effect).toBe("Finishes the task. Nothing is published.");
   });
 
-  test("a missing or unreadable proof is Accept without checks, and says so", () => {
+  test("nothing on record is Accept anyway when the checks passed, Accept without checks when they didn't run, and says so", () => {
     expect(acceptWordsOf({ checks: "passed", unmet: 0, action: "complete", publishing: "off", proof: false }))
-      .toMatchObject({ label: "Accept without checks", ready: false, why: "Nothing on record says what was met." });
+      .toMatchObject({ label: "Accept anyway", ready: false, why: "Nothing on record says what was met." });
+    expect(acceptWordsOf({ checks: "not-run", unmet: 0, action: "complete", publishing: "off", proof: false }).label).toBe("Accept without checks");
     expect(acceptWordsOf({ checks: "not-run", unmet: 0, action: "complete", publishing: "off", proof: false }).why).toBe("Nothing on record says what was met and checks didn't run.");
   });
 
-  test("Accept without checks names what is missing in one line", () => {
+  test("the label names the gap: without checks only when the checks are what's missing; the why line says what, once", () => {
     expect(acceptWordsOf({ checks: "not-run", unmet: 0, action: "complete", publishing: "off", proof: true }))
       .toEqual({ label: "Accept without checks", ready: false, why: "Checks didn't run.", effect: "Finishes the task. The branch stays; publishing isn't set up." });
     expect(acceptWordsOf({ checks: "passed", unmet: 2, action: "complete", publishing: "other", proof: true }))
-      .toEqual({ label: "Accept without checks", ready: false, why: "2 requirements aren't met.", effect: "Finishes the task. Nothing is published." });
-    // Checks deliberately Off are checked at release: only the unmet requirement is said.
-    expect(acceptWordsOf({ checks: "off", unmet: 1, action: "complete", publishing: "off", proof: true }).why).toBe("1 requirement isn't met.");
+      .toEqual({ label: "Accept anyway", ready: false, why: "2 requirements aren't met.", effect: "Finishes the task. Nothing is published." });
+    // Checks deliberately Off are checked at release: only the unmet requirement is said, and it isn't "without checks".
+    expect(acceptWordsOf({ checks: "off", unmet: 1, action: "complete", publishing: "off", proof: true })).toMatchObject({ label: "Accept anyway", why: "1 requirement isn't met." });
+    expect(acceptWordsOf({ checks: "off", unmet: 0, action: "complete", publishing: "off", proof: true })).toMatchObject({ label: "Accept", ready: true });
+    // Checks running, unreadable or failed, with requirements unmet too: the checks are a gap, so the label says it.
+    for (const checks of ["running", "unavailable", "failed"] as const) {
+      expect(acceptWordsOf({ checks, unmet: 1, action: "complete", publishing: "off", proof: true }).label).toBe("Accept without checks");
+    }
     expect(acceptWordsOf({ checks: null, unmet: 0, action: "complete", publishing: "off", proof: true }).label).toBe("Accept without checks");
   });
 
   test("an acceptance that can't finish the task never says it does, nor that a second step follows", () => {
     expect(acceptWordsOf({ checks: "failed", unmet: 0, action: "accept", publishing: "pull-request", proof: true }))
       .toEqual({ label: "Accept without checks", ready: false, why: "Checks failed.", effect: "Records that you accept it. The task stays open." });
+  });
+});
+
+describe("a result built with no project check: what it says depends on whether one is set now", () => {
+  const attested = (checkSet?: boolean, checkLevel?: "quick" | "full" | "off" | null) => resultStatusOf({ runId: 7, role: "builder", outcome: "built", verdict: "attested", reasons: [], accepted: false,
+    ...(checkLevel === undefined ? {} : { checkLevel }), ...(checkSet === undefined ? {} : { checkSet }) });
+  test("none set now: the task card names Settings → Projects → Checks, never a pass", () => {
+    expect(attested(false)).toMatchObject({ token: "agent-attested", label: "Ready · no project check set up",
+      detail: `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}`, action: { kind: "open-result" } });
+    expect(SET_A_CHECK).toBe("Set one in Settings → Projects → Checks.");
+    expect(attested(false, "full").detail).not.toMatch(/passed|ran on/i);
+  });
+  test("one is set now: it says to run it, and the act is Run checks, never Set one", () => {
+    expect(attested(true, "full")).toMatchObject({ token: "agent-attested", label: "Ready · checks didn't run",
+      detail: "No project check was set when this was built, so the checks listed are the agent's own report. A check is set now: run it on this result.",
+      action: { label: "Run checks", kind: "open-review" } });
+    expect(attested(true).detail).not.toContain(SET_A_CHECK);
+  });
+  test("checks deliberately Off, or a caller that didn't read it, aren't told to set one", () => {
+    expect(attested(false, "off").detail).not.toContain(SET_A_CHECK);
+    expect(attested(true, "off").detail).not.toContain(SET_A_CHECK);
+    expect(attested(true, "off").label).toBe("Ready · no project check set up");
+    expect(attested().detail).toBe("No project check is set up, so the checks listed are the agent's own report.");
   });
 });
 

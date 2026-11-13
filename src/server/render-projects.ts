@@ -3,6 +3,7 @@
  * reading page, folder browse and the GitHub listing. Names, descriptions and paths are gh or filesystem data,
  * escaped at the sink like everything else (html.ts).
  */
+import { advancedShownNow } from "../advanced-view.js";
 import { ACTIVITY_ACTORS, activityAge, activityLimit, activityMetrics, activityScope } from "../project-activity.js";
 import { type BrowserProjectRow, type BrowserProjectsView } from "../browser-workspace.js";
 import { html, htmlString, joinHtml, postForm, type Html, type HtmlValue } from "../html.js";
@@ -31,12 +32,12 @@ export function projectHref(name: string, path: string, ambiguous: boolean, page
 /** What a project's counts say on one line ("2 need you · 1 running"); null when it wasn't scanned. */
 export function peekWords(peek: ProjectPeek | null): string | null {
   if (peek === null) return null;
+  // What waits on you is said once, by the row's chip ("2 waiting on you"); the line keeps the neutral facts.
   const words = [
-    peek.waiting > 0 ? `${peek.waiting} need${peek.waiting === 1 ? "s" : ""} you` : "",
     peek.running > 0 ? `${peek.running} running` : "",
     peek.queued > 0 ? `${peek.queued} queued` : "",
   ].filter(Boolean);
-  return words.length === 0 ? "Nothing waiting" : words.join(" · ");
+  return words.length === 0 ? peek.waiting > 0 ? "" : "Nothing waiting" : words.join(" · ");
 }
 
 const mono = (text: string): Html => html`<span class="k-mono">${text}</span>`;
@@ -70,11 +71,11 @@ export function addWaysHtml(data: { browsable: boolean; onboard: OnboardCardStat
         ]), { attrs: { class: "k-sec" } }),
       ])}</section>`;
   const local = html`<section class="k-sec" aria-labelledby="add-local"><h3 id="add-local">From this computer</h3>${joinHtml([
-    data.browsable ? acts(btn("Choose a folder", { sm: true, href: "/projects/browse" })) : note(html`Choose a projects folder once with ${mono("toolroll up --project-root <dir>")}. Toolroll remembers it after that.`),
+    data.browsable ? acts(btn("Choose a folder", { sm: true, href: "/projects/browse" })) : note(html`Choose a projects folder once with <span class="k-mono k-nowrap">${"toolroll up --project-root <dir>"}</span>. Toolroll remembers it after that.`),
     postForm("/projects/open", joinHtml([
       field({ id: "add-path", label: "Or enter an exact path", hint: "It must be a git repository.",
         control: input({ id: "add-path", name: "path", hint: true, attrs: { placeholder: "/Users/you/code/your-repo", autocomplete: "off", spellcheck: "false" } }) }),
-      acts(btn("Add and open", { sm: true, type: "submit" })),
+      acts(btn("Add and open", { sm: true, type: "submit", variant: "primary" })),
     ]), { attrs: { class: "k-sec" }, returnTo: data.returnTo }),
   ])}</section>`;
   return html`<div class="k-sec">${github ?? ""}${local}</div>`;
@@ -124,6 +125,7 @@ export function projectsPage(chrome: Chrome, data: {
       name, path, shortPath: shortPathOf(path), href: projectHref(name, path, (names.get(name) ?? 0) > 1),
       open: data.open !== null && data.open === path, openedAt,
       status: peek === null ? null : peek.waiting > 0 ? "needs" : peek.running > 0 ? "running" : null,
+      waiting: peek?.waiting ?? 0,
       summary: peekWords(peek),
     };
   };
@@ -138,7 +140,7 @@ export function projectsPage(chrome: Chrome, data: {
 
   // Without the workspace script: the same rows, the add ways as a section.
   const rowHtml = (one: BrowserProjectRow): Html => row({
-    href: one.href, chip: one.status === null ? html`` : status(one.status), title: one.name, wait: one.status === "needs",
+    href: one.href, chip: one.status === null ? html`` : one.status === "needs" ? chip(waitingWords(one.waiting), "ask") : status(one.status), title: one.name, wait: one.status === "needs",
     desc: mono(one.shortPath), meta: html`<span>${one.summary ?? "Not scanned"}</span>${one.open ? html`<span>Open now</span>` : ""}`,
     action: one.open && !choosing ? btn("New task", { sm: true, href: "/tasks/new" })
       : postForm("/projects/open", btn(choosing ? "Choose" : "Open", { sm: true, type: "submit" }), { returnTo: data.returnTo, hidden: { path: one.path } }),
@@ -149,8 +151,8 @@ export function projectsPage(chrome: Chrome, data: {
     topProblem === null ? null : notice(topProblem),
     said === null ? null : infoLine(said),
     review,
-    recent.length > 0 ? html`${group("Projects", count(recent.length))}${recent.map(rowHtml)}` : null,
-    available.length > 0 ? html`${group("Available", count(available.length))}${available.map(rowHtml)}` : null,
+    recent.length > 0 ? html`<section aria-label="Projects" data-project-list>${group("Projects", count(recent.length))}${recent.map(rowHtml)}</section>` : null,
+    available.length > 0 ? html`<section aria-label="Available" data-project-list>${group("Available", count(available.length))}${available.map(rowHtml)}</section>` : null,
     recent.length === 0 && available.length === 0 ? empty({ title: "No projects yet.", text: "A project is a git repository your agents work in." }) : null,
     html`<section class="k-doc" id="add-project" aria-label="Add a project">${addHtml}</section>`,
   ], "\n");
@@ -222,8 +224,11 @@ export function projectPage(chrome: Chrome, data: {
     ...(data.checks === null ? [] : [["Checks", html`<a class="k-link" href="${data.checks.href}">${data.checks.level}</a>`] as const]),
     ...(data.pullRequests === null ? [] : [["Pull requests", html`<a class="k-link" href="${data.pullRequests.href}">${data.pullRequests.on ? "On" : "Off"}</a>`] as const]),
     ["Knowledge", html`<a class="k-link" href="${data.knowledgeHref}">Open knowledge</a>`],
-    ["Code map", html`<a class="k-link" href="${`/projects/${encodeURIComponent(data.name)}/map${data.selfHref.includes("?") ? data.selfHref.slice(data.selfHref.indexOf("?")) : ""}`}">Open code map</a>`],
-    ["Flaky tests", html`<a class="k-link" href="${data.flakyHref}">Open flaky tests</a>`],
+    // Settings → Advanced off: the code map and flaky tests rows go (Settings → Advanced points to them).
+    ...(advancedShownNow() ? [
+      ["Code map", html`<a class="k-link" href="${`/projects/${encodeURIComponent(data.name)}/map${data.selfHref.includes("?") ? data.selfHref.slice(data.selfHref.indexOf("?")) : ""}`}">Open code map</a>`] as const,
+      ["Flaky tests", html`<a class="k-link" href="${data.flakyHref}">Open flaky tests</a>`] as const,
+    ] : []),
   ]);
   const body = joinHtml([
     phoneHeader(data.name, { back: "/projects" }),
@@ -337,3 +342,9 @@ export function githubReposPage(chrome: Chrome, data: {
 /** A project name nobody can see answers the same as one that doesn't exist. */
 export const unknownProject = (name: string): { title: string; text: string } =>
   ({ title: `There is no project called ${name} here.`, text: "It may have been removed, or the link is for another Toolroll." });
+
+/** A project row's chip when something there waits on this person (DESIGN.md "Peek chips"): "2 waiting on you", in the
+ * soft ask tone; the solid Needs you chip is never on every row of a list. */
+export function waitingWords(count: number): string {
+  return `${count} waiting on you`;
+}

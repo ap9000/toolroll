@@ -254,6 +254,8 @@ export type MainOptions = {
   quickStart?: Partial<QuickStartSeams>;
   /** Tests: bare `toolroll` at a person's terminal (easy-start.ts) — the terminal and agent checks, and its seams. */
   easyStart?: { terminal?: boolean; underAgent?: boolean; seams?: Partial<import("./easy-start.js").EasyStartSeams> };
+  /** Tests: `toolroll demo` — the terminal and agent checks, the browser it opens, and when it stops (instead of Ctrl-C). */
+  demo?: { terminal?: boolean; underAgent?: boolean; openPage?: (file: string) => void; stop?: Promise<void> };
 };
 
 /**
@@ -438,7 +440,7 @@ async function dispatch(
     return runReleaseCommand(rest, write, { releaseLease: lease => runOperate("worker", ["release", ...lease], write, mainOptions.operate ?? {}), ...mainOptions.release });
   }
   if (first === "contract") return runContractCommand(rest, write);
-  if (first === "demo") return runDemoCommand(rest, write);
+  if (first === "demo") return runDemoCommand(rest, write, mainOptions.demo);
   if (first === "skills") return runSkillsCommand(rest, write);
   if (first === "repos") return runReposCommand(rest, write, mainOptions.onboard);
   if (first === "pulls") return runPullsCommand(rest, write);
@@ -1452,7 +1454,7 @@ function runSkillsCommand(argv: readonly string[], write: Write): number {
  * throwaway password prints to the terminal and to a 0600 file in the
  * sandbox — never into the --json envelope.
  */
-async function runDemoCommand(argv: readonly string[], write: Write): Promise<number> {
+async function runDemoCommand(argv: readonly string[], write: Write, seams: MainOptions["demo"] = {}): Promise<number> {
   const json = argv.includes("--json");
   const keep = argv.includes("--keep");
   const portIndex = argv.indexOf("--port");
@@ -1500,6 +1502,12 @@ async function runDemoCommand(argv: readonly string[], write: Write): Promise<nu
   // The greeting names a road that will actually answer: the first allowed
   // name when one was given, else the loopback.
   const url = allowedHosts.length > 0 ? `http://${allowedHosts[0]}` : `http://127.0.0.1:${boundPort}`;
+  // Eight W2: a person at this terminal gets the browser opened signed in as the demo account, through a one-time link
+  // on the loopback address the server actually bound (demo-sign-in.ts) — never under an agent, without a terminal, with
+  // --json or on a wildcard/LAN bind, and never printed.
+  const terminal = seams.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true);
+  const demoSignIn = await import("./demo-sign-in.js");
+  const signIn = demoSignIn.demoSignInLink(server, seed.login.name, { stdin: terminal, stdout: terminal, agent: seams.underAgent ?? underAgent(process.env), json });
 
   if (json) {
     // The password is deliberately NOT here (adoption review, finding 9):
@@ -1512,14 +1520,28 @@ async function runDemoCommand(argv: readonly string[], write: Write): Promise<nu
     write(`  login     ${seed.login.name} / ${seed.login.password}`);
     write(`  sandbox   ${sandbox}`);
     write("");
+    if (signIn !== null) {
+      write("Opened in your browser, signed in.");
+      write("");
+    }
     write("Open Chat and ask for a change, like \"fix the flaky refund test\".");
-    write("For your own project, run `npx toolroll up` in its folder.");
+    write("For your own project, run `toolroll` in its folder.");
     write("");
     write(
       keep
         ? "Ctrl-C stops the server; the sandbox is KEPT. It stays a demo forever — every spending command refuses it."
         : "Ctrl-C stops the server and deletes the sandbox. --keep preserves it (still fenced from spending).",
     );
+  }
+
+  // Never in an opener's arguments: a 0600 page in the sandbox moves the browser on to the link, and only the platform's
+  // own opener gets that page's path (demo-sign-in.ts). The page goes once the link is spent, or expires, or on stop.
+  let removePage = (): void => {};
+  if (signIn !== null) {
+    const page = demoSignIn.writeSignInPage(sandbox, signIn);
+    removePage = demoSignIn.removeSignInPageWhenSpent(store, page, seed.login.name);
+    if (seams.openPage !== undefined) seams.openPage(page);
+    else demoSignIn.openSignInPage(page);
   }
 
   await new Promise<void>(done => {
@@ -1530,7 +1552,9 @@ async function runDemoCommand(argv: readonly string[], write: Write): Promise<nu
     };
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
+    void seams.stop?.then(stop);
   });
+  removePage();
   lead.stop();
   await new Promise<void>(closed => server.close(() => closed()));
   store.close();

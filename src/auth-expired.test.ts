@@ -13,11 +13,11 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { classifyTerminal, isAuthFailure } from "./exhaustion.js";
 import { acquire, finalize } from "./claim.js";
-import { register } from "./runner.js";
+import { observeProviderReadiness, register } from "./runner.js";
 import { invokeAgent } from "./invoke.js";
 import { addApprover } from "./scope.js";
 import { AUTH_TRIAL_MS, authPauseOf, authWaitOf, claimAuthTrial, giveBackAuthTrial, liftAuthPause, noteSignInProbe, openAuthPauses, pauseForAuth, signInGate, signInNotices } from "./provider-auth.js";
-import { diagnoseTaskDispatch } from "./dispatch.js";
+import { agentlessCommand, diagnoseTaskDispatch } from "./dispatch.js";
 import { workIndexPage } from "./work-index.js";
 import { installationStatus, renderInstallationStatus } from "./lead-status.js";
 
@@ -314,5 +314,78 @@ describe("sign-in pauses", () => {
     expect(pauseForAuth(store, { provider: "claude", authMode: "subscription", runId: one.runId, taskRef: one.ref, now: T0 }).opened).toBe(true);
     expect(pauseForAuth(store, { provider: "claude", authMode: "subscription", runId: one.runId, taskRef: one.ref, now: T0 }).opened).toBe(false);
     expect(openAuthPauses(store).map(pause => pause.provider)).toEqual(["claude"]);
+  });
+
+  test("no coding agent signed in (a first run): the task says so with the one command, and stops saying it once one is", () => {
+    store.createTask({ id: "t-first", title: "first task" }, T0);
+    const ref = store.refFor("built-in", "t-first").id;
+    store.placeTask(ref, REPO);
+    store.requestPlan(ref, T0);
+    const report = (claude: "missing" | "signed-out" | "ready", codex: "missing" | "signed-out" = "missing") => store.recordProviderReadiness(RUNNER, [
+      claude === "ready" ? { provider: "claude", state: "ready", reason: "installed (2.1.300); logged in", probe: "identity" }
+        : claude === "signed-out" ? { provider: "claude", state: "unavailable", reason: "`claude auth status` says not logged in", probe: "login" }
+        : { provider: "claude", state: "unavailable", reason: "`claude` is not installed on this runner's PATH", probe: "path" },
+      codex === "signed-out" ? { provider: "codex", state: "unavailable", reason: "`codex login status` says not logged in", probe: "identity" }
+        : { provider: "codex", state: "unavailable", reason: "`codex` is not installed on this runner's PATH", probe: "path" },
+      { provider: "openrouter", state: "unavailable", reason: "OPENROUTER_API_KEY is absent from this runner's environment", probe: "key" },
+      { provider: "gemini", state: "unavailable", reason: "`gemini` is not installed on this runner's PATH", probe: "path" },
+    ], T0);
+    const now = at(2_000);
+    const statusOf = () => workIndexPage(store, now, { principal: "operator", repos: null, includeUnplaced: true }).items.find(one => one.activeTaskId === "t-first")?.status;
+    // A builder that never reported its agents (a fake, an older one): nothing is claimed about sign-in.
+    expect(diagnoseTaskDispatch(store, "t-first", now)?.code).toBe("planning-ready");
+
+    // Nothing installed: install Claude Code and sign in, in one command (never a `config set plan` hint).
+    report("missing");
+    const install = agentlessCommand(false, false);
+    expect(install).toMatch(/^npm install -g @anthropic-ai\/claude-code(;| &&) claude auth login$/);
+    expect(diagnoseTaskDispatch(store, "t-first", now)).toMatchObject({ code: "signed-out", summary: "No coding agent is signed in", detail: `No coding agent is signed in. Run \`${install}\`, then it starts by itself.` });
+    expect(statusOf()).toMatchObject({ detail: `No coding agent is signed in. Run \`${install}\`, then it starts by itself.` });
+    // Claude Code installed but signed out: just the sign-in. Only Codex there: its sign-in.
+    report("signed-out");
+    expect(diagnoseTaskDispatch(store, "t-first", now)?.detail).toBe("No coding agent is signed in. Run `claude auth login`, then it starts by itself.");
+    expect(statusOf()?.detail).toBe("No coding agent is signed in. Run `claude auth login`, then it starts by itself.");
+    report("missing", "signed-out");
+    expect(diagnoseTaskDispatch(store, "t-first", now)?.detail).toBe("No coding agent is signed in. Run `codex login`, then it starts by itself.");
+    expect(statusOf()?.detail).toBe("No coding agent is signed in. Run `codex login`, then it starts by itself.");
+    // Codex's login check timed out: that proves no sign-out, so no command is recommended on either surface.
+    store.recordProviderReadiness(RUNNER, [{ provider: "claude", state: "unavailable", reason: "`claude` is not installed on this runner's PATH", probe: "path" },
+      { provider: "codex", state: "unavailable", reason: "`codex login status` timed out", probe: "identity-failed" }], T0);
+    expect(diagnoseTaskDispatch(store, "t-first", now)?.summary).not.toBe("No coding agent is signed in");
+    expect(statusOf()?.detail ?? "").not.toContain("No coding agent");
+    // Models chosen here once and then cleared: a sign-in won't fill them again, so nothing promises a start by itself.
+    report("signed-out");
+    store.setPhaseConfig("installation", "build", "claude", "claude-sonnet-5-5", "alex", T0);
+    expect(store.clearPhaseConfig("installation", "build")).toBe(true);
+    const choose = "No coding agent is signed in. Run `claude auth login`, then choose its models in Settings → Models.";
+    expect(diagnoseTaskDispatch(store, "t-first", now)?.detail).toBe(choose);
+    expect(statusOf()?.detail).toBe(choose);
+    // Signed in: the task waits only for its planner again, on every surface.
+    report("ready");
+    expect(diagnoseTaskDispatch(store, "t-first", now)?.code).toBe("planning-ready");
+    expect(statusOf()?.detail).not.toContain("No coding agent");
+  });
+
+  test("Claude Code's readiness reads its own login check on a subscription: a clear \"not logged in\" is unavailable, nothing else is", async () => {
+    const answers = (auth: { code: number; stdout: string }) => async (file: string, args: readonly string[]) =>
+      file !== "claude" ? { code: -1, stdout: "", stderr: "", notFound: true, timedOut: false }
+        : args[0] === "--version" ? { code: 0, stdout: "2.1.300 (Claude Code)\n", stderr: "", notFound: false, timedOut: false }
+        : { ...auth, stderr: "", notFound: false, timedOut: false };
+    const claudeOf = async (auth: { code: number; stdout: string }, mode: "subscription" | "api-key" = "subscription") =>
+      (await observeProviderReadiness(answers(auth), {}, ["claude"], undefined, () => mode))[0];
+    expect(await claudeOf({ code: 1, stdout: JSON.stringify({ loggedIn: false }) })).toMatchObject({ state: "unavailable", probe: "login" });
+    expect(await claudeOf({ code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }) })).toMatchObject({ state: "unknown" });
+    // An unreadable answer is not a "no": it stays unknown, as before.
+    expect(await claudeOf({ code: 2, stdout: "something else" })).toMatchObject({ state: "unknown" });
+    // Codex: only its clear "Not logged in" is a sign-out; a check that timed out or failed otherwise proves nothing.
+    const codexOf = async (answer: { code: number; stdout?: string; stderr?: string; timedOut?: boolean }) => (await observeProviderReadiness(async (file, args) =>
+      file !== "codex" ? { code: -1, stdout: "", stderr: "", notFound: true, timedOut: false }
+        : args[0] === "--version" ? { code: 0, stdout: "codex-cli 0.62.0\n", stderr: "", notFound: false, timedOut: false }
+        : { stdout: "", stderr: "", notFound: false, timedOut: false, ...answer }, {}, ["codex"]))[0];
+    expect(await codexOf({ code: 1, stderr: "Not logged in\n" })).toMatchObject({ state: "unavailable", probe: "identity" });
+    expect(await codexOf({ code: -1, timedOut: true })).toMatchObject({ state: "unavailable", probe: "identity-failed", reason: "`codex login status` timed out" });
+    expect(await codexOf({ code: 2, stderr: "error: something broke" })).toMatchObject({ state: "unavailable", probe: "identity-failed" });
+    // On an API key the login check says nothing about it: never asked, never unavailable for it.
+    expect(await claudeOf({ code: 1, stdout: JSON.stringify({ loggedIn: false }) }, "api-key")).toMatchObject({ state: "unknown" });
   });
 });

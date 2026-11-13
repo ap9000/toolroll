@@ -206,7 +206,7 @@ export function consoleRunning(store: Store, now: Date): boolean {
 
 /** The one plain line after an addition: where the project is now. */
 export function addedWords(name: string, added: boolean, running: boolean): string {
-  const where = running ? "it is in the console now" : "it will be in the console when Toolroll starts (toolroll up)";
+  const where = running ? "it is in the console now" : "run `toolroll` to start working on it";
   return added ? `Added ${name}; ${where}.` : `${name} was already added; ${where}.`;
 }
 

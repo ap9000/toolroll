@@ -837,7 +837,9 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
 
   // What no acceptance resolves (a failed check, a HIGH finding): Complete is refused, so no Accept is offered and
   // the one line says the next step.
-  const hardStop = hardBlockerOf(assignment);
+  // Who is looking counts too: a refusal the completion would give this person (a fast start that grew, protected work
+  // that needs someone other than its approver) offers no Accept or Mark complete, and the one line says why.
+  const hardStop = hardBlockerOf(assignment) ?? view.detail.completeRefusal ?? null;
   const blocked = hardStop ?? cantAcceptYetOf(proof?.verdict ?? null, proof?.reasons ?? [], accepted);
   const youCheck = panel.panel.youCheck;
   // Accept and finish posts the completion; when an acceptance is owed (the person's own checks, or a reason a
@@ -858,7 +860,9 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     unmet: matrix.filter(row => !["Met", "You check", CHECKED_AT_RELEASE].includes(requirementWordOf(row, null, checks === undefined ? undefined : checkBackingOf(checks)))).length,
     action: complete !== null ? "complete" : "accept",
     publishing: view.detail?.publishing ?? "other",
-    proof: proof !== null && proof.proof !== null && proof.proofProblem === null,
+    // On record: the machine's own saved requirement list (direct assessment; builders no longer write a manifest),
+    // or a readable manifest. A manifest that can't be read still refuses; a build with neither reads "Nothing on record".
+    proof: proof !== null && proof.proofProblem === null && (proof.proof !== null || proof.matrix.length > 0),
   });
   // Refuted: plain Accept and finish stays as allowed, in outline, and the one line before the acts (acts.line) says why.
   const settled = base === null || blocked === null ? base : { ...base, label: "Accept" as const, ready: false };
@@ -1912,6 +1916,9 @@ export type ResultDetail = {
   run: Run;
   receipt: CompletionReceiptView;
   assignment?: AssignmentSnapshot | null;
+  /** Why this viewer can't complete this exact result (assignment.ts personCompletionRefusal): a fast start that grew,
+   * or protected work that needs a person other than its approver. Null: nothing about who they are refuses it. */
+  completeRefusal?: string | null;
   handoff: StructuredHandoffView | null;
   proof: ProofBundleView | null;
   terminal: TerminalDiffView | null;

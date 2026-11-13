@@ -4,7 +4,7 @@
   "name": "KField",
   "version": "1.0.0",
   "status": "stable",
-  "summary": "A field in the one field family: dim label above, one filled surface (no outline, 12px radius, textareas auto-grow), hint and error below, tied to the control.",
+  "summary": "A field in the one field family: dim label above, one filled surface with a 3:1 field-line boundary (12px radius, textareas auto-grow), hint and error below, tied to the control.",
   "source": {
     "file": "k-field.tsx",
     "export": "KField",
@@ -36,6 +36,7 @@
   },
   "tokens": {
     "surface": "youi:toolroll/token/color.field",
+    "boundary": "youi:toolroll/token/color.field-line",
     "invalid": "youi:toolroll/token/color.danger",
     "ring": "youi:toolroll/token/color.ring"
   },
@@ -44,7 +45,7 @@
     "notes": [
       "16px text and 44px height on a phone.",
       "The label stays visible while typing; never a placeholder instead of a label.",
-      "No outline at rest: the visible label names the field; focus draws the 2px ink ring (3:1 or better); a transparent border keeps the edge in forced colours."
+      "A 1px field-line boundary at rest, 3:1 or better on paper in both themes (WCAG 1.4.11); focus draws the 2px ink ring (3:1 or better)."
     ]
   },
   "rules": [

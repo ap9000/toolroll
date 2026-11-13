@@ -712,19 +712,42 @@ const STOP_WAITS: ReadonlySet<string> = new Set(["build-finishing", "build-check
  * own and its family's root) must pass the shared work rule — no release, no protected work (declared or actually
  * changed), nothing a coordinator filed. Read inside the completion's transaction.
  */
+/** What refuses this person's completion of this exact result for who they are, read as acknowledgeCurrent reads it:
+ * a local owner's work rule (their own password-free session), a fast start that grew (or no person acting), or
+ * protected work this person may not complete. The result page reads
+ * it before it offers Accept or Mark complete, so it never offers a completion the server refuses. Words only here:
+ * acknowledgeCurrent still checks both at the write. */
+export function personCompletionRefusal(store: Store, taskId: string, runId: number, person: string | null, root: string,
+  local: { rootId: string } | null = null): string | null {
+  // A password-free local owner's own session first, as the completion checks it first (localCompletionRefusal).
+  const own = local === null || person === null ? null : localOwnerCompletionProblem(store, person, [taskId, local.rootId], runId, root);
+  return own ?? fastCompletionProblem(store, taskId, runId, person) ?? store.protectedResultProblem(taskId, familyChangedFiles(store, taskId, runId, root), person);
+}
+
 function localCompletionRefusal(store: Store, actor: string, taskIds: readonly string[], runId: number, root: string): { ok: false; reason: string; message: string } | null {
   const local = currentLocalOwner();
   if (local === null) return null;
   if (!localOwnerInFlight(local) || !localOwnerStandsNow(store, local)) return { ok: false, reason: "local-owner", message: LOCAL_OWNER_LAPSED };
-  const instead = localOwnerRefusal(store.accountOf(local.account)?.passwordSet === true, "/");
-  const then = instead.action === "Set a password" ? "Set a password first: run `toolroll password set`." : instead.message;
-  if (local.act !== "complete-task" || actor !== `operator:${local.account}`) return { ok: false, reason: "local-owner", message: `This needs your password. ${then}` };
+  if (local.act !== "complete-task" || actor !== `operator:${local.account}`) return { ok: false, reason: "local-owner", message: `This needs your password. ${localOwnerThen(store, local.account)}` };
+  const problem = localOwnerCompletionProblem(store, local.account, taskIds, runId, root);
+  return problem === null ? null : { ok: false, reason: "local-owner", message: problem };
+}
+
+/** What the local owner is told to do instead: set a password first, or the refusal's own words. */
+function localOwnerThen(store: Store, account: string): string {
+  const instead = localOwnerRefusal(store.accountOf(account)?.passwordSet === true, "/");
+  return instead.action === "Set a password" ? "Set a password first: run `toolroll password set`." : instead.message;
+}
+
+/** The one work rule a local owner's completion meets (scope.ts localWorkEligible), with what to do instead: the
+ * completion reads it in its own transaction (localCompletionRefusal), the result page before it offers Accept. */
+export function localOwnerCompletionProblem(store: Store, account: string, taskIds: readonly string[], runId: number, root: string): string | null {
   // An earlier build in the family whose inventory is missing, and that its record doesn't prove committed nothing, is
   // unknown here, and unknown counts as protected (localWorkEligible).
   const changed = familyChangedFiles(store, taskIds[0]!, runId, root, { missing: "unknown" });
   for (const taskId of new Set(taskIds)) {
-    const eligible = localWorkEligible(store, local.account, taskId, { act: "complete", changed });
-    if (!eligible.ok) return { ok: false, reason: "local-owner", message: `${eligible.message} ${then}` };
+    const eligible = localWorkEligible(store, account, taskId, { act: "complete", changed });
+    if (!eligible.ok) return `${eligible.message} ${localOwnerThen(store, account)}`;
   }
   return null;
 }

@@ -225,6 +225,7 @@ export const CONSOLE_FORMS = {
   leadAbout: formContract("POST /settings/lead/about", ["about"]),
   leadPromiseCancel: formContract("POST /settings/lead/promise/cancel", ["promise"]),
   leadQuick: formContract("POST /settings/lead/quick", ["enabled"]),
+  advancedView: formContract("POST /settings/advanced", ["advanced"]),
   leadCheck: formContract("POST /lead/check", ["return"]),
   leadOn: formContract("POST /settings/lead/on", ["agent", "return"]),
   welcomeSample: formContract("POST /welcome/sample", []),

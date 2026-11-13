@@ -68,9 +68,9 @@ describe("the v147 migration", () => {
     db.close();
     expect(updateSafeSchema(146)).toBe(true);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(147);
-    expect(SCHEMA_VERSION).toBe(159);
+    expect(SCHEMA_VERSION).toBe(160);
     const store = opened(openStore(file));
-    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     // Every account has a password, whatever its role or standing (the SSO-only one's hash still never matches).
     expect(store.handle.prepare("SELECT name, password_set FROM approver ORDER BY name").all().map(row => ({ ...row }))).toEqual(
       ["alex", "carol", "dana", "robin"].map(name => ({ name, password_set: 1 })));
@@ -83,7 +83,8 @@ describe("the v147 migration", () => {
     expect(localModeOf(store)).toBeNull();
     expect(installationCreatedBy(store)).toBeNull();
     expect(passwordlessOn(store)).toBe(true);
-    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "not-laptop" });
+    // Eight W2: initialisation no longer reads the creator fact; an upgraded install with accounts is refused for them.
+    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "has-accounts" });
     // The new shapes refuse what they can't name.
     expect(() => store.handle.prepare("UPDATE approver SET password_set = 2").run()).toThrow();
     expect(() => store.handle.prepare("UPDATE web_session SET authority = 'root'").run()).toThrow();
@@ -108,7 +109,7 @@ describe("the v147 migration", () => {
     const peek = new DatabaseSync(crashed, { readOnly: true });
     try { expect(peek.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(-146); } finally { peek.close(); }
     const resumed = opened(openStore(crashed));
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     expect(rowsOf(resumed)).toEqual(rowsOf(whole));
   });
 });
@@ -154,12 +155,12 @@ describe("local mode's initialization", () => {
     expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = 'local mode on'").get()!["n"]).toBe(0);
   });
 
-  test("a `serve` setup database with no account is never initialized (no creator fact)", () => {
+  test("eight W2: a database with no creator fact and no account is initialized by the write itself; its provenance is never rewritten (who may ask is the caller's guard: local-mode-init.test.ts)", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v147-"));
     const store = opened(openStore(join(dir, "serve.db")));
     expect(store.listApprovers()).toEqual([]);
-    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "not-laptop" });
-    expect(localModeOf(store)).toBeNull();
+    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: true, owner: "alex", generation: 1 });
+    expect(installationCreatedBy(store)).toBeNull();
   });
 });
 

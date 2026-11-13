@@ -1,6 +1,7 @@
 /** What one console request knows about itself, readable anywhere below its handler. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ServerResponse } from "node:http";
+import { provideAdvancedShown } from "../advanced-view.js";
 import { provideFormToken, providePasswordless, type Html } from "../html.js";
 import type { workCountsByProject, WorkIndexPage } from "../work-index.js";
 
@@ -40,6 +41,9 @@ export type RequestFacts = {
   workspaceValidator?: { key: string; revision: string; expiresAt: number; etag: string };
   /** Passwordless is on and this is a signed-in browser: ceremony password fields render as nothing (html.ts reauth). */
   passwordless?: boolean;
+  /** Settings → Advanced: false when the signed-in person's pages leave out advanced entry points (advanced.ts). Absent:
+   * shown. It only hides links; it never decides what may be read or done. */
+  advanced?: boolean;
   /** The browser session's open project (display only: the sidebar's picker names it). */
   openProject?: string | null;
   /** Easy start: a local owner with no password yet: every step-up field is the Set a password link instead (this href). */
@@ -60,6 +64,7 @@ export type RequestFacts = {
 export const requestContext = new AsyncLocalStorage<RequestFacts>();
 provideFormToken(() => requestContext.getStore()?.csrf);
 providePasswordless(() => requestContext.getStore()?.passwordless === true);
+provideAdvancedShown(() => requestContext.getStore()?.advanced !== false);
 
 /** Run a render outside a live request (a test, a background render) as if a browser session with this token asked. */
 export function withFormToken<T>(csrf: string, render: () => T): T {

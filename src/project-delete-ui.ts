@@ -4,6 +4,7 @@
  * then read exactly what goes and confirm with their password (or a fresh
  * sign-in with the identity provider). The repository itself stays.
  */
+import { advancedShownNow } from "./advanced-view.js";
 import { entryMovesOnWords, entryWords, type FallbackSetting } from "./fallback.js";
 import { sandboxRuntimeWords } from "./sandbox-runtime.js";
 import type { ProjectSandbox } from "./project-sandbox.js";
@@ -260,7 +261,11 @@ export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: st
       formRow("Recorded remote", view.remoteUrl ? null : "None. Landed work waits for your review.", view.remoteUrl ? mono(view.remoteUrl) : html``, view.remoteUrl ? "wide" : "inline"),
       disclose("Change remote", joinHtml([note("An owner or instance operator can run:"), codeLine("toolroll repos add <project> --remote <url>")])),
     ]) });
-  const settings = joinHtml([buildsHtml(view), accessHtml(view), networkHtml(view), fallbackHtml(view), writesHtml(view), sandboxHtml(view), checkAccessHtml(view), liveViewHtml(view), codeMapHtml(view)]);
+  // Settings → Advanced off: fallback agents, live view and the code map leave this page, except a fallback chain that is
+  // set and live view commands that are on (an active setting keeps its state and its way to turn it off).
+  const advanced = advancedShownNow();
+  const settings = joinHtml([buildsHtml(view), accessHtml(view), networkHtml(view), advanced || (view.fallback?.setting ?? null) !== null ? fallbackHtml(view) : "",
+    writesHtml(view), sandboxHtml(view), checkAccessHtml(view), advanced || view.liveView?.commands === true ? liveViewHtml(view) : "", advanced ? codeMapHtml(view) : ""]);
   if (!view.canDelete) return joinHtml([answer, project, settings, note("An instance operator can remove or delete a project.")]);
   const deleteBody = view.running.length > 0
     ? notice(`Its work is running: ${view.running.join(", ")}. Stop it before deleting the project.`)

@@ -2,6 +2,7 @@
  * reaches the running agent through the steering mailbox and closes that question, and an open agent's room holds
  * its viewer's pings while it is open. */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { advancedOnForEveryone } from "../test/advanced-on.js";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +63,7 @@ beforeEach(async () => {
   robinToken = robin.token;
   expect(store.setAccountProjects("robin", [repoB], "alex", T0)).toEqual({ ok: true });
   register(store, { name: "builder-1", host: "here", capacity: 4, repos: [repoA, repoB], now: new Date(), newToken: () => "tok-builder-1" });
+  advancedOnForEveryone(store, T0);
   server = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date() });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

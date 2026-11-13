@@ -1015,3 +1015,21 @@ export function routeStampProblem(stamp: unknown): string | null {
   if (model === null && s["chosen"] !== "legacy") return `a ${String(s["chosen"])} leg names an exact model — the stamp carries none`;
   return null;
 }
+
+// ---- readiness that speaks for one sign-in only (W1) ----------------------------------------------------------------
+
+/** A runner's observation of a provider's own subscription login (Claude Code's `claude auth status`): it says nothing
+ * about an API key, so it never stops a run that spends on one. Executable failures (not installed, a version check)
+ * stay provider-wide. */
+export const LOGIN_PROBE = "login";
+/** A runner's observation that the provider's command isn't on its PATH at all. */
+export const PATH_PROBE = "path";
+/** A login check that timed out or failed without saying "not logged in": unavailable, but proof of nothing. */
+export const IDENTITY_FAILED_PROBE = "identity-failed";
+
+/** Whether an observation stops a claim or a dispatch that would spend under `authMode`: any unavailable one, except a
+ * subscription login's when the spend is on an API key (or an agent's own login). */
+export function readinessRefuses(observation: Pick<ReadinessObservation, "state" | "probe"> | null, authMode: string): boolean {
+  if (observation === null || observation.state !== "unavailable") return false;
+  return !(observation.probe === LOGIN_PROBE && authMode !== "subscription");
+}

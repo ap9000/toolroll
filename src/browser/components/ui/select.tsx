@@ -7,7 +7,7 @@ import { cn } from "./utils.js";
 export const Select = SelectPrimitive.Root;
 export const SelectValue = SelectPrimitive.Value;
 export function SelectTrigger({ className, children, ...props }: ComponentProps<typeof SelectPrimitive.Trigger>) {
-  return <SelectPrimitive.Trigger data-slot="select-trigger" className={cn("flex h-9 w-full items-center justify-between gap-2 rounded-xl border border-transparent bg-field px-3 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring phone:h-11 phone:text-base [&>span]:truncate", className)} {...props}>
+  return <SelectPrimitive.Trigger data-slot="select-trigger" className={cn("flex h-9 w-full items-center justify-between gap-2 rounded-xl border border-field-line bg-field px-3 text-body outline-none focus-visible:ring-2 focus-visible:ring-ring phone:h-11 phone:text-base [&>span]:truncate", className)} {...props}>
     {children}<SelectPrimitive.Icon asChild><ChevronDown className="size-4 opacity-60" /></SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>;
 }

@@ -1,5 +1,6 @@
 /** The console's page chrome: the shell, navigation, page scripts, the stylesheet and shared presentation helpers. */
 import { accentStyle } from "../accent-colors.js";
+import { advancedShownNow } from "../advanced-view.js";
 import { APPROVAL_RULES_CSS } from "../approval-rules-ui.js";
 import { ASSIGNMENT_CSS } from "../assignment-ui.js";
 import { BACKUP_CSS } from "../backup-ui.js";
@@ -689,6 +690,8 @@ ${scopeStatus}</div>`;
   // destination it now lives under. The count rides Work: it is the
   // saturated needs-you count, exactly as the inbox row wore it.
   const primary = chrome.active === "code" ? "work" : primaryDestinationOf(chrome.active);
+  // Settings → Advanced: off, this person's rail and tabs leave out the advanced entry points (advanced-view.ts).
+  const advanced = advancedShownNow();
   const primaryItem = (key: "code" | "chat" | "work" | "projects" | "flows", href: string, label: string, count?: number): Html =>
     html`<a href="${href}" aria-label="${key === "work" && count !== undefined && count > 0 && chrome.inboxLabel !== undefined ? `${label}, ${chrome.inboxLabel}` : label}" title="${label}"${primary === key ? html` class="active" aria-current="page"` : ""}${key === "work" && count !== undefined ? html` data-waiting="${count}"` : ""}>\
 <span class="glyph">${NAV_ICONS[key] ?? ""}</span>${label}\
@@ -706,13 +709,13 @@ ${count !== undefined && count > 0 ? html` <span${chrome.inboxLabel === undefine
     // text row inside one of the two accordion groups below.
     ...(chrome.chat ? [primaryItem("chat", "/chat", "Chat")] : []),
     primaryItem("work", "/tasks", "Tasks", chrome.inboxCount),
-    primaryItem("flows", "/flows", "Flows"),
+    ...(advanced ? [primaryItem("flows", "/flows", "Flows")] : []),
     primaryItem("projects", "/projects", "Projects"),
     html`</nav>`,
     ...(chrome.active === "code" ? [] : [html`<a class="new-task" href="/tasks/new" aria-label="New task">+ New task</a>`]),
     html`<nav class="nav-groups">`,
-    navGroup("tools", "Work tools", workToolRows(chrome.projectScoped, chrome.chat, chrome.code), TOOL_KEYS.has(chrome.active)),
-    navGroup("settings", "Settings", settingsRows(chrome.projectScoped, chrome.settings), SETTINGS_KEYS.has(chrome.active)),
+    navGroup("tools", "Work tools", workToolRows(chrome.projectScoped, chrome.chat, chrome.code, advanced), TOOL_KEYS.has(chrome.active)),
+    navGroup("settings", "Settings", settingsRows(chrome.projectScoped, chrome.settings, advanced), SETTINGS_KEYS.has(chrome.active)),
     html`</nav>`,
     html`<span class="grow"></span>`,
     html`</aside>`,
@@ -787,7 +790,7 @@ ${count !== undefined && count > 0 ? html`<span class="dot-badge" role="img" ari
     html`<nav class="tabbar">`,
     ...(chrome.chat ? [tab("chat", "/chat", "Chat")] : []),
     tab("work", "/tasks", "Tasks", chrome.inboxCount),
-    tab("flows", "/flows", "Flows"),
+    ...(advanced ? [tab("flows", "/flows", "Flows")] : []),
     tab("projects", "/projects", "Projects"),
     html`</nav>`,
   ]);
@@ -886,11 +889,11 @@ export type NavRow = { key: Chrome["active"]; href: string; label: string; hint:
  * never disagree, and a project-scoped login sees exactly the rows it
  * saw before: moving a link never widens role or project visibility.
  */
-export function workToolRows(scoped = false, _offersChat = false, offersCode = false): NavRow[] {
+export function workToolRows(scoped = false, _offersChat = false, offersCode = false, advanced = true): NavRow[] {
   const rows: NavRow[] = [
     // D5: coding sessions are deprecated; /code still opens this release, but nothing links to it.
     // Live terminals: an operator's own Claude Code, Codex or shell, in a real terminal (docs/plans/live-terminal.md).
-    ...(offersCode ? [{ key: "code" as const, href: "/term", label: "Live", hint: "your own terminals: Claude Code, Codex or a shell" }] : []),
+    ...(offersCode && advanced ? [{ key: "code" as const, href: "/term", label: "Live", hint: "your own terminals: Claude Code, Codex or a shell" }] : []),
     { key: "inbox", href: "/", label: "Home", hint: "what needs you, what runs, and what waits" },
     { key: "board", href: "/tasks?view=board", label: "Board", hint: "lanes by state, with the order view" },
     { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
@@ -899,9 +902,11 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
     { key: "ledger", href: "/ledger", label: "Audit log", hint: "who acted, what happened, and the result" },
     { key: "spend", href: "/spend", label: "Spend", hint: "what agent work cost, and monthly budgets" },
   ];
-  return scoped ? rows.filter(row => row.key !== "workbench" && row.key !== "spend") : rows;
+  // Settings → Advanced off: no Spend row (Settings → Advanced lists it).
+  const shown = advanced ? rows : rows.filter(row => row.key !== "spend");
+  return scoped ? shown.filter(row => row.key !== "workbench" && row.key !== "spend") : shown;
 }
-export function settingsRows(scoped = false, offersSettings = false): NavRow[] {
+export function settingsRows(scoped = false, offersSettings = false, advanced = true): NavRow[] {
   const rows: NavRow[] = [
     ...(offersSettings ? [{ key: "settings" as const, href: "/settings", label: "Settings", hint: "agent defaults, alerts, credentials" }] : []),
     { key: "fleet", href: "/fleet", label: "Fleet", hint: "who is working, and on what" },
@@ -910,7 +915,10 @@ export function settingsRows(scoped = false, offersSettings = false): NavRow[] {
     { key: "mode", href: "/mode", label: "Operating mode", hint: "how much this project may do without asking" },
     { key: "system", href: "/system", label: "System", hint: "workers, providers, and grants" },
   ];
-  return scoped ? rows.filter(row => row.key === "people" || row.key === "settings") : rows;
+  // Settings → Advanced off: no Fleet or Operating mode rows (Settings → Advanced lists both; an active mode keeps its
+  // banner on every page it rides). Requirements stays: it says what waiting work is missing.
+  const shown = advanced ? rows : rows.filter(row => row.key !== "fleet" && row.key !== "mode");
+  return scoped ? shown.filter(row => row.key === "people" || row.key === "settings") : shown;
 }
 /** Which accordion group opens by default for a given active page. */
 export const TOOL_KEYS = new Set<Chrome["active"]>(["code", "inbox", "board", "queue", "tasks", "workbench", "recipes", "ledger", "spend"]);

@@ -13,7 +13,7 @@ import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
-import { checklistLines, mergeChecklistOf, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
+import { checklistLines, mergeChecklistOf, noCheckSetWords, NOT_RECORDED, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
 import { revisionFormOf, workspaceOf } from "../test/serve-kit.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
@@ -33,7 +33,7 @@ function filed(id: string, at: Date, approved = true): number {
   }
   return ref;
 }
-function built(id: string, at: Date, kind: "verified" | "refuted" | "failed" | "unchecked" = "verified"): number {
+function built(id: string, at: Date, kind: "verified" | "refuted" | "failed" | "unchecked" | "person" | "attested" = "verified"): number {
   const ref = filed(id, at);
   const authority = store.routeAuthorityFor(ref, "builder");
   if (!authority?.ok) throw new Error("route");
@@ -49,10 +49,12 @@ function built(id: string, at: Date, kind: "verified" | "refuted" | "failed" | "
   store.recordOutcomeFacts(run, { headRevision: head, handoff: "Changed the footer." });
   store.finishRun(run, { outcome: "built", committed: true, now: at });
   store.setTaskState(id, "done", at);
-  const reasons = kind === "refuted" ? ["claimed changed path not in the sealed diff: src/other.ts"] : [];
-  store.saveProofVerdict(run, kind === "refuted" ? "refuted" : "verified", reasons, at, [{ id: "c1", statement: "The footer link opens.", requiredEvidence: ["check"], state: kind === "refuted" ? "failed" : "pass", detail: [], answered: [], review: null }] as never, kind === "refuted" ? "refuted" : "verified");
+  const reasons = kind === "refuted" ? ["claimed changed path not in the sealed diff: src/other.ts"]
+    : kind === "person" ? ['criterion "c1" requires manual-review evidence — an operator must accept it before this can verify'] : [];
+  const verdict = kind === "refuted" ? "refuted" : kind === "person" ? "short" : kind === "attested" ? "attested" : "verified";
+  store.saveProofVerdict(run, verdict, reasons, at, [{ id: "c1", statement: "The footer link opens.", requiredEvidence: ["check"], state: kind === "refuted" ? "failed" : kind === "person" ? "manual-review" : "pass", detail: [], answered: [], review: null }] as never, verdict);
   storeEvidence(store, ev, run, "terminal-diff", "diff.patch", Buffer.from("diff --git a/src/footer.ts b/src/footer.ts\n--- a/src/footer.ts\n+++ b/src/footer.ts\n@@ -1 +1 @@\n-a\n+b\n"), "git diff (exit 0)", at, { captureStatus: "ok" });
-  if (kind !== "unchecked") {
+  if (kind !== "unchecked" && kind !== "attested") {
     storeEvidence(store, ev, run, "check-log", "checks.txt", Buffer.from("12 passed\n"), "npm test", at, { captureStatus: "ok" });
     sealVerificationReceipt(store, ev, run, head, store.liveVerifyCommand(REPO)!, { configured: true, ran: true, exitCode: 0 }, at);
   }
@@ -90,6 +92,7 @@ beforeAll(async () => {
   built("refuted", ago(50), "refuted");
   built("unchecked", ago(45), "unchecked");
   built("noted", ago(40));
+  built("person", ago(35), "person");
   server = createDecisionServer({ store, evidenceRoot: ev, repo: REPO, clock: () => NOW });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const address = server.address();
@@ -141,6 +144,14 @@ describe("each row reads its one source", () => {
     expect(row.act).toMatchObject({ kind: "fix", run: runs["refuted"] });
     expect(row.act?.kind === "fix" ? row.act.note : "").not.toBe("");
     expect(rowOf("refuted", "checks").mark).toBe("yes");
+  });
+
+  test("the requirements: one only a person can confirm, not confirmed yet, waits on them; checks passing don't make it met", () => {
+    expect(rowOf("person", "checks").mark).toBe("yes");
+    expect(rowOf("person", "requirements")).toMatchObject({ mark: "waiting", say: "You check 1 requirement.", act: null });
+    const list = listOf("person");
+    expect(list.answer).toBe("not-yet");
+    expect(list.sentence).toBe("Not yet: requirements met — You check 1 requirement.");
   });
 
   test("review comments: a saved note not sent back yet is in the way, and only that row changes", () => {
@@ -203,5 +214,25 @@ describe("one checklist on every surface", () => {
     expect(family.versions.length).toBe(2);
     const consumed = store.allDiffComments(runs["refuted"]!).filter(one => one.consumedBy === family.current.id);
     expect(consumed.map(one => one.note)).toEqual([fix.note]);
+  });
+});
+
+describe("a project with no check set", () => {
+  test("says where to set one and offers no Run checks; once a command exists, a result it didn't run on keeps Run checks", () => {
+    const live = store.liveVerifyCommand(REPO)!;
+    try {
+      store.clearVerifyCommand(REPO, "sam", ago(30));
+      built("no-check", ago(25), "attested");
+      expect(rowOf("no-check", "checks")).toEqual({ key: "checks", label: "Project checks passed on this commit", mark: "no",
+        say: "No check is set for merge-ready. Set one in Settings → Projects → merge-ready → Checks.", act: null });
+      expect(noCheckSetWords(REPO)).toBe("No check is set for merge-ready. Set one in Settings → Projects → merge-ready → Checks.");
+      // Never says a check passed or ran when none did.
+      expect(checklistLines(listOf("no-check")).join("\n")).not.toMatch(/Passed on|Running now/);
+    } finally {
+      store.setVerifyCommand({ repo: REPO, command: live.command, timeoutMs: live.timeoutMs, approvedBy: "sam" }, ago(20));
+    }
+    // The same result, now that the project has a check: it didn't run on this commit, so Run checks stays.
+    expect(rowOf("no-check", "checks")).toMatchObject({ mark: "no", act: { kind: "run-checks", run: runs["no-check"] } });
+    expect(rowOf("no-check", "checks").say).not.toMatch(/No check is set/);
   });
 });

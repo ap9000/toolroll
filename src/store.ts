@@ -18,6 +18,7 @@ import { V156_SCHEMA, V156_STEPS } from "./fallback-schema.js";
 import { V158_ADDED_COLUMNS, V158_SCHEMA, V158_STEPS, LEAD_FAILURE_DETAILS, LEAD_ROUTES, type LeadFailureDetail, type LeadRoute } from "./lead-latency-schema.js";
 import { V157_SCHEMA, V157_STEPS } from "./chat-live-schema.js";
 import { V159_ADDED_COLUMNS, V159_SCHEMA, V159_STEPS } from "./one-step-chat-schema.js";
+import { V160_BACKFILL, V160_SCHEMA, V160_STEPS } from "./advanced-schema.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -1215,7 +1216,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v159 adds, and changes no saved row (docs/plans/one-step-chat.md): the lead turn a chat start's preview was prepared
 // in (fast_preview.turn) and a typed yes's record (chat_typed_start, a new table). V159_SCHEMA, V159_ADDED_COLUMNS
 // (one-step-chat-schema.ts): saved rows read NULL.
-export const SCHEMA_VERSION = 159;
+// v160 adds, and changes no saved row: each person's "Show advanced features" (view_preference, a new table;
+// advanced-schema.ts), made once with an ON row for every account present then, so nobody loses a menu item.
+export const SCHEMA_VERSION = 160;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1353,7 +1356,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1617,7 +1620,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2027,6 +2030,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
+export { V160_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6011,7 +6015,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6412,6 +6416,25 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   step("one-step-chat-tables");
   for (const [table, columns] of Object.entries(V159_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   step("one-step-chat-columns");
+  // v160: each person's "Show advanced features". The table and its one-time ON rows for the accounts present now are
+  // made in one transaction, only when the table isn't there yet: a resumed epoch finds both or neither, and a later
+  // upgrade (or an account made after this one) never gets an ON row it didn't choose.
+  // A table already here (a resumed epoch, a later upgrade) must be exactly this build's shape.
+  if (tableExists(db, "view_preference")) {
+    const damaged = viewPreferenceShapeProblem(db);
+    if (damaged !== null) throw new Error(`${file}: refusing to open — ${damaged}`);
+  } else {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(V160_SCHEMA);
+      db.exec(V160_BACKFILL);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  step("advanced-preference");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -11104,6 +11127,17 @@ export class Store {
       this.db
         .prepare("UPDATE approver SET revoked_at = ?, revoked_by = ?, generation = generation + 1 WHERE name = ?")
         .run(stamp, by, name);
+      // v160: the person's own view preference goes with the account (a name is never reused). Only a display
+      // preference: a damaged or missing table never blocks a revocation (a savepoint keeps its failure to itself, and
+      // with the account revoked the row is never read for anyone).
+      this.db.exec("SAVEPOINT view_preference_cleanup");
+      try {
+        this.db.prepare("DELETE FROM view_preference WHERE account = ?").run(name);
+        this.db.exec("RELEASE view_preference_cleanup");
+      } catch {
+        this.db.exec("ROLLBACK TO view_preference_cleanup");
+        this.db.exec("RELEASE view_preference_cleanup");
+      }
       const invites = this.db
         .prepare("UPDATE invite SET revoked_at = ? WHERE minted_by = ? AND revoked_at IS NULL AND consumed_at IS NULL")
         .run(stamp, name);
@@ -14665,6 +14699,7 @@ export class Store {
    * per provider. Callers authenticate the runner first (runner.ts). */
   recordProviderReadiness(runner: string, observations: readonly Omit<ReadinessObservation, "runner" | "observedAt">[], now: Date): void {
     this.transact(() => {
+      let changed = false;
       for (const one of observations) {
         // The same observation again only renews its time: a quiet write that moves no workspace revision.
         const renewed = this.db.prepare("UPDATE provider_readiness SET observed_at = ? WHERE runner = ? AND provider = ? AND state = ? AND reason = ? AND probe IS ?")
@@ -14677,7 +14712,10 @@ export class Store {
                                                           probe = excluded.probe, observed_at = excluded.observed_at`,
           )
           .run(runner, one.provider, one.state, one.reason, one.probe, now.toISOString());
+        changed = true;
       }
+      // A changed answer (an agent signed in since the last look) is a readiness change: the watch passes again now.
+      if (changed) this.bumpWake();
     });
   }
 
@@ -26685,29 +26723,36 @@ export function installationCreatedBy(store: Store): string | null {
 
 export type InitLocalModeResult =
   | { ok: true; owner: string; generation: number }
-  | { ok: false; reason: "not-laptop" | "no-fence" | "has-accounts" | "already" };
+  | { ok: false; reason: "no-fence" | "has-accounts" | "already" | "console-running" };
 
 /**
- * Turn local mode on for a database `up --laptop` made, once (plan F). Only when: that database records created-by
- * laptop, it has no account yet, it never had local mode, and the caller found a fence on this machine (diagnostic
- * only: it decides whether local mode is offered). One transaction: the owner (no password: a hash of random bytes
- * that are thrown away, password_set 0), the local_mode row and one ledger line, each inserted only if nothing is
- * there. A retry or a racing start inserts nothing and writes no second ledger line. Migration and the update
- * rehearsal never call this.
+ * Turn local mode on for a database with no account, once (plan F; eight W2: however the database was made — `up
+ * --laptop`, or `welcome`/`status`/`repos add` first). Only when: it has no account row of any kind (viewer-only and
+ * revoked ones count: accounts are never deleted), it never had local mode (on or off), and the caller found a fence
+ * on this machine (diagnostic only: it decides whether local mode is offered). The caller proves a person at this
+ * computer's terminal first (operate.ts initLocalModeForPerson); this is the write. One transaction: the owner (no
+ * password: a hash of random bytes that are thrown away, password_set 0), the local_mode row and one ledger line,
+ * each inserted only if, read again inside it, there is still no account and no local mode. A retry or a racing start
+ * inserts nothing and writes no second ledger line. Creation provenance (created-by) is neither read nor written.
+ * Migration and the update rehearsal never call this.
  */
-export function initLocalMode(store: Store, input: { owner: string; fenceAvailable: boolean; now: Date }): InitLocalModeResult {
+export function initLocalMode(store: Store, input: { owner: string; fenceAvailable: boolean; now: Date; consolesProvenDown?: ReadonlySet<string> }): InitLocalModeResult {
   if (!input.fenceAvailable) return { ok: false, reason: "no-fence" };
   // Hashed before the transaction (scrypt is slow); the random bytes are never kept anywhere.
   const unusable = hashPassword(randomBytes(32).toString("hex"));
   return store.transact((): InitLocalModeResult => {
-    if (installationCreatedBy(store) !== "laptop") return { ok: false, reason: "not-laptop" };
-    if (store.handle.prepare("SELECT 1 FROM local_mode WHERE id = 1").get() !== undefined) return { ok: false, reason: "already" };
+    if (store.handle.prepare("SELECT 1 FROM local_mode").get() !== undefined) return { ok: false, reason: "already" };
+    // A console serving this database right now (a standalone `serve` claims no instance record): never turned
+    // password-free underneath it (Codex review of #377, finding 2).
+    // Round 2 (finding A): any console row not stopped counts, unless the caller proved that very row's address isn't
+    // listening (operate.ts consolesProvenDown) — a paused console with no fresh heartbeat still blocks.
+    if (consoleServingNow(store, input.now, input.consolesProvenDown) !== null) return { ok: false, reason: "console-running" };
     const stamp = input.now.toISOString();
     const made = store.handle.prepare(`INSERT INTO approver (name, credential_hash, added_at, generation, password_set)
       SELECT ?, ?, ?, 1, 0 WHERE NOT EXISTS (SELECT 1 FROM approver) AND NOT EXISTS (SELECT 1 FROM local_mode)`).run(input.owner, unusable, stamp);
     if (Number(made.changes) !== 1) return { ok: false, reason: "has-accounts" };
     store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, ?, 1, 1, ?, ?)").run(input.owner, stamp, stamp);
-    store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new laptop install: the owner has no password yet" });
+    store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new install with no account, started at its own terminal: the owner has no password yet" });
     return { ok: true, owner: input.owner, generation: 1 };
   });
 }
@@ -27179,4 +27224,87 @@ export function checkCleanupTaskOf(store: Store, checkId: number, runner: string
     WHERE r.id = ? AND r.runner = ? AND r.state IN ('passed','failed') AND r.settled_at IS NULL
       AND r.settle_by = ? AND r.settle_until > ?`).get(BUILT_IN, checkId, runner, attempt, now.toISOString());
   return row === undefined ? null : Number(row["ref"]);
+}
+
+/**
+ * Eight W2: whether this database could still become password-free — one read: no account row of any kind (viewer-only
+ * and revoked ones count) and no local-mode state ever recorded (on or off). Never a grant: initLocalMode reads both
+ * again inside the transaction that writes.
+ */
+export function localModeCandidate(store: Store): boolean {
+  const row = store.handle.prepare("SELECT (SELECT count(*) FROM approver) AS accounts, (SELECT count(*) FROM local_mode) AS local").get();
+  return row !== undefined && Number(row["accounts"]) === 0 && Number(row["local"]) === 0;
+}
+
+/** How long a console's lifecycle heartbeat (every 15 s) stays proof that it is serving: three beats and a margin. */
+export const CONSOLE_BEAT_FRESH_MS = 60_000;
+
+/** Codex review of #377, round 2 (finding B): a console's lifecycle identity names its bind address as well as its
+ * port, so two consoles of one database on one port at different addresses never share (or overwrite) a row. */
+export function consoleComponent(host: string, port: number): string {
+  return `console:${host}:${port}`;
+}
+
+/** A console row's address: `console:<host>:<port>`, or the older `console:<port>` (host unknown: null). */
+export function consoleAddressOf(component: string): { host: string | null; port: number | null } {
+  const rest = component.slice("console:".length);
+  const cut = rest.lastIndexOf(":");
+  const port = Number(cut === -1 ? rest : rest.slice(cut + 1));
+  return { host: cut === -1 ? null : rest.slice(0, cut), port: Number.isInteger(port) && port > 0 && port < 65_536 ? port : null };
+}
+
+/** The lifecycle row of a console of this database on `port`, at any address (either identity form), or null. */
+export function consoleRowForPort(store: Store, port: number): LifecycleRow | null {
+  const old = lifecycleOf(store, `console:${port}`);
+  if (old !== null) return old;
+  const rows = store.handle.prepare("SELECT * FROM service_lifecycle WHERE component LIKE 'console:%' ORDER BY beat_at DESC").all().map(lifecycleRowOf);
+  return rows.find(one => consoleAddressOf(one.component).port === port) ?? null;
+}
+
+/** One console row that isn't stopped: its address, whether it beat within CONSOLE_BEAT_FRESH_MS (`beatRecent`), and the
+ * key that names exactly this row as it reads now (component, holder and last beat), for consolesProvenDown. */
+export type OpenConsoleRow = { key: string; host: string | null; port: number | null; beatRecent: boolean };
+export function openConsoleRows(store: Store, now: Date): OpenConsoleRow[] {
+  const since = now.getTime() - CONSOLE_BEAT_FRESH_MS;
+  return store.handle.prepare("SELECT * FROM service_lifecycle WHERE component LIKE 'console:%' AND state <> 'stopped' ORDER BY beat_at DESC").all().map(lifecycleRowOf)
+    .map(row => ({ key: `${row.component}|${row.holder}|${row.beatAt}`, ...consoleAddressOf(row.component), beatRecent: Date.parse(row.beatAt) > since }));
+}
+
+/**
+ * Codex review of #377, findings 2 and A: a console that may be serving this database — by its lifecycle row
+ * (`console:<host>:<port>` or the older `console:<port>`; `up`'s console and a standalone `serve` both write one). Every
+ * row that isn't stopped counts, whatever its heartbeat (a paused process beats nothing), except a stale one whose exact
+ * row the caller proved isn't listening (`provenDown`, keys from openConsoleRows). A fresh row always counts. Null when
+ * none. A row that can't be read is reported as serving (fail closed).
+ */
+export function consoleServingNow(store: Store, now: Date, provenDown: ReadonlySet<string> = new Set()): { port: number | null } | null {
+  try {
+    const open = openConsoleRows(store, now).find(row => row.beatRecent || !provenDown.has(row.key));
+    return open === undefined ? null : { port: open.port };
+  } catch { return { port: null }; }
+}
+
+/** Settings → Advanced (v160, advanced-schema.ts): this person's own "Show advanced features" row, or null when they
+ * have none (advanced.ts decides what no row means). Read-only. */
+export function advancedPreferenceOf(store: Store, account: string): boolean | null {
+  const row = store.handle.prepare("SELECT advanced FROM view_preference WHERE account = ?").get(account);
+  return row === undefined ? null : Number(row["advanced"]) === 1;
+}
+
+/** Write one person's choice (advanced.ts setAdvancedPreference proves the person inside the caller's transaction
+ * first). Only an existing, unrevoked account gets a row; false when there is none. */
+export function writeAdvancedPreference(store: Store, account: string, on: boolean, now: Date): boolean {
+  const written = store.handle.prepare(`INSERT INTO view_preference (account, advanced, source, updated_at)
+    SELECT name, ?, 'person', ? FROM approver WHERE name = ? AND revoked_at IS NULL
+    ON CONFLICT(account) DO UPDATE SET advanced = excluded.advanced, source = 'person', updated_at = excluded.updated_at`).run(on ? 1 : 0, now.toISOString(), account);
+  return Number(written.changes) === 1;
+}
+
+/** v160's table, as a current or resumed file must hold it (advanced-schema.ts): there, and exactly this build's DDL.
+ * Null when it is; else what is wrong, in words. */
+function viewPreferenceShapeProblem(db: Database): string | null {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'view_preference'").get();
+  if (row === undefined) return "the view_preference table is missing";
+  const want = canonicalDdl(V160_SCHEMA.trim().replace(/;$/, "")).trim();
+  return canonicalDdl(String(row["sql"])).trim() === want ? null : "the view_preference table has an unknown shape";
 }

@@ -362,6 +362,8 @@ export type BrowserProjectRow = {
   openedAt: string | null;
   /** The row's chip: something waits on this person, or runs; null for neither. */
   status: 'needs' | 'running' | null;
+  /** How many of its tasks wait on this person (the chip's "2 waiting on you"); 0 when none or not scanned. */
+  waiting: number;
   /** Its counts in words ("2 need you · 1 running"); null when not scanned. */
   summary: string | null;
 };
@@ -788,6 +790,8 @@ export type BrowserAgentsSystem = {
 export type BrowserView = BrowserTasksView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView | BrowserHomeView | BrowserSearchView;
 
 export type BrowserWorkspace = {
+  /** Settings → Advanced: false when this person's pages leave out advanced entry points (absent: shown). Display only. */
+  advanced?: false;
   /** The one Needs-you count (tasks only) with its scope: the Tasks list's own count for the project in view (`scope`,
    * a project path) or every project (null), its words ("5 need you in payments-api") and the list it opens. */
   needsYou?: { count: number; saturated: boolean; scope: string | null; label: string; href: string };
@@ -976,7 +980,7 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
   });
 }
 
-export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string): BrowserNavigationItem[] {
+export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string, advanced = true): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
   const under = (...roots: string[]) => roots.some(root => pathname === root || pathname.startsWith(`${root}/`));
   // The rail (UI revamp, wave B; Chat under Home, live-pages-and-home.md B1): Home carries the one Needs-you count and
@@ -988,10 +992,15 @@ export function browserNavigationOf(path: string, project: string | null = null,
     { label: 'Chat', href: '/chat', active: under('/chat') },
     { label: 'Tasks', href: `/tasks${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
       active: under('/tasks', '/t', '/r', '/review') },
-    { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
-    { label: 'Agents', href: '/agents', active: under('/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
+    // Settings → Advanced off: Flows and Agents leave the rail (Settings → Advanced lists both; their pages still open).
+    ...(advanced ? [
+      { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
+      { label: 'Agents', href: '/agents', active: under('/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
+    ] : []),
     { label: 'Projects', href: '/projects', active: under('/projects') },
-    { label: 'Settings', href: '/settings', active: under('/settings', '/spend', '/mode', '/people', '/ledger', '/menu') },
+    // With Flows and Agents off the rail, their pages (opened from Settings → Advanced) sit under Settings.
+    { label: 'Settings', href: '/settings', active: under('/settings', '/spend', '/mode', '/people', '/ledger', '/menu',
+      ...(advanced ? [] : ['/flows', '/recipes', '/kits', '/routines', '/agents', '/peek', '/term', '/fleet', '/system', '/runs'])) },
   ];
 }
 
