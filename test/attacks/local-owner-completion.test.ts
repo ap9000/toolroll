@@ -302,3 +302,36 @@ describe("a revision whose source build saved no diff inventory, as the local ow
     expect(completed(accepted.runId)).toBe(1);
   });
 });
+
+describe("the result page, as the local owner: never a plain Accept or Mark complete the completion then refuses", () => {
+  type Selected = { complete: unknown; decision: { ready: boolean } | null; acts: { primary: string | null; line: string | null } };
+  const selectedOf = async (cookie: string, id: string, runId: number): Promise<Selected> =>
+    (JSON.parse((await world.send(`/review?result=${id}&run=${runId}&format=workspace`, "GET", { cookie })).body) as { view: { selected: Selected } }).view.selected;
+
+  for (const kind of REFUSED) {
+    test(`a ${kind} result with its check passed and every requirement met: no completion offered, and the line says what to do`, async () => {
+      const { cookie, csrf } = await world.localSession();
+      const { id, runId, digest } = ready(kind);
+      const selected = await selectedOf(cookie, id, runId);
+      expect(selected.complete).toBeNull();
+      expect(selected.decision?.ready ?? false).toBe(false);
+      expect(selected.acts.primary).not.toBe("accept");
+      expect(selected.acts.line ?? "").toContain("toolroll password set");
+      const task = await world.send(`/t/${id}?tab=result&run=${runId}`, "GET", { cookie });
+      expect(task.body).not.toContain(`/t/${id}/complete`);
+      // What the page says is what the completion says when it is pressed anyway.
+      const answer = await world.post(`/t/${id}/complete`, cookie, { csrf, receipt: digest, run: String(runId) });
+      expect(answer.status).toBe(409);
+      expect(answer.body.replace(/&#39;/g, "'").replace(/&#x27;/g, "'").replace(/&quot;/g, '"')).toContain(selected.acts.line!.split(" Set a password first")[0]!);
+    });
+  }
+
+  test("an ordinary result still reads plain Accept, ready, with its completion", async () => {
+    const { cookie } = await world.localSession();
+    const { id, runId } = ready("ordinary");
+    const selected = await selectedOf(cookie, id, runId);
+    expect(selected.complete).not.toBeNull();
+    expect(selected.decision?.ready).toBe(true);
+    expect(selected.acts.primary).toBe("accept");
+  });
+});

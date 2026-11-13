@@ -1183,7 +1183,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         // The completion's own refusals for this viewer, by the same reading the server's completion uses: a person is a
         // signed-in browser; anything else is no person.
         const completeRefusal = assignment?.state !== "ready-to-check" || assignment.receipt === null ? null
-          : personCompletionRefusal(runtime.store, assignment.receipt.taskId, run.id, who.via === "cookie" ? who.name : null, runtime.evidenceRoot);
+          : personCompletionRefusal(runtime.store, assignment.receipt.taskId, run.id, who.via === "cookie" ? who.name : null, runtime.evidenceRoot,
+              who.via === "cookie" && who.authority === "local-owner" ? { rootId: assignment.rootId } : null);
         return { assignment, completeRefusal };
       })(),
       handoff,
