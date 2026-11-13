@@ -241,6 +241,9 @@ const passedNow = (check: ChecksFact | null | undefined): boolean => {
   return state === "passed" || (state === "running" && check?.status === "passed");
 };
 
+/** Where a person sets a project's check, said the same wherever no check is set. */
+export const SET_A_CHECK = "Set one in Settings → Projects → Checks.";
+
 /** A result whose check this surface didn't read: no pass is claimed, the result page says. */
 const UNREAD_CHECK = "Open the result to see its checks.";
 
@@ -343,7 +346,9 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
     return {
       token: "agent-attested",
       label: "Ready · no project check set up",
-      detail: withPublication("No project check is set up, so the checks listed are the agent's own report."),
+      // Off is a choice with a command kept for release: no "set one" there.
+      detail: withPublication(result.checkLevel === "off" ? "No project check is set up, so the checks listed are the agent's own report."
+        : `No project check is set up, so the checks listed are the agent's own report. ${SET_A_CHECK}`),
       tone: "neutral",
       action: { label: OPEN_RESULT, kind: "open-result" },
     };
@@ -562,9 +567,12 @@ export const RESULT_DECISION_SENTENCE = "Review the change, then accept it or se
 
 /** What the result page's Accept says, from facts it already shows: the
  * recorded checks, the requirements not met, whether the saved proof reads,
- * and what the button posts. "Accept and finish" only when everything is met
- * and the checks passed; otherwise "Accept without checks" and one line naming
- * what. The person's own checks are the page's to add (acceptWithChecksOf).
+ * and what the button posts. "Accept" only when everything is met and the
+ * checks passed; otherwise one line naming what, and the label names the gap:
+ * "Accept without checks" only when the checks didn't pass (or didn't run),
+ * "Accept anyway" for any other gap. The label is words only: what the button
+ * posts and what the server checks never change with it. The person's own
+ * checks are the page's to add (acceptWithChecksOf).
  * `effect` says what pressing it does, in the action's own terms. */
 export type AcceptFacts = {
   checks: "passed" | "failed" | "not-run" | "off" | "running" | "unavailable" | null;
@@ -573,7 +581,8 @@ export type AcceptFacts = {
   action: "complete" | "accept";
   /** `pull-request`: one can be opened from the task after; `off`: publishing isn't set up; `other`: neither is said. Accept itself never publishes. */
   publishing: "pull-request" | "off" | "other";
-  /** False when the saved proof is missing or can't be read: nothing on record says what was met. */
+  /** False when nothing on record says what was met: no saved requirement list from the machine's assessment and no
+   * readable proof manifest, or a manifest that can't be read. */
   proof: boolean;
 };
 export type AcceptWords = { label: AcceptLabel; ready: boolean; why: string | null; effect: string };
@@ -593,7 +602,8 @@ export function acceptWordsOf(facts: AcceptFacts): AcceptWords {
     : facts.publishing === "pull-request" ? "Finishes the task. No pull request opens; you can open one from the task after."
     : facts.publishing === "off" ? "Finishes the task. The branch stays; publishing isn't set up."
     : "Finishes the task. Nothing is published.";
-  return { label: ready ? "Accept" : "Accept without checks", ready, why: ready ? null : `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`, effect };
+  const checksGap = facts.checks !== "passed" && facts.checks !== "off";
+  return { label: ready ? "Accept" : checksGap ? "Accept without checks" : "Accept anyway", ready, why: ready ? null : `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`, effect };
 }
 
 export function resultHeadlineOf<T extends DisplayStatus>(status: T): T {

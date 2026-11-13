@@ -28,7 +28,12 @@ export type CheckSettingsView = {
   fast?: { on: boolean };
   said: string | null;
   problem: string | null;
+  /** A password-free local owner (no password set): the command line asks for a password, so the page says to set one first. */
+  needsPassword?: boolean;
 };
+
+/** A path as one shell word: plain when it is only safe characters, else single-quoted. */
+const shellWord = (value: string): string => /^[A-Za-z0-9_./~@%+=:,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 
 const list = (items: readonly string[]): Html => html`<ul class="k-note">${items.map(one => html`<li>${one}</li>`)}</ul>`;
 
@@ -72,7 +77,9 @@ export function checkSettingsHtml(view: CheckSettingsView): Html {
         ])]) });
   const full = settingsSection({ id: "full-check", title: "Full check", state: view.full === null ? " · None yet" : "",
     body: view.full === null
-      ? joinHtml([note("Approve one from the command line:"), codeLine(`toolroll verify set --repo … --command "…"`)])
+      ? joinHtml([note("Set the command that tests this project from the command line, for example npm test:"),
+          codeLine(`toolroll verify set --repo ${shellWord(view.repo)} --command "npm test"`),
+          view.needsPassword === true ? note("Setting a check needs a password. Run toolroll password set first.") : ""])
       : command(view.full) });
   return joinHtml([head, level, fastHtml(view), batchHtml(view), reviewHtml(view), quick, full]);
 

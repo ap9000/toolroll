@@ -66,7 +66,7 @@ More: [Getting started](docs/guide/getting-started.md).
 3. **Approve** once. Nothing spends until you do; changing the terms asks again.
 4. **Build.** An agent works on its own branch. A judgement call
    becomes a question for you, not a guess.
-5. **Check.** Your project's own check runs on the exact commit.
+5. **Check.** Once you set your project's check, it runs on the exact commit.
 6. **Ready.** The diff, the check log and screenshots. Mark it Complete, send
    it back with what to change, or merge through the pull request.
 
