@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { openStore, type Store } from "./store.js";
+import { openStore, writeAdvancedPreference, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { passwordlessOn } from "./passwordless.js";
@@ -26,6 +26,8 @@ beforeEach(async () => {
   const alex = addApprover(store, "alex", NOW);
   if (!alex.ok) throw new Error("alex");
   password = alex.token;
+  // Settings → Advanced on for alex, so the page shows its advanced sections too (live view's form among them).
+  if (!writeAdvancedPreference(store, "alex", true, NOW)) throw new Error("advanced");
   const made = store.createConsoleTask({ title: "known", repo, filedVia: "console", filedBy: { name: "alex", kind: "person" } }, NOW);
   if (!made.ok) throw new Error(made.reason);
   server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, platform: "darwin", fenceAvailable: () => true });
@@ -74,6 +76,13 @@ test("with Passwordless on, each of the four forms still shows the password fiel
   for (const action of ACTS) expect(formOf(html, action), action).toMatch(PASSWORD_FIELD);
   // An ordinary step-up on the same page still drops its field: Passwordless is in force for this browser.
   expect(formOf(html, "/settings/project/live-view")).not.toMatch(/type="password"/);
+});
+
+test("with Advanced off and live view commands not on, the live view form is gone and the four forms still ask for a password", async () => {
+  if (!writeAdvancedPreference(store, "alex", false, NOW)) throw new Error("advanced");
+  const html = await page(await signIn());
+  expect(html).not.toContain('action="/settings/project/live-view"');
+  for (const action of ACTS) expect(formOf(html, action), action).toMatch(PASSWORD_FIELD);
 });
 
 test("with Passwordless on, each act still refuses without a typed password and saves with it", async () => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { advancedOnForEveryone } from '../test/advanced-on.js';
 import { mkdtempSync, mkdirSync, renameSync, cpSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -256,6 +257,7 @@ describe('quiet learning', () => {
     expect(view().lessons).toHaveLength(1);expect(view().events.some(e=>e.action==='failure'&&e.reason.includes('excerpt'))).toBe(true);
   });
   test('real HTTP Settings without notifications, project admission, CSRF, viewer and stale forms',async()=>{
+    advancedOnForEveryone(store, now);
     capture(); const server=createDecisionServer({store,evidenceRoot:evidence,repo});await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
     const address=server.address();if(!address||typeof address==='string')throw Error('server');const url=`http://127.0.0.1:${address.port}`;
     try {
