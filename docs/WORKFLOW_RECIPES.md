@@ -1,142 +1,126 @@
 # Workflow recipes
 
-Open **Flows → New flow → One-time work** in the console to create a reusable
-recipe, use one you saved, or customize a starter. Recipes use the same tasks, scope approval,
-planning, evidence, review, scheduler, and recovery paths as other work.
+A recipe is a saved piece of work you can run again: what the agent should do,
+what to leave alone, and how you'll know it worked. Recipes live under
+**Flows → New flow → One-time work**, and they go through the same tasks,
+approvals, checks and recovery as any other work. (The old **Recipes** address
+opens the same place.)
 
 <img src="media/ui/workflow-recipes.png" alt="One-time work under New flow: a saved recipe above the six starters, each with a Use this button." width="920">
 
-## Create a recipe for work you do often
+## Find them
 
-Choose **Create a recipe**, give it a name, describe the instructions, and say
-what success looks like. Keep a fixed scope for repeatable work, or open
-**Ask something each time** to add questions for the parts that change.
+Open a project, then **Flows → New flow**. Under **Start from a template**,
+choose **One-time work** (on a phone, pick it from the template menu). The list
+shows the project's saved recipes first, the ones used most recently on top,
+then six starters:
 
-For example, a regression-test recipe can use:
+- **Understand this project**: a source-backed report, no code changes. A
+  useful first run.
+- **Ship a small feature**: one clear outcome, planned, built and checked.
+- **Keep dependencies current**, **Test one overlooked module**, **Keep
+  documentation accurate**: these repeat on a schedule.
+- **Clean up lint and types**: one sweep of mechanical fixes.
 
-- Name: `Test {{module}}`
-- Instructions: `Add regression tests for {{module}}, covering {{scenario}}.`
-- Questions: key `module`, label “Which module?”; key `scenario`, label “Which
-  behavior should the tests cover?” A default answer is optional.
-- Success check: `The tests cover {{scenario}} in {{module}} and pass.`
+Each row says what it makes (a report or a code change) and whether it runs
+once as a task or repeats on a schedule. Every row has one button, **Use this**.
+Without an open project the list is still there to read, and it says to open a
+project to use, save or import a recipe.
 
-**Insert into instructions** adds the question at your cursor so you do not
-have to type the placeholder. Inputs can appear in the name, description,
-instructions, exclusions, and success-check statements. Allowed paths and
-check commands stay fixed. Questions are for work details, not passwords,
-credentials, or executable snippets. Up to eight questions are supported.
+## Use a starter
 
-Choose **Preview recipe**, review the reusable definition, then **Save recipe**.
-Saving starts no work. You can also open a task's **Reuse this scope as a recipe**
-link, adapt its existing instructions, add questions, and save a copy.
+**Use this** on a starter opens **Make this workflow yours**: the outcome
+(name, short description, what the agent should do, what to leave alone,
+allowed files or folders), the success checks, and how it should run (a code
+change or a report, when to plan, run once or repeat on a schedule, an
+optional weekly spending limit).
 
-## Kick off familiar work
+Choose **Preview workflow →** to see the steps, the terms you'd approve and
+what this project and its agents are ready for. Previewing starts no agents.
+Then create it: **Create task for approval**, **Create workflow** when a
+signed policy approves it for you, or **Create scheduled workflow** for
+repeating work. A schedule starts paused, so nothing repeats until you turn it
+on from its flow.
+
+## Use a saved recipe
+
+**Use this** on a saved recipe asks only **What changes this time?**: one box
+per question the recipe asks. A recipe without questions says it's ready to go.
+Choose **Preview this run →**, check the preview, and create the work.
+**Saved instructions and boundaries** shows what the recipe always does, and
+**Edit a copy of this recipe →** starts a new copy from it.
 
 <img src="media/ui/recipe-creator-run-mobile.png" alt="On a phone, a saved recipe asks only which module needs tests, then Preview this run." width="280">
 
-Saved recipes appear above the starters, with recently used recipes first and
-a search field. **Use recipe** opens a short form containing only that recipe's
-questions. Fill in what changes this time, **Preview this run**, and create
-the task. A fixed recipe needs no answers. The new-task screen also links
-directly to your saved recipes.
+Each use freezes its answers into a fresh plan, so using the recipe for another
+module makes separate work, and creating the same preview twice returns the
+same task. For a repeating recipe, the answers stay fixed for every run of the
+schedule it creates; each use creates another scheduled flow.
 
-Each use freezes its answers into a fresh scope. Reusing the recipe with another
-module creates independent work; retrying the same preview returns the same
-task. Questions, answers, and saved scope never grant project access or bypass
-the existing approval policy. Teammates answer the same recipe in their own
-sessions, with their own current project permissions.
+## Create a recipe for work you do often
 
-For repeating recipes, the chosen answers stay fixed for every scheduled
-firing. **Use recipe** creates another scheduled flow; pause or resume an
-existing one from its flow (**Resume** on the canvas, or
-`toolroll flows trigger pause|resume`). **Edit a copy** changes a new recipe, leaving previous
-copies and work intact.
+Choose **Create a recipe** below the list. Give it a name, say what the agent
+should do and what success looks like. For the parts that change each time,
+open **Ask something each time** and add a question. For example:
 
-## Your first workflow
+- Recipe name: `Test {{module}}`
+- What should the agent do?: `Add regression tests for {{module}}, covering {{scenario}}.`
+- Questions: short key `module`, “Which module?”; short key `scenario`, “Which
+  behavior should the tests cover?” A default answer is optional.
+- Success check: `The tests cover {{scenario}} in {{module}} and pass.`
 
-1. Open a project. **Understand this project** is a useful first run: it asks
-   for a source-backed report and excludes code changes. Other starters cover a
-   small feature, dependencies, test coverage, documentation, and lint/types.
-2. Describe the result you want, what to leave alone, and any allowed paths.
-   Keep the supplied success checks or specify your own evidence. Code workflows
-   can plan first; repeating work reuses a previously approved scope.
-3. Choose **Run once** or a daily, weekly, or interval schedule. Repeating work
-   becomes a scheduled flow: a Build task step and a schedule whose standing
-   order carries the task's terms. It supports an optional rolling seven-day
-   dollar cap and runs one at a time, skipping while the last task is
-   unfinished. The schedule starts paused; nothing repeats until you turn it
-   on.
-4. **Preview workflow** shows the steps, scope, proof, schedule, and current
-   project/agent/worker setup. Previewing starts no agents.
-5. Create the task or scheduled workflow. A matching signed policy can approve
-   a one-time task filed by its signed-in signer. Otherwise approve the scope
-   on the task page. Each task a schedule files waits for approval under the
-   project's approval rules, like any other proposal. Existing publication
-   authority still applies separately.
+**Insert into instructions** puts a question's placeholder at your cursor.
+Answers can appear in the name, description, instructions, exclusions and
+success checks; allowed paths and check commands stay fixed. Questions are for
+work details, never passwords or keys. A recipe can ask up to eight.
 
-Work can be created while a worker is offline; the preview explains that it
-will wait. The created task or flow page remains the place to inspect evidence,
-handle decisions, stop/resume work, or pause a schedule. The recipe library
-links the twelve most recent workflows to those same durable records.
-
-## Reuse and share
+Choose **Preview recipe →**, read **When someone uses this recipe** and
+**Saved instructions**, then **Save recipe**. Saving starts no work. Two other
+ways to save one: **Preview recipe to save** in a starter's editor, and **Save
+as a project recipe** on a workflow preview. A task's **Reuse this plan as a
+recipe →** link (under **More about this task**) copies the task's goal, exclusions, allowed paths
+and success checks into the editor.
 
 <img src="media/ui/workflow-recipe-mobile.png" alt="On a phone, a starter opened to customize: its name, description and what the agent should do." width="280" align="right">
 
-**Save as a project recipe** saves the exact preview without creating work.
-People with access to that project can reuse it; viewers can browse but cannot
-save or launch. Saved copies are immutable. To change one, customize it and
-save a new copy. The library shows the newest 100 saved copies.
+## Share a recipe
 
-A task's **Reuse this scope as a recipe** link copies its goal, exclusions,
-allowed paths, and acceptance criteria into the editor. This is a new work
-definition: dependencies, credentials, approvals, provider settings, budgets,
-and publication grants are not copied. Review the new project's policy before
-creating work.
+Everyone with access to the project can use its saved recipes; viewers can
+read them but not save or use them. Saved copies don't change: editing makes a
+new copy, and work already made from the old one is left alone. The list shows
+the newest 100.
 
-**Export recipe JSON** creates a portable work definition: version 1 for fixed
-recipes and version 2 for recipes with questions. Paste it
-under **Import a shared recipe** in another project to customize and preview
-it there. Imports carry no project identity, permissions, credentials, or
-approval authority; unsupported fields and versions are rejected. The text
-you explicitly put in goals, checks, and exclusions is included in the export.
+**Export recipe JSON** (on a preview) downloads a portable copy. In another
+project, open **Import a shared recipe** below the One-time work list, paste it
+under **Recipe JSON**, and choose **Review imported recipe**: it opens in the
+editor so you can check and preview it there. An export carries only the text
+you wrote (goals, checks, exclusions). It carries no project, permissions,
+credentials or approvals, and unsupported fields or versions are refused.
 
-## Creation and recovery guarantees
+**Made from recipes lately** below the list links the twelve most recent tasks
+and flows made from recipes in this project.
 
-Previews are stored on the server for 30 minutes and bound to the actor,
-canonical project, and a digest of the exact definition. Editing makes a fresh
-preview. Creating work atomically records the task or scheduled flow, optional existing
-policy approval, launch receipt, and action-ledger event. Retrying the **same
-preview** after a double click, lost response, or controller restart returns
-the same work. Deliberately making a new preview can create another workflow.
-An expired preview cannot create new work; existing receipts remain replayable.
+## What stays the same
 
-Every mutation rechecks current project access. Cookie requests also require
-CSRF and the current open-project revision. Unknown JSON fields, disguised
-text, malformed schedules, unsupported evidence, oversized documents, and
-excess success checks are refused. There are at most 30 unused, unexpired
-previews per actor.
+Recipes don't add a second way to run work:
 
-Recipes use schema 56's `workflow_recipe` and `workflow_preview` tables. Schema
-57 adds an index for recently used recipes and fences older readers before
-question-based recipes are saved. Existing version-1 documents, digests, and
-launch receipts are preserved. A database already marked current but missing
-its recipe/receipt tables is refused instead of silently recreating history.
-Back up and follow the existing coordinated controller upgrade process; older
-workers must not write a newer schema.
+- A preview lasts 30 minutes and is tied to you, the project and the exact
+  definition; editing makes a fresh one. You can have up to 30 open previews.
+- Creating work from a preview records the task or flow, any policy approval
+  and a launch receipt together. A double click, lost response or restart
+  returns the same work; an expired preview creates nothing new.
+- Every step rechecks your current access to the project. Answers and saved
+  recipes never grant access or skip the project's approval rules; teammates
+  use a recipe with their own permissions.
+- Work can be created while no builder is connected; the preview says it will
+  wait. The task or flow page is where you inspect results, answer questions,
+  stop or resume work, and pause a schedule.
 
-## Current boundaries
-
-This is a guided layer over the existing work engine. It does not add arbitrary
-conditional branches, external service triggers, credentials in templates, or
-a second execution engine. Report recipes and workflows requiring a fresh
-plan run once; repeating workflows produce code changes from approved scope.
-Saved recipe editing creates a new copy rather than modifying running work.
-
-Readiness is a current configuration summary, not an execution certificate.
-The scheduler and worker recheck actual authority, availability, budget,
-containment, and completion requirements at their existing boundaries.
-
+Recipes don't add branching logic, outside triggers or credentials in
+templates. Reports and plan-first recipes run once; repeating recipes make code
+changes from an approved plan. What the preview says is ready is the current
+setup, not a promise: the scheduler and builder recheck access, availability,
+budget and requirements when the work runs.
 
 ## Install a prepared commit as the attempt (no agent)
 
