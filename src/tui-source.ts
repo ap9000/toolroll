@@ -8,6 +8,7 @@
  * nothing ever prompts on the terminal the screen owns.
  */
 import { dirname, join } from "node:path";
+import { advancedShownFor } from "./advanced.js";
 import { assignmentOf, owedAcceptance } from "./assignment.js";
 import { familyChangedFiles } from "./result-completion.js";
 import { checkBackingOf, receiptChecksOf, requirementWordOf } from "./task-status.js";
@@ -102,7 +103,10 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const store = read();
       const mode = store === null ? null : localModeOf(store);
       const passwordSet = store !== null && mode !== null && store.accountOf(mode.owner)?.passwordSet === true;
-      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock()) };
+      // Settings → Advanced: the learning line is an advanced feature; the local owner's own switch decides (no local
+      // mode: no one person to ask, so it shows as before).
+      const advanced = store === null || mode === null || advancedShownFor(store, mode.owner);
+      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null || !advanced ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock()) };
     },
 
     async task(id: string): Promise<TuiTask | null> {

@@ -39,6 +39,11 @@ const EMPTY_SUGGESTIONS: Record<string, string[]> = {
   tasks: ["What needs my attention here?", "What should we build next?", "File a task: ", "Make a flow for "],
 };
 
+/** Settings → Advanced off: the pills leave out the flow starter (flows are an advanced feature). */
+export function advancedPills(words: readonly string[], advanced: boolean): readonly string[] {
+  return advanced ? words : words.filter(one => one !== "Make a flow for ");
+}
+
 /** The words a thread replaced by a change in reachable projects (mate arc ruling 9) sit above this line. */
 export const REPLACED_THREAD_DIVIDER = "New conversation — the projects I can reach changed";
 
@@ -250,9 +255,9 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
           ? !busy && <ChatEmpty title="What should we work on?" text={workspace.firstRun.intro ?? ""}>
               <FirstRequest firstRun={{ ...workspace.firstRun, intro: "" }} onDraft={text => { edit(withSuggestion(draft.text, text)); focusBox(); }} /></ChatEmpty>
           : <ChatEmpty title="What should we work on?" text={`${leadName} reads ${projectName ?? "your projects"}, files tasks and opens what needs you. Nothing is built until you approve its plan.`}>
-              {pills(EMPTY_SUGGESTIONS[context] ?? EMPTY_SUGGESTIONS.lead!)}
-              {/* v99: or a working setup in one click — a subagent and the flow it works. */}
-              {!projectName && <nav className="lc-kits" aria-label="Starter kits" data-kit-links><span>Or start from a kit:</span>{KIT_LINKS.map(([id, label]) => <a key={id} href={`/kits/${id}`}>{label}</a>)}</nav>}
+              {pills(advancedPills(EMPTY_SUGGESTIONS[context] ?? EMPTY_SUGGESTIONS.lead!, workspace.advanced !== false))}
+              {/* v99: or a working setup in one click — a subagent and the flow it works (an advanced feature). */}
+              {!projectName && workspace.advanced !== false && <nav className="lc-kits" aria-label="Starter kits" data-kit-links><span>Or start from a kit:</span>{KIT_LINKS.map(([id, label]) => <a key={id} href={`/kits/${id}`}>{label}</a>)}</nav>}
             </ChatEmpty>)}
       <div id="chat-thread" className="lc-messages" data-chat-region="thread">{chat.messages.map((message, index) => {
         if (message.role === "operator") return <YourMessage key={message.id} message={message} arrived={!opened.current.has(message.id)} onEdit={() => { edit(message.text); focusBox(); }} />;

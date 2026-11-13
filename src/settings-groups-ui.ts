@@ -18,16 +18,17 @@ import { type UnattendedPermissionMode } from "./scope.js";
 import { type QualityMode, qualityModeTitle } from "./quality.js";
 import { type ResultScreenshots } from "./store.js";
 import { kitSectionForm, SECRET_OPT_OUTS } from "./settings-kit.js";
+import { ADVANCED_PAGES } from "./advanced-view.js";
 import {
   btn, chip, codeLine, disclose, formRow, infoLine, input, needsPanel, note, notice, radios, select, settingsLink, settingsLinks, settingsRecord,
   settingsSection, settingsShell, switchInput,
 } from "./server/kit.js";
 
-export type SettingsGroup = "hub" | "general" | "agents" | "alerts" | "approval" | "projects" | "access" | "system";
+export type SettingsGroup = "hub" | "general" | "agents" | "alerts" | "approval" | "projects" | "access" | "system" | "advanced";
 /** The group pages this module draws (Spend is /spend; Approvals and safety is /settings/approval, its own handler). */
 export const GROUP_PATHS: Readonly<Record<string, SettingsGroup>> = {
   "/settings": "hub", "/settings/general": "general", "/settings/agents": "agents", "/settings/alerts": "alerts",
-  "/settings/projects": "projects", "/settings/access": "access", "/settings/system": "system",
+  "/settings/projects": "projects", "/settings/access": "access", "/settings/system": "system", "/settings/advanced": "advanced",
 };
 
 type Tone = "ok" | "warn" | "off" | "neutral";
@@ -70,6 +71,9 @@ export type SettingsFacts = {
   /** Easy-start: local mode is on for this laptop install. `owner`: this is the local owner's own session (no password);
    * `passwordSet`: the owner has set one; `canTurnOff`: a full session of an instance operator. Absent when it is off. */
   local?: { owner: boolean; passwordSet: boolean; canTurnOff: boolean } | null;
+  /** Settings → Advanced: this person's own switch (`on`), whether they can change it here (a browser sign-in), and
+   * whether a visible project runs under an operating mode now (its link then stays, whatever the switch). */
+  advanced?: { on: boolean; canChange: boolean; modeActive?: boolean };
 };
 
 const CHAT_APPS = [["telegram", "Telegram"], ["slack", "Slack"], ["discord", "Discord"], ["teams", "Teams"]] as const;
@@ -167,7 +171,9 @@ export function settingsHub(facts: SettingsFacts): Html {
     spend: "Monthly limits and the spend report",
     system: systemWords(facts),
   };
-  const shown = SETTINGS_GROUPS.filter(([, slug]) => slug !== "spend" || facts.operator).filter(([, slug]) => slug !== "system" || facts.operator || facts.approver);
+  const shown = SETTINGS_GROUPS.filter(([, slug]) => slug !== "spend" || facts.operator).filter(([, slug]) => slug !== "system" || facts.operator || facts.approver)
+    .filter(([, slug]) => slug !== "spend" || advancedOn(facts));
+  words["advanced"] = advancedWords(facts);
   const panel = needsPanel(items.map((item, index) => ({ title: item.title, text: item.text, action: btn(item.action[0], { variant: index === 0 ? "primary" : "outline", href: item.action[1] }) })));
   return settingsShell({
     group: "hub", title: "Settings", lead: "For the whole Toolroll.", flags: flagsOf(counts),
@@ -275,11 +281,11 @@ export function agentsGroup(facts: SettingsFacts, flags: Record<string, boolean>
   const links = settingsLinks("In this group", [
     settingsLink({ href: "/settings/models", title: "Models", status: "Which model plans, builds and reviews" }),
     settingsLink({ href: "/settings/lead", title: "Lead", status: "The assistant you chat with" }),
-    settingsLink({ href: "/settings/lead/subagents", title: "Subagents", status: "Helpers the lead looks after" }),
+    ...(advancedOn(facts) ? [settingsLink({ href: "/settings/lead/subagents", title: "Subagents", status: "Helpers the lead looks after" })] : []),
     settingsLink({ href: "/settings/tools", title: "Tools", status: "What builds can use, per project" }),
-    settingsLink({ href: "/settings/skills", title: "Skills", status: "Reusable instructions for agents" }),
+    ...(advancedOn(facts) ? [settingsLink({ href: "/settings/skills", title: "Skills", status: "Reusable instructions for agents" })] : []),
     settingsLink({ href: "/settings/knowledge", title: "Knowledge", status: "What agents know about each project" }),
-    settingsLink({ href: "/settings/learning", title: "Learning", status: "Lessons kept from finished work" }),
+    ...(advancedOn(facts) ? [settingsLink({ href: "/settings/learning", title: "Learning", status: "Lessons kept from finished work" })] : []),
   ]);
   return settingsShell({
     group: "agents", title: "Agents and models", lead: "Which agent does the work, how it’s paid for, and which model plans, builds and reviews.", flags,
@@ -443,6 +449,8 @@ export type ApprovalGroupFacts = {
   /** The project's approval rules and release approval, drawn by approval-rules-ui.ts (kit markup). */
   rules: Html;
   mode: string;
+  /** Settings → Advanced: this person's switch, and whether a project they can see runs under an operating mode now. */
+  advanced?: { on: boolean; modeActive: boolean };
 };
 export function approvalGroup(view: ApprovalGroupFacts): Html {
   const facts = view.facts;
@@ -471,8 +479,9 @@ export function approvalGroup(view: ApprovalGroupFacts): Html {
   const rules = view.chosen === "" ? settingsSection({ id: "rules", title: "Approval rules", body: note("Add a project to set its approval rules.") })
     : joinHtml([picker, view.rules]);
   const links = settingsLinks("In this group", [
-    settingsLink({ href: "/mode", title: "Operating mode", status: view.mode }),
-    settingsLink({ href: "/settings/policy", title: "Policy", status: "Limits no task can go past, whatever its mode or approver" }),
+    // Settings → Advanced off: Operating mode stays while a mode is active (its terms and End it live there); Policy goes.
+    ...(view.advanced === undefined || view.advanced.on || view.advanced.modeActive ? [settingsLink({ href: "/mode", title: "Operating mode", status: view.mode })] : []),
+    ...(view.advanced === undefined || view.advanced.on ? [settingsLink({ href: "/settings/policy", title: "Policy", status: "Limits no task can go past, whatever its mode or approver" })] : []),
     settingsLink({ href: "/caps", title: "Requirements", status: "What builders are missing for waiting work" }),
     settingsLink({ href: "/settings/projects", title: "Network, writes and sandbox", status: "Set for each project" }),
   ]);
@@ -508,10 +517,11 @@ export function accessGroup(facts: SettingsFacts, flags: Record<string, boolean>
   const links = [
     settingsLink({ href: "/people", title: "People", status: people === null ? "Your own access" : [accessWords({ ...facts, passwordless: null }), people.invites === 0 ? "no open invites" : plural(people.invites, "open invite", "open invites")].join(" · ") }),
     settingsLink({ href: "/settings/sessions", title: "Sessions and tokens", status: `Signed in on ${plural(facts.access.sessions, "device", "devices")} · ${plural(facts.access.tokens, "API token", "API tokens")}` }),
-    ...(facts.operator ? [
-      settingsLink({ href: "/settings/sign-in", title: "Sign-in with a provider", status: facts.sso === null ? "Not set up: everyone uses a password" : `People sign in with ${facts.sso}` }),
-      settingsLink({ href: "/settings/passwordless", title: "Passwordless", status: facts.passwordless ? "On: signing in is the only password" : "Off: approvals ask for your password" }),
-    ] : []),
+    // Settings → Advanced off: each stays while it is set up or on (its state and its off switch), and goes otherwise.
+    ...(facts.operator && (advancedOn(facts) || facts.sso !== null) ? [
+      settingsLink({ href: "/settings/sign-in", title: "Sign-in with a provider", status: facts.sso === null ? "Not set up: everyone uses a password" : `People sign in with ${facts.sso}` })] : []),
+    ...(facts.operator && (advancedOn(facts) || facts.passwordless === true) ? [
+      settingsLink({ href: "/settings/passwordless", title: "Passwordless", status: facts.passwordless ? "On: signing in is the only password" : "Off: approvals ask for your password" })] : []),
   ];
   return settingsShell({ group: "access", title: "People and sign-in", lead: "Who can get in, how they sign in, and the ways in they hold.", flags,
     body: joinHtml([answered(facts), localModeSection(facts), settingsLinks(null, links, { label: "People and sign-in" })]) });
@@ -540,13 +550,13 @@ export function systemGroup(facts: SettingsFacts, flags: Record<string, boolean>
     settingsLink({ href: "/settings/backups", title: "Backups", status: facts.backup?.words ?? "When and where the database is copied", needs: facts.backup?.failed ? 1 : 0 }),
     settingsLink({ href: "/settings/storage", title: "Storage", status: "Task folders on this computer, and cleaning them up" }),
     settingsLink({ href: "/settings/retention", title: "Retention", status: "How long run logs and chats are kept" }),
-    settingsLink({ href: "/settings/monitoring", title: "Monitoring", status: "Send the audit stream and traces to your own systems" }),
+    ...(advancedOn(facts) ? [settingsLink({ href: "/settings/monitoring", title: "Monitoring", status: "Send the audit stream and traces to your own systems" })] : []),
     settingsLink({ href: "/settings/data", title: "Data export", status: "Everything except secrets, as one download" }),
     settingsLink({ href: "/settings/integrations", title: "Integrations", status: "Which connected services work" }),
-    settingsLink({ href: "/fleet", title: "Builders", status: "Every computer that builds, on Agents" }),
+    ...(advancedOn(facts) ? [settingsLink({ href: "/fleet", title: "Builders", status: "Every computer that builds, on Agents" })] : []),
   ]) : settingsLinks("In this group", [
     settingsLink({ href: "/settings/integrations", title: "Integrations", status: "Which connected services work" }),
-    settingsLink({ href: "/fleet", title: "Builders", status: "Every computer that builds" }),
+    ...(advancedOn(facts) ? [settingsLink({ href: "/fleet", title: "Builders", status: "Every computer that builds" })] : []),
   ]);
   return settingsShell({ group: "system", title: "System", lead: "This Toolroll’s version, backups, storage and what leaves this computer.", flags,
     body: joinHtml([answered(facts), facts.updates === null ? "" : updatesSection(facts.updates), links]) });
@@ -563,6 +573,7 @@ export function settingsGroupPage(group: SettingsGroup, facts: SettingsFacts): H
     case "projects": return projectsGroup(facts, flags);
     case "access": return accessGroup(facts, flags);
     case "system": return systemGroup(facts, flags);
+    case "advanced": return advancedGroup(facts, flags);
     case "approval": return settingsHub(facts);
   }
 }
@@ -737,4 +748,27 @@ export function passwordlessHtml(view: { on: boolean; since: string | null; trad
 export function projectPicker(action: string, projects: readonly { repo: string; name: string }[], chosen: string): Html {
   if (projects.length < 2) return html``;
   return html`<form method="get" action="${action}" class="k-acts k-picker">${select({ name: "repo", label: "Project", current: chosen, items: projects.map(one => [one.repo, one.name] as const) })}${btn("Show", { sm: true, type: "submit" })}</form>`;
+}
+
+// ---- Advanced (/settings/advanced; the eight plan, W4) -----------------------------------------------------------
+
+/** This person's switch as the facts carry it: absent (an older caller) reads on, so nothing hides by accident. */
+function advancedOn(facts: SettingsFacts): boolean { return facts.advanced === undefined || facts.advanced.on; }
+function advancedWords(facts: SettingsFacts): string {
+  return advancedOn(facts) ? "On: every page shows in the menus" : "Off: menus show only the main steps";
+}
+
+/** Settings → Advanced: the person's own switch, then every advanced page, always (whatever the switch says). */
+export function advancedGroup(facts: SettingsFacts, flags: Record<string, boolean>): Html {
+  const on = advancedOn(facts);
+  const change = facts.advanced?.canChange === true
+    ? postForm("/settings/advanced", btn(on ? "Turn off" : "Turn on", { sm: true, type: "submit" }), { hidden: { advanced: on ? "off" : "on" } })
+    : html``;
+  const toggle = settingsSection({ id: "show-advanced", title: "Show advanced features", state: on ? " · on" : " · off", right: change,
+    lead: "Flows, other computers, spend limits, operating modes and the rest, in your menus. They keep working either way, and each opens from below.",
+    body: html`` });
+  const pages = ADVANCED_PAGES.filter(one => one.operator !== true || facts.operator)
+    .map(one => settingsLink({ href: one.href, title: one.title, status: one.words }));
+  return settingsShell({ group: "advanced", title: "Advanced", lead: "Everything beyond filing, approving and accepting work.", flags,
+    body: joinHtml([answered(facts), toggle, settingsLinks("Advanced pages", pages)]) });
 }

@@ -201,6 +201,8 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   // Learning loops (D3): a person at the laptop decides lesson notes and clean-ups of project memory.
   "settings.knowledge-note": "memory-review",
   "settings.knowledge-tidy": "memory-review",
+  // Settings → Advanced: the person's own view switch (advanced.ts re-checks this exact act at the write).
+  "settings.advanced": "view-preference",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -473,7 +475,7 @@ get("settings", "settings.page", "/settings", { limited: "unscoped", ...free });
 // The Settings groups (docs/plans/settings-revamp.md §3): one read-only page each, drawn by the overview's handler.
 // Anyone signed in may open one; the page shows only the sections this person can use, and every form's own route
 // keeps its own role and proof.
-for (const one of ["general", "agents", "alerts", "projects", "access", "system"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
+for (const one of ["general", "agents", "alerts", "projects", "access", "system", "advanced"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
 get("pages", "health", "/health", { ...free, ...anyOperator("An instance operator reads server health.", "/") });
 get("pages", "metrics", "/metrics", { ...free, ...anyOperator("An instance operator reads metrics.", "/") });
 get("chat", "push.key", "/push/key");
@@ -492,6 +494,10 @@ post("settings", "settings.updates-checks", "/settings/updates/checks");
 // Cockpit B2: Forget ends this session's remembered password now.
 // Forget is about the caller's own session only: anyone signed in with a browser may use it (a viewer, a project-limited person).
 post("settings", "session.forget-password", "/session/forget-password", { ...free, limited: "self", viewer: true, callers: ["cookie"] });
+// Settings → Advanced: "Show advanced features" is the caller's own view (it hides or shows entry points, never grants),
+// so a viewer, a project-limited person and the local owner may each set their own. Browser sign-in only; the account
+// comes from the session, and advanced.ts proves that session (or the local owner's act) again inside the write.
+post("settings", "settings.advanced", "/settings/advanced", { ...free, limited: "self", viewer: true, callers: ["cookie"] });
 const CODING_ACT = { scope: "step-up", project: "coding", limited: "self" } as const;
 post("tasks", "code.start", "/code/start", CODING_ACT);
 post("tasks", "term.start", "/term/start", { ...TERM, scope: "step-up" });

@@ -1,3 +1,4 @@
+import { advancedShownNow } from "../advanced-view.js";
 import { titleWithin } from "../task-text.js";
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
 import { archiveTaskFamily, dropFeedbackImage, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runCheckStamp, runLiveCommands } from "../store.js";
@@ -247,7 +248,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       state,
       canPutAway: who.via === "cookie" && who.role === "approver",
       // v105: subscription windows and monthly budgets, for whoever runs the installation.
-      limits: store.isInstanceOperator(who.name)
+      // Settings → Advanced off: no usage footer (Spend is an advanced page; a budget that holds a task still says so on it).
+      limits: store.isInstanceOperator(who.name) && advancedShownNow()
         ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, subagent: id => subagentNamesOf(store.handle).get(id) ?? `Subagent ${id}` }, now)
         : null,
     });
