@@ -75,7 +75,7 @@ async function signIn(): Promise<string> {
   return (response.headers.get("set-cookie") ?? "").split(";")[0]!;
 }
 const workspace = async (cookie: string, path = "/chat") => (await fetch(`${base}${path}${path.includes("?") ? "&" : "?"}format=workspace`, { headers: { cookie } })).json() as Promise<import("./browser-workspace.js").BrowserWorkspace>;
-const until = async (what: () => boolean) => { for (let i = 0; i < 100 && !what(); i++) await new Promise(done => setTimeout(done, 20)); };
+const until = async (what: () => boolean, tries = 100) => { for (let i = 0; i < tries && !what(); i++) await new Promise(done => setTimeout(done, 20)); };
 
 test("the one-time sign-in link: this computer only, once, for ten minutes, and never in the ledger", async () => {
   await start({ allowedHosts: ["pi.local:4180"] });
@@ -356,7 +356,10 @@ test("a laptop install whose lead was already settled when no agent was signed i
   // Past the sign-in check's own 30-second memory (move the clock, not the wall).
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(Date.now() + 31_000);
-  await until(() => store.phaseConfig("installation", "plan") !== null);
+  // Wait for the check itself, not a 2-second window: the console's first background pass also reads project learning
+  // and Codex's tools in processes of their own, and no pass starts until it finishes — on a loaded runner that ran
+  // past 2 s. The sign-in check after it is exactly one (Date stands still from here) and sees the sign-in.
+  await until(() => store.phaseConfig("installation", "plan") !== null, 750);
   expect(store.phaseConfig("installation", "plan")).toMatchObject({ provider: "claude", model: "claude-opus-5-5", updatedBy: "toolroll" });
   expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
   expect(store.getChatConfig()).toBeNull();
@@ -375,7 +378,8 @@ test("models a person chose and then cleared stay cleared through the whole sign
   signedIn = "claude";
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(Date.now() + 31_000);
-  await until(() => store.getChatConfig() !== null);
+  // As above: wait for the check, however long the first pass's own reads take.
+  await until(() => store.getChatConfig() !== null, 750);
   await new Promise(done => setTimeout(done, 300));
   expect(store.getChatConfig()?.provider).toBe("claude-subscription");
   for (const phase of ["plan", "build", "review"]) expect(store.phaseConfig("installation", phase), phase).toBeNull();
