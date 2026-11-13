@@ -15,6 +15,7 @@
  * browser sessions). Those surfaces read their own facts, never this switch, or keep their row when the setting is on.
  */
 import { currentLocalOwner, localOwnerInFlight, localOwnerStandsNow } from "./local-owner.js";
+import { isOpen, policyParts, readPolicy } from "./policy.js";
 import { machineActing } from "./scope.js";
 import { advancedPreferenceOf, writeAdvancedPreference, type Store } from "./store.js";
 
@@ -60,4 +61,24 @@ function proveAndWrite(store: Store, door: AdvancedDoor, on: boolean, now: Date)
     store.recordAction({ at: now.toISOString(), actor: door.actor, repo: null, taskId: null, runId: null, action: "advanced features", outcome: on ? "shown" : "hidden", source: "request", detail: door.kind === "local-owner" ? "local owner" : "browser" });
     return { ok: true, on };
   });
+}
+
+/**
+ * The organisation policy in words when any restriction applies (a provider, model or tool list, or a permission
+ * ceiling below escalated), else null. Settings → Advanced off keeps Policy's link while this is non-null. A saved row
+ * that doesn't read cleanly, or a read that fails, counts as applying (never hide on a doubt).
+ */
+export function policyInForce(store: Pick<Store, "handle">): string | null {
+  const unsure = "Limits apply: open Policy to see them";
+  try {
+    const row = store.handle.prepare("SELECT providers_json, models_json, tools_json, ceiling FROM org_policy WHERE id = 1").get();
+    if (row === undefined) return null;
+    const policy = readPolicy(store.handle);
+    const raw = row["providers_json"] !== null || row["models_json"] !== null || row["tools_json"] !== null || row["ceiling"] !== "escalated";
+    if (isOpen(policy)) return raw ? unsure : null;
+    const parts = policyParts(policy);
+    return `Providers: ${parts.providers} · models: ${parts.models} · tools: ${parts.tools} · ceiling: ${parts.ceiling}`;
+  } catch {
+    return unsure;
+  }
 }

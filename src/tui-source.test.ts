@@ -165,3 +165,18 @@ describe("text someone else wrote reaches the screen clean", () => {
     } finally { source.close(); }
   });
 });
+
+describe("Settings → Advanced off (the owner's own switch)", () => {
+  test("a memory suggestion waiting on a person still shows on the learning line", async () => {
+    const store = openStore(file);
+    try {
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM view_preference").get()?.["n"]).toBe(0);
+      store.handle.prepare(`INSERT INTO memory_proposal (repo, kind, fingerprint, title, rationale, after_text, evidence, sessions, status, created_at, surface)
+        VALUES (?, 'instruction-add', 'f1', 'Run the linter', 'seen twice', 'Run the linter first.', '[]', 2, 'pending', ?, 'lesson-note')`).run(repo, now.toISOString());
+    } finally { store.close(); }
+    const source = createTuiSource({ databaseFile: file, operate: { now }, check });
+    try {
+      expect((await source.snapshot()).learning).toBe("1 project memory suggestion: open Settings → Knowledge");
+    } finally { source.close(); }
+  }, 30_000);
+});

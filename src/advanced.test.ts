@@ -1,6 +1,6 @@
 /** Settings → Advanced: who may change "Show advanced features", proved on the write itself (the eight plan, W4 v2/v3). */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { setAdvancedPreference, advancedShownFor, type AdvancedDoor } from "./advanced.js";
+import { policyInForce, setAdvancedPreference, advancedShownFor, type AdvancedDoor } from "./advanced.js";
 import { asLocalOwner, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { advancedPreferenceOf, initLocalMode, openStore, type Store } from "./store.js";
 
@@ -86,5 +86,22 @@ describe("the local owner", () => {
   test("attack: once local mode is off, its act no longer stands", () => {
     store.handle.prepare("UPDATE local_mode SET enabled = 0, generation = generation + 1").run();
     expect(asLocalOwner(owner("view-preference"), () => setAdvancedPreference(store, door, true, NOW)).ok).toBe(false);
+  });
+});
+
+describe("the organisation policy, for Settings → Advanced off", () => {
+  test("in words while any restriction applies; null only when open; a doubt counts as applying", () => {
+    expect(policyInForce(store)).toBeNull();
+    store.setOrgPolicy({ providers: null, models: null, tools: null, ceiling: "escalated" }, "alex", NOW);
+    expect(policyInForce(store)).toBeNull();
+    store.setOrgPolicy({ providers: null, models: null, tools: null, ceiling: "standard" }, "alex", NOW);
+    expect(policyInForce(store)).toContain("ceiling: Standard");
+    store.setOrgPolicy({ providers: ["claude"], models: ["sonnet"], tools: ["github"], ceiling: "escalated" }, "alex", NOW);
+    expect(policyInForce(store)).toContain("models: sonnet");
+    // A saved list that doesn't read cleanly, or a table that can't be read, keeps the link.
+    store.handle.prepare("UPDATE org_policy SET providers_json = 'not json', models_json = NULL, tools_json = NULL").run();
+    expect(policyInForce(store)).not.toBeNull();
+    store.handle.exec("DROP TABLE org_policy");
+    expect(policyInForce(store)).not.toBeNull();
   });
 });

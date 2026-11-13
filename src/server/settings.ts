@@ -106,7 +106,7 @@ import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
 import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
 import { LOCAL_MODE_CONFINES, localModeOn } from "../local-owner.js";
-import { setAdvancedPreference, type AdvancedDoor } from "../advanced.js";
+import { policyInForce, setAdvancedPreference, type AdvancedDoor } from "../advanced.js";
 import { advancedShownNow } from "../advanced-view.js";
 import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml,type ProjectSettingsView } from "../project-delete-ui.js";
@@ -409,7 +409,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
         quality: limited ? null : { mode: quality.mode, canManage: who.role === "approver" && csrf !== "", changed: changed(quality.updatedAt, quality.updatedBy) } },
       flags: {}, projects: projects.map(repo => ({ repo, name: projectName(repo) })), chosen, rules,
       // Settings → Advanced: the Operating mode link stays while any project this person can see runs under a mode.
-      advanced: { on: advancedShownNow(), modeActive: projects.some(repo => { try { return store.activeMode(repo, now) !== null; } catch { return true; } }) },
+      advanced: { on: advancedShownNow(), modeActive: projects.some(repo => { try { return store.activeMode(repo, now) !== null; } catch { return true; } }), policy: policyInForce(store) },
       mode: chosen === "" ? "Open a project to sign one" : live === null ? `${projectName(chosen)}: locked, approvals stay with people` : `${projectName(chosen)}: ${live.name} until ${when(live.absoluteExpiry)}`,
     });
     return sendScreen(response, 200, screen("Approvals and safety", page, { chrome: chromeFor(chosen || project, "settings") }));

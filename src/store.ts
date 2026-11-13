@@ -6015,7 +6015,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6419,7 +6419,11 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   // v160: each person's "Show advanced features". The table and its one-time ON rows for the accounts present now are
   // made in one transaction, only when the table isn't there yet: a resumed epoch finds both or neither, and a later
   // upgrade (or an account made after this one) never gets an ON row it didn't choose.
-  if (!tableExists(db, "view_preference")) {
+  // A table already here (a resumed epoch, a later upgrade) must be exactly this build's shape.
+  if (tableExists(db, "view_preference")) {
+    const damaged = viewPreferenceShapeProblem(db);
+    if (damaged !== null) throw new Error(`${file}: refusing to open — ${damaged}`);
+  } else {
     db.exec("BEGIN IMMEDIATE");
     try {
       db.exec(V160_SCHEMA);
@@ -11123,8 +11127,17 @@ export class Store {
       this.db
         .prepare("UPDATE approver SET revoked_at = ?, revoked_by = ?, generation = generation + 1 WHERE name = ?")
         .run(stamp, by, name);
-      // v160: the person's own view preference goes with the account (a name is never reused).
-      this.db.prepare("DELETE FROM view_preference WHERE account = ?").run(name);
+      // v160: the person's own view preference goes with the account (a name is never reused). Only a display
+      // preference: a damaged or missing table never blocks a revocation (a savepoint keeps its failure to itself, and
+      // with the account revoked the row is never read for anyone).
+      this.db.exec("SAVEPOINT view_preference_cleanup");
+      try {
+        this.db.prepare("DELETE FROM view_preference WHERE account = ?").run(name);
+        this.db.exec("RELEASE view_preference_cleanup");
+      } catch {
+        this.db.exec("ROLLBACK TO view_preference_cleanup");
+        this.db.exec("RELEASE view_preference_cleanup");
+      }
       const invites = this.db
         .prepare("UPDATE invite SET revoked_at = ? WHERE minted_by = ? AND revoked_at IS NULL AND consumed_at IS NULL")
         .run(stamp, name);
@@ -27216,4 +27229,13 @@ export function writeAdvancedPreference(store: Store, account: string, on: boole
     SELECT name, ?, 'person', ? FROM approver WHERE name = ? AND revoked_at IS NULL
     ON CONFLICT(account) DO UPDATE SET advanced = excluded.advanced, source = 'person', updated_at = excluded.updated_at`).run(on ? 1 : 0, now.toISOString(), account);
   return Number(written.changes) === 1;
+}
+
+/** v160's table, as a current or resumed file must hold it (advanced-schema.ts): there, and exactly this build's DDL.
+ * Null when it is; else what is wrong, in words. */
+function viewPreferenceShapeProblem(db: Database): string | null {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'view_preference'").get();
+  if (row === undefined) return "the view_preference table is missing";
+  const want = canonicalDdl(V160_SCHEMA.trim().replace(/;$/, "")).trim();
+  return canonicalDdl(String(row["sql"])).trim() === want ? null : "the view_preference table has an unknown shape";
 }

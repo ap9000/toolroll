@@ -41,6 +41,13 @@ describe("with Advanced off, never hidden", () => {
     expect(page(false)).not.toContain("/settings/policy");
     expect(page(false)).toContain("href=\"/caps\"");
   });
+  test("Policy keeps its link and what it is now while any restriction applies (or can't be read)", () => {
+    const page = (policy: string | null) => render(false, () => approvalGroup({ facts: { said: null, problem: null, permission: null, quality: null }, flags: {}, projects: [], chosen: "", rules: html``, mode: "", advanced: { on: false, modeActive: false, policy } }));
+    const restricted = page("Providers: Claude · models: any · tools: any · ceiling: Standard");
+    expect(restricted).toContain("href=\"/settings/policy\"");
+    expect(restricted).toContain("ceiling: Standard");
+    expect(page(null)).not.toContain("/settings/policy");
+  });
   test("what waits on this person in Settings", () => {
     const hub = render(false, () => settingsHub(facts({ workers: [], backup: { failed: true, words: "Failed today" } })));
     expect(hub).toContain("No builder is connected");

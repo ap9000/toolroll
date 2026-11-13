@@ -449,8 +449,9 @@ export type ApprovalGroupFacts = {
   /** The project's approval rules and release approval, drawn by approval-rules-ui.ts (kit markup). */
   rules: Html;
   mode: string;
-  /** Settings → Advanced: this person's switch, and whether a project they can see runs under an operating mode now. */
-  advanced?: { on: boolean; modeActive: boolean };
+  /** Settings → Advanced: this person's switch, whether a project they can see runs under an operating mode now, and
+   * the organisation policy in words when any restriction applies (advanced.ts policyInForce; null: none). */
+  advanced?: { on: boolean; modeActive: boolean; policy?: string | null };
 };
 export function approvalGroup(view: ApprovalGroupFacts): Html {
   const facts = view.facts;
@@ -479,9 +480,11 @@ export function approvalGroup(view: ApprovalGroupFacts): Html {
   const rules = view.chosen === "" ? settingsSection({ id: "rules", title: "Approval rules", body: note("Add a project to set its approval rules.") })
     : joinHtml([picker, view.rules]);
   const links = settingsLinks("In this group", [
-    // Settings → Advanced off: Operating mode stays while a mode is active (its terms and End it live there); Policy goes.
+    // Settings → Advanced off: Operating mode stays while a mode is active (its terms and End it live there).
     ...(view.advanced === undefined || view.advanced.on || view.advanced.modeActive ? [settingsLink({ href: "/mode", title: "Operating mode", status: view.mode })] : []),
-    ...(view.advanced === undefined || view.advanced.on ? [settingsLink({ href: "/settings/policy", title: "Policy", status: "Limits no task can go past, whatever its mode or approver" })] : []),
+    // Policy stays while any restriction applies (or can't be read), with what it is now.
+    ...(view.advanced === undefined || view.advanced.on || (view.advanced.policy ?? null) !== null
+      ? [settingsLink({ href: "/settings/policy", title: "Policy", status: view.advanced?.policy ?? "Limits no task can go past, whatever its mode or approver" })] : []),
     settingsLink({ href: "/caps", title: "Requirements", status: "What builders are missing for waiting work" }),
     settingsLink({ href: "/settings/projects", title: "Network, writes and sandbox", status: "Set for each project" }),
   ]);

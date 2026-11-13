@@ -127,4 +127,43 @@ describe("v160", () => {
     expect(advancedPreferenceOf(store, "sam")).toBeNull();
     store.close();
   });
+
+  test.each([
+    ["missing", "DROP TABLE view_preference", /view_preference table is missing/],
+    ["wrong columns", "DROP TABLE view_preference; CREATE TABLE view_preference (account TEXT PRIMARY KEY, advanced INTEGER)", /view_preference table has an unknown shape/],
+    ["a loosened check", "DROP TABLE view_preference; CREATE TABLE view_preference (account TEXT PRIMARY KEY, advanced INTEGER NOT NULL, source TEXT NOT NULL CHECK (source IN ('upgrade', 'person')), updated_at TEXT)", /unknown shape/],
+  ])("a current file whose table is %s is refused, not opened", (_name, damage, message) => {
+    const dir = mkdtempSync(join(tmpdir(), "toolroll-v160-"));
+    dirs.push(dir);
+    const file = join(dir, "orders.db");
+    openStore(file).close();
+    const raw = new DatabaseSync(file);
+    raw.exec(damage);
+    raw.close();
+    expect(() => openStore(file)).toThrow(message);
+  });
+
+  test("a resumed upgrade whose table was damaged is refused", () => {
+    const file = v159File(people);
+    expect(() => openStore(file, { migrationStep: at => { if (at === "advanced-preference") throw new Error("crash"); } })).toThrow("crash");
+    const raw = new DatabaseSync(file);
+    raw.exec("DROP TABLE view_preference; CREATE TABLE view_preference (account TEXT, advanced INTEGER)");
+    raw.close();
+    expect(() => openStore(file)).toThrow(/view_preference table has an unknown shape/);
+  });
+
+  test.each([
+    ["missing", "DROP TABLE view_preference"],
+    ["without its account column", "DROP TABLE view_preference; CREATE TABLE view_preference (who TEXT, advanced INTEGER)"],
+  ])("a damaged table (%s) never blocks a revocation", (_name, damage) => {
+    const store = openStore(":memory:");
+    store.saveApprover("alex", "hash-a", T0);
+    store.saveApprover("sam", "hash-s", T0);
+    store.handle.exec(damage);
+    expect(store.revokeAccount("sam", "alex", T0)).toMatchObject({ ok: true });
+    expect(store.accountOf("sam")?.revokedAt).toBe(T0.toISOString());
+    // And the revocation's own transaction went through whole: sam's live state ended with it.
+    expect(store.revokeAccount("sam", "alex", T0)).toEqual({ ok: false, reason: "already-revoked" });
+    store.close();
+  });
 });

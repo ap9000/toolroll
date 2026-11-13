@@ -103,10 +103,10 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const store = read();
       const mode = store === null ? null : localModeOf(store);
       const passwordSet = store !== null && mode !== null && store.accountOf(mode.owner)?.passwordSet === true;
-      // Settings → Advanced: the learning line is an advanced feature; the local owner's own switch decides (no local
-      // mode: no one person to ask, so it shows as before).
+      // Settings → Advanced: flaky tests are an advanced feature; the local owner's own switch decides (no local mode: no
+      // one person to ask, so it shows as before). Memory suggestions wait on a person, so they show whatever the switch.
       const advanced = store === null || mode === null || advancedShownFor(store, mode.owner);
-      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null || !advanced ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock()) };
+      return { rows, needsYou, projects: "error" in registry ? [] : registry.repos, passwordSet, learning: store === null ? null : learningLine(store, "error" in registry ? [] : registry.repos, clock(), advanced) };
     },
 
     async task(id: string): Promise<TuiTask | null> {
@@ -218,12 +218,14 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
   };
 }
 
-/** The screen's one line about the learning loops: flaky tests and what waits in project memory, each with its command. */
-function learningLine(store: Store, repos: readonly string[], now: Date): string | null {
+/** The screen's one line about the learning loops: flaky tests and what waits in project memory, each with its command.
+ * `advanced` false (Settings → Advanced off) leaves out flaky tests only: memory suggestions wait on a person and always
+ * show. */
+export function learningLine(store: Store, repos: readonly string[], now: Date, advanced = true): string | null {
   let flaky = 0, memory = 0;
   try {
     for (const repo of repos) {
-      flaky += flakyCount(store, repo, now);
+      if (advanced) flaky += flakyCount(store, repo, now);
       const waiting = memoryWaiting(store, repo);
       memory += waiting.notes + waiting.cleanups;
     }
