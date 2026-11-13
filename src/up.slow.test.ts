@@ -10,12 +10,12 @@ import { mkdirSync, mkdtempSync, rmSync, existsSync, statSync, readFileSync, wri
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
-import { execFileSync } from "node:child_process";
-import { consoleSignInLink, runOperate, parseOperateArgs, upLinkRequest, upNarrowDeferred } from "./operate.js";
+import { execFileSync, spawn } from "node:child_process";
+import { consoleSignInLink, easyStartInitLocalMode, runOperate, parseOperateArgs, upLinkRequest, upNarrowDeferred } from "./operate.js";
 import { run as execRun } from "./exec.js";
 import { type Runner as CommandRunner } from "./builder.js";
 import { sweepServiceRunning } from "./storage-sweep-schedule.js";
-import { enrollOwnerPassword, laptopPortOf, openStore } from "./store.js";
+import { enrollOwnerPassword, laptopPortOf, openStore, reportLifecycle } from "./store.js";
 import { backgroundShow } from "./laptop-background.js";
 import { register } from "./runner.js";
 import { addApprover, authenticateApprover, hashPassword } from "./scope.js";
@@ -893,6 +893,250 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       const store = openStore(db);
       try { expect(laptopPortOf(store)).toBeNull(); } finally { store.close(); }
     } finally { foreign.close(); }
+  });
+
+  test("eight W2: a database made first by `status` becomes password-free under a direct `up --laptop` only for a person at its terminal", async () => {
+    /** A fresh database as `status` makes it before any start: no creator fact, no account. */
+    const madeByStatus = async (file: string): Promise<void> => {
+      expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
+      const made = openStore(file);
+      try {
+        expect(made.listApprovers()).toEqual([]);
+        expect(made.handle.prepare("SELECT value FROM installation_fact WHERE key = 'created-by'").get()).toBeUndefined();
+      } finally { made.close(); }
+    };
+    const laptopUp = async (file: string, port: number, seams: { terminal: boolean; env: Record<string, string>; json?: boolean }): Promise<number> => {
+      lines = [];
+      return runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--port", String(port), "--for", "1200", ...(seams.json === true ? ["--json"] : [])], line => lines.push(line), {
+        databaseFile: file, inferProjectFromCwd: false,
+        upSeams: { terminal: seams.terminal, env: seams.env, home: join(base, "home"), fenceAvailable: () => true },
+      });
+    };
+    const localRows = (file: string): number => { const store = openStore(file); try { return Number(store.handle.prepare("SELECT count(*) AS n FROM local_mode").get()!["n"]); } finally { store.close(); } };
+    // Not a person: no terminal; a coding agent at a terminal; --json at a terminal. Each takes today's password road.
+    const notPeople: { terminal: boolean; env: Record<string, string>; json?: boolean }[] = [
+      { terminal: false, env: {} }, { terminal: true, env: { CLAUDECODE: "1" } }, { terminal: true, env: {}, json: true },
+    ];
+    // And a brand-new database `up --laptop` makes itself, started with no terminal: never password-free either.
+    lines = [];
+    const fresh = join(base, "fresh-not-person.db");
+    expect(await laptopUp(fresh, PORT + 64, { terminal: false, env: {}, json: true }), lines.join("\n")).toBe(0);
+    expect(localRows(fresh)).toBe(0);
+    for (const [index, seams] of notPeople.entries()) {
+      const file = join(base, `not-person-${index}.db`);
+      await madeByStatus(file);
+      expect(await laptopUp(file, PORT + 60 + index, seams), lines.join("\n")).toBe(0);
+      expect(localRows(file), JSON.stringify(seams)).toBe(0);
+    }
+    // A person at its terminal: password-free, provenance untouched, no login minted.
+    const file = join(base, "person.db");
+    await madeByStatus(file);
+    expect(await laptopUp(file, PORT + 63, { terminal: true, env: {} }), lines.join("\n")).toBe(0);
+    expect(lines.join("\n")).toContain("local mode is on");
+    const store = openStore(file);
+    try {
+      expect(store.handle.prepare("SELECT owner, enabled FROM local_mode").all().map(row => ({ ...row }))).toEqual([{ owner: expect.any(String), enabled: 1 }]);
+      expect(store.listApprovers()).toHaveLength(1);
+      expect(store.accountOf(store.listApprovers()[0]!.name)?.passwordSet).toBe(false);
+      expect(store.handle.prepare("SELECT value FROM installation_fact WHERE key = 'created-by'").get()).toBeUndefined();
+    } finally { store.close(); }
+  });
+
+  test("eight W2: a password-free install not made by `up --laptop` steps past a port another program holds, never past its own running console", async () => {
+    const foreign = createServer();
+    await new Promise<void>(resolve => foreign.listen(PORT + 70, "127.0.0.1", () => resolve()));
+    const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
+    try {
+      // A database `status` made first, started by a person at its terminal with no --port: the next free port.
+      const first = join(base, "first.db");
+      expect(await runOperate("status", ["--json"], () => {}, { databaseFile: first })).toBe(0);
+      lines = [];
+      const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
+        databaseFile: first, inferProjectFromCwd: false, upSeams: { ...person, laptopPorts: [PORT + 70, PORT + 71] },
+      });
+      expect(code, lines.join("\n")).toBe(0);
+      expect(lines.join("\n")).toContain(`port ${PORT + 70} is in use by another program, so Toolroll uses ${PORT + 71}`);
+      const saved = openStore(first);
+      try { expect(laptopPortOf(saved)).toBe(PORT + 71); } finally { saved.close(); }
+    } finally { foreign.close(); }
+  });
+
+  test.skipIf(SOCKETS_TOO_DEEP)("eight W2: a laptop start never steps past a busy port while this database's own console runs", async () => {
+    const foreign = createServer();
+    await new Promise<void>(resolve => foreign.listen(PORT + 70, "127.0.0.1", () => resolve()));
+    const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
+    // The console's socket sits beside its database: a short folder keeps it within the OS limit.
+    const short = shortTempDir("so-w2-");
+    try {
+      // This database's own console running (on a port it was given): a second start never steps past the busy first
+      // port to start another console beside it. It says where Toolroll runs, and nothing else is bound or written.
+      const second = join(short, "second.db");
+      const ownLines: string[] = [];
+      const running = runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--port", String(PORT + 72), "--for", "10000"], line => ownLines.push(line), {
+        databaseFile: second, inferProjectFromCwd: false, upSeams: person,
+      });
+      for (const deadline = Date.now() + 60_000; ;) {
+        if (existsSync(second)) {
+          const store = openStore(second);
+          try { if ((await proveLiveConsole(second, store, packageVersion())).ok) break; } finally { store.close(); }
+        }
+        if (Date.now() > deadline) throw Error(`the first console never proved live:\n${ownLines.join("\n")}`);
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      lines = [];
+      const again = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200", "--json"], line => lines.push(line), {
+        databaseFile: second, inferProjectFromCwd: false, upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: [PORT + 70, PORT + 73] },
+      });
+      expect(again).not.toBe(0);
+      expect(envelope()).toMatchObject({ ok: false, reason: "already-running", message: `Toolroll is already running at http://127.0.0.1:${PORT + 72}` });
+      const probe = createServer();
+      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 73, "127.0.0.1", () => resolve()); });
+      probe.close();
+      const store = openStore(second);
+      try { expect(laptopPortOf(store)).toBeNull(); } finally { store.close(); }
+      // The first start ends on its own (--for): `stop` would signal this very process, which runs it.
+      expect(await running, ownLines.join("\n")).toBe(0);
+    } finally { foreign.close(); rmSync(short, { recursive: true, force: true }); }
+  });
+
+  test("eight W2 (Codex #377 finding 2): a standalone `serve` running on an accountless database is never stepped past or made password-free", async () => {
+    const file = join(base, "served.db");
+    expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
+    const home = join(base, "home");
+    mkdirSync(home, { recursive: true });
+    // `serve` as a person runs it: its own process (it stops on a signal), from source.
+    const served = spawn(process.execPath, ["--import", "tsx", "src/bin.ts", "serve", "--db", file, "--port", String(PORT + 74), "--json"], {
+      cwd: process.cwd(), env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let said = "";
+    served.stdout!.on("data", chunk => { said += String(chunk); });
+    served.stderr!.on("data", chunk => { said += String(chunk); });
+    const exited = new Promise<void>(resolve => served.once("exit", () => resolve()));
+    try {
+      for (const deadline = Date.now() + 60_000; !said.includes('"port"');) {
+        if (served.exitCode !== null || Date.now() > deadline) throw Error(`serve never started:\n${said}`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const localRows = (): number => { const store = openStore(file); try { return Number(store.handle.prepare("SELECT count(*) AS n FROM local_mode").get()!["n"]); } finally { store.close(); } };
+      // A person's laptop start with no --port, the served port first in line: refused, nothing bound or made.
+      lines = [];
+      const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
+        databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 74, PORT + 75] },
+      });
+      expect(code, lines.join("\n")).not.toBe(0);
+      // The served port carries this database's console lifecycle row: never stepped past (the ordinary port-taken words).
+      expect(lines.join("\n")).toContain(`port ${PORT + 74} is taken`);
+      expect(localRows()).toBe(0);
+      const probe = createServer();
+      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 75, "127.0.0.1", () => resolve()); });
+      probe.close();
+      // `serve` on a port not in line, another program holding the first one: still never stepped past to a second console.
+      const foreign = createServer();
+      await new Promise<void>(resolve => foreign.listen(PORT + 76, "127.0.0.1", () => resolve()));
+      try {
+        lines = [];
+        const beside = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
+          databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 76, PORT + 77] },
+        });
+        expect(beside, lines.join("\n")).not.toBe(0);
+        expect(lines.join("\n")).toContain(`Toolroll is already running at http://127.0.0.1:${PORT + 74}`);
+        expect(localRows()).toBe(0);
+      } finally { foreign.close(); }
+      // Bare `toolroll`'s initialisation at the terminal refuses too, while `serve` runs.
+      const person = { stdin: true, stdout: true, agent: false, json: false, remote: false };
+      expect(await easyStartInitLocalMode(file, person, { fence: () => true, owner: "sam" })).toBe(false);
+      expect(localRows()).toBe(0);
+      // Once `serve` has stopped, the same database may become password-free.
+      served.kill("SIGTERM");
+      await exited;
+      expect(await easyStartInitLocalMode(file, person, { fence: () => true, owner: "sam" })).toBe(true);
+    } finally {
+      if (served.exitCode === null && served.signalCode === null) served.kill("SIGKILL");
+    }
+  });
+
+  test("eight W2 (Codex #377 round 2, finding A): a stale console row blocks stepping while its port still listens, not once nothing does", async () => {
+    const foreign = createServer();
+    await new Promise<void>(resolve => foreign.listen(PORT + 80, "127.0.0.1", () => resolve()));
+    // A console of this database that is paused: its row is old (no heartbeat), its port still answers.
+    const paused = createServer();
+    await new Promise<void>(resolve => paused.listen(PORT + 81, "127.0.0.1", () => resolve()));
+    const home = join(base, "home");
+    const start = async (file: string): Promise<number> => {
+      lines = [];
+      return runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
+        databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 80, PORT + 82] },
+      });
+    };
+    const staleRow = (file: string, port: number): void => {
+      const store = openStore(file);
+      try { reportLifecycle(store, `console:127.0.0.1:${port}`, "started", "serve:1:old", new Date(Date.now() - 10 * 60_000), { pid: 1 }); } finally { store.close(); }
+    };
+    try {
+      const pausedDb = join(base, "paused.db");
+      expect(await runOperate("status", ["--json"], () => {}, { databaseFile: pausedDb })).toBe(0);
+      staleRow(pausedDb, PORT + 81);
+      expect(await start(pausedDb), lines.join("\n")).not.toBe(0);
+      expect(lines.join("\n")).toContain(`Toolroll is already running at http://127.0.0.1:${PORT + 81}`);
+      // A row left by a console that crashed (nothing listens on its port any more): the start steps past the busy port.
+      const crashedDb = join(base, "crashed.db");
+      expect(await runOperate("status", ["--json"], () => {}, { databaseFile: crashedDb })).toBe(0);
+      staleRow(crashedDb, PORT + 83);
+      expect(await start(crashedDb), lines.join("\n")).toBe(0);
+      expect(lines.join("\n")).toContain(`port ${PORT + 80} is in use by another program, so Toolroll uses ${PORT + 82}`);
+    } finally { foreign.close(); paused.close(); }
+  });
+
+  test("eight W2 (Codex #377 round 2, finding A): `serve` that can't record its console's lifecycle refuses to serve", async () => {
+    const file = join(base, "unrecordable.db");
+    expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
+    const store = openStore(file);
+    try { store.handle.exec("CREATE TRIGGER no_console_rows BEFORE INSERT ON service_lifecycle WHEN NEW.component LIKE 'console:%' BEGIN SELECT RAISE(ABORT, 'refused'); END"); } finally { store.close(); }
+    lines = [];
+    let settled = false;
+    const serving = runOperate("serve", ["--port", String(PORT + 84), "--json"], line => lines.push(line), { databaseFile: file }).finally(() => { settled = true; });
+    for (const deadline = Date.now() + 10_000; !settled && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50));
+    // Before the fix it serves on (until a signal): stop it so the test can say so.
+    if (!settled) process.emit("SIGINT");
+    expect(settled).toBe(true);
+    expect(await serving).not.toBe(0);
+    expect(envelope()).toMatchObject({ ok: false, command: "serve", reason: "lifecycle" });
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 84, "127.0.0.1", () => resolve()); });
+    probe.close();
+  });
+
+  test("eight W2 (Codex #377 round 2, finding B): two consoles of one database on one port at different addresses keep their own rows", async () => {
+    const file = join(base, "two.db");
+    expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
+    const home = join(base, "home");
+    mkdirSync(home, { recursive: true });
+    const children: ReturnType<typeof spawn>[] = [];
+    const serveOn = async (host: string): Promise<void> => {
+      const child = spawn(process.execPath, ["--import", "tsx", "src/bin.ts", "serve", "--db", file, "--host", host, "--port", String(PORT + 85), "--json"], {
+        cwd: process.cwd(), env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(child);
+      let said = "";
+      child.stdout!.on("data", chunk => { said += String(chunk); });
+      child.stderr!.on("data", chunk => { said += String(chunk); });
+      for (const deadline = Date.now() + 60_000; !said.includes('"port"');) {
+        if (child.exitCode !== null || Date.now() > deadline) throw Error(`serve on ${host} never started:\n${said}`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    };
+    try {
+      await serveOn("127.0.0.1");
+      await serveOn("::1");
+      const store = openStore(file);
+      try {
+        const rows = store.handle.prepare("SELECT component, state FROM service_lifecycle WHERE component LIKE 'console:%' ORDER BY component").all().map(row => ({ ...row }));
+        expect(rows).toEqual([{ component: `console:127.0.0.1:${PORT + 85}`, state: "started" }, { component: `console:::1:${PORT + 85}`, state: "started" }].sort((a, b) => a.component < b.component ? -1 : 1));
+      } finally { store.close(); }
+    } finally {
+      for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      await Promise.all(children.map(child => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise(resolve => child.once("exit", resolve))));
+    }
   });
 
   test("the console mints only the kind of link its own start was authorised for; a request of another kind gets none", () => {

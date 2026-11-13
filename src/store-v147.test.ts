@@ -83,7 +83,8 @@ describe("the v147 migration", () => {
     expect(localModeOf(store)).toBeNull();
     expect(installationCreatedBy(store)).toBeNull();
     expect(passwordlessOn(store)).toBe(true);
-    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "not-laptop" });
+    // Eight W2: initialisation no longer reads the creator fact; an upgraded install with accounts is refused for them.
+    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "has-accounts" });
     // The new shapes refuse what they can't name.
     expect(() => store.handle.prepare("UPDATE approver SET password_set = 2").run()).toThrow();
     expect(() => store.handle.prepare("UPDATE web_session SET authority = 'root'").run()).toThrow();
@@ -154,12 +155,12 @@ describe("local mode's initialization", () => {
     expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = 'local mode on'").get()!["n"]).toBe(0);
   });
 
-  test("a `serve` setup database with no account is never initialized (no creator fact)", () => {
+  test("eight W2: a database with no creator fact and no account is initialized by the write itself; its provenance is never rewritten (who may ask is the caller's guard: local-mode-init.test.ts)", () => {
     dir = mkdtempSync(join(tmpdir(), "so-v147-"));
     const store = opened(openStore(join(dir, "serve.db")));
     expect(store.listApprovers()).toEqual([]);
-    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "not-laptop" });
-    expect(localModeOf(store)).toBeNull();
+    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW })).toEqual({ ok: true, owner: "alex", generation: 1 });
+    expect(installationCreatedBy(store)).toBeNull();
   });
 });
 

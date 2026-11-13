@@ -298,8 +298,9 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         return;
       }
       case "background": {
-        const yes = input === "y" || input === "Y" || key.return;
-        if (!yes && input !== "n" && input !== "N") return;
+        // Eight W2: no is the default (Enter); only y adds the login item.
+        const yes = input === "y" || input === "Y";
+        if (!yes && input !== "n" && input !== "N" && !key.return) return;
         setScreen({ kind: "main" });
         setBusy(yes ? "Moving Toolroll to the background…" : "Saving…");
         void session.answerBackground(yes).then(words => { setMessage(words); setBusy(null); });
@@ -361,11 +362,11 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
           <Box flexDirection="column" borderStyle="single" paddingX={1}>
             <Text bold>Quit Toolroll?</Text>
             <Text>s  Stop agents and quit (running work is saved)</Text>
-            <Text>b  Keep running in the background</Text>
+            <Text>b  Keep running, and start when you log in</Text>
           </Box>
         );
       case "background":
-        return <Box borderStyle="single" paddingX={1}><Text bold>Keep Toolroll running in the background? (Y/n)</Text></Box>;
+        return <Box borderStyle="single" paddingX={1}><Text bold>Start Toolroll when you log in, so tasks keep going? (y/N)</Text></Box>;
       case "build":
         return (
           <Box flexDirection="column" borderStyle="single" paddingX={1}>

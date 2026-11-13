@@ -26689,29 +26689,36 @@ export function installationCreatedBy(store: Store): string | null {
 
 export type InitLocalModeResult =
   | { ok: true; owner: string; generation: number }
-  | { ok: false; reason: "not-laptop" | "no-fence" | "has-accounts" | "already" };
+  | { ok: false; reason: "no-fence" | "has-accounts" | "already" | "console-running" };
 
 /**
- * Turn local mode on for a database `up --laptop` made, once (plan F). Only when: that database records created-by
- * laptop, it has no account yet, it never had local mode, and the caller found a fence on this machine (diagnostic
- * only: it decides whether local mode is offered). One transaction: the owner (no password: a hash of random bytes
- * that are thrown away, password_set 0), the local_mode row and one ledger line, each inserted only if nothing is
- * there. A retry or a racing start inserts nothing and writes no second ledger line. Migration and the update
- * rehearsal never call this.
+ * Turn local mode on for a database with no account, once (plan F; eight W2: however the database was made — `up
+ * --laptop`, or `welcome`/`status`/`repos add` first). Only when: it has no account row of any kind (viewer-only and
+ * revoked ones count: accounts are never deleted), it never had local mode (on or off), and the caller found a fence
+ * on this machine (diagnostic only: it decides whether local mode is offered). The caller proves a person at this
+ * computer's terminal first (operate.ts initLocalModeForPerson); this is the write. One transaction: the owner (no
+ * password: a hash of random bytes that are thrown away, password_set 0), the local_mode row and one ledger line,
+ * each inserted only if, read again inside it, there is still no account and no local mode. A retry or a racing start
+ * inserts nothing and writes no second ledger line. Creation provenance (created-by) is neither read nor written.
+ * Migration and the update rehearsal never call this.
  */
-export function initLocalMode(store: Store, input: { owner: string; fenceAvailable: boolean; now: Date }): InitLocalModeResult {
+export function initLocalMode(store: Store, input: { owner: string; fenceAvailable: boolean; now: Date; consolesProvenDown?: ReadonlySet<string> }): InitLocalModeResult {
   if (!input.fenceAvailable) return { ok: false, reason: "no-fence" };
   // Hashed before the transaction (scrypt is slow); the random bytes are never kept anywhere.
   const unusable = hashPassword(randomBytes(32).toString("hex"));
   return store.transact((): InitLocalModeResult => {
-    if (installationCreatedBy(store) !== "laptop") return { ok: false, reason: "not-laptop" };
-    if (store.handle.prepare("SELECT 1 FROM local_mode WHERE id = 1").get() !== undefined) return { ok: false, reason: "already" };
+    if (store.handle.prepare("SELECT 1 FROM local_mode").get() !== undefined) return { ok: false, reason: "already" };
+    // A console serving this database right now (a standalone `serve` claims no instance record): never turned
+    // password-free underneath it (Codex review of #377, finding 2).
+    // Round 2 (finding A): any console row not stopped counts, unless the caller proved that very row's address isn't
+    // listening (operate.ts consolesProvenDown) — a paused console with no fresh heartbeat still blocks.
+    if (consoleServingNow(store, input.now, input.consolesProvenDown) !== null) return { ok: false, reason: "console-running" };
     const stamp = input.now.toISOString();
     const made = store.handle.prepare(`INSERT INTO approver (name, credential_hash, added_at, generation, password_set)
       SELECT ?, ?, ?, 1, 0 WHERE NOT EXISTS (SELECT 1 FROM approver) AND NOT EXISTS (SELECT 1 FROM local_mode)`).run(input.owner, unusable, stamp);
     if (Number(made.changes) !== 1) return { ok: false, reason: "has-accounts" };
     store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, ?, 1, 1, ?, ?)").run(input.owner, stamp, stamp);
-    store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new laptop install: the owner has no password yet" });
+    store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new install with no account, started at its own terminal: the owner has no password yet" });
     return { ok: true, owner: input.owner, generation: 1 };
   });
 }
@@ -27183,4 +27190,62 @@ export function checkCleanupTaskOf(store: Store, checkId: number, runner: string
     WHERE r.id = ? AND r.runner = ? AND r.state IN ('passed','failed') AND r.settled_at IS NULL
       AND r.settle_by = ? AND r.settle_until > ?`).get(BUILT_IN, checkId, runner, attempt, now.toISOString());
   return row === undefined ? null : Number(row["ref"]);
+}
+
+/**
+ * Eight W2: whether this database could still become password-free — one read: no account row of any kind (viewer-only
+ * and revoked ones count) and no local-mode state ever recorded (on or off). Never a grant: initLocalMode reads both
+ * again inside the transaction that writes.
+ */
+export function localModeCandidate(store: Store): boolean {
+  const row = store.handle.prepare("SELECT (SELECT count(*) FROM approver) AS accounts, (SELECT count(*) FROM local_mode) AS local").get();
+  return row !== undefined && Number(row["accounts"]) === 0 && Number(row["local"]) === 0;
+}
+
+/** How long a console's lifecycle heartbeat (every 15 s) stays proof that it is serving: three beats and a margin. */
+export const CONSOLE_BEAT_FRESH_MS = 60_000;
+
+/** Codex review of #377, round 2 (finding B): a console's lifecycle identity names its bind address as well as its
+ * port, so two consoles of one database on one port at different addresses never share (or overwrite) a row. */
+export function consoleComponent(host: string, port: number): string {
+  return `console:${host}:${port}`;
+}
+
+/** A console row's address: `console:<host>:<port>`, or the older `console:<port>` (host unknown: null). */
+export function consoleAddressOf(component: string): { host: string | null; port: number | null } {
+  const rest = component.slice("console:".length);
+  const cut = rest.lastIndexOf(":");
+  const port = Number(cut === -1 ? rest : rest.slice(cut + 1));
+  return { host: cut === -1 ? null : rest.slice(0, cut), port: Number.isInteger(port) && port > 0 && port < 65_536 ? port : null };
+}
+
+/** The lifecycle row of a console of this database on `port`, at any address (either identity form), or null. */
+export function consoleRowForPort(store: Store, port: number): LifecycleRow | null {
+  const old = lifecycleOf(store, `console:${port}`);
+  if (old !== null) return old;
+  const rows = store.handle.prepare("SELECT * FROM service_lifecycle WHERE component LIKE 'console:%' ORDER BY beat_at DESC").all().map(lifecycleRowOf);
+  return rows.find(one => consoleAddressOf(one.component).port === port) ?? null;
+}
+
+/** One console row that isn't stopped: its address, whether it beat within CONSOLE_BEAT_FRESH_MS (`beatRecent`), and the
+ * key that names exactly this row as it reads now (component, holder and last beat), for consolesProvenDown. */
+export type OpenConsoleRow = { key: string; host: string | null; port: number | null; beatRecent: boolean };
+export function openConsoleRows(store: Store, now: Date): OpenConsoleRow[] {
+  const since = now.getTime() - CONSOLE_BEAT_FRESH_MS;
+  return store.handle.prepare("SELECT * FROM service_lifecycle WHERE component LIKE 'console:%' AND state <> 'stopped' ORDER BY beat_at DESC").all().map(lifecycleRowOf)
+    .map(row => ({ key: `${row.component}|${row.holder}|${row.beatAt}`, ...consoleAddressOf(row.component), beatRecent: Date.parse(row.beatAt) > since }));
+}
+
+/**
+ * Codex review of #377, findings 2 and A: a console that may be serving this database — by its lifecycle row
+ * (`console:<host>:<port>` or the older `console:<port>`; `up`'s console and a standalone `serve` both write one). Every
+ * row that isn't stopped counts, whatever its heartbeat (a paused process beats nothing), except a stale one whose exact
+ * row the caller proved isn't listening (`provenDown`, keys from openConsoleRows). A fresh row always counts. Null when
+ * none. A row that can't be read is reported as serving (fail closed).
+ */
+export function consoleServingNow(store: Store, now: Date, provenDown: ReadonlySet<string> = new Set()): { port: number | null } | null {
+  try {
+    const open = openConsoleRows(store, now).find(row => row.beatRecent || !provenDown.has(row.key));
+    return open === undefined ? null : { port: open.port };
+  } catch { return { port: null }; }
 }

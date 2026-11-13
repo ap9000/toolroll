@@ -130,10 +130,10 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
+  requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, consoleServingNow, consoleComponent, consoleRowForPort, openConsoleRows, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
-import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
+import { claimInstance, clearInstance, openInstanceSocket, proveLiveConsole } from "./console-instance.js";
 import { backgroundOff, backgroundOn, backgroundShow, laptopStatus, laptopStop, restartOwnBuilder, type LaptopSeams } from "./laptop-background.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
@@ -155,7 +155,7 @@ import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAcce
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
-import { createServer as createNetServer } from "node:net";
+import { createConnection as createNetConnection, createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -1145,7 +1145,8 @@ async function runOperateLocal(
 
   let store: Store;
   try {
-    // v147: `up --laptop` records who made a NEW database (installation_fact created-by), the fact local mode starts from.
+    // v147: `up --laptop` records who made a NEW database (installation_fact created-by): provenance only; local mode
+    // starts from a person at the terminal and a database with no account (eight W2, initLocalModeForPerson).
     const laptop = command === "up" && flags.has("laptop") && options.upRole === undefined;
     store = options.openDatabase !== undefined ? options.openDatabase(file) : openStore(file, laptop ? { createdBy: "laptop" } : {});
   } catch (error) {
@@ -4680,6 +4681,12 @@ async function serveCommand(
   });
   const server = console_.server;
   const actual = console_.port;
+  // Round 2 (finding A): a `serve` that can't record that it is serving this database doesn't serve it.
+  const serveLifecycle = serveConsoleLifecycle(store, host, actual, context.clock);
+  if (serveLifecycle === null) {
+    await closeServedConsole(server);
+    return fail(write, json, "serve", "lifecycle", "Toolroll couldn't record that this console is running, so it didn't start. Check the database, then run it again.", EXIT.refused);
+  }
   if (json) {
     write(envelopeJson({ ok: true, command: "serve", host, port: actual, ...(setupCode === undefined ? {} : { setupCode }) }));
   } else if (setupCode !== undefined) {
@@ -4698,6 +4705,7 @@ async function serveCommand(
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
   });
+  serveLifecycle();
   return EXIT.ok;
 }
 
@@ -7968,21 +7976,37 @@ async function upCommand(
 
   // 3. Reserve the port BEFORE any identity or enrollment mutation
   // (finding 7/19): a busy port must refuse while the world is untouched.
-  // A laptop start with no --port: the port this install saved, else (a NEW laptop install only) the first free one from
-  // `up`'s default on (upLaptopPortCandidates), saved once it is reserved. Every other install keeps its port.
-  const candidates = laptop && portGiven === undefined ? upLaptopPortCandidates(store, context.upSeams?.laptopPorts) : [port];
+  // A laptop start with no --port: the port this install saved, else (a NEW laptop install, or one that is or is about to
+  // be password-free: eight W2) the first free one from `up`'s default on (upLaptopPortCandidates), saved once it is
+  // reserved. Every other install keeps its port.
+  const localCaller = upLocalInitCaller(context, flags);
+  const localInstall = laptop && (localModeOf(store)?.enabled === true || (personMayInitLocalMode(localCaller) && localModeCandidate(store)));
+  const candidates = laptop && portGiven === undefined ? upLaptopPortCandidates(store, context.upSeams?.laptopPorts, localInstall) : [port];
   let probe = createNetServer();
   let reserved = false;
   for (const candidate of candidates) {
     // A port this database's own console has held is never stepped past: that is this install, restarting or running.
-    if (candidate !== candidates[0] && lifecycleOf(store, `console:${candidate}`) !== null) break;
+    if (candidate !== candidates[0] && consoleRowForPort(store, candidate) !== null) break;
+    // Eight W2: nor is any port stepped past until this database's console is proved NOT running (console-instance.ts,
+    // both channels): a busy port is only another program's when this install's own console isn't up anywhere.
+    if (candidate !== candidates[0] && candidate === candidates[1]) {
+      let ours: Awaited<ReturnType<typeof proveLiveConsole>> | null = null;
+      try { ours = await proveLiveConsole(context.databaseFile, store, packageVersion()); } catch { ours = null; }
+      if (ours?.ok === true) return fail(write, json, "up", "already-running", `Toolroll is already running at ${ours.url}`, EXIT.refused);
+      if (ours === null || ours.state !== "none") break;
+      // A standalone `serve` on this database claims no instance record, but it beats its lifecycle row: never stepped
+      // past either (Codex review of #377, finding 2).
+      // Round 2 (finding A): any console row not stopped counts unless its own address is proved not listening.
+      const serving = consoleServingNow(store, clock(), await consolesProvenDown(store, clock()));
+      if (serving !== null) return fail(write, json, "up", "already-running", serving.port === null ? "Toolroll's console is already serving this database" : `Toolroll is already running at http://127.0.0.1:${serving.port}`, EXIT.refused);
+    }
     probe = createNetServer();
     port = candidate;
     reserved = await new Promise<boolean>(resolveProbe => {
       probe.once("error", () => resolveProbe(false));
       probe.listen(candidate, "127.0.0.1", () => resolveProbe(true));
     });
-    if (reserved || lifecycleOf(store, `console:${candidate}`) !== null) break;
+    if (reserved || consoleRowForPort(store, candidate) !== null) break;
   }
   if (reserved && laptop && portGiven === undefined && candidates.length > 1) {
     recordLaptopPort(store, port, new Date());
@@ -7990,7 +8014,7 @@ async function upCommand(
   }
   if (!reserved) {
     // The console that holds it said it is stopping: a restart is under way, so say that instead of "another one runs".
-    const holder = lifecycleOf(store, `console:${port}`);
+    const holder = consoleRowForPort(store, port);
     if (holder?.state === "draining") return fail(write, json, "up", "port-busy", `Toolroll is restarting (draining): the console on port ${port} is stopping — try again in a few seconds`, EXIT.refused);
     return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`, EXIT.refused);
   }
@@ -8006,7 +8030,7 @@ async function upCommand(
     // 4. The approver (findings 2/8/17/21/27/29/32). A laptop start first turns local mode on for a database it just
     // made with no account yet, when this machine has a fence (easy-start plan F); anywhere else this changes nothing.
     if (flags.has("laptop")) {
-      const made = upLaptopLocalMode(context, text(flags, "as"));
+      const made = await upLaptopLocalMode(context, text(flags, "as"), localCaller);
       if (made.ok) progress("local mode is on: this computer's browser signs in without a password");
     }
     const approverPlan = await resolveUpApprover(context, flags, canPrompt);
@@ -13001,7 +13025,7 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
   let resolveStopped: () => void = () => {};
   const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
   port.onStop(() => resolveStopped());
-  const lifecycleComponent = `console:${console_.port}`;
+  const lifecycleComponent = consoleComponent(config.host, console_.port);
   const lifecycleHolder = `${process.pid}:${randomUUID().slice(0, 8)}`;
   try { reportLifecycle(store, lifecycleComponent, "started", lifecycleHolder, clock(), { pid: process.pid }); } catch { /* reporting never stops the console */ }
   const lifecycleBeat = setInterval(() => { try { beatLifecycle(store, lifecycleComponent, lifecycleHolder, clock()); } catch { /* the next beat tries again */ } }, RUNNER_HEARTBEAT_MS);
@@ -13813,17 +13837,17 @@ function upLaptopProjectsRoot(home: string): string | null {
 }
 
 /**
- * Local mode for a laptop start (plan F): only for a database this start's `--laptop` made (created-by laptop) with no
- * account yet, and only where this machine has a fence (diagnostic: on Linux without bubblewrap the ordinary password
- * flow runs). The owner is named like today's minted login: --as, else the user's name. Idempotent: a later start, a
- * racing start or an install with accounts changes nothing.
+ * Local mode for a laptop start (plan F; eight W2): only for a database with no account of any kind and no local-mode
+ * state ever recorded, however it was made, and only when a person runs this `up --laptop` at this computer's own
+ * terminal (initLocalModeForPerson: both TTYs, no coding agent, no --json, no remote principal) and this machine has a
+ * fence (diagnostic: on Linux without bubblewrap the ordinary password flow runs). The owner is named like today's
+ * minted login: --as, else the user's name. Idempotent: a later start, a racing start or an install with accounts
+ * changes nothing.
  */
-function upLaptopLocalMode(context: Context, asFlag: string | undefined): InitLocalModeResult {
-  const fence = context.upSeams?.fenceAvailable ?? (() => process.platform === "darwin" ? macosFenceAvailable() : linuxFenceAvailable());
+function upLaptopLocalMode(context: Context, asFlag: string | undefined, caller: LocalInitCaller): Promise<InitLocalModeResult | { ok: false; reason: "not-a-person" }> {
+  const fence = context.upSeams?.fenceAvailable ?? defaultFenceAvailable;
   const owner = asFlag ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
-  // Cheap reads first: the fence probe runs only for a database that could still be initialized.
-  if (installationCreatedBy(context.store) !== "laptop" || localModeOf(context.store) !== null || context.store.listApprovers().length > 0) return { ok: false, reason: "already" };
-  return initLocalMode(context.store, { owner, fenceAvailable: fence(), now: context.clock() });
+  return initLocalModeForPerson(context.store, caller, { owner, fence, now: context.clock() });
 }
 
 /** The sign-in link `up` asks its console for, by this start's authority: none for "none". */
@@ -14051,15 +14075,16 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
 
 /**
  * Easy start: the ports `up --laptop` (no --port) tries, in order. The port this install saved, alone; else, for a NEW
- * laptop install (made by `up --laptop`, nothing saved yet), `up`'s default and the next nineteen, so a console that
- * isn't this database's (another Toolroll, the desktop app's) never stops a first start; else (an install made any other
- * way) `up`'s default alone, as before. `fromSeam` replaces the default range in tests.
+ * laptop install (made by `up --laptop`, nothing saved yet) or a password-free one (`localInstall`: local mode on, or
+ * about to be turned on by this start — eight W2), `up`'s default and the next nineteen, so a console that isn't this
+ * database's (another Toolroll, the desktop app's) never stops a first start; else (an install with passwords made any
+ * other way) `up`'s default alone, as before. `fromSeam` replaces the default range in tests.
  */
-export function upLaptopPortCandidates(store: Store, fromSeam?: readonly number[]): number[] {
+export function upLaptopPortCandidates(store: Store, fromSeam?: readonly number[], localInstall = false): number[] {
   const saved = laptopPortOf(store);
   if (saved !== null) return [saved];
   const range = fromSeam ?? Array.from({ length: 20 }, (_, index) => 4180 + index);
-  if (installationCreatedBy(store) !== "laptop") return [range[0] ?? 4180];
+  if (installationCreatedBy(store) !== "laptop" && !localInstall) return [range[0] ?? 4180];
   return [...range];
 }
 
@@ -14703,4 +14728,125 @@ async function localRetryCommand(positional: readonly string[], flags: Map<strin
   return succeed(write, json, command, { id, replayed: done.replayed, retries: done.retries }, () => [
     done.replayed ? `${id} · Already retrying build #${run}.` : `${id} · Retrying build #${run}. It starts next.`,
   ]);
+}
+
+// ---- eight W2: who may turn local (password-free) mode on ------------------------------------------------------------
+
+/** The facts about who is asking to turn local mode on: both TTYs, a coding agent, --json, and any remote principal
+ * (a remote run, the terminal UI's local owner acting, or a credential named on the command line). */
+export type LocalInitCaller = { stdin: boolean; stdout: boolean; agent: boolean; json: boolean; remote: boolean };
+
+/** Only a person at this computer's own terminal: stdin AND stdout a TTY, not under a coding agent, no --json, no remote
+ * principal. Anything else never turns local mode on: it gets today's password road. */
+export function personMayInitLocalMode(caller: LocalInitCaller): boolean {
+  return caller.stdin && caller.stdout && !caller.agent && !caller.json && !caller.remote;
+}
+
+/** This machine's fence, probed (the same probe every other caller uses). */
+function defaultFenceAvailable(): boolean {
+  return process.platform === "darwin" ? macosFenceAvailable() : linuxFenceAvailable();
+}
+
+/** `up`'s own caller facts: its test seams, else this process's terminal and environment. */
+function upLocalInitCaller(context: Context, flags: Map<string, string | true>): LocalInitCaller {
+  const terminal = context.upSeams?.terminal;
+  return {
+    stdin: terminal ?? process.stdin.isTTY === true,
+    stdout: terminal ?? process.stdout.isTTY === true,
+    agent: underAgent(context.upSeams?.env ?? process.env),
+    json: context.json,
+    remote: context.principal !== undefined || localOwnerRequested() || ["token", "token-file", "token-env"].some(name => flags.has(name)),
+  };
+}
+
+/**
+ * The one road to local mode (eight W2): the caller guard, then a cheap read (no account of any kind, no local-mode
+ * state: store.ts localModeCandidate), then the fence probe, then initLocalMode, which reads both again inside the
+ * transaction that writes. Provenance (created-by) is never read or rewritten.
+ */
+export async function initLocalModeForPerson(store: Store, caller: LocalInitCaller, input: { owner: string; fence: () => boolean; now: Date; probe?: ConsoleProbe }): Promise<InitLocalModeResult | { ok: false; reason: "not-a-person" }> {
+  if (!personMayInitLocalMode(caller)) return { ok: false, reason: "not-a-person" };
+  if (!localModeCandidate(store)) return { ok: false, reason: "already" };
+  // Round 2 (finding A): stale console rows count as serving unless their address is proved not listening; the write's
+  // transaction reads the rows again and only exactly these proved rows are let through.
+  const consolesDown = await consolesProvenDown(store, input.now, input.probe);
+  return initLocalMode(store, { owner: input.owner, fenceAvailable: input.fence(), now: input.now, consolesProvenDown: consolesDown });
+}
+
+/**
+ * Bare `toolroll` (and `toolroll open`) at a person's terminal, before it starts `up --laptop` as its child (which has
+ * no terminal of its own, so it never initialises anything): turn local mode on here, in the process at the terminal,
+ * for a database with no account and no local-mode state — or, with no database yet and a fence on this machine, a new
+ * one, made exactly as `up --laptop` makes it (created-by laptop). True when local mode is on for its owner afterwards.
+ * Unreadable or anything in doubt: false (today's password road).
+ */
+export async function easyStartInitLocalMode(databaseFile: string, caller: LocalInitCaller, options: { fence?: () => boolean; owner?: string; now?: Date; probe?: ConsoleProbe } = {}): Promise<boolean> {
+  if (!personMayInitLocalMode(caller)) return false;
+  const fence = options.fence ?? defaultFenceAvailable;
+  // No fence: nothing is made or changed here; `up --laptop` then runs the ordinary password flow, as before.
+  if (!fence()) return false;
+  let store: Store;
+  try { store = openStore(databaseFile, { createdBy: "laptop" }); } catch { return false; }
+  try {
+    const owner = options.owner ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
+    await initLocalModeForPerson(store, caller, { owner, fence: () => true, now: options.now ?? new Date(), ...(options.probe === undefined ? {} : { probe: options.probe }) });
+    return localOwnerBinding(store) !== null;
+  } catch { return false; } finally { store.close(); }
+}
+
+/**
+ * Codex review of #377, finding 2: a standalone `serve` claims no instance record, so it reports its console's lifecycle
+ * (`console:<host>:<port>`) as `up`'s console does and beats it while it serves; null (it must not serve) when it can't. `up` never steps past its port and local mode
+ * is never turned on under it (store.ts consoleServingNow). Returns the stop: the row says stopped.
+ */
+function serveConsoleLifecycle(store: Store, host: string, port: number, clock: () => Date): (() => void) | null {
+  const component = consoleComponent(host, port), holder = `serve:${process.pid}:${randomUUID().slice(0, 8)}`;
+  // Round 2 (finding A): registration failing is a refusal to serve (the caller stops), never swallowed.
+  try { reportLifecycle(store, component, "started", holder, clock(), { pid: process.pid }); } catch { return null; }
+  const beat = setInterval(() => { try { beatLifecycle(store, component, holder, clock()); } catch { /* the next beat tries again */ } }, RUNNER_HEARTBEAT_MS);
+  beat.unref?.();
+  return () => {
+    clearInterval(beat);
+    try { reportLifecycle(store, component, "stopped", holder, clock()); } catch { /* a stale row lapses with its heartbeat */ }
+  };
+}
+
+/** Whether something accepts a TCP connection at host:port: "listening", "refused" (nothing there), or "unknown"
+ * (a timeout or any other answer). */
+export type ConsoleProbe = (host: string, port: number) => Promise<"listening" | "refused" | "unknown">;
+const probeConsoleAddress: ConsoleProbe = (host, port) => new Promise(resolve => {
+  const socket = createNetConnection({ host, port });
+  const done = (answer: "listening" | "refused" | "unknown"): void => { socket.destroy(); resolve(answer); };
+  socket.setTimeout(1_000, () => done("unknown"));
+  socket.once("connect", () => done("listening"));
+  socket.once("error", error => {
+    const code = (error as NodeJS.ErrnoException).code ?? "";
+    // Refused, or an address this machine doesn't have: nothing listens there.
+    done(["ECONNREFUSED", "EADDRNOTAVAIL", "EAFNOSUPPORT"].includes(code) ? "refused" : "unknown");
+  });
+});
+
+/**
+ * Codex review of #377, round 2 (finding A): the stale console rows of this database (not stopped, no fresh heartbeat)
+ * whose address is proved NOT listening — keys for consoleServingNow/initLocalMode. A row is proved down only when every
+ * address it could be reached on refuses (a wildcard, `localhost` or an older row with no address: 127.0.0.1 and ::1).
+ * A paused console still listening, a timeout, or a row with no port is never proved down.
+ */
+export async function consolesProvenDown(store: Store, now: Date, probe: ConsoleProbe = probeConsoleAddress): Promise<Set<string>> {
+  const down = new Set<string>();
+  let rows: ReturnType<typeof openConsoleRows>;
+  try { rows = openConsoleRows(store, now); } catch { return down; }
+  for (const row of rows) {
+    if (row.beatRecent || row.port === null) continue;
+    const addresses = row.host === null || ["0.0.0.0", "::", "localhost"].includes(row.host) ? ["127.0.0.1", "::1"] : [row.host];
+    let allRefused = true;
+    for (const address of addresses) if ((await probe(address, row.port)) !== "refused") allRefused = false;
+    if (allRefused) down.add(row.key);
+  }
+  return down;
+}
+
+/** A console `serve` started and must not keep: closed, and its port given back, before the refusal is reported. */
+async function closeServedConsole(server: import("node:http").Server): Promise<void> {
+  await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections?.(); });
 }
