@@ -6,7 +6,7 @@ what to leave alone, and how you'll know it worked. Recipes live under
 approvals, checks and recovery as any other work. (The old **Recipes** address
 opens the same place.)
 
-<img src="media/ui/workflow-recipes.png" alt="Recipe library with six starters and a saved project recipe." width="920">
+<img src="media/ui/workflow-recipes.png" alt="One-time work under New flow: a saved recipe above the six starters, each with a Use this button." width="920">
 
 ## Find them
 
@@ -50,7 +50,7 @@ Choose **Preview this run →**, check the preview, and create the work.
 **Saved instructions and boundaries** shows what the recipe always does, and
 **Edit a copy of this recipe →** starts a new copy from it.
 
-<img src="media/ui/recipe-creator-run-mobile.png" alt="A saved recipe asks only which module needs tests before previewing a run." width="280">
+<img src="media/ui/recipe-creator-run-mobile.png" alt="On a phone, a saved recipe asks only which module needs tests, then Preview this run." width="280">
 
 Each use freezes its answers into a fresh plan, so using the recipe for another
 module makes separate work, and creating the same preview twice returns the
@@ -81,7 +81,7 @@ as a project recipe** on a workflow preview. A task's **Reuse this plan as a
 recipe →** link (under **More about this task**) copies the task's goal, exclusions, allowed paths
 and success checks into the editor.
 
-<img src="media/ui/workflow-recipe-mobile.png" alt="Phone recipe editor with a named workflow, goal, and preview action." width="280" align="right">
+<img src="media/ui/workflow-recipe-mobile.png" alt="On a phone, a starter opened to customize: its name, description and what the agent should do." width="280" align="right">
 
 ## Share a recipe
 
