@@ -82,16 +82,24 @@ q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
 # Run inside a git repository (and no SO_PROJECTS chosen): Toolroll starts on that repository, here. Nothing in the
 # environment or the repository's config may point it somewhere else: every git override is cleared (for git and for
 # the Toolroll started below), no system or global config is read, and git's answer is kept only when it is a real
-# folder holding a .git entry that contains the folder this was run in. Anything else: ~/Projects, as before.
+# folder holding a .git folder that contains the folder this was run in. Anything else: ~/Projects, as before. (A
+# linked `git worktree` checkout, whose .git is a file, also falls back.)
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
   GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_NAMESPACE GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS \
   GIT_CONFIG_COUNT GIT_CONFIG_SYSTEM GIT_CONFIG_GLOBAL GIT_EXEC_PATH GIT_TEMPLATE_DIR 2>/dev/null || true
+# The repository is identified apart from core.worktree too: its git folder must be exactly <top>/.git, and no
+# core.worktree may be set (a nested repository pointing its worktree at an enclosing one is refused).
+g() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.fsmonitor=false "$@"; }
 repo_here() {
   cwd=$(pwd -P 2>/dev/null) || return 0
-  top=$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -c core.fsmonitor=false rev-parse --show-toplevel 2>/dev/null) || return 0
+  top=$(g rev-parse --show-toplevel 2>/dev/null) || return 0
   [ -n "$top" ] || return 0
   top=$(cd "$top" 2>/dev/null && pwd -P) || return 0
-  [ -e "$top/.git" ] || return 0
+  [ -d "$top/.git" ] || return 0
+  gitdir=$(g rev-parse --absolute-git-dir 2>/dev/null) || return 0
+  gitdir=$(cd "$gitdir" 2>/dev/null && pwd -P) || return 0
+  [ "$gitdir" = "$top/.git" ] || return 0
+  [ -z "$(g config --get core.worktree 2>/dev/null)" ] || return 0
   case "$cwd/" in
     "$top"/*) printf '%s' "$top" ;;
   esac

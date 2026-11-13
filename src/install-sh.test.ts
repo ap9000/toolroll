@@ -25,7 +25,7 @@ beforeEach(() => {
   stub("node", `echo 22.13.0`);
   stub("npm", `[ "$1" = ls ] && exit 1\n[ "$1" = install ] && : > "${base}/npm-installed"\nexit 0`);
   // git: its version (GIT_STUB_VERSION), and the repository a folder is in (a folder with a .git directory).
-  stub("git", `[ "$1" = --version ] && { echo "git version \${GIT_STUB_VERSION:-2.43.0}"; exit 0; }\ncase " $* " in *" rev-parse "*) [ -d .git ] && { pwd -P; exit 0; }; exit 128 ;; esac\nexit 0`);
+  stub("git", `[ "$1" = --version ] && { echo "git version \${GIT_STUB_VERSION:-2.43.0}"; exit 0; }\ncase " $* " in *" --absolute-git-dir "*) [ -d .git ] && { echo "$(pwd -P)/.git"; exit 0; }; exit 128 ;; *" rev-parse "*) [ -d .git ] && { pwd -P; exit 0; }; exit 128 ;; *" config "*) exit 1 ;; esac\nexit 0`);
   // The installed command: --version answers; a start records its arguments, one per line, and whether stdin is a
   // terminal, and the folder it started in.
   stub("toolroll", `[ "$1" = --version ] && { echo "toolroll 9.9.9"; exit 0; }\n{ for a in "$@"; do printf '%s\\n' "$a"; done; if [ -t 0 ]; then echo TTY; else echo NO-TTY; fi; } > "${record}"\npwd -P > "${record}.cwd"`);
@@ -192,5 +192,21 @@ describe("install.sh's repository, with real git", () => {
     const result = await run("sh", [INSTALL], { SO_NO_START: "1" }, "pipe", repo);
     expect(result.code, result.out).toBe(0);
     expect(startLine(result.out)).toBe(projectsLine());
+  });
+
+  test("round 2 (finding C): a nested repository whose core.worktree points at the repository around it: ~/Projects", async () => {
+    const outer = makeRepo(join(base, "outer"));
+    const inner = makeRepo(join(outer, "vendor", "inner"));
+    execFileSync(realGit, ["-C", inner, "config", "core.worktree", outer], { env: gitEnv });
+    const result = await run("sh", [INSTALL], { SO_NO_START: "1" }, "pipe", inner);
+    expect(result.code, result.out).toBe(0);
+    expect(startLine(result.out)).toBe(projectsLine());
+  });
+
+  test("the script stays plain POSIX sh (dash parses it)", () => {
+    for (const shell of ["/bin/sh", "/bin/dash", "/usr/bin/dash"]) {
+      if (!existsSync(shell)) continue;
+      expect(() => execFileSync(shell, ["-n", INSTALL]), shell).not.toThrow();
+    }
   });
 });
