@@ -97,6 +97,9 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   "journeys · flows (scripted)": ".github/workflows/journeys.yml",
   "upgrade path · scope": ".github/workflows/upgrade-path.yml",
   "upgrade path": ".github/workflows/upgrade-path.yml",
+  // The install smoke (scripts/install-smoke.mjs): advisory until it has a run of green pull requests behind it.
+  "install smoke · ubuntu-24.04": ".github/workflows/install-smoke.yml",
+  "install smoke · macos-latest": ".github/workflows/install-smoke.yml",
 };
 
 /**
