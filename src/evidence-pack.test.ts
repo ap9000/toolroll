@@ -187,7 +187,7 @@ test("the audit export covers a date range: sealed entries and a pack per task, 
   const sam = await signIn("sam");
   const answer = await get(sam, `/ledger/export?from=${today}&to=${today}`);
   expect(answer.status).toBe(200);
-  expect(answer.headers.get("content-disposition")).toBe(`attachment; filename="standing-orders-audit-${today}-to-${today}.json"`);
+  expect(answer.headers.get("content-disposition")).toBe(`attachment; filename="toolroll-audit-${today}-to-${today}.json"`);
   const bundle = await answer.json() as LedgerExport;
   expect(bundle.format).toBe("standing-orders/ledger-export/v1");
   expect(bundle.entries.length).toBeGreaterThan(0);

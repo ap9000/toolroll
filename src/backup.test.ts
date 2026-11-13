@@ -47,8 +47,8 @@ test("a backup is an online copy: running work carries on, the copy is checked, 
   const made = await backupNow(store, file, "manual", () => NOW);
   expect(made).toMatchObject({ ok: true, removed: 0 });
   if (!made.ok) throw new Error(made.error);
-  expect(made.file).toBe(join(folder(), `standing-orders-${databaseTag(file)}-2026-09-28-050000.db`));
-  expect(readdirSync(folder())).toEqual([`standing-orders-${databaseTag(file)}-2026-09-28-050000.db`]);
+  expect(made.file).toBe(join(folder(), `toolroll-${databaseTag(file)}-2026-09-28-050000.db`));
+  expect(readdirSync(folder())).toEqual([`toolroll-${databaseTag(file)}-2026-09-28-050000.db`]);
   expect(statSync(made.file).mode & 0o777).toBe(0o600);
   expect(tasksIn(made.file)).toEqual(["before"]);
   expect(readFileSync(made.file).includes(["sk", "ant", "secret", "value"].join("-"))).toBe(false);
@@ -96,7 +96,7 @@ test("the newest N are kept; nothing else in the folder is touched", async () =>
   expect(backupFiles(folder(), backupOwner(store, file)).map(one => one.path)).toEqual(made.slice(2).reverse());
   expect(store.backupRuns().map(run => run.removed)).toEqual([1, 1, 0, 0, 0]);
   expect(pruneBackups(folder(), 1, backupOwner(store, file))).toBe(2);
-  expect(readdirSync(folder()).sort()).toEqual(["before-restore-2026-09-01-000000-abc123.db", "notes.txt", `standing-orders-${databaseTag(file)}-2026-09-28-090000.db`]);
+  expect(readdirSync(folder()).sort()).toEqual(["before-restore-2026-09-01-000000-abc123.db", "notes.txt", `toolroll-${databaseTag(file)}-2026-09-28-090000.db`]);
 });
 
 test("two databases backing up into one folder each keep their own newest N and never delete the other's", async () => {
@@ -138,7 +138,25 @@ test("backups made before they were tagged: this database's history claims its o
   store.setBackupSettings({ enabled: true, everyHours: 1, keep: 1, folder: null }, "alex", NOW);
   const made = await backupNow(store, file, "manual", () => NOW);
   expect(made).toMatchObject({ ok: true, removed: 1 });
-  expect(readdirSync(shared).sort()).toEqual([basename(unknown), `standing-orders-${databaseTag(file)}-2026-09-28-050000.db`, `standing-orders-${otherTag}-2026-09-03-000000.db`].sort());
+  expect(readdirSync(shared).sort()).toEqual([basename(unknown), `toolroll-${databaseTag(file)}-2026-09-28-050000.db`, `standing-orders-${otherTag}-2026-09-03-000000.db`].sort());
+});
+
+test("backups named before the rename (standing-orders-*) are still this database's: listed beside toolroll-* ones, newest first, and pruned in turn", async () => {
+  const shared = folder();
+  mkdirSync(shared);
+  const tag = databaseTag(file);
+  const older = join(shared, `standing-orders-${tag}-2026-09-01-000000.db`), old = join(shared, `standing-orders-${tag}-2026-09-02-000000.db`);
+  writeFileSync(older, "older");
+  writeFileSync(old, "old");
+  // Ownership holds for both names: an untagged toolroll-* backup this database's history doesn't record isn't its own.
+  writeFileSync(join(shared, "toolroll-2026-09-03-000000.db"), "unknown");
+  expect(backupFiles(shared, backupOwner(store, file)).map(one => one.path)).toEqual([old, older]);
+  store.setBackupSettings({ enabled: true, everyHours: 1, keep: 2, folder: null }, "alex", NOW);
+  const made = await backupNow(store, file, "manual", () => NOW);
+  if (!made.ok) throw new Error(made.error);
+  expect(basename(made.file)).toBe(`toolroll-${tag}-2026-09-28-050000.db`);
+  expect(made.removed).toBe(1);
+  expect(backupFiles(shared, backupOwner(store, file)).map(one => one.path)).toEqual([made.file, old]);
 });
 
 test("a failed backup is recorded and notified, and the schedule retries within the hour", async () => {
@@ -176,9 +194,9 @@ test("backup now and backup list on the command line", async () => {
   expect(now.code).toBe(0);
   expect(JSON.parse(now.out)).toMatchObject({ ok: true, command: "backup now", backup: { ok: true } });
   const list = await run("backup", ["list"]);
-  expect(list.out).toContain(`standing-orders-${databaseTag(file)}-`);
+  expect(list.out).toContain(`toolroll-${databaseTag(file)}-`);
   // Another database's backup in the same folder isn't listed.
-  const theirs = `standing-orders-${databaseTag(join(dir, "other.db"))}-2026-09-28-040000.db`;
+  const theirs = `toolroll-${databaseTag(join(dir, "other.db"))}-2026-09-28-040000.db`;
   writeFileSync(join(folder(), theirs), "theirs");
   const listed = await run("backup", ["list", "--json"]);
   expect(JSON.parse(listed.out).files.map((one: { name: string }) => one.name)).toEqual([expect.stringContaining(databaseTag(file))]);
@@ -317,8 +335,8 @@ test("Settings → Backups is an instance operator's: the last backup and its re
     const after = await page();
     expect(after).toContain('data-backup-state="ok"');
     // Only this database's backups: another database's in the same folder isn't shown.
-    expect(after).toContain(`standing-orders-${databaseTag(file)}-`);
-    const theirs = `standing-orders-${databaseTag(join(dir, "other.db"))}-2026-09-28-040000.db`;
+    expect(after).toContain(`toolroll-${databaseTag(file)}-`);
+    const theirs = `toolroll-${databaseTag(join(dir, "other.db"))}-2026-09-28-040000.db`;
     writeFileSync(join(folder(), theirs), "theirs");
     expect(await page()).not.toContain(theirs);
 

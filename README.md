@@ -150,9 +150,6 @@ docs for language models.
 - [A team server](docs/team-server.md) · [Linux](docs/guide/linux.md)
 - [All docs](docs/guide/README.md)
 
-Coming from Standing Orders? Same product, renamed. The `standing-orders`
-command and your data keep working.
-
 ## Contributing
 
 Provider adapters are the most useful place to start. See

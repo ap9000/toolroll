@@ -209,7 +209,7 @@ describe("project access and the action ledger", () => {
     const response = await get("/ledger?format=csv&actor=exporter&source=work&outcome=recorded&task=alpha-task&before=1", "viewer");
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/csv");
-    expect(response.headers.get("content-disposition")).toBe('attachment; filename="standing-orders-actions.csv"');
+    expect(response.headers.get("content-disposition")).toBe('attachment; filename="toolroll-actions.csv"');
     const csv = await response.text();
     expect(csv.match(/"exporter"/g)).toHaveLength(235);
     expect(csv).toContain('"quoted, ""action""\nsecond line"');

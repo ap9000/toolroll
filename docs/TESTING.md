@@ -1,6 +1,6 @@
 # Testing
 
-Standing Orders is tested end to end: the real CLI, the real console and the
+Toolroll is tested end to end: the real CLI, the real console and the
 real worker, driven through a real browser. Journeys that test the model
 integration use real Claude turns and real builds; the rest script the model.
 Unit tests are kept only where an end-to-end run can't be the guard.

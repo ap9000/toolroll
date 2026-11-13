@@ -11,7 +11,7 @@ Only the latest release is supported with security fixes.
 
 ## Security model in brief
 
-Standing Orders runs AI coding agents on your own computer, as your own
+Toolroll runs AI coding agents on your own computer, as your own
 user. What it promises:
 
 - **No agent approves its own work.** Approvals need your password on a
@@ -61,7 +61,7 @@ user. What it promises:
   limited to projects, expires, and only its hash is kept. A password sent on a
   request (`Bearer name:password`) still works this release, with a deprecation
   warning on every answer, and is refused from 0.10.0.
-- **The agent fence.** Standing Orders' own secrets (the state folder beside
+- **The agent fence.** Toolroll's own secrets (the state folder beside
   the database, except the build's worktree, and `~/.toolroll`) are
   denied to agents by the operating system: Codex through its own sandbox on
   every platform; Claude, Gemini and ACP agents, and every command and check,
