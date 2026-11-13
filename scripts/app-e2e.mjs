@@ -2282,7 +2282,7 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   // (A password remembered on this computer stands in for it: then the field isn't drawn, and the server still checks.)
   const typed = offered.locator('input[name="password"]');
   if (await typed.isVisible()) await typed.fill(w.passwords.alex);
-  else if (await page.locator("text=Password remembered").count() === 0) throw new Error("accepting the looser rule asks for no password, and none is remembered");
+  else if (await page.locator("form[data-fresh-chip]").count() === 0) throw new Error("accepting the looser rule asks for no password, and none is remembered");
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
   if (JSON.stringify(rule) !== suggestion.rule_json) throw new Error(`her refund rule is ${JSON.stringify(rule)}, not the suggested ${suggestion.rule_json}`);
@@ -2600,8 +2600,8 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
         await visitor.goto(`${started.url}/chat`);
         const banner = await visitor.locator("body").innerText();
         // A phone gets the one-line banner (a terminal command is no use there); a desk gets the full one, which hands off.
-        if (!(width === 1440 ? /Nothing calls a model, reaches outside or spends\./ : /Nothing calls a model or spends\./).test(banner)) throw new Error(`the demo banner: ${banner.slice(0, 300)}`);
-        if (width === 1440 && !/For your own project, run npx toolroll up in its folder\./.test(banner)) throw new Error(`the demo banner doesn't hand off: ${banner.slice(0, 300)}`);
+        if (!(width === 1440 ? /Nothing calls a model, reaches outside or costs anything\./ : /Nothing calls a model or costs anything\./).test(banner)) throw new Error(`the demo banner: ${banner.slice(0, 300)}`);
+        if (width === 1440 && !/For your own project, run npx toolroll in its folder\./.test(banner)) throw new Error(`the demo banner doesn't hand off: ${banner.slice(0, 300)}`);
         if (width === 1440) {
           await visitor.locator(".demo-hint").waitFor();
           if (await visitor.locator(".demo-suggestions button").count() < 2) throw new Error("the first visit shows no suggestions");
@@ -2633,7 +2633,7 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
         await turn.getByText("That's the whole loop").waitFor();
         // ...and so does its last step.
         const handoff = await turn.locator("[data-demo-handoff]").innerText();
-        if (!handoff.includes("npx toolroll up")) throw new Error(`the demo's last step: ${handoff}`);
+        if (!handoff.includes("npx toolroll") || handoff.includes("npx toolroll up")) throw new Error(`the demo's last step: ${handoff}`);
         await turn.locator("[data-demo-handoff]").scrollIntoViewIfNeeded();
         await settle(visitor); await visitor.screenshot({ path: join(w.out, `demo-complete-${width}.png`) });
         if (errors.length > 0) throw new Error(`browser errors at ${width} wide: ${errors.join(" | ").slice(0, 400)}`);
