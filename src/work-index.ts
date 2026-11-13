@@ -255,6 +255,8 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
       AND NOT EXISTS(SELECT 1 FROM workers w WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive AND NOT (EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.provider='claude' AND pr.state='unavailable' AND pr.probe IN ('path','login')) AND EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.provider='codex' AND pr.state='unavailable' AND pr.probe IN ('path','identity')) AND NOT EXISTS(SELECT 1 FROM provider_readiness pr WHERE pr.runner=w.name AND pr.state<>'unavailable')))
     THEN CASE WHEN EXISTS(SELECT 1 FROM workers w JOIN provider_readiness pr ON pr.runner=w.name WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive AND pr.provider='claude' AND pr.probe='login') THEN 2
       WHEN EXISTS(SELECT 1 FROM workers w JOIN provider_readiness pr ON pr.runner=w.name WHERE w.repo=c.repo AND (c.assigned_runner IS NULL OR w.name=c.assigned_runner) AND w.heartbeat_at>$alive AND pr.provider='codex' AND pr.probe='identity') THEN 3 ELSE 1 END ELSE 0 END no_agent,
+    -- Models chosen here once and cleared (dispatch.ts modelsEverChosen): the no-agent line then promises no start by itself.
+    EXISTS(SELECT 1 FROM models_generation) models_cleared,
     CASE WHEN NOT json_valid(c.capability_requirements) THEN 1 ELSE EXISTS(
       SELECT 1 FROM json_each(c.capability_requirements) req WHERE req.type<>'text' OR instr(req.value,':')<2
         OR NOT EXISTS(SELECT 1 FROM capability cap WHERE cap.repo=c.repo AND cap.kind=substr(req.value,1,instr(req.value,':')-1)
@@ -530,7 +532,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'ask_group',ask_group,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
     'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,600),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
-    'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,'no_agent',no_agent,
+    'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,'no_agent',no_agent,'models_cleared',models_cleared,
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),'machine_check',COALESCE(machine_check,0),
@@ -741,7 +743,7 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     : code === 'waiting-dependency' ? { task: s(row, 'dependency_id') } : {};
   if (code === 'signed-out' && n(row, 'no_agent') > 0 && s(row, 'signed_out') === null) {
     label = NO_AGENT_TITLE;
-    detail = noAgentWords(agentlessCommand(n(row, 'no_agent') === 2, n(row, 'no_agent') === 3));
+    detail = noAgentWords(agentlessCommand(n(row, 'no_agent') === 2, n(row, 'no_agent') === 3), n(row, 'models_cleared') === 1);
   } else if (code === 'signed-out') {
     const [provider = '', authMode = 'subscription'] = (s(row, 'signed_out') ?? '').split(':');
     const pause = { provider: provider as ProviderId, authMode: authMode === 'api-key' ? 'api-key' as const : 'subscription' as const };

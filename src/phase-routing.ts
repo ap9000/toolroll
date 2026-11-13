@@ -1024,6 +1024,8 @@ export function routeStampProblem(stamp: unknown): string | null {
 export const LOGIN_PROBE = "login";
 /** A runner's observation that the provider's command isn't on its PATH at all. */
 export const PATH_PROBE = "path";
+/** A login check that timed out or failed without saying "not logged in": unavailable, but proof of nothing. */
+export const IDENTITY_FAILED_PROBE = "identity-failed";
 
 /** Whether an observation stops a claim or a dispatch that would spend under `authMode`: any unavailable one, except a
  * subscription login's when the spend is on an API key (or an agent's own login). */

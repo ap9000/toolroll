@@ -521,7 +521,15 @@ export function retryWhenWords(until: string, now: Date): string {
 /** The title every surface shows while no coding agent is signed in where the work would run. */
 export const NO_AGENT_TITLE = "No coding agent is signed in";
 /** The one line after it: the command, and that nothing else is needed. */
-export const noAgentWords = (command: string): string => `${NO_AGENT_TITLE}. Run \`${command}\`, then it starts by itself.`;
+export const noAgentWords = (command: string, modelsCleared = false): string => modelsCleared
+  // Models were chosen here once and then cleared: a sign-in never fills them again (model-choices.ts
+  // fillDefaultRouting), so nothing promises a start by itself; the person chooses them.
+  ? `${NO_AGENT_TITLE}. Run \`${command}\`, then choose its models in Settings → Models.`
+  : `${NO_AGENT_TITLE}. Run \`${command}\`, then it starts by itself.`;
+/** Whether models were ever chosen or cleared here (a models generation exists): no automatic fill will run. */
+export function modelsEverChosen(store: Store): boolean {
+  return store.handle.prepare("SELECT 1 FROM models_generation LIMIT 1").get() !== undefined;
+}
 
 type AgentReadiness = { provider: string; state: string; probe: string };
 /** Not on the builder's PATH at all (runner.ts PATH_PROBE). */
@@ -529,6 +537,7 @@ const notInstalled = (one: AgentReadiness): boolean => one.state === "unavailabl
 /** Its own login check said plainly that it is not signed in: Claude Code's `claude auth status` (LOGIN_PROBE), or
  * Codex's `codex login status`. A version failure, a timeout or an unreadable answer proves neither. */
 const signedOut = (one: AgentReadiness): boolean => one.state === "unavailable" && (one.probe === LOGIN_PROBE || (one.provider === "codex" && one.probe === "identity"));
+// (A login check that timed out or failed some other way is recorded as IDENTITY_FAILED_PROBE: never a sign-out.)
 
 /** The sign-in command for an install with no agent: `claude auth login` when Claude Code is there, `codex login` when
  * only Codex is, else install Claude Code and sign in (first-run.ts signInCommandFor, the welcome's own rule). */
@@ -555,7 +564,7 @@ export function agentlessSignIn(store: Store, runners: readonly string[], platfo
     codexInstalled ||= signedOut(codex);
   }
   const command = agentlessCommand(claudeInstalled, codexInstalled, platform);
-  return { command, words: noAgentWords(command) };
+  return { command, words: noAgentWords(command, modelsEverChosen(store)) };
 }
 
 /** No models chosen anywhere here: no role row, tier row or other-provider candidate, at the installation or any

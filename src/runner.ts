@@ -31,7 +31,7 @@ import { canonicalProject } from "./project.js";
 import { lifecycleOf, reportLifecycle, type Store, type Mutation } from "./store.js";
 import { ALL_CREDENTIAL_ENV, PROVIDER_IDS, inspectionOf, type ProviderId } from "./provider.js";
 import { attestationOf, versionInRange } from "./attest.js";
-import { LOGIN_PROBE, PATH_PROBE, type ReadinessObservation } from "./phase-routing.js";
+import { IDENTITY_FAILED_PROBE, LOGIN_PROBE, PATH_PROBE, type ReadinessObservation } from "./phase-routing.js";
 import { homedir } from "node:os";
 import { readAuthMode, type AuthMode } from "./keys.js";
 import { signInFacts } from "./provider-connection.js";
@@ -606,8 +606,14 @@ export async function observeProviderReadiness(
       }
       if (facts.identityProbe !== null) {
         const identity = await probe(facts.binary, [...facts.identityProbe], { timeoutMs: READINESS_PROBE_TIMEOUT_MS, omitEnv: ALL_CREDENTIAL_ENV });
+        const asked = `\`${facts.binary} ${facts.identityProbe.join(" ")}\``;
+        // A clear "not logged in" (exit 1 saying so) is a sign-out; a check that timed out or failed some other way is
+        // recorded apart (IDENTITY_FAILED_PROBE): still unavailable, never read as signed out (dispatch.ts agentlessSignIn).
+        if (!identity.timedOut && identity.code === 1 && /not logged in/i.test(`${identity.stdout}\n${identity.stderr}`)) {
+          return { provider, state: "unavailable" as const, reason: `${asked} says not logged in`, probe: "identity" };
+        }
         if (identity.code !== 0) {
-          return { provider, state: "unavailable" as const, reason: `\`${facts.binary} ${facts.identityProbe.join(" ")}\` says not logged in`, probe: "identity" };
+          return { provider, state: "unavailable" as const, reason: `${asked} ${identity.timedOut ? "timed out" : `exited ${identity.code}`}`, probe: IDENTITY_FAILED_PROBE };
         }
         const who = identity.stdout.trim().split("\n")[0] ?? "";
         return { provider, state: "ready" as const, reason: `installed (${installed}); ${who === "" ? "logged in" : who}`, probe: "identity" };

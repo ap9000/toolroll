@@ -293,8 +293,8 @@ describe("Never Stuck dispatch diagnosis", () => {
   });
 
   test("\"No coding agent is signed in\" is only the first run's wait: anything routed, or an observation that proves no sign-out, keeps its own answer", () => {
-    // A first run: no models chosen yet.
-    store.handle.exec("DELETE FROM phase_config");
+    // A first run: no models chosen yet, ever (this file's fixture sets some; a fresh install has none).
+    store.handle.exec("DELETE FROM phase_config; DELETE FROM models_generation;");
     enroll(store);
     const seen = (claude: { reason: string; probe: string }) => store.recordProviderReadiness("worker", [
       { provider: "claude", state: "unavailable", ...claude },

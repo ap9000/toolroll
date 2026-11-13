@@ -3204,7 +3204,9 @@ async function tickCommand(
       repo,
       provider: spec.provider,
       ...(spec.model === null ? {} : { model: spec.model }),
-      ...(fallback === null ? {} : { authMode: fallback.entry.authMode }),
+      // The credential this run spends under, for the claim's quota and readiness: a fallback entry's pinned mode, else
+      // the provider's own (an API-key Claude isn't stopped by a subscription login seen signed out).
+      ...(fallback !== null ? { authMode: fallback.entry.authMode } : brokenMode.ok && (brokenMode.mode === "api-key" || brokenMode.mode === "subscription") ? { authMode: brokenMode.mode } : {}),
       ...(text(flags, "incarnation") === undefined ? {} : { incarnation: text(flags, "incarnation") as string }),
       ...(text(flags, "max-open-decisions") === undefined
         ? {}
