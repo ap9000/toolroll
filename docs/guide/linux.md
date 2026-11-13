@@ -12,15 +12,17 @@ It needs Node.js 22.13 or newer (from nodejs.org, your package manager, or
 `fnm install 22`) and git. If npm says permission denied, give it a folder
 you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally
 
-## Install bubblewrap
+## Install the sandbox tools
 
 ```sh
-sudo apt install bubblewrap      # Debian, Ubuntu
-sudo dnf install bubblewrap      # Fedora
+sudo apt install bubblewrap socat ripgrep      # Debian, Ubuntu
+sudo dnf install bubblewrap socat ripgrep      # Fedora
 ```
 
-With it, Claude and Gemini agents run in a sandbox where Toolroll's
-own secrets don't exist. See [Security](security.md).
+Toolroll runs Claude and Gemini agents in a sandbox where its own secrets
+don't exist, and the sandbox needs all three. Until they're installed,
+`toolroll` says which are missing and doesn't start. See
+[Security](security.md).
 
 ## Process containment
 

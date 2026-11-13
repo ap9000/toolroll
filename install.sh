@@ -69,10 +69,19 @@ if [ -z "$agents" ]; then
   say "npm install -g @anthropic-ai/claude-code (or npm install -g @openai/codex),"
   say "then sign in with claude auth login (or codex login)."
 fi
-if [ "$(uname -s)" = "Linux" ] && ! command -v bwrap >/dev/null 2>&1; then
+# On Linux, agents run in a sandbox that needs these programs, each <command>:<package> (the same list as
+# LINUX_SANDBOX_TOOLS in src/sandbox-runtime.ts; src/sandbox-runtime.test.ts keeps the two the same). Toolroll starts
+# only once they are all there.
+sandbox_missing=""
+if [ "$(uname -s)" = "Linux" ]; then
+  for tool in bwrap:bubblewrap socat:socat rg:ripgrep; do
+    command -v "${tool%%:*}" >/dev/null 2>&1 || sandbox_missing="$sandbox_missing ${tool#*:}"
+  done
+fi
+if [ -n "$sandbox_missing" ]; then
   say ""
-  say "Tip: install bubblewrap (apt install bubblewrap) so Claude agents can't read"
-  say "Toolroll's own secrets on this computer. Codex is fenced without it."
+  say "Toolroll runs agents in a sandbox, which on this computer needs:$sandbox_missing. Install them:"
+  say "sudo apt install$sandbox_missing (Fedora: sudo dnf install$sandbox_missing)"
 fi
 
 projects="${SO_PROJECTS:-$HOME/Projects}"
@@ -107,7 +116,7 @@ repo_here() {
 here=""
 if [ -z "${SO_PROJECTS:-}" ]; then here=$(repo_here); fi
 
-if [ "${SO_NO_START:-}" = "1" ]; then
+if [ "${SO_NO_START:-}" = "1" ] || [ -n "$sandbox_missing" ]; then
   say ""
   if [ -n "$here" ]; then say "Start it in $here with: $cli"; else say "Start it with: $cli --project-root $(q "$projects")"; fi
   exit 0

@@ -49,7 +49,7 @@ import { localModeOn } from "./local-owner.js";
 import { CHECK_STAMP_VERSION, EVERYWHERE, unfencedStamp, type CheckStamp } from "./check-stamp.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, localModeCap, narrowestAccess, narrowestNetwork, signInsAvailable, type CheckAccess } from "./check-access.js";
 import { readDenyPath } from "./project-sandbox.js";
-import { sandboxRuntimeWords } from "./sandbox-runtime.js";
+import { linuxSandboxToolsWords, sandboxRuntimeWords } from "./sandbox-runtime.js";
 import { canonicalJson } from "./canonical-json.js";
 import { deliveredFile } from "./code-map-admission.js";
 import { buildCacheEnv, buildCacheFolder, grantFolder, writeAllowlist, type WorktreeBinding, WRITES_DEFAULT, type WritesMode, CheckoutBindingError, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, codexFenceArgv, fenceFor, fencedGitEnv, LEGACY_SANDBOX, launchSandboxOf, type LaunchSandbox, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn, serverGrantsOf, runFolders, taskBoundary, type FenceGrants, type FenceMethod } from "./agent-fence.js";
@@ -559,7 +559,7 @@ export async function invokeAgent(
     codexHome?.cleanup();
     removeAgentDatabase(isolatedDb.dir);
     return { kind: "refused", reason: "containment", providerVersion: attested?.version ?? null,
-      diagnostic: "This machine can't confine an agent (no macOS sandbox, no working bubblewrap), so nothing was started. Install bubblewrap, socat and ripgrep (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
+      diagnostic: "This machine can't confine an agent (no macOS sandbox, no working bubblewrap), so nothing was started. Install " + linuxSandboxToolsWords() + " (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
   }
   let egress: EgressProxy | null = null;
   let runTemp: string | null = null;
@@ -1146,7 +1146,7 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
     // (and the run says so: its checks ran without a sandbox, whatever was sealed).
     if (!available()) {
       if (store.unfencedAgentsAllowed()) { store.stampRunCheckAccess(runId, "unsandboxed"); stampLaunch(store, [runId], unfencedStamp()); return inner(file, args, options); }
-      return { code: 1, stdout: "", stderr: "This machine can't confine the build's commands (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, socat and ripgrep (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
+      return { code: 1, stdout: "", stderr: "This machine can't confine the build's commands (no macOS sandbox, no working bubblewrap), so they didn't run. Install " + linuxSandboxToolsWords() + " (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
     }
     const own = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-cmd-")));
     try {
@@ -1204,7 +1204,7 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
   return async (file, args, options) => {
     if (!available()) {
       if (store.unfencedAgentsAllowed()) { stampLaunch(store, stampRuns, unfencedStamp()); return inner(file, args, options); }
-      return { code: 1, stdout: "", stderr: "This machine can't confine the project's checks (no macOS sandbox, no working bubblewrap), so they didn't run. Install bubblewrap, socat and ripgrep (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
+      return { code: 1, stdout: "", stderr: "This machine can't confine the project's checks (no macOS sandbox, no working bubblewrap), so they didn't run. Install " + linuxSandboxToolsWords() + " (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`.\n", timedOut: false, notFound: false };
     }
     const databaseFile = store.databaseFile();
     if (databaseFile === null) { stampLaunch(store, stampRuns, unfencedStamp()); return inner(file, args, options); }

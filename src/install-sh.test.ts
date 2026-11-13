@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -208,5 +208,48 @@ describe("install.sh's repository, with real git", () => {
       if (!existsSync(shell)) continue;
       expect(() => execFileSync(shell, ["-n", INSTALL]), shell).not.toThrow();
     }
+  });
+});
+
+/** l1 (stranger test, Linux): the sandbox's programs, and how Node is installed there. `uname` answers Linux; PATH is
+ * the stubs and a folder holding only the system programs the script and script(1) use, so what is missing is exact. */
+describe("install.sh on Linux", () => {
+  let sys: string;
+  beforeEach(() => {
+    writeFileSync(join(stubs, "uname"), "#!/bin/sh\necho Linux\n");
+    chmodSync(join(stubs, "uname"), 0o755);
+    sys = join(base, "sys");
+    mkdirSync(sys);
+    for (const name of ["sh", "sed", "mkdir", "cat", "script", "env"]) {
+      const found = execFileSync("/bin/sh", ["-c", `command -v ${name} || true`], { encoding: "utf8" }).trim();
+      if (found !== "") symlinkSync(found, join(sys, name));
+    }
+  });
+  const linux = (env: Record<string, string>, stdin: "pipe" | "ignore" = "pipe", cwd = base) => {
+    const args = process.platform === "darwin" ? ["-q", "/dev/null", "sh", INSTALL] : ["-qec", `sh '${INSTALL}'`, "/dev/null"];
+    return stdin === "ignore" ? run("script", args, { PATH: `${stubs}:${sys}`, ...env }, "ignore", cwd) : run("sh", [INSTALL], { PATH: `${stubs}:${sys}`, ...env }, "pipe", cwd);
+  };
+
+  test("missing sandbox programs: it names exactly those with the line that installs them, and doesn't start", async () => {
+    writeFileSync(join(stubs, "bwrap"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(stubs, "bwrap"), 0o755);
+    const repo = join(base, "shop");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const result = await linux({}, "ignore", repo);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("which on this computer needs: socat ripgrep. Install them:");
+    expect(result.out).toContain("sudo apt install socat ripgrep (Fedora: sudo dnf install socat ripgrep)");
+    expect(result.out).toContain(`Start it in ${realpathSync(repo)} with: toolroll`);
+    expect(existsSync(record)).toBe(false);
+  });
+
+  test("with all of them there, no word about them, and it starts", async () => {
+    for (const name of ["bwrap", "socat", "rg"]) { writeFileSync(join(stubs, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(stubs, name), 0o755); }
+    const repo = join(base, "shop");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const result = await linux({}, "ignore", repo);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).not.toContain("sandbox");
+    expect(started()).toEqual(["TTY"]);
   });
 });
