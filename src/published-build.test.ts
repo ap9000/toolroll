@@ -16,6 +16,18 @@ describe("the published build", () => {
     expect(files.filter(name => name.endsWith(".map"))).toEqual([]);
   });
 
+  test("pins undici as a direct dependency equal to the override, so global installs get the version #280 chose", () => {
+    // package.json `overrides` reach only this checkout's installs, never `npm i -g toolroll` or npx. @slack/socket-mode
+    // takes undici as a peer (^7 || ^8); undici 8 needs Node >= 22.19, Toolroll supports >= 22.13. The direct, exact
+    // dependency is what makes npm 10, 11 and 12 install 7.30.1 for everyone; nothing in src imports it.
+    const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as { dependencies: Record<string, string>; overrides: Record<string, Record<string, string>> };
+    const lock = JSON.parse(readFileSync(resolve("package-lock.json"), "utf8")) as { packages: Record<string, { version?: string }> };
+    const pinned = manifest.dependencies["undici"];
+    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(pinned).toBe(manifest.overrides["@slack/socket-mode"]?.["undici"]);
+    expect(lock.packages["node_modules/undici"]?.version).toBe(pinned);
+  });
+
   test("ships no source comments, and still runs as the bin (the shebang stays)", () => {
     for (const name of ["bin.js", "cli.js", "serve.js", "store.js"]) {
       const text = readFileSync(join(DIST, name), "utf8");
