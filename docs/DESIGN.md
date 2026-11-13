@@ -1,6 +1,6 @@
 # Toolroll — design v0.4
 
-**Standing orders for your agents. Wake me only for these.**
+**Your agents build. You decide. Wake me only for these.**
 
 Status: the pre-M0 design, kept as written — the sections below are the
 original bet, and [PROGRESS.md](PROGRESS.md) is the ledger of what each

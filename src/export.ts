@@ -122,7 +122,7 @@ const sha256 = (data: Buffer) => createHash("sha256").update(data).digest("hex")
 export function buildExport(store: Store, options: { who: string; now: Date; evidenceRoot: string; configDir: string | null }): FullExport {
   const db = store.handle;
   const stamp = options.now.toISOString().replace(/[:.]/g, "-");
-  const root = `standing-orders-export-${stamp}`;
+  const root = `toolroll-export-${stamp}`;
   const files: ExportFile[] = [];
   const entries: ManifestEntry[] = [];
   const add = (path: string, data: Buffer, rows?: number) => { files.push({ path, data }); entries.push({ path, sha256: sha256(data), bytes: data.length, ...(rows === undefined ? {} : { rows }) }); };

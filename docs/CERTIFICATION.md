@@ -261,7 +261,7 @@ exercises that Windows path rather than silently skipping it.
 
 Then certify Task Scheduler with a real connected repository:
 
-1. Start Standing Orders once and connect the repository.
+1. Start Toolroll once and connect the repository.
 2. Register a dedicated worker bound to that repository and write its token to
    a file with `runner register --token-file`.
 3. Run `daemon install --runner <name> --token-file <file> --repo <repo>`.

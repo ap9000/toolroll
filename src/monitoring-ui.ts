@@ -39,12 +39,12 @@ export function monitoringHtml(view: MonitoringView, said: { said?: string | nul
   const audit = settingsSection({ id: "audit-stream", title: "Audit stream", lead: "Every ledger entry with its seal, as it happens, to your log system.",
     body: joinHtml([
       formRow("Webhook", "Blank: off.", input({ id: "monitoring-webhook", name: "webhook", type: "url", value: s.webhook?.url ?? "",
-        attrs: { placeholder: "https://logs.example.com/standing-orders", spellcheck: "false", "aria-label": "Webhook" } })),
+        attrs: { placeholder: "https://logs.example.com/toolroll", spellcheck: "false", "aria-label": "Webhook" } })),
       statusLine(view, "webhook", s.webhook?.url ?? null),
       s.webhook === null ? "" : formRow("Signing secret", "Make a new one. It is shown once, after Save.",
         switchInput({ id: "monitoring-rotate", name: "rotate", label: "Make a new signing secret", on: false, attrs: { value: "1" } }), "inline"),
       formRow("Folder", "JSON Lines, a file per day. Blank: off.", input({ id: "monitoring-folder", name: "folder", value: s.folder?.path ?? "",
-        attrs: { placeholder: "/var/log/standing-orders", spellcheck: "false", "aria-label": "Folder" } })),
+        attrs: { placeholder: "/var/log/toolroll", spellcheck: "false", "aria-label": "Folder" } })),
       statusLine(view, "folder", s.folder?.path ?? null),
     ]) });
   const traces = settingsSection({ id: "traces", title: "Traces", lead: "Each run as an OpenTelemetry span: timings, model, tokens and cost. Never a prompt or code.",

@@ -460,7 +460,8 @@ with a time limit.
 
 - The branch is pushed, with an open pull request into main.
 - package.json has the new version, and the lead wrote its CHANGELOG.md
-  entry (\`## <version>\`). No tag or npm package has that version yet.
+  entry (\`## <version>\`, in the format the top of CHANGELOG.md
+  describes). No tag or npm package has that version yet.
 - \`gh\` is signed in, the console, worker and both CLI names
   (\`toolroll\`, \`standing-orders\`) run one build, and the gate checkout
   is a clone whose origin is the GitHub repository. Credentials are never
