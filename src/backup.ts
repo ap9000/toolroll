@@ -24,8 +24,9 @@ import { DEFAULT_LIVENESS_MS } from "./runner.js";
 import { openStore, readSchemaVersion, SCHEMA_VERSION, type BackupSettings, type Database, type Store } from "./store.js";
 
 /** A scheduled backup's name: the database it came from (see `databaseTag`), then when it was made. Backups made
- * before the tag was added have none. Retention only ever removes files named like this. */
-const BACKUP_NAME = /^standing-orders-(?:([0-9a-f]{8})-)?(\d{4}-\d{2}-\d{2}-\d{6})(?:-(\d+))?\.db$/;
+ * before the tag was added have none, and ones made before 0.9.105 start `standing-orders-` (still listed and pruned).
+ * Retention only ever removes files named like this. */
+const BACKUP_NAME = /^(?:toolroll|standing-orders)-(?:([0-9a-f]{8})-)?(\d{4}-\d{2}-\d{2}-\d{6})(?:-(\d+))?\.db$/;
 /** The oldest schema whose ledger has a hash chain to verify. */
 export const OLDEST_RESTORABLE = 103;
 export { BACKUP_EVERY_HOURS, MAX_KEEP };
@@ -77,7 +78,7 @@ export async function onlineCopy(sourceFile: string, target: string): Promise<{ 
 /** A folder the operator may choose: a full path, outside every project and build checkout (agents work there). */
 export function checkBackupFolder(path: string, forbidden: readonly string[]): string | null {
   const folder = path.trim();
-  if (!isAbsolute(folder) || folder.length > 500 || /[\u0000-\u001f]/.test(folder)) return "The folder is a full path, like /Volumes/Backup/standing-orders.";
+  if (!isAbsolute(folder) || folder.length > 500 || /[\u0000-\u001f]/.test(folder)) return "The folder is a full path, like /Volumes/Backup/toolroll.";
   const at = resolve(folder);
   const inside = (one: string, parent: string) => one === parent || one.startsWith(`${parent}/`);
   if (forbidden.some(one => inside(at, resolve(one)) || inside(resolve(one), at))) return "Choose a folder outside your projects and build checkouts: agents work there.";
@@ -145,8 +146,8 @@ export async function backupNow(store: Store, databaseFile: string, trigger: "sc
   try {
     mkdirSync(folder, { recursive: true, mode: 0o700 });
     const stamp = `${databaseTag(databaseFile)}-${stampOf(clock())}`;
-    let name = `standing-orders-${stamp}.db`;
-    for (let n = 2; existsSync(join(folder, name)); n++) name = `standing-orders-${stamp}-${n}.db`;
+    let name = `toolroll-${stamp}.db`;
+    for (let n = 2; existsSync(join(folder, name)); n++) name = `toolroll-${stamp}-${n}.db`;
     // The whole chain walked and its head checkpointed first, so the copy carries the checkpoint. A broken chain gets
     // none (the walk raises the console's chain alarm, as any whole walk does); the backup goes ahead either way.
     let checkpoint: BackupCheckpoint;

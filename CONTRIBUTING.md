@@ -62,7 +62,11 @@ about seven minutes, and writes `report.md`, screenshots and both logs to
 
 ## Writing a provider adapter
 
-The most useful contribution surface. `src/provider.ts` is the only module
+The most useful contribution surface, with two ways in. An agent that speaks
+the Agent Client Protocol needs only a row in `src/acp-agents.ts` (its name,
+binary, argv and sign-in command); the shared transport and a conformance
+check against the installed binary do the rest. Any other agent gets its own
+adapter: `src/provider.ts` is the only module
 that names an agent binary: an adapter supplies argv builders for build,
 plan, and repair invocations, an envelope parser for the tool's output
 stream, timeout clamps, and an identity probe. `src/provider.test.ts` shows

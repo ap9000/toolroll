@@ -28,6 +28,8 @@ const RULES: Rule[] = [
   { name: "home folder", pattern: /(?:\/(?:Users|home)\/|\b[A-Za-z]:\\{1,2}Users\\{1,2})([A-Za-z0-9._-]+)/g,
     allowed: match => PLACEHOLDER_ACCOUNTS.has(match[1]!) },
   { name: "computer name", pattern: /\b[A-Za-z]+s-?(?:mac-?(?:book|studio|mini|pro)|imac)\b/gi },
+  // macOS's own spelling of a computer name, as Settings shows it: "Jane’s MacBook Pro", "Jane's Mac Studio".
+  { name: "computer name", pattern: /\b[A-Za-z]+['’]s (?:MacBook|iMac|Mac (?:Studio|mini|Pro))\b/g },
   { name: "worker name", pattern: /\b[a-z0-9][a-z0-9-]*-localdomain\b/gi },
   { name: "tailnet name", pattern: /\b(tail[0-9a-f]{3,})\.ts\.net\b/gi, allowed: match => PLACEHOLDER_TAILNETS.has(match[1]!.toLowerCase()) },
 ];
@@ -51,11 +53,14 @@ test.each([
   ["HOME=/home/jdoe", ["home folder: /home/jdoe"]],
   ["C:\\\\Users\\\\jdoe\\\\app", ["home folder: C:\\\\Users\\\\jdoe"]],
   ["Janes-MacBook-Pro.local and janesmacstudio", ["computer name: Janes-MacBook", "computer name: janesmacstudio"]],
+  ["Jane’s MacBook Pro and Jane's Mac Studio", ["computer name: Jane’s MacBook", "computer name: Jane's Mac Studio"]],
   ["worker janesmac-localdomain claimed it", ["worker name: janesmac-localdomain"]],
   ["https://box.tail9f3e2.ts.net", ["tailnet name: tail9f3e2.ts.net"]],
   // Placeholders, system accounts and fixture tailnets pass; so do a runner named after a product.
   ["/Users/someone/code /home/linuxbrew/.linuxbrew /Users/runner/work C:\\Users\\a ~/Projects <your-mac>", []],
   ["mac.tail1234.ts.net mac-studio studio-a.localdomain", []],
+  // A person's Mac in prose is not a computer name.
+  ["it runs on Alex's Mac, a Mac Studio", []],
 ])("the rule table on %j", (text, expected) => {
   expect(findings(text)).toEqual(expected);
 });
