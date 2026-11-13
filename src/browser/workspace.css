@@ -794,10 +794,13 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-work-panel-header, .so-supporting-panel--detail .so-work-panel-header { min-height: 52px; padding-top: max(var(--so-space-xs), env(safe-area-inset-top)); padding-bottom: var(--so-space-xs); }
   .so-workspace-notices { padding: var(--so-phone-row) var(--so-phone-gutter) 0; gap: 6px; }
   .so-workspace-notices .ui-alert { padding: 7px 10px; line-height: 1.35; }
-  .so-demo-notice { padding: 7px 10px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* On a phone the short sentence wraps to a second line rather than clipping or trailing off, and a kit page's
+     notice keeps the phone gutters so it never runs past the right edge. */
+  .ui-alert.so-demo-notice { padding: 7px var(--so-phone-card); line-height: 1.35; border-radius: var(--so-radius-card); white-space: normal; overflow-wrap: anywhere; }
   .so-demo-notice-full { display: none; }
   .so-demo-notice-short { display: inline; }
   .so-page-content > .so-demo-notice { margin-bottom: var(--so-phone-gap); }
+  .so-workspace--kit .so-page-content > .so-demo-notice { margin: var(--so-phone-row) var(--so-phone-gutter) 0; max-width: calc(100% - 2 * var(--so-phone-gutter)); }
   .so-work-detail-content, .so-page-content { padding: var(--so-phone-gap) var(--so-phone-gutter) 20px; }
   /* The approval's sticky act meets the screen's bottom edge, not the page's 20px end padding. */
   .so-page-content .approval-sheet[data-sticky] .approval-act, .so-work-detail-content .approval-sheet[data-sticky] .approval-act { bottom: -20px; }

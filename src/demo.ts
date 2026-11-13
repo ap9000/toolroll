@@ -213,9 +213,9 @@ const DEMO_PROOF = {
   ],
   checks: [{ command: "npm test", exitCode: 0, summary: "214 tests passed, including the new rounding boundary cases." }],
   changed: ["src/payout.ts", "src/payout.test.ts"],
-  // One declared caveat, so the review cockpit's "caveats" row shows a real
-  // agent-declared concern in the sandbox rather than only its empty state.
-  caveats: ["The dashboard screenshot was captured against the ledger fixtures, not production data."],
+  // No caveat: any agent note reads as "the report doesn't match the changes", and this is the demo's clean,
+  // acceptable result. The failed build (DEMO_FAILED_PROOF) shows a note naming its missed requirement.
+  caveats: [],
   screenshots: [{ path: "evidence/payout-dashboard.png", caption: "Payout dashboard after the fix — totals match the ledger." }],
 };
 
@@ -696,6 +696,8 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     now: hoursAgo(27),
   });
   approve(store, done, "demo", hoursAgo(26), doneProposed.digest, token);
+  // The project check the result reports, approved before the attempt starts — as `verify set` would.
+  const doneCheck = store.setVerifyCommand({ repo: store.refFor("built-in", done).repo ?? repos.api, command: DEMO_CHECK_COMMAND, timeoutMs: 120_000, approvedBy: "demo" }, hoursAgo(26));
   // Route provenance (v47): the demo's finished build names the exact
   // agent it spent as, under the route its approval sealed — the same
   // stamp a real admission writes.
@@ -734,6 +736,8 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     ],
     filesTruncated: false,
   };
+  // The commit the build saved, recorded as a real build's finish records it (its report and receipt name it).
+  store.recordOutcomeFacts(doneRun, { headRevision: stat.head, handoff: DEMO_HANDOFF.conclusion });
   storeEvidence(
     store,
     evidenceRoot,
@@ -784,10 +788,15 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     doneRun,
     "check-log",
     "check-log.txt",
-    Buffer.from(`$ npm test\n(exit 0)\n\n--- stdout ---\n214 tests passed.\n\n--- stderr ---\n`, "utf8"),
-    `sh -c "npm test" (exit 0) [demo: synthetic]`,
+    Buffer.from(`=== Attempt summary ===\n- Project check · attempt 1: (exit 0)\n\n=== Project check · attempt 1 ===\n$ ${DEMO_CHECK_COMMAND}\n(exit 0)\n\n--- stdout ---\n214 tests passed.\n\n--- stderr ---\n`, "utf8"),
+    `${DEMO_CHECK_COMMAND} (attempt recorded) [demo: synthetic]`,
     hoursAgo(8.4),
+    { captureStatus: "ok" },
   );
+  // The machine's sealed receipt that the check passed on the saved commit — the same writers a real build's
+  // finish uses, so the result reads as a finished, checked build rather than one with nothing to review.
+  sealVerificationReceipt(store, evidenceRoot, doneRun, stat.head, doneCheck, { configured: true, ran: true, exitCode: 0 }, hoursAgo(8.4));
+  store.recordRunCheck(doneRun, { status: "passed", exitCode: 0, suites: [] }, hoursAgo(8.4));
   // The verdict AND the criterion-to-evidence matrix are computed by the
   // real adjudicate() — same function, same rules the builder runs —
   // never hand-authored, so the seeded sandbox shows exactly what the
@@ -922,7 +931,7 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
   const copyStat: DiffStat = {
     schema: 1,
     base: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
-    head: "1c2d3e4f52aa01c9f3d7700e54bf8d69288fbe999",
+    head: "1c2d3e4f52aa01c9f3d7700e54bf8d69288fbe99",
     fileCount: 1,
     additions: 3,
     deletions: 1,
@@ -930,6 +939,9 @@ export function seedDemo(store: Store, repos: { api: string; web: string }, evid
     files: [{ path: "src/inbox-copy.ts", additions: 3, deletions: 1 }],
     filesTruncated: false,
   };
+  // The commit the build saved. Its only requirement asks for a person's read, and web-console has no project check,
+  // so the result honestly owes that read and no check receipt.
+  store.recordOutcomeFacts(copyReviewRun, { headRevision: copyStat.head, handoff: DEMO_COPY_HANDOFF.conclusion });
   storeEvidence(
     store,
     evidenceRoot,

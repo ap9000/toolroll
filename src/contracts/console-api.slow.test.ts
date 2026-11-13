@@ -176,8 +176,11 @@ describe("over HTTP", () => {
     const cookie = await signIn();
     const csrf = csrfOf(await (await get(cookie, "/tasks/new")).text());
     // The action ledger records each refused request by design (moving the workspace revision cursor); the request budget counts it.
+    // latency_timeline is request timing too: serve.ts keeps any console request slower than a second (keepSlowRequest, on
+    // the response's finish), a refused one included — route id, offsets and its 403/400 status, nothing the handler did.
+    // On a loaded runner a refused POST (or the GET above, finishing late) crosses that second mid-loop.
     const tables = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
-      .map(row => String(row["name"])).filter(name => !["action_ledger", "request_budget_usage", "ledger_chain", "ledger_head"].includes(name));
+      .map(row => String(row["name"])).filter(name => !["action_ledger", "request_budget_usage", "ledger_chain", "ledger_head", "latency_timeline"].includes(name));
     const snapshot = () => Object.fromEntries(tables.map(table => {
       // A session's last visit is saved at most once a minute (session.ts): a slow runner crosses that mid-loop.
       const rows = store.handle.prepare(`SELECT * FROM "${table}"`).all().filter(row => table !== "service_cursor" || row["key"] !== "workspace-content:v1")
