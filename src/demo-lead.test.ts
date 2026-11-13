@@ -25,6 +25,7 @@ vi.mock("node:child_process", async original => {
 import { createDemoSandbox, createDemoLead, type DemoLead } from "./demo.js";
 import { createDecisionServer } from "./serve.js";
 import { assignmentOf } from "./assignment.js";
+import { verificationEvidence } from "./verification-evidence.js";
 import type { Store } from "./store.js";
 
 describe("the scripted demo lead", () => {
@@ -176,5 +177,25 @@ describe("the scripted demo lead", () => {
     const again = await post(cookie, `/chat/demo/${id}/approve`, { csrf: csrfIn(html) });
     expect(decodeURIComponent(again.headers.get("location") ?? "")).toContain("That plan was already handled.");
     expect((await post(cookie, "/chat/demo/ask", { csrf: "0".repeat(64), message: "hi" })).status).toBe(403);
+  });
+
+  test("the seeded Ready results each saved a commit; the one whose output shows a passing check has its sealed receipt", async () => {
+    const snapshot = (taskId: string) => assignmentOf(store, taskId, now, { principal: "operator", repos: [store.lookupRef(taskId)!.repo!] }, evidenceRoot)!;
+    // The clean result: a commit, its check passed on that commit with a sealed receipt, every requirement met.
+    const clean = snapshot("fix-payout-rounding");
+    expect(clean.state).toBe("ready-to-check");
+    expect(clean.receipt!.head).toMatch(/^[0-9a-f]{40}$/);
+    expect(clean.receipt!.checks).toMatchObject({ status: "passed", command: "npm test" });
+    expect(clean.receipt!.proof?.verdict).toBe("verified");
+    expect(clean.attention).toEqual([]);
+    const sealed = verificationEvidence(store, evidenceRoot, clean.receipt!.runId!);
+    expect(sealed.ok && sealed.bytes !== null && JSON.parse(sealed.bytes).head).toBe(clean.receipt!.head);
+    // The result that owes a person's read: a commit too, no check claimed, and the read it owes said plainly.
+    const owed = snapshot("confirm-empty-state-copy");
+    expect(owed.receipt!.head).toMatch(/^[0-9a-f]{40}$/);
+    expect(owed.receipt!.checks.status).toBe("not-run");
+    expect(owed.attention.some(line => line.includes("manual-review"))).toBe(true);
+    // Neither Review row says the build saved nothing to review.
+    expect(await page(await login(), "/tasks?scope=all")).not.toContain("saved no commit");
   });
 });
