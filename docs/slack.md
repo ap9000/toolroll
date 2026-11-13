@@ -2,7 +2,7 @@
 
 Connect a workspace under **Settings → Slack**. Use the supplied app manifest to create and install a custom Slack app, create an app-level token with `connections:write`, and enter that token and the bot token in the local setup form. Tokens are stored in a private file beside the database and never shown back.
 
-Choose **Create pairing code**, then send the displayed message to the app in a direct message. The code expires after ten minutes and works once. The pairing identifies your workspace, Slack member, private conversation, and current Standing Orders account. Disconnecting or changing account access invalidates it.
+Choose **Create pairing code**, then send the displayed message to the app in a direct message. The code expires after ten minutes and works once. The pairing identifies your workspace, Slack member, private conversation, and current Toolroll account. Disconnecting or changing account access invalidates it.
 
 Ask for tasks, project skills, knowledge, MCP configuration, status, result evidence, or a proposed change. Slack uses the same saved assistant session and action records as the console. It uses the configured membership login; it does not grant API spending authority. An incompatible existing session must be ended in the console before Slack can start one.
 
@@ -14,7 +14,7 @@ The shared assistant can read a current brief from the local database and search
 - Reply in a result’s thread to keep feedback tied to that result. A thread containing multiple results asks you to choose one.
 - Choose **Send task updates here** to make Slack the primary notification channel. It edits one progress message per result, showing completed steps, outstanding work, blockers, and publication status. Urgent decisions retain their own message. Telegram can still accept conversations while Slack receives updates.
 
-Keep the normal Standing Orders worker running. Socket Mode makes an outbound connection and reconnects after interruptions; it needs no public event endpoint. Review links use the installation’s configured HTTPS console address. Configure and verify that address for your own setup; no operator-specific Tailscale address is included.
+Keep the normal Toolroll worker running. Socket Mode makes an outbound connection and reconnects after interruptions; it needs no public event endpoint. Review links use the installation’s configured HTTPS console address. Configure and verify that address for your own setup; no operator-specific Tailscale address is included.
 
 The first Slack transport supports one paired person in private messages and threads per installation. It does not read shared channels, accept incoming file attachments, or distribute through the public Slack Marketplace. Each installation creates its own custom app. [Slack documents Socket Mode’s distribution limits](https://docs.slack.dev/apis/events-api/using-socket-mode/).
 
