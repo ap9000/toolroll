@@ -4,6 +4,45 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.105 — 2026-11-13
+
+A first run that works without help: one way in, plain words, and results that say what's true.
+
+### New
+
+- **Help fits on one screen.** `toolroll --help` shows the main loop; every other command is under
+  `toolroll internals`, and the scan options under `toolroll scan --help`.
+- **The demo opens signed in.** `toolroll demo` opens your browser already signed in, no typed password.
+- **Settings → Advanced.** Flows, other computers, spend, operating modes and the rest are one switch away. New
+  accounts start with it off; existing accounts keep everything. Active safety settings always stay visible.
+
+### Changed
+
+- **No agent signed in? It says so.** A task filed before Claude Code or Codex is signed in says "No coding agent is
+  signed in. Run `claude auth login`", and starts by itself once you do, with no restart.
+- **Password-free from the first command.** Running `toolroll repos add` (or any command) before the first `toolroll`
+  no longer turns password-free mode off. Only a person at the terminal can turn it on.
+- **A Ready result has one clear button.** Plain Accept when its checks passed and its requirements are met; otherwise
+  the page says what's missing. With no project check set, it tells you how to set one.
+- **The installer starts in your repository** and checks for git 2.41 or newer up front. Pressing Enter at the quit
+  question no longer adds a login item.
+- **Smaller install.** The package is 4.2 MB instead of 6.8 MB.
+- **Plainer words.** Task, approve, Ready, accept or send back; "Toolroll" everywhere, including file names
+  (`toolroll-*` backups, exports and logs).
+
+### Fixed
+
+- **Every real build read "Accept without checks".** A result whose checks passed and whose requirements were met
+  now reads plain Accept.
+- **Slack on Node 22.13–22.18.** Global installs get the tested undici again.
+- **`toolroll --port <n>` works,** and a password-free start picks the next free port.
+- **Tasks on a phone** no longer squash the demo banner; row buttons fit at a desk; form fields have a visible edge.
+
+### Action needed
+
+- The daily audit log is now `toolroll-audit-<day>.jsonl`. Update any log shipper that watches
+  `standing-orders-audit-*`.
+
 ## 0.9.104 — 2026-11-12
 
 Finish a task from the terminal: accept, plan and retry without a password on your own computer.
