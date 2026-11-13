@@ -771,7 +771,8 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   const ran = await page.locator('[data-step-row="ready"] #how-it-ran summary').first().innerText();
   if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
   // What a person sees: checks passed (the task's header says it once), and the decision after the evidence says what
-  // accepting does (plain Accept when every requirement is met; the planner may have left one for a person to check).
+  // accepting does: plain Accept once the person's own checks are answered, since the machine's saved requirement list
+  // is on record and every requirement is met (never "Accept without checks" when the checks passed).
   // The checks fact is the Checks row's own.
   const status = (await page.locator('[data-step-row="checks"] [data-status-detail="checks"]').first().textContent()) ?? "";
   if (!/Passed/.test(status)) throw new Error(`the task's checks say: ${status.slice(0, 200)}`);
@@ -779,7 +780,7 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
   for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
   const decision = await page.locator("[data-result-decision]").first().innerText();
-  if (!/^Accept( without checks)?$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
+  if (!/^Accept$/m.test(decision) || !/Finishes the task/.test(decision)) throw new Error(`the decision says: ${decision.slice(0, 200)}`);
   await page.locator('a[data-result-tab="changes"]').click();
   await until("the changed files", async () => /src\/math\.js/.test(await page.locator("body").innerText()), { timeoutMs: 10_000, everyMs: 500 });
   await shot("result-changes");

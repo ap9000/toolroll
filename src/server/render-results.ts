@@ -858,7 +858,9 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     unmet: matrix.filter(row => !["Met", "You check", CHECKED_AT_RELEASE].includes(requirementWordOf(row, null, checks === undefined ? undefined : checkBackingOf(checks)))).length,
     action: complete !== null ? "complete" : "accept",
     publishing: view.detail?.publishing ?? "other",
-    proof: proof !== null && proof.proof !== null && proof.proofProblem === null,
+    // On record: the machine's own saved requirement list (direct assessment; builders no longer write a manifest),
+    // or a readable manifest. A manifest that can't be read still refuses; a build with neither reads "Nothing on record".
+    proof: proof !== null && proof.proofProblem === null && (proof.proof !== null || proof.matrix.length > 0),
   });
   // Refuted: plain Accept and finish stays as allowed, in outline, and the one line before the acts (acts.line) says why.
   const settled = base === null || blocked === null ? base : { ...base, label: "Accept" as const, ready: false };
