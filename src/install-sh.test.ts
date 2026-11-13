@@ -4,7 +4,7 @@
  * Every program it calls (node, npm, toolroll) is a stub on PATH; HOME is a temp folder; nothing is installed.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ beforeEach(() => {
   stub("node", `echo 22.13.0`);
   stub("npm", `[ "$1" = ls ] && exit 1\n[ "$1" = install ] && : > "${base}/npm-installed"\nexit 0`);
   // git: its version (GIT_STUB_VERSION), and the repository a folder is in (a folder with a .git directory).
-  stub("git", `[ "$1" = --version ] && { echo "git version \${GIT_STUB_VERSION:-2.43.0}"; exit 0; }\n[ "$1" = rev-parse ] && { [ -d .git ] && { pwd -P; exit 0; }; exit 128; }\nexit 0`);
+  stub("git", `[ "$1" = --version ] && { echo "git version \${GIT_STUB_VERSION:-2.43.0}"; exit 0; }\ncase " $* " in *" rev-parse "*) [ -d .git ] && { pwd -P; exit 0; }; exit 128 ;; esac\nexit 0`);
   // The installed command: --version answers; a start records its arguments, one per line, and whether stdin is a
   // terminal, and the folder it started in.
   stub("toolroll", `[ "$1" = --version ] && { echo "toolroll 9.9.9"; exit 0; }\n{ for a in "$@"; do printf '%s\\n' "$a"; done; if [ -t 0 ]; then echo TTY; else echo NO-TTY; fi; } > "${record}"\npwd -P > "${record}.cwd"`);
@@ -134,5 +134,63 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     expect(result.code, result.out).toBe(0);
     expect(result.out).toContain("Toolroll needs one to build your tasks");
     expect(result.out).not.toContain("works without one");
+  });
+});
+
+/**
+ * Codex review of #377, finding 3: which repository install.sh starts in is git's answer with every override cleared,
+ * kept only when it is a folder with a .git entry that contains the folder the script ran in. Real git here (only its
+ * version is answered by the stub), against hostile environments and repository config.
+ */
+describe("install.sh's repository, with real git", () => {
+  const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  const makeRepo = (dir: string): string => {
+    mkdirSync(dir, { recursive: true });
+    execFileSync(realGit, ["init", "-q", dir], { env: gitEnv });
+    return realpathSync(dir);
+  };
+  beforeEach(() => {
+    // Version from the stub (the floor check), everything else from the real git.
+    writeFileSync(join(stubs, "git"), `#!/bin/sh\n[ "$1" = --version ] && { echo "git version 2.43.0"; exit 0; }\nexec "${realGit}" "$@"\n`);
+    chmodSync(join(stubs, "git"), 0o755);
+  });
+  const startLine = (out: string) => out.split("\n").find(one => one.startsWith("Start it"));
+  const projectsLine = () => `Start it with: toolroll --project-root '${join(base, "home", "Projects")}'`;
+
+  test("run from a folder inside a repository: that repository's top", async () => {
+    const repo = makeRepo(join(base, "shop"));
+    mkdirSync(join(repo, "src", "deep"), { recursive: true });
+    const result = await run("sh", [INSTALL], { SO_NO_START: "1" }, "pipe", join(repo, "src", "deep"));
+    expect(result.code, result.out).toBe(0);
+    expect(startLine(result.out)).toBe(`Start it in ${repo} with: toolroll`);
+  });
+
+  test("GIT_DIR and GIT_WORK_TREE pointing at another repository, run outside any: ~/Projects, never that repository", async () => {
+    const other = makeRepo(join(base, "other"));
+    const outside = join(base, "plain");
+    mkdirSync(outside);
+    const result = await run("sh", [INSTALL], { SO_NO_START: "1", GIT_DIR: join(other, ".git"), GIT_WORK_TREE: other }, "pipe", outside);
+    expect(result.code, result.out).toBe(0);
+    expect(startLine(result.out)).toBe(projectsLine());
+  });
+
+  test("injected config (GIT_CONFIG_COUNT core.worktree) can't move the repository it starts in", async () => {
+    const repo = makeRepo(join(base, "shop"));
+    const elsewhere = join(base, "elsewhere");
+    mkdirSync(elsewhere);
+    const result = await run("sh", [INSTALL], { SO_NO_START: "1", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.worktree", GIT_CONFIG_VALUE_0: elsewhere }, "pipe", repo);
+    expect(result.code, result.out).toBe(0);
+    expect(startLine(result.out)).toBe(`Start it in ${repo} with: toolroll`);
+  });
+
+  test("a repository whose own config sets core.worktree to a folder outside it: ~/Projects, never that folder", async () => {
+    const repo = makeRepo(join(base, "shop"));
+    const elsewhere = join(base, "elsewhere");
+    mkdirSync(elsewhere);
+    execFileSync(realGit, ["-C", repo, "config", "core.worktree", elsewhere], { env: gitEnv });
+    const result = await run("sh", [INSTALL], { SO_NO_START: "1" }, "pipe", repo);
+    expect(result.code, result.out).toBe(0);
+    expect(startLine(result.out)).toBe(projectsLine());
   });
 });
