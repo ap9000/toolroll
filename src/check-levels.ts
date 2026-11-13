@@ -38,6 +38,11 @@ export function liveQuickCommand(store: Store, repo: string): VerifyCommand | nu
   return store.liveVerifyCommand(quickVerifyKey(repo));
 }
 
+/** Whether the project has any check command now (full, or quick): what "No check is set" and Run checks both read. */
+export function projectCheckSet(store: Store, repo: string): boolean {
+  return store.liveVerifyCommand(repo) !== null || liveQuickCommand(store, repo) !== null;
+}
+
 type LedgerRow = { actor: string; at: string; outcome: string };
 /** Ledger reads go through the repo index: `repo = ?` (or IS NULL for unplaced work). */
 export const repoClause = (repo: string | null): [string, string[]] => repo === null ? ["repo IS NULL", []] : ["repo = ?", [repo]];

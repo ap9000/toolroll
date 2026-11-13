@@ -1334,6 +1334,41 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(awaiting.decision).toMatchObject({ label: "Accept anyway", ready: false, why: "1 requirement isn't met." });
   });
 
+  test("who is looking counts: protected work and a fast start that grew offer no plain Accept or Mark complete, and say why", async () => {
+    // Everything else is ready (a passing sealed check, every requirement met, no proof manifest): only the viewer's own
+    // completion refusal stands, the same one the server's completion gives (assignment.ts personCompletionRefusal).
+    const patch = "diff --git a/z b/z\n--- a/z\n+++ b/z\n@@ -1 +1 @@\n-a\n+b\n";
+    const acceptance = [{ id: "c1", statement: "the tests pass", evidence: ["check" as const] }];
+    const met = [row("c1", "the tests pass", "pass", [{ kind: "check", ref: "npm test" }], [], { judgement: "upholds", note: "ok", author: "reviewer:claude" })];
+    const verdict = { verdict: "verified" as const, machineVerdict: "verified" as const, reasons: ["The saved evidence and independent assessment satisfy the approved goal."], matrix: met };
+    const guarded = build("t-guarded", seed("t-guarded", "Touches a protected file", "/repo/main", { acceptance }), { patch, stat: [{ path: "z", additions: 1, deletions: 1 }], handoff: {}, verdict });
+    const grew = build("t-grew", seed("t-grew", "A fast start that grew", "/repo/main", { acceptance }), { patch, stat: [{ path: "z", additions: 1, deletions: 1 }], handoff: {}, verdict });
+    store.handle.prepare("UPDATE task_ref SET fast_start_at = ? WHERE external_id = ?").run(T0.toISOString(), "t-grew");
+    store.setApprovalRules("/repo/main", { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", T0);
+    await boot();
+    store.setVerifyCommand({ repo: "/repo/main", command: "npm test", timeoutMs: 300_000, approvedBy: "alex" }, new Date(T0.getTime() - 120_000));
+    for (const [task, run] of [["t-guarded", guarded], ["t-grew", grew]] as const) {
+      store.stampRun(run, { scopeDigest: store.getScope(task)!.digest });
+      storeEvidence(store, evidenceRoot, run, "check-log", "checks.txt", Buffer.from("1 test passed"), "npm test", T0, { captureStatus: "ok" });
+      sealVerificationReceipt(store, evidenceRoot, run, "b".repeat(40), store.liveVerifyCommand("/repo/main")!, { configured: true, ran: true, exitCode: 0 }, T0);
+    }
+    const cookie = await login();
+    const read = async (task: string, run: number) => ((await (await fetch(url(`/review?result=${task}&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    for (const [task, run, why] of [
+      ["t-guarded", guarded, "This result changed protected files (z), and alex approved its scope alone. Someone else has to mark it complete."],
+      ["t-grew", grew, "This grew beyond a small change. Approve it to keep it."],
+    ] as const) {
+      const selected = (await read(task, run)).selected!;
+      expect(selected.complete, task).toBeNull();
+      expect(selected.decision?.ready ?? false, task).toBe(false);
+      expect(selected.acts.primary, task).not.toBe("accept");
+      expect(selected.acts.line ?? "", task).toContain(why);
+      // The task page offers no completion form either (Mark complete is that form, moved up).
+      const page = await (await fetch(url(`/t/${task}?tab=result&run=${run}`), { headers: { cookie } })).text();
+      expect(page, task).not.toContain(`/t/${task}/complete`);
+    }
+  });
+
   test("mark complete binds the exact saved result and preserves check failures and publication authority", async () => {
     const ref = seed("t-complete", "Keep the payout total accurate");
     const historical = build("t-complete", ref, { patch: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-before\n+earlier\n", handoff: { conclusion: "Saved the earlier payout correction." } });

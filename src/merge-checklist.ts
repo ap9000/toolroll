@@ -13,7 +13,7 @@ import { isRevisionFeedback } from "./result-review.js";
 import { approvalOf, deployGateScope } from "./scope.js";
 import { shipChecksForTask, type Store } from "./store.js";
 import { approvedCheckStateOf, requirementWordOf } from "./task-status.js";
-import { liveQuickCommand } from "./check-levels.js";
+import { projectCheckSet } from "./check-levels.js";
 import { projectName } from "./project.js";
 
 export const CHECKLIST_KEYS = ["plan", "build", "checks", "requirements", "pull-request", "pr-ci", "up-to-date", "conflicts", "comments", "release"] as const;
@@ -93,7 +93,7 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   else if (check === "running") row("checks", "waiting", "Running now.");
   else if (check === "off") row("checks", "waiting", "Checks are off for this project; they run at release.");
   // No check command at all: Run checks could only refuse, so the row says how to set one instead.
-  else if (check === "not-run" && assignment.repo !== null && store.liveVerifyCommand(assignment.repo) === null && liveQuickCommand(store, assignment.repo) === null) {
+  else if (check === "not-run" && assignment.repo !== null && !projectCheckSet(store, assignment.repo)) {
     row("checks", "no", noCheckSetWords(assignment.repo));
   }
   else row("checks", "no", check === "unreadable" ? "The check result couldn't be read." : "No check ran on this commit.", { kind: "run-checks", run: receipt.runId });

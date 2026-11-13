@@ -22,7 +22,7 @@ import { recentGitReads, taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
 import { html, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
-import { assignmentOf,type AssignmentSnapshot } from '../assignment.js';
+import { assignmentOf,personCompletionRefusal,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";
 import { failedAttemptSentence,failingCheckSuggestion,GENERAL_SUGGESTION,isInternalErrorReason,latestFinishedAttempt,missedRequirementLine,missedRequirementSuggestion,NO_REASON_RECORDED,stopSuggestionOf,type FailureExplanation } from '../needs-you.js';
 import { planAutoPending } from "../plan-auto.js";
@@ -33,6 +33,7 @@ import { readSkillsSnapshot,skillTestResult } from "../project-skills.js";
 import { newestPullRequestOf,publishingOf,pullRequestBlocker } from '../pull-request-flow.js';
 import { structuredHandoffView,terminalDiffView } from "../result-evidence-readers.js";
 import { resultCheckLevel } from '../result-follow-ups.js';
+import { projectCheckSet } from '../check-levels.js';
 import { followThroughView } from "./render-follow-through.js";
 import { skillsSnapshotHtml,skillTestFeedbackHtml } from "../skills-ui.js";
 import type { TaskFamily, TaskArchive } from "../store.js";
@@ -208,6 +209,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
                 reasons: verdict?.reasons ?? [],
                 accepted: runtime.store.proofAcceptance(latest.id) !== null,
                 checkLevel: resultCheckLevel(runtime.store, latest.id, now),
+                ...(ref?.repo == null ? {} : { checkSet: projectCheckSet(runtime.store, ref.repo) }),
                 review: runtime.reviewFactsFor(latest.id),
                 ...(latest.outcome !== "no-change"
                   ? {}
@@ -1175,9 +1177,15 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       ...(() => { const family = runtime.familyOf(taskId); return family === null ? {} : { history: familyHistory(family) }; })(),
       run,
       receipt,
-      assignment: (() => {
+      ...(() => {
         const value = assignmentOf(runtime.store, taskId, now, runtime.workAccess(), runtime.evidenceRoot);
-        return value?.receipt?.runId === run.id && value.activeTaskId === taskId ? freshAssignment(value, receipt) : null;
+        const assignment = value?.receipt?.runId === run.id && value.activeTaskId === taskId ? freshAssignment(value, receipt) : null;
+        // The completion's own refusals for this viewer, by the same reading the server's completion uses: a person is a
+        // signed-in browser; anything else is no person.
+        const completeRefusal = assignment?.state !== "ready-to-check" || assignment.receipt === null ? null
+          : personCompletionRefusal(runtime.store, assignment.receipt.taskId, run.id, who.via === "cookie" ? who.name : null, runtime.evidenceRoot,
+              who.via === "cookie" && who.authority === "local-owner" ? { rootId: assignment.rootId } : null);
+        return { assignment, completeRefusal };
       })(),
       handoff,
       proof,

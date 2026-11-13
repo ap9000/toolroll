@@ -5,6 +5,7 @@
 import { heldFindingCount } from "./findings.js";
 import { machineChecked } from "./machine-check.js";
 import { resultCheckLevel } from "./result-follow-ups.js";
+import { projectCheckSet } from "./check-levels.js";
 import { diagnoseTaskDispatch, type DispatchAction } from "./dispatch.js";
 import { isAlive } from "./runner.js";
 import type { Store } from "./store.js";
@@ -134,6 +135,7 @@ export function taskWorkSummaryOf(store: Store, taskId: string, now: Date, acces
       runId: result.id, role: result.role, outcome: result.outcome,
       verdict: proof?.verdict ?? null, reasons: proof?.reasons ?? [], accepted: store.proofAcceptance(result.id) !== null,
       checkLevel: resultCheckLevel(store, result.id, now),
+      ...(ref.repo == null ? {} : { checkSet: projectCheckSet(store, ref.repo) }),
       review: reviewFactsOf(store.reviewRetryStateOf(result.id), name => {
         const runner = store.getRunner(name)?.runner;
         return runner !== undefined && isAlive(runner, now);
