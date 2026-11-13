@@ -42,7 +42,7 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
     // A password-free owner has nothing to sign in with here: the terminal UI is where they accept or send back.
     return fail('unauthenticated', passwordFreeOwner(context.store)
       ? `Open \`toolroll\` and press ${action === 'complete' ? 'c' : 'b'} on the task.`
-      : 'Sign in with --as <you> --token <your password>. Your lead can use --token-file or --token-env with its own credential.');
+      : 'Run this at a terminal to sign in when asked, or open `toolroll`. Your lead can use --token-file or --token-env with its own credential.');
   }
   const { store, now, evidenceRoot } = context;
   // A result whose build Toolroll hasn't yet proven stopped: it looks now (stop-proof.ts), so completing never waits

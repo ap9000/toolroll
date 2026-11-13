@@ -145,6 +145,7 @@ describe("task complete and send back from a shell", () => {
     expect(set.code, set.out).toBe(0);
     const withPassword = await run("task", ["complete", "t-1"]);
     expect(withPassword.code).toBe(3);
-    expect(withPassword.out).toContain("Sign in with --as <you> --token <your password>.");
+    expect(withPassword.out).toContain("Run this at a terminal to sign in when asked, or open `toolroll`.");
+    expect(withPassword.out).not.toContain("<your password>");
   });
 });
