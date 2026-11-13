@@ -61,7 +61,7 @@ export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey): stri
   } else if (key === "project") {
     lines.push(`2. Project · ${mark(model.project.done)}`);
     for (const one of model.project.projects.slice(0, 3)) lines.push(`   ${one.name}  ${one.path}`);
-    if (model.project.projects.length === 0) lines.push("   Add a git repository: run `toolroll repos add <folder>`, or `toolroll open --web` and choose one.");
+    if (model.project.projects.length === 0) lines.push("   Add a git repository: run `toolroll repos add <folder>`, or `toolroll --web` and choose one.");
     else if (model.project.notTakingWork) lines.push("   Tasks can't start yet: nothing on this computer is taking work. Run `toolroll`.");
   } else {
     lines.push(`3. First task · ${mark(model.task.done)}`);

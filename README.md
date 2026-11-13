@@ -8,7 +8,7 @@
 ### Your agents build. You decide.
 
 For Claude Code, Codex and Gemini, on your own machine.<br>
-Approve the exact scope once. Get results back Ready with the diff, the check status and screenshots.
+Approve each plan once. Get results back Ready with the diff, the check status and screenshots.
 
 [![npm](https://img.shields.io/npm/v/toolroll?color=171717)](https://www.npmjs.com/package/toolroll)
 [![CI](https://github.com/ap9000/toolroll/actions/workflows/ci.yml/badge.svg)](https://github.com/ap9000/toolroll/actions/workflows/ci.yml)
@@ -20,7 +20,7 @@ Approve the exact scope once. Get results back Ready with the diff, the check st
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/ui/tasks-dark.png">
-  <img src="docs/media/ui/tasks-light.png" alt="The Toolroll console's Tasks view: plan windows and budget at the top, then every task with what it needs from you and the one action that settles it." width="920">
+  <img src="docs/media/ui/tasks-light.png" alt="The Toolroll console's Tasks view: every task with what it needs from you and the one action that settles it." width="920">
 </picture>
 
 <sub>Every task across every project, and the one thing each needs from you. (Demo workspace.)</sub>
@@ -50,28 +50,28 @@ task, approve the plan, and the result comes back **Ready**. Elsewhere, add a
 project with `toolroll repos add <folder>`, or open the browser (press `w`, or
 run `toolroll --web`), which also offers a sample project. To look around
 first, `toolroll demo` opens a seeded sandbox with no model calls and no spend.
-
-**Letting agents work on their own.** Approving work you start on this
-computer needs no password. Hands-off modes, merging, releasing and most
-settings ask you to set one first: `toolroll password set`. More: [Getting started](docs/guide/getting-started.md).
+More: [Getting started](docs/guide/getting-started.md).
 
 ## How it works
 
 ```
- describe ─▶ scope ─▶ approve ─▶ build ─▶ check ─▶ Ready ─▶ you decide
-                        you       agent   exact     diff     Complete,
-                                          commit    + proof  revise or merge
+ describe ─▶ plan ─▶ approve ─▶ build ─▶ check ─▶ Ready ─▶ you decide
+                       you       agent   exact     diff     Complete,
+                                         commit    + checks send back or merge
 ```
 
 1. **Describe** the outcome in Chat, the terminal or your phone.
-2. **Scope.** The lead reads the repository and drafts the goal, what's out of
-   bounds, acceptance criteria, and the exact agent and model.
+2. **Plan.** Toolroll reads the repository and drafts the goal, what's out of
+   bounds, the requirements, and the exact agent and model.
 3. **Approve** once. Nothing spends until you do; changing the terms asks again.
-4. **Build.** An agent works in its own worktree and branch. A judgement call
+4. **Build.** An agent works on its own branch. A judgement call
    becomes a question for you, not a guess.
 5. **Check.** Your project's own check runs on the exact commit.
-6. **Ready.** The diff, the check log and screenshots. Mark it Complete, ask
-   for a revision, or merge through the pull request.
+6. **Ready.** The diff, the check log and screenshots. Mark it Complete, send
+   it back with what to change, or merge through the pull request.
+
+Approving work you start on this computer needs no password. Hands-off modes,
+merging, releasing and most settings ask you to set one first: `toolroll password set`.
 
 ## Use cases
 

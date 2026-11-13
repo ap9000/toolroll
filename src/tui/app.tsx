@@ -48,14 +48,15 @@ type Screen =
 
 /** The keys (keymap.ts is the one table the console shares): its keys as this screen does them, then the terminal's own. */
 const TUI_SAYS: Readonly<Record<TuiShortcut, string>> = {
-  new: "new task", ink: "approve the plan (shows it in full first), or accept the result (shows it first)", "send-back": "send the result back",
+  new: "new task", ink: "approve the plan (shows it in full first)", "send-back": "send the result back",
   retry: "retry", plan: "ask for a plan", list: "back to the task list", help: "these keys",
 };
 export const HELP_LINES = [
   "j / k or ↑ / ↓   move",
   "Enter            open the task",
-  ...SHORTCUTS.filter(one => typeof one.tui === "string").map(one => `${keyWords(one.keys).padEnd(17)}${TUI_SAYS[one.tui as TuiShortcut]}`),
-  "c                accept the result (shows it first)",
+  // Keys that do the same thing here share one line ("g then h, g then t": both are this list).
+  ...[...SHORTCUTS.filter(one => typeof one.tui === "string").reduce((acts, one) => acts.set(one.tui as TuiShortcut, [...acts.get(one.tui as TuiShortcut) ?? [], keyWords(one.keys)]), new Map<TuiShortcut, string[]>())]
+    .flatMap(([tui, keys]) => [`${keys.join(", ").padEnd(15)}  ${TUI_SAYS[tui]}`, ...tui === "ink" ? ["c                accept the result (shows it first)"] : []]),
   "s                stop the running attempt",
   "1–9              answer the task's question",
   "w                open in the browser",

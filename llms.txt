@@ -2,7 +2,7 @@
 
 > Toolroll is an open-source (MIT) control plane for unattended coding agents: Claude Code, Codex and Gemini run on your own machine or a team server. Every task gets a scope a person approves before work starts; the result comes back Ready with the diff, the project's check on the exact commit, and screenshots. Agents drive it through the `toolroll` CLI (JSON envelopes, stable reasons, exit codes 0/1/2/3, idempotency keys) or an MCP gateway. Approvals always belong to people.
 
-Install with `npm install -g toolroll` (Node 22.13+, git 2.41+, macOS or Linux), start with `toolroll up`, try `npx toolroll demo`. The installed binary is the authoritative reference: `toolroll --help`, `toolroll contract --commands --json`, `toolroll skills get operating`.
+Install with `npm install -g toolroll` (Node 22.13+, git 2.41+, macOS or Linux), start with `toolroll` in your project's folder, try `npx toolroll demo`. The installed binary is the authoritative reference: `toolroll --help`, `toolroll internals`, `toolroll contract --commands --json`, `toolroll skills get operating`.
 
 ## For agents
 

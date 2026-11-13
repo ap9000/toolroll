@@ -112,7 +112,7 @@ describe("finish setting up", () => {
     ], true);
     expect(rows.map(one => one.id)).toEqual(["setup:agent", "setup:builder"]);
     expect(rows[0]).toMatchObject({ title: "Sign in to a coding agent", line: "Run claude auth login in a terminal.", action: { label: "Open setup", href: "/welcome" }, at: null });
-    expect(rows[1]).toMatchObject({ title: "Connect a builder", action: { label: "Do builder", href: "/builder" } });
+    expect(rows[1]).toMatchObject({ title: "Start taking work", action: { label: "Do builder", href: "/builder" } });
     // Approvers only.
     expect(setupAsks([step("builder")], false)).toEqual([]);
   });

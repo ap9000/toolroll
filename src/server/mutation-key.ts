@@ -39,9 +39,9 @@ export type Reconnect = { kind: "password"; href: string } | { kind: "command"; 
 export type KeyRefusal = { status: 403 | 409; message: string; reconnect: Reconnect };
 
 export const RESTARTED = "Toolroll restarted — reconnect to make changes.";
-export const RESTARTED_LOCAL = "Toolroll restarted — run `toolroll open` to reconnect.";
+export const RESTARTED_LOCAL = "Toolroll restarted — run `toolroll --web` to reconnect.";
 export const NOT_CONNECTED = "This tab isn't connected to Toolroll — reconnect to make changes.";
-export const NOT_CONNECTED_LOCAL = "This tab isn't connected to Toolroll — run `toolroll open` to reconnect.";
+export const NOT_CONNECTED_LOCAL = "This tab isn't connected to Toolroll — run `toolroll --web` to reconnect.";
 
 /** The page a request reads, without the workspace read's own parameters: where a reconnect comes back to. */
 export function pagePathOf(url: URL): string {
@@ -108,7 +108,7 @@ export function createBrowserKeys(deps: {
   // A refused post comes back to Home (its own address may answer only posts); a page's notice, to that page.
   const reconnectOf = (who: Extract<Who, { via: "cookie" }>, back = "/"): Reconnect => who.authority === "full"
     ? { kind: "password", href: back === "/" ? "/login/rekey" : `/login/rekey?return=${encodeURIComponent(back)}` }
-    : { kind: "command", command: "toolroll open" };
+    : { kind: "command", command: "toolroll --web" };
   const stale = (who: Who, back?: string): Reconnect | null => {
     if (!required() || who.via !== "cookie") return null;
     const session = who.session;

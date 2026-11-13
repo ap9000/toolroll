@@ -66,7 +66,8 @@ envelope per command, stable \`reason\` tokens, exit 3 means "no" not
 \`held\`, \`fenced\`, \`reserved\`, \`unapproved\`, and \`external\` are
 answers to branch on, not errors to retry. Details:
 \`.claude/skills/toolroll/SKILL.md\`, or \`toolroll --help\`,
-which is authoritative — and \`toolroll skills get <name>\` serves
+which is authoritative (\`toolroll internals\` and
+\`toolroll contract --commands --json\` list every command) — and \`toolroll skills get <name>\` serves
 version-matched guides straight from the binary (\`skills list\` names
 them). Project memory (instructions, references, lessons, decisions) lives
 in the plane: read \`skills get knowledge\`, search it with

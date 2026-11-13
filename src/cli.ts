@@ -55,7 +55,7 @@ import type { BackendGrant } from "./grant.js";
 import type { OperateOptions } from "./operate.js";
 import { renderReport, renderPulls, renderGraph, type PullGroup, type RemoteMap } from "./render.js";
 import { DEFAULT_MAX_DEPTH } from "./scan.js";
-import { HELP, INTERNALS_HELP } from "./cli-help.js";
+import { HELP, INTERNALS_HELP, SCAN_HELP } from "./cli-help.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { quickAnswer } from "./cli-fast.js";
 import {
@@ -463,7 +463,9 @@ async function dispatch(
     }
   }
   // Cockpit B1: the scan by name, and bare `toolroll` in a repository starting (or attaching to) its console.
-  if (first === "scan") argv = rest;
+  // `toolroll scan --help` prints the scan's own options; top-level help stays about the work.
+  const scanNamed = first === "scan";
+  if (scanNamed) argv = rest;
   else if (isBareInvocation(argv)) {
     const databaseFile = mainOptions.operate?.databaseFile ?? databasePath(process.env, homedir());
     const started = await runQuickStart(argv, write, {
@@ -488,7 +490,7 @@ async function dispatch(
 
   const { options } = parsed;
   if (options.help) {
-    write(HELP);
+    write(scanNamed ? SCAN_HELP : HELP);
     return 0;
   }
 
@@ -624,7 +626,7 @@ function describeMissing(missing: readonly string[], rawRoots: readonly string[]
   return missing
     .map(root =>
       bareWord(rawOf.get(root))
-        ? `${root} does not exist — if you meant a command, \`toolroll --help\` lists them; to scan a folder, give a path that exists.`
+        ? `${root} does not exist — if you meant a command, \`toolroll --help\` and \`toolroll internals\` list them; to scan a folder, give a path that exists.`
         : `${root} does not exist — check the path.`,
     )
     .join("\n");

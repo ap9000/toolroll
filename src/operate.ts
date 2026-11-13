@@ -4591,18 +4591,23 @@ async function startConsole(options: {
     store: context.store, settings: () => readMonitoring(dirname(context.databaseFile)),
     instance: options.publicUrl ?? hostname(), version: packageVersion(),
   });
-  server.on("close", stopMonitoring);
-  // v105: budget alerts at 50/80/100 %, a pass a minute.
-  server.on("close", startBudgetAlerts(context.store));
-  // v111: API tokens: 7- and 1-day expiry notices to their person, and the end of each rotated token, a pass a minute.
-  server.on("close", startTokenNotices(context.store));
-  // A paused provider's sign-in is checked every two minutes (no model, nothing spent); the pause lifts when it works.
-  server.on("close", startSignInProbes(context.store, createConnectionChecker()));
-  // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
-  server.on("close", startBackups(context.store, context.databaseFile));
-  server.on("close", startCodexLimits(context.store));
-  // At most one anonymous look a day for a newer Toolroll (Settings → Updates can switch it off).
-  server.on("close", startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {}));
+  // Every loop beside the console stops when it does, through one close listener (one each pushed the server past
+  // Node's ten-listener warning, printed on every Ctrl-C).
+  const besideConsole: (() => void)[] = [
+    stopMonitoring,
+    // v105: budget alerts at 50/80/100 %, a pass a minute.
+    startBudgetAlerts(context.store),
+    // v111: API tokens: 7- and 1-day expiry notices to their person, and the end of each rotated token, a pass a minute.
+    startTokenNotices(context.store),
+    // A paused provider's sign-in is checked every two minutes (no model, nothing spent); the pause lifts when it works.
+    startSignInProbes(context.store, createConnectionChecker()),
+    // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
+    startBackups(context.store, context.databaseFile),
+    startCodexLimits(context.store),
+    // At most one anonymous look a day for a newer Toolroll (Settings → Updates can switch it off).
+    startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {}),
+  ];
+  server.on("close", () => { for (const stop of besideConsole) stop(); });
   const bound = server.address();
   const port = typeof bound === "object" && bound !== null ? bound.port : options.port;
   // A bind-everywhere address is not a place a browser can go: the URL
@@ -8278,7 +8283,7 @@ async function upCommand(
       // No person at a terminal: an agent started this. It gets the
       // handoff to relay, never the password, and no browser opens.
       write("");
-      for (const line of handoffLines(upHandoff)) write(line);
+      for (const line of handoffLines(upHandoff, { local: approverPlan2.startAuthority === "local" })) write(line);
       write("Run `toolroll onboard` inside a repository to add it and install the Toolroll skill for your agent.");
     } else {
       // Three lines (onboarding): where it is, that it opens signed in, and what to do if it doesn't. The browser gets a
@@ -8352,7 +8357,8 @@ async function upCommand(
     process.stderr.write(`up: ${fatal}\n`);
     return EXIT.failed;
   }
-  progress("Toolroll stopped. Run `toolroll up` anywhere on this machine to start it again with every saved project.");
+  // A laptop start (bare `toolroll`) is started again the same way; `up` names itself.
+  progress(flags.has("laptop") ? "Toolroll stopped. Run `toolroll` to start it again." : "Toolroll stopped. Run `toolroll up` anywhere on this machine to start it again with every saved project.");
   return EXIT.ok;
 }
 
@@ -14010,7 +14016,7 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
   }
   return succeed(write, json, command, { account: binding.account, generation: enrolled.generation }, () => [
     "Password set.",
-    "Open browser tabs and the terminal UI sign in again: run `toolroll open`, or sign in with your password.",
+    "Open browser tabs and the terminal UI sign in again: run `toolroll`, or sign in with your password.",
   ]);
 }
 
@@ -14197,7 +14203,7 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   const buildNow = (preview: string, digest: string): FastBuild => fastStartBuild(store, { preview, digest, actor: name ?? "", via: local === null ? "cli" : "terminal-ui", password: facts,
     approveNow: (taskId, sawDigest, fast) => approve(store, taskId, name ?? "", clock(), sawDigest, token ?? "", {}, fast) }, clock());
   const answerBuild = (built: FastBuild): number => built.ok
-    ? succeed(write, json, command, { task: built.taskId }, () => [`Building ${built.taskId}. A builder starts it next.`])
+    ? succeed(write, json, command, { task: built.taskId }, () => [`Building ${built.taskId}. It starts next.`])
     : fail(write, json, command, built.reason, built.message, EXIT.refused);
   const pressed = text(flags, "build");
   if (pressed !== undefined) {
@@ -14666,6 +14672,6 @@ async function localRetryCommand(positional: readonly string[], flags: Map<strin
   const done = retryAsLocalOwner(store, id, { run: Number(run), digest }, clock());
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
   return succeed(write, json, command, { id, replayed: done.replayed, retries: done.retries }, () => [
-    done.replayed ? `${id} · Already retrying build #${run}.` : `${id} · Retrying build #${run}. A builder starts it next.`,
+    done.replayed ? `${id} · Already retrying build #${run}.` : `${id} · Retrying build #${run}. It starts next.`,
   ]);
 }

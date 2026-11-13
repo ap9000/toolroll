@@ -131,3 +131,21 @@ describe("toolroll open", () => {
     expect(out).not.toContain("/login/once/");
   });
 });
+
+describe("task complete and send back from a shell", () => {
+  test("a password-free owner is pointed at the terminal UI's key (never a sign-in road that can't work); once a password exists, the sign-in words", async () => {
+    const accept = await run("task", ["complete", "t-1"]);
+    expect(accept.code).toBe(3);
+    expect(accept.out).toContain("Open `toolroll` and press c on the task.");
+    const back = await run("task", ["revise", "t-1", "--feedback", "Use the other colour"]);
+    expect(back.code).toBe(3);
+    expect(back.out).toContain("Open `toolroll` and press b on the task.");
+    expect(`${accept.out}${back.out}`).not.toMatch(/Sign in with up/);
+    const set = await run("password", ["set"], { terminal: true, askHidden: typing("correct horse battery", "correct horse battery") });
+    expect(set.code, set.out).toBe(0);
+    const withPassword = await run("task", ["complete", "t-1"]);
+    expect(withPassword.code).toBe(3);
+    expect(withPassword.out).toContain("Run this at a terminal to sign in when asked, or open `toolroll`.");
+    expect(withPassword.out).not.toContain("<your password>");
+  });
+});

@@ -20,7 +20,7 @@ toolroll
 ```
 
 To look around first, `npx toolroll demo` opens a throwaway sandbox
-with tasks and two flows already mid-flight. It never spends and never
+with sample tasks already mid-flight. It never spends and never
 reaches outside.
 
 ## Your first run
@@ -40,13 +40,12 @@ each agent is doing and what needs you.
   `w` and use the browser's welcome page to choose the agent and add a
   folder, one of your GitHub repositories, or a small sample project. Then
   press `n` to write the first task; the steps suggest a few starters.
-  `toolroll welcome` prints the same steps.
 - **Approve and collect.** `a` shows the plan in full, and `y` approves it,
   with no password. The result comes back **Ready**: mark it Complete with
   `c`, or send it back for a revision with `b` (it asks what to change). `r`
   retries a build that failed. `?` lists every key.
 - **The browser.** Press `w`, or run `toolroll --web`. It opens signed in.
-  `toolroll open` gets you back in from any terminal, signed in again.
+  Running `toolroll` again gets you back in from any terminal.
 - **Quitting.** `q` asks whether to stop the agents (running work is saved)
   or keep Toolroll running in the background. The first time, Toolroll asks
   once whether to keep running in the background; change it later with
@@ -56,15 +55,6 @@ each agent is doing and what needs you.
 Toolroll is at `http://127.0.0.1:4180`. If another program already uses that
 port when you first start, a new install takes the next free one and keeps
 it.
-
-### Letting agents work on their own
-
-Work you start and approve on this computer needs no password. Hands-off
-modes, merging, releasing, people and access, and most settings ask you to
-set one first. When you reach one, the page says **Set a password**; or run
-`toolroll password set` at your terminal (typed twice, never a flag or a
-file). Every open tab and the terminal then sign in again, and approving
-your own work still needs no password.
 
 ### Other ways to install
 
@@ -90,6 +80,33 @@ git older than 2.45 (no `git --no-lazy-fetch`), a project that is a partial
 clone (`git clone --filter=…`) is refused for Toolroll's protected reads: use
 git 2.45 or newer for those, or a full clone. CI runs the git tests on 2.41
 and on 2.47.
+
+## Your first project
+
+Open **Projects** and add a folder or a GitHub repository. Any repository you
+put in the projects folder later connects by itself.
+
+Agents need a coding CLI signed in on this computer: Claude Code (`claude`)
+or Codex (`codex`). Settings → AI providers shows which are connected.
+
+## Your first task
+
+Open **Chat** and say what you want in plain words. Toolroll drafts a plan
+with a goal, boundaries and checks for you to approve. Nothing is built until
+you approve it, and every result waits for you to accept it.
+
+## More ways to run it
+
+None of this is needed for a first result.
+
+### Letting agents work on their own
+
+Work you start and approve on this computer needs no password. Hands-off
+modes, merging, releasing, people and access, and most settings ask you to
+set one first. When you reach one, the page says **Set a password**; or run
+`toolroll password set` at your terminal (typed twice, never a flag or a
+file). Every open tab and the terminal then sign in again, and approving
+your own work still needs no password.
 
 ### Starting with `toolroll up`
 
@@ -122,7 +139,7 @@ npx toolroll demo               # a seeded sandbox: see it working in 90 seconds
 npx toolroll                    # what's in flight across your repos: read-only, zero config
 ```
 
-## Install with your agent
+### Install with your agent
 
 Paste this into Claude Code or Codex:
 
@@ -137,20 +154,6 @@ project, says which agent CLIs are signed in, and prints the line that adds
 Toolroll as tools (`claude mcp add --scope user toolroll -- toolroll mcp`)
 without running it. `toolroll onboard --remove --yes` takes the skill out
 again. How an agent then drives Toolroll is in [Toolroll for agents](../agents.md).
-
-## Your first project
-
-Open **Projects** and add a folder or a GitHub repository. Any repository you
-put in the projects folder later connects by itself.
-
-Agents need a coding CLI signed in on this computer: Claude Code (`claude`)
-or Codex (`codex`). Settings → AI providers shows which are connected.
-
-## Your first task
-
-Open **Chat** and say what you want in plain words. The lead drafts a task
-with a goal, boundaries and checks for you to approve. Nothing is built until
-you approve it, and every result waits for you to accept it.
 
 ## Change requests from youiyoux
 
@@ -332,8 +335,8 @@ toolroll chat --say "what is waiting on me across every project?"       # your l
 ```
 
 Every command takes `--json` and answers with one envelope; every mutation
-takes `--key` so a retry never files twice. `toolroll --help` and
-`toolroll skills get console` are the live references; the second is what
+takes `--key` so a retry never files twice. `toolroll --help`, `toolroll internals`
+and `toolroll skills get console` are the live references; the second is what
 your coding agent reads when you ask it how something works.
 
 An agent that hits a judgement call **parks a typed decision instead of

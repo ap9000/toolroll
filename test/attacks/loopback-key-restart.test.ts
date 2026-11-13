@@ -150,7 +150,7 @@ test("a tailnet name makes the install not protected", async () => {
   expect((await post(one.port, "/session/forget-password", cookie, { csrf: await csrfOf(one.port, cookie) })).body).not.toMatch(KEY_REFUSED);
 });
 
-test("a local owner's link delivers a key bound to this start; after a restart the owner is told to run `toolroll open`", async () => {
+test("a local owner's link delivers a key bound to this start; after a restart the owner is told to run `toolroll --web`", async () => {
   const dir = mkdtempSync(join(tmpdir(), "toolroll-key-local-"));
   const store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
   try {
@@ -165,10 +165,10 @@ test("a local owner's link delivers a key bound to this start; after a restart t
     await stop(one); consoles = [];
     const again = await started(store, dir, {}, one.port);
     const page = JSON.parse((await raw(again.port, "GET", "/chat?format=workspace", { cookie })).body);
-    expect(page.reconnect).toEqual({ kind: "command", command: "toolroll open" });
+    expect(page.reconnect).toEqual({ kind: "command", command: "toolroll --web" });
     // Its reconnect page has no password road (there is no password): the terminal gives a fresh link.
     const rekey = await raw(again.port, "GET", "/login/rekey", { cookie });
-    expect(rekey.body).toContain("toolroll open");
+    expect(rekey.body).toContain("toolroll --web");
     expect(rekey.body).not.toContain('type="password"');
     const posted = await raw(again.port, "POST", "/login/rekey", { cookie, origin: again.base, "content-type": "application/x-www-form-urlencoded" }, new URLSearchParams({ token: "anything" }).toString());
     expect(posted.status).toBe(403);

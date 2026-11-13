@@ -619,7 +619,7 @@ export function chatPage(chrome: Chrome, data: {
   }
   if (data.canManage) {
     parts.push(
-      html`<p class="meta" id="chat-settings"><a href="/settings/lead">Lead settings</a> · provider, model and limits</p>`,
+      html`<p class="meta" id="chat-settings"><a href="/settings/lead">Chat settings</a> · provider, model and limits</p>`,
     );
   }
   if (data.recent.length > 0) {
@@ -1257,7 +1257,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
         ? ""
         : html`<p class="meta">Recent turns: ${joinHtml(data.recent
             .map(turn => html`<span class="mono">#${turn.id}</span> ${turn.state}${turn.failureReason === null ? "" : html` · ${turn.failureReason}`} · ${subscription ? "membership" : chatMoney(turn.settledMicrousd ?? turn.reservedMicrousd)}`), " · ")}</p>`,
-      html`<p class="meta"><a href="/settings/lead">Lead settings</a> · provider, model and limits</p>`,
+      html`<p class="meta"><a href="/settings/lead">Chat settings</a> · provider, model and limits</p>`,
     ], "\n")}\n</details>`,
   ], "\n");
   const conversation: HtmlValue[] = [

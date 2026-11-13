@@ -754,7 +754,7 @@ function WorkPanel({ view, chat, csrf, open, onClose, onClick }: { view: Browser
         : <SteerNote key={steering.steer.run} steer={steering.steer} controls={{ ...steering.controls, pause }} back="task" label={`Message ${agent}`} note={steering.controls.words} />}
     </div>
     : <div className="so-work-box" data-work-lead="">
-      {chat !== null ? chat.footer : view.chatHref != null && <KNote><a className="k-link" href={view.chatHref}>Message the lead</a> from Chat.</KNote>}
+      {chat !== null ? chat.footer : view.chatHref != null && <KNote><a className="k-link" href={view.chatHref}>Ask about it in Chat</a>.</KNote>}
     </div>;
   const who = work === null ? "No build yet" : `${work.agent} · ${work.live ? "working" : "finished"}`;
   return <KWork id="task-activity" title="Activity" who={who} live={work?.live === true} onClose={onClose} closeLabel="Close activity" closeData={{ "data-close-activity": "" }} onClick={onClick}

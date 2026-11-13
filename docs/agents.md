@@ -13,7 +13,8 @@ builds may add keys: ignore the ones you don't know.
 The installed binary is the reference. It cannot be stale; this page can.
 
 ```sh
-toolroll --help                     # every verb
+toolroll --help                     # the main loop
+toolroll internals                  # every other verb
 toolroll task --help                # the queue surface
 toolroll contract --json            # capability tokens to feature-detect
 toolroll contract --commands --json # every command: synopsis, flags, audience, mutation, reasons

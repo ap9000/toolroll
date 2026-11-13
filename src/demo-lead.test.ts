@@ -87,7 +87,7 @@ describe("the scripted demo lead", () => {
     const first = await page(cookie);
     expect(first).toContain("Ask for something, like “fix the flaky refund test”");
     expect(first).toContain('value="Fix the flaky refund test"');
-    expect(first).toContain("Nothing calls a model, reaches outside or spends.");
+    expect(first).toContain("Nothing calls a model, reaches outside or costs anything.");
     expect(first).not.toContain("Chat isn’t available in demo mode");
 
     expect((await post(cookie, "/chat/demo/ask", { csrf: csrfIn(first), message: "please fix the flaky refund test" })).status).toBe(303);

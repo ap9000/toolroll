@@ -2282,7 +2282,7 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   // (A password remembered on this computer stands in for it: then the field isn't drawn, and the server still checks.)
   const typed = offered.locator('input[name="password"]');
   if (await typed.isVisible()) await typed.fill(w.passwords.alex);
-  else if (await page.locator("text=Password remembered").count() === 0) throw new Error("accepting the looser rule asks for no password, and none is remembered");
+  else if (await page.locator("form[data-fresh-chip]").count() === 0) throw new Error("accepting the looser rule asks for no password, and none is remembered");
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
   if (JSON.stringify(rule) !== suggestion.rule_json) throw new Error(`her refund rule is ${JSON.stringify(rule)}, not the suggested ${suggestion.rule_json}`);
@@ -2600,8 +2600,8 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
         await visitor.goto(`${started.url}/chat`);
         const banner = await visitor.locator("body").innerText();
         // A phone gets the one-line banner (a terminal command is no use there); a desk gets the full one, which hands off.
-        if (!(width === 1440 ? /Nothing calls a model, reaches outside or spends\./ : /Nothing calls a model or spends\./).test(banner)) throw new Error(`the demo banner: ${banner.slice(0, 300)}`);
-        if (width === 1440 && !/For your own project, run npx toolroll up in its folder\./.test(banner)) throw new Error(`the demo banner doesn't hand off: ${banner.slice(0, 300)}`);
+        if (!(width === 1440 ? /Nothing calls a model, reaches outside or costs anything\./ : /Nothing calls a model or costs anything\./).test(banner)) throw new Error(`the demo banner: ${banner.slice(0, 300)}`);
+        if (width === 1440 && !/For your own project, run npx toolroll in its folder\./.test(banner)) throw new Error(`the demo banner doesn't hand off: ${banner.slice(0, 300)}`);
         if (width === 1440) {
           await visitor.locator(".demo-hint").waitFor();
           if (await visitor.locator(".demo-suggestions button").count() < 2) throw new Error("the first visit shows no suggestions");
@@ -2633,7 +2633,7 @@ await journey("pages", SCRIPTED, "The demo lead: type a request, approve, see it
         await turn.getByText("That's the whole loop").waitFor();
         // ...and so does its last step.
         const handoff = await turn.locator("[data-demo-handoff]").innerText();
-        if (!handoff.includes("npx toolroll up")) throw new Error(`the demo's last step: ${handoff}`);
+        if (!handoff.includes("npx toolroll") || handoff.includes("npx toolroll up")) throw new Error(`the demo's last step: ${handoff}`);
         await turn.locator("[data-demo-handoff]").scrollIntoViewIfNeeded();
         await settle(visitor); await visitor.screenshot({ path: join(w.out, `demo-complete-${width}.png`) });
         if (errors.length > 0) throw new Error(`browser errors at ${width} wide: ${errors.join(" | ").slice(0, 400)}`);
@@ -3017,11 +3017,11 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   // 3. The lead is already on with the Claude Code sign-in; 4. how it works, once, above the composer, with first tasks.
   await waitFor(on.locator("[data-lead-line]"), "the line saying what runs the lead", { timeoutMs: 30_000, seen: async () => (await on.locator("main").innerText()).slice(0, 400) });
   const lead = await on.locator("[data-lead-line]").innerText();
-  if (lead !== "The lead uses your Claude Code sign-in · Change") throw new Error(`the lead line: ${lead}`);
+  if (lead !== "Chat uses your Claude Code sign-in · Change") throw new Error(`the lead line: ${lead}`);
   if (await on.locator('a[href="/settings/lead"]', { hasText: "Change" }).count() !== 1) throw new Error("no Change link to Settings → Lead");
   // How it works is the empty chat's own sentence now (lead-chat.tsx ChatEmpty), above the first tasks.
   const intro = await on.locator("[data-chat-empty] > p").first().innerText();
-  if (!intro.startsWith("Ask for a change. The lead writes a short plan; you approve it;")) throw new Error(`how it works: ${intro}`);
+  if (!intro.startsWith("Ask for a change. You approve a short plan;")) throw new Error(`how it works: ${intro}`);
   const firstTasks = on.locator("[data-first-tasks] button");
   if (await firstTasks.count() !== 3) throw new Error(`${await firstTasks.count()} first tasks`);
   if (await on.locator('input[type="password"], form[action="/chat/config"]').count() > 0) throw new Error("Chat asks for a password or shows the setup form");
@@ -3487,7 +3487,7 @@ await journey("easy-start", SCRIPTED, "After a restart an open tab says how to r
   const notice = on.locator('[data-reconnect="command"]');
   await waitFor(notice, "the reconnect notice", { timeoutMs: 30_000, seen: () => saysNow(on) });
   const said = await notice.innerText();
-  if (!/Toolroll restarted\. Run toolroll open to reconnect\./.test(said.replace(/\s+/g, " "))) throw new Error(`the notice says: ${said}`);
+  if (!/Toolroll restarted\. Run toolroll --web to reconnect\./.test(said.replace(/\s+/g, " "))) throw new Error(`the notice says: ${said}`);
   await bothSizes(on, "6-restarted", "easy-start");
   // A change is refused with the same words, and nothing is filed.
   const before = laptopRows("SELECT COUNT(*) AS n FROM task")[0].n;
@@ -3495,7 +3495,7 @@ await journey("easy-start", SCRIPTED, "After a restart an open tab says how to r
   await on.fill('form[action="/tasks/add"] textarea[name="title"]', "Refuse a negative discount with a clear error, and test it.");
   const [answer] = await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
   if (answer?.status() !== 409) throw new Error(`a change after the restart answered ${answer?.status()}: ${await saysNow(on)}`);
-  if (!(await saysNow(on)).includes("Toolroll restarted — run `toolroll open` to reconnect.") && !(await saysNow(on)).includes("Toolroll restarted — run toolroll open to reconnect.")) throw new Error(`the refusal says: ${await saysNow(on)}`);
+  if (!(await saysNow(on)).includes("Toolroll restarted — run `toolroll --web` to reconnect.") && !(await saysNow(on)).includes("Toolroll restarted — run toolroll --web to reconnect.")) throw new Error(`the refusal says: ${await saysNow(on)}`);
   if (laptopRows("SELECT COUNT(*) AS n FROM task")[0].n !== before) throw new Error("a task was filed after the restart without reconnecting");
   await bothSizes(on, "7-restarted-refused", "easy-start");
   // `toolroll open --web` at this computer's terminal: a fresh one-time link, opened in the browser.

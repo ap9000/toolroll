@@ -654,10 +654,10 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
   return {
     entries: chat.messages.map(message => ({ key: `message-${message.id}`, at: message.createdAt, node:
       <li key={`message-${message.id}`} data-message-id={message.id} data-thread-kind="message" className="so-thread-entry relative flex gap-3">
-        <span aria-hidden="true" className="relative z-[1] flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-card text-[10.5px] font-semibold text-muted-foreground">{message.role === "operator" ? "Y" : (workspace.leadName ?? "Lead").slice(0, 1).toUpperCase()}</span>
+        <span aria-hidden="true" className="relative z-[1] flex size-6 shrink-0 items-center justify-center rounded-full border border-border bg-card text-[10.5px] font-semibold text-muted-foreground">{message.role === "operator" ? "Y" : (workspace.leadName ?? "Toolroll").slice(0, 1).toUpperCase()}</span>
         <div className="min-w-0 flex-1 pb-5 phone:pb-4">
           <p className="flex min-h-6 flex-wrap items-baseline gap-x-2 text-body leading-6">
-            <span className="font-medium">{message.role === "operator" ? "You" : workspace.leadName ?? "Lead"}</span>
+            <span className="font-medium">{message.role === "operator" ? "You" : workspace.leadName ?? "Toolroll"}</span>
             <time dateTime={message.createdAt} className="ml-auto text-xs tabular-nums text-muted-foreground">{threadWhen(message.createdAt)}</time>
           </p>
           <MessageContent className={message.role === "operator" ? "so-thread-mine" : "so-thread-theirs"}><GuardedHtml html={message.html} />
@@ -669,7 +669,7 @@ function useTaskThreadChat(controller: ReturnType<typeof useWorkspace>): ThreadC
         </div>
       </li> })),
     footer: <div className="so-task-composer flex flex-col gap-2">
-      {(busy || live !== null) && <LiveReplyBubble live={live} leadName={workspace.leadName ?? "Lead"} />}
+      {(busy || live !== null) && <LiveReplyBubble live={live} leadName={workspace.leadName ?? "Toolroll"} />}
       {!busy && live === null && chat.failure && <p className="so-live-failed" role="alert" data-lead-failed>{chat.failure}</p>}
       {delivery && <div className="so-connection" role={stale ? "alert" : "status"}><span>{delivery}</span>
         {stale ? <ViewButton variant="outline" size="sm" onClick={controller.reconnect}>Reconnect</ViewButton> : !sending && !offline && <ViewButton variant="ghost" size="sm" onClick={() => { void controller.check(); }}>Check again</ViewButton>}
@@ -851,7 +851,7 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
           ? <li key={at} aria-current="page">{one.label}</li> : <li key={at}><a href={one.href}>{one.label}</a></li>)}</ol></nav>
         : pageOnly || settingsFrame
         ? <p className="so-header-title">{section}</p>
-        : <h1>{isChat ? workspace.leadName ?? "Lead" : section}</h1>}
+        : <h1>{isChat ? workspace.leadName ?? "Toolroll" : section}</h1>}
         {workspace.focus && isChat && <span className="so-focus-label" title={workspace.focus.title}>{workspace.focus.title}</span>}
       </header>}
       {(workspace.notices.length > 0 || (workspace.signIn?.length ?? 0) > 0 || update !== null || phone !== null || workspace.reconnect !== undefined || (demo !== undefined && !pageScrolls)) && <div className="so-workspace-notices">

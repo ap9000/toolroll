@@ -13,7 +13,7 @@ import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
-import { checklistLines, mergeChecklistOf, NOT_RECORDED, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
+import { checklistLines, mergeChecklistOf, NOT_RECORDED_LOCAL, type ChecklistKey, type MergeChecklist } from "./merge-checklist.js";
 import { revisionFormOf, workspaceOf } from "../test/serve-kit.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
@@ -109,9 +109,11 @@ describe("each row reads its one source", () => {
     const list = listOf("ready");
     const marks = Object.fromEntries(list.rows.map(one => [one.key, one.mark]));
     expect(marks).toEqual({ plan: "yes", build: "yes", checks: "yes", requirements: "yes", "pull-request": "skip", "pr-ci": "skip", "up-to-date": "unknown", conflicts: "unknown", comments: "yes", release: "skip" });
-    expect(list.rows.find(one => one.key === "up-to-date")!.say).toBe(NOT_RECORDED);
+    // This project opens no pull requests, so nothing points at GitHub.
+    expect(list.rows.find(one => one.key === "up-to-date")!.say).toBe(NOT_RECORDED_LOCAL);
     expect(list.answer).toBe("yes");
-    expect(list.sentence).toBe("Yes, as far as Toolroll records. Check up to date with main and no conflicts on GitHub.");
+    expect(list.sentence).toBe("Yes, as far as Toolroll records. Check up to date with main and no conflicts in your repository.");
+    expect(checklistLines(list).join("\n")).not.toMatch(/GitHub|\[/);
     expect(list.rows.every(one => one.act === null)).toBe(true);
   });
 
@@ -127,6 +129,10 @@ describe("each row reads its one source", () => {
   test("the checks: none ran on this commit carries Run checks on that build", () => {
     // No sealed check for its commit reads as one that can't be read, as the Checks row says it.
     expect(rowOf("unchecked", "checks")).toMatchObject({ mark: "no", say: "The check result couldn't be read.", act: { kind: "run-checks", run: runs["unchecked"] } });
+    // In plain text (the CLI, the terminal UI) the act says where it is, never a bracketed button nobody can press.
+    const lines = checklistLines(listOf("unchecked")).join("\n");
+    expect(lines).toContain("Next: Run checks, on the task's page.");
+    expect(lines).not.toContain("[Run checks]");
   });
 
   test("the requirements: a result that doesn't match its plan carries Ask the agent to fix, its note naming the blocker", () => {

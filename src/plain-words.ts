@@ -72,3 +72,28 @@ export const hasInternalWords = (text: string): boolean => PLAIN_WORDS.some(one 
 
 /** A plan's version as Details shows it: a short handle, never the whole digest. */
 export const planVersionWords = (digest: string): string => `Plan version ${digest.slice(0, 8)}`;
+
+/** The first hour (docs: "four words in the first hour": task, approve, Ready, Complete or send back). Words a newcomer
+ * never meets on the first-run surfaces (help, the welcome steps, the terminal UI's keys, how it works, the first-run
+ * steps and the demo chat): they stay out of sight until sought. Not a global rule: the pages that own these features
+ * say them, and so does any approval's terms, a password asked for where one is needed, or a reason something waits. */
+export const FIRST_HOUR_WORDS: readonly PlainWord[] = [
+  row("lead", "lead", "Toolroll, or Chat"),
+  row("crew", "crew", "Toolroll"),
+  row("scope", "scopes?|scoped", "plan"),
+  row("mode", "modes?", "(Settings)"),
+  row("flow", "flows?", "(Settings)"),
+  row("fleet", "fleet", "(Settings)"),
+  row("fallback", "fallbacks?", "(Settings)"),
+  row("routing", "routing|routed", "(Settings)"),
+  row("spend", "spend|spends|spending|spent", "cost"),
+  row("MCP", "mcp", "(Settings)"),
+  row("password", "passwords?|passwordless", "(only where one is asked for)"),
+  row("token", "tokens?", "(Settings)"),
+  row("builder", "builders?", "taking work"),
+];
+
+/** Every first-hour word in `text`, as the list names it. */
+export function firstHourWordsIn(text: string): string[] {
+  return FIRST_HOUR_WORDS.filter(one => one.pattern.test(text)).map(one => one.never);
+}

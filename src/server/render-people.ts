@@ -113,7 +113,7 @@ export function loginPage(problem: string | null, returnTo = "/", sso: { label: 
 export function reconnectPage(problem: string | null, returnTo: string, how: { kind: "password"; name: string } | { kind: "sso"; label: string } | { kind: "command" }): Html {
   const back = returnTo === "/" ? null : returnTo;
   const body = how.kind === "command"
-    ? html`<p>Run <code>toolroll open</code> on this computer to reconnect.</p>`
+    ? html`<p>Run <code>toolroll --web</code> on this computer to reconnect.</p>`
     : how.kind === "sso"
       ? btn(`Sign in with ${how.label}`, { variant: "primary", href: `/login/sso${back === null ? "" : `?return=${encodeURIComponent(back)}`}`, className: "k-wide" })
       : postForm("/login/rekey", joinHtml([

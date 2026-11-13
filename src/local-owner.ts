@@ -290,7 +290,7 @@ export function localOwnerStandsNow(store: Pick<Store, "handle" | "accountOf" | 
 
 /** What a local owner's write hears when it no longer stands (local mode turned off or moved, the owner changed, the
  * session ended). */
-export const LOCAL_OWNER_LAPSED = "This local sign-in no longer stands. Run `toolroll open` to sign in again.";
+export const LOCAL_OWNER_LAPSED = "This local sign-in no longer stands. Run `toolroll` to sign in again.";
 /** What widening a launch's confinement hears while local mode is on (plan C5). */
 export const LOCAL_MODE_CONFINES = "Turn off local mode first.";
 /** What a local owner's browser session hears from anywhere but this computer (another address, a proxy, a tailnet or
