@@ -8,7 +8,7 @@
  * link` makes a symlink to this file and the shell refuses to run it without.
  */
 
-import { chmod, copyFile, mkdir, stat } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
@@ -31,6 +31,11 @@ await copyFile(resolve(root, "src", "design", "tokens.css"), resolve(root, "dist
 await copyFile(resolve(root, "src", "design", "kit.css"), resolve(root, "dist", "design", "kit.css"));
 // The deployment phase table is one JSON file; deploy-phase.js reads it as a sibling (the deploy scripts read src's copy).
 await copyFile(resolve(root, "src", "deploy-phase-data.json"), resolve(root, "dist", "deploy-phase-data.json"));
+// The published build emits no declarations (tsconfig.build.json); an older build's stay in dist until removed here, or
+// they would ship and leave this dist unlike a clean build's.
+for (const name of await readdir(resolve(root, "dist"), { recursive: true })) {
+  if (/\.d\.ts(?:\.map)?$/.test(name)) await rm(resolve(root, "dist", name));
+}
 
 if (process.platform !== "win32") {
   for (const name of ["bin.js", "cli.js"]) {
