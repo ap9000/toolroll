@@ -101,10 +101,10 @@ export function saveMonitoring(dir: string, form: MonitoringForm, previous: Moni
   let folder: MonitoringSettings["folder"] = null;
   if (form.folder.trim() !== "") {
     const path = form.folder.trim();
-    if (!isAbsolute(path) || path.length > 500 || /[\u0000-\u001f]/.test(path)) return { ok: false, said: "The folder is a full path, like /var/log/standing-orders." };
+    if (!isAbsolute(path) || path.length > 500 || /[\u0000-\u001f]/.test(path)) return { ok: false, said: "The folder is a full path, like /var/log/toolroll." };
     // Never where an agent works or Toolroll keeps its own state: an agent could read the whole stream there.
     const real = realish(path);
-    if ([dir, ...forbidden].some(one => within(real, realish(one)) || within(realish(one), real))) return { ok: false, said: "Choose a folder outside Toolroll's own folder and your projects, like /var/log/standing-orders." };
+    if ([dir, ...forbidden].some(one => within(real, realish(one)) || within(realish(one), real))) return { ok: false, said: "Choose a folder outside Toolroll's own folder and your projects, like /var/log/toolroll." };
     folder = { path };
   }
   let traces: MonitoringSettings["traces"] = null;

@@ -1,12 +1,30 @@
 # Changelog
 
+Each release opens with one line on its theme, then **New**, **Changed**, **Fixed** and **Action needed** (only
+the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
+tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
+
 ## 0.9.104 — 2026-11-12
 
-- **Accept, plan and retry from the terminal, without a password.** On your own computer (laptop mode), pressing `c` on a Ready result opens "Accept this result?": the summary, the changed files, each requirement and the real check status. You answer "Did you check it yourself?", give a reason for an exception, or just say yes. The answer is tied to the result you read; if it changed meanwhile, you're shown the new one. A bigger first task now asks for its plan straight away, and `p` asks for one; you still approve the plan before anything is built. After a crash or a model error, `r` retries your own approved build, up to 3 times per approval, with the same plan, agent and limits. Merging, releasing, hands-off modes and settings still need your password; API tokens, the lead and chat bots can't do any of this.
-- **Password-free mode is tighter.** The password-free session now has to come from this computer on every request, not only when it starts. It can no longer accept release, protected or coordinator results, or open pull requests; those need your password.
-- **The release page says why it couldn't read what changed.** "What changed couldn't be read" now gives the reason, and a slow machine no longer drops the list after 15 seconds.
-- **No security warning on first start.** discord.js is updated to 14.28.1, so `npx toolroll` no longer opens with npm's deprecation warning.
-- **Docs match the app.** The getting-started guide, CONTRIBUTING and the README describe the terminal's first run as it is (`b` sends back, `r` retries), and Ready is described as showing the check status.
+Finish a task from the terminal: accept, plan and retry without a password on your own computer.
+
+### New
+
+- **Accept a result in the terminal.** Press `c` on a Ready result to read its summary, changed files, requirements
+  and check status, then accept it. If the result changed while you read, you're shown the new one.
+- **Plan and retry in the terminal.** `p` asks for a plan, and a bigger first task asks straight away; you still
+  approve it. After a crash, `r` retries your approved build, up to 3 times.
+
+### Changed
+
+- **Password-free mode is stricter.** Every request must come from this computer. Merging, releasing, pull requests,
+  protected work, hands-off modes and settings still need your password.
+
+### Fixed
+
+- **The release page says why it couldn't read what changed.** A slow machine no longer loses the list.
+- **No npm warning on first start.** `npx toolroll` no longer opens with a deprecation warning.
+- **The guides match the app.** In the terminal, `b` sends a result back and `r` retries.
 
 ## 0.9.103 — 2026-11-11
 

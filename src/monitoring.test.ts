@@ -153,13 +153,13 @@ test("the folder gets the same events as JSON Lines, a file per day, readable by
   const folder = join(dir, "audit-logs");
   expect(await monitoringPass(store, { ...NO_MONITORING, folder: { path: folder } }, deps())).toEqual({ folder: 2 });
   const files = readdirSync(folder).sort();
-  expect(files).toEqual(["standing-orders-audit-2026-09-27.jsonl", "standing-orders-audit-2026-09-28.jsonl"]);
+  expect(files).toEqual(["toolroll-audit-2026-09-27.jsonl", "toolroll-audit-2026-09-28.jsonl"]);
   expect((JSON.parse(readFileSync(join(folder, files[1]!), "utf8").trim()) as { action: string }).action).toBe("today");
   expect(statSync(join(folder, files[0]!)).mode & 0o777).toBe(0o600);
   // A link planted where tomorrow's file goes is never followed.
   const elsewhere = join(dir, "not-an-audit-log.txt");
   writeFileSync(elsewhere, "keep\n");
-  symlinkSync(elsewhere, join(folder, "standing-orders-audit-2026-09-29.jsonl"));
+  symlinkSync(elsewhere, join(folder, "toolroll-audit-2026-09-29.jsonl"));
   act("tomorrow", new Date("2026-09-29T01:00:00Z"));
   expect(await monitoringPass(store, { ...NO_MONITORING, folder: { path: folder } }, deps())).toEqual({ folder: 0 });
   expect(readFileSync(elsewhere, "utf8")).toBe("keep\n");

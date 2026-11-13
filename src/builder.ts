@@ -853,7 +853,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     if (!verdict.ok) return { ok: false, reason: "policy", message: `${taskId}: ${verdict.message}` };
     if (verdict.lowered !== null) {
       effective = { ...effective, profile: verdict.profile, skipPermissions: profileWantsSkip(verdict.profile) };
-      store.recordAction({ at: now.toISOString(), actor: "standing-orders", repo: store.refForId(taskRef)?.repo ?? null, taskId, runId: request.runId,
+      store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: store.refForId(taskRef)?.repo ?? null, taskId, runId: request.runId,
         action: "permission lowered by policy", outcome: "lowered", source: "policy", detail: verdict.lowered });
     }
   }
