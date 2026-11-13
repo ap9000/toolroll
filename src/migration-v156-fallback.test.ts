@@ -17,7 +17,7 @@ describe("v156", () => {
     const has = (handle: { prepare(sql: string): { all(): unknown[] } }) => (handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map(one => one.name);
     for (const table of V156_TABLES) expect(has(fresh.handle)).toContain(table);
     fresh.close();
-    expect(SCHEMA_VERSION).toBe(159);
+    expect(SCHEMA_VERSION).toBe(160);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(156);
     expect(updateSafeSchema(154)).toBe(true);
     expect(V156_STEPS).toEqual(["fallback-tables"]);
@@ -36,11 +36,11 @@ describe("v156", () => {
     const upgraded = openStore(file);
     for (const table of V156_TABLES) expect(has(upgraded.handle)).toContain(table);
     expect(upgraded.getTask("kept")?.title).toBe("kept");
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     upgraded.close();
     // A second open changes nothing.
     const again = openStore(file);
-    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     again.close();
   });
 
@@ -67,7 +67,7 @@ describe("v156", () => {
     const names = (upgraded.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map(one => one.name);
     for (const table of V156_TABLES) expect(names).toContain(table);
     expect(upgraded.getTask("kept")?.title).toBe("kept");
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     upgraded.close();
   });
 });

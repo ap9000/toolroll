@@ -35,7 +35,7 @@ const LIMITED_ACCESS = {
   'chat.page': 'conversation', 'routine.page': 'resource', 'chat.action': 'proposal',
   'settings.skills': 'unscoped', 'settings.flows': 'collection', 'settings.knowledge': 'unscoped',
   'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
-  'settings.group-general': 'unscoped', 'settings.group-agents': 'unscoped', 'settings.group-alerts': 'unscoped', 'settings.group-projects': 'unscoped', 'settings.group-access': 'unscoped', 'settings.group-system': 'unscoped',
+  'settings.group-general': 'unscoped', 'settings.group-agents': 'unscoped', 'settings.group-alerts': 'unscoped', 'settings.group-projects': 'unscoped', 'settings.group-access': 'unscoped', 'settings.group-system': 'unscoped', 'settings.group-advanced': 'unscoped',
   'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
   'code.other': 'self', 'code.changes-read': 'self', 'code.ship-preview': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
   // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.
@@ -68,7 +68,7 @@ const LIMITED_ACCESS = {
   'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal.confirm': 'proposal', 'chat.proposal.dismiss': 'proposal',
   'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
   'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'run.act.add-tests': 'resource', 'run.act.checks': 'resource', 'run.act.comment': 'resource',
-  'run.act.draft-repair': 'resource', 'run.act.note': 'resource', 'run.act.reveal': 'resource', 'run.act.revise': 'resource', 'session.forget-password': 'self',
+  'run.act.draft-repair': 'resource', 'run.act.note': 'resource', 'run.act.reveal': 'resource', 'run.act.revise': 'resource', 'session.forget-password': 'self', 'settings.advanced': 'self',
 } satisfies Record<string, Exclude<RouteDeclaration['limited'], 'deny'>>;
 
 describe("the route table", () => {
@@ -115,7 +115,7 @@ describe("the route table", () => {
     for (const route of ROUTES.filter(one => one.limited !== "deny")) expect(route.stage, route.id).toBe("console");
     for (const route of ROUTES.filter(one => one.needsProject)) expect([route.stage, route.method], route.id).toEqual(["console", "GET"]);
     for (const route of ROUTES.filter(one => one.viewer)) expect([route.method, route.callers.includes("cookie")], route.id).toEqual(["POST", true]);
-    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["session.forget-password", "projects.select", "session.editor-links", "agents.seen", "agents.watch"]);
+    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["session.forget-password", "settings.advanced", "projects.select", "session.editor-links", "agents.seen", "agents.watch"]);
     // Each limited kind names how its object is found.
     for (const route of ROUTES.filter(one => one.limited === "self")) expect(["coding", "session"], route.id).toContain(route.project);
     expect(ids(ROUTES.filter(one => one.limited === "proposal"))).toEqual(ids(ROUTES.filter(one => one.project === "proposal")));

@@ -106,6 +106,8 @@ import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
 import { isWritesMode } from "../writes-mode.js";
 import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
 import { LOCAL_MODE_CONFINES, localModeOn } from "../local-owner.js";
+import { policyInForce, setAdvancedPreference, type AdvancedDoor } from "../advanced.js";
+import { advancedShownNow } from "../advanced-view.js";
 import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml,type ProjectSettingsView } from "../project-delete-ui.js";
 import { endHoldout,setCodeMapSwitch,type MapDoor } from "../code-map-acts.js";
@@ -392,7 +394,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const release = chosen === "" ? null : releaseApprovalSetting(store, chosen);
     const notice = { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") };
     const csrf = who.via === "cookie" ? who.session.csrf : "";
-    const rules = chosen === "" ? html`` : html`${approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, notice)}${
+    // Settings → Advanced off: the Releases section goes unless releases approve themselves here (its state and its off switch stay).
+    const releases = chosen !== "" && (advancedShownNow() || release!.auto);
+    const rules = chosen === "" ? html`` : html`${approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, notice)}${!releases ? "" :
       releaseApprovalHtml({ repo: chosen, auto: release!.auto, setBy: release!.setBy, at: release!.at, canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, chosen) })}`;
     // The installation-wide defaults are not a project-limited account's to see or set.
     const limited = restricted();
@@ -404,6 +408,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
         permission: limited ? null : { mode: permission.mode, canManage: who.role === "approver" && csrf !== "", changed: changed(permission.updatedAt, permission.updatedBy) },
         quality: limited ? null : { mode: quality.mode, canManage: who.role === "approver" && csrf !== "", changed: changed(quality.updatedAt, quality.updatedBy) } },
       flags: {}, projects: projects.map(repo => ({ repo, name: projectName(repo) })), chosen, rules,
+      // Settings → Advanced: the Operating mode link stays while any project this person can see runs under a mode.
+      advanced: { on: advancedShownNow(), modeActive: projects.some(repo => { try { return store.activeMode(repo, now) !== null; } catch { return true; } }), policy: policyInForce(store) },
       mode: chosen === "" ? "Open a project to sign one" : live === null ? `${projectName(chosen)}: locked, approvals stay with people` : `${projectName(chosen)}: ${live.name} until ${when(live.absoluteExpiry)}`,
     });
     return sendScreen(response, 200, screen("Approvals and safety", page, { chrome: chromeFor(chosen || project, "settings") }));
@@ -778,6 +784,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
         if (mode === null || !mode.enabled || who.via !== "cookie") return null;
         return { owner: who.authority !== "full", passwordSet: store.accountOf(who.name)?.passwordSet === true, canTurnOff: who.authority === "full" && operator };
       })(),
+      advanced: { on: requestContext.getStore()?.advanced !== false, canChange: who.via === "cookie" },
       backup: lastBackup === null ? null : lastBackup.ok === false
         ? { failed: true, words: `Failed ${when(lastBackup.startedAt)}${lastBackup.error === null ? "" : `: ${lastBackup.error}`}` }
         : { failed: false, words: lastBackup.finishedAt === null ? "Backing up now" : `Backed up ${when(lastBackup.finishedAt)}` },
@@ -2428,6 +2435,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.group-projects": settingsHome.bind(null),
     "settings.group-access": settingsHome.bind(null),
     "settings.group-system": settingsHome.bind(null),
+    "settings.group-advanced": settingsHome.bind(null),
     "provider.resume": providerResume,
     "settings.updates-dismiss": updatesDismiss,
     "session.forget-password": forgetPassword,
@@ -2537,6 +2545,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.lead-on": leadOn,
     "settings.code-map": codeMapAct("switch"),
     "settings.code-map-holdout": codeMapAct("holdout"),
+    "settings.advanced": advancedAct,
   }, {
     "edge.google-callback": googleCallback,
     "edge.connect-callback": connectCallback,
@@ -2811,6 +2820,25 @@ ${postForm("/settings/chat-approval/save", html`\
     const body = readForm(posted, CONSOLE_FORMS.leadQuick);
     setLeadQuickAnswers(store, body.get("enabled") === "on", who.name, now);
     return redirect(response, "/settings/lead?saved=quick");
+  }
+  // Settings → Advanced: "Show advanced features", the caller's own view. The route admits a browser sign-in only (a
+  // viewer, a project-limited person and the local owner too); the account is the session's, never a posted field; one
+  // strict on/off; and advanced.ts proves the session (or the local owner's exact act) again inside the write.
+  async function advancedAct(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.advancedView);
+    const back = sayTo(response, "/settings/advanced");
+    if (who.via !== "cookie") return refuse(response, who, 403, "This address needs a browser sign-in.", "/settings");
+    const values = body.getAll("advanced");
+    if (values.length !== 1 || (values[0] !== "on" && values[0] !== "off")) return refuse(response, who, 400, "Choose on or off.", "/settings/advanced");
+    const on = values[0] === "on";
+    const session = who.session;
+    const door: AdvancedDoor = who.authority === "full"
+      ? { kind: "person", actor: who.name, generation: session.generation, live: () => sessions.holds(session) && sessions.savedNow(session) && sessionWithinLifetime(session, Date.now()) }
+      : { kind: "local-owner", actor: who.name };
+    const done = setAdvancedPreference(store, door, on, now);
+    if (!done.ok) return refuse(response, who, 403, done.problem, "/settings/advanced");
+    return back("said", on ? "Advanced features show in your menus." : "Advanced features are out of your menus. They still open from here.");
   }
   return { registrations, modelsView };
 }

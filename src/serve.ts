@@ -186,6 +186,7 @@ import type { ServerRuntime } from './server/runtime.js';
 import { createSettingsHandlers } from './server/settings.js';
 import { readPurpose, requestContext } from "./server/request-context.js";
 import { inPlaceRoute, prefetchRoute } from "./server/in-place.js";
+import { advancedShownFor } from "./advanced.js";
 import { LOCAL_OWNER_ELSEWHERE,asLocalOwner,localModeOn,localOwnerRefusal,localOwnerStandsNow,type LocalPrincipal } from "./local-owner.js";
 import { defaultAgentOf,fillDefaultRouting,fillRoutingOnSignIn } from "./model-choices.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
@@ -943,6 +944,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       browser: who.via === 'cookie',
       // Passwordless (read once for rendering; every act proves it again at the act): ceremony fields render as nothing.
       passwordless: who.via === 'cookie' && passwordlessOn(store),
+      // Settings → Advanced: this person's own switch (read once for rendering; it hides links and never decides an act).
+      advanced: advancedShownFor(store, who.name),
       openProject: who.via === 'cookie' ? who.session.project : null,
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
       // Cockpit B2: "fresh" is an explicit re-check made on request and not yet spent (read live; one step-up uses it).
@@ -1696,14 +1699,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // The usage chip: the Limits view's own audience (an operator on a browser session), never a sensitive page.
         ...(() => {
           const actor = requestFacts.actor;
-          if (sensitive || !actor || requestFacts.csrf === '' || !store.isInstanceOperator(actor)) return {};
+          if (sensitive || !actor || requestFacts.csrf === '' || requestFacts.advanced === false || !store.isInstanceOperator(actor)) return {};
           try { const usage = usageChipOf(store.providerLimits(), clock()); return usage === null ? {} : { usage }; } catch { return {}; }
         })(),
         conversation, ...(extras.team ? { team: extras.team } : {}), focus: extras.focus ?? null, result: extras.result ?? null,
         catchUpHtml: extras.catchUpHtml === undefined ? '' : htmlString(extras.catchUpHtml), controlsHtml: extras.controlsHtml === undefined ? '' : htmlString(extras.controlsHtml), notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
         pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml === null ? null : htmlString(extras.pageHtml),
-        navigation: browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel),
+        navigation: browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel, requestFacts.advanced !== false),
+        ...(requestFacts.advanced === false ? { advanced: false as const } : {}),
         // The one Needs-you count (tasks only), with the scope it covers: the Tasks list's own count for this project
         // view (or every project), so the rail, the phone header and Home all read the same number.
         needsYou: { count: needsYou, saturated: s.chrome.inboxSaturated === true, scope: tasksProject ?? null,

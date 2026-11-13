@@ -14,7 +14,7 @@ const T0 = new Date("2026-11-08T00:00:00.000Z");
 
 describe("v158", () => {
   test("a fresh database has the table and columns; a v156 one gains them, keeps its rows (NULL), and may update in place", () => {
-    expect(SCHEMA_VERSION).toBe(159);
+    expect(SCHEMA_VERSION).toBe(160);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(158);
     expect(updateSafeSchema(156)).toBe(true);
     expect(V158_STEPS).toEqual(["lead-quick-setting", "lead-latency-columns"]);
@@ -49,12 +49,12 @@ describe("v158", () => {
     expect(upgraded.getTask("kept")?.title).toBe("kept");
     expect(upgraded.handle.prepare("SELECT tools, failure_detail FROM chat_turn").get()).toEqual({ tools: null, failure_detail: null });
     expect(leadQuickAnswersOn(upgraded)).toBe(false);
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     // The new columns refuse values outside their vocabulary.
     expect(() => upgraded.handle.prepare("UPDATE chat_turn SET failure_detail = 'mystery'").run()).toThrow();
     upgraded.close();
     const again = openStore(file);
-    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(159);
+    expect(again.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(160);
     again.close();
   });
 });

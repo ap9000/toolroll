@@ -26,6 +26,8 @@ const COOKIE_ONLY_POSTS = [
   // The lead queue: removing your own waiting message, from a browser.
   'chat.queued-remove',
   'agents.seen', 'agents.watch',
+  // Settings → Advanced: the person's own view switch, from their own browser.
+  'settings.advanced',
   'chat.send', 'chat.file', 'chat.ack-send',
   // Cockpit E: Show in Finder reveals a proved checkout — a person's act in their own browser.
   'run.act.reveal',

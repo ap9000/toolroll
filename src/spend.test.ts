@@ -7,6 +7,7 @@
  * page with CSV.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { advancedOnForEveryone } from "../test/advanced-on.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -249,6 +250,7 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
   const keyed = work({ name: "alex", kind: "person" }, { costUsd: 3 }, new Date());
   // Its own evidence proved the key (invoke.ts records the basis); without it the run's money would read as unknown.
   store.handle.prepare("UPDATE run SET billing_basis = 'evidence' WHERE id = ?").run(keyed.run);
+  advancedOnForEveryone(store, NOW);
   const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: REPO });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

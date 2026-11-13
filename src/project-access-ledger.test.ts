@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { advancedOnForEveryone } from "../test/advanced-on.js";
 import { mkdtempSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -52,6 +53,7 @@ describe("project access and the action ledger", () => {
     }
     invite("member", "approver", [alpha]);
     invite("viewer", "viewer", [alpha]);
+    advancedOnForEveryone(store, now);
     server = createDecisionServer({ store, evidenceRoot: root, repos: [alpha, beta], clock: () => now });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();

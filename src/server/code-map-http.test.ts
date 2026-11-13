@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { advancedOnForEveryone } from "../../test/advanced-on.js";
 import { seedMap } from "../../test/code-map-seed.js";
 import { codeMapOn, readRefresh, recordFailure, releaseLease, takeLease } from "../code-map-store.js";
 import { setLimitOverride } from "../request-budget.js";
@@ -33,6 +34,7 @@ beforeAll(async () => {
   setLimitOverride(store, "*", { readPerMinute: 600, actPerMinute: 600, perDay: 10000 }, "alex", now);
   store.upsertProject(REPO, "shop", now, { remoteUrl: "https://github.com/acme/shop.git" });
   store.upsertProject(OTHER, "other", now, { remoteUrl: "https://github.com/acme/other.git" });
+  advancedOnForEveryone(store, now);
   server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: REPO, admittedRepos: () => [REPO, OTHER], configDir: join(dir, "config"), telegramTokenFile: join(dir, "config", "telegram-token") });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;

@@ -3,6 +3,7 @@
  * reading page, folder browse and the GitHub listing. Names, descriptions and paths are gh or filesystem data,
  * escaped at the sink like everything else (html.ts).
  */
+import { advancedShownNow } from "../advanced-view.js";
 import { ACTIVITY_ACTORS, activityAge, activityLimit, activityMetrics, activityScope } from "../project-activity.js";
 import { type BrowserProjectRow, type BrowserProjectsView } from "../browser-workspace.js";
 import { html, htmlString, joinHtml, postForm, type Html, type HtmlValue } from "../html.js";
@@ -223,8 +224,11 @@ export function projectPage(chrome: Chrome, data: {
     ...(data.checks === null ? [] : [["Checks", html`<a class="k-link" href="${data.checks.href}">${data.checks.level}</a>`] as const]),
     ...(data.pullRequests === null ? [] : [["Pull requests", html`<a class="k-link" href="${data.pullRequests.href}">${data.pullRequests.on ? "On" : "Off"}</a>`] as const]),
     ["Knowledge", html`<a class="k-link" href="${data.knowledgeHref}">Open knowledge</a>`],
-    ["Code map", html`<a class="k-link" href="${`/projects/${encodeURIComponent(data.name)}/map${data.selfHref.includes("?") ? data.selfHref.slice(data.selfHref.indexOf("?")) : ""}`}">Open code map</a>`],
-    ["Flaky tests", html`<a class="k-link" href="${data.flakyHref}">Open flaky tests</a>`],
+    // Settings → Advanced off: the code map and flaky tests rows go (Settings → Advanced points to them).
+    ...(advancedShownNow() ? [
+      ["Code map", html`<a class="k-link" href="${`/projects/${encodeURIComponent(data.name)}/map${data.selfHref.includes("?") ? data.selfHref.slice(data.selfHref.indexOf("?")) : ""}`}">Open code map</a>`] as const,
+      ["Flaky tests", html`<a class="k-link" href="${data.flakyHref}">Open flaky tests</a>`] as const,
+    ] : []),
   ]);
   const body = joinHtml([
     phoneHeader(data.name, { back: "/projects" }),
