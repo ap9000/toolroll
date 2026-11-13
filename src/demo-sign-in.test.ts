@@ -5,11 +5,12 @@
  * never reaches the ledger. Real demo sandboxes and real servers on ephemeral loopback ports; no browser opens.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import type { AddressInfo } from "node:net";
 import { main } from "./cli.js";
 import { createDemoSandbox } from "./demo.js";
-import { demoLoopbackOrigin, demoSignInLink, type DemoCaller } from "./demo-sign-in.js";
+import { demoLoopbackOrigin, demoSignInLink, openSignInPage, removeSignInPageWhenSpent, writeSignInPage, type DemoCaller } from "./demo-sign-in.js";
 import { createDecisionServer } from "./serve.js";
 
 const PERSON: DemoCaller = { stdin: true, stdout: true, agent: false, json: false };
@@ -101,7 +102,11 @@ describe("the demo's link, against real servers", () => {
 
   test("IPv6 loopback: the link is on [::1], and works there", async () => {
     let one: Awaited<ReturnType<typeof demo>>;
-    try { one = await demo("::1"); } catch { return; } // a machine with no IPv6 loopback: nothing to prove here
+    try { one = await demo("::1"); } catch (error) {
+      // Only a machine with no IPv6 loopback skips this; any other failure is a failure.
+      if (["EADDRNOTAVAIL", "EAFNOSUPPORT"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+      throw error;
+    }
     const link = demoSignInLink(one.server, one.seed.login.name, PERSON)!;
     expect(link.startsWith(`http://[::1]:${one.port}/login/once/`)).toBe(true);
     expect((await visit(link)).headers.get("set-cookie") ?? "").toMatch(/HttpOnly/);
@@ -118,23 +123,46 @@ describe("the demo's link, against real servers", () => {
 
 describe("toolroll demo", () => {
   /** `toolroll demo` until its greeting is out, then stopped (its stop seam), with what it opened. */
-  async function runDemo(argv: string[], caller: { terminal: boolean; underAgent: boolean }): Promise<{ out: string[]; opened: string[] }> {
+  /** `toolroll demo` until its greeting is out (or, with `whileUp`, until that is done too), then stopped (its stop
+   * seam), with the page paths it handed the opener. */
+  async function runDemo(argv: string[], caller: { terminal: boolean; underAgent: boolean }, whileUp: (opened: string[]) => Promise<void> = async () => {}): Promise<{ out: string[]; opened: string[] }> {
     const out: string[] = [], opened: string[] = [];
     let stop: () => void = () => {};
     const stopped = new Promise<void>(resolve => { stop = resolve; });
-    const code = await main(["demo", "--port", "0", ...argv], line => { out.push(line); if (/Ctrl-C|"command":\s*"demo"/.test(line)) stop(); }, {
-      demo: { ...caller, openBrowser: url => { opened.push(url); }, stop: stopped },
+    const code = await main(["demo", "--port", "0", ...argv], line => { out.push(line); if (/Ctrl-C|"command":\s*"demo"/.test(line)) void whileUp(opened).finally(stop); }, {
+      demo: { ...caller, openPage: file => { opened.push(file); }, stop: stopped },
     });
     expect(code).toBe(0);
     return { out, opened };
   }
 
-  test("a person at its terminal: the browser opens signed in on the loopback origin; the link is never printed", async () => {
-    const { out, opened } = await runDemo([], { terminal: true, underAgent: false });
+  test("a person at its terminal: the opener gets only a 0600 page's path, never the link; the page signs in and goes once spent", async () => {
+    const seen: { mode: number; dirMode: number; link: string; signedIn: string; goneAfter: boolean }[] = [];
+    const { out, opened } = await runDemo([], { terminal: true, underAgent: false }, async files => {
+      // The greeting comes first; the page is handed over right after it.
+      for (const deadline = Date.now() + 5_000; files.length === 0 && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 20));
+      const file = files[0]!;
+      const link = /location\.replace\("([^"]+)"\)/.exec(readFileSync(file, "utf8"))![1]!;
+      const mode = statSync(file).mode & 0o777, dirMode = statSync(dirname(file)).mode & 0o777;
+      const signedIn = (await fetch(link, { redirect: "manual" })).headers.get("set-cookie") ?? "";
+      for (const deadline = Date.now() + 5_000; existsSync(file) && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 100));
+      seen.push({ mode, dirMode, link, signedIn, goneAfter: !existsSync(file) });
+    });
     expect(opened).toHaveLength(1);
-    expect(opened[0]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/login\/once\/[A-Za-z0-9_-]{43}$/);
+    // What the opener was handed: a path, with no code in it.
+    expect(opened[0]).toMatch(/\/sign-in-[^/]+\/open\.html$/);
+    expect(opened[0]).not.toMatch(/login|once|[A-Za-z0-9_-]{43}/);
+    expect(seen[0]).toMatchObject({ mode: 0o600, dirMode: 0o700, goneAfter: true });
+    expect(seen[0]!.link).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/login\/once\/[A-Za-z0-9_-]{43}$/);
+    expect(seen[0]!.signedIn).toMatch(/HttpOnly/);
     expect(out.join("\n")).not.toContain("/login/once/");
     expect(out).toContain("For your own project, run `toolroll` in its folder.");
+  });
+
+  test("an unspent page is deleted when the demo stops", async () => {
+    const { opened } = await runDemo([], { terminal: true, underAgent: false });
+    expect(opened).toHaveLength(1);
+    expect(existsSync(opened[0]!)).toBe(false);
   });
 
   test("under a coding agent, without a terminal, or with --json: no link is minted, printed or opened", async () => {
@@ -149,5 +177,38 @@ describe("toolroll demo", () => {
     const { out, opened } = await runDemo(["--host", "0.0.0.0"], { terminal: true, underAgent: false });
     expect(opened).toEqual([]);
     expect(out.join("\n")).not.toContain("/login/once/");
+  });
+});
+
+describe("how the link reaches the browser", () => {
+  test("only the platform's own opener, handed the page's path: TOOLROLL_BROWSER_COMMAND is not honoured for a credential", () => {
+    const was = process.env["TOOLROLL_BROWSER_COMMAND"];
+    process.env["TOOLROLL_BROWSER_COMMAND"] = "/tmp/logs-every-argument";
+    try {
+      for (const [platform, command] of [["darwin", "open"], ["linux", "xdg-open"]] as const) {
+        const calls: { command: string; args: string[] }[] = [];
+        expect(openSignInPage("/sandbox/sign-in-x/open.html", (one, args) => { calls.push({ command: one, args }); return { unref: () => {} }; }, platform)).toBe(true);
+        expect(calls).toEqual([{ command, args: ["/sandbox/sign-in-x/open.html"] }]);
+      }
+      const none: string[] = [];
+      expect(openSignInPage("/sandbox/sign-in-x/open.html", one => { none.push(one); return { unref: () => {} }; }, "win32")).toBe(false);
+      expect(none).toEqual([]);
+    } finally {
+      if (was === undefined) delete process.env["TOOLROLL_BROWSER_COMMAND"];
+      else process.env["TOOLROLL_BROWSER_COMMAND"] = was;
+    }
+  });
+
+  test("the page: 0600 in a fresh 0700 folder; an unspent one goes when the link expires", async () => {
+    const one = await demo("127.0.0.1");
+    const link = demoSignInLink(one.server, one.seed.login.name, PERSON)!;
+    const file = writeSignInPage(one.sandbox, link);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
+    expect(readFileSync(file, "utf8")).toContain(`location.replace(${JSON.stringify(link)})`);
+    removeSignInPageWhenSpent(one.store, file, one.seed.login.name, { everyMs: 20, expiresMs: 150 });
+    expect(existsSync(file)).toBe(true);
+    for (const deadline = Date.now() + 3_000; existsSync(file) && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 20));
+    expect(existsSync(file)).toBe(false);
   });
 });
