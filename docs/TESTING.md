@@ -1,6 +1,6 @@
 # Testing
 
-Standing Orders is tested end to end: the real CLI, the real console and the
+Toolroll is tested end to end: the real CLI, the real console and the
 real worker, driven through a real browser. Journeys that test the model
 integration use real Claude turns and real builds; the rest script the model.
 Unit tests are kept only where an end-to-end run can't be the guard.
@@ -165,7 +165,14 @@ refresh --run <ci run id> [--run <id>]...`, each file's median over the runs,
 see what each shard would take with `node
 scripts/ci-timings.mjs plan`), and a newer push to a pull request cancels the
 older run (never a `release-*` branch's). `journeys.yml` runs the scripted
-journeys on every pull request, advisory (see `docs/plans/ci-speed.md`). The
+journeys on every pull request, advisory (see `docs/plans/ci-speed.md`).
+`install-smoke.yml` (advisory too, on Ubuntu and macOS) runs on a pull request
+that changes what gets packed or installed (package.json, install.sh, the bin,
+the demo; every `release-*` pull request) and by hand: it packs the build,
+installs the tarball with `npm i -g` and with install.sh into scratch prefixes
+under a throwaway HOME, and runs `toolroll --version`, `toolroll help` and
+`toolroll demo` start to stop. Run it locally with
+`node scripts/install-smoke.mjs --port <n>`. The
 area lanes: Linux cgroup
 containment, the Linux fence, Windows Job Object containment and the git
 2.41/2.47 lanes. A documentation-only pull request (only Markdown under

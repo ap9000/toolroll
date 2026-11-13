@@ -140,7 +140,7 @@ function appendFolder(folder: string, entries: SealedLedgerEntry[], instance: st
   }
   for (const [day, lines] of byDay) {
     // Never through a link someone left where the day's file goes: it would append to wherever it points.
-    const handle = openSync(join(folder, `standing-orders-audit-${day}.jsonl`), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    const handle = openSync(join(folder, `toolroll-audit-${day}.jsonl`), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
     try { writeSync(handle, `${lines.join("\n")}\n`); fsyncSync(handle); } finally { closeSync(handle); }
   }
 }

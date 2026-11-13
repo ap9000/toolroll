@@ -1,0 +1,73 @@
+name: Install smoke
+
+# A newcomer's first minute, on the package a release would publish (scripts/install-smoke.mjs): build, `npm pack`,
+# `npm i -g` the tarball into a scratch prefix with a throwaway HOME, then `toolroll --version` (package.json's),
+# `toolroll help`, `toolroll demo --port <n> --json` (starts, answers, stops, removes its sandbox) and install.sh as
+# `curl … | sh` runs it, installing the same tarball (SO_PACKAGE) with SO_NO_START=1. On Linux and macOS.
+#
+# Which runs: pull requests that change what gets packed or installed (a release-* pull request always does: it changes
+# package.json, and its head is the tree the tag publishes), and by hand (on a tag too: Run workflow, pick the tag). The
+# release tag itself runs no tests (docs/TESTING.md). Advisory: it is not one of REQUIRED_PR_CHECKS, and the release
+# verdict leaves these jobs out by name and workflow (release.ts ADVISORY_PR_CHECKS), so a release never waits for them
+# or fails on them. No secrets: it reads only, and needs the public npm registry for the package's dependencies.
+
+on:
+  pull_request:
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - "install.sh"
+      - "tsconfig.build.json"
+      - "scripts/install-smoke.mjs"
+      - "scripts/postbuild.mjs"
+      - "scripts/browser-build.mjs"
+      - "src/bin.ts"
+      - "src/cli.ts"
+      - "src/cli-fast.ts"
+      - "src/cli-help.ts"
+      - "src/version.ts"
+      - "src/demo*.ts"
+      - ".github/workflows/install-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels the run on its older head; never a release-* branch's run.
+concurrency:
+  group: install-smoke-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: install smoke · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The engines floor's major (package.json: node >=22.13), the Node most newcomers have.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      # Builds, packs, installs and runs the package in a throwaway home under the runner's temp folder.
+      - name: Install smoke
+        timeout-minutes: 10
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: node scripts/install-smoke.mjs

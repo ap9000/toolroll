@@ -178,7 +178,7 @@ export function createSettingsHandlers(runtime: ServerRuntime) {
     const rows = spendRows(store.handle, month.from, month.to);
     const subagentNames = subagentNamesOf(store.handle);
     if (url.searchParams.get("format") === "csv") {
-      response.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="standing-orders-spend-${month.name}.csv"`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      response.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="toolroll-spend-${month.name}.csv"`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
       return void response.end(spendReportCsv(rows, subagentNames));
     }
     const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
@@ -679,7 +679,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
   async function slackManifest(ctx: HandlerContext): Promise<void> {
     const { who, response } = ctx;
     if (!options.configDir) return refuse(response,who,403,"An installation approver can connect Slack.","/settings");
-    response.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Content-Disposition":'attachment; filename="standing-orders-slack.json"',"Cache-Control":"no-store"});
+    response.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Content-Disposition":'attachment; filename="toolroll-slack.json"',"Cache-Control":"no-store"});
     response.end(JSON.stringify(SLACK_MANIFEST,null,2));return;
   }
   async function settingsHome(ctx: HandlerContext): Promise<void> {

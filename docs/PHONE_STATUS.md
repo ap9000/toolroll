@@ -4,8 +4,8 @@
 
 The console's **Chat** tab is the primary phone-control experience. Open your
 existing securely reachable console URL on your phone, sign in, and start the
-conversation once. No Telegram bot is required. The computer hosting Standing
-Orders must remain online; these changes do not expose it to the internet or
+conversation once. No Telegram bot is required. The computer hosting
+Toolroll must remain online; these changes do not expose it to the internet or
 create a remote-access tunnel.
 
 Ask naturally: “What needs me?”, “Make the mobile navigation clearer”, or

@@ -207,7 +207,7 @@ test("the command line writes a new folder or .zip and records the export in the
     expect((await run(["--out", archive, "--zip"])).out).toContain(`to ${archive}.`);
     const files = unzip(readFileSync(archive));
     const names = [...files.keys()];
-    expect(names.every(one => one.startsWith("standing-orders-export-"))).toBe(true);
+    expect(names.every(one => one.startsWith("toolroll-export-"))).toBe(true);
     expect(names.some(one => one.endsWith("/manifest.json"))).toBe(true);
     expect([...files.values()].some(one => one.includes(apiToken))).toBe(false);
   } finally {
@@ -246,7 +246,7 @@ test("Settings → Data downloads the .zip behind the password, for an instance 
     const download = await post({ password });
     expect(download.status).toBe(200);
     expect(download.headers.get("content-type")).toBe("application/zip");
-    expect(download.headers.get("content-disposition")).toMatch(/^attachment; filename="standing-orders-export-.+\.zip"$/);
+    expect(download.headers.get("content-disposition")).toMatch(/^attachment; filename="toolroll-export-.+\.zip"$/);
     const files = unzip(Buffer.from(await download.arrayBuffer()));
     const manifest = [...files.entries()].find(([name]) => name.endsWith("/manifest.json"))![1];
     expect(JSON.parse(manifest.toString("utf8"))).toMatchObject({ generatedBy: "alex" });
