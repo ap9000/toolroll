@@ -5,10 +5,10 @@
 #
 # It checks what it needs (Node.js 22.13 or newer, git 2.41 or newer), installs
 # the `toolroll` command with npm (`standing-orders`, the older name, still
-# works), and opens it in this terminal: on the repository you run it in, or,
-# outside one, with your projects in ~/Projects. Nothing runs as root, and
-# nothing is installed but the one npm package. Settings:
-#   SO_PROJECTS=/path/to/projects   where your repositories live (default: this repository, else ~/Projects)
+# works), and opens it in this terminal on the repository you run it in.
+# Outside one, it says how to start it in a project instead. Nothing runs as
+# root, and nothing is installed but the one npm package. Settings:
+#   SO_PROJECTS=/path/to/projects   start it with this folder of repositories (default: the repository you're in)
 #   SO_VERSION=0.5.0                a particular release (default: the latest)
 #   SO_NO_START=1                   install only; it prints the command that starts it
 set -eu
@@ -91,15 +91,15 @@ if [ -n "$sandbox_missing" ]; then
   say "sudo apt install$sandbox_missing (Fedora: sudo dnf install$sandbox_missing)"
 fi
 
-projects="${SO_PROJECTS:-$HOME/Projects}"
+projects="${SO_PROJECTS:-}"
 # The start command, with the folder single-quoted for a shell (a ' inside it becomes '\'').
 q() { printf "'%s'" "$(printf %s "$1" | sed "s/'/'\\\\''/g")"; }
 
 # Run inside a git repository (and no SO_PROJECTS chosen): Toolroll starts on that repository, here. Nothing in the
 # environment or the repository's config may point it somewhere else: every git override is cleared (for git and for
 # the Toolroll started below), no system or global config is read, and git's answer is kept only when it is a real
-# folder holding a .git folder that contains the folder this was run in. Anything else: ~/Projects, as before. (A
-# linked `git worktree` checkout, whose .git is a file, also falls back.)
+# folder holding a .git folder that contains the folder this was run in. Anything else is no repository: it says how to
+# start in one instead of starting on an empty folder (a linked `git worktree` checkout, whose .git is a file, too).
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
   GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_NAMESPACE GIT_PREFIX GIT_CONFIG GIT_CONFIG_PARAMETERS \
   GIT_CONFIG_COUNT GIT_CONFIG_SYSTEM GIT_CONFIG_GLOBAL GIT_EXEC_PATH GIT_TEMPLATE_DIR 2>/dev/null || true
@@ -125,7 +125,9 @@ if [ -z "${SO_PROJECTS:-}" ]; then here=$(repo_here); fi
 
 if [ "${SO_NO_START:-}" = "1" ] || [ -n "$sandbox_missing" ]; then
   say ""
-  if [ -n "$here" ]; then say "Start it in $here with: $cli"; else say "Start it with: $cli --project-root $(q "$projects")"; fi
+  if [ -n "$here" ]; then say "Start it in $here with: $cli"
+  elif [ -n "$projects" ]; then say "Start it with: $cli --project-root $(q "$projects")"
+  else say "Start it in a project: cd into a git repository and run $cli"; fi
   exit 0
 fi
 
@@ -141,6 +143,12 @@ if [ -n "$here" ]; then
   exit 0
 fi
 
+# Outside a repository with no SO_PROJECTS: nothing to start on yet (an empty ~/Projects isn't your project).
+if [ -z "$projects" ]; then
+  say ""
+  say "Start it in a project: cd into a git repository and run $cli"
+  exit 0
+fi
 mkdir -p "$projects"
 # Piped into sh, this script's input is the download, not you: Toolroll opens on the terminal itself. With no terminal
 # (a script, CI), it says how to start instead.

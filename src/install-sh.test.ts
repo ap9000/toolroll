@@ -91,7 +91,7 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     expect(result.out).not.toContain("Start it with:");
   });
 
-  // Eight W2: run inside a repository, it starts there; outside one, ~/Projects as before.
+  // Eight W2: run inside a repository, it starts there; outside one, it says how to start in one.
   test("run inside a git repository with a terminal, it starts Toolroll on that repository, in it", async () => {
     const repo = join(base, "shop");
     mkdirSync(join(repo, ".git"), { recursive: true });
@@ -129,6 +129,19 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     }
   });
 
+  test("l1: outside a repository with no SO_PROJECTS, even at a terminal, it says how to start in a project and starts nothing", async () => {
+    const plain = join(base, "plain");
+    mkdirSync(plain);
+    const args = process.platform === "darwin" ? ["-q", "/dev/null", "sh", INSTALL] : ["-qec", `sh '${INSTALL}'`, "/dev/null"];
+    for (const [command, argv, stdin] of [["script", args, "ignore"], ["sh", [INSTALL], "pipe"]] as const) {
+      const result = await run(command, [...argv], {}, stdin, plain);
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toContain("Start it in a project: cd into a git repository and run toolroll");
+      expect(existsSync(record)).toBe(false);
+      expect(existsSync(join(base, "home", "Projects"))).toBe(false);
+    }
+  });
+
   test("no coding agent found: it says one is needed to build tasks, never that it works without one", async () => {
     const result = await run("sh", [INSTALL], { SO_NO_START: "1" });
     expect(result.code, result.out).toBe(0);
@@ -156,7 +169,7 @@ describe("install.sh's repository, with real git", () => {
     chmodSync(join(stubs, "git"), 0o755);
   });
   const startLine = (out: string) => out.split("\n").find(one => one.startsWith("Start it"));
-  const projectsLine = () => `Start it with: toolroll --project-root '${join(base, "home", "Projects")}'`;
+  const projectsLine = () => "Start it in a project: cd into a git repository and run toolroll";
 
   test("run from a folder inside a repository: that repository's top", async () => {
     const repo = makeRepo(join(base, "shop"));
@@ -166,7 +179,7 @@ describe("install.sh's repository, with real git", () => {
     expect(startLine(result.out)).toBe(`Start it in ${repo} with: toolroll`);
   });
 
-  test("GIT_DIR and GIT_WORK_TREE pointing at another repository, run outside any: ~/Projects, never that repository", async () => {
+  test("GIT_DIR and GIT_WORK_TREE pointing at another repository, run outside any: no repository, never that one", async () => {
     const other = makeRepo(join(base, "other"));
     const outside = join(base, "plain");
     mkdirSync(outside);
@@ -184,7 +197,7 @@ describe("install.sh's repository, with real git", () => {
     expect(startLine(result.out)).toBe(`Start it in ${repo} with: toolroll`);
   });
 
-  test("a repository whose own config sets core.worktree to a folder outside it: ~/Projects, never that folder", async () => {
+  test("a repository whose own config sets core.worktree to a folder outside it: no repository, never that folder", async () => {
     const repo = makeRepo(join(base, "shop"));
     const elsewhere = join(base, "elsewhere");
     mkdirSync(elsewhere);
@@ -194,7 +207,7 @@ describe("install.sh's repository, with real git", () => {
     expect(startLine(result.out)).toBe(projectsLine());
   });
 
-  test("round 2 (finding C): a nested repository whose core.worktree points at the repository around it: ~/Projects", async () => {
+  test("round 2 (finding C): a nested repository whose core.worktree points at the repository around it: no repository", async () => {
     const outer = makeRepo(join(base, "outer"));
     const inner = makeRepo(join(outer, "vendor", "inner"));
     execFileSync(realGit, ["-C", inner, "config", "core.worktree", outer], { env: gitEnv });

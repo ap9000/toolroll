@@ -308,7 +308,7 @@ import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordina
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
 import { hashPassword, verifyCredential } from "./scope.js";
-import { openStoreReadOnly } from "./store.js";
+import { openStoreReadOnly, noticeDueOnce, CONTAINMENT_NOTICE_FACT } from "./store.js";
 import { NAMES } from "./names.js";
 import { linuxSandboxInstallLine } from "./sandbox-runtime.js";
 import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
@@ -13146,13 +13146,16 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     return copy;
   };
   const prefix = (repo: string): string => (activeRepos.size > 1 ? `[${projectName(repo)}] ` : "");
-  // Containment at start: one plain sentence, once, for a person at a terminal; the exact status line with --verbose,
-  // in a service log (no terminal), and always when a required policy will refuse spawns.
+  // Containment at start: one plain sentence for a person at a terminal, the first time on this installation only (l1:
+  // it isn't news on every start), and with --verbose; the exact status line with --verbose, in a service log (no
+  // terminal), and always when a required policy will refuse spawns.
   const containmentDetail = config.verbose || !config.terminal;
   let containmentSaid = false;
+  /** Due once per installation; a write that fails says it again rather than never. */
+  const firstContainmentNotice = (): boolean => { try { return noticeDueOnce(context.store, CONTAINMENT_NOTICE_FACT, clock()); } catch { return true; } };
   const containmentLines = (effective: EffectiveContainment): string[] => {
     const notice = containmentNotice(effective);
-    if (notice !== null && !containmentSaid) progress(notice);
+    if (notice !== null && !containmentSaid && (containmentDetail || firstContainmentNotice())) progress(notice);
     containmentSaid = true;
     return containmentDetail || effective.refusal !== null ? [`watch: ${describeContainment(effective)}`] : [];
   };
