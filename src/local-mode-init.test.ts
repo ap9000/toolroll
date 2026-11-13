@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, test } from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { easyStartInitLocalMode, initLocalModeForPerson, personMayInitLocalMode, type LocalInitCaller } from "./operate.js";
@@ -51,26 +52,26 @@ describe("which databases may still become password-free", () => {
     ["a viewer-only account", "INSERT INTO approver (name, credential_hash, added_at, role, generation) VALUES ('robin', 'x', ?, 'viewer', 1)"],
     ["a revoked account", "INSERT INTO approver (name, credential_hash, added_at, revoked_at, revoked_by, generation) VALUES ('carol', 'x', ?, ?, 'carol', 1)"],
     ["an SSO-only account", "INSERT INTO approver (name, credential_hash, added_at, generation) VALUES ('dana', 'sso-only$x', ?, 1)"],
-  ])("%s: never initialised, and not a candidate", (_label, insert) => {
+  ])("%s: never initialised, and not a candidate", async (_label, insert) => {
     const { store, file } = madeFirstByAnotherCommand();
     const stamp = NOW.toISOString();
     store.handle.prepare(insert).run(...(insert.includes("revoked_at") ? [stamp, stamp] : [stamp]));
     expect(localModeCandidate(store)).toBe(false);
     expect(localModeRead(file)).toBe("off");
     expect(initLocalMode(store, { owner: "sam", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "has-accounts" });
-    expect(initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => true, now: NOW })).toEqual({ ok: false, reason: "already" });
+    expect(await initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => true, now: NOW })).toEqual({ ok: false, reason: "already" });
     expect(localRows(store)).toBe(0);
     expect(accounts(store)).toBe(1);
   });
 
-  test("local mode turned off before is never turned on again", () => {
+  test("local mode turned off before is never turned on again", async () => {
     const { store, file } = madeFirstByAnotherCommand();
     expect(initLocalMode(store, { owner: "sam", fenceAvailable: true, now: NOW }).ok).toBe(true);
     expect(setLocalModeOff(store, { name: "sam", authority: "full" }, NOW).ok).toBe(true);
     expect(localModeCandidate(store)).toBe(false);
     expect(localModeRead(file)).toBe("off");
     expect(initLocalMode(store, { owner: "sam", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "already" });
-    expect(easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(false);
+    expect(await easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(false);
     expect(localModeOf(store)?.enabled).toBe(false);
   });
 
@@ -88,23 +89,56 @@ describe("which databases may still become password-free", () => {
   });
 });
 
-describe("never under a console serving the database (Codex #377 finding 2: a standalone `serve` claims no instance)", () => {
-  test.each([
-    ["serving now (beaten just now)", "started", 0, false],
-    ["draining now", "draining", 0, false],
-    ["its last beat over a minute ago (it died)", "started", 61_000, true],
-    ["stopped", "stopped", 0, true],
-  ] as const)("a console %s (row %s, %s ms old): initialised %s", (_label, state, ageMs, initialised) => {
-    const { store, file } = madeFirstByAnotherCommand();
+describe("never under a console serving the database (Codex #377 finding 2, round 2 finding A)", () => {
+  /** A real listener on a free loopback port (a console that is paused, say: it answers, it beats nothing). */
+  async function listening(): Promise<{ port: number; close: () => Promise<void> }> {
+    const server = createServer();
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", () => resolve()));
+    return { port: (server.address() as AddressInfo).port, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
+  }
+  /** A port nothing listens on: one that was free a moment ago. */
+  async function nothingOn(): Promise<number> { const one = await listening(); await one.close(); return one.port; }
+  const row = (store: Store, component: string, state: "started" | "draining" | "stopped", ageMs: number): void => {
     const at = new Date(NOW.getTime() - ageMs);
-    reportLifecycle(store, "console:4351", "started", "serve:1:abc", at, { pid: 1 });
-    if (state !== "started") reportLifecycle(store, "console:4351", state, "serve:1:abc", at);
-    const result = initLocalMode(store, { owner: "sam", fenceAvailable: true, now: NOW });
-    expect(result.ok).toBe(initialised);
-    if (!initialised) expect(result).toEqual({ ok: false, reason: "console-running" });
-    expect(localRows(store)).toBe(initialised ? 1 : 0);
-    expect(accounts(store)).toBe(initialised ? 1 : 0);
-    if (!initialised) expect(easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(false);
+    reportLifecycle(store, component, "started", "serve:1:abc", at, { pid: 1 });
+    if (state !== "started") reportLifecycle(store, component, state, "serve:1:abc", at);
+  };
+
+  test.each([["started"], ["draining"]] as const)("a console row %s and beaten just now: never initialised, even with nothing listening", async state => {
+    const { store, file } = madeFirstByAnotherCommand();
+    row(store, `console:127.0.0.1:${await nothingOn()}`, state, 0);
+    expect(await initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => true, now: NOW })).toEqual({ ok: false, reason: "console-running" });
+    expect(await easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(false);
+    expect(localRows(store)).toBe(0);
+  });
+
+  test("a paused console: no heartbeat for minutes, but its address still listens — never initialised", async () => {
+    const paused = await listening();
+    try {
+      for (const component of [`console:127.0.0.1:${paused.port}`, `console:${paused.port}`]) {
+        const { store, file } = madeFirstByAnotherCommand(`paused-${component.length}.db`);
+        row(store, component, "started", 10 * 60_000);
+        expect(await initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => true, now: NOW }), component).toEqual({ ok: false, reason: "console-running" });
+        expect(await easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(false);
+        expect(localRows(store)).toBe(0);
+      }
+    } finally { await paused.close(); }
+  });
+
+  test("a stale row whose address nothing listens on (a console that crashed), or a stopped one: initialised", async () => {
+    const gone = await nothingOn();
+    for (const [name, component, state] of [["crashed", `console:127.0.0.1:${gone}`, "started"], ["stopped", `console:127.0.0.1:${gone}`, "stopped"]] as const) {
+      const { store } = madeFirstByAnotherCommand(`${name}.db`);
+      row(store, component, state, 10 * 60_000);
+      expect((await initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => true, now: NOW })).ok, name).toBe(true);
+    }
+  });
+
+  test("the write itself refuses a stale row nobody proved down (initLocalMode with no proof)", () => {
+    const { store } = madeFirstByAnotherCommand();
+    row(store, "console:127.0.0.1:4351", "started", 10 * 60_000);
+    expect(initLocalMode(store, { owner: "sam", fenceAvailable: true, now: NOW })).toEqual({ ok: false, reason: "console-running" });
+    expect(localRows(store)).toBe(0);
   });
 });
 
@@ -116,45 +150,45 @@ describe("only a person at this computer's own terminal turns it on", () => {
     ["--json", { json: true }],
     ["a remote principal or a named credential", { remote: true }],
   ];
-  test.each(notPeople)("%s: refused before anything is read or written", (_label, change) => {
+  test.each(notPeople)("%s: refused before anything is read or written", async (_label, change) => {
     const caller = { ...PERSON, ...change };
     expect(personMayInitLocalMode(caller)).toBe(false);
     const { store, file } = madeFirstByAnotherCommand();
     let probed = false;
-    expect(initLocalModeForPerson(store, caller, { owner: "sam", fence: () => { probed = true; return true; }, now: NOW })).toEqual({ ok: false, reason: "not-a-person" });
-    expect(easyStartInitLocalMode(file, caller, { fence: () => { probed = true; return true; }, owner: "sam", now: NOW })).toBe(false);
+    expect(await initLocalModeForPerson(store, caller, { owner: "sam", fence: () => { probed = true; return true; }, now: NOW })).toEqual({ ok: false, reason: "not-a-person" });
+    expect(await easyStartInitLocalMode(file, caller, { fence: () => { probed = true; return true; }, owner: "sam", now: NOW })).toBe(false);
     expect(probed).toBe(false);
     expect(localRows(store)).toBe(0);
     expect(accounts(store)).toBe(0);
   });
 
-  test("a person: on, once; a second start changes nothing", () => {
+  test("a person: on, once; a second start changes nothing", async () => {
     const { store, file } = madeFirstByAnotherCommand();
     expect(personMayInitLocalMode(PERSON)).toBe(true);
-    expect(easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(true);
+    expect(await easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(true);
     expect(localModeOf(store)).toMatchObject({ owner: "sam", enabled: true, generation: 1 });
     expect(installationCreatedBy(store)).toBeNull();
-    expect(easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "robin", now: NOW })).toBe(true);
+    expect(await easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "robin", now: NOW })).toBe(true);
     expect(store.listApprovers().map(one => one.name)).toEqual(["sam"]);
   });
 
-  test("no database yet: made as `up --laptop` makes it (created-by laptop) only when there is a fence; without one nothing is made", () => {
+  test("no database yet: made as `up --laptop` makes it (created-by laptop) only when there is a fence; without one nothing is made", async () => {
     dir = mkdtempSync(join(tmpdir(), "so-w2-init-"));
     const none = join(dir, "none.db");
-    expect(easyStartInitLocalMode(none, PERSON, { fence: () => false, owner: "sam", now: NOW })).toBe(false);
+    expect(await easyStartInitLocalMode(none, PERSON, { fence: () => false, owner: "sam", now: NOW })).toBe(false);
     expect(existsSync(none)).toBe(false);
     const fresh = join(dir, "fresh.db");
-    expect(easyStartInitLocalMode(fresh, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(true);
+    expect(await easyStartInitLocalMode(fresh, PERSON, { fence: () => true, owner: "sam", now: NOW })).toBe(true);
     const store = openStore(fresh);
     open.push(store);
     expect(installationCreatedBy(store)).toBe("laptop");
     expect(localModeOf(store)?.owner).toBe("sam");
   });
 
-  test("no fence on this machine: an existing accountless database is left exactly as it was", () => {
+  test("no fence on this machine: an existing accountless database is left exactly as it was", async () => {
     const { store, file } = madeFirstByAnotherCommand();
-    expect(easyStartInitLocalMode(file, PERSON, { fence: () => false, owner: "sam", now: NOW })).toBe(false);
-    expect(initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => false, now: NOW })).toEqual({ ok: false, reason: "no-fence" });
+    expect(await easyStartInitLocalMode(file, PERSON, { fence: () => false, owner: "sam", now: NOW })).toBe(false);
+    expect(await initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => false, now: NOW })).toEqual({ ok: false, reason: "no-fence" });
     expect(localRows(store)).toBe(0);
     expect(accounts(store)).toBe(0);
   });
