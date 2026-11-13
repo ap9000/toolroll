@@ -439,9 +439,13 @@ export function efficiencyLine(one: Efficiency): string {
     .filter((part): part is string => part !== null).join(" · ");
 }
 
-/** Whether the run recorded anything to show under How it ran: a row of dashes says nothing, so it isn't shown. */
+/** Any number How it ran shows: time (waiting or the agent's), turns, tokens, cache, steps. */
+const efficiencyMeasured = (one: Efficiency): boolean =>
+  [one.time.waitMs, one.time.agentMs, one.turns, one.usage.in, one.usage.out, one.usage.cacheRead, one.usage.cacheWrite, one.steps.total].some(value => value !== null);
+/** Whether How it ran has anything to say: a number it shows, or why its steps can't be shown (a step record that
+ * couldn't be read, or one that expired). Only a run that kept nothing at all ("absent") and measured nothing is left out. */
 export function efficiencyRecorded(one: Efficiency): boolean {
-  return one.time.agentMs !== null || one.turns !== null || one.usage.in !== null || one.usage.out !== null || one.steps.total !== null;
+  return efficiencyMeasured(one) || one.steps.state !== "absent";
 }
 
 /** How it ran (docs/plans/run-efficiency.md): where the time went, what the agent did, what it repeated — only what was
@@ -496,7 +500,7 @@ function Details({ selected }: { selected: Selected }) {
       body: <ul className="flex flex-col gap-1 text-body text-muted-foreground">{panel.limits.map(one => <li key={one}>{one}</li>)}</ul> }]),
     ...(panel?.reviewHistory == null ? [] : [{ id: "review-history", title: "Review history", hint: null,
       body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
-    ...(selected.efficiency == null || !efficiencyRecorded(selected.efficiency) ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
+    ...(selected.efficiency == null || !efficiencyRecorded(selected.efficiency) ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyMeasured(selected.efficiency) ? efficiencyLine(selected.efficiency) : selected.efficiency.steps.reason, body: <EfficiencyBody one={selected.efficiency} /> }]),
     ...(selected.network == null ? [] : [{ id: "network", title: "Network", hint: networkLine(selected.network), body: <NetworkBody one={selected.network} /> }]),
     ...(selected.timing == null || selected.timing.length === 0 ? [] : [{ id: "timing", title: "Where the time went", hint: selected.timing.map(one => `${one.title} ${one.total}`).join(" · "), body: <TimingBody groups={selected.timing} /> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,

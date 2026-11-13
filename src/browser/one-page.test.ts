@@ -5,7 +5,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { BrowserTaskView } from "../browser-workspace.js";
+import type { BrowserResultPanel, BrowserTaskView } from "../browser-workspace.js";
+import type { AssignmentCard } from "../assignment-ui.js";
 import { TaskView } from "./views/task-view.js";
 import { SelectedResult } from "./views/result-view.js";
 import { taskRoad } from "../first-run.js";
@@ -156,6 +157,60 @@ test("How it ran: the result's record says time, turns, tokens and cache in one 
   const unknown = { ...efficiency, turns: null, usage: { ...efficiency.usage, in: null, out: null, cacheShare: null } };
   act(() => root!.render(createElement(SelectedResult, { selected: selectedOf(6, { efficiency: unknown }), csrf: "c" })));
   expect(host.querySelector("#how-it-ran summary")?.textContent).toContain("14 min · — tokens in · — out");
+});
+
+test("How it ran stays whenever it has a number or a reason: only a run that kept and measured nothing leaves it out", () => {
+  const none = { version: 1, time: { waitMs: null, agentMs: null }, turns: null,
+    usage: { in: null, out: null, cacheRead: null, cacheWrite: null, cacheShare: null, provider: "claude", model: null },
+    steps: { state: "absent" as const, reason: "No step records were kept for this run.", total: null, failed: null, unknownDuration: null, byKind: {}, longest: [], repeats: null, repeatsReason: null } };
+  const shown = (efficiency: typeof none | Omit<typeof none, "steps"> & { steps: Omit<typeof none["steps"], "state"> & { state: "truncated" | "expired" | "absent" } }) => {
+    act(() => root!.render(createElement(SelectedResult, { selected: selectedOf(7, { efficiency }), csrf: "c" })));
+    return host.querySelector("#how-it-ran");
+  };
+  // A step record that couldn't be read: the reason is the whole story, so the fold stays and says it.
+  const unreadable = shown({ ...none, steps: { ...none.steps, state: "truncated", reason: "The step record couldn't be read: it ends mid-line." } });
+  expect(unreadable?.querySelector("summary")?.textContent).toContain("The step record couldn't be read");
+  expect(unreadable?.querySelector("[data-run-efficiency-steps]")?.textContent).toContain("couldn't be read");
+  // Only the wait was measured, or only the cache: still a number to show.
+  expect(shown({ ...none, time: { waitMs: 12_000, agentMs: null } })).not.toBeNull();
+  expect(shown({ ...none, usage: { ...none.usage, cacheRead: 1_000 } })).not.toBeNull();
+  // Nothing kept, nothing measured: a row of dashes says nothing.
+  expect(shown(none)).toBeNull();
+});
+
+test("the whole task page: the Ready status box holds the one completion, moved there only when nothing more is owed, and follows your check", () => {
+  const card = { token: "assignment-ready", tone: "attention", label: "Ready for review", reasons: [], diagnostics: [], notices: null, attempts: [], lead: null,
+    status: { headline: "Ready for review", tone: "attention", sentence: "Check the result, then accept it or send it back.", details: [], primaryAction: null, why: [] },
+    action: { label: "Open result", href: "/t/t-1?tab=result", openResult: true } } as unknown as AssignmentCard;
+  const inTask = (selected: Selected, csrf: string, current: boolean) => createElement(SelectedResult, { selected, csrf, inTask: { current } });
+  const page = (selected: Selected, key: string) => act(() => root!.render(createElement(TaskView, { key, view: withRows("review", { status: card, result: { selected, current: true, attempts: [], revision: "r1" } }),
+    details: false, csrf: "c", result: inTask })));
+  const completions = () => host.querySelectorAll('form[action="/t/t-1/complete"]').length;
+  const statusAct = () => host.querySelector<HTMLElement>("[data-task-status] [data-result-status-act]");
+  const decision = { label: "Accept", ready: true, why: null, effect: "Finishes the task." } as Selected["decision"];
+  const facts = { accept: { ready: true }, runChecks: false, checksRunning: false, blocked: null, canRequest: false, need: null, next: null };
+
+  // Nothing owed: the decision's own exact-receipt completion is the status box's Mark complete, and only there.
+  page(selectedOf(5, { complete: { action: "/t/t-1/complete", receipt: "r".repeat(64), run: 5, returnTo: "/t/t-1" }, decision, actFacts: facts } as Partial<Selected>), "free");
+  expect(statusAct()?.querySelector("[data-ink-act=accept]")?.textContent).toBe("Mark complete");
+  expect(completions()).toBe(1);
+  expect(host.querySelectorAll("[data-ink-act], [data-review-and-accept]").length).toBe(1);
+
+  // Your own check waits: the status box points to it and posts nothing; Accept waits, outline, below.
+  const panel = { attributes: {}, heading: "", outcome: "", status: null, reviewHistory: null, attention: [], limits: [], tabs: [], views: [], history: "", learning: "",
+    request: null, canRequest: false, need: null, requestQuiet: false, requirements: null,
+    youCheck: { lines: [], accept: null, items: [{ id: "c1", statement: "The copy reads clearly.", words: "", note: null, excerpts: [], shots: [] }] } } as unknown as BrowserResultPanel;
+  page(selectedOf(6, { panel, complete: { action: "/t/t-1/complete", receipt: "r".repeat(64), run: 6, accept: { note: null }, returnTo: "/t/t-1" },
+    decision: { ...decision!, base: { label: "Accept", ready: true, why: null } }, actFacts: facts } as Partial<Selected>), "yours");
+  expect(statusAct()?.querySelector("[data-review-and-accept]")?.textContent).toBe("Review and accept");
+  expect(statusAct()?.querySelector("form")).toBeNull();
+  expect(completions()).toBe(1);
+  expect(host.querySelector('[data-result-decision] [data-accept-result]')?.hasAttribute("data-ink-act")).toBe(false);
+  // Looks right: the acceptance of your check is owed and recorded with it, so Accept stays the decision's, now ink.
+  act(() => host.querySelector<HTMLButtonElement>("[data-looks-right]")!.click());
+  expect(statusAct()?.childElementCount ?? 0).toBe(0);
+  expect(completions()).toBe(1);
+  expect(host.querySelector('[data-result-decision] [data-accept-result]')?.getAttribute("data-ink-act")).toBe("accept");
 });
 
 test("Can I merge? sits with a result in the Ready row: never loose under the rows, never on a research task", () => {
