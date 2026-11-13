@@ -22,9 +22,9 @@ import { verifyApproverStanding } from "./principal.js";
 import { decideOffer, DECIDE_LABELS, type DecideTarget } from "./chat-decide.js";
 import { buildPushPayload, PUSH_WORDS } from "./push.js";
 import { runOperate } from "./operate.js";
-import { HELP } from "./cli-help.js";
+import { HELP, SCAN_HELP } from "./cli-help.js";
 import { setChatApproval } from "./chat-approval.js";
-import { PLAIN_WORDS, bannedWordsIn } from "./plain-words.js";
+import { FIRST_HOUR_WORDS, PLAIN_WORDS, bannedWordsIn, firstHourWordsIn } from "./plain-words.js";
 import { phoneStatus, phoneTask } from "./telegram-status.js";
 import { RUN_REASON_WORDS, NEEDS, WAITS } from "./needs-you.js";
 import type { BrowserWorkspace } from "./browser-workspace.js";
@@ -282,10 +282,40 @@ describe("product copy says no banned word; preserved content renders unchanged"
 
   test("CLI people output", async () => {
     expect(offences(HELP).join("\n"), "toolroll --help").toBe("");
+    expect(offences(SCAN_HELP).join("\n"), "toolroll scan --help").toBe("");
     for (const argv of [["task", "list"], ["task", "show", "plan-draft"], ["task", "show", "ready"], ["task", "show", "accepted"], ["task", "show", "failed"], ["task", "show", "refuted"], ["task", "show", "short"], ["status"], ["pulls"]]) {
       const text = await cli(argv);
       expect(offences(text).join("\n"), argv.join(" ")).toBe("");
     }
+  });
+});
+
+describe("the first hour", () => {
+  /** The first-run surfaces a newcomer reads before their first result. Approval terms, a password asked for where one is
+   * needed and reasons work waits are not here: they say what they must. */
+  test("help, the welcome steps, the terminal UI's keys, how it works, the first-run steps and the demo chat say none of the later words", async () => {
+    const { welcomeLines } = await import("./welcome-facts.js");
+    const { firstRunSteps, withBuilderStep, welcomeModel, HOW_IT_WORKS, GENERIC_FIRST_TASKS } = await import("./first-run.js");
+    const { HELP_LINES } = await import("./tui/app.js");
+    const { demoChatHtml } = await import("./demo-chat.js");
+    const { DEMO_BANNER, DEMO_BANNER_SHORT } = await import("./server/chrome.js");
+    const { htmlString } = await import("./html.js");
+    const { requestContext } = await import("./server/request-context.js");
+    const surfaces: [string, string][] = [["toolroll --help", HELP], ["how it works", HOW_IT_WORKS], ["terminal keys", HELP_LINES.join("\n")], ["demo banner", `${DEMO_BANNER}\n${DEMO_BANNER_SHORT}`],
+      ["demo chat", requestContext.run({ csrf: "c", returnTo: "/chat" }, () => htmlString(demoChatHtml({ exchanges: [], version: 0, problem: null, resultOf: () => null }))).replace(/<[^>]*>/g, " ")]];
+    const project = { name: "shop", path: "/work/shop" };
+    for (const [agent, projects, ready, hasTask] of [[null, [], false, false], ["not-installed", [], false, false], ["signed-out", [project], false, false],
+      ["connected", [project], false, false], ["connected", [project], true, false], ["connected", [project], true, true]] as const) {
+      const model = welcomeModel({ agents: { claude: agent, codex: agent }, inUse: null, buildsOn: "claude", canChoose: false, projects, projectRoot: "/work", ready, hasTask,
+        starters: GENERIC_FIRST_TASKS, platform: "darwin" });
+      surfaces.push([`welcome ${agent} ${projects.length} ${ready} ${hasTask}`, welcomeLines(model).join("\n")]);
+      const steps = withBuilderStep(firstRunSteps({ agentSignedIn: agent === "connected", projects: projects.length, hasTask, firstResultAt: null }), ready) ?? [];
+      surfaces.push([`first-run steps ${agent} ${ready}`, steps.flatMap(step => [step.title, step.action?.kind === "link" ? step.action.label : ""]).join("\n")]);
+    }
+    for (const [name, text] of surfaces) expect(firstHourWordsIn(text), `${name}:\n${text}`).toEqual([]);
+    // The list is a whole-word check like the table: an ordinary word that contains one passes.
+    expect(firstHourWordsIn("Leading the flowchart; a misleading token")).toEqual(["token"]);
+    expect(FIRST_HOUR_WORDS.length).toBeGreaterThan(10);
   });
 });
 

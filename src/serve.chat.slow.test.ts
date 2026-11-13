@@ -1447,7 +1447,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     // A membership conversation starts on its own; its settings live one tap away.
     html = await (await fetch(url("/chat?settings=1"), { headers: { cookie } })).text();
     expect(html).toContain("membership login · no dollar limit");
-    expect(html).toContain('href="/settings/lead">Lead settings</a>');
+    expect(html).toContain('href="/settings/lead">Chat settings</a>');
     html = await (await fetch(url("/settings/lead"), { headers: { cookie } })).text();
     expect(html).not.toContain('name="weekly-usd"');
     expect(html).not.toContain('name="ceiling-usd"');
@@ -1640,7 +1640,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(counts()).toEqual({ sessions: 0, threads: 0 });
     expect(html).not.toContain('action="/chat/mate/mint"');
     expect(html).not.toContain('autocomplete="current-password"');
-    expect(html).toContain('href="/settings/lead">Lead settings</a>');
+    expect(html).toContain('href="/settings/lead">Chat settings</a>');
     expect(html).toContain('name="request-session" value="0"');
     // The first message starts it: one session, one thread.
     subscriptionAnswers.push({ text: "Hello.", calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });

@@ -104,7 +104,15 @@ describe("missing paths", () => {
     const code = await main(["help"], line => lines.push(line));
 
     expect(code).toBe(0);
-    expect(lines.join("\n")).toContain("hand coding work to agents, walk away, come back to pull requests");
+    expect(lines.join("\n")).toContain("hand coding work to agents, approve each plan, accept what comes back Ready");
+  });
+
+  test("`toolroll scan --help` prints the scan's options; top-level help leaves them out", async () => {
+    const scan: string[] = [], top: string[] = [];
+    expect(await main(["scan", "--help"], line => scan.push(line))).toBe(0);
+    expect(await main(["--help"], line => top.push(line))).toBe(0);
+    expect(scan.join("\n")).toContain("--depth <n>");
+    expect(top.join("\n")).not.toContain("--depth");
   });
 });
 

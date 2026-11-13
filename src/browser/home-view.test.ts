@@ -31,7 +31,7 @@ const view = (over: Partial<BrowserHomeView> = {}): BrowserHomeView => ({
   ],
   working: [row("w", { state: "running", ask: null, line: "Building", action: null })],
   finishedToday: { count: 0, rows: [], href: "/tasks?scope=all&view=completed" },
-  newTask: "/tasks/new", ask: { project: null, placeholder: "Message the lead" },
+  newTask: "/tasks/new", ask: { project: null, placeholder: "Ask Toolroll" },
   lastLead: { text: "The pagination build is on step 2 of 3.", age: "4m ago", href: "/chat" }, empty: null, ...over });
 
 let root: Root | null = null;
@@ -106,11 +106,11 @@ test("what needs you is grouped by what is asked, each heading with its exact co
   // The lead's last message, one line that opens the chat, above the filled message box that posts to /chat.
   const lead = document.querySelector<HTMLAnchorElement>("[data-home-lead]")!;
   expect(lead.getAttribute("href")).toBe("/chat");
-  expect(lead.textContent).toBe("LeadThe pagination build is on step 2 of 3.4m agoOpen chat");
+  expect(lead.textContent).toBe("ChatThe pagination build is on step 2 of 3.4m agoOpen chat");
   const ask = document.querySelector<HTMLFormElement>("form.so-home-ask")!;
   expect(ask.getAttribute("action")).toBe("/chat");
   expect(ask.querySelector<HTMLInputElement>('input[name="csrf"]')!.value).toBe("csrf-1");
-  expect(ask.querySelector("textarea")?.getAttribute("placeholder")).toBe("Message the lead");
+  expect(ask.querySelector("textarea")?.getAttribute("placeholder")).toBe("Ask Toolroll");
 });
 
 test("arrow keys move the selection through every group, and the pane follows", async () => {
@@ -236,8 +236,8 @@ test("search finds a setting by any of its words and an old name says where it l
   expect(recipes.sub).toBe("Now Flows → New flow");
   // Every destination is an address inside the console.
   for (const [, href] of [...DESTINATIONS, ...LEGACY]) expect(href.startsWith("/") && !href.startsWith("//")).toBe(true);
-  // Ask the lead never sends from a link: it only starts a draft.
-  expect(searchResults(workspace, "why is it slow").find(one => one.title === "Ask the lead")!.href).toBe("/chat?draft=why%20is%20it%20slow");
+  // Ask in Chat never sends from a link: it only starts a draft.
+  expect(searchResults(workspace, "why is it slow").find(one => one.title === "Ask in Chat")!.href).toBe("/chat?draft=why%20is%20it%20slow");
 });
 
 test("search with nothing found in a truncated read says so and offers every task", async () => {

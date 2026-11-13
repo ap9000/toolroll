@@ -14,9 +14,9 @@ import { START_BUILDER_HREF } from "./needs-you.js";
 export const SIGN_IN_COMMAND = "claude auth login";
 export const SANDBOX_COMMAND = "npx toolroll demo";
 /** How a person starts on a real project (the demo hands off to this). */
-export const START_COMMAND = "npx toolroll up";
+export const START_COMMAND = "npx toolroll";
 /** How it works, once, above the composer until the first request. */
-export const HOW_IT_WORKS = "Ask for a change. The lead writes a short plan; you approve it; an agent builds it on its own branch; it's Ready when your tests pass.";
+export const HOW_IT_WORKS = "Ask for a change. You approve a short plan; an agent builds it on its own branch; it comes back Ready with the result and its check status.";
 
 type SignInState = "connected" | "signed-out" | "not-installed" | "unverified" | "key-present" | "key-works" | "key-refused" | "missing-key";
 
@@ -54,8 +54,8 @@ export function firstRunSteps(facts: FirstRunFacts): FirstRunStep[] | null {
  * waits forever, so the steps never all read done without one. It leads to Start a builder, which shows the command. */
 export function withBuilderStep(steps: FirstRunStep[] | null, connected: boolean): FirstRunStep[] | null {
   if (steps === null) return null;
-  const builder: FirstRunStep = { key: "builder", title: "Builder connected", done: connected,
-    action: connected ? null : { kind: "link", label: "Start a builder", href: START_BUILDER_HREF } };
+  const builder: FirstRunStep = { key: "builder", title: "Taking work", done: connected,
+    action: connected ? null : { kind: "link", label: "Start taking work", href: START_BUILDER_HREF } };
   const task = steps.findIndex(one => one.key === "task");
   return task < 0 ? [...steps, builder] : [...steps.slice(0, task), builder, ...steps.slice(task)];
 }

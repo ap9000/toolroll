@@ -147,13 +147,13 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         // A task too big to build straight away: filed, then its plan asked for at once (local-owner slice 2), below.
         case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed."; break;
         case "plan": argv = ["task", "plan", act.id, "--digest", act.source]; done = "Asked for a plan. You'll approve it before anything is built."; break;
-        case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. A builder starts it next."; break;
+        case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. It starts next."; break;
         case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
         case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
         // Retry: exactly the build and approved plan the screen read (local-owner slice 3), never the current ones.
-        case "retry": argv = ["task", "requeue", act.id, "--run", String(act.runId), "--digest", act.digest]; done = "Retrying. A builder starts it next."; break;
+        case "retry": argv = ["task", "requeue", act.id, "--run", String(act.runId), "--digest", act.digest]; done = "Retrying. It starts next."; break;
         // Accept: exactly the result the Accept screen read, never the one current when this is sent (the command
         // refuses a result that changed meanwhile). The person's yes to their own check, or a reason, only when given.
         case "complete":
@@ -164,7 +164,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       if (answer.ok !== true) return refusalOf(answer);
       if (act.kind === "complete" && answer["replayed"] === true) return { ok: true, message: "Already accepted. The task is done." };
       if (act.kind === "plan" && answer["replayed"] === true) return { ok: true, message: "Already asked for a plan." };
-      if (act.kind === "retry" && answer["replayed"] === true) return { ok: true, message: "Already retrying. A builder starts it next." };
+      if (act.kind === "retry" && answer["replayed"] === true) return { ok: true, message: "Already retrying. It starts next." };
       const filed = act.kind === "new" ? words(record(answer["task"])["id"], words(answer["id"])) : act.kind === "build" ? words(answer["task"]) : "";
       // Filed in a project: ask for its plan now, bound to the task just filed (the screen promised a plan).
       if (act.kind === "new" && filed !== "" && act.repo !== null) {

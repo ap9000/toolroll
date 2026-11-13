@@ -94,7 +94,7 @@ function OpenPane({ row, asked, onApproved }: { row: BrowserHomeRow | null; aske
 /** The lead's last message as one line that opens the chat. */
 function LeadLine({ lead }: { lead: NonNullable<BrowserHomeView["lastLead"]> }) {
   return <a className="so-lead" href={lead.href} data-home-lead>
-    <span className="so-lead-who">Lead</span><span className="so-lead-text">{lead.text}</span>
+    <span className="so-lead-who">Chat</span><span className="so-lead-text">{lead.text}</span>
     <span className="so-lead-age k-num">{lead.age}</span><span className="so-lead-open">Open chat</span>
   </a>;
 }
@@ -115,12 +115,12 @@ function AskLead({ ask, line }: { ask: NonNullable<BrowserHomeView["ask"]>; line
     if (field) field.value = text;
     form.current?.requestSubmit();
   };
-  return <form ref={form} method="post" action="/chat" className="so-home-ask" aria-label="Message the lead" onSubmit={() => { setSending(true); keepAskDraft(csrf, ask.project, ""); }}>
+  return <form ref={form} method="post" action="/chat" className="so-home-ask" aria-label="Ask Toolroll" onSubmit={() => { setSending(true); keepAskDraft(csrf, ask.project, ""); }}>
     <input type="hidden" name="csrf" value={csrf} />
     <input type="hidden" name="request" value={request.current} />
     {ask.project !== null && <input type="hidden" name="project" value={ask.project} />}
     <input type="hidden" name="message" value={text} />
-    <KComposer id="home-ask" label="Message the lead" placeholder={ask.placeholder} value={text} onChange={value => { setText(value); keepAskDraft(csrf, ask.project, value); }} onSend={send} line={line} rows={line ? 1 : 2} sendLabel="Send to the lead" disabled={sending} />
+    <KComposer id="home-ask" label="Ask Toolroll" placeholder={ask.placeholder} value={text} onChange={value => { setText(value); keepAskDraft(csrf, ask.project, value); }} onSend={send} line={line} rows={line ? 1 : 2} sendLabel="Send" disabled={sending} />
   </form>;
 }
 

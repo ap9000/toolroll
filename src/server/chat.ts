@@ -1141,7 +1141,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       suggestions: taskFiled || repo === null ? [] : firstTasksFor(repo),
       sandbox: agent !== undefined && !agent.done && !agent.checking ? SANDBOX_COMMAND : null,
       intro: HOW_IT_WORKS,
-      lead: lead === null ? null : { words: `The lead uses ${lead}`, href: "/settings/lead" },
+      lead: lead === null ? null : { words: `Chat uses ${lead}`, href: "/settings/lead" },
       // With no lead yet and no agent signed in, the page asks this computer again on its own.
       recheck: store.getChatConfig() === null && agent !== undefined && !agent.done ? "/lead/check" : null,
     };

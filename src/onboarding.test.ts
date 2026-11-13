@@ -199,8 +199,8 @@ test("with Claude Code signed in, the lead is on by default, says so in one line
   expect((await fetch(`${base}/chat`, { headers: { cookie } })).status).toBe(200);
   const shown = await workspace(cookie);
   expect(shown.conversation).not.toBeNull();
-  expect(shown.firstRun?.lead).toEqual({ words: "The lead uses your Claude Code sign-in", href: "/settings/lead" });
-  expect(shown.firstRun?.intro).toBe("Ask for a change. The lead writes a short plan; you approve it; an agent builds it on its own branch; it's Ready when your tests pass.");
+  expect(shown.firstRun?.lead).toEqual({ words: "Chat uses your Claude Code sign-in", href: "/settings/lead" });
+  expect(shown.firstRun?.intro).toBe("Ask for a change. You approve a short plan; an agent builds it on its own branch; it comes back Ready with the result and its check status.");
   expect(shown.firstRun?.suggestions).toHaveLength(3);
   expect(shown.firstRun?.recheck).toBeNull();
 });

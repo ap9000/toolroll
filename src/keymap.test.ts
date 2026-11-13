@@ -20,7 +20,10 @@ describe("one table", () => {
 
   test("the console's list and the terminal's keys are read from it", () => {
     for (const one of SHORTCUTS) expect(htmlString(KBD_HELP), one.keys).toContain(one.says);
-    for (const one of SHORTCUTS.filter(row => typeof row.tui === "string")) expect(HELP_LINES.some(line => line.startsWith(keyWords(one.keys))), one.keys).toBe(true);
+    for (const one of SHORTCUTS.filter(row => typeof row.tui === "string")) expect(HELP_LINES.some(line => line.split(/\s{2,}/)[0]!.split(", ").includes(keyWords(one.keys))), one.keys).toBe(true);
+    // Each thing is said once: no two lines name the same act.
+    const says = HELP_LINES.map(line => line.split(/\s{2,}/).slice(1).join(" "));
+    expect(new Set(says).size).toBe(says.length);
   });
 });
 

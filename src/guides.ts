@@ -14,7 +14,8 @@
 /** Every guide opens with this: the manual defers to the machine. */
 export const AUTHORITY_LINE =
   "**Live `toolroll --help` (and `toolroll task --help`) is\n" +
-  "authoritative over anything written here.** Probe it rather than guessing.";
+  "authoritative over anything written here.** Probe it rather than guessing:\n" +
+  "`toolroll internals` and `toolroll contract --commands --json` list every command.";
 
 export type Guide = {
   readonly name: string;

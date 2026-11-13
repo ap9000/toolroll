@@ -125,7 +125,7 @@ function LeadMessage({ message, workspace, onChanged, took, retry, arrived = fal
   const body = useRef<HTMLDivElement>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
   useCodeCopy(body, message.html);
-  const name = workspace.leadName ?? "Lead";
+  const name = workspace.leadName ?? "Toolroll";
   const readOnly = retry === null;
   return <article className={arrived ? "lc-msg lc-lead lc-new" : "lc-msg lc-lead"} data-message-id={message.id} aria-label={name}>
     <header className="lc-who"><ChatMark /><b>{name}</b><When at={message.createdAt} /></header>
@@ -160,7 +160,7 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
   const box = useRef<HTMLTextAreaElement>(null);
   const form = useRef<HTMLFormElement>(null);
   const busy = chat.pendingTurnId !== null;
-  const leadName = workspace.leadName ?? "Lead";
+  const leadName = workspace.leadName ?? "Toolroll";
   const context = docked ?? (chat.taskId ? "task" : chat.project ? "tasks" : "lead");
   // "/" opens quick starts for this conversation's context.
   const commands = CHAT_COMMANDS[context] ?? CHAT_COMMANDS.lead!;
@@ -202,9 +202,9 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
     try {
       const response = await fetch("/chat/mate/stop", { method: "POST", credentials: "same-origin", redirect: "manual", headers: keyed({}),
         body: new URLSearchParams({ csrf: workspace.csrf, turn: String(chat.pendingTurnId), return: window.location.pathname + window.location.search }) });
-      setStopping(response.type === "opaqueredirect" || response.ok ? "idle" : "The lead didn't stop. Try again.");
+      setStopping(response.type === "opaqueredirect" || response.ok ? "idle" : "It didn't stop. Try again.");
     } catch {
-      setStopping("The lead didn't stop. Check your connection and try again.");
+      setStopping("It didn't stop. Check your connection and try again.");
     }
     void controller.check();
   };
@@ -229,7 +229,7 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
     {!dock && <KPageHeader title="Chat" ctx={[leadName, projectName].filter(Boolean).join(" · ")} right={<>
       {newChat && <PostForm action="/chat/mate/end" className="lc-tb-form"><input type="hidden" name="return" value="/chat" />
         <KButton type="submit" variant="ghost" sm lead="plus" label="New chat" title="End this conversation and start a new one" /></PostForm>}
-      <KLinkButton variant="ghost" sm href="/settings/lead" label="Lead settings" />
+      <KLinkButton variant="ghost" sm href="/settings/lead" label="Chat settings" />
     </>} />}
     <Conversation className="so-conversation lc-scroll"><ConversationContent className="lc-thread">
       {!dock && workspace.firstRun && <FirstRun firstRun={workspace.firstRun} />}
@@ -276,11 +276,11 @@ export function LeadChat({ controller, docked = null }: { controller: Controller
             <span className="lc-slash-name">/{one.command}</span><span className="lc-slash-hint">{one.hint}</span>
           </li>)}
         </ul>}
-        <KComposer id="lead-chat" textareaId="lead-message" name="message" maxLength={chat.maxChars} label="Message your lead" textareaRef={box}
-          placeholder={dock?.placeholder ?? (projectName ? `Ask about ${projectName}…` : "Message your lead…")} value={draft.text}
+        <KComposer id="lead-chat" textareaId="lead-message" name="message" maxLength={chat.maxChars} label="Ask Toolroll" textareaRef={box}
+          placeholder={dock?.placeholder ?? (projectName ? `Ask about ${projectName}…` : "Ask Toolroll…")} value={draft.text}
           onChange={value => { setCommandsClosed(false); edit(value); }} onSend={() => form.current?.requestSubmit()} submit
           sendDisabled={sendBlocked} sendLabel={busy ? "Queue message" : "Send message"}
-          working={busy && draft.text.trim() === ""} onStop={() => { void stop(); }} stopLabel={stopping === "busy" ? "Stopping…" : "Stop the lead"}
+          working={busy && draft.text.trim() === ""} onStop={() => { void stop(); }} stopLabel={stopping === "busy" ? "Stopping…" : "Stop"}
           {...(!dock && !chat.taskId ? { project: { current: projectName ?? ALL_PROJECTS, sub: leadName, items: [ALL_PROJECTS, ...workspace.projects.map(one => one.name)] }, onProject: (name: string) => {
             if (name === ALL_PROJECTS) { if (chat.project) window.location.assign("/chat"); return; }
             const chosen = workspace.projects.find(one => one.name === name);

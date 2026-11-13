@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { runOperate, type OnboardSeams } from "./operate.js";
 import { openStore } from "./store.js";
 import { loadProjectRegistry } from "./repos.js";
-import { RELEASED_SKILLS, agentHome, operatorSkillContent, skillFingerprint } from "./agent-onboard.js";
+import { RELEASED_SKILLS, agentHome, buildHandoff, handoffLines, operatorSkillContent, skillFingerprint } from "./agent-onboard.js";
 import { addApprover } from "./scope.js";
 import { CLAUDE_CODE_MANAGED_MARK, claudeCodeGuideContent, claudeCodeSkillContent, planClaudeCodeInstall } from "./skills.js";
 import type { ProviderConnection } from "./provider-connection.js";
@@ -326,6 +326,16 @@ describe("the handoff", () => {
     lines = [];
     await onboard(["--json", "--port", "4190"]);
     expect(envelope().handoff.console).toBe("http://127.0.0.1:4190");
+  });
+});
+
+describe("the handoff of a password-free start", () => {
+  test("says how this computer opens it, names no password and offers no phone (only this computer signs in)", () => {
+    const handoff = buildHandoff({ url: "http://127.0.0.1:4180/", login: { account: "alex", file: null } });
+    const local = handoffLines(handoff, { local: true }).join("\n");
+    expect(local).toContain("login     none on this computer: run `toolroll` at its terminal, and it opens signed in");
+    expect(local).not.toMatch(/password|phone|\/pair/);
+    expect(handoffLines(handoff).join("\n")).toContain("alex — sign in with your password");
   });
 });
 

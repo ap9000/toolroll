@@ -87,8 +87,8 @@ export type NeedsItem = { group: string; title: string; text: string; action: re
 export function settingsNeeds(facts: SettingsFacts): NeedsItem[] {
   const out: NeedsItem[] = [];
   if (facts.workers !== null && facts.approver && !facts.workers.some(one => one.tone === "ok")) {
-    out.push({ group: "agents", title: facts.workers.length === 0 ? "No builder is connected" : "No builder is connected right now",
-      text: "Approved work waits until a computer builds it. Run toolroll up on the computer with your projects.", action: ["Open builders", "/settings/agents#workers"] });
+    out.push({ group: "agents", title: facts.workers.length === 0 ? "Nothing is taking work" : "Nothing is taking work right now",
+      text: "Approved work waits until a computer builds it. Run toolroll up on the computer with your projects.", action: ["Start taking work", "/settings/agents#workers"] });
   }
   if (facts.telegram.failing) out.push({ group: "alerts", title: "Telegram isn’t delivering", text: facts.telegram.delivery ?? "Alerts to your phone are failing.", action: ["Open Telegram", "/settings/telegram"] });
   if (facts.backup?.failed) out.push({ group: "system", title: "The last backup failed", text: facts.backup.words, action: ["Open backups", "/settings/backups"] });
@@ -108,8 +108,8 @@ const themeWords = (theme: string): string => theme === "light" ? "Light" : them
 function agentsWords(facts: SettingsFacts): string {
   const signed = facts.providers?.find(one => one.connection !== null && one.tone === "ok") ?? facts.providers?.find(one => one.tone === "ok");
   const builders = facts.workers === null ? null : facts.workers.filter(one => one.tone === "ok").length;
-  return [signed ? `${signed.name}: ${signed.words}` : facts.providers === null ? "Models, the lead, tools and knowledge" : "No agent signed in yet",
-    builders === null ? null : builders === 0 ? "no builder connected" : `${plural(builders, "builder", "builders")} connected`].filter(Boolean).join(" · ");
+  return [signed ? `${signed.name}: ${signed.words}` : facts.providers === null ? "Models, chat and tools" : "No agent signed in yet",
+    builders === null ? null : builders === 0 ? "not taking work yet" : "taking work"].filter(Boolean).join(" · ");
 }
 function alertsWords(facts: SettingsFacts): string {
   const configured = facts.messaging?.configured ?? [];
@@ -120,12 +120,12 @@ function alertsWords(facts: SettingsFacts): string {
 }
 function approvalWords(facts: SettingsFacts): string {
   return [facts.permission ? `New tasks: ${facts.permission.mode === "bypassPermissions" ? "Full access" : "Auto"}` : null,
-    facts.quality ? `${qualityModeTitle(facts.quality.mode)} quality` : null, "operating modes, policy and approval rules"].filter(Boolean).join(" · ");
+    facts.quality ? `${qualityModeTitle(facts.quality.mode)} quality` : null, "Who approves, and what runs without asking"].filter(Boolean).join(" · ");
 }
 function accessWords(facts: SettingsFacts): string {
   const people = facts.people === null ? null : [facts.people.approvers.length ? `${and(facts.people.approvers)} can manage and approve` : "",
     facts.people.viewers.length ? `${and(facts.people.viewers)} can view` : ""].filter(Boolean).join(" · ");
-  return [people || "Your sessions and API tokens", facts.passwordless === null ? null : facts.passwordless ? "Passwordless on" : "Passwordless off"].filter(Boolean).join(" · ");
+  return [people || "Who can get in", facts.passwordless === null || passwordFree(facts) ? null : facts.passwordless ? "Passwordless on" : "Passwordless off"].filter(Boolean).join(" · ");
 }
 function systemWords(facts: SettingsFacts): string {
   const latest = facts.updates?.latest;
@@ -170,7 +170,7 @@ export function settingsHub(facts: SettingsFacts): Html {
   const shown = SETTINGS_GROUPS.filter(([, slug]) => slug !== "spend" || facts.operator).filter(([, slug]) => slug !== "system" || facts.operator || facts.approver);
   const panel = needsPanel(items.map((item, index) => ({ title: item.title, text: item.text, action: btn(item.action[0], { variant: index === 0 ? "primary" : "outline", href: item.action[1] }) })));
   return settingsShell({
-    group: "hub", title: "Settings", lead: "For the whole Toolroll.", flags: flagsOf(counts),
+    group: "hub", title: "Settings", flags: flagsOf(counts),
     body: joinHtml([
       answered(facts),
       panel,
@@ -232,7 +232,9 @@ export function generalGroup(facts: SettingsFacts, flags: Record<string, boolean
       facts.operator ? formRow("Updates", null, btn("Open updates", { sm: true, variant: "ghost", href: "/settings/updates" }), "inline") : "",
     ]),
   });
-  return settingsShell({ group: "general", title: "General", lead: "How Toolroll looks and behaves in this browser.", flags, body: joinHtml([answered(facts), appearance, browser, password, version]) });
+  // The password sections only where a password exists: a password-free owner has none to remember or look up.
+  const withPassword = passwordFree(facts) ? [] : [browser, password];
+  return settingsShell({ group: "general", title: "General", lead: "How Toolroll looks and behaves in this browser.", flags, body: joinHtml([answered(facts), appearance, ...withPassword, version]) });
 }
 
 // ---- Agents and models ------------------------------------------------------------------------------------------
@@ -274,7 +276,7 @@ export function agentsGroup(facts: SettingsFacts, flags: Record<string, boolean>
   });
   const links = settingsLinks("In this group", [
     settingsLink({ href: "/settings/models", title: "Models", status: "Which model plans, builds and reviews" }),
-    settingsLink({ href: "/settings/lead", title: "Lead", status: "The assistant you chat with" }),
+    settingsLink({ href: "/settings/lead", title: "Chat", status: "The assistant you chat with" }),
     settingsLink({ href: "/settings/lead/subagents", title: "Subagents", status: "Helpers the lead looks after" }),
     settingsLink({ href: "/settings/tools", title: "Tools", status: "What builds can use, per project" }),
     settingsLink({ href: "/settings/skills", title: "Skills", status: "Reusable instructions for agents" }),
@@ -737,4 +739,10 @@ export function passwordlessHtml(view: { on: boolean; since: string | null; trad
 export function projectPicker(action: string, projects: readonly { repo: string; name: string }[], chosen: string): Html {
   if (projects.length < 2) return html``;
   return html`<form method="get" action="${action}" class="k-acts k-picker">${select({ name: "repo", label: "Project", current: chosen, items: projects.map(one => [one.repo, one.name] as const) })}${btn("Show", { sm: true, type: "submit" })}</form>`;
+}
+
+/** The local owner's own session with no password set (local mode): password words and sections are left out. Presentation
+ * only: what needs a password is decided where it is asked, never here. */
+function passwordFree(facts: SettingsFacts): boolean {
+  return facts.local?.owner === true && !facts.local.passwordSet;
 }

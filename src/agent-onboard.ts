@@ -227,17 +227,21 @@ export function buildHandoff(input: { url: string; login: HandoffLogin | null })
   };
 }
 
-export function handoffLines(handoff: Handoff): string[] {
-  const login = handoff.login === null
-    ? "no account yet; `toolroll up` creates one"
-    : handoff.login.file === null
-      ? `${handoff.login.account ?? "your account"} — sign in with your password`
-      : `${handoff.login.account ?? "the account"} — the password is in ${handoff.login.file}`;
+/** `local`: a password-free start (local mode): there is no password to name, and only this computer signs in, so the
+ * lines say how this computer opens it and offer no phone. */
+export function handoffLines(handoff: Handoff, how: { local?: boolean } = {}): string[] {
+  const login = how.local === true
+    ? "none on this computer: run `toolroll` at its terminal, and it opens signed in"
+    : handoff.login === null
+      ? "no account yet; `toolroll up` creates one"
+      : handoff.login.file === null
+        ? `${handoff.login.account ?? "your account"} — sign in with your password`
+        : `${handoff.login.account ?? "the account"} — the password is in ${handoff.login.file}`;
   return [
     "Toolroll is ready.",
     `  console   ${handoff.console}`,
     `  login     ${login}`,
-    `  phone     ${handoff.phone}`,
+    ...how.local === true ? [] : [`  phone     ${handoff.phone}`],
     `  say next  ${handoff.next.map(one => `"${one}"`).join(" · ")}`,
   ];
 }

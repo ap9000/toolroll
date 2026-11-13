@@ -61,12 +61,14 @@ describe("removed central team and native session commands", () => {
   });
 
   test("help and the command contract name none of them, and keep the local lead's", async () => {
-    const help: string[] = [];
+    const help: string[] = [], internals: string[] = [];
     await main(["help"], line => help.push(line));
-    const text = help.join("\n");
-    for (const hidden of [/toolroll session\b/, /toolroll connect\b/, /toolroll conversation\b/, /toolroll lead +named leads/, /--lead <id> --conversation/]) expect(text).not.toMatch(hidden);
-    expect(text).toContain("toolroll lead token");
-    expect(text).toContain('toolroll lead say "<text>"');
+    await main(["internals"], line => internals.push(line));
+    for (const text of [help.join("\n"), internals.join("\n")]) {
+      for (const hidden of [/toolroll session\b/, /toolroll connect\b/, /toolroll conversation\b/, /toolroll lead +named leads/, /--lead <id> --conversation/]) expect(text).not.toMatch(hidden);
+    }
+    expect(internals.join("\n")).toContain("toolroll lead token");
+    expect(internals.join("\n")).toContain('toolroll lead say "<text>"');
 
     const contract: string[] = [];
     expect(await main(["contract", "--commands", "--json"], line => contract.push(line))).toBe(0);

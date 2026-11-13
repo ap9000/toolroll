@@ -1,7 +1,7 @@
 /** Everyday task verbs over the existing completion and revision boundaries. */
 import { createHash } from 'node:crypto';
 import { assignmentOf, checkAssignmentAsOperator, completeAsLocalOwner } from './assignment.js';
-import { currentLocalOwner } from './local-owner.js';
+import { currentLocalOwner, localModeOn } from './local-owner.js';
 import { validateNote } from './decision.js';
 import { assignmentForCoordinator, coordinatorToken } from './assignment-adapters.js';
 import { authenticateCoordinator } from './coordinator.js';
@@ -38,7 +38,12 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
   if (credential.token !== null && (flags.has('as') || flags.has('token'))) return fail('usage', 'Choose your lead\'s credential or your own sign-in, not both.');
   if (credential.token !== null && pullRequest) return fail('unauthenticated', 'Opening a pull request is an approver\'s act. Use your own sign-in (--as and --token), not your lead\'s credential.');
   const operator = credential.token === null ? await context.operator() : null;
-  if (credential.token === null && operator === null) return fail('unauthenticated', 'Sign in with up, or supply --as and --token. Your lead can use --token-file or --token-env with its own credential.');
+  if (credential.token === null && operator === null) {
+    // A password-free owner has nothing to sign in with here: the terminal UI is where they accept or send back.
+    return fail('unauthenticated', passwordFreeOwner(context.store)
+      ? `Open \`toolroll\` and press ${action === 'complete' ? 'c' : 'b'} on the task.`
+      : 'Sign in with --as <you> --token <your password>. Your lead can use --token-file or --token-env with its own credential.');
+  }
   const { store, now, evidenceRoot } = context;
   // A result whose build Toolroll hasn't yet proven stopped: it looks now (stop-proof.ts), so completing never waits
   // on a person to confirm it, only on Toolroll's own check (a refusal says "stopping" until it lands).
@@ -216,4 +221,13 @@ export async function runLocalCompletion(positional: readonly string[], flags: M
     `Result: ${receipt.taskId} · build #${receipt.runId} · ${receipt.head?.slice(0, 7) ?? 'no commit'}`,
     ...(assignment.readiness?.checksOff ? [] : [receipt.checks.detail]),
   ]);
+}
+
+/** Words only: local mode is on and no account has a password yet, so no sign-in from a shell can succeed (the terminal
+ * UI's owner acts there). It decides what a refusal says, never what is allowed. A read that fails says no. */
+export function passwordFreeOwner(store: Store): boolean {
+  try {
+    if (!localModeOn(store)) return false;
+    return store.handle.prepare("SELECT 1 FROM approver WHERE password_set = 1 AND revoked_at IS NULL LIMIT 1").get() === undefined;
+  } catch { return false; }
 }

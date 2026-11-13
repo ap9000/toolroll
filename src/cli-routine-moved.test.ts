@@ -54,6 +54,7 @@ describe("`toolroll routine …` after routines became scheduled flows", () => {
   test("it is hidden: neither help nor the contract names it", async () => {
     const help: string[] = [];
     await main(["help"], line => help.push(line));
+    await main(["internals"], line => help.push(line));
     expect(help.join("\n")).not.toMatch(/toolroll routine\b/);
     const contract: string[] = [];
     expect(await main(["contract", "--json"], line => contract.push(line))).toBe(0);

@@ -95,7 +95,7 @@ export function searchResults(workspace: BrowserWorkspace, raw: string): SearchE
   const all = searchIndex(workspace);
   const actions: SearchEntry[] = [
     { kind: "action", title: "New task", sub: query ? "Describe the change on the next page" : "Describe a change in a sentence", href: "/tasks/new" },
-    { kind: "action", title: "Ask the lead", sub: query ? `“${raw.trim()}”` : "A question about your projects", href: query ? `/chat?draft=${encodeURIComponent(raw.trim())}` : "/chat" },
+    { kind: "action", title: "Ask in Chat", sub: query ? `“${raw.trim()}”` : "A question about your projects", href: query ? `/chat?draft=${encodeURIComponent(raw.trim())}` : "/chat" },
   ];
   if (query === "") return [...all.filter(one => one.kind === "task" && one.needs).slice(0, 4), ...actions, ...all.filter(one => one.kind === "page" && !one.legacy)];
   const words = query.split(/\s+/);

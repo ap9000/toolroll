@@ -89,7 +89,7 @@ ${field({ id: "nt-from", label: "From an issue or PR (optional)", hint: "A githu
 ${field({ id: "nt-quality", label: "Checks", control: select({ id: "nt-quality", name: "quality-mode", items: [["default", "Default checks"], ["strict", "Strict (release)"]], current: quality, wide: true }) })}\
 ${candidates.length === 0 ? "" : field({ id: "nt-after", label: "Starts", control: select({ id: "nt-after", name: "after", wide: true, current: after,
     items: [["", "Right away"], ...candidates.map(one => [one.id, `After ${one.id}: ${one.title}`] as const)] }) })}\
-${field({ id: "nt-goal", label: "Goal (optional)", hint: "With acceptance below, automatic approval can sign an unchanged plan.", control: textarea({ id: "nt-goal", name: "goal", rows: 2, value: prefill?.goal ?? "", attrs: { placeholder: "What success looks like" } }) })}\
+${field({ id: "nt-goal", label: "Goal (optional)", hint: "With requirements below, an unchanged plan can be approved automatically.", control: textarea({ id: "nt-goal", name: "goal", rows: 2, value: prefill?.goal ?? "", attrs: { placeholder: "What success looks like" } }) })}\
 ${field({ id: "nt-acceptance", label: "Acceptance", hint: "Needed with a goal. One per line: statement | evidence,kinds | how", control: textarea({ id: "nt-acceptance", name: "acceptance", rows: 2, value: prefill?.acceptance ?? "", attrs: { placeholder: "Requests over the limit return 429 | check" } }) })}\
 ${field({ id: "nt-not", label: "Not this (optional)", control: input({ id: "nt-not", name: "not", value: prefill?.not ?? "" }) })}\
 ${field({ id: "nt-touches", label: "Likely touches (optional)", hint: "Paths, separated by commas.", control: input({ id: "nt-touches", name: "touches", value: prefill?.touches ?? "", hint: true }) })}\

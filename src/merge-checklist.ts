@@ -44,6 +44,8 @@ export const CHECKLIST_LABELS: Readonly<Record<ChecklistKey, string>> = {
 };
 /** The one sentence for a row Toolroll keeps no record of. */
 export const NOT_RECORDED = "Toolroll doesn't record this. The pull request on GitHub shows it.";
+/** The same, for a project that doesn't open pull requests (it may not be on GitHub at all). */
+export const NOT_RECORDED_LOCAL = "Toolroll doesn't record this. Your repository shows it.";
 /** The act labels, the same words the result page uses. */
 export const CHECKLIST_ACT_LABELS: Readonly<Record<ChecklistAct["kind"], string>> = { "run-checks": "Run checks", retry: "Retry", fix: "Ask the agent to fix" };
 
@@ -130,11 +132,13 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
     else row("pr-ci", view.state === "failed" || view.state === "closed" ? "skip" : "waiting", view.state === "failed" || view.state === "closed" ? "No open pull request." : "No CI has reported yet.");
   }
 
-  // Up to date with main and conflicts: Toolroll keeps no record of either, except a batch check's conflict.
-  row("up-to-date", merged ? "yes" : "unknown", merged ? "Merged." : NOT_RECORDED);
+  // Up to date with main and conflicts: Toolroll keeps no record of either, except a batch check's conflict. Where to
+  // look is GitHub only when this project opens pull requests there.
+  const notRecorded = publishing.on ? NOT_RECORDED : NOT_RECORDED_LOCAL;
+  row("up-to-date", merged ? "yes" : "unknown", merged ? "Merged." : notRecorded);
   if (merged) row("conflicts", "yes", "Merged.");
   else if (receipt?.checks.batch?.state === "conflict") row("conflicts", "no", "It conflicted with another result in its batch check.", { kind: "fix", run: receipt.runId, note: "It conflicts with another change. Rebase it on main and resolve the conflict." });
-  else row("conflicts", "unknown", NOT_RECORDED);
+  else row("conflicts", "unknown", notRecorded);
 
   // Review comments: the saved notes and pull request review comments not yet sent back.
   const notes = run === null ? [] : store.liveDiffComments(run).filter(one => isRevisionFeedback(one));
@@ -156,7 +160,7 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
   const sentence = answer === "merged" ? "Already merged."
     : answer === "no" ? `Not yet: ${first!.label.toLowerCase()} — ${first!.say}`
     : answer === "not-yet" ? `Not yet: ${rows.find(one => one.mark === "waiting")!.label.toLowerCase()} — ${rows.find(one => one.mark === "waiting")!.say}`
-    : `Yes, as far as Toolroll records.${unknown.length === 0 ? "" : ` Check ${unknown.join(" and ")} on GitHub.`}`;
+    : `Yes, as far as Toolroll records.${unknown.length === 0 ? "" : ` Check ${unknown.join(" and ")} ${publishing.on ? "on GitHub" : "in your repository"}.`}`;
   return { taskId, activeTaskId: active, run, head, answer, sentence, rows };
 }
 
@@ -164,5 +168,6 @@ export function checklistFromAssignment(store: Store, taskId: string, assignment
 export function checklistLines(list: MergeChecklist): string[] {
   const MARK: Readonly<Record<ChecklistMark, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?", skip: "–" };
   return [`Can I merge ${list.activeTaskId}? ${list.sentence}`,
-    ...list.rows.filter(one => one.mark !== "skip").map(one => `  ${MARK[one.mark]} ${one.label}: ${one.say}${one.act === null ? "" : ` [${CHECKLIST_ACT_LABELS[one.act.kind]}]`}`)];
+    // A blocker's act is a button on the task's page; in plain text it says where to find it, never a fake button.
+    ...list.rows.filter(one => one.mark !== "skip").map(one => `  ${MARK[one.mark]} ${one.label}: ${one.say}${one.act === null ? "" : ` Next: ${CHECKLIST_ACT_LABELS[one.act.kind]}, on the task's page.`}`)];
 }

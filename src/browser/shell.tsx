@@ -110,9 +110,13 @@ function RailProjects({ workspace, states, current }: { workspace: BrowserWorksp
 /** Who is signed in, and what stands in for a password on this computer right now. */
 function Account({ workspace }: { workspace: BrowserWorkspace }) {
   const signOut = useRef<HTMLFormElement>(null);
+  const forget = useRef<HTMLFormElement>(null);
   const [chime, setChimeState] = useState(chimeOn);
+  // A remembered password is said in this menu, not on every page: only a password typed in this session makes one.
+  const remembered = workspace.fresh && !workspace.sensitive ? workspace.fresh : null;
   const menu = (trigger: HTMLElement) => {
     const items = [
+      ...(remembered !== null ? [{ label: `Forget remembered password · ${remembered.minutes} min left`, act: () => { forget.current?.requestSubmit(); } }] : []),
       ...(workspace.usage && !workspace.sensitive ? [{ label: `Plan use · ${workspace.usage.text}`, act: () => { window.location.assign(workspace.usage!.href); } }] : []),
       ...(!workspace.sensitive && workspace.projectStates !== undefined ? [{ label: chime ? "Turn the chime off" : "Chime when something needs me", act: () => { setChime(!chime); setChimeState(!chime); } }] : []),
       { label: "Sign out", act: () => { signOut.current?.requestSubmit(); } },
@@ -124,9 +128,8 @@ function Account({ workspace }: { workspace: BrowserWorkspace }) {
       <span className="so-acct-name" title={workspace.user}>{workspace.user}</span>
       <KButton variant="ghost" sm iconOnly="more" label="Account" onClick={event => menu(event.currentTarget)} />
     </div>
-    <div data-live data-sidebar-slot="chips">{workspace.fresh && !workspace.sensitive ? <PostForm action={workspace.fresh.forget} className="so-acct-note" data-fresh-chip>
+    <div data-live data-sidebar-slot="chips">{remembered !== null ? <PostForm action={remembered.forget} ref={forget} hidden data-fresh-chip>
       <input type="hidden" name="return" value={workspace.path} />
-      <span>Password remembered</span><span>{workspace.fresh.minutes} min left</span><KButton variant="ghost" sm type="submit" label="Forget" className="so-acct-forget" />
     </PostForm> : workspace.passwordless ? <p className="so-acct-note">Passwordless is on</p> : null}</div>
     <PostForm action="/logout" ref={signOut} hidden />
   </div>;

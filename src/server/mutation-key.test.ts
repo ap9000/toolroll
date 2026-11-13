@@ -48,7 +48,7 @@ describe("check", () => {
 
   test("a refusal names how to reconnect: the password for a full session, the terminal for a local owner", () => {
     expect(keys().check(browser({ keyEpoch: "e0" }), request(), null)?.reconnect).toEqual({ kind: "password", href: "/login/rekey" });
-    expect(keys().check(browser({ keyEpoch: "e0" }, "local-owner"), request(), null)).toMatchObject({ status: 409, reconnect: { kind: "command", command: "toolroll open" } });
+    expect(keys().check(browser({ keyEpoch: "e0" }, "local-owner"), request(), null)).toMatchObject({ status: 409, reconnect: { kind: "command", command: "toolroll --web" } });
   });
 
   test("a key is issued only on the canonical origin, and only its hash and this start's epoch are kept", () => {

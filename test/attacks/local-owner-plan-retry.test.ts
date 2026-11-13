@@ -560,8 +560,8 @@ describe("the terminal UI's Retry, on the laptop's database", () => {
       const read = (await source.task(build.id))!;
       expect(read.retry).toEqual({ runId: build.runId, digest: build.digest });
       const sent = { kind: "retry" as const, id: build.id, runId: read.retry!.runId, digest: read.retry!.digest };
-      expect(await source.act(sent)).toEqual({ ok: true, message: "Retrying. A builder starts it next." });
-      expect(await source.act(sent)).toEqual({ ok: true, message: "Already retrying. A builder starts it next." });
+      expect(await source.act(sent)).toEqual({ ok: true, message: "Retrying. It starts next." });
+      expect(await source.act(sent)).toEqual({ ok: true, message: "Already retrying. It starts next." });
       expect(retryPinsOf(world.store, build.id)).toBeNull();
       const other = failedBuild();
       const stale = (await source.task(other.id))!.retry!;

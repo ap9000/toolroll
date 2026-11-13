@@ -700,7 +700,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/acp-client.ts#exactField@10": 3,
     "src/backup.ts#runningNow@18": 2,
     "src/browser-workspace.ts#<module>": 2,
-    "src/browser/shell.tsx#Account@10": 3,
+    "src/browser/shell.tsx#Account@10": 2,
     "src/browser/chime.ts#createChime@10>see@3": 2,
     "src/browser/chime.ts#createChime@10>see@3>window.setTimeout(_,CHIME_SETTLE_MS)@6>exclusively(_)@1": 2,
     "src/browser/live-task.tsx#ActivityLine@2": 1,

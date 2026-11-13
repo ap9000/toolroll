@@ -103,7 +103,7 @@ export function flowAsks(store: Store, repos: readonly string[], viewer: { name:
 }
 
 const SETUP_TITLES: Readonly<Record<FirstRunStep["key"], string>> = {
-  agent: "Sign in to a coding agent", project: "Add a project", builder: "Connect a builder", task: "File your first task",
+  agent: "Sign in to a coding agent", project: "Add a project", builder: "Start taking work", task: "File your first task",
 };
 
 /** The first-run steps (first-run.ts, with the builder step) still to do, for an approver. A step that is done, or only

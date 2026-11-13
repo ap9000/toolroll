@@ -199,7 +199,7 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
     working: [...live.map(one => row(one, "running")), ...queued.map(one => row(one, "queued"))],
     finishedToday: { count: Math.max(today.completedSince, done.length), rows: done.map(one => row(one, "done")), href: counts[3]!.href },
     newTask: "/tasks/new",
-    ask: facts.chat ? { project, placeholder: "Message the lead" } : null,
+    ask: facts.chat ? { project, placeholder: "Ask Toolroll" } : null,
     lastLead: lead === null || leadText === "" ? null : { text: leadText, age: relativeAge(lead.at, now), href: "/chat" },
     empty: any || others > 0 ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
   };

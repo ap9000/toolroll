@@ -128,9 +128,9 @@ export function refuse(
 }
 
 /** The demo's one-line promise, on every page. */
-export const DEMO_BANNER = `Demo: a scripted lead and sample projects. Nothing calls a model, reaches outside or spends. For your own project, run ${START_COMMAND} in its folder.`;
+export const DEMO_BANNER = `Demo: a scripted chat and sample projects. Nothing calls a model, reaches outside or costs anything. For your own project, run ${START_COMMAND} in its folder.`;
 /** The demo notice on a phone: one line. */
-export const DEMO_BANNER_SHORT = "Demo: sample projects. Nothing calls a model or spends.";
+export const DEMO_BANNER_SHORT = "Demo: sample projects. Nothing calls a model or costs anything.";
 
 /**
  * The Operations Ledger: the design system Alex approved in Figma and the
