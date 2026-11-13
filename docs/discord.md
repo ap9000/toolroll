@@ -1,10 +1,10 @@
 # Discord
 
-Open **Settings → Discord**. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications), copy its bot token, and enter it in the setup form with your Standing Orders password. The token stays in a private file on this installation and is never shown back.
+Open **Settings → Discord**. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications), copy its bot token, and enter it in the setup form with your Toolroll password. The token stays in a private file on this installation and is never shown back.
 
 Keep the app’s **Interactions Endpoint URL** empty so buttons arrive over the Gateway connection. Leave privileged intents off. Enable **Guild Install**, with the **bot** scope and no server permissions, and install it in a server you manage. Open a direct message to the bot from its member profile. If Discord refuses the conversation, allow direct messages for that server.
 
-Choose **Create pairing code** and send the displayed message to the bot. It expires in ten minutes and works once. Your paired Discord account can read your connected projects and confirm proposed changes using your current Standing Orders permissions. Disconnecting or changing account access invalidates the pairing.
+Choose **Create pairing code** and send the displayed message to the bot. It expires in ten minutes and works once. Your paired Discord account can read your connected projects and confirm proposed changes using your current Toolroll permissions. Disconnecting or changing account access invalidates the pairing.
 
 Ask about tasks, projects, skills, knowledge, MCP servers, results or evidence. Discord uses the same saved assistant, project access, proposals and history as the console, Slack and Telegram. It uses your configured membership login and does not grant API spending authority.
 

@@ -14,7 +14,7 @@ Secondary (confirmed 2026-09-22): open-source adopters who install their own cop
 
 ## Product Purpose
 
-Standing Orders is a control plane for unattended coding agents. A person tells a lead agent what outcome they want; the lead plans it; the person approves the exact contract once; crew agents build it under the approved terms; the result comes back as **Ready** with the saved diff, checks and screenshots; a person marks it **Complete** or asks for a specific revision. Success means the person spends minutes supervising, not hours watching, and is interrupted only for decisions that genuinely need a human.
+Toolroll is a control plane for unattended coding agents. A person tells a lead agent what outcome they want; the lead plans it; the person approves the exact contract once; crew agents build it under the approved terms; the result comes back as **Ready** with the saved diff, checks and screenshots; a person marks it **Complete** or asks for a specific revision. Success means the person spends minutes supervising, not hours watching, and is interrupted only for decisions that genuinely need a human.
 
 ## Positioning
 
@@ -36,7 +36,7 @@ One central installation, many surfaces, one truth: browser, CLI and every chat 
 
 ## Brand Commitments
 
-- Name: Standing Orders (wordmark `standing·orders`), from a captain's night orders: "proceed without me, wake me only for these."
+- Name: Toolroll. It was called Standing Orders before 0.5.0; that name survives only in compatibility identifiers (config folder, environment variables, the `standing-orders` command alias).
 - Voice: plain English, concise, calm; say it once; describe what happened and what the person can do (see AGENTS.md "simple, elegant UI").
 - Geist and Geist Mono are the product's typefaces (self-hosted in `/fonts`; chosen 2026-09-27, replacing IBM Plex).
 - Visual register (chosen 2026-09-27): the Raycast and Arc canon played straight. Neutral grey with one signature accent, the ink accent, reserved for what waits on a person; ink for every other act. Craft bar: Raycast, Arc, Linear, Vercel.

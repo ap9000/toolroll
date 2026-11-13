@@ -25,8 +25,7 @@ people and unattended work. See [Project access and action ledger v1](../PROJECT
 for its permissions, history coverage, and migration behavior.
 
 [Automatic approvals](../AUTO_APPROVAL.md) explains the signed project policy for scope filings, unchanged plans, reviews, repairs, and merges.
-Earlier arcs shipped behind their own adversarial review rounds;
-docs/PROGRESS.md records those findings.
+Earlier arcs shipped behind their own adversarial review rounds.
 
 **M4 built.** The whole loop runs: `toolroll watch` (or `daemon
 install` — no crontab) dispatches approved work, spends nothing while idle,
@@ -37,8 +36,7 @@ and every provider spawn is stamped before it spends, so cost is measured,
 never asserted. CI on published PRs is watched as episodes that never call
 silence green. The whole unattended stretch is one test,
 [`src/unattended.slow.test.ts`](../../src/unattended.slow.test.ts): queue twelve, walk
-away, come back to PRs. Architecture: [`docs/DESIGN.md`](../DESIGN.md);
-the item-by-item ledger: [`docs/PROGRESS.md`](../PROGRESS.md).
+away, come back to PRs. Architecture: [`docs/DESIGN.md`](../DESIGN.md).
 
 ## Milestones
 

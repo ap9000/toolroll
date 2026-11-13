@@ -1,7 +1,7 @@
 {
   "name": "toolroll",
   "version": "0.9.104",
-  "description": "A control plane for unattended coding agents — queue tasks, walk away, come back to pull requests. Agents build in leased worktrees, never touch your default branch, and interrupt you only for decisions that need a human.",
+  "description": "Your agents build. You decide. A control plane for coding agents — Claude Code, Codex, Gemini: approve the exact scope once, get results back Ready with the diff, the passing check and screenshots. Runs on your machine.",
   "directories": {
     "doc": "docs"
   },
@@ -58,7 +58,7 @@
   "bugs": {
     "url": "https://github.com/ap9000/toolroll/issues"
   },
-  "homepage": "https://github.com/ap9000/toolroll#readme",
+  "homepage": "https://toolroll.dev",
   "bin": {
     "toolroll": "dist/bin.js",
     "standing-orders": "dist/bin.js"
