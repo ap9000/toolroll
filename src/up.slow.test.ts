@@ -895,6 +895,53 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     } finally { foreign.close(); }
   });
 
+  test("eight W2: a database made first by `status` becomes password-free under a direct `up --laptop` only for a person at its terminal", async () => {
+    /** A fresh database as `status` makes it before any start: no creator fact, no account. */
+    const madeByStatus = async (file: string): Promise<void> => {
+      expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
+      const made = openStore(file);
+      try {
+        expect(made.listApprovers()).toEqual([]);
+        expect(made.handle.prepare("SELECT value FROM installation_fact WHERE key = 'created-by'").get()).toBeUndefined();
+      } finally { made.close(); }
+    };
+    const laptopUp = async (file: string, port: number, seams: { terminal: boolean; env: Record<string, string>; json?: boolean }): Promise<number> => {
+      lines = [];
+      return runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--port", String(port), "--for", "1200", ...(seams.json === true ? ["--json"] : [])], line => lines.push(line), {
+        databaseFile: file, inferProjectFromCwd: false,
+        upSeams: { terminal: seams.terminal, env: seams.env, home: join(base, "home"), fenceAvailable: () => true },
+      });
+    };
+    const localRows = (file: string): number => { const store = openStore(file); try { return Number(store.handle.prepare("SELECT count(*) AS n FROM local_mode").get()!["n"]); } finally { store.close(); } };
+    // Not a person: no terminal; a coding agent at a terminal; --json at a terminal. Each takes today's password road.
+    const notPeople: { terminal: boolean; env: Record<string, string>; json?: boolean }[] = [
+      { terminal: false, env: {} }, { terminal: true, env: { CLAUDECODE: "1" } }, { terminal: true, env: {}, json: true },
+    ];
+    // And a brand-new database `up --laptop` makes itself, started with no terminal: never password-free either.
+    lines = [];
+    const fresh = join(base, "fresh-not-person.db");
+    expect(await laptopUp(fresh, PORT + 64, { terminal: false, env: {}, json: true }), lines.join("\n")).toBe(0);
+    expect(localRows(fresh)).toBe(0);
+    for (const [index, seams] of notPeople.entries()) {
+      const file = join(base, `not-person-${index}.db`);
+      await madeByStatus(file);
+      expect(await laptopUp(file, PORT + 60 + index, seams), lines.join("\n")).toBe(0);
+      expect(localRows(file), JSON.stringify(seams)).toBe(0);
+    }
+    // A person at its terminal: password-free, provenance untouched, no login minted.
+    const file = join(base, "person.db");
+    await madeByStatus(file);
+    expect(await laptopUp(file, PORT + 63, { terminal: true, env: {} }), lines.join("\n")).toBe(0);
+    expect(lines.join("\n")).toContain("local mode is on");
+    const store = openStore(file);
+    try {
+      expect(store.handle.prepare("SELECT owner, enabled FROM local_mode").all().map(row => ({ ...row }))).toEqual([{ owner: expect.any(String), enabled: 1 }]);
+      expect(store.listApprovers()).toHaveLength(1);
+      expect(store.accountOf(store.listApprovers()[0]!.name)?.passwordSet).toBe(false);
+      expect(store.handle.prepare("SELECT value FROM installation_fact WHERE key = 'created-by'").get()).toBeUndefined();
+    } finally { store.close(); }
+  });
+
   test("the console mints only the kind of link its own start was authorised for; a request of another kind gets none", () => {
     const minted: string[] = [];
     const server = { mintSignInLink: (account: string) => { minted.push(`full:${account}`); return "/login/once/full"; }, mintLocalLink: () => { minted.push("local"); return "/login/once/local"; } };

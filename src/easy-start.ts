@@ -23,7 +23,8 @@ import { pathToFileURL } from "node:url";
 import { requestLocalLink, type AttachProof } from "./console-instance.js";
 import { backgroundInstalled, backgroundOn, startInstalledService } from "./laptop-background.js";
 import { proveConsoleReadOnly } from "./quick-start.js";
-import { backgroundAsked, localModeOf, openStore, openStoreReadOnly, recordBackgroundAsked } from "./store.js";
+import { backgroundAsked, localModeCandidate, localModeOf, openStore, openStoreReadOnly, recordBackgroundAsked } from "./store.js";
+import { underAgent } from "./prompt.js";
 import type { TuiExit, TuiSession } from "./tui-contract.js";
 
 export { easyStartApplies, easyStartArgs, type EasyStartArgs } from "./easy-start-args.js";
@@ -38,8 +39,12 @@ export type EasyStartSeams = {
   write: (line: string) => void;
   /** Prove this database's console live (read only). */
   prove: () => Promise<AttachProof>;
-  /** Local mode as saved now: on, off, or no database yet (a new install). */
-  localMode: () => "on" | "off" | "absent";
+  /** Local mode as saved now: on, off, no database yet (a new install), or a database with no account and no local-mode
+   * state that this person's start may still make password-free (eight W2: `welcome`, `status` or `repos add` ran first). */
+  localMode: () => "on" | "off" | "absent" | "candidate";
+  /** Eight W2: turn local mode on here, at the person's terminal, before anything starts (operate.ts
+   * easyStartInitLocalMode re-proves the person and the database itself). True when it is on afterwards. */
+  initLocal: () => Promise<boolean>;
   serviceInstalled: () => boolean;
   /** Start the installed background service through its supervisor and prove its console. */
   startService: () => Promise<AttachProof>;
@@ -90,8 +95,17 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     return (await seams.enrolled(repo)) ? EXIT.ok : seams.admit(repo);
   };
 
+  // Eight W2: a database with no account and no local-mode state (or none yet) becomes password-free here, at the
+  // person's own terminal, before anything starts — only while nothing of this database's is running. The `up` started
+  // below has no terminal of its own, so it never initialises anything itself.
+  let local = seams.localMode();
+  if ((local === "candidate" || local === "absent") && !first.ok && first.state === "none" && await seams.initLocal()) local = "on";
+  // A database that could not be made password-free (no fence, an account that appeared meanwhile, a console running):
+  // today's password road, never the laptop road.
+  if (local === "candidate") local = "off";
+
   // An install with passwords: today's flow, in the browser, where the person signs in. Nothing here writes.
-  if (seams.localMode() === "off") {
+  if (local === "off") {
     if (!first.ok) return seams.runUpForeground(rootArgs);
     const joined = await joinRepo();
     if (joined !== EXIT.ok) return joined;
@@ -249,6 +263,10 @@ export function defaultEasyStartSeams(options: {
     write: options.write,
     prove: () => proveConsoleReadOnly(file, options.build),
     localMode: () => localModeRead(file),
+    initLocal: async () => (await import("./operate.js")).easyStartInitLocalMode(file, {
+      stdin: process.stdin.isTTY === true, stdout: process.stdout.isTTY === true, agent: underAgent(process.env), json: false,
+      remote: (await import("./local-owner.js")).localOwnerRequested(),
+    }),
     serviceInstalled: () => backgroundInstalled(),
     startService: async () => {
       const store = openStore(file);
@@ -312,10 +330,14 @@ async function loadTui(): Promise<{ startTui: (source: import("./tui-contract.js
   return await import(pathToFileURL(new URL("./tui/entry.tsx", import.meta.url).pathname).href) as never;
 }
 
-/** Local mode as saved, read only: "absent" with no database yet; an older database has none ("off"). */
-export function localModeRead(file: string): "on" | "off" | "absent" {
+/** Local mode as saved, read only: "absent" with no database yet; "candidate" for one with no account of any kind and no
+ * local-mode state (store.ts localModeCandidate); an older or unreadable database has none ("off"): never widened. */
+export function localModeRead(file: string): "on" | "off" | "absent" | "candidate" {
   if (file !== ":memory:" && !existsSync(file)) return "absent";
   const store = openStoreReadOnly(file);
   if (store === null) return "off";
-  try { return localModeOf(store)?.enabled === true ? "on" : "off"; } finally { store.close(); }
+  try {
+    if (localModeOf(store)?.enabled === true) return "on";
+    return localModeCandidate(store) ? "candidate" : "off";
+  } catch { return "off"; } finally { store.close(); }
 }

@@ -33,7 +33,9 @@ function fakeChild(pid = fakePid(2)) {
 
 type Script = {
   proofs?: AttachProof[];
-  local?: ("on" | "off" | "absent")[];
+  local?: ("on" | "off" | "absent" | "candidate")[];
+  /** What the initialisation at the terminal answers (eight W2); default: it turns local mode on. */
+  init?: boolean;
   service?: boolean;
   tui?: (session: TuiSession) => Promise<TuiExit>;
   asked?: boolean;
@@ -44,6 +46,8 @@ type Script = {
 function scripted(script: Script = {}) {
   const calls: string[] = [];
   const lines: string[] = [];
+  /** Each initialisation asked for at the terminal (eight W2). */
+  const inits: string[] = [];
   const children: ReturnType<typeof fakeChild>[] = [];
   const proofs = [...(script.proofs ?? [LIVE])];
   const local = [...(script.local ?? ["on"])];
@@ -52,6 +56,7 @@ function scripted(script: Script = {}) {
     databaseFile: "/tmp/none.db", cwd: "/work/shop", write: line => lines.push(line),
     prove: async () => (proofs.length > 1 ? proofs.shift()! : proofs[0]!),
     localMode: () => (local.length > 1 ? local.shift()! : local[0]!),
+    initLocal: async () => { inits.push("init"); return script.init ?? true; },
     serviceInstalled: () => script.service ?? false,
     startService: async () => { calls.push("service"); return LIVE; },
     spawnUp: args => { calls.push(`spawn ${args.join(" ")}`); const child = fakeChild(fakePid(2 + children.length)); children.push(child); return child; },
@@ -68,7 +73,7 @@ function scripted(script: Script = {}) {
     sleep: async () => {},
     startTimeoutMs: 5_000,
   };
-  return { seams, calls, lines, children };
+  return { seams, calls, lines, children, inits };
 }
 const bare = { web: false, projectRoot: null };
 
@@ -160,6 +165,48 @@ describe("bare toolroll at a terminal", () => {
     expect(await runEasyStart("open", { web: true, projectRoot: null }, warm.seams)).toBe(0);
     expect(warm.calls).toEqual(["link", "browser http://127.0.0.1:4999/login/once/abc"]);
     expect(warm.lines.join("\n")).not.toContain("/login/once/");
+  });
+});
+
+describe("a database made before the first start (eight W2: welcome, status or repos add ran first)", () => {
+  test("no account and no local mode, nothing running: made password-free at this terminal, then the laptop road", async () => {
+    const { seams, calls, inits } = scripted({ proofs: [NONE, LIVE], local: ["candidate", "on"] });
+    expect(await runEasyStart("start", bare, seams)).toBe(0);
+    expect(inits).toEqual(["init"]);
+    expect(calls).toEqual(["spawn --laptop --no-open", "tui"]);
+  });
+
+  test("when it couldn't be made password-free (no fence, an account appeared meanwhile): today's password road, never --laptop", async () => {
+    const { seams, calls, inits } = scripted({ proofs: [NONE], local: ["candidate"], init: false });
+    expect(await runEasyStart("start", { web: false, projectRoot: "/p" }, seams)).toBe(0);
+    expect(inits).toEqual(["init"]);
+    expect(calls).toEqual(["foreground --project-root /p"]);
+  });
+
+  test("a console of this database already running: nothing is initialised under it; today's browser flow", async () => {
+    const { seams, calls, inits } = scripted({ proofs: [LIVE], local: ["candidate"] });
+    expect(await runEasyStart("start", bare, seams)).toBe(0);
+    expect(inits).toEqual([]);
+    expect(calls).toEqual(["browser http://127.0.0.1:4999"]);
+  });
+
+  test("an install with passwords, or one already password-free, is never initialised", async () => {
+    for (const local of ["off", "on"] as const) {
+      const { seams, inits } = scripted({ proofs: [NONE, LIVE], local: [local] });
+      await runEasyStart("start", bare, seams);
+      expect(inits, local).toEqual([]);
+    }
+  });
+
+  test("cli.ts: without a terminal, under an agent or with --json, the initialisation is never reached", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-easy-init-")));
+    const initLocal = vi.fn(async () => true);
+    const quickStart = { findRepo: async () => "/work/shop", enrolled: async () => false, underAgent: true };
+    for (const easyStart of [{ terminal: false }, { terminal: true, underAgent: true }]) {
+      await main([], () => {}, { operate: { databaseFile: join(dir, "none.db") }, quickStart, easyStart: { ...easyStart, seams: { initLocal } } });
+    }
+    await main(["--json"], () => {}, { operate: { databaseFile: join(dir, "none.db") }, quickStart, easyStart: { terminal: true, underAgent: false, seams: { initLocal } } });
+    expect(initLocal).not.toHaveBeenCalled();
   });
 });
 

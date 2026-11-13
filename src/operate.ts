@@ -130,7 +130,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import { dur } from "./design/kit.js";
 import {
-  requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
+  requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -1143,7 +1143,8 @@ async function runOperateLocal(
 
   let store: Store;
   try {
-    // v147: `up --laptop` records who made a NEW database (installation_fact created-by), the fact local mode starts from.
+    // v147: `up --laptop` records who made a NEW database (installation_fact created-by): provenance only; local mode
+    // starts from a person at the terminal and a database with no account (eight W2, initLocalModeForPerson).
     const laptop = command === "up" && flags.has("laptop") && options.upRole === undefined;
     store = options.openDatabase !== undefined ? options.openDatabase(file) : openStore(file, laptop ? { createdBy: "laptop" } : {});
   } catch (error) {
@@ -7952,6 +7953,7 @@ async function upCommand(
   // (finding 7/19): a busy port must refuse while the world is untouched.
   // A laptop start with no --port: the port this install saved, else (a NEW laptop install only) the first free one from
   // `up`'s default on (upLaptopPortCandidates), saved once it is reserved. Every other install keeps its port.
+  const localCaller = upLocalInitCaller(context, flags);
   const candidates = laptop && portGiven === undefined ? upLaptopPortCandidates(store, context.upSeams?.laptopPorts) : [port];
   let probe = createNetServer();
   let reserved = false;
@@ -7988,7 +7990,7 @@ async function upCommand(
     // 4. The approver (findings 2/8/17/21/27/29/32). A laptop start first turns local mode on for a database it just
     // made with no account yet, when this machine has a fence (easy-start plan F); anywhere else this changes nothing.
     if (flags.has("laptop")) {
-      const made = upLaptopLocalMode(context, text(flags, "as"));
+      const made = upLaptopLocalMode(context, text(flags, "as"), localCaller);
       if (made.ok) progress("local mode is on: this computer's browser signs in without a password");
     }
     const approverPlan = await resolveUpApprover(context, flags, canPrompt);
@@ -13778,17 +13780,17 @@ function upLaptopProjectsRoot(home: string): string | null {
 }
 
 /**
- * Local mode for a laptop start (plan F): only for a database this start's `--laptop` made (created-by laptop) with no
- * account yet, and only where this machine has a fence (diagnostic: on Linux without bubblewrap the ordinary password
- * flow runs). The owner is named like today's minted login: --as, else the user's name. Idempotent: a later start, a
- * racing start or an install with accounts changes nothing.
+ * Local mode for a laptop start (plan F; eight W2): only for a database with no account of any kind and no local-mode
+ * state ever recorded, however it was made, and only when a person runs this `up --laptop` at this computer's own
+ * terminal (initLocalModeForPerson: both TTYs, no coding agent, no --json, no remote principal) and this machine has a
+ * fence (diagnostic: on Linux without bubblewrap the ordinary password flow runs). The owner is named like today's
+ * minted login: --as, else the user's name. Idempotent: a later start, a racing start or an install with accounts
+ * changes nothing.
  */
-function upLaptopLocalMode(context: Context, asFlag: string | undefined): InitLocalModeResult {
-  const fence = context.upSeams?.fenceAvailable ?? (() => process.platform === "darwin" ? macosFenceAvailable() : linuxFenceAvailable());
+function upLaptopLocalMode(context: Context, asFlag: string | undefined, caller: LocalInitCaller): InitLocalModeResult | { ok: false; reason: "not-a-person" } {
+  const fence = context.upSeams?.fenceAvailable ?? defaultFenceAvailable;
   const owner = asFlag ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
-  // Cheap reads first: the fence probe runs only for a database that could still be initialized.
-  if (installationCreatedBy(context.store) !== "laptop" || localModeOf(context.store) !== null || context.store.listApprovers().length > 0) return { ok: false, reason: "already" };
-  return initLocalMode(context.store, { owner, fenceAvailable: fence(), now: context.clock() });
+  return initLocalModeForPerson(context.store, caller, { owner, fence, now: context.clock() });
 }
 
 /** The sign-in link `up` asks its console for, by this start's authority: none for "none". */
@@ -14668,4 +14670,65 @@ async function localRetryCommand(positional: readonly string[], flags: Map<strin
   return succeed(write, json, command, { id, replayed: done.replayed, retries: done.retries }, () => [
     done.replayed ? `${id} · Already retrying build #${run}.` : `${id} · Retrying build #${run}. A builder starts it next.`,
   ]);
+}
+
+// ---- eight W2: who may turn local (password-free) mode on ------------------------------------------------------------
+
+/** The facts about who is asking to turn local mode on: both TTYs, a coding agent, --json, and any remote principal
+ * (a remote run, the terminal UI's local owner acting, or a credential named on the command line). */
+export type LocalInitCaller = { stdin: boolean; stdout: boolean; agent: boolean; json: boolean; remote: boolean };
+
+/** Only a person at this computer's own terminal: stdin AND stdout a TTY, not under a coding agent, no --json, no remote
+ * principal. Anything else never turns local mode on: it gets today's password road. */
+export function personMayInitLocalMode(caller: LocalInitCaller): boolean {
+  return caller.stdin && caller.stdout && !caller.agent && !caller.json && !caller.remote;
+}
+
+/** This machine's fence, probed (the same probe every other caller uses). */
+function defaultFenceAvailable(): boolean {
+  return process.platform === "darwin" ? macosFenceAvailable() : linuxFenceAvailable();
+}
+
+/** `up`'s own caller facts: its test seams, else this process's terminal and environment. */
+function upLocalInitCaller(context: Context, flags: Map<string, string | true>): LocalInitCaller {
+  const terminal = context.upSeams?.terminal;
+  return {
+    stdin: terminal ?? process.stdin.isTTY === true,
+    stdout: terminal ?? process.stdout.isTTY === true,
+    agent: underAgent(context.upSeams?.env ?? process.env),
+    json: context.json,
+    remote: context.principal !== undefined || localOwnerRequested() || ["token", "token-file", "token-env"].some(name => flags.has(name)),
+  };
+}
+
+/**
+ * The one road to local mode (eight W2): the caller guard, then a cheap read (no account of any kind, no local-mode
+ * state: store.ts localModeCandidate), then the fence probe, then initLocalMode, which reads both again inside the
+ * transaction that writes. Provenance (created-by) is never read or rewritten.
+ */
+export function initLocalModeForPerson(store: Store, caller: LocalInitCaller, input: { owner: string; fence: () => boolean; now: Date }): InitLocalModeResult | { ok: false; reason: "not-a-person" } {
+  if (!personMayInitLocalMode(caller)) return { ok: false, reason: "not-a-person" };
+  if (!localModeCandidate(store)) return { ok: false, reason: "already" };
+  return initLocalMode(store, { owner: input.owner, fenceAvailable: input.fence(), now: input.now });
+}
+
+/**
+ * Bare `toolroll` (and `toolroll open`) at a person's terminal, before it starts `up --laptop` as its child (which has
+ * no terminal of its own, so it never initialises anything): turn local mode on here, in the process at the terminal,
+ * for a database with no account and no local-mode state — or, with no database yet and a fence on this machine, a new
+ * one, made exactly as `up --laptop` makes it (created-by laptop). True when local mode is on for its owner afterwards.
+ * Unreadable or anything in doubt: false (today's password road).
+ */
+export function easyStartInitLocalMode(databaseFile: string, caller: LocalInitCaller, options: { fence?: () => boolean; owner?: string; now?: Date } = {}): boolean {
+  if (!personMayInitLocalMode(caller)) return false;
+  const fence = options.fence ?? defaultFenceAvailable;
+  // No fence: nothing is made or changed here; `up --laptop` then runs the ordinary password flow, as before.
+  if (!fence()) return false;
+  let store: Store;
+  try { store = openStore(databaseFile, { createdBy: "laptop" }); } catch { return false; }
+  try {
+    const owner = options.owner ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
+    initLocalModeForPerson(store, caller, { owner, fence: () => true, now: options.now ?? new Date() });
+    return localOwnerBinding(store) !== null;
+  } catch { return false; } finally { store.close(); }
 }

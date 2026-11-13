@@ -26685,29 +26685,31 @@ export function installationCreatedBy(store: Store): string | null {
 
 export type InitLocalModeResult =
   | { ok: true; owner: string; generation: number }
-  | { ok: false; reason: "not-laptop" | "no-fence" | "has-accounts" | "already" };
+  | { ok: false; reason: "no-fence" | "has-accounts" | "already" };
 
 /**
- * Turn local mode on for a database `up --laptop` made, once (plan F). Only when: that database records created-by
- * laptop, it has no account yet, it never had local mode, and the caller found a fence on this machine (diagnostic
- * only: it decides whether local mode is offered). One transaction: the owner (no password: a hash of random bytes
- * that are thrown away, password_set 0), the local_mode row and one ledger line, each inserted only if nothing is
- * there. A retry or a racing start inserts nothing and writes no second ledger line. Migration and the update
- * rehearsal never call this.
+ * Turn local mode on for a database with no account, once (plan F; eight W2: however the database was made — `up
+ * --laptop`, or `welcome`/`status`/`repos add` first). Only when: it has no account row of any kind (viewer-only and
+ * revoked ones count: accounts are never deleted), it never had local mode (on or off), and the caller found a fence
+ * on this machine (diagnostic only: it decides whether local mode is offered). The caller proves a person at this
+ * computer's terminal first (operate.ts initLocalModeForPerson); this is the write. One transaction: the owner (no
+ * password: a hash of random bytes that are thrown away, password_set 0), the local_mode row and one ledger line,
+ * each inserted only if, read again inside it, there is still no account and no local mode. A retry or a racing start
+ * inserts nothing and writes no second ledger line. Creation provenance (created-by) is neither read nor written.
+ * Migration and the update rehearsal never call this.
  */
 export function initLocalMode(store: Store, input: { owner: string; fenceAvailable: boolean; now: Date }): InitLocalModeResult {
   if (!input.fenceAvailable) return { ok: false, reason: "no-fence" };
   // Hashed before the transaction (scrypt is slow); the random bytes are never kept anywhere.
   const unusable = hashPassword(randomBytes(32).toString("hex"));
   return store.transact((): InitLocalModeResult => {
-    if (installationCreatedBy(store) !== "laptop") return { ok: false, reason: "not-laptop" };
-    if (store.handle.prepare("SELECT 1 FROM local_mode WHERE id = 1").get() !== undefined) return { ok: false, reason: "already" };
+    if (store.handle.prepare("SELECT 1 FROM local_mode").get() !== undefined) return { ok: false, reason: "already" };
     const stamp = input.now.toISOString();
     const made = store.handle.prepare(`INSERT INTO approver (name, credential_hash, added_at, generation, password_set)
       SELECT ?, ?, ?, 1, 0 WHERE NOT EXISTS (SELECT 1 FROM approver) AND NOT EXISTS (SELECT 1 FROM local_mode)`).run(input.owner, unusable, stamp);
     if (Number(made.changes) !== 1) return { ok: false, reason: "has-accounts" };
     store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, ?, 1, 1, ?, ?)").run(input.owner, stamp, stamp);
-    store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new laptop install: the owner has no password yet" });
+    store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new install with no account, started at its own terminal: the owner has no password yet" });
     return { ok: true, owner: input.owner, generation: 1 };
   });
 }
@@ -27179,4 +27181,14 @@ export function checkCleanupTaskOf(store: Store, checkId: number, runner: string
     WHERE r.id = ? AND r.runner = ? AND r.state IN ('passed','failed') AND r.settled_at IS NULL
       AND r.settle_by = ? AND r.settle_until > ?`).get(BUILT_IN, checkId, runner, attempt, now.toISOString());
   return row === undefined ? null : Number(row["ref"]);
+}
+
+/**
+ * Eight W2: whether this database could still become password-free — one read: no account row of any kind (viewer-only
+ * and revoked ones count) and no local-mode state ever recorded (on or off). Never a grant: initLocalMode reads both
+ * again inside the transaction that writes.
+ */
+export function localModeCandidate(store: Store): boolean {
+  const row = store.handle.prepare("SELECT (SELECT count(*) FROM approver) AS accounts, (SELECT count(*) FROM local_mode) AS local").get();
+  return row !== undefined && Number(row["accounts"]) === 0 && Number(row["local"]) === 0;
 }
