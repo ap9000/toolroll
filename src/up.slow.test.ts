@@ -942,6 +942,63 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     } finally { store.close(); }
   });
 
+  test("eight W2: a password-free install not made by `up --laptop` steps past a port another program holds, never past its own running console", async () => {
+    const foreign = createServer();
+    await new Promise<void>(resolve => foreign.listen(PORT + 70, "127.0.0.1", () => resolve()));
+    const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
+    try {
+      // A database `status` made first, started by a person at its terminal with no --port: the next free port.
+      const first = join(base, "first.db");
+      expect(await runOperate("status", ["--json"], () => {}, { databaseFile: first })).toBe(0);
+      lines = [];
+      const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
+        databaseFile: first, inferProjectFromCwd: false, upSeams: { ...person, laptopPorts: [PORT + 70, PORT + 71] },
+      });
+      expect(code, lines.join("\n")).toBe(0);
+      expect(lines.join("\n")).toContain(`port ${PORT + 70} is in use by another program, so Toolroll uses ${PORT + 71}`);
+      const saved = openStore(first);
+      try { expect(laptopPortOf(saved)).toBe(PORT + 71); } finally { saved.close(); }
+    } finally { foreign.close(); }
+  });
+
+  test.skipIf(SOCKETS_TOO_DEEP)("eight W2: a laptop start never steps past a busy port while this database's own console runs", async () => {
+    const foreign = createServer();
+    await new Promise<void>(resolve => foreign.listen(PORT + 70, "127.0.0.1", () => resolve()));
+    const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
+    // The console's socket sits beside its database: a short folder keeps it within the OS limit.
+    const short = shortTempDir("so-w2-");
+    try {
+      // This database's own console running (on a port it was given): a second start never steps past the busy first
+      // port to start another console beside it. It says where Toolroll runs, and nothing else is bound or written.
+      const second = join(short, "second.db");
+      const ownLines: string[] = [];
+      const running = runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--port", String(PORT + 72), "--for", "10000"], line => ownLines.push(line), {
+        databaseFile: second, inferProjectFromCwd: false, upSeams: person,
+      });
+      for (const deadline = Date.now() + 60_000; ;) {
+        if (existsSync(second)) {
+          const store = openStore(second);
+          try { if ((await proveLiveConsole(second, store, packageVersion())).ok) break; } finally { store.close(); }
+        }
+        if (Date.now() > deadline) throw Error(`the first console never proved live:\n${ownLines.join("\n")}`);
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      lines = [];
+      const again = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200", "--json"], line => lines.push(line), {
+        databaseFile: second, inferProjectFromCwd: false, upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: [PORT + 70, PORT + 73] },
+      });
+      expect(again).not.toBe(0);
+      expect(envelope()).toMatchObject({ ok: false, reason: "already-running", message: `Toolroll is already running at http://127.0.0.1:${PORT + 72}` });
+      const probe = createServer();
+      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 73, "127.0.0.1", () => resolve()); });
+      probe.close();
+      const store = openStore(second);
+      try { expect(laptopPortOf(store)).toBeNull(); } finally { store.close(); }
+      // The first start ends on its own (--for): `stop` would signal this very process, which runs it.
+      expect(await running, ownLines.join("\n")).toBe(0);
+    } finally { foreign.close(); rmSync(short, { recursive: true, force: true }); }
+  });
+
   test("the console mints only the kind of link its own start was authorised for; a request of another kind gets none", () => {
     const minted: string[] = [];
     const server = { mintSignInLink: (account: string) => { minted.push(`full:${account}`); return "/login/once/full"; }, mintLocalLink: () => { minted.push("local"); return "/login/once/local"; } };

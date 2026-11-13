@@ -133,7 +133,7 @@ import {
   requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
-import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
+import { claimInstance, clearInstance, openInstanceSocket, proveLiveConsole } from "./console-instance.js";
 import { backgroundOff, backgroundOn, backgroundShow, laptopStatus, laptopStop, restartOwnBuilder, type LaptopSeams } from "./laptop-background.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
@@ -7951,15 +7951,25 @@ async function upCommand(
 
   // 3. Reserve the port BEFORE any identity or enrollment mutation
   // (finding 7/19): a busy port must refuse while the world is untouched.
-  // A laptop start with no --port: the port this install saved, else (a NEW laptop install only) the first free one from
-  // `up`'s default on (upLaptopPortCandidates), saved once it is reserved. Every other install keeps its port.
+  // A laptop start with no --port: the port this install saved, else (a NEW laptop install, or one that is or is about to
+  // be password-free: eight W2) the first free one from `up`'s default on (upLaptopPortCandidates), saved once it is
+  // reserved. Every other install keeps its port.
   const localCaller = upLocalInitCaller(context, flags);
-  const candidates = laptop && portGiven === undefined ? upLaptopPortCandidates(store, context.upSeams?.laptopPorts) : [port];
+  const localInstall = laptop && (localModeOf(store)?.enabled === true || (personMayInitLocalMode(localCaller) && localModeCandidate(store)));
+  const candidates = laptop && portGiven === undefined ? upLaptopPortCandidates(store, context.upSeams?.laptopPorts, localInstall) : [port];
   let probe = createNetServer();
   let reserved = false;
   for (const candidate of candidates) {
     // A port this database's own console has held is never stepped past: that is this install, restarting or running.
     if (candidate !== candidates[0] && lifecycleOf(store, `console:${candidate}`) !== null) break;
+    // Eight W2: nor is any port stepped past until this database's console is proved NOT running (console-instance.ts,
+    // both channels): a busy port is only another program's when this install's own console isn't up anywhere.
+    if (candidate !== candidates[0] && candidate === candidates[1]) {
+      let ours: Awaited<ReturnType<typeof proveLiveConsole>> | null = null;
+      try { ours = await proveLiveConsole(context.databaseFile, store, packageVersion()); } catch { ours = null; }
+      if (ours?.ok === true) return fail(write, json, "up", "already-running", `Toolroll is already running at ${ours.url}`, EXIT.refused);
+      if (ours === null || ours.state !== "none") break;
+    }
     probe = createNetServer();
     port = candidate;
     reserved = await new Promise<boolean>(resolveProbe => {
@@ -14018,15 +14028,16 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
 
 /**
  * Easy start: the ports `up --laptop` (no --port) tries, in order. The port this install saved, alone; else, for a NEW
- * laptop install (made by `up --laptop`, nothing saved yet), `up`'s default and the next nineteen, so a console that
- * isn't this database's (another Toolroll, the desktop app's) never stops a first start; else (an install made any other
- * way) `up`'s default alone, as before. `fromSeam` replaces the default range in tests.
+ * laptop install (made by `up --laptop`, nothing saved yet) or a password-free one (`localInstall`: local mode on, or
+ * about to be turned on by this start — eight W2), `up`'s default and the next nineteen, so a console that isn't this
+ * database's (another Toolroll, the desktop app's) never stops a first start; else (an install with passwords made any
+ * other way) `up`'s default alone, as before. `fromSeam` replaces the default range in tests.
  */
-export function upLaptopPortCandidates(store: Store, fromSeam?: readonly number[]): number[] {
+export function upLaptopPortCandidates(store: Store, fromSeam?: readonly number[], localInstall = false): number[] {
   const saved = laptopPortOf(store);
   if (saved !== null) return [saved];
   const range = fromSeam ?? Array.from({ length: 20 }, (_, index) => 4180 + index);
-  if (installationCreatedBy(store) !== "laptop") return [range[0] ?? 4180];
+  if (installationCreatedBy(store) !== "laptop" && !localInstall) return [range[0] ?? 4180];
   return [...range];
 }
 

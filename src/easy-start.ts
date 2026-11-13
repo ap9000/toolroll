@@ -69,7 +69,7 @@ export type EasyStartSeams = {
   startTimeoutMs?: number;
 };
 
-const EXIT = { ok: 0, failed: 1, refused: 3 } as const;
+const EXIT = { ok: 0, failed: 1, usage: 2, refused: 3 } as const;
 
 /**
  * Bare `toolroll` ("start") or `toolroll open` ("open") at a person's terminal. Resolves with the exit code once the
@@ -77,7 +77,18 @@ const EXIT = { ok: 0, failed: 1, refused: 3 } as const;
  */
 export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, seams: EasyStartSeams): Promise<number> {
   const { write } = seams;
-  const rootArgs = args.projectRoot === null ? [] : ["--project-root", args.projectRoot];
+  // Eight W2: --port goes to every `up` this starts (laptop, password, --web). Without it, a laptop start tries the next
+  // free port itself (operate.ts upLaptopPortCandidates) once this database's console is proved not running.
+  const port = args.port === undefined || args.port === null ? null : Number(args.port);
+  if (port !== null && (!/^[0-9]{1,5}$/.test(args.port!) || port < 1 || port > 65_535)) {
+    write("--port is a whole number from 1 to 65535.");
+    return EXIT.usage;
+  }
+  const rootArgs = [...(args.projectRoot === null ? [] : ["--project-root", args.projectRoot]), ...(port === null ? [] : ["--port", String(port)])];
+  /** A console of this database already running (or the background service) keeps its own port: say so, once. */
+  const elsewhere = (proof: AttachProof): void => {
+    if (port !== null && proof.ok && proof.port !== port) write(`Toolroll is already set up on port ${proof.port}, so it opens there.`);
+  };
   const sleep = seams.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)));
   const first = await seams.prove();
   if (!first.ok && first.state === "refused") {
@@ -109,6 +120,7 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     if (!first.ok) return seams.runUpForeground(rootArgs);
     const joined = await joinRepo();
     if (joined !== EXIT.ok) return joined;
+    elsewhere(first);
     write(`Toolroll is on ${first.url}`);
     await seams.openBrowser(first.url);
     return EXIT.ok;
@@ -151,6 +163,7 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     const joined = await joinRepo();
     if (joined !== EXIT.ok) return joined;
   }
+  elsewhere(proof);
   const url = proof.url;
   /** The `up` this process owns, while it runs. */
   const ownedNow = (): OwnedUp | null => (owned !== null && owned.running() ? owned : null);

@@ -79,9 +79,11 @@ const bare = { web: false, projectRoot: null };
 
 describe("which invocations are an easy start", () => {
   test("only bare, --web and --project-root <dir>, at a person's terminal, never under an agent", () => {
-    expect(easyStartArgs([])).toEqual({ web: false, projectRoot: null });
-    expect(easyStartArgs(["--web", "--project-root", "/p"])).toEqual({ web: true, projectRoot: "/p" });
-    for (const argv of [["--json"], ["--web", "--json"], ["--project-root"], ["--project-root", "--web"], ["scan"], ["/some/path"], ["--web", "--web"], ["--local"]]) expect(easyStartArgs(argv), argv.join(" ")).toBeNull();
+    expect(easyStartArgs([])).toEqual({ web: false, projectRoot: null, port: null });
+    expect(easyStartArgs(["--web", "--project-root", "/p"])).toEqual({ web: true, projectRoot: "/p", port: null });
+    // Eight W2: --port <n> too (checked where it is used, so a bad one is told as such).
+    expect(easyStartArgs(["--port", "4351", "--project-root", "/p"])).toEqual({ web: false, projectRoot: "/p", port: "4351" });
+    for (const argv of [["--json"], ["--web", "--json"], ["--project-root"], ["--project-root", "--web"], ["scan"], ["/some/path"], ["--web", "--web"], ["--local"], ["--port"], ["--port", "--web"], ["--port", "1", "--port", "2"]]) expect(easyStartArgs(argv), argv.join(" ")).toBeNull();
     const person = { stdin: true, stdout: true, agent: false };
     expect(easyStartApplies([], person)).toBe(true);
     expect(easyStartApplies([], { ...person, stdin: false })).toBe(false);
@@ -207,6 +209,45 @@ describe("a database made before the first start (eight W2: welcome, status or r
     }
     await main(["--json"], () => {}, { operate: { databaseFile: join(dir, "none.db") }, quickStart, easyStart: { terminal: true, underAgent: false, seams: { initLocal } } });
     expect(initLocal).not.toHaveBeenCalled();
+  });
+});
+
+describe("--port (eight W2): carried to every start, never past a console it can't prove", () => {
+  const port = { web: false, projectRoot: null, port: "4351" };
+  test("the laptop road, the password road and --web each start `up` on exactly that port", async () => {
+    const laptop = scripted({ proofs: [NONE, NONE, { ...LIVE, url: "http://127.0.0.1:4351", port: 4351 }], local: ["absent", "on"] });
+    expect(await runEasyStart("start", port, laptop.seams)).toBe(0);
+    expect(laptop.calls).toEqual(["spawn --laptop --no-open --port 4351", "tui"]);
+    expect(laptop.lines.join("\n")).not.toContain("already set up");
+    const password = scripted({ proofs: [NONE], local: ["off"] });
+    expect(await runEasyStart("start", port, password.seams)).toBe(0);
+    expect(password.calls).toEqual(["foreground --port 4351"]);
+    const web = scripted({ proofs: [NONE], local: ["absent"] });
+    expect(await runEasyStart("start", { ...port, web: true, projectRoot: "/p" }, web.seams)).toBe(0);
+    expect(web.calls).toEqual(["foreground --laptop --project-root /p --port 4351"]);
+  });
+
+  test("this database's console already running elsewhere: proved, attached, and the port it keeps is said; nothing else starts", async () => {
+    const on = scripted({ proofs: [LIVE], local: ["on"], tui: async () => "leave" });
+    expect(await runEasyStart("start", port, on.seams)).toBe(0);
+    expect(on.calls).toEqual(["tui"]);
+    expect(on.lines).toContain("Toolroll is already set up on port 4999, so it opens there.");
+    const off = scripted({ proofs: [LIVE], local: ["off"] });
+    expect(await runEasyStart("start", port, off.seams)).toBe(0);
+    expect(off.calls).toEqual(["browser http://127.0.0.1:4999"]);
+    // A console that can't prove itself is refused, port or not: never attached to.
+    const refused = scripted({ proofs: [{ ok: false, state: "refused", message: "the console's socket can't be trusted" }] });
+    expect(await runEasyStart("start", port, refused.seams)).toBe(3);
+    expect(refused.calls).toEqual([]);
+  });
+
+  test("a port that isn't a whole number from 1 to 65535 is refused before anything runs", async () => {
+    for (const bad of ["0", "65536", "abc", "12.5", "1e3"]) {
+      const { seams, calls, lines } = scripted({ proofs: [NONE], local: ["absent"] });
+      expect(await runEasyStart("start", { ...port, port: bad }, seams), bad).toBe(2);
+      expect(calls).toEqual([]);
+      expect(lines).toEqual(["--port is a whole number from 1 to 65535."]);
+    }
   });
 });
 
