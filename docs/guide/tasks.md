@@ -14,9 +14,9 @@ you open them. Before execution, the approval card restates the goal,
 boundaries, evidence requirements, model, and permissions.
 
 <div align="center">
-  <img src="../media/ui/tasks-mobile.png" alt="The Tasks view on a phone: each task with its status and the one action that settles it." width="260">
+  <img src="../media/ui/tasks-mobile.png" alt="The Tasks page on a phone: each task with its status and one button for the next step." width="260">
   &nbsp;
-  <img src="../media/ui/scope-approval.png" alt="The scope you approve: goal, what is out of bounds, the files it may touch, acceptance criteria with their evidence, quality, permissions and the agents that will build it." width="640">
+  <img src="../media/ui/approval-step.png" alt="A task page at its approval step: the plan is done, and the approval card shows what approving allows, the Approve, Request changes and Reject buttons, the goal, the steps and when it counts as done." width="640">
 </div>
 
 ## One lead, durable crew work

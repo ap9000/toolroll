@@ -1,10 +1,10 @@
 # Workflow recipes
 
-Open **Recipes** in the console to create a reusable recipe, use one you saved,
-or customize a starter. Recipes use the same tasks, scope approval,
+Open **Flows → New flow → One-time work** in the console to create a reusable
+recipe, use one you saved, or customize a starter. Recipes use the same tasks, scope approval,
 planning, evidence, review, scheduler, and recovery paths as other work.
 
-<img src="media/ui/workflow-recipes.png" alt="Recipe library with six starters and a saved project recipe." width="920">
+<img src="media/ui/workflow-recipes.png" alt="One-time work under New flow: a saved recipe above the six starters, each with a Use this button." width="920">
 
 ## Create a recipe for work you do often
 
@@ -32,7 +32,7 @@ link, adapt its existing instructions, add questions, and save a copy.
 
 ## Kick off familiar work
 
-<img src="media/ui/recipe-creator-run-mobile.png" alt="A saved recipe asks only which module needs tests before previewing a run." width="280">
+<img src="media/ui/recipe-creator-run-mobile.png" alt="On a phone, a saved recipe asks only which module needs tests, then Preview this run." width="280">
 
 Saved recipes appear above the starters, with recently used recipes first and
 a search field. **Use recipe** opens a short form containing only that recipe's
@@ -81,7 +81,7 @@ links the twelve most recent workflows to those same durable records.
 
 ## Reuse and share
 
-<img src="media/ui/workflow-recipe-mobile.png" alt="Phone recipe editor with a named workflow, goal, and preview action." width="280" align="right">
+<img src="media/ui/workflow-recipe-mobile.png" alt="On a phone, a starter opened to customize: its name, description and what the agent should do." width="280" align="right">
 
 **Save as a project recipe** saves the exact preview without creating work.
 People with access to that project can reuse it; viewers can browse but cannot
