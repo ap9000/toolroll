@@ -18,6 +18,7 @@ import { listDecisions, recordDecision, retireDecision } from "./project-memory.
 import { register } from "./runner.js";
 import { createDecisionServer } from "./serve.js";
 import { initLocalMode, openStore } from "./store.js";
+import { advancedOnForEveryone } from "../test/advanced-on.js";
 
 const NAME = "Fix footer «scope digest sealed lease»";
 const IDENTITY = `unit:src/footer.test.ts::${NAME}`;
@@ -78,6 +79,7 @@ function seed(): void {
 
 beforeAll(async () => {
   f = memoryFixture();
+  advancedOnForEveryone(f.store); // the flaky-tests link is an advanced entry point (W4)
   server = createDecisionServer({ store: f.store, evidenceRoot: join(f.root, "evidence"), repo: f.repo, clock: () => MEMORY_NOW });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const address = server.address();
