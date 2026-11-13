@@ -3017,7 +3017,7 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   // 3. The lead is already on with the Claude Code sign-in; 4. how it works, once, above the composer, with first tasks.
   await waitFor(on.locator("[data-lead-line]"), "the line saying what runs the lead", { timeoutMs: 30_000, seen: async () => (await on.locator("main").innerText()).slice(0, 400) });
   const lead = await on.locator("[data-lead-line]").innerText();
-  if (lead !== "The lead uses your Claude Code sign-in · Change") throw new Error(`the lead line: ${lead}`);
+  if (lead !== "Chat uses your Claude Code sign-in · Change") throw new Error(`the lead line: ${lead}`);
   if (await on.locator('a[href="/settings/lead"]', { hasText: "Change" }).count() !== 1) throw new Error("no Change link to Settings → Lead");
   // How it works is the empty chat's own sentence now (lead-chat.tsx ChatEmpty), above the first tasks.
   const intro = await on.locator("[data-chat-empty] > p").first().innerText();
@@ -3487,7 +3487,7 @@ await journey("easy-start", SCRIPTED, "After a restart an open tab says how to r
   const notice = on.locator('[data-reconnect="command"]');
   await waitFor(notice, "the reconnect notice", { timeoutMs: 30_000, seen: () => saysNow(on) });
   const said = await notice.innerText();
-  if (!/Toolroll restarted\. Run toolroll open to reconnect\./.test(said.replace(/\s+/g, " "))) throw new Error(`the notice says: ${said}`);
+  if (!/Toolroll restarted\. Run toolroll --web to reconnect\./.test(said.replace(/\s+/g, " "))) throw new Error(`the notice says: ${said}`);
   await bothSizes(on, "6-restarted", "easy-start");
   // A change is refused with the same words, and nothing is filed.
   const before = laptopRows("SELECT COUNT(*) AS n FROM task")[0].n;
@@ -3495,7 +3495,7 @@ await journey("easy-start", SCRIPTED, "After a restart an open tab says how to r
   await on.fill('form[action="/tasks/add"] textarea[name="title"]', "Refuse a negative discount with a clear error, and test it.");
   const [answer] = await Promise.all([on.waitForNavigation(), on.click('form[action="/tasks/add"] button.k-send')]);
   if (answer?.status() !== 409) throw new Error(`a change after the restart answered ${answer?.status()}: ${await saysNow(on)}`);
-  if (!(await saysNow(on)).includes("Toolroll restarted — run `toolroll open` to reconnect.") && !(await saysNow(on)).includes("Toolroll restarted — run toolroll open to reconnect.")) throw new Error(`the refusal says: ${await saysNow(on)}`);
+  if (!(await saysNow(on)).includes("Toolroll restarted — run `toolroll --web` to reconnect.") && !(await saysNow(on)).includes("Toolroll restarted — run toolroll --web to reconnect.")) throw new Error(`the refusal says: ${await saysNow(on)}`);
   if (laptopRows("SELECT COUNT(*) AS n FROM task")[0].n !== before) throw new Error("a task was filed after the restart without reconnecting");
   await bothSizes(on, "7-restarted-refused", "easy-start");
   // `toolroll open --web` at this computer's terminal: a fresh one-time link, opened in the browser.
