@@ -796,7 +796,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-workspace-notices .ui-alert { padding: 7px 10px; line-height: 1.35; }
   /* On a phone the short sentence wraps to a second line rather than clipping or trailing off, and a kit page's
      notice keeps the phone gutters so it never runs past the right edge. */
-  .ui-alert.so-demo-notice { padding: 7px 12px; line-height: 1.35; border-radius: var(--so-radius-card); white-space: normal; overflow-wrap: anywhere; }
+  .ui-alert.so-demo-notice { padding: 7px var(--so-phone-card); line-height: 1.35; border-radius: var(--so-radius-card); white-space: normal; overflow-wrap: anywhere; }
   .so-demo-notice-full { display: none; }
   .so-demo-notice-short { display: inline; }
   .so-page-content > .so-demo-notice { margin-bottom: var(--so-phone-gap); }
