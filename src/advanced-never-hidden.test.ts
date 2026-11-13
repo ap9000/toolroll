@@ -50,7 +50,7 @@ describe("with Advanced off, never hidden", () => {
   });
   test("what waits on this person in Settings", () => {
     const hub = render(false, () => settingsHub(facts({ workers: [], backup: { failed: true, words: "Failed today" } })));
-    expect(hub).toContain("No builder is connected");
+    expect(hub).toContain("Nothing is taking work");
     expect(hub).toContain("The last backup failed");
   });
   test("a fallback chain that is set, and commands shown in the live view", () => {
