@@ -19,12 +19,14 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { requestLocalLink, type AttachProof } from "./console-instance.js";
 import { backgroundInstalled, backgroundOn, startInstalledService } from "./laptop-background.js";
 import { proveConsoleReadOnly } from "./quick-start.js";
 import { backgroundAsked, localModeCandidate, localModeOf, openStore, openStoreReadOnly, recordBackgroundAsked } from "./store.js";
 import { underAgent } from "./prompt.js";
+import { savedLoginFile } from "./login-secrets.js";
 import type { TuiExit, TuiSession } from "./tui-contract.js";
 
 export { easyStartApplies, easyStartArgs, type EasyStartArgs } from "./easy-start-args.js";
@@ -45,6 +47,14 @@ export type EasyStartSeams = {
   /** Eight W2: turn local mode on here, at the person's terminal, before anything starts (operate.ts
    * easyStartInitLocalMode re-proves the person and the database itself). True when it is on afterwards. */
   initLocal: () => Promise<boolean>;
+  /** l1: this computer's sandbox, read now — the Linux programs it lacks (sandbox-runtime.ts LINUX_SANDBOX_TOOLS, by
+   * package; none elsewhere), and why it can't sandbox here (null when it can). */
+  sandbox: () => Promise<{ missing: string[]; problem: string | null }>;
+  /** l1: what to tell a person whose install got a password only because its first start couldn't go password-free,
+   * and how to start over (operate.ts startOverWords), or null for every other install. Read only. */
+  startOver: (sandbox: { missing: string[]; problem: string | null }) => Promise<string[] | null>;
+  /** The saved login file `up` wrote for this database, when there is one (its path, never what it holds). */
+  savedLogin: () => string | null;
   serviceInstalled: () => boolean;
   /** Start the installed background service through its supervisor and prove its console. */
   startService: () => Promise<AttachProof>;
@@ -110,14 +120,29 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   // person's own terminal, before anything starts — only while nothing of this database's is running. The `up` started
   // below has no terminal of its own, so it never initialises anything itself.
   let local = seams.localMode();
-  if ((local === "candidate" || local === "absent") && !first.ok && first.state === "none" && await seams.initLocal()) local = "on";
+  if ((local === "candidate" || local === "absent") && !first.ok && first.state === "none") {
+    // l1: a new install on a Linux computer missing the sandbox's programs stops here, before anything is made: no
+    // account, no database written (a candidate stays one), so once they are installed the next start is password-free.
+    const sandbox = await seams.sandbox();
+    if (sandbox.missing.length > 0) {
+      const { missingSandboxToolsWords } = await import("./sandbox-runtime.js");
+      for (const line of missingSandboxToolsWords(sandbox.missing)) write(line);
+      return EXIT.refused;
+    }
+    if (await seams.initLocal()) local = "on";
+  }
   // A database that could not be made password-free (no fence, an account that appeared meanwhile, a console running):
   // today's password road, never the laptop road.
   if (local === "candidate") local = "off";
 
   // An install with passwords: today's flow, in the browser, where the person signs in. Nothing here writes.
   if (local === "off") {
-    if (!first.ok) return seams.runUpForeground(rootArgs);
+    if (!first.ok) {
+      // l1: an install that got a password only because its first start couldn't go password-free, with nothing filed:
+      // say so and how to start over (nothing is changed here; the person moves the folder themselves).
+      if (!seams.serviceInstalled()) for (const line of await seams.startOver(await seams.sandbox()) ?? []) write(line);
+      return seams.runUpForeground(rootArgs);
+    }
     const joined = await joinRepo();
     if (joined !== EXIT.ok) return joined;
     elsewhere(first);
@@ -175,9 +200,13 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     return EXIT.ok;
   };
 
-  // No local mode here (a new install on a computer with no sandbox): the browser, with the password `up` saved.
+  // No local mode here (a new install on a computer that can't sandbox): the browser, with the password `up` saved —
+  // pointed at, never "your password" to someone who never set one (l1).
   if (seams.localMode() !== "on") {
-    write(`Toolroll is on ${url}. Sign in with your password.`);
+    const problem = (await seams.sandbox()).problem;
+    if (problem !== null) write(`Toolroll can't start without a password here: ${problem}.`);
+    const saved = seams.savedLogin();
+    write(saved === null ? `Toolroll is on ${url}. Sign in with your password.` : `Toolroll is on ${url}. Your password: run \`cat -- '${saved.replaceAll("'", "'\\''")}'\``);
     await seams.openBrowser(url);
     return waitOwned();
   }
@@ -280,6 +309,17 @@ export function defaultEasyStartSeams(options: {
       stdin: process.stdin.isTTY === true, stdout: process.stdout.isTTY === true, agent: underAgent(process.env), json: false,
       remote: (await import("./local-owner.js")).localOwnerRequested(),
     }),
+    sandbox: async () => {
+      const { missingLinuxSandboxTools, sandboxRuntimeProblem } = await import("./sandbox-runtime.js");
+      if (process.platform !== "linux") return { missing: [], problem: sandboxRuntimeProblem() };
+      const missing = missingLinuxSandboxTools();
+      return { missing, problem: missing.length > 0 ? null : sandboxRuntimeProblem() };
+    },
+    startOver: async sandbox => (await import("./operate.js")).startOverWords(file, sandbox),
+    savedLogin: () => {
+      const saved = resolve(savedLoginFile(dirname(file)));
+      return existsSync(saved) ? saved : null;
+    },
     serviceInstalled: () => backgroundInstalled(),
     startService: async () => {
       const store = openStore(file);

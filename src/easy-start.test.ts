@@ -6,7 +6,7 @@
  * terminal, with --json or under a coding agent, nothing here runs and bare `toolroll` behaves exactly as before.
  */
 import { describe, expect, test, vi } from "vitest";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli.js";
@@ -42,6 +42,11 @@ type Script = {
   backgroundOk?: boolean;
   repo?: string | null;
   enrolled?: boolean;
+  /** l1: the Linux sandbox programs this computer lacks, and why it can't sandbox (default: none, it can). */
+  missing?: string[];
+  problem?: string | null;
+  startOver?: string[] | null;
+  savedLogin?: string | null;
 };
 function scripted(script: Script = {}) {
   const calls: string[] = [];
@@ -57,6 +62,9 @@ function scripted(script: Script = {}) {
     prove: async () => (proofs.length > 1 ? proofs.shift()! : proofs[0]!),
     localMode: () => (local.length > 1 ? local.shift()! : local[0]!),
     initLocal: async () => { inits.push("init"); return script.init ?? true; },
+    sandbox: async () => ({ missing: script.missing ?? [], problem: script.problem ?? null }),
+    startOver: async () => script.startOver ?? null,
+    savedLogin: () => script.savedLogin ?? null,
     serviceInstalled: () => script.service ?? false,
     startService: async () => { calls.push("service"); return LIVE; },
     spawnUp: args => { calls.push(`spawn ${args.join(" ")}`); const child = fakeChild(fakePid(2 + children.length)); children.push(child); return child; },
@@ -309,5 +317,78 @@ setInterval(() => {}, 1000);
     expect(await child.exited).toBe(0);
     expect(child.running()).toBe(false);
     expect(child.tail()).toContain("draining");
+  });
+});
+
+describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ubuntu 24.04)", () => {
+  test("a new install, nothing running: names exactly the missing ones with the install line; nothing initialised, nothing started", async () => {
+    for (const local of ["absent", "candidate"] as const) {
+      for (const args of [bare, { web: true, projectRoot: "/p" }]) {
+        const { seams, calls, lines, inits } = scripted({ proofs: [NONE], local: [local], missing: ["socat", "ripgrep"] });
+        expect(await runEasyStart("start", args, seams), local).toBe(3);
+        expect(lines).toEqual([
+          "Toolroll needs socat and ripgrep to run agents in a sandbox on this computer.",
+          "Install them, then run toolroll again: sudo apt install socat ripgrep (Fedora: sudo dnf install socat ripgrep)",
+        ]);
+        expect(inits).toEqual([]);
+        expect(calls).toEqual([]);
+        expect(lines.join("\n")).not.toContain("password");
+      }
+    }
+  });
+
+  test("once they are installed, the same start goes password-free (the laptop road)", async () => {
+    const { seams, calls, inits } = scripted({ proofs: [NONE, LIVE], local: ["candidate", "on"], missing: [] });
+    expect(await runEasyStart("start", bare, seams)).toBe(0);
+    expect(inits).toEqual(["init"]);
+    expect(calls).toEqual(["spawn --laptop --no-open", "tui"]);
+  });
+
+  test("an install with passwords, or a console already running, is never stopped for them", async () => {
+    const off = scripted({ proofs: [NONE], local: ["off"], missing: ["socat"] });
+    expect(await runEasyStart("start", bare, off.seams)).toBe(0);
+    expect(off.calls).toEqual(["foreground"]);
+    const running = scripted({ proofs: [LIVE], local: ["candidate"], missing: ["socat"] });
+    expect(await runEasyStart("start", bare, running.seams)).toBe(0);
+    expect(running.calls).toEqual(["browser http://127.0.0.1:4999"]);
+  });
+
+  test("an install that got a password that way: says how to start over before today's road; never with a console running or a service", async () => {
+    const words = ["This Toolroll was set up with a password because it couldn't start without one then.", "  mv -- '/x/toolroll' '/x/toolroll.old' && toolroll"];
+    const cold = scripted({ proofs: [NONE], local: ["off"], startOver: words });
+    expect(await runEasyStart("start", bare, cold.seams)).toBe(0);
+    expect(cold.lines).toEqual(words);
+    expect(cold.calls).toEqual(["foreground"]);
+    const running = scripted({ proofs: [LIVE], local: ["off"], startOver: words });
+    await runEasyStart("start", bare, running.seams);
+    expect(running.lines.join("\n")).not.toContain("start over");
+    const service = scripted({ proofs: [NONE], local: ["off"], startOver: words, service: true });
+    await runEasyStart("start", bare, service.seams);
+    expect(service.lines).toEqual([]);
+  });
+
+  test("a new install that still can't go password-free (no sandbox for another reason): why, and where its password is", async () => {
+    const { seams, lines } = scripted({ proofs: [NONE, LIVE], local: ["absent", "off"], init: false, problem: "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)", savedLogin: "/home/dev/.config/toolroll/.toolroll-secrets/up-login.txt" });
+    // The `up` it started runs until stopped (Ctrl-C): stopped here once the words are out.
+    const spawn = seams.spawnUp;
+    seams.spawnUp = args => { const child = spawn(args); setTimeout(() => child.stop(), 20); return child; };
+    expect(await runEasyStart("start", bare, seams)).toBe(0);
+    expect(lines).toContain("Toolroll can't start without a password here: bubblewrap can't start a sandbox here (unprivileged user namespaces may be off).");
+    expect(lines).toContain("Toolroll is on http://127.0.0.1:4999. Your password: run `cat -- '/home/dev/.config/toolroll/.toolroll-secrets/up-login.txt'`");
+    expect(lines.join("\n")).not.toContain("Sign in with your password");
+  });
+
+  test("cli.ts, the real seams (but no real `up`): a missing program stops the first start before the database is even made", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-easy-l1-")));
+    const file = join(dir, "toolroll", "orders.db");
+    const out: string[] = [];
+    const code = await main([], line => out.push(line), { operate: { databaseFile: file }, easyStart: { terminal: true, underAgent: false, seams: {
+      sandbox: async () => ({ missing: ["socat"], problem: null }),
+      // Never a real `up` from a test, even if the stop regressed: those starts fail here instead.
+      spawnUp: () => { throw Error("started an up"); }, runUpForeground: async () => { throw Error("started an up"); },
+    } } });
+    expect(code).toBe(3);
+    expect(out.join("\n")).toContain("sudo apt install socat (Fedora: sudo dnf install socat)");
+    expect(existsSync(file)).toBe(false);
   });
 });

@@ -307,7 +307,10 @@ import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
-import { hashPassword } from "./scope.js";
+import { hashPassword, verifyCredential } from "./scope.js";
+import { openStoreReadOnly } from "./store.js";
+import { NAMES } from "./names.js";
+import { linuxSandboxInstallLine } from "./sandbox-runtime.js";
 import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
@@ -14849,4 +14852,49 @@ export async function consolesProvenDown(store: Store, now: Date, probe: Console
 /** A console `serve` started and must not keep: closed, and its port given back, before the refusal is reported. */
 async function closeServedConsole(server: import("node:http").Server): Promise<void> {
   await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections?.(); });
+}
+
+// ---- l1 (stranger test, Linux): an install that got a password only because its first start couldn't go password-free
+
+/**
+ * What to tell a person whose install has a password only because its first start couldn't go password-free (before
+ * l1, a Linux computer missing the sandbox's programs made an account on its first `toolroll`, and every start after
+ * took the password road), and the way to start over, or null. Read only: nothing is changed here; the person moves
+ * the folder aside themselves (a rename, undone by moving it back).
+ *
+ * Fail-closed, every fact read from this database and its own saved login: the database is the default one in its own
+ * Toolroll folder (orders.db in a folder named toolroll or an older name), made by a laptop start (created-by laptop),
+ * never in local mode (on or off); exactly one account row of any kind, an active approver; nothing filed (no task_ref
+ * row); and the login file `up` saved still holds that account's current password (so the person never set or changed
+ * one). And starting over would help now: this computer can sandbox, or lacks only the sandbox's programs. Anything
+ * else, or anything unreadable: null.
+ */
+export function startOverWords(databaseFile: string, sandbox: { missing: readonly string[]; problem: string | null }): string[] | null {
+  if (sandbox.missing.length === 0 && sandbox.problem !== null) return null;
+  const stateDir = dirname(resolve(databaseFile));
+  if (basename(databaseFile) !== "orders.db" || !NAMES.includes(basename(stateDir))) return null;
+  let store: Store | null;
+  try { store = openStoreReadOnly(databaseFile); } catch { return null; }
+  if (store === null) return null;
+  try {
+    if (installationCreatedBy(store) !== "laptop" || localModeOf(store) !== null) return null;
+    const rows = store.handle.prepare("SELECT name FROM approver").all();
+    const work = store.handle.prepare("SELECT count(*) AS n FROM task_ref").get();
+    if (rows.length !== 1 || work === undefined || Number(work["n"]) !== 0) return null;
+    const name = String(rows[0]!["name"]);
+    const account = store.accountOf(name);
+    if (account === null || account.revokedAt !== null || account.role !== "approver") return null;
+    const saved = readLoginFile(savedLoginFile(stateDir));
+    if (saved === null || saved.name !== name || !verifyCredential(account.credentialHash, saved.password)) return null;
+  } catch { return null; } finally { store.close(); }
+  const quote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
+  let aside = `${stateDir}.old`;
+  for (let n = 2; existsSync(aside) && n < 100; n += 1) aside = `${stateDir}.old-${n}`;
+  if (existsSync(aside)) return null;
+  return [
+    "This Toolroll was set up with a password because it couldn't start without one then.",
+    "Nothing has been filed yet, so you can start over without a password: press Ctrl-C, then run",
+    ...(sandbox.missing.length > 0 ? [`  ${linuxSandboxInstallLine(sandbox.missing)}`] : []),
+    `  mv -- ${quote(stateDir)} ${quote(aside)} && toolroll`,
+  ];
 }
