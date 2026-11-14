@@ -111,14 +111,14 @@ test("a person signs in with the provider: an account from their groups, set aga
   expect(store.accountOf("priya")).toMatchObject({ role: "viewer", projects: ["/repo/main"] });
   expect(store.ssoAccount(ISSUER, "00u-priya")).toBe("priya");
   const cookie = cookieOf(first);
-  expect((await fetch(`${base}/tasks`, { headers: { cookie }, redirect: "manual" })).status).toBe(200);
+  expect((await fetch(`${base}/?view=all`, { headers: { cookie }, redirect: "manual" })).status).toBe(200);
   // Promoted in the provider: the next sign-in makes them an operator everywhere, on the record.
   person.groups = ["eng", "eng-leads"];
   expect((await providerSignIn()).status).toBe(303);
   expect(store.accountOf("priya")).toMatchObject({ role: "approver", projects: null });
   expect(store.actionLedger({ repos: null, source: "access" }).find(one => one.action === "access changed by groups")?.detail).toBe("viewer · main → operator · all projects");
   // The old session ended with the change.
-  expect((await fetch(`${base}/tasks`, { headers: { cookie }, redirect: "manual" })).status).toBe(303);
+  expect((await fetch(`${base}/?view=all`, { headers: { cookie }, redirect: "manual" })).status).toBe(303);
   // No matching group: refused, and said so.
   person = { sub: "00u-sales", email: "sam@acme.com", groups: ["sales"] };
   const refused = await providerSignIn();
@@ -191,7 +191,7 @@ test("someone who signs in only with the provider approves a task on an explicit
   // Approvals bind exact routing: every phase names a model.
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", new Date());
   store.createTask({ id: "t-sso", title: "approve me" }, new Date());
-  const csrf = csrfOf(await (await fetch(`${base}/tasks`, { headers: { cookie } })).text());
+  const csrf = csrfOf(await (await fetch(`${base}/?view=all`, { headers: { cookie } })).text());
   const post = (path: string, fields: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, ...fields }) });
   expect((await post("/t/t-sso/scope", { acceptance: "c1: ok | manual-review", sawDigest: "", goal: "the goal", not: "", touches: "" })).status).toBe(303);
   const digest = store.getScope("t-sso")?.digest ?? "";
@@ -283,7 +283,7 @@ test("an ordinary provider sign-in starts no remembered window; an explicit re-c
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", new Date());
   store.createTask({ id: "t-window", title: "window" }, new Date());
   store.placeTask(store.refFor("built-in", "t-window").id, "/repo/main");
-  const csrf = csrfOf(await (await fetch(`${base}/tasks`, { headers: { cookie } })).text());
+  const csrf = csrfOf(await (await fetch(`${base}/?view=all`, { headers: { cookie } })).text());
   expect((await fetch(`${base}/t/t-window/scope`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual",
     body: new URLSearchParams({ csrf, acceptance: "c1: ok | manual-review", sawDigest: "", goal: "the goal", not: "", touches: "" }) })).status).toBe(303);
   const page = async () => (await fetch(`${base}/t/t-window`, { headers: { cookie } })).text();

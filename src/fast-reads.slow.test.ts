@@ -6,7 +6,8 @@
  * its second page, a state filter, the completed and archived views, one project's list, the board), a result page in
  * another project, a result page in the viewer's own project, a task page, Projects and Chat — the document load and the
  * in-place read — and holds every answer to the digest of what main sent (fast-reads.golden.json, written from main's
- * code with FAST_READS_WRITE_GOLDEN=1). Some answers are refusals (the viewer's other-project result is a 404; Chat
+ * code with FAST_READS_WRITE_GOLDEN=1; since the work reads exist, written with FAST_READS_BARE=1 too, which reads every
+ * page without them). Some answers are refusals (the viewer's other-project result is a 404; Chat
  * refuses project-limited accounts): those are held too. A page that differs by one byte fails here, and its body is
  * left in FAST_READS_OUT to compare.
  *
@@ -26,6 +27,13 @@ import { createHash } from "node:crypto";
 import { seeded, seedWireWorld, WIRE_NOW, type WireWorld } from "../test/wire-world.js";
 import type { DecisionServer } from "./serve.js";
 import type { Store } from "./store.js";
+
+// FAST_READS_BARE=1 serves every read without its request's work reads (as main read every page before they were made
+// cheap): the golden is written that way, and an ordinary run, with them, must match it byte for byte.
+vi.mock("./work-reads.js", async importOriginal => {
+  const real = await importOriginal<typeof import("./work-reads.js")>();
+  return process.env["FAST_READS_BARE"] === "1" ? { ...real, withWorkReads: <T>(run: () => T): T => run() } : real;
+});
 
 process.env["TZ"] = "UTC";
 const GOLDEN = join(import.meta.dirname, "fast-reads.golden.json");
@@ -51,10 +59,10 @@ function send(path: string, headers: Record<string, string>, method = "GET", bod
   });
 }
 
-/** The account's second Tasks page: the link its first page's in-place read names (its own first page if none). */
+/** The account's second Work page: the link its first page's in-place read names (its own first page if none). */
 async function nextPageOf(who: string): Promise<string> {
-  const first = await send("/tasks?format=workspace", { cookie: cookies[who]!, accept: "application/json", "x-toolroll-read": "navigate", "x-toolroll-work": "1" });
-  return /"next":"(\/tasks\?cursor=[A-Za-z0-9_-]+)"/.exec(first.body)?.[1] ?? "/tasks";
+  const first = await send("/?view=all&format=workspace", { cookie: cookies[who]!, accept: "application/json", "x-toolroll-read": "navigate", "x-toolroll-work": "1" });
+  return /"next":"(\/\?cursor=[A-Za-z0-9_-]+)"/.exec(first.body)?.[1] ?? "/?view=all";
 }
 
 /** Where and when the run happened, and the tokens a sign-in mints, as fixed stand-ins. */
@@ -64,7 +72,7 @@ function normalized(text: string): string {
   // Per-session secrets (the form token, each page's script nonce): the same length every run, never content.
   // A form's one-time request id (a hidden field, and the chat composer's requestId), raw and inside escaped HTML.
   return out.replace(/("csrf":"|name=\\?"csrf\\?" value=\\?"|nonce=\\?"|"nonce":")[A-Za-z0-9_\-+/=]+/g, "$1<token>")
-    .replace(/(name=\\?"request\\?" value=\\?"|"requestId":")[0-9a-f]{32}/g, "$1<request>")
+    .replace(/(name=\\?"request\\?" value=\\?"|"requestId":"|"request":")[0-9a-f]{32}/g, "$1<request>")
     // Digests over the world's own paths (a result's receipt, a task's source, a page revision): fixed length, the folder
     // decides their value. A page cursor's scope is one too, inside its base64url.
     .replace(/(name=\\?"(?:receipt|source)\\?" value=\\?"|"(?:receipt|source)":")[0-9a-f]{64}/g, "$1<digest>")
@@ -123,9 +131,9 @@ test("every account sees byte for byte what it saw before the reads were made ch
     WHERE r.repo = ? AND t.state = 'done' AND r.revision_of IS NULL AND EXISTS(SELECT 1 FROM run WHERE task_ref = r.id AND finished_at IS NOT NULL AND role = 'builder' AND outcome = 'built')
     ORDER BY t.id LIMIT 1`).get(world.samProject)?.["id"]);
   const pages: [string, string | ((who: string) => Promise<string>)][] = [
-    ["Home", "/"], ["Tasks", "/tasks"], ["Tasks (next page)", nextPageOf], ["Tasks (state filter: failed)", "/tasks?state=failed"],
-    ["Tasks (completed)", "/tasks?view=completed"], ["Tasks (archived)", "/tasks?view=archived"], ["Tasks (one project)", `/tasks?project=${encodeURIComponent(world.samProject)}`],
-    ["Tasks (board)", "/tasks?layout=board"], ["Result", `/t/${encodeURIComponent(world.resultTask)}?tab=result`], ["Result (viewer's project)", `/t/${encodeURIComponent(ownResult)}?tab=result`],
+    ["Work", "/"], ["Work (needs you)", "/?view=needs-you"], ["Work (next page)", nextPageOf], ["Work (state filter: failed)", "/?state=failed"],
+    ["Work (completed)", "/?view=completed"], ["Work (archived)", "/?view=archived"], ["Work (one project)", `/?project=${encodeURIComponent(world.samProject)}`],
+    ["Work (board)", "/?view=board"], ["Result", `/t/${encodeURIComponent(world.resultTask)}?tab=result`], ["Result (viewer's project)", `/t/${encodeURIComponent(ownResult)}?tab=result`],
     ["Task", `/t/${encodeURIComponent(world.probeTask)}`], ["Projects", "/projects"], ["Chat", "/chat"],
   ];
   const seen: Record<string, string> = {};

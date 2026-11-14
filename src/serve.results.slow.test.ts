@@ -27,7 +27,7 @@ import type { LeadProviderAnswer } from "./converse.js";
 import { resultFactsFromHtml, resultReturnTarget } from "./result-review.js";
 import { Window } from "happy-dom";
 import { validateTaskText, TASK_TEXT_LIMITS } from "./task-text.js";
-import { presented, T0, renderedHtmlOf, workspaceOf, revisionIdOf, plannerKeptTerms, revisionFormOf } from "../test/serve-kit.js";
+import { presented, T0, renderedHtmlOf, workspaceOf, workListOf, revisionIdOf, plannerKeptTerms, revisionFormOf } from "../test/serve-kit.js";
 import { handoffBytes } from "../test/handoff-fixture.js";
 import type { HandoffArtifact } from "./contracts/handoff.js";
 
@@ -283,7 +283,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
   test("the queue is authenticated, visibility-safe, bounded to done tasks, deep-linkable, and honest when empty or when the link misses", async () => {
     await boot();
     // Unauthenticated: the login door, never the queue.
-    for (const path of ["/review", "/review?result=t-ours", "/tasks?view=ready"]) {
+    for (const path of ["/review", "/review?result=t-ours", "/?view=ready"]) {
       const anonymous = await fetch(url(path), { redirect: "manual" });
       expect(anonymous.status, path).toBe(303);
       expect(anonymous.headers.get("location"), path).toContain("/login");
@@ -293,10 +293,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // The bare list is retired to Tasks' Ready view; a result keeps its own page, and the list beside it.
     const retired = await fetch(url("/review"), { headers: { cookie }, redirect: "manual" });
     expect(retired.status).toBe(301);
-    expect(retired.headers.get("location")).toBe("/tasks?view=ready");
+    expect(retired.headers.get("location")).toBe("/?view=ready");
 
     // Empty, honestly, on both.
-    expect(await (await fetch(url("/tasks?view=ready"), { headers: { cookie } })).text()).toContain("Nothing is ready for review.");
+    expect(await (await fetch(url("/?view=ready"), { headers: { cookie } })).text()).toContain("Nothing is ready for review.");
     expect(await (await fetch(url("/review?result=nope"), { headers: { cookie } })).text()).toContain("No results in this review list.");
 
     // Two visible done tasks, one still running, one done in a repo outside the ceiling.
@@ -335,7 +335,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // The result a link names is the one shown.
     expect(html).toContain('data-result-task="t-ours"');
     // Tasks' Ready view reads the same ceiling: nothing from outside it.
-    const ready = await (await fetch(url("/tasks?view=ready"), { headers: { cookie } })).text();
+    const ready = await (await fetch(url("/?view=ready"), { headers: { cookie } })).text();
     expect(ready).not.toContain("never shown");
     expect(ready).not.toContain("t-theirs");
     const olderRun = store.runsFor(store.lookupRef("t-older")!.id)[0]!.id;
@@ -1094,11 +1094,17 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const before = ledger().length;
     // A receipt other than the one read refuses both: nothing is accepted or completed.
     expect((await post(cookie, "/t/t-look/complete", { csrf, run: String(run), receipt: "0".repeat(64), accept: "1" })).status).toBe(409);
+    // Work's panel asks for the answer in place (S2a): the same refusal, as words; nothing is accepted.
+    const inPlace = (fields: Record<string, string>) => fetch(url("/t/t-look/complete"), { method: "POST", redirect: "manual", body: new URLSearchParams(fields),
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", accept: "application/json" } });
+    const refusedInPlace = await inPlace({ csrf, run: String(run), receipt: "0".repeat(64), accept: "1" });
+    expect(refusedInPlace.status).toBe(409);
+    expect(await refusedInPlace.json()).toMatchObject({ outcome: "refused", words: expect.any(String) });
     expect(store.proofAcceptance(run)).toBeNull();
-    // Accept: one request records the acceptance and completes the receipt that acceptance produces.
-    const done = await post(cookie, "/t/t-look/complete", { csrf, run: String(run), receipt: first.complete!.receipt, accept: "1" });
-    expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe(`/t/t-look?tab=result&run=${run}`);
+    // Accept: one request records the acceptance and completes the receipt that acceptance produces (here in place).
+    const done = await inPlace({ csrf, run: String(run), receipt: first.complete!.receipt, accept: "1" });
+    expect(done.status).toBe(200);
+    expect(await done.json()).toEqual({ outcome: "done", words: "Accepted. The task is complete." });
     expect(store.proofAcceptance(run)).toMatchObject({ approver: "alex", note: null });
     const assignment = assignmentOf(store, "t-look", new Date(), { principal: "operator", repos: null }, evidenceRoot)!;
     expect(assignment.state).toBe("complete");
@@ -1539,6 +1545,11 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const first = { intent: "revise", request: "a".repeat(32), note: "Make the action clearer.", ...initial };
     // A failed combined action saves neither the note nor a task.
     expect((await send({ ...first, source: "stale" })).status).toBe(409);
+    // Asked in place (Work's panel, S2a): the same refusal, as words.
+    const stale = await fetch(url(`/r/${run}/comment`), { method: "POST", redirect: "manual", body: new URLSearchParams({ csrf, ...first, source: "stale" }),
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", accept: "application/json" } });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ outcome: "refused" });
     expect(store.allDiffComments(run)).toHaveLength(0);
     expect(store.revisionsFromRun(run)).toHaveLength(0);
     expect((await send({ ...first, line: "0", path: "src/a.ts" })).status).toBe(400);
@@ -1822,10 +1833,11 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       expect(chat).toContain(`data-task="${root}" data-execution="${child}"`);
       expect(chat).toContain(`data-execution="${child}"`);
       expect(chat).toContain(`action="/t/${child}/approve"`);
-      const work = await read("/tasks");
-      expect(work.match(new RegExp(`class="work-row" data-task="${root}"`, "g"))).toHaveLength(1);
-      expect(work).not.toContain(`class="work-row" data-task="${child}"`);
-      expect(await read("/tasks")).not.toContain(`href="/t/${child}"`);
+      // Work lists the family once, under its root; the revision is never a row of its own nor a link of its own.
+      const work = workListOf(workspaceOf(await read("/"))).rows;
+      expect(work.filter(row => row.id === root)).toHaveLength(1);
+      expect(work.some(row => row.id === child)).toBe(false);
+      expect(work.some(row => row.href === `/t/${child}`)).toBe(false);
       const form = new RegExp(`<form method="post" action="/t/${child}/approve"[\\s\\S]*?</form>`).exec(chat)![0];
       const digest = /name="digest" value="([^"]+)"/.exec(form)![1]!;
       const nonce = /name="nonce" value="([^"]+)"/.exec(form)![1]!;
@@ -1948,7 +1960,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(await read(`/chat?task=${root}`)).not.toContain(`action="/t/${child}/approve"`);
     plannerKeptTerms(store, child);
     expect(await read(`/chat?task=${root}`)).toContain(`action="/t/${child}/approve"`);
-    expect(await read("/tasks")).toContain(`data-task="${root}"`);
+    expect(workListOf(workspaceOf(await read("/"))).rows.some(row => row.id === root)).toBe(true);
     await post(cookie, `/chat/proposal/${revise.id}/confirm`, { csrf });
     expect(store.taskFamilyOf(root, [repo], false)?.versions).toHaveLength(2);
     expect(store.allDiffComments(run)).toHaveLength(3);
@@ -2605,7 +2617,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const childRef = store.lookupRef(child)!.id;
     const line = async () => /<p class="result-revision" data-result-revision="[^"]+" data-result-revision-approved="([01])" data-tone="([a-z]+)"><strong>Revision<\/strong> <a href="[^"]+">[^<]*<\/a> <span class="meta">· ([^<]*)<\/span><\/p>/.exec(await read(`/r/${run}`));
     // The Work row names the assignment; the selected result still names the exact revision state.
-    const rowWords = async () => /<span class="status-label">([^<]*)<\/span>/.exec((await read("/tasks?view=all")).split(`data-task="t-standing"`)[1] ?? "")?.[1] ?? null;
+    const rowWords = async () => workListOf(workspaceOf(await read("/?view=all"))).rows.find(row => row.id === "t-standing")?.status.label ?? null;
     // Planned first: nothing to approve until the plan is updated (this fixture's worker is stale, and it says so).
     // The revision's standing is its shared headline (task-status.ts).
     expect((await line())?.[3]).toBe("Needs you");

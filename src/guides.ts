@@ -320,14 +320,15 @@ ${AUTHORITY_LINE}
 
 ## The console's screens (what each one is for)
 
-- **Home** (\`/\`): what needs a person (questions to answer, plans to
-  approve, results to accept), what is running, and what waits on its own.
-- **Tasks** (\`/tasks\`): every task, with List, Board
-  (\`/tasks?view=board\`), Ready (\`/tasks?view=ready\`), Archived and every
-  project (\`/tasks?scope=all\`). Its *order* view (\`/tasks?view=order\`) is
-  the dispatch order per builder (drag to reorder, drag onto a builder to
-  keep a task for it). The old pages (\`/inbox\`, \`/next\`, \`/board\`,
-  \`/queue\`, \`/workbench\`, \`/done\`, \`/work\`) redirect here for good.
+- **Work** (\`/\`): what needs a person first (plans to approve, questions to
+  answer, results to accept), then what is running, queued and done, with the
+  selected task beside the list (\`/?task=<id>\`). Views: Needs you, All,
+  Running, Queued, Done (\`/?view=needs-you\` and so on), the Board
+  (\`/?view=board\`), Archived, one project (\`/?project=<path>\`). Its *order*
+  view (\`/?view=order\`) is the dispatch order per builder (drag to reorder,
+  drag onto a builder to keep a task for it). The old pages (\`/tasks\`,
+  \`/inbox\`, \`/next\`, \`/board\`, \`/queue\`, \`/workbench\`, \`/done\`,
+  \`/work\`) redirect here for good.
 - **task page** (\`/t/<id>\`): the approval ceremony when a scope waits,
   the acts bar (plan first, hold, retry, build next, cancel), scope,
   attempts, decisions, and — for a scout task — the report with one-tap

@@ -1157,7 +1157,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const namedProject = url.searchParams.get("project");
       if (url.searchParams.getAll("result").length !== 1 || url.searchParams.getAll("run").length > 1 || url.searchParams.getAll("project").length > 1 ||
           (namedProject !== null && (ref === null || !visible(ref.repo) || namedProject !== ref.repo))) {
-        return refuse(response, who, 404, "No such result in your projects.", "/tasks");
+        return refuse(response, who, 404, "No such result in your projects.", "/");
       }
       if (who.via === "cookie" && ref !== null && visible(ref.repo)) project = ref.repo;
     }
@@ -1512,15 +1512,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function paletteIndexTag(project: string | null): Html {
     const admitted = project === null ? admissionList() : null;
     const entries: { label: string; href: string }[] = [
-      { label: "tasks", href: "/tasks" },
-      { label: "needs you", href: "/tasks?view=needs-you" },
+      { label: "tasks", href: "/" },
+      { label: "needs you", href: "/?view=needs-you" },
       { label: "home", href: "/" },
-      { label: "board", href: "/tasks?view=board&scope=all" },
+      { label: "board", href: "/?view=board" },
       { label: "queue", href: QUEUE_VIEW },
-      { label: "every project", href: "/tasks?scope=all" },
+      { label: "every project", href: "/" },
       { label: "flows", href: "/flows" },
-      { label: "finished", href: "/tasks?view=done" },
-      { label: "ready for review", href: "/tasks?view=ready" },
+      { label: "finished", href: "/?view=done" },
+      { label: "ready for review", href: "/?view=ready" },
       { label: "fleet", href: "/fleet" },
       { label: "activity", href: "/activity" },
       { label: "action ledger", href: "/ledger" },
@@ -1535,8 +1535,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       entries.push({ label: `${one.id} — ${one.title}`, href: `/t/${encodeURIComponent(one.id)}` });
     }
     const saturated = open.length > 200;
-    const safeEntries = restricted() ? entries.filter(one => ["/tasks", "/tasks?view=needs-you", "/", "/tasks?view=board", "/flows", "/tasks?view=done", "/tasks?view=ready", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
-    return jsonScript(saturated ? [...safeEntries, { label: "… more in Tasks", href: "/tasks" }] : safeEntries, { id: "palette-index" });
+    const safeEntries = restricted() ? entries.filter(one => ["/", "/?view=needs-you", "/", "/?view=board", "/flows", "/?view=done", "/?view=ready", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
+    return jsonScript(saturated ? [...safeEntries, { label: "… more in Work", href: "/" }] : safeEntries, { id: "palette-index" });
   }
 
   /**
@@ -1714,14 +1714,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         catchUpHtml: extras.catchUpHtml === undefined ? '' : htmlString(extras.catchUpHtml), controlsHtml: extras.controlsHtml === undefined ? '' : htmlString(extras.controlsHtml), notices, view: extras.view ?? null,
         ...(s.chrome.demo ? { demo: { text: DEMO_BANNER, short: DEMO_BANNER_SHORT } } : {}),
         pageHtml: extras.pageHtml === undefined ? (conversation === null ? pageHtml : null) : extras.pageHtml === null ? null : htmlString(extras.pageHtml),
-        navigation: browserNavigationOf(currentPath, s.chrome.project, needsYou, tasksProject, s.chrome.inboxLabel, requestFacts.advanced !== false),
+        navigation: browserNavigationOf(currentPath, needsYou, s.chrome.inboxLabel),
         ...(requestFacts.advanced === false ? { advanced: false as const } : {}),
         // The one Needs-you count (tasks only), with the scope it covers: the Tasks list's own count for this project
         // view (or every project), so the rail, the phone header and Home all read the same number.
         needsYou: { count: needsYou, saturated: s.chrome.inboxSaturated === true, scope: tasksProject ?? null,
           label: s.chrome.inboxLabel ?? `${needsYou} ${needsYou === 1 ? 'needs' : 'need'} you`,
-          // Every project, said by name (all=1), so a session's own open project never narrows the list the count opens.
-          href: tasksProject === null ? '/tasks?scope=all&view=needs-you' : `/tasks?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
+          // Work's Needs you view: with no project named it is every project, so a session's open project never narrows it.
+          href: tasksProject === null ? '/?view=needs-you' : `/?project=${encodeURIComponent(tasksProject)}&view=needs-you` },
         chats,
         // The same count per project (the rail's project rows), read from the same work index totals.
         ...(() => { if (sensitive) return {}; try { return { needsYouByProject: projectCounts(clock()).map(one => ({ path: one.repo, count: one.totals['needs-you'] })) }; } catch { return {}; } })(),
@@ -2362,7 +2362,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get outsideAdmissions(): ServerRuntime['outsideAdmissions'] { return outsideAdmissions; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
-  const pagesHandlers = createPagesHandlers(handlerRuntime);
+  const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });
   const flowsHandlers = createFlowsHandlers(handlerRuntime);
   const chatHandlers = createChatHandlers(handlerRuntime);
   const settingsHandlers = createSettingsHandlers(handlerRuntime);

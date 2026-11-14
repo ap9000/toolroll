@@ -80,21 +80,21 @@ test("the session table: a re-read and a read ahead never extend it, a followed 
   const { cookie, hash } = await login();
   clockAt = Date.now();
   for (const [path, purpose, extends_] of [
-    ["/tasks?format=workspace", undefined, false],
-    ["/tasks?format=workspace", "poll", false],
-    ["/tasks?format=workspace", "something-else", false],
-    ["/tasks?format=workspace", "prefetch", false],
-    ["/tasks?format=workspace", "navigate", true],
+    ["/?view=running&format=workspace", undefined, false],
+    ["/?view=running&format=workspace", "poll", false],
+    ["/?view=running&format=workspace", "something-else", false],
+    ["/?view=running&format=workspace", "prefetch", false],
+    ["/?view=running&format=workspace", "navigate", true],
     ["/?format=workspace", "navigate", true],
     // The no-touch reads keep their rule whatever the header says.
     ["/agents?view=live&format=workspace", "navigate", false],
-    ["/tasks?fragment=rail&format=workspace", "navigate", false],
+    ["/?fragment=rail&format=workspace", "navigate", false],
     ["/term/state?format=workspace", "navigate", false],
     [`/code/${"a".repeat(32)}/state?format=workspace`, "navigate", false],
     ["/agents/live?format=workspace", "navigate", false],
     // The header means nothing on a request that is not a workspace read: the page's own GET extends, as today.
-    ["/tasks", "prefetch", true],
-    ["/tasks", undefined, true],
+    ["/?view=running", "prefetch", true],
+    ["/?view=running", undefined, true],
   ] as const) {
     const { moved } = await seenAfter(hash, () => read(cookie, path, purpose));
     expect(moved, `${path} ${purpose ?? "(no header)"}`).toBe(extends_);
@@ -111,7 +111,7 @@ test("the header does nothing on a page's own GET: it answers the page, not 204"
 test("a read ahead changes nothing, on every allowlisted page and its query variants", async () => {
   const { cookie, hash } = await login();
   clockAt = Date.now();
-  for (const path of ["/", `/?project=${encodeURIComponent(repo)}`, "/tasks", `/tasks?project=${encodeURIComponent(repo)}`, "/tasks?view=needs-you", "/tasks?page=2",
+  for (const path of ["/", `/?project=${encodeURIComponent(repo)}`, "/?view=all", `/?view=running&project=${encodeURIComponent(repo)}`, "/?view=needs-you", "/?page=2",
     "/projects", "/agents", "/search", "/search?q=limiter", "/t/t-plan"]) {
     const address = path + (path.includes("?") ? "&" : "?") + "format=workspace";
     const before = writes();
@@ -172,9 +172,9 @@ test("a read ahead from anything but a browser session, or of any page off the a
   store.createApiToken({ id: minted.id, account: "alex", name: "laptop", secretHash: minted.hash, access: "act", expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
   const before = writes();
   for (const [path, headers] of [
-    ["/tasks?format=workspace", { authorization: `Bearer ${minted.token}` }],
-    ["/tasks?format=workspace", {}],
-    ["/tasks?format=workspace", { cookie: `standing-orders_session=${"0".repeat(64)}` }],
+    ["/?view=running&format=workspace", { authorization: `Bearer ${minted.token}` }],
+    ["/?view=running&format=workspace", {}],
+    ["/?view=running&format=workspace", { cookie: `standing-orders_session=${"0".repeat(64)}` }],
     ["/settings?format=workspace", { cookie }],
     ["/welcome?format=workspace", { cookie }],
     ["/chat?format=workspace", { cookie }],
@@ -200,7 +200,7 @@ test("inPlace: the allowlisted pages say it; the welcome page, the terminal and 
     if (response.status !== 200 || !(response.headers.get("content-type") ?? "").includes("application/json")) { await response.arrayBuffer(); return "no workspace"; }
     return ((await response.json()) as BrowserWorkspace).inPlace === true;
   };
-  for (const path of ["/?format=workspace", "/tasks?format=workspace", "/projects?format=workspace", "/agents?format=workspace", "/search?format=workspace"])
+  for (const path of ["/?format=workspace", "/?view=running&format=workspace", "/projects?format=workspace", "/agents?format=workspace", "/search?format=workspace"])
     expect(await inPlaceOf(path), path).toBe(true);
   for (const path of ["/welcome?format=workspace", "/term?format=workspace", "/agents?view=live&format=workspace", "/agents/terminals?format=workspace", "/chat?format=workspace"])
     expect(await inPlaceOf(path), path).not.toBe(true);

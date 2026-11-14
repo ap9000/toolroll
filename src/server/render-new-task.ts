@@ -53,8 +53,8 @@ export function newTaskPage(
   /** A link the lead or a person put in the address (GET ?from=). */
   fromLink: string | null = null,
 ): Screen {
-  const head = html`${phoneHeader("New task", { back: "/tasks" })}`;
-  const header = docHeader({ title: "New task", back: ["/tasks", "Tasks"], meta: "Nothing is built until you approve its plan.", same: true });
+  const head = html`${phoneHeader("New task", { back: "/" })}`;
+  const header = docHeader({ title: "New task", back: ["/", "Work"], meta: "Nothing is built until you approve its plan.", same: true });
   const items = projectItems(projects, project);
   const values = prefill?.values;
   // No project to choose from: the task names its folder (the server proves it), and adding a project is one link away.

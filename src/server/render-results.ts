@@ -2431,6 +2431,9 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     learning: detail.learning === undefined ? "" : htmlString(detail.learning),
     request: detail.skillTest ? null : htmlString(joinHtml(requestParts, "\n")),
     canRequest: detail.canAnnotate && o.csrf !== "",
+    // The request form's own fields, as data (the same batch, source and request token the form above posts).
+    sendBack: detail.skillTest || !detail.canAnnotate || o.csrf === "" ? null
+      : { action: `/r/${runId}/comment`, batch: revisionBatchOf(detail.comments), source: revisionSourceOf(detail.sourceDigest), request: o.requestToken },
     need,
     requestQuiet: detail.canAnnotate && o.csrf !== "" && detail.comments.length === 0 && (detail.pastComments?.length ?? 0) === 0 && detail.revisions.length === 0,
   };

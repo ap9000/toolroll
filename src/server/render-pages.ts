@@ -189,7 +189,7 @@ export function boardBody(
     // A lane is a section that can fold (board pass): open when it holds
     // cards, folded when empty, so a phone reads the counts first and a
     // desktop column never spends its height on "nothing here".
-    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/tasks">+${more} more in Tasks</a>` : null}</details>`;
+    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/">+${more} more in Tasks</a>` : null}</details>`;
   };
 
   // The card's facts: mono key–value pairs under the title (board pass) —
@@ -289,8 +289,8 @@ export function boardBody(
           data.all
             ? html`${data.project === null
                 ? html`<strong>All projects</strong>`
-                : html`<a href="/tasks?view=board">${projectName(data.project)}</a> · <strong>all projects</strong>`} — every project this server serves, each card wearing its project`
-            : html`<strong>${projectName(data.project as string)}</strong> · <a href="/tasks?view=board&scope=all">all projects</a>`
+                : html`<a href="/?view=board">${projectName(data.project)}</a> · <strong>all projects</strong>`} — every project this server serves, each card wearing its project`
+            : html`<strong>${projectName(data.project as string)}</strong> · <a href="/?view=board">all projects</a>`
         }</p>`;
 
   const ago = (minutes: number): string =>
@@ -311,7 +311,7 @@ export function boardBody(
 
   return joinHtml([
     html`<h1>Board</h1>`,
-    data.all ? null : html`<p class="meta board-view"><strong>State</strong> · <a href="/tasks?view=order">order →</a> <span class="meta">drag to reorder, or to keep a task for one builder</span></p>`,
+    data.all ? null : html`<p class="meta board-view"><strong>State</strong> · <a href="/?view=order">order →</a> <span class="meta">drag to reorder, or to keep a task for one builder</span></p>`,
     deltaLine,
     toggle,
     workerStrip(data.workers, data.cards, data.now),
@@ -320,7 +320,7 @@ export function boardBody(
     lane("queued", "Queued", "Starts when a builder is free.", queuedCard),
     lane("waiting", "Waiting", "Paused until a time, another task, or a requirement is ready.", plain),
     lane("building", "Building", "One agent per card, in its own workspace.", building),
-    html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2>${laneChip("done", html`<a href="/tasks?view=done">Done recently</a>`)}</h2></summary><p class="hint">The most recent. The full list is under Done.</p>${doneCards}</details>`,
+    html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2>${laneChip("done", html`<a href="/?view=done">Done recently</a>`)}</h2></summary><p class="hint">The most recent. The full list is under Done.</p>${doneCards}</details>`,
     html`</div>`,
   ], "\n");
 }
@@ -560,7 +560,7 @@ export function workPage(
     ['finished', 'Finished', data.board.finished, 'completed', 'Nothing has finished yet.'],
   ] as const).map(([key, label, page, view, empty]) => ({ key, label, count: page.totals[view], href: query({ view, layout: 'list' }), empty, rows: page.items.map(rowOf) }));
   const putAwayLink = data.canPutAway === true && data.view !== 'archived' ? { label: 'Archive old tasks', href: '/tasks/archive' } : null;
-  const toolLinks = [['/tasks?view=order', 'Order the queue'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/tasks?scope=all', 'Every project']]), ['/ledger', 'Audit log']];
+  const toolLinks = [['/?view=order', 'Order the queue'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/', 'Every project']]), ['/ledger', 'Audit log']];
   const newTaskHref = lens === null ? '/tasks/new' : `/tasks/new?project=${encodeURIComponent(lens)}`;
   const emptyNow = data.work.items.length > 0 ? null : filtered && !data.previous ? { text: `No tasks are ${data.state} in this view.`, action: { label: 'Show every state', href: href(data.view, undefined, null) } } : {
     text: data.previous ? 'There are no more tasks on this page.' : current.empty,
@@ -589,39 +589,20 @@ export function workPage(
     states: [{ label: 'Any state', href: href(data.view, undefined, null), active: (data.state ?? null) === null },
       ...TASK_STATES.map(one => ({ label: one.charAt(0).toUpperCase() + one.slice(1), href: href(data.view, undefined, one), active: data.state === one }))],
   };
-  // The page without the workspace (and its first paint) keeps the older rows the server tests read; the workspace
-  // replaces it with the kit view above.
+  // Work renders with React only (PRODUCT.md); without JavaScript the document is this stub: the views as links with
+  // their counts, and each task as a link with its status in words. No forms, no acts: a task's page has those.
   const legacyTabs = html`<nav class="work-views" aria-label="Task views">${WORK_VIEWS.map(one =>
     html`<a href="${href(one.key)}"${one.key === data.view ? html` class="active" aria-current="page"` : null}>${one.label}<span class="count">${data.work.totals[one.key]}</span></a>`
   )}</nav>`;
-  const rowHtml = (row: WorkIndexItem): Html => {
-    if (row.archived !== undefined) {
-      const act = tidyAct(row);
-      const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
-      return html`<article class="work-row" data-task="${row.rootId}" data-work-status="archived" data-work-views="archived"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.archived.at, data.now)}</span><span class="mono">${row.rootId}</span></p><p class="work-detail" data-archived-by>${archivedWords(row.archived)}</p></div><div class="work-row-status">${act === null ? null : postForm(act.action, html`<button type="submit" class="secondary">${act.label}</button>`, { hidden: { return: returnTo }, attrs: { class: 'inline', 'data-tidy-act': 'restore' } })}</div></article>`;
-    }
-    const target = row.primaryAction?.target;
-    const actionHref = row.primaryAction?.code === 'open-result' && target?.runId != null
-      ? taskLinkOf({ task: target.taskId, run: target.runId })
-      : browserWorkActionHref(row);
-    const action = actionHref === null || row.primaryAction === null ? null : html`<a class="work-action" data-primary-action href="${actionHref}">${row.primaryAction.label} →</a>`;
-    const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
-    const act = tidyAct(row);
-    const putAway = act === null ? null : postForm(act.action, html`<button type="submit" class="quiet">${act.label}</button>`, { hidden: { return: returnTo }, attrs: { class: 'inline', 'data-tidy-act': 'put-away' } });
-    return html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.updatedAt, data.now)}</span><span class="mono">${row.rootId}</span></p></div><div class="work-row-status">${statusLineHtml(row.status)}${action}${putAway}${row.familyProblem === null ? null : html`<p class="problem">${row.familyProblem}</p>`}${row.status.views.includes('needs-you') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem ? html`<p class="work-detail">${row.status.detail}</p>` : null}${workDiagnosticsHtml(row.status.diagnostics)}</div></article>`;
-  };
-  // The state filter, as real links (the old task list's), so a page without the React view can still change it.
-  const stateLinks = html`<nav class="work-states" aria-label="Task state"><span class="meta">State:</span> ${joinHtml([html`<a href="${href(data.view, undefined, null)}"${filtered ? null : html` aria-current="page"`}>Any</a>`,
-    ...TASK_STATES.map(one => html`<a href="${href(data.view, undefined, one)}"${data.state === one ? html` aria-current="page"` : null}>${one}</a>`)], html` · `)}</nav>`;
-  const list = data.work.items.length === 0 && filtered && !data.previous
-    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>No tasks are ${data.state} in this view.</p><a href="${href(data.view, undefined, null)}">Show every state →</a></div>`
-    : data.work.items.length === 0
-    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>${data.previous ? 'There are no more tasks on this page.' : current.empty}</p>${data.view === 'all' && !data.previous ? html`<p><a class="button-link" href="${chrome.chat === true ? '/chat' : '/tasks/new'}">${chrome.chat === true ? 'Start in chat' : 'Add a task'}</a></p>` : html`<a href="${href('all')}">See all tasks →</a>`}</div>`
+  const rowHtml = (row: WorkIndexItem): Html => row.archived !== undefined
+    ? html`<article class="work-row" data-task="${row.rootId}" data-work-status="archived" data-work-views="archived"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a> <span class="status-label">Archived</span></article>`
+    : html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a> <span class="status-label">${row.status.label}</span></article>`;
+  const list = data.work.items.length === 0
+    ? html`<p class="work-empty" data-work-empty="${data.view}">${filtered && !data.previous ? `No tasks are ${data.state} in this view.` : data.previous ? 'There are no more tasks on this page.' : current.empty}</p>`
     : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
-  const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="row work-pagination" aria-label="Task pages">${data.previous ? html`<a class="button-link" href="${href(data.view)}">First page</a>` : null}${data.work.nextCursor === null ? null : html`<a class="button-link" rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
-  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/', 'Home'], ['/tasks?view=board', 'Board'], ['/tasks?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/tasks?scope=all', 'Every project']]), ['/ledger', 'Audit log']]
-      .map(([path, label]) => html`<a href="${path}">${label}</a>`)}</nav></details>`;
-  return screen('work', html`<div class="work-head"><h1>Tasks</h1>${putAwayLink === null ? null : html`<a class="button-link" href="${putAwayLink.href}" data-put-away-old>${putAwayLink.label}</a>`}${tools}</div>${limitsHtml(data.limits ?? null)}${legacyTabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
+  const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="work-pagination" aria-label="Task pages">${data.previous ? html`<a href="${href(data.view)}">First page</a>` : null} ${data.work.nextCursor === null ? null : html`<a rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
+  // The plan's windows and the budgets, as links, for whoever runs the installation (data.limits is theirs alone).
+  return screen('work', html`${limitsHtml(data.limits ?? null)}${legacyTabs}${list}${pages}`, { chrome, workspace: { view } });
 }
 
 
@@ -743,7 +724,7 @@ export function queueScript(): string {
     `function tell(){if(!stamp)return;if(paused()){stamp.textContent="paused while you edit";return;}` +
     `stamp.textContent="updated "+Math.round((Date.now()-last)/1000)+"s ago";}setInterval(tell,1000);` +
     `function cycle(){if(document.hidden||busy||paused()){setTimeout(cycle,wait);return;}busy=true;` +
-    `fetch("/tasks?view=order&fragment=1",{redirect:"manual",cache:"no-store"})` +
+    `fetch("/?view=order&fragment=1",{redirect:"manual",cache:"no-store"})` +
     `.then(function(r){if(r.type==="opaqueredirect"||r.status===401||r.status===403){location.href="/login";return null;}` +
     `return r.ok?r.text():null;})` +
     `.then(function(t){if(t&&!paused()){region.innerHTML=t;last=Date.now();}})` +
@@ -777,13 +758,13 @@ export function queueScript(): string {
     `var old=card.querySelector(".queue-problem");if(old)old.remove();` +
     `var row=document.createElement("p");row.className="problem queue-problem";row.setAttribute("role","alert");row.textContent=text;card.appendChild(row);return true;}` +
     `fetch("/queue/move",{method:"POST",headers:(window.soKeyHeaders||function(h){return h})({"Content-Type":"application/x-www-form-urlencoded"}),body:post.toString(),redirect:"manual"})` +
-    `.then(function(r){if(r.ok)return fetch("/tasks?view=order&fragment=1",{redirect:"manual",cache:"no-store"}).then(function(f){` +
+    `.then(function(r){if(r.ok)return fetch("/?view=order&fragment=1",{redirect:"manual",cache:"no-store"}).then(function(f){` +
     `if(f.type==="opaqueredirect"||f.status===401||f.status===403){location.href="/login";return false;}return f.ok?f.text():null;});` +
     `if(r.type==="opaqueredirect"||r.status===401||r.status===403){location.href="/login";return false;}` +
     `var kind=(r.headers&&r.headers.get?r.headers.get("content-type"):"")||"";` +
     `if(r.status===409&&kind.indexOf("text/plain")===0){return r.text().then(function(text){return problem(drag.task,text)?false:null;});}` +
     `return null;})` +
-    `.then(function(t){if(t===false)return;if(t&&!paused()){region.innerHTML=t;last=Date.now();}else if(t===null){location.href="/tasks?view=order";}})` +
+    `.then(function(t){if(t===false)return;if(t&&!paused()){region.innerHTML=t;last=Date.now();}else if(t===null){location.href="/?view=order";}})` +
     `.catch(function(){})` +
     `.then(function(){tell();});});` +
     `})();`
@@ -804,12 +785,12 @@ export function queueScript(): string {
 export function putAwayPage(chrome: Chrome, data: { items: readonly TidyItem[]; days: number; digest: string; now: Date; problem: string | null; releasesSkipped: string | null }): Screen {
   const groups = tidyGroups(data.items, data.days);
   const count = data.items.length;
-  const crumbs = html`<nav class="kit-crumbs" aria-label="Breadcrumb"><ol><li><a href="/tasks">Tasks</a></li><li><span aria-current="page">Archive old tasks</span></li></ol></nav>`;
+  const crumbs = html`<nav class="kit-crumbs" aria-label="Breadcrumb"><ol><li><a href="/">Work</a></li><li><span aria-current="page">Archive old tasks</span></li></ol></nav>`;
   const daysForm = html`<form method="get" action="/tasks/archive" class="put-away-days"><label>Also finished tasks untouched for <input type="number" name="days" min="1" max="365" value="${String(data.days)}" inputmode="numeric"> days</label><button type="submit" class="secondary">Update list</button></form>`;
   const list = joinHtml(groups.map(group => html`<fieldset class="put-away-group" data-tidy-group="${group.rule}"><legend>${group.label}<span class="count">${String(group.items.length)}</span></legend><ul>${group.items.map(item =>
     html`<li><label class="put-away-item" data-tidy-task="${item.taskId}"><input type="checkbox" name="task" value="${item.taskId}" checked><span class="put-away-title">${item.title}</span><span class="put-away-why">${item.reason}</span><span class="put-away-id">${item.taskId}${item.repo === null ? "" : ` · ${projectName(item.repo)}`}${item.members.length > 1 ? ` · ${item.members.length} versions` : ""}</span></label></li>`)}</ul></fieldset>`));
   const body = count === 0
-    ? html`<p class="kit-state">Nothing to archive right now.</p><p><a href="/tasks?view=archived">See archived tasks →</a></p>`
+    ? html`<p class="kit-state">Nothing to archive right now.</p><p><a href="/?view=archived">See archived tasks →</a></p>`
     : stepUpForm({ proof: "tasks-put-away", action: "/work/put-away", id: "put-away", hidden: { digest: data.digest, days: data.days },
       body: html`${list}`, save: { label: "Archive selected", idle: `${count} ${count === 1 ? "task" : "tasks"} selected` }, confirm: `Archive the selected tasks. You can restore any of them from Archived.` });
   return screen("Archive old tasks", html`<div class="put-away">${crumbs}<h1>Archive old tasks</h1>\

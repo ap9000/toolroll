@@ -31,7 +31,7 @@ function Meta({ row }: { row: BrowserTaskRow }) {
 }
 
 /** Restore, on an archived row: a POST to the task's own route, back to this list. */
-function RestoreAct({ tidy }: { tidy: NonNullable<BrowserTaskRow["tidy"]> }) {
+export function RestoreAct({ tidy }: { tidy: NonNullable<BrowserTaskRow["tidy"]> }) {
   return <PostForm action={tidy.action} data-tidy-act="restore">
     <input type="hidden" name="return" value={tidy.returnTo} />
     <KButton type="submit" sm label="Restore" />
@@ -67,7 +67,7 @@ function TaskList({ view, rows }: { view: BrowserTasksView; rows: BrowserTaskRow
 }
 
 /** The Board view: the same index as columns; one column at a time on a phone, chosen above it. */
-function TaskBoard({ view, match }: { view: BrowserTasksView; match: (row: BrowserTaskRow) => boolean }) {
+export function TaskBoard({ view, match }: { view: BrowserTasksView; match: (row: BrowserTaskRow) => boolean }) {
   const columns = view.board ?? [];
   const [column, setColumn] = useState<string>(() => columns.find(one => one.rows.length > 0)?.key ?? "needs");
   return <>
@@ -83,9 +83,9 @@ function TaskBoard({ view, match }: { view: BrowserTasksView; match: (row: Brows
 }
 
 /** The list's other places (Order the queue, Recipes, the action ledger, Put away old tasks), in one menu. */
-function ToolsMenu({ view }: { view: BrowserTasksView }) {
+export function ToolsMenu({ view, more = [] }: { view: BrowserTasksView; more?: readonly { label: string; href: string }[] }) {
   const menu = useKMenu();
-  const items = [...view.tools, ...(view.putAway ? [view.putAway] : [])];
+  const items = [...more, ...view.tools, ...(view.putAway ? [view.putAway] : [])];
   if (items.length === 0) return null;
   return <KButton variant="ghost" sm iconOnly="more" label="More task tools" aria-haspopup="dialog"
     onClick={event => menu(event.currentTarget, "Task tools", items.map(item => ({ label: item.label, act: () => go(item.href) })))} />;
