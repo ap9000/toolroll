@@ -2,11 +2,13 @@
  * never stand in for what changed since — a write, the clock or another reader's projects. */
 import { afterEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { workCountsByProject, workIndexPage, workStateRows } from "./work-index.js";
-import { WORK_READ_REUSE_MS, outsideWorkReads, withWorkReads, workReadsOf } from "./work-reads.js";
+import { WORK_READ_REUSE_MS, outsideWorkReads, readerOf, withWorkReads, workReadsOf } from "./work-reads.js";
+import { addApprover } from "./scope.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { LEAD_CLAIMED } from "./lead-voice.js";
 
@@ -131,6 +133,88 @@ test("an async request keeps its reads until it ends, and drops them after", asy
     expect(temps(store)).toEqual(["so_work_ranked_0"]);
   });
   expect(temps(store)).toEqual([]);
+});
+
+test("a store or reader acquired earlier in the request never answers from before a write (Codex round 1, finding 1)", () => {
+  const store = world();
+  withWorkReads(() => {
+    // Acquired once, used after writes made through the store itself (not through them).
+    const saving = workReadsOf(store)!.store, reader = readerOf(store);
+    expect(saving.getTask("a")!.state).toBe("queued");
+    expect(reader.getTask("a")!.state).toBe("queued");
+    store.setTaskState("a", "cancelled", now);
+    expect(saving.getTask("a")!.state).toBe("cancelled");
+    expect(reader.getTask("a")!.state).toBe("cancelled");
+    // A derived value is proved before its reuse too.
+    const reads = workReadsOf(store)!;
+    let computed = 0;
+    expect(reads.value("n", () => ++computed)).toBe(1);
+    expect(reads.value("n", () => ++computed)).toBe(1);
+    store.setTaskState("b", "cancelled", now);
+    expect(reads.value("n", () => ++computed)).toBe(2);
+  });
+});
+
+test("a grant removed or an account revoked mid-request is read by the next read of the same request", () => {
+  const store = world();
+  const alex = addApprover(store, "alex", now);
+  const pat = alex.ok ? addApprover(store, "pat", now, { name: "alex", token: alex.token }) : alex;
+  expect(pat.ok).toBe(true);
+  expect(store.setAccountProjects("pat", ["/repo/one", "/repo/two"], "alex", now).ok).toBe(true);
+  withWorkReads(() => {
+    const saving = workReadsOf(store)!.store;
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(true);
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(true);
+    expect(store.setAccountProjects("pat", ["/repo/one"], "alex", now).ok).toBe(true);
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(false);
+    expect(saving.accountCanAccess("pat", "/repo/one")).toBe(true);
+    expect(store.revokeAccount("pat", "alex", now).ok).toBe(true);
+    expect(saving.accountCanAccess("pat", "/repo/one")).toBe(false);
+    expect(readerOf(store).accountOf("pat")?.revokedAt).not.toBeNull();
+  });
+});
+
+test("a commit by another process is read from the next turn on", async () => {
+  const store = world();
+  await withWorkReads(async () => {
+    const saving = workReadsOf(store)!.store;
+    expect(saving.getTask("c")!.state).toBe("queued");
+    expect(page(store).items.find(item => item.rootId === "c")?.state).toBe("queued");
+    // Another process (no Store of this one counts its write): only the file's data version says it committed.
+    execFileSync(process.execPath, ["--no-warnings", "-e", `const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1]); db.exec("PRAGMA busy_timeout = 5000");
+      db.prepare("UPDATE task SET state = 'cancelled' WHERE id = 'c'").run(); db.close();`, join(dir!, "orders.db")]);
+    await Promise.resolve();
+    expect(saving.getTask("c")!.state).toBe("cancelled");
+    expect(page(store).items.find(item => item.rootId === "c")?.state).toBe("cancelled");
+  });
+});
+
+test("a write while the projection is built is never stamped as new: the copy is rebuilt, or not kept (finding 2)", () => {
+  const store = world();
+  withWorkReads(() => {
+    const reads = workReadsOf(store)!;
+    let fills = 0;
+    // The first build writes while it fills: its copy is dropped and built again.
+    const table = reads.ranked("k", now, name => {
+      fills++;
+      store.handle.exec(`CREATE TEMP TABLE "${name}" AS SELECT state FROM task WHERE id = 'a'`);
+      if (fills === 1) store.setTaskState("a", "cancelled", now);
+    });
+    expect(fills).toBe(2);
+    expect(table).not.toBeNull();
+    expect(store.handle.prepare(`SELECT state FROM temp."${table}"`).get()?.["state"]).toBe("cancelled");
+    // Every build writes: after three tries nothing is kept and the caller reads the projection itself.
+    let always = 0;
+    expect(reads.ranked("j", now, name => {
+      always++;
+      store.handle.exec(`CREATE TEMP TABLE "${name}" AS SELECT 1 AS one`);
+      store.setTaskState("b", always % 2 === 0 ? "queued" : "cancelled", now);
+    })).toBeNull();
+    expect(always).toBe(3);
+    // Those writes also dropped the first copy: nothing kept stands for a database that has since changed.
+    expect(temps(store)).toEqual([]);
+  });
 });
 
 /** The same read with no request around it, as every read was before. */

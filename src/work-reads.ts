@@ -10,24 +10,35 @@
  * input it reads (the reader's projects, unplaced work, the project, state and lead filters, the custody and release
  * sets). It is cache metadata only.
  *
- * What a read returns is what it returned before, as long as nothing changed: every reuse first proves the database is
- * where it was (this connection's total changes and the file's data version, one statement), and anything written
- * meanwhile — by this request, another request or another process — drops every saved value. Time is the one input a
- * reuse can't prove unchanged, so the projection is reused only for WORK_READ_REUSE_MS after it was read: one request
- * sees one instant, the way the page's own panels should agree.
+ * What a read returns is what it returned before, as long as nothing changed. EVERY reuse — a saved answer through the
+ * saving store or readerOf(), a derived value, a kept projection — first proves the database is where it was, and
+ * anything written meanwhile drops every saved value before the read:
+ * - a write by this process, on any Store connection, is seen at once: sqlite-telemetry.ts counts every statement that
+ *   may write as it runs (writesSoFar), so this proof costs no statement;
+ * - a commit by another process is seen through the file's data version, read once per turn of the event loop (one
+ *   PRAGMA). Inside one synchronous turn no other code of this process runs, so a commit landing during it is ordered
+ *   after the turn: the turn reads as if it ran just before that commit; the next turn (after any await) sees it.
+ * A kept projection is checked again after it is built: a write that lands while it fills discards it (it is rebuilt,
+ * at most twice, then the read goes to the projection itself). Time is the one input a reuse can't prove unchanged, so
+ * the projection is reused only for WORK_READ_REUSE_MS after it was read: one request sees one instant.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database, Statement, Store } from "./store.js";
+import { writesSoFar } from "./sqlite-telemetry.js";
 import { statementEffect } from "./workspace-revision.js";
 
 /** How long one request keeps reading the projection it read first (wall clock, between its own reads). */
 export const WORK_READ_REUSE_MS = 5_000;
 /** Saved query answers per request and connection; past it, reads simply go to the database again. */
 const MAX_SAVED = 50_000;
+/** Builds of one kept projection a write may spoil before the read goes to the projection itself. */
+const FILL_TRIES = 3;
 
 type Connection = {
-  /** The database as last proved: this connection's total changes and the file's data version. */
+  /** The database as last proved: this process's write count and the file's data version. */
   stamp: string | null;
+  /** The file's data version, read once per turn of the event loop. */
+  version: { turn: number; value: string } | null;
   /** Answers to pure read statements, by statement, method and parameters. */
   answers: Map<string, unknown>;
   /** Values derived from reads (custody readings, release tasks), by name. */
@@ -92,16 +103,16 @@ export type WorkReads = {
   /** Forget the projection kept for `key` (it could not be read). */
   forget(key: string): void;
   /** Answers read together in one statement, saved as the one-row statement `sql` would have answered each entry's
-   * parameters (`method`: get, a row or undefined; all, rows). The caller reads them just now, at this proof; a
-   * statement with any other text simply reads the database. */
+   * parameters (`method`: get, a row or undefined; all, rows). The caller reads them just now, in this turn with no
+   * write since; a statement with any other text simply reads the database. */
   seed(sql: string, method: "get" | "all", entries: Iterable<readonly [unknown[], Record<string, unknown> | Record<string, unknown>[] | undefined]>): void;
 };
 
-/** Each saving store handed out, to the store it saves for (a read through one needs no new proof: it is the request's). */
+/** Each saving store handed out, to the store it saves for. */
 const savingFor = new WeakMap<object, Store>();
 
-/** The store a pure read should read through: this request's saving store (proved current), or `store` itself outside
- * a request's reads. A saving store passes through as it is. */
+/** The store a pure read should read through: this request's saving store, or `store` itself outside a request's
+ * reads. A saving store passes through as it is: it proves the database unchanged before every answer it reuses. */
 export function readerOf(store: Store): Store {
   if (savingFor.has(store)) return store;
   return workReadsOf(store)?.store ?? store;
@@ -115,7 +126,7 @@ export function workReadsOf(given: Store): WorkReads | null {
   const db = store.handle;
   let connection = scope.connections.get(db);
   if (connection === undefined) {
-    const created: Connection = { stamp: null, answers: new Map(), values: new Map(), ranked: new Map(), slots: new Set(), store: store };
+    const created: Connection = { stamp: null, version: null, answers: new Map(), values: new Map(), ranked: new Map(), slots: new Set(), store: store };
     created.store = Object.create(store, { db: { value: savingHandle(db, created) } }) as Store;
     savingFor.set(created.store, store);
     scope.connections.set(db, created);
@@ -126,12 +137,14 @@ export function workReadsOf(given: Store): WorkReads | null {
   return {
     store: current.store,
     value<T>(name: string, compute: () => T): T {
+      prove(db, current);
       if (current.values.has(name)) return current.values.get(name) as T;
       const value = compute();
       current.values.set(name, value);
       return value;
     },
     ranked(key, now, fill) {
+      prove(db, current);
       const held = current.ranked.get(key);
       if (held !== undefined && Math.abs(now.getTime() - held.at) < WORK_READ_REUSE_MS) return held.table;
       if (held !== undefined) forgetRanked(db, current, key);
@@ -140,22 +153,34 @@ export function workReadsOf(given: Store): WorkReads | null {
       let slot = 0;
       while (taken.has(slot)) slot++;
       const table = tableOf(slot);
-      try {
-        db.exec(`DROP TABLE IF EXISTS temp."${table}"`);
-        fill(table);
-      } catch {
+      for (let attempt = 0; attempt < FILL_TRIES; attempt++) {
+        // The database as it stands before the build (the data version read anew, not this turn's), and again after:
+        // a copy is kept only when nothing was written in between, so it never stands for anything newer than it read.
+        const before = stampOf(db, current, true);
+        try {
+          db.exec(`DROP TABLE IF EXISTS temp."${table}"`);
+          fill(table);
+        } catch {
+          try { db.exec(`DROP TABLE IF EXISTS temp."${table}"`); } catch { /* nothing was kept */ }
+          return null;
+        }
+        const after = stampOf(db, current, true);
+        if (before !== null && before === after) {
+          taken.add(slot); current.slots.add(slot);
+          current.ranked.set(key, { table, slot, at: now.getTime() });
+          current.stamp = after;
+          return table;
+        }
+        // Something was written while it filled: drop the copy and everything else kept, and build again.
         try { db.exec(`DROP TABLE IF EXISTS temp."${table}"`); } catch { /* nothing was kept */ }
-        return null;
+        prove(db, current);
       }
-      taken.add(slot); current.slots.add(slot);
-      current.ranked.set(key, { table, slot, at: now.getTime() });
-      // The temp table is this request's own: what it wrote moves nothing anyone else reads.
-      current.stamp = stampOf(db);
-      return table;
+      return null;
     },
     forget(key) { forgetRanked(db, current, key); },
     seed(sql, method, entries) {
       if (!pureRead(sql)) return;
+      prove(db, current);
       for (const [params, answer] of entries) {
         const key = keyOf(sql, method, params);
         if (key === null || current.answers.size >= MAX_SAVED) continue;
@@ -173,20 +198,33 @@ function forgetRanked(db: Database, connection: Connection, key: string): void {
   release(db, held.slot);
 }
 
-const stampOf = (db: Database): string | null => {
-  try {
-    const row = db.prepare("SELECT total_changes() AS changes,(SELECT data_version FROM pragma_data_version()) AS version").get();
-    return `${String(row?.["changes"])}:${String(row?.["version"])}`;
-  } catch { return null; }
-};
+/** The event loop's turn: it moves once the synchronous code that asked has run (a microtask), so the code after any
+ * await is a new turn. */
+let turn = 0, turning = false;
+function currentTurn(): number {
+  if (!turning) { turning = true; queueMicrotask(() => { turning = false; turn++; }); }
+  return turn;
+}
 
-/** Anything written since the last proof (or a proof that can't be made) drops every saved answer and value. */
+/** The database as it stands: this process's write count (no statement) and the file's data version (read once per
+ * turn, or anew with `exact`). Null when the version can't be read (nothing is then reused). */
+function stampOf(db: Database, connection: Connection, exact = false): string | null {
+  const now = currentTurn();
+  if (exact || connection.version === null || connection.version.turn !== now) {
+    try { connection.version = { turn: now, value: String(db.prepare("PRAGMA data_version").get()?.["data_version"]) }; }
+    catch { connection.version = null; return null; }
+  }
+  return `${writesSoFar()}:${connection.version.value}`;
+}
+
+/** Anything written since the last proof (or a proof that can't be made) drops every saved answer, value and kept
+ * projection. Runs before every reuse. */
 function prove(db: Database, connection: Connection): void {
-  const stamp = stampOf(db);
+  const stamp = stampOf(db, connection);
   if (stamp !== null && stamp === connection.stamp) return;
   connection.answers.clear(); connection.values.clear();
   for (const key of [...connection.ranked.keys()]) forgetRanked(db, connection, key);
-  connection.stamp = stampOf(db);
+  connection.stamp = stamp;
 }
 
 /** A read whose answer depends on nothing but the database: a plain SELECT (or WITH … SELECT) with no clock, random or
@@ -229,6 +267,8 @@ function savingHandle(db: Database, connection: Connection): Database {
           if (!pureRead(sql)) forgetAll();
           try { return statement[method](...params); } finally { if (!pureRead(sql)) forgetAll(); }
         }
+        // Proved before every reuse: a write since the answer was saved drops it (and every other).
+        prove(db, connection);
         if (connection.answers.has(key)) {
           const answer = connection.answers.get(key) as Record<string, unknown> | Record<string, unknown>[] | undefined;
           return answer === undefined ? undefined : Array.isArray(answer) ? answer.map(copied) : copied(answer);

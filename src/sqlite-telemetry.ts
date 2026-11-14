@@ -2,6 +2,13 @@ import type { Database, Statement } from './store.js';
 import type { ServerTelemetry } from './server-telemetry.js';
 
 type State = { telemetry: ServerTelemetry; measuringWait: boolean };
+
+/** Statements that may have written, on every Store connection of this process, counted as they run (fast reads:
+ * work-reads.ts proves nothing changed before it reuses a read, without a statement of its own). A write, a run(),
+ * any exec: counted. Only work-reads.ts's own temp tables (its kept copies of the projection) are not. */
+let writes = 0;
+export const writesSoFar = (): number => writes;
+const ownTemp = (op: string) => /^(?:CREATE\s+TEMP\s+TABLE\s+"so_work_ranked_\d+"|DROP\s+TABLE\s+IF\s+EXISTS\s+temp\."so_work_ranked_\d+"$)/i.test(op);
 const states = new WeakMap<Database, State>();
 
 /** One observation for the entire bounded BEGIN retry, including a failed acquisition. */
@@ -32,6 +39,7 @@ export function instrumentDatabase(db: Database, telemetry: ServerTelemetry): Da
   const methods: Database = {
     exec(sql) {
       const op = operation(sql);
+      if (!ownTemp(op)) writes++;
       if (/^BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b/i.test(op)) {
         const at = telemetry.clock();
         try { db.exec(sql); heldAt = telemetry.clock(); }
@@ -41,12 +49,15 @@ export function instrumentDatabase(db: Database, telemetry: ServerTelemetry): Da
       } else standalone(writing(op), () => db.exec(sql));
     },
     prepare(sql): Statement {
-      const statement = db.prepare(sql), write = writing(operation(sql));
+      const op = operation(sql), statement = db.prepare(sql), write = writing(op), counts = !ownTemp(op);
       const methods: Statement = {
-        run: (...params) => standalone(write, () => statement.run(...params)),
-        get: (...params) => standalone(write, () => statement.get(...params)),
-        all: (...params) => standalone(write, () => statement.all(...params)),
+        run: (...params) => { if (counts) writes++; return standalone(write, () => statement.run(...params)); },
+        get: (...params) => { if (write && counts) writes++; return standalone(write, () => statement.get(...params)); },
+        all: (...params) => { if (write && counts) writes++; return standalone(write, () => statement.all(...params)); },
       };
+      // A write read row by row (INSERT … RETURNING through iterate) counts too.
+      const native = statement as Statement & { iterate?: (...params: unknown[]) => unknown };
+      if (write && counts && typeof native.iterate === 'function') Object.assign(methods, { iterate: (...params: unknown[]) => { writes++; return native.iterate!(...params); } });
       return preservingNative(statement, methods);
     },
     close() { try { db.close(); } finally { finish(); } },
