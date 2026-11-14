@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { ROUTES, matchRoute } from "./route-table.js";
-import { IN_PLACE_ROUTES } from "./in-place.js";
+import { IN_PLACE_ROUTES, inPlaceRoute } from "./in-place.js";
 import { createDemoSandbox } from "../demo.js";
 import { createDecisionServer } from "../serve.js";
 import { openStore } from "../store.js";
@@ -64,6 +64,14 @@ describe("the destination manifest", () => {
   test("a retired row is an alias; a ceremony is never a page that changes in place", () => {
     for (const route of landable.filter(one => one.retired === true)) expect(manifest.routes[route.id]?.kind, route.id).toBe("alias");
     for (const [id, entry] of entries) if (entry.kind === "ceremony") expect(IN_PLACE_ROUTES.has(id), id).toBe(false);
+    // Settings change documents (settings plan v2 §2.2): each a ceremony, never on the in-place list, never in place.
+    const changes = landable.filter(one => one.id.startsWith("settings.change."));
+    expect(changes.length).toBeGreaterThan(0);
+    for (const route of changes) {
+      expect(manifest.routes[route.id]?.kind, route.id).toBe("ceremony");
+      expect(inPlaceRoute(route.id, new URL(`http://x${route.sample}`)), route.id).toBe(false);
+    }
+    expect([...IN_PLACE_ROUTES].filter(id => id.startsWith("settings.change."))).toEqual([]);
   });
 });
 

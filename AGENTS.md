@@ -15,6 +15,10 @@ Example: show **Plan ready**, a short outcome, and **Review plan**. Omit **Your 
 
 Carry this check into Toolroll task acceptance criteria and review feedback for UI work. Do not claim future agents followed it until their output has been inspected.
 
+## Feature freeze (owner decision, 2026-11-14)
+
+No new features on flows, AI teammates (subagents), starter kits, email inboxes or evals until 20 people outside the project use Toolroll. Fixes, security work and removals there are fine; new capability is not. Spend the effort on speed, the Work screen, first-run and settings instead.
+
 ## Chat and UI consistency
 
 - Treat chat as another way to use the same product, not a separate task system. Reuse the action that owns the change and the same saved state, history, permissions, and approvals.

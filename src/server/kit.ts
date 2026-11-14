@@ -485,9 +485,9 @@ export function ideas(options: { label: HtmlValue; into: string; items: Readonly
 
 /** A settings section: its heading (with an optional muted state after it), one muted lead line, then its rows.
  * No nested wells. `id` is also the anchor other pages link to. */
-export function settingsSection(options: { id: string; title: string; state?: HtmlValue; lead?: HtmlValue; right?: Html; body: HtmlValue }): Html {
+export function settingsSection(options: { id: string; title: string; state?: HtmlValue; lead?: HtmlValue; right?: Html; body: HtmlValue; attrs?: Attrs }): Html {
   const head = `${options.id}-h`;
-  return html`<section class="k-ssec" id="${options.id}" aria-labelledby="${head}"><div class="k-secthead"><h3 id="${head}">${options.title}\
+  return html`<section class="k-ssec" id="${options.id}" aria-labelledby="${head}"${attributes(options.attrs ?? {})}><div class="k-secthead"><h3 id="${head}">${options.title}\
 ${options.state ? html`<span class="k-ssec-state">${options.state}</span>` : ""}</h3>${options.right ?? ""}</div>\
 ${options.lead ? html`<p class="k-ssec-lead">${options.lead}</p>` : ""}${options.body}</section>`;
 }
