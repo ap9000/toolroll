@@ -3,15 +3,19 @@ import type { ServerTelemetry } from './server-telemetry.js';
 
 type State = { telemetry: ServerTelemetry; measuringWait: boolean };
 
-/** Statements that may have written, on every Store connection of this process, counted as they run (fast reads:
- * work-reads.ts proves nothing changed before it reuses a read, without a statement of its own). A write, a run(), any
- * exec: counted. Not counted: work-reads.ts's own temp tables (its kept copies of the projection), and an exec that is
- * one transaction boundary or the busy timeout alone (the writes inside a transaction count themselves; one that rolls
- * back has already counted). */
+/** Statements that may have changed what a read returns, on every Store connection of this process, counted as they
+ * run (fast reads: work-reads.ts proves nothing changed before it reuses a read, without a statement of its own).
+ * Counted: every write, every run(), every exec, every statement that fails (an error may roll a transaction back on
+ * its own), and every end of a transaction or savepoint — COMMIT, END, ROLLBACK, ROLLBACK TO, RELEASE — because a
+ * rollback takes back writes already counted, so an answer read between them must not stand. Not counted: work-reads.ts's
+ * own temp tables (its kept copies of the projection), BEGIN, SAVEPOINT and the busy timeout (they change no row), and an
+ * end of a transaction in which nothing at all was counted since it opened (it has nothing to take back). */
 let writes = 0;
 export const writesSoFar = (): number => writes;
 const ownTemp = (op: string) => /^(?:CREATE\s+TEMP\s+TABLE\s+"so_work_ranked_\d+"|DROP\s+TABLE\s+IF\s+EXISTS\s+temp\."so_work_ranked_\d+"$)/i.test(op);
-const boundaryOnly = (op: string) => /^(?:(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?|COMMIT|END(?:\s+TRANSACTION)?|ROLLBACK(?:\s+TRANSACTION)?|SAVEPOINT\s+\w+|RELEASE(?:\s+SAVEPOINT)?\s+\w+)|PRAGMA\s+busy_timeout\s*=\s*\d+)\s*;?$/i.test(op);
+const opening = (op: string) => /^(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?|SAVEPOINT\s+\w+)\s*;?$/i.test(op);
+const settingOnly = (op: string) => /^PRAGMA\s+busy_timeout\s*=\s*\d+\s*;?$/i.test(op);
+const ending = (op: string) => /^(?:COMMIT|END|ROLLBACK|RELEASE)\b/i.test(op);
 const states = new WeakMap<Database, State>();
 
 /** One observation for the entire bounded BEGIN retry, including a failed acquisition. */
@@ -39,28 +43,41 @@ export function instrumentDatabase(db: Database, telemetry: ServerTelemetry): Da
     try { return body(); } finally { telemetry.writeStatement.observe(elapsed(at)); }
   };
   const finish = () => { if (heldAt !== null) { telemetry.writeHold.observe(elapsed(heldAt)); heldAt = null; } };
+  /** The write count when this connection's open transaction began (null with none open). */
+  let openedAt: number | null = null;
+  const native = db as Database & { isTransaction?: unknown };
+  /** Count a statement before it runs as `counts` says, and any statement that fails. */
+  const counted = <T>(counts: boolean, body: () => T): T => {
+    if (counts) writes++;
+    try { return body(); } catch (error) { writes++; throw error; }
+  };
+  const execNow = (sql: string, op: string): void => {
+    if (/^BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b/i.test(op)) {
+      const at = telemetry.clock();
+      try { db.exec(sql); heldAt = telemetry.clock(); }
+      finally { if (!state.measuringWait) telemetry.writeWait.observe(elapsed(at)); }
+    } else if (/^(?:COMMIT|END|ROLLBACK(?!\s+TO))\b/i.test(op)) {
+      db.exec(sql); finish();
+    } else standalone(writing(op), () => db.exec(sql));
+  };
   const methods: Database = {
     exec(sql) {
       const op = operation(sql);
-      if (!ownTemp(op) && !boundaryOnly(op)) writes++;
-      if (/^BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b/i.test(op)) {
-        const at = telemetry.clock();
-        try { db.exec(sql); heldAt = telemetry.clock(); }
-        finally { if (!state.measuringWait) telemetry.writeWait.observe(elapsed(at)); }
-      } else if (/^(?:COMMIT|END|ROLLBACK(?!\s+TO))\b/i.test(op)) {
-        db.exec(sql); finish();
-      } else standalone(writing(op), () => db.exec(sql));
+      if (opening(op) && openedAt === null && native.isTransaction !== true) openedAt = writes;
+      const counts = ending(op) ? openedAt === null || writes !== openedAt : !ownTemp(op) && !opening(op) && !settingOnly(op);
+      try { counted(counts, () => execNow(sql, op)); }
+      finally { if (native.isTransaction === false || (native.isTransaction === undefined && /^(?:COMMIT|END|ROLLBACK(?!\s+TO))\b/i.test(op))) openedAt = null; }
     },
     prepare(sql): Statement {
       const op = operation(sql), statement = db.prepare(sql), write = writing(op), counts = !ownTemp(op);
       const methods: Statement = {
-        run: (...params) => { if (counts) writes++; return standalone(write, () => statement.run(...params)); },
-        get: (...params) => { if (write && counts) writes++; return standalone(write, () => statement.get(...params)); },
-        all: (...params) => { if (write && counts) writes++; return standalone(write, () => statement.all(...params)); },
+        run: (...params) => counted(counts, () => standalone(write, () => statement.run(...params))),
+        get: (...params) => counted(write && counts, () => standalone(write, () => statement.get(...params))),
+        all: (...params) => counted(write && counts, () => standalone(write, () => statement.all(...params))),
       };
       // A write read row by row (INSERT … RETURNING through iterate) counts too.
-      const native = statement as Statement & { iterate?: (...params: unknown[]) => unknown };
-      if (write && counts && typeof native.iterate === 'function') Object.assign(methods, { iterate: (...params: unknown[]) => { writes++; return native.iterate!(...params); } });
+      const rows = statement as Statement & { iterate?: (...params: unknown[]) => unknown };
+      if (write && counts && typeof rows.iterate === 'function') Object.assign(methods, { iterate: (...params: unknown[]) => counted(true, () => rows.iterate!(...params)) });
       return preservingNative(statement, methods);
     },
     close() { try { db.close(); } finally { finish(); } },

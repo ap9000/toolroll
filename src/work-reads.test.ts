@@ -174,6 +174,36 @@ test("a grant removed or an account revoked mid-request is read by the next read
   });
 });
 
+test("a grant written then rolled back in the same request never reads as granted (rollback counts)", () => {
+  const store = world();
+  const alex = addApprover(store, "alex", now);
+  const pat = alex.ok ? addApprover(store, "pat", now, { name: "alex", token: alex.token }) : alex;
+  expect(pat.ok).toBe(true);
+  expect(store.setAccountProjects("pat", ["/repo/one"], "alex", now).ok).toBe(true);
+  const grant = (projects: string[]) => store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'pat'").run(JSON.stringify(projects));
+  withWorkReads(() => {
+    const saving = workReadsOf(store)!.store;
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(false);
+    // A whole transaction rolled back.
+    store.handle.exec("BEGIN");
+    grant(["/repo/one", "/repo/two"]);
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(true);
+    store.handle.exec("ROLLBACK");
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(false);
+    // A savepoint rolled back to, then released, inside a transaction that commits.
+    store.handle.exec("BEGIN");
+    store.handle.exec("SAVEPOINT grant_try");
+    grant(["/repo/one", "/repo/two"]);
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(true);
+    store.handle.exec("ROLLBACK TO grant_try");
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(false);
+    store.handle.exec("RELEASE grant_try");
+    store.handle.exec("COMMIT");
+    expect(saving.accountCanAccess("pat", "/repo/two")).toBe(false);
+    expect(readerOf(store).accountCanAccess("pat", "/repo/one")).toBe(true);
+  });
+});
+
 test("a commit by another process is read from the next turn on", async () => {
   const store = world();
   await withWorkReads(async () => {
