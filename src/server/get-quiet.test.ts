@@ -64,7 +64,7 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
   const project = encodeURIComponent(world.repo);
   const deeper = [`/settings/pull-requests?repo=${project}`, `/settings/knowledge?repo=${project}&q=refunds`, `/settings/tools?repo=${project}`,
     `/settings/project?repo=${project}`, "/control?provider=openrouter&refresh-models=1", "/control?check-connection=1", "/settings?check-connection=claude",
-    "/settings/updates?check=now", "/chat?task=one", "/chat/mate/status?task=one", "/chat/task-status?task=one", "/tasks?scope=all", "/t/one"];
+    "/settings/updates?check=now", "/chat?task=one", "/chat/mate/status?task=one", "/chat/task-status?task=one", "/?scope=all", "/?task=one", "/t/one"];
   const targets = [...rows.flatMap(row => (row.method === "GET,HEAD" ? ["GET", "HEAD"] : ["GET"]).map(method => ({ method, path: row.sample, id: row.id }))),
     ...deeper.map(path => ({ method: "GET", path, id: "deeper" }))];
   const found: string[] = [];

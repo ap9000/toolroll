@@ -35,7 +35,7 @@ import { readChildWindow } from "../live-children-read.js";
 import { leadFiledLinks } from "./agents-live-filed.js";
 import { readMainWindow } from "../live-main-read.js";
 import { runLiveCommands } from "../store.js";
-import type { BrowserAgentDetail,BrowserAgentsView } from "../browser-workspace.js";
+import type { BrowserAgentDetail,BrowserAgentsView,BrowserWorkView } from "../browser-workspace.js";
 import { prometheusMetrics } from "../metrics.js";
 import { readMonitoring } from "../monitoring-settings.js";
 import { targetOf } from "../monitoring.js";
@@ -66,7 +66,7 @@ import { healthz } from "./remote-hooks.js";
 import { slowRequestLines, SLOW_REQUEST_MS } from "../latency-timeline.js";
 import type { ServerRuntime } from './runtime.js';
 import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
-import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
+import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow, type Screen } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { taskLinkOf } from "../task-link.js";
 import { assignmentOf } from "../assignment.js";
@@ -89,10 +89,14 @@ import { capsPage } from "./render-settings.js";
 import { consentDoorOf,decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
-import { homeView } from "./home.js";
-import { flowAsks, releaseAsks, setupAsks, type HomeAsks } from "./home-asks.js";
+import { workNeeds } from "./home.js";
+import type { WorkList } from "./tasks.js";
+import { flowAsks, NO_HOME_ASKS, releaseAsks, setupAsks, type HomeAsks } from "./home-asks.js";
 import { workIndexPage } from "../work-index.js";
-export function createPagesHandlers(runtime: ServerRuntime) {
+/** What Work borrows from the tasks handlers (tasks.ts): its list for an address, and the queue's order page. */
+export type WorkListDeps = { listFor: (ctx: HandlerContext) => Promise<WorkList | null>; showOrder: (ctx: HandlerContext) => Promise<void> };
+
+export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) {
   const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows, outsideAdmissions } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
@@ -214,27 +218,49 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return void projectsScreen(response, who, url.searchParams.get("said"), 200, safeReturn(url.searchParams.get("return")), "said");
   }
 
-  // Home (UI revamp wave B): what needs this person, four counts that agree with the Tasks filters, and the lead's box.
-  // A token or a restricted session keeps landing on Tasks; a first run with nothing filed yet keeps its checklist in the chat.
+  // Work (the one-workspace plan S2a): the Tasks list and what needs this person on one screen, for every account that may
+  // read tasks, through Work's own collection admission (a project-limited account and a token read their own projects'
+  // rows; there is no redirect, so /tasks → / never loops). The selected task (`?task=`) is never read here: the page
+  // reads it through the task's own page, whose resource admission decides. A first run with nothing filed yet keeps its
+  // checklist in the chat; the queue's order view is its own page.
   async function homeRedirect(ctx: HandlerContext): Promise<void> {
-    const { who, response, now, project } = ctx;
-    if (who.via !== "cookie" || restricted()) return redirect(response, "/tasks");
-    if (firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
-    // One scope for the page and the chrome around it: the project its address names (proved by the router), else all.
-    const chrome = chromeFor(project, "none");
-    const projects = chrome.projects ?? [];
+    const { url, who, response, now, project } = ctx;
+    if (url.searchParams.get("view") === "order") return work.showOrder(ctx);
+    // Only Work itself: an address that names a view, a project or a task is that list, even before the first task.
+    if (who.via === "cookie" && url.search === "" && firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
+    const found = await work.listFor(ctx);
+    if (found === null) return;
+    const listed = found.screen;
+    const list = listed.workspace?.view;
+    if (list?.kind !== "tasks") throw new Error("Work's list is not the Tasks list");
+    const chrome = listed.chrome ?? chromeFor(project, "work");
+    const access = workAccess(), approver = who.via === "cookie" && who.role === "approver";
     const closedDoor = (taskId: string) => {
       const scope = store.getScope(taskId);
       const door = consentDoorOf(scope, runtime.routeViewOf(taskId, store.lookupRef(taskId), scope, now, who));
       return door.open ? null : door;
     };
-    const chat = chrome.chat === true;
-    const access = workAccess(), approver = who.role === "approver";
-    const view = { ...homeView({ store, now, access, evidenceRoot, project, projects, chat, canAnswer: approver, approver, closedDoor,
-      leadMessage: chat ? leadLastMessage(who, now) : null, asks: homeAsksFor(who, access, now, project) }),
+    // What waits on this person, from the very list page shown (its view, filters and cursor); the asks that aren't tasks
+    // ride the first unfiltered page.
+    const needs = workNeeds({ store, now, access, evidenceRoot, project, projects: chrome.projects ?? [], chat: false, canAnswer: approver, approver, closedDoor,
+      asks: who.via === "cookie" && !found.filtered ? homeAsksFor(who, access, now, project) : NO_HOME_ASKS }, found.work, found.filtered);
+    // Needs you is the page's own rows: each waiting task's row carries what it asks; the groups keep their counts and the
+    // asks that are no task's row (one copy of every row, S2a review round 2).
+    const asked = new Map(needs.groups.flatMap(group => group.rows).map(row => [row.id, row] as const));
+    const rows = list.rows.map(row => { const need = asked.get(row.id); return need === undefined ? row : { ...row, need }; });
+    const onRows = new Set(rows.flatMap(row => row.need === undefined ? [] : [row.id]));
+    const view: BrowserWorkView = {
+      kind: "work", list: { ...list, rows }, needs: needs.groups.map(group => ({ ...group, rows: group.rows.filter(row => !onRows.has(row.id)) })), needsCount: needs.total, project,
+      projectName: project === null ? "All projects" : (chrome.projects ?? []).find(one => one.path === project)?.name ?? projectName(project),
       // Until the first result: the welcome's three steps stay one link away.
-      setup: firstRunStepsNow(now) !== null ? "/welcome" : null };
-    return sendScreen(response, 200, screen("Home", html`<div data-kit-page><h1>Home</h1><p>${view.say}</p><p><a href="/tasks">Tasks</a></p></div>`, { chrome, workspace: { view } }));
+      setup: firstRunStepsNow(now) !== null ? "/welcome" : null,
+      empty: needs.any || needs.total > 0 ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
+    };
+    // Work renders with React only (PRODUCT.md); without JavaScript the document is a stub of links: what else waits on
+    // this person (a held release, a flow card, a setup step), then the list's own (render-pages.ts workPage).
+    const asks = needs.groups.flatMap(group => group.rows).filter(row => row.id.includes(":"));
+    const stub = html`<div data-kit-page><h1>Work</h1>${asks.length === 0 ? null : html`<ul class="work-asks">${asks.map(row => html`<li><a href="${row.href}">${row.title}</a></li>`)}</ul>`}${listed.body}<p><a href="/tasks/new">New task</a> · <a href="/chat">Chat</a> · <a href="/settings">Settings</a></p></div>`;
+    return sendScreen(response, 200, screen("Work", stub, { chrome, workspace: { view } }));
   }
 
   // Search (UI revamp wave B): the ⌘K menu's "See all results". The places come from the page; the tasks here are the
@@ -1213,7 +1239,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // session's selection is left alone. Unknown, unplaced or not visible to this person: 404, the same answer.
     const taskId = url.searchParams.get("task");
     const ref = taskId === null ? null : store.lookupRef(taskId.slice(0, 200));
-    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/tasks");
+    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/");
     const shown = ref !== null ? ref.repo : project !== null && visible(project) ? project : null;
     const connected = shown === null ? null : buildersFor(store, shown, now, ref?.assignedRunner ?? null).alive.length > 0;
     return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({

@@ -1,20 +1,21 @@
-/** Retired addresses (docs/plans/plain-toolroll.md P1.4): Home (`/`) and Tasks (`/tasks`) are the pages; every old page
- * answers with a permanent redirect to its place there, for good, so a bookmark, an old push or an installed phone's old
- * service worker still lands right. A redirect keeps only the query keys its target knows, and decides nothing: the
- * target admits the person and filters what they may see, exactly as if they had opened it. */
+/** Retired addresses (docs/plans/plain-toolroll.md P1.4, the one-workspace plan S2a): Work (`/`) is the page; every old
+ * page, Tasks (`/tasks`) included, answers with a permanent redirect to its place there, for good, so a bookmark, an old
+ * push or an installed phone's old service worker still lands right. A redirect keeps only the query keys its target
+ * knows, and decides nothing: the target admits the person and filters what they may see, exactly as if they had opened it. */
 import type { ServerResponse } from "node:http";
 import { SAFETY } from "./http.js";
 import { taskLinkFromLegacy, taskLinkOf, type TaskLinkSection } from "../task-link.js";
+import type { HandlerContext } from "./handler-context.js";
 
-/** The Tasks page's own address for a view, a project and the other keys it knows. */
+/** Work's own address for a view, a project and the other keys its list knows. With no project named it is every
+ * project (`scope=all` is never needed there). */
 export function tasksHref(over: { view?: string | null; project?: string | null; scope?: "all" | null; state?: string | null; cursor?: string | null } = {}): string {
   const q = new URLSearchParams();
-  if (over.scope === "all") q.set("scope", "all");
-  else if (over.project != null) q.set("project", over.project);
+  if (over.scope !== "all" && over.project != null) q.set("project", over.project);
   if (over.view != null && over.view !== "all") q.set("view", over.view);
   if (over.state != null) q.set("state", over.state);
   if (over.cursor != null) q.set("cursor", over.cursor);
-  return `/tasks${q.size === 0 ? "" : `?${q}`}`;
+  return `/${q.size === 0 ? "" : `?${q}`}`;
 }
 
 /** The one project a link names (one `project` key, never two), or null. */
@@ -66,6 +67,13 @@ export const RETIRED_ROUTES: Readonly<Record<string, (url: URL) => string>> = {
   done: url => tasksHref({ view: "done", project: projectOf(url) }),
   // The old review list (a result leads to its task page: TASK_VIEW_REDIRECTS below).
   review: url => tasksHref({ view: "ready", project: projectOf(url) }),
+  // Tasks (S2a): Work at `/` with the same query (its view, project, state, page and layout keys); a template link
+  // still opens the new-task page with it.
+  tasks: url => {
+    const template = url.searchParams.get("template");
+    if (template !== null) return `/tasks/new?template=${encodeURIComponent(template)}`;
+    return `/${url.search}`;
+  },
   // Archive old tasks' preview moved beside Tasks; its POST keeps /work/put-away exactly.
   "work.put-away": url => { const days = url.searchParams.get("days"); return days !== null && /^[0-9]{1,3}$/.test(days) ? `/tasks/archive?days=${days}` : "/tasks/archive"; },
   ...Object.fromEntries(Object.entries(SETTINGS_RETIRED).map(([id, retirement]) => [id, (url: URL) => settingsRetiredHref(retirement, url)])),
@@ -95,4 +103,10 @@ export function retiredRedirect(id: string, url: URL, response: ServerResponse):
   response.setHeader("Location", to(url));
   response.writeHead(301, { ...SAFETY });
   response.end();
+}
+
+/** A retired row's handler (route-table.ts `retired`): its redirect, and nothing else. */
+export function retiredHandler(id: string): (ctx: HandlerContext) => Promise<void> {
+  if (RETIRED_ROUTES[id] === undefined) throw new Error(`no retired route ${id}`);
+  return async ctx => retiredRedirect(id, ctx.url, ctx.response);
 }

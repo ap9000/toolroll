@@ -875,7 +875,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks"), ...(extras.result == null ? {} : { functional: { script: `${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}` } }) }));
     // A read ahead (x-toolroll-read: prefetch, live-pages-and-home.md A1.4) mints nothing: its plan form says "unminted".
     const data = taskViewData(taskId, who, problem, { mintNonce: requestContext.getStore()?.readPurpose !== "prefetch" });
-    if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (data === null) return refuse(response, who, 404, "no such task", "/");
     const family = runtime.familyOf(taskId);
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
       ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),

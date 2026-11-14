@@ -117,6 +117,7 @@ function rowsOf(ws: BrowserWorkspace): { view: number; chrome: number; messages:
   let viewRows = 0;
   if (view?.kind === "tasks") viewRows = view.rows.length + (view.board ?? []).reduce((sum, column) => sum + column.rows.length, 0);
   else if (view?.kind === "home") viewRows = view.groups.reduce((sum, group) => sum + group.rows.length, 0) + view.working.length + view.finishedToday.rows.length;
+  else if (view?.kind === "work") viewRows = view.needs.reduce((sum, group) => sum + group.rows.length, 0) + view.list.rows.length + (view.list.board ?? []).reduce((sum, column) => sum + column.rows.length, 0);
   else if (view?.kind === "task") viewRows = (view.thread?.length ?? 0) + view.sections.length + view.lead.length + (view.result?.attempts.length ?? 0) + (view.result?.selected.mismatch?.rows.length ?? 0);
   else if (view?.kind === "result") viewRows = view.results.length;
   const chrome = ws.crew.length + ws.projects.length + (ws.chats?.length ?? 0) + ws.navigation.length + (ws.projectStates?.length ?? 0)
@@ -130,7 +131,7 @@ function roomsOf(ws: BrowserWorkspace): string[] {
   if (ws.sensitive) return [];
   const rooms: string[] = [];
   const view = ws.view;
-  if (ws.conversation !== null || ws.refreshSeconds !== undefined || view?.kind === "home" || view?.kind === "agents") rooms.push("workspace");
+  if (ws.conversation !== null || ws.refreshSeconds !== undefined || view?.kind === "home" || view?.kind === "work" || view?.kind === "agents") rooms.push("workspace");
   if (view?.kind === "task" && view.live) rooms.push(view.live.room);
   if (ws.projectStates !== undefined) rooms.push("summary");
   if (ws.conversation !== null) {
@@ -142,11 +143,11 @@ function roomsOf(ws: BrowserWorkspace): string[] {
   return rooms;
 }
 
+// Work ("/", the one-workspace plan S2a) is Home and Tasks on one screen: its read is held to their sum (wire-ceilings.json).
 const PAGES = [
-  { name: "Home", path: "/" },
-  { name: "Tasks", path: "/tasks" },
-  { name: "Tasks (state filter: failed)", path: "/tasks?state=failed" },
-  { name: "Tasks (board)", path: "/tasks?layout=board" },
+  { name: "Work", path: "/" },
+  { name: "Work (state filter: failed)", path: "/?state=failed" },
+  { name: "Work (board)", path: "/?view=board" },
   { name: "Result", path: "" /* filled from the world */ },
   { name: "Chat", path: "/chat" },
 ] as const;
@@ -198,11 +199,11 @@ test("wire budgets: what the browser receives today stays within its committed c
   info("World", "tasks", "count", c.tasks); info("World", "runs", "count", c.runs); info("World", "artifacts on disk", "count", c.artifacts);
   info("World", "artifact bytes on disk", "bytes", c.artifactBytes); info("World", "ledger rows", "count", c.ledger); info("World", "lead messages", "count", c.leadMessages);
 
-  // ---- every page, as the operator; Tasks and its board as the project-limited viewer ----
+  // ---- every page, as the operator; Work and its board as the project-limited viewer ----
   const viewers: [string, string, readonly (typeof PAGES)[number][]][] = [
     ["alex", "operator", PAGES],
-    // A viewer has no Home (it opens Tasks): their Tasks list and board.
-    ["sam", "project-limited viewer", PAGES.filter(page => page.name === "Tasks" || page.name === "Tasks (board)")],
+    // A project-limited viewer's Work and its board (their own project's rows only).
+    ["sam", "project-limited viewer", PAGES.filter(page => page.name === "Work" || page.name === "Work (board)")],
   ];
   const opened: Record<string, BrowserWorkspace> = {};
   for (const [who, label, pages] of viewers) {
@@ -244,13 +245,13 @@ test("wire budgets: what the browser receives today stays within its committed c
 
   // The world reads as a busy team's: a full first page, things waiting, a Ready result, a long conversation, and a
   // viewer who sees only their own project. (A broken seed fails here rather than shrinking every number.)
-  const tasks = opened["alex Tasks"]!.view, home = opened["alex Home"]!.view, result = opened["alex Result"]!.view;
-  expect(tasks?.kind === "tasks" && tasks.rows.length).toBe(40);
-  expect(home?.kind === "home" && home.groups.length).toBeGreaterThan(0);
+  const work = opened["alex Work"]!.view, result = opened["alex Result"]!.view;
+  expect(work?.kind === "work" && work.list.rows.length).toBe(40);
+  expect(work?.kind === "work" && work.needs.length).toBeGreaterThan(0);
   expect(result?.kind === "task" && result.result?.selected.taskId).toBe(`${world.resultTask}-r2`);
   expect(opened["alex Chat"]!.conversation?.messages.length).toBeGreaterThanOrEqual(40);
-  const samTasks = opened["sam Tasks"]!.view;
-  expect(samTasks?.kind === "tasks" && samTasks.rows.length > 0 && samTasks.rows.every(row => row.project === null || row.project === world.samProject.split("/").pop())).toBe(true);
+  const samWork = opened["sam Work"]!.view;
+  expect(samWork?.kind === "work" && samWork.list.rows.length > 0 && samWork.list.rows.every(row => row.project === null || row.project === world.samProject.split("/").pop())).toBe(true);
 
   // ---- one live-room change: four open pages, one task moves ----
   await liveChange(opened);
@@ -335,14 +336,14 @@ async function quiet(streams: Stream[], work: Tally): Promise<void> {
 }
 
 /**
- * What one live-room change costs today. Home, Tasks, the result page and Chat are open (the operator's), each with its
+ * What one live-room change costs today. Work, the result page and Chat are open (the operator's), each with its
  * one stream; one task in a project every page shows moves state. Counted: the frames each stream receives, the room
  * reads the write sets off on the server, and the whole-workspace re-read each page makes after its hint, as the app
  * makes it (browser/app.tsx check: a workspace `change` re-reads with the page's ETag; a task room `change` re-reads
  * without one).
  */
 async function liveChange(opened: Record<string, BrowserWorkspace>): Promise<void> {
-  const pages = ["Home", "Tasks", "Result", "Chat"].map(name => {
+  const pages = ["Work", "Result", "Chat"].map(name => {
     const page = PAGES.find(one => one.name === name)!;
     return { name, path: pathOf(page), ws: opened[`alex ${name}`]! };
   });
