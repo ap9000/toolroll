@@ -7924,6 +7924,9 @@ async function upCommand(
     if (!explicitRoots.includes(canonical)) explicitRoots.push(canonical);
   }
   const projectRoots = [...resolveCeiling([], addRepos(loadedRegistry.roots, explicitRoots)).ceiling.roots];
+  // A refusal before enrollment (step 6) saves nothing, --project-root included: on an install whose service is already
+  // running, that is every terminal start, so the refusal says the folder wasn't saved and why.
+  const rootNotSaved = explicitRoots.length > 0 ? ". The projects folder wasn't saved, because this Toolroll didn't start: stop the one already running, then start it again with --project-root" : "";
 
   // Every saved repository reconnects automatically. Explicit --repo paths
   // still work for first use; with none, a Git working directory joins the
@@ -8002,13 +8005,13 @@ async function upCommand(
     if (candidate !== candidates[0] && candidate === candidates[1]) {
       let ours: Awaited<ReturnType<typeof proveLiveConsole>> | null = null;
       try { ours = await proveLiveConsole(context.databaseFile, store, packageVersion()); } catch { ours = null; }
-      if (ours?.ok === true) return fail(write, json, "up", "already-running", `Toolroll is already running at ${ours.url}`, EXIT.refused);
+      if (ours?.ok === true) return fail(write, json, "up", "already-running", `Toolroll is already running at ${ours.url}${rootNotSaved}`, EXIT.refused);
       if (ours === null || ours.state !== "none") break;
       // A standalone `serve` on this database claims no instance record, but it beats its lifecycle row: never stepped
       // past either (Codex review of #377, finding 2).
       // Round 2 (finding A): any console row not stopped counts unless its own address is proved not listening.
       const serving = consoleServingNow(store, clock(), await consolesProvenDown(store, clock()));
-      if (serving !== null) return fail(write, json, "up", "already-running", serving.port === null ? "Toolroll's console is already serving this database" : `Toolroll is already running at http://127.0.0.1:${serving.port}`, EXIT.refused);
+      if (serving !== null) return fail(write, json, "up", "already-running", `${serving.port === null ? "Toolroll's console is already serving this database" : `Toolroll is already running at http://127.0.0.1:${serving.port}`}${rootNotSaved}`, EXIT.refused);
     }
     probe = createNetServer();
     port = candidate;
@@ -8025,8 +8028,8 @@ async function upCommand(
   if (!reserved) {
     // The console that holds it said it is stopping: a restart is under way, so say that instead of "another one runs".
     const holder = consoleRowForPort(store, port);
-    if (holder?.state === "draining") return fail(write, json, "up", "port-busy", `Toolroll is restarting (draining): the console on port ${port} is stopping — try again in a few seconds`, EXIT.refused);
-    return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`, EXIT.refused);
+    if (holder?.state === "draining") return fail(write, json, "up", "port-busy", `Toolroll is restarting (draining): the console on port ${port} is stopping — try again in a few seconds${rootNotSaved}`, EXIT.refused);
+    return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port${rootNotSaved}`, EXIT.refused);
   }
 
   // Under a coding agent nothing is asked and no secret is printed, even in a real terminal: what is shown lands in
@@ -13050,7 +13053,9 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
       admittedRepos: () => [...activeRepos],
       upConsole: true,
       registryPath: config.registryPath,
-      projectRoots: config.projectRoots,
+      // The machine registry is the source of truth (Settings → Projects saves there; `up` enrolled this start's folders
+      // there before starting this role), so a console started again picks up a folder chosen since `up` began.
+      projectRoots: await (async () => { const saved = await loadProjectRegistry(config.registryPath); return "error" in saved ? config.projectRoots : saved.roots; })(),
       ...(config.editor ? { editorLinks: "vscode" as const } : {}),
     });
   } catch (error) {

@@ -89,6 +89,9 @@ export interface ServerRuntime {
   taskRooms: TaskRooms;
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; elsewhere?: boolean; }) => Who | null;
   liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
+  /** Repositories this console added from outside every projects folder (pages.ts projectsOpen, a password typed now):
+   * `admit` puts one, proved and admitted by its caller, in the live ceiling now. */
+  outsideAdmissions: { admit: (repo: string) => void };
   /** Project identities without reading folders on the console's thread (project-identity.ts). */
   identities: ProjectIdentities;
   taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean, page?: TaskPageExtras) => void;
