@@ -40,7 +40,7 @@ import {
   type DiscordChatOptions,
   planDiscordRooms,
 } from "./discord-chat.js";
-import { Client } from "discord.js";
+import { DiscordGateway, DiscordGatewayError } from "./discord-gateway.js";
 import { followDiscord, discordReadyMatches } from "./discord.js";
 import { knowledgeView } from "./project-knowledge.js";
 import { resolveChannelLead } from "./chat-channel.js";
@@ -872,7 +872,7 @@ test("Gateway validates READY and persists a button before acknowledging without
   state.prepare("UPDATE chat_runtime SET owner=NULL,lease_until=NULL WHERE provider=:provider").run();
   const controller = new AbortController(),
     raw = interaction("a".repeat(32), snow());
-  vi.spyOn(Client.prototype, "login").mockImplementation(async function () {
+  vi.spyOn(DiscordGateway.prototype, "login").mockImplementation(async function (this: DiscordGateway) {
     this.emit("raw", {
       t: "READY",
       d: { application: { id: BOT }, user: { id: BOT, bot: true } },
@@ -901,6 +901,33 @@ test("Gateway validates READY and persists a button before acknowledging without
     JSON.stringify(state.prepare("SELECT payload FROM chat_event WHERE provider=:provider").all()),
   ).not.toContain(raw.token);
 });
+
+test("a rejected bot token is not retried until the token changes", async () => {
+  saveDiscordCredentials(dir, { ...ID, botToken: TOKEN });
+  state.prepare("UPDATE chat_runtime SET owner=NULL,lease_until=NULL WHERE provider=:provider").run();
+  const controller = new AbortController(),
+    tokens: string[] = [];
+  vi.spyOn(DiscordGateway.prototype, "login").mockImplementation(async (token: string) => {
+    tokens.push(token);
+    throw new DiscordGatewayError("Discord rejected the bot token. Disconnect and reconnect with the current bot token.", 4004, true);
+  });
+  const following = followDiscord({ ...options, dir, signal: controller.signal, notifications: () => false });
+  try {
+    // The follower pauses 5 s after a failed connection; well past that, the same token has not been tried again.
+    await new Promise((r) => setTimeout(r, 7500));
+    expect(tokens).toEqual([TOKEN]);
+    expect(state.runtime(ID.installation)?.problem).toBe(
+      "Discord rejected the bot token. Disconnect and reconnect with the current bot token.",
+    );
+    const fresh = TOKEN.replace("never-sent", "replacement");
+    saveDiscordCredentials(dir, { ...ID, botToken: fresh });
+    for (let i = 0; i < 60 && tokens.length < 2; i++) await new Promise((r) => setTimeout(r, 100));
+    expect(tokens).toEqual([TOKEN, fresh]);
+  } finally {
+    controller.abort();
+    await following;
+  }
+}, 20_000);
 
 test("a recovered screenshot remains one upload when its repaint receipt is also lost", async () => {
   const { run } = source(),

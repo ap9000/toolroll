@@ -11,7 +11,7 @@ import { PACKAGE_VERSION } from "./version.js";
 const BIN = resolve("dist/bin.js");
 const DIST = `${pathToFileURL(resolve("dist")).href}/`;
 const VERSION = (JSON.parse(readFileSync(resolve("package.json"), "utf8")) as { version: string }).version;
-const CONNECTOR_SDKS = /\/node_modules\/(discord\.js|@slack\/socket-mode|imapflow|mailparser|nodemailer)\//;
+const CONNECTOR_SDKS = /\/node_modules\/(ws|@slack\/socket-mode|imapflow|mailparser|nodemailer)\//;
 
 let scratch: string;
 beforeAll(() => {
