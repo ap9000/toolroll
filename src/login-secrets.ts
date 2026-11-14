@@ -157,7 +157,7 @@ export function migrateLegacyLogin(stateDir: string): LoginMigration {
 export type StaleLoginCleanup = { removed: string[]; stale: string[]; unchecked: string[] };
 
 /**
- * After `toolroll password reset`: remove each saved first password (the reserved folder's, and an older version's
+ * After `toolroll password reset`: report (never delete) each saved first password (the reserved folder's, and an older version's
  * beside the database) that is this account's and no longer its password — stale, it only misleads. Removed only when
  * every part of its path below the state folder is proved, by lstat from the state folder down, to be a real folder or
  * file of this user's (no link anywhere, one name for the file), and only when the file read just before removal is
@@ -189,14 +189,10 @@ export function removeStaleSavedLogin(stateDir: string, account: string, current
     const raw = held.bytes.toString("utf8").trim();
     const cut = raw.indexOf(" ");
     if (cut <= 0 || raw.slice(0, cut) !== account || raw.slice(cut + 1) === current) continue;
+    // Never deleted here (Codex review of #394, round 2): Node has no unlinkat, so a parent swapped or the file
+    // replaced between the last check and the removal could make it delete the wrong thing. The person deletes it.
     beforeRemove?.(path);
-    const again = proved(parts) === "contained" ? ownRegularBytes(path, LOGIN_LIMIT) : null;
-    if (again === null || again.dev !== held.dev || again.ino !== held.ino || !again.bytes.equals(held.bytes)) { done.stale.push(path); continue; }
-    try {
-      unlinkSync(path);
-      fsyncFolder(join(stateDir, ...parts.slice(0, -1)));
-      done.removed.push(path);
-    } catch { done.stale.push(path); }
+    done.stale.push(path);
   }
   return done;
 }

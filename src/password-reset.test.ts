@@ -285,14 +285,14 @@ describe("toolroll password reset", () => {
     expect(out).toContain("alex's lead token ended: mint a new one with `toolroll lead token`.");
     withStore(store => expect(store.leadFor(leadToken)).toBeNull());
     expect(out).toContain("Password reset for alex. Every session of alex has ended; sign in with the new password.");
-    expect(out).toContain(`Removed ${shownPath(savedFile, homedir(), null) ?? savedFile}: it held the old password.`);
+    expect(out).toContain(`The saved first password at ${shownPath(savedFile, homedir(), null) ?? savedFile} no longer works; delete it yourself.`);
     expect(out).not.toContain(NEW);
     const after = facts();
     expect(after.generation).toBe(before.generation + 1);
     expect(after).toMatchObject({ sessions: 0, resets: 1 });
     expect(verifyCredential(after.credentialHash, NEW)).toBe(true);
     expect(verifyCredential(after.credentialHash, OLD)).toBe(false);
-    expect(existsSync(savedFile)).toBe(false);
+    expect(existsSync(savedFile)).toBe(true); // reported, never deleted
   });
 });
 
@@ -327,7 +327,8 @@ describe("removing the stale saved first password", () => {
     writeFileSync(savedFile, `alex ${NEW}\n`);
     expect(removeStaleSavedLogin(configDir, "alex", NEW)).toEqual({ removed: [], stale: [], unchecked: [] });
     writeFileSync(savedFile, `alex ${OLD}\n`);
-    expect(removeStaleSavedLogin(configDir, "alex", NEW)).toEqual({ removed: [savedFile], stale: [], unchecked: [] });
+    expect(removeStaleSavedLogin(configDir, "alex", NEW)).toEqual({ removed: [], stale: [savedFile], unchecked: [] });
+    expect(existsSync(savedFile)).toBe(true); // never deleted: the person is told to
   });
 });
 
@@ -335,7 +336,7 @@ describe("over a real console", () => {
   let server: Server | DecisionServer | null = null;
   afterEach(async () => { if (server !== null) await new Promise<void>(resolve => server!.close(() => resolve())); server = null; });
 
-  test("the footer names the saved file as ~/…, a reset ends the signed-in session, the new password signs in and the footer drops the file", async () => {
+  test("the footer names the saved file as ~/…, a reset ends the signed-in session, the new password signs in, and a stale saved file is reported, not deleted", async () => {
     passwordInstall();
     process.env["HOME"] = root;
     const store = openStore(file);
@@ -381,9 +382,11 @@ describe("over a real console", () => {
       const before = (server as DecisionServer).mintSignInLink("alex")!;
       store.saveApprover("alex", hashPassword("third password 3"), new Date());
       expect((await fetch(`${base}${before}`, { redirect: "manual" })).status).toBe(410);
+      // The stale saved file is reported to the person, never deleted (a race-free unlink isn't possible in Node), so
+      // the footer still names it while it exists — next to the reset line.
       const now = await (await fetch(`${base}/login`)).text();
-      expect(now).not.toContain("up-login.txt");
-      expect(now).toContain("Forgot your password? Run <code class=\"k-nowrap\">toolroll password reset</code> on the computer running Toolroll.");
+      expect(now.replace(/<wbr>/g, "")).toContain("~/config/.toolroll-secrets/up-login.txt");
+      expect(now).toContain("toolroll password reset");
     } finally { store.close(); }
   });
 });

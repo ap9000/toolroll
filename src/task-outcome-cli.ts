@@ -1,12 +1,12 @@
 /** Everyday task verbs over the existing completion and revision boundaries. */
 import { createHash } from 'node:crypto';
 import { assignmentOf, checkAssignmentAsOperator, completeAsLocalOwner } from './assignment.js';
-import { currentLocalOwner, localModeOn } from './local-owner.js';
+import { currentLocalOwner, localActNow, localModeOn, LOCAL_OWNER_LAPSED } from './local-owner.js';
 import { validateNote } from './decision.js';
 import { assignmentForCoordinator, coordinatorToken } from './assignment-adapters.js';
 import { authenticateCoordinator } from './coordinator.js';
-import { reproveApprover, type VerifiedApprover } from './principal.js';
-import { authenticateApprover, machineActing, personProof } from './scope.js';
+import { reproveApprover, verifyApproverStanding, type VerifiedApprover } from './principal.js';
+import { authenticateApprover, localWorkEligible, machineActing, personProof } from './scope.js';
 import { currentActor } from './actor.js';
 import { requestResultChanges } from './result-actions.js';
 import { commentSourceKey, revisionSourceOf } from './result-review.js';
@@ -15,12 +15,17 @@ import { completeAndOpenPullRequest, mergeAsPerson, MERGE_NEEDS_PERSON, newestPu
 import type { PublishExec } from './publish.js';
 import type { Store } from './store.js';
 import { proveRunStopped } from './stop-proof.js';
+import { familyChangedFiles } from './result-completion.js';
+import { activeRemote } from './remote-run.js';
+import { underAgent } from './prompt.js';
 
 export async function runTaskOutcomeCommand(action: 'complete' | 'revise', positional: readonly string[], flags: Map<string, string | true>, context: {
   store: Store; evidenceRoot: string; json: boolean; write: (line: string) => void; now: Date;
   operator: () => Promise<VerifiedApprover | null>;
   /** The command it answers as: `task accept --finish` is this same completion under its own name. */
   command?: string;
+  /** Who is running this shell command (a coding agent, a terminal), read only to word a password-free owner's refusal. */
+  caller?: () => ShellCaller;
 }): Promise<number> {
   const command = context.command ?? `task ${action}`;
   const emit = (result: { ok: boolean; reason?: string; message?: string; result?: unknown; pullRequest?: unknown }, lines?: string[]) => {
@@ -37,11 +42,14 @@ export async function runTaskOutcomeCommand(action: 'complete' | 'revise', posit
   if ('ok' in credential) return emit(credential);
   if (credential.token !== null && (flags.has('as') || flags.has('token'))) return fail('usage', 'Choose your lead\'s credential or your own sign-in, not both.');
   if (credential.token !== null && pullRequest) return fail('unauthenticated', 'Opening a pull request is an approver\'s act. Use your own sign-in (--as and --token), not your lead\'s credential.');
+  const key = action === 'complete' ? 'c' : 'b';
+  // A password-free owner has nothing to sign in with here: refused before anything asks for a username or password
+  // (which could never work, and would count a failed password), saying why and that the terminal UI is where they act.
+  if (credential.token === null && passwordFreeShell(context.store)) return fail('local-owner', passwordFreeShellWords(key, shellCallerOf(context.json, context.caller)));
   const operator = credential.token === null ? await context.operator() : null;
   if (credential.token === null && operator === null) {
-    // A password-free owner has nothing to sign in with here: the terminal UI is where they accept or send back.
     return fail('unauthenticated', passwordFreeOwner(context.store)
-      ? `Open \`toolroll\` and press ${action === 'complete' ? 'c' : 'b'} on the task.`
+      ? passwordFreeShellWords(key, shellCallerOf(context.json, context.caller))
       : 'Run this at a terminal to sign in when asked, or open `toolroll`. Your lead can use --token-file or --token-env with its own credential.');
   }
   const { store, now, evidenceRoot } = context;
@@ -221,6 +229,122 @@ export async function runLocalCompletion(positional: readonly string[], flags: M
     `Result: ${receipt.taskId} · build #${receipt.runId} · ${receipt.head?.slice(0, 7) ?? 'no commit'}`,
     ...(assignment.readiness?.checksOff ? [] : [receipt.checks.detail]),
   ]);
+}
+
+/** A send back by the local owner, as its writer answers: the revision made (or the one this same note already made), or
+ * why not. */
+export type LocalRevision =
+  | { ok: true; id: string; rootId: string; sourceRun: number; source: string; key: string; approved: boolean; planning: boolean }
+  | { ok: false; reason: string; message: string };
+
+/**
+ * The terminal's Send back (the eight plan, F-lite): the laptop's local owner, with no password, sends back the exact
+ * build its screen read (`runId`, pinned when it pressed b) with its note, in one transaction. Accept's road
+ * (completeAsLocalOwner) for a revision: never a password check, so the sign-in guard never moves; the owner is the one in
+ * flight now, acting as exactly `request-revision`, still standing, and its approver standing re-proved from that; the
+ * build must be this task's and still current (a newer version refuses, as the password road refuses it); completion's
+ * work rule refuses release, protected (declared or changed) and coordinator work; and the revision is the person's
+ * (`origin: "person"`, the browser's local-owner parity). The same note again returns the revision it made.
+ */
+export function reviseAsLocalOwner(store: Store, taskId: string, input: { runId: number; feedback: string }, now: Date, evidenceRoot: string): LocalRevision {
+  const fail = (reason: string, message: string): LocalRevision => ({ ok: false, reason, message });
+  try {
+    return store.transact((): LocalRevision => {
+      const local = localActNow(store, 'request-revision');
+      if (local === null) return fail('local-owner', LOCAL_OWNER_LAPSED);
+      const standing = verifyApproverStanding(store, local.account, local.accountGeneration, store.knownRepos().filter(repo => store.accountCanAccess(local.account, repo)));
+      if (!standing.ok) return fail('local-owner', LOCAL_OWNER_LAPSED);
+      const who = standing.who, repos = who.repos;
+      const current = assignmentOf(store, taskId, now, { principal: 'operator', repos }, evidenceRoot);
+      if (current === null || !store.accountCanAccess(who.name, current.repo)) return fail('not-found', 'That task is unavailable in your projects.');
+      const run = store.getRun(input.runId);
+      const runTask = run === null ? null : store.externalIdFor(run.taskRef);
+      const family = runTask === null ? null : store.taskFamilyOf(runTask, repos, false);
+      if (run === null || runTask === null || family?.root.id !== current.rootId || run.outcome === null) return fail('not-found', 'That finished result is unavailable for this task.');
+      // Completion's work rule, read for every task named (the one asked, the build's own, the family's root), with
+      // what the build actually changed (an unreadable inventory counts as protected).
+      const changed = familyChangedFiles(store, runTask, run.id, evidenceRoot, { missing: 'unknown' });
+      for (const one of new Set([taskId, runTask, current.rootId])) {
+        const eligible = localWorkEligible(store, who.name, one, { act: 'revise', changed });
+        if (!eligible.ok) return fail('local-owner', `${eligible.message} ${store.accountOf(who.name)?.passwordSet === true ? 'Sign in with your password to do this.' : 'Set a password first: run `toolroll password set`.'}`);
+      }
+      const source = revisionSourceOf(store.getScope(runTask)?.digest ?? null);
+      const key = createHash('sha256').update(JSON.stringify([who.name, run.id, source, input.feedback])).digest('hex').slice(0, 32);
+      const previous = store.diffCommentBySourceKey(commentSourceKey(who.name, key)!);
+      if ((family.current.id !== runTask || (current.receipt !== null && current.receipt.runId !== run.id)) && previous?.consumedBy == null) return fail('stale-result', 'A newer version is current. Read its result before sending it back.');
+      const revised = requestResultChanges(store, evidenceRoot, { run: run.id, source, actor: who.name, repos,
+        batch: '', note: input.feedback, path: '', line: '', request: key, allowMode: true,
+        // The person at this computer's own terminal, in their own words: the browser's local owner is the same.
+        origin: 'person' }, now);
+      if (!revised.ok) return fail(revised.status === 400 ? 'usage' : 'stale-result', revised.message);
+      const scope = store.getScope(revised.id);
+      return { ok: true, id: revised.id, rootId: current.rootId, sourceRun: run.id, source, key,
+        approved: scope?.approvedDigest != null && scope.approvedDigest === scope.digest, planning: store.lookupRef(revised.id)?.plan === 'requested' };
+    });
+  } catch (error) {
+    // Store.transact's own re-check found the bound owner no longer standing: the same refusal, said, never a crash.
+    if (error instanceof Error && error.message === LOCAL_OWNER_LAPSED) return fail('local-owner', LOCAL_OWNER_LAPSED);
+    throw error;
+  }
+}
+
+/**
+ * `task revise` for the laptop's local owner (the terminal UI's Send back): its own road, chosen only inside the local
+ * owner's chain, as runLocalCompletion is for Accept. It never reaches a password check. Pinned: `--run` is required
+ * (the build the screen read, never defaulted to the current one) and `--feedback` says something. No `--source` or
+ * `--key` (Toolroll reads them itself), and no credential flags (runOperate refuses those for the local owner first).
+ */
+export async function runLocalRevision(positional: readonly string[], flags: Map<string, string | true>, context: {
+  store: Store; evidenceRoot: string; json: boolean; write: (line: string) => void; now: Date;
+}): Promise<number> {
+  const command = 'task revise';
+  const emit = (result: { ok: boolean; reason?: string; message?: string; [key: string]: unknown }, lines?: string[]) => {
+    context.write(context.json ? envelopeJson({ ...result, command }) : result.ok ? (lines ?? []).join('\n') : result.message ?? 'The action was refused.');
+    return result.ok ? 0 : result.reason === 'usage' ? 2 : 3;
+  };
+  const fail = (reason: string, message: string) => emit({ ok: false, reason, message });
+  const usage = 'Use task revise <task> --run <build> --feedback "requested change".';
+  const allowed = new Set(['json', 'db', 'run', 'feedback']);
+  for (const key of flags.keys()) if (!allowed.has(key)) return fail('usage', `--${key} is not a ${command} option here.`);
+  const task = positional[0];
+  if (positional.length !== 1 || !task || task.length > 64 || /[\x00-\x1f]/.test(task)) return fail('usage', usage);
+  const run = flags.get('run'), feedback = flags.get('feedback');
+  if (typeof run !== 'string' || !/^[1-9]\d{0,14}$/.test(run)) return fail('usage', `--run needs the exact build number of the result you read. ${usage}`);
+  if (typeof feedback !== 'string' || !feedback.trim()) return fail('usage', 'Describe the requested change with --feedback.');
+  const done = reviseAsLocalOwner(context.store, task, { runId: Number(run), feedback }, context.now, context.evidenceRoot);
+  if (!done.ok) return emit(done);
+  const { ok: _ok, ...result } = done;
+  return emit({ ok: true, result }, [`${done.rootId} · Revision created`, `Execution: ${done.id}`,
+    done.approved ? 'Covered by your existing operating mode.' : done.planning ? 'Updating the plan with your notes; approve it when it is ready.' : 'The revision is waiting for approval.']);
+}
+
+/** Who runs a shell command, as a password-free owner's refusal words it: under --json, under a coding agent, at a terminal. */
+export type ShellCaller = { json: boolean; agent: boolean; terminal: boolean };
+
+/** This process's own caller facts (or a test's), read only when a refusal is worded: the agent check walks the
+ * process's ancestors. */
+export function shellCallerOf(json: boolean, seam?: () => ShellCaller): ShellCaller {
+  return seam?.() ?? { json, agent: underAgent(process.env), terminal: process.stdin.isTTY === true && process.stdout.isTTY === true };
+}
+
+/**
+ * Whether a shell command from this person can't sign in at all, so it is refused before it asks for a username or a
+ * password (the eight plan, F-lite): a password-free install (passwordFreeOwner), and none of the roads that carry their
+ * own authority — the terminal UI's local owner, a remote API run, the lead. It only ever refuses earlier a command that
+ * would be refused anyway (no account has a password to check), and never grants anything.
+ */
+export function passwordFreeShell(store: Store): boolean {
+  return currentLocalOwner() === null && activeRemote() === null && currentActor()?.lead !== true && passwordFreeOwner(store);
+}
+
+/** One line for a password-free owner's refused shell command: why it can't work from here (a coding agent ran it, it
+ * runs under --json, or piped with no one to ask), and the fix, the terminal UI's key for the act. */
+export function passwordFreeShellWords(key: 'a' | 'c' | 'b', caller: ShellCaller): string {
+  const fix = `Open \`toolroll\` in your own terminal and press ${key} on the task.`;
+  if (caller.agent) return `Your coding agent can't do this for you. ${fix}`;
+  if (caller.json) return `With --json nothing can ask you, and you haven't set a password. ${fix}`;
+  if (!caller.terminal) return `This can't ask you when it runs piped or in the background, and you haven't set a password. ${fix}`;
+  return `You haven't set a password, so there's nothing to sign in with here. Open \`toolroll\` and press ${key} on the task.`;
 }
 
 /** Words only: local mode is on and no account has a password yet, so no sign-in from a shell can succeed (the terminal

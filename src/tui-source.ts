@@ -155,7 +155,8 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. It starts next."; break;
         case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
-        case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
+        // Send back: the build the screen read when b was pressed, never the one current when this is sent.
+        case "revise": argv = ["task", "revise", act.id, "--run", String(act.runId), "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
         // Retry: exactly the build and approved plan the screen read (local-owner slice 3), never the current ones.
         case "retry": argv = ["task", "requeue", act.id, "--run", String(act.runId), "--digest", act.digest]; done = "Retrying. It starts next."; break;

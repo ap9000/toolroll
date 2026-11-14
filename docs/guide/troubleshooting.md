@@ -36,7 +36,7 @@ terminal on that computer: type the new one twice. Its browser sessions,
 remembered passwords, paired chats, phone notifications, lead sessions and
 lead tokens end; API and MCP tokens and coordinator credentials stay (revoke
 them in Settings → Sessions & tokens and with `toolroll coordinator revoke`).
-The saved file is removed once it no longer works. With more than one
+The reset tells you when the saved file no longer works; delete it yourself. With more than one
 person, add `--as <name>`.
 Anyone who can run commands as you on that computer can do this, just as
 they could read the saved file. Accounts that sign in with an identity
