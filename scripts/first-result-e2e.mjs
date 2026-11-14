@@ -155,7 +155,7 @@ const installs = [];
  */
 function newcomer(name, { agent = "signed-in", where = "repo" } = {}) {
   const root = realpathSync(makeTempRoot("tr-fr-", { keep: flag("--keep"), parent: "/tmp" }));
-  const home = join(root, "home"), bin = join(root, "bin"), tmp = join(root, "tmp"), shop = join(home, "shop"), folder = join(home, "notes"), opened = join(root, "opened.txt");
+  const home = join(root, "home"), bin = join(root, "bin"), tmp = join(root, "tmp"), shop = join(home, "shop"), folder = join(home, "notes"), opened = join(root, "opened.html");
   for (const one of [home, bin, tmp]) mkdirSync(one, { recursive: true });
   symlinkSync(process.execPath, join(bin, "node"));
   for (const tool of ["npm", "npx"]) { const found = join(dirname(process.execPath), tool); if (existsSync(found)) symlinkSync(realpathSync(found), join(bin, tool)); }
@@ -164,7 +164,11 @@ function newcomer(name, { agent = "signed-in", where = "repo" } = {}) {
   if (install === "local") exe("toolroll", `#!/bin/sh\nexec ${shellWord(process.execPath)} ${shellWord(w.bin)} "$@"\n`);
   exe("tailscale", `#!/bin/sh\necho '{"BackendState":"Stopped"}'\n`);
   for (const supervisor of ["launchctl", "systemctl"]) exe(supervisor, `#!/bin/sh\necho "${supervisor} is refused in a first-result journey" >&2\nexit 1\n`);
-  exe("open-browser", `#!/bin/sh\nprintf '%s' "$1" > ${shellWord(opened)}\n`);
+  // The browser: a one-time sign-in link goes only into a 0600 page handed to the platform's own opener (eight k1); this
+  // stand-in takes that opener's place and keeps the page, which the journey's browser follows (openedLink).
+  // TOOLROLL_BROWSER_COMMAND stays for plain addresses and must never be handed a sign-in link.
+  kit.signInOpenerStandIn(bin, opened);
+  exe("open-browser", `#!/bin/sh\nprintf '%s\\n' "$1" >> ${shellWord(join(root, "plain-opened.txt"))}\n`);
   // The agent: in a scripted run the world's scripted stand-in; in a real run this computer's Claude Code with its own
   // home (its sign-in lives in the person's keychain), through the world's counting shim.
   const stand = w.provider.shims?.claude ?? null;
@@ -402,7 +406,13 @@ async function browserFor(inst) {
 }
 /** The one-time sign-in address the terminal's `w` (or `toolroll --web`) handed the browser. */
 async function openedLink(inst, after = 0) {
-  const link = await until(`${inst.name}: the browser to be opened`, async () => { if (!existsSync(inst.opened)) return null; const text = readFileSync(inst.opened, "utf8"); return text.startsWith("http") ? text : null; }, { timeoutMs: 60_000, everyMs: 200 });
+  const plain = join(inst.root, "plain-opened.txt");
+  const link = await until(`${inst.name}: the browser to be opened`, async () => {
+    if (existsSync(plain) && readFileSync(plain, "utf8").includes("/login/once/")) throw new GiveUp("TOOLROLL_BROWSER_COMMAND was handed a sign-in link");
+    // Throws if the opener was ever handed a link or a code in its arguments.
+    const text = kit.signInLinkFrom(inst.opened);
+    return text?.startsWith("http") ? text : null;
+  }, { timeoutMs: 60_000, everyMs: 200 });
   inst.base = new URL(link).origin;
   return link;
 }

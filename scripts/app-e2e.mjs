@@ -26,7 +26,7 @@ import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
+import { flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, signInLinkFrom, signInOpenerStandIn, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 /** The saved login `up` writes: in the reserved secrets folder, else (an older install) beside the database. */
 const savedLoginOf = state => existsSync(join(state, ".toolroll-secrets", "up-login.txt")) ? join(state, ".toolroll-secrets", "up-login.txt") : join(state, "up-login.txt");
@@ -2907,7 +2907,7 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
   // A laptop install's console socket lives under its home folder: a short root keeps it under the socket path limit
   // (macOS's own temp folder is too deep), so `toolroll open` finds the console as it would on a real laptop.
   const root = realpathSync(laptop ? makeTempRoot("tr-es-", { keep: flag("--keep"), parent: "/tmp" }) : makeTempRoot(`toolroll-onboarding-${name}-`, { keep: flag("--keep") }));
-  const home = join(root, "home"), shop = join(root, "shop"), bin = join(root, "bin"), opened = join(root, "opened.txt"), log = join(root, "terminal.log");
+  const home = join(root, "home"), shop = join(root, "shop"), bin = join(root, "bin"), opened = join(root, "opened.html"), log = join(root, "terminal.log");
   for (const one of [home, shop, bin]) mkdirSync(one);
   // The PATH a stranger's shell might have, minus every agent CLI: node and npm, git, the system's own tools.
   symlinkSync(process.execPath, join(bin, "node"));
@@ -2920,8 +2920,12 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
     chmodSync(join(bin, "claude"), 0o755);
   };
   if (claude) signIn();
-  // The browser `up` opens: the one-time link is handed to this program, never printed. The journey's browser opens it.
-  writeFileSync(join(bin, "open-browser"), `#!/bin/sh\nprintf '%s' "$1" > ${JSON.stringify(opened)}\n`);
+  // The browser `up` opens: the one-time link goes into a 0600 page handed to the platform's own opener (eight k1), never
+  // printed and never in any program's arguments. This stand-in takes that opener's place; the journey's browser
+  // follows the page as a browser would (openedLink). TOOLROLL_BROWSER_COMMAND stays for plain addresses only, and must
+  // never be handed a sign-in link.
+  signInOpenerStandIn(bin, opened);
+  writeFileSync(join(bin, "open-browser"), `#!/bin/sh\nprintf '%s\\n' "$1" >> ${JSON.stringify(join(root, "plain-opened.txt"))}\n`);
   chmodSync(join(bin, "open-browser"), 0o755);
   // A laptop install's console is a PROTECTED loopback install only with no tailnet names (mutation-key.ts): this
   // computer's own Tailscale would name some, so this install's PATH answers "Tailscale isn't running" (tailnet.ts reads
@@ -2962,7 +2966,7 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
       rmSync(home, { recursive: true, force: true }); mkdirSync(home);
     }
     const state = (() => { for (const one of [join(home, ".config", "toolroll"), join(home, ".toolroll"), join(home, ".config", "standing-orders")]) if (existsSync(join(one, "orders.db"))) return one; throw new Error(`no database under ${home}`); })();
-    Object.assign(install, { state, db: join(state, "orders.db"), link: readFileSync(opened, "utf8") });
+    Object.assign(install, { state, db: join(state, "orders.db"), link: openedLink(install) });
     if (laptop) return install;
     // Not yet automatic (see the onboarding handoff): a fresh install has no exact crew models (approvals bind exact
     // routing, so a first task would wait at Plan) and no project check (so a result could never be Ready). The setup a
@@ -2983,6 +2987,14 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
   }
 }
 const shellWord = text => `'${String(text).replace(/'/g, "'\\''")}'`;
+/** The sign-in address the install's last browser open carried (signInLinkFrom: the page the opener stand-in was handed,
+ * followed as a browser would; it throws if the opener ever got a link or a code in its arguments), or null. Plain
+ * opens through TOOLROLL_BROWSER_COMMAND must never carry one either. */
+function openedLink(install) {
+  const plain = join(install.root, "plain-opened.txt");
+  if (existsSync(plain) && readFileSync(plain, "utf8").includes("/login/once/")) throw new GiveUp("TOOLROLL_BROWSER_COMMAND was handed a sign-in link");
+  return signInLinkFrom(install.opened);
+}
 /**
  * `script` running `/bin/sh -c inner` at a pseudo-terminal, quietly, its typescript thrown away. BSD's (macOS) takes the
  * command as words after the file; util-linux's (Linux) takes one shell command with -c, run by $SHELL — unset in a
@@ -3013,7 +3025,7 @@ async function startUp(install, { name, env, log, opened, upPid, go }) {
   // The real signal is `up` opening the browser, or `up` ending; the time limit is only a backstop for a hung start.
   let ended = null;
   await until(`${name}: toolroll up to open the browser`, async () => {
-    if (existsSync(opened) && readFileSync(opened, "utf8").startsWith(install.base)) return true;
+    if (openedLink(install)?.startsWith(install.base)) return true;
     if (!running()) { ended = install.terminal().trim().slice(-400) || "it printed nothing"; return true; }
     return false;
   }, { timeoutMs: 10 * 60_000, everyMs: 250, seen: install.terminal });
@@ -3339,7 +3351,7 @@ const laptopBuild = id => laptopRows(`SELECT r.id, r.outcome, r.reason, r.finish
 const saysNow = async on => (await on.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 500);
 /** `toolroll <argv>` typed at this install's own terminal (script's pseudo-terminal; nothing of this run above it, as
  * startUp does); resolves with what it printed once it has ended. */
-async function atLaptopTerminal(install, argv, name) {
+async function atLaptopTerminal(install, argv, name, whileRunning = async () => {}) {
   const dir = join(install.root, `terminal-${name}`);
   mkdirSync(dir, { recursive: true });
   const pid = join(dir, "pid"), go = join(dir, "go"), log = join(dir, "out.log");
@@ -3353,6 +3365,7 @@ async function atLaptopTerminal(install, argv, name) {
   const ran = Number(readFileSync(pid, "utf8"));
   install.groups.push(own(ran, `toolroll ${argv.join(" ")} (${name})`));
   writeFileSync(go, "");
+  await whileRunning(printed);
   await until(`toolroll ${argv.join(" ")} to finish`, async () => !groupAlive(ran) && !groupAlive(shell.pid), { timeoutMs: 90_000, everyMs: 200, seen: printed });
   return printed();
 }
@@ -3361,7 +3374,7 @@ async function restartLaptop(install) {
   await stopGroups(install.groups.splice(0));
   const ended = await startUp(install, { name: "laptop-again", env: install.env, log: install.log, opened: install.opened, upPid: join(install.root, "up.pid"), go: join(install.root, "up.go") });
   if (ended !== null) throw new Error(`toolroll up --laptop didn't start again: ${ended}`);
-  install.link = readFileSync(install.opened, "utf8");
+  install.link = openedLink(install);
 }
 /** Wait for a laptop task's build to end Ready (built, the task done). */
 async function laptopReady(id, after = 0) {
@@ -3554,12 +3567,15 @@ await journey("easy-start", SCRIPTED, "After a restart an open tab says how to r
   if (laptopRows("SELECT COUNT(*) AS n FROM task")[0].n !== before) throw new Error("a task was filed after the restart without reconnecting");
   await bothSizes(on, "7-restarted-refused", "easy-start");
   // `toolroll open --web` at this computer's terminal: a fresh one-time link, opened in the browser.
+  // It waits for the browser to use the link (eight k1), so the browser goes there while it runs.
   const linkBefore = install.link;
-  const printed = await atLaptopTerminal(install, ["open", "--web"], "open");
-  const link = readFileSync(install.opened, "utf8");
-  if (link === linkBefore || !link.startsWith(install.base)) throw new Error(`toolroll open opened ${link}: ${printed.slice(-300)}`);
+  let link = null;
+  const printed = await atLaptopTerminal(install, ["open", "--web"], "open", async soFar => {
+    link = await until("toolroll open to open the browser", async () => { const now = openedLink(install); return now !== null && now !== linkBefore ? now : null; }, { timeoutMs: 60_000, everyMs: 200, seen: soFar });
+    if (!link.startsWith(install.base)) throw new Error(`toolroll open opened ${link}: ${soFar().slice(-300)}`);
+    await on.goto(link);
+  });
   if (printed.includes("/login/once/")) throw new Error("toolroll open printed the sign-in link");
-  await on.goto(link);
   const id = await fileLocally(on, install.base, "Refuse a negative discount with a clear error, and test it.");
   install.second = id;
   return { reconnected: true, task: id };
