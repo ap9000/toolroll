@@ -5,7 +5,7 @@
  * Settings → Lead. Real console, stubbed sign-in checks: no model, no network.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import { addApprover, hashPassword } from "./scope.js";
 import { createDecisionServer, redactedPath, SIGN_IN_LINK_MS, wrongHostPage, type DecisionServer } from "./serve.js";
 import { enrollOwnerPassword, initLocalMode, openStore, setLocalModeOff, type Store } from "./store.js";
 import { LEAD_BY_DEFAULT_FACT } from "./server/render-chat.js";
+import { updateProjectRegistry } from "./repos.js";
 
 const answer = (stdout: string, code = 0): ExecResult => ({ code, stdout, stderr: "", timedOut: false, notFound: false });
 const notInstalled: ExecResult = { code: -1, stdout: "", stderr: "", timedOut: false, notFound: true };
@@ -309,6 +310,30 @@ test("the welcome: Use this one turns on exactly the agent named, only when it i
   const after = await (await fetch(`${base}/welcome`, { headers: { cookie } })).text();
   expect(after).toContain("toolroll-sample");
   expect(after).toContain("Round prices to whole cents");
+}, 20_000);
+
+test("an up console decides the sample on the registry's projects folders as they are now; a flag-only serve keeps its own", async () => {
+  const root = join(dir, "Projects");
+  mkdirSync(root);
+  const registry = join(dir, "repos.json");
+  const listed = () => JSON.parse(readFileSync(registry, "utf8")) as { repos: string[]; roots: string[] };
+  // An `up` console: it serves the registry's admitted set, and started with this projects folder in the registry.
+  await updateProjectRegistry(registry, () => ({ repos: [], roots: [realpathSync(root)] }));
+  await start({ projectRoots: [root], registryPath: registry, admittedRepos: () => [] });
+  const cookie = await signIn();
+  const { csrf } = await workspace(cookie);
+  const post = () => fetch(`${base}/welcome/sample`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf }) });
+  // The projects folder taken out of the registry while the console runs: the sample is no longer added there.
+  await updateProjectRegistry(registry, current => ({ ...current, roots: [] }));
+  expect((await post()).headers.get("location")).toBe("/welcome?sample=no-root#welcome-project");
+  expect(listed().repos).toEqual([]);
+  expect(store.listProjects().some(one => one.path.endsWith("toolroll-sample"))).toBe(false);
+  expect(existsSync(join(root, "toolroll-sample"))).toBe(false);
+  // Back in the registry: added.
+  await updateProjectRegistry(registry, current => ({ ...current, roots: [realpathSync(root)] }));
+  expect((await post()).headers.get("location")).toBe("/welcome");
+  expect(listed().repos).toEqual([realpathSync(join(root, "toolroll-sample"))]);
+  // (A flag-only `serve --project-root`, whose registry names no projects folder, is the test above: it adds the sample.)
 }, 20_000);
 
 test("a laptop install: choosing the agent starts its models on that agent's default preset, once, and never overwrites", async () => {

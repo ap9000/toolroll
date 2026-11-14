@@ -305,3 +305,30 @@ function bumpRegistryRemovals(file: string, lines: readonly string[], tag: strin
   writeFileSync(temp, `${JSON.stringify(counts)}\n`, { flag: "wx", mode: 0o600 });
   renameFile(temp, registryRemovalsFile(file));
 }
+
+/**
+ * The registry as it is on disk now, read synchronously (strict, like the locked writer): for a check that must run
+ * inside a database transaction (sample-project.ts binds an admission to the projects folders read there). Only a
+ * missing file is an empty registry; anything unreadable or malformed is an error, never an empty list.
+ */
+export function readProjectRegistryNow(file: string): RegistryLoadResult {
+  let text: string;
+  try {
+    const fd = openFd(file, fsConstants.O_RDONLY);
+    try {
+      const size = fstatSync(fd).size;
+      if (size > 4 * 1024 * 1024) return { error: `${file} is too large to be a Toolroll config` };
+      const buffer = Buffer.alloc(size);
+      let read = 0;
+      while (read < size) { const got = readSync(fd, buffer, read, size - read, read); if (got === 0) break; read += got; }
+      text = buffer.subarray(0, read).toString("utf8");
+    } finally { closeFd(fd); }
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return { repos: [], roots: [] };
+    return { error: `${file} could not be read (${String((cause as Error).message)})` };
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return { error: `${file} is not valid JSON` }; }
+  const registry = readProjectRegistryStrict(parsed);
+  return registry === null ? { error: `${file} does not look like a Toolroll config` } : { repos: sortUnique(registry.repos), roots: sortUnique(registry.roots) };
+}

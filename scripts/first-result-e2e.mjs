@@ -668,24 +668,13 @@ async function terminalFromHome({ trace, criterion, note }) {
     term = await startToolroll(inst, trace);
     const first = await term.waitFor(/Project/, "the project step");
     trace.note("The first screen: no project", { screen: first });
-    criterion("B1.4", "the terminal offers the sample project", /sample/i.test(first), boxLines(first, /Project ·|repos add|open --web|sample/i));
-    trace.notPossible("Try the sample project in the terminal: its project step names `toolroll repos add <folder>` or the browser",
-      "press w and choose Try a sample project in the browser's welcome");
-    const on = await toBrowser(inst, term, trace, "add the sample project");
-    if (new URL(on.url()).pathname !== "/welcome") { await on.goto(`${inst.base}/welcome`); trace.interaction("Open the welcome", { surface: "browser" }); }
-    const sample = on.locator('form[action="/welcome/sample"] button');
-    await waitFor(sample, "Try a sample project", { timeoutMs: 30_000, seen: () => pageText(on) });
-    trace.decision("Try the sample project", { surface: "browser", screen: await pageText(on) });
-    await Promise.all([on.waitForNavigation({ timeout: 30_000 }).catch(() => undefined), sample.click()]);
-    trace.interaction("Click Try a sample project", { surface: "browser" });
-    const adding = trace.beginWait("The sample project is added and takes work", { surface: "browser" });
-    await until("the project step done", async () => { if (await on.locator('[data-step="project"][data-done="1"]').count() > 0) return true; await on.reload(); return false; }, { timeoutMs: 90_000, everyMs: 1000, seen: () => pageText(on) });
-    adding({ screen: await pageText(on) });
-    trace.interaction("Go back to the terminal", { surface: "terminal" });
-    trace.endFallback();
-    const noticing = trace.beginWait("The terminal notices the project");
+    criterion("B1.4", "the terminal offers the sample project", /s {2}Try the sample project/.test(first), boxLines(first, /Project ·|repos add|open --web|sample/i));
+    trace.decision("Try the sample project", { screen: first });
+    term.press("s");
+    trace.interaction("Press s", { keys: "s" });
+    const adding = trace.beginWait("The sample project is added");
     const ideas = await term.waitFor(/Idea: .*cents/, "the sample's ideas in the terminal", { timeoutMs: 90_000 });
-    noticing({ screen: ideas });
+    adding({ screen: ideas });
     const idea = /Idea: (.*cents[^│]*)/.exec(ideas)?.[1]?.trim();
     if (!idea) throw new Error(`no whole-cents idea: ${ideas}`);
     trace.notPossible("Pick one of the ideas: they are plain text", "type the idea's words into New task");

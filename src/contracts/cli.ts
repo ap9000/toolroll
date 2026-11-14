@@ -245,6 +245,9 @@ export const COMMAND_OUTPUTS = {
     next: nullable(z.enum(["agent", "project", "task"])),
     left: int,
   }),
+  // The sample project added (sample-project.ts addSampleProject): where, whether this made it or added it now, and
+  // whether its own fixed check was set.
+  "welcome sample": answers("welcome sample", { repo: str, created: z.boolean(), added: z.boolean(), checkSet: z.boolean() }),
   // The first password set: whose, and the account generation every older session was bound to before it.
   "password set": answers("password set", { account: str, generation: int }),
   // A forgotten password reset at this computer: whose, its new generation, and the stale saved logins removed.

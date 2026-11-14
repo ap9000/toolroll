@@ -46,8 +46,9 @@ export type TuiTask = {
   readonly retry?: { readonly runId: number; readonly digest: string } | null;
 };
 
-/** The welcome's steps, as lines (welcome-facts.ts). */
-export type TuiSetup = { readonly left: number; readonly lines: readonly string[] };
+/** The welcome's steps, as lines (welcome-facts.ts). `sample`: `s` adds the sample project here (no project yet, a
+ * projects folder to make it in, a password-free install); what the screen offers only, the command decides. */
+export type TuiSetup = { readonly left: number; readonly lines: readonly string[]; readonly sample?: boolean };
 
 export type TuiSnapshot = {
   readonly rows: readonly TuiRow[];
@@ -76,7 +77,9 @@ export type TuiAct =
   | { readonly kind: "retry"; readonly id: string; readonly runId: number; readonly digest: string }
   /** Plan it: exactly the planning source the screen read (the command refuses a task that changed meanwhile). */
   | { readonly kind: "plan"; readonly id: string; readonly source: string }
-  | { readonly kind: "answer"; readonly decision: number; readonly option: string };
+  | { readonly kind: "answer"; readonly decision: number; readonly option: string }
+  /** The sample project (`toolroll welcome sample`): it takes nothing from the screen. */
+  | { readonly kind: "sample" };
 
 /** What Build would approve: the same lines every approval surface reads. */
 export type TuiFastTerms = { readonly preview: string; readonly digest: string; readonly terms: readonly { readonly label: string; readonly words: string }[] };

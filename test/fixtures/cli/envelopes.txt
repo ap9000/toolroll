@@ -6480,6 +6480,26 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "welcome sample",
+      "synopsis": "add the sample project (a tiny repository with one function and its test) in your projects folder, as this computer's password-free owner at a terminal: the console welcome's Try a sample project; takes no folder or name",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "flags": [
+        {
+          "name": "json",
+          "takesValue": false,
+          "meaning": "answer with one machine envelope on stdout"
+        },
+        {
+          "name": "db",
+          "takesValue": true,
+          "meaning": "path to the database file (defaults to the installation's)"
+        }
+      ],
+      "remote": "no"
+    },
+    {
       "invocation": "password set",
       "synopsis": "set this computer's first password, typed twice at your own terminal (never a flag, file or environment variable); every session signs in again and local mode stays on",
       "audience": "operator",
