@@ -219,6 +219,14 @@ requests that touch the server, the browser app, the work index or the store, an
 the pull request raises, and it uploads the report as the `wire-budgets` artifact. It is advisory: not one of
 `REQUIRED_PR_CHECKS`, and the release verdict leaves it out (`ADVISORY_PR_CHECKS`).
 
+What each account sees stays byte for byte the same when reads get cheaper: `src/fast-reads.slow.test.ts` renders the
+same pages (and a task page) on a smaller wire world for the operator, an approver on every project, an approver on
+two and a viewer on one, and holds every answer to the digest in `src/fast-reads.golden.json`. Rewrite the golden only
+for a change meant to alter what people see (`FAST_READS_WRITE_GOLDEN=1`), never to make a read faster;
+`FAST_READS_OUT=<folder>` keeps any body that changed. A page read's work projection and its rows' saved facts are read
+once per request (`src/work-reads.ts`): every reuse is proved against the database first, and nothing outlives the
+request.
+
 ## Destinations and click paths
 
 Slice S0 of the one-workspace plan measures how many places a person can land on and how many clicks the common jobs
