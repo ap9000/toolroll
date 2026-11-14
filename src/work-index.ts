@@ -772,6 +772,8 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
   return { checks, requirements: unverifiedWhenRefuted(requirements, verdict), ...(accepted ? { accepted } : {}), ...(blockers.length === 0 ? {} : { blockers }) };
 }
 
+/** A row of the named columns, in order, as node:sqlite returns one (no prototype). */
+const picked = (row: Record<string, unknown>, names: readonly string[]) => Object.assign(Object.create(null) as Record<string, unknown>, Object.fromEntries(names.map(name => [name, row[name]])));
 /** The saved facts every shown result's readiness reads one at a time (resultReadinessFacts: its run and task, verdict,
  * acceptance, review, files, check level and follow-up checks; each row's own check choice), read for the whole page in
  * a few statements and saved as the one-row reads would have answered them (work-reads.ts seed). The SQL texts are the
@@ -779,6 +781,29 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
 function prefetchResults(reads: WorkReads, store: Store, rows: readonly Row[]): void {
   const runIds = [...new Set(rows.map(row => n(row, 'result_id')).filter(id => id > 0))];
   if (runIds.length === 0) return;
+  prefetchResultRuns(store, runIds, reads);
+  const all = (sql: string, ...params: unknown[]) => store.handle.prepare(sql).all(...params);
+  const keyed = (list: Record<string, unknown>[], column: string) => new Map(list.map(row => [row[column], row] as const));
+  // Each shown task's own check choice (check-levels.ts taskCheckLevel's first step): its ref and its newest choice.
+  const taskIds = [...new Set(rows.filter(row => n(row, 'result_id') > 0).map(row => String(row['id'])))];
+  const tasks = keyed(all('SELECT * FROM task_ref WHERE backend = ? AND external_id IN (SELECT value FROM json_each(?))', BUILT_IN, JSON.stringify(taskIds)), 'external_id');
+  reads.seed('SELECT * FROM task_ref WHERE backend = ? AND external_id = ?', 'get', taskIds.map(id => [[BUILT_IN, id], tasks.get(id)] as const));
+  const chosen = all('SELECT task_id, repo, actor, at, outcome FROM action_ledger WHERE task_id IN (SELECT value FROM json_each(?)) AND action = ? ORDER BY id DESC', JSON.stringify(taskIds), TASK_LEVEL_ACTION);
+  for (const id of taskIds) {
+    const ref = tasks.get(id);
+    const [where, params] = repoClause(ref === undefined || ref['repo'] === null ? null : String(ref['repo']));
+    const newest = chosen.find(row => row['task_id'] === id && (params.length === 0 ? row['repo'] === null : row['repo'] === params[0]));
+    reads.seed(`SELECT actor, at, outcome FROM action_ledger WHERE ${where} AND task_id = ? AND action = ? ORDER BY id DESC LIMIT 1`, 'get',
+      [[[...params, id, TASK_LEVEL_ACTION], newest === undefined ? undefined : picked(newest, ['actor', 'at', 'outcome'])]]);
+  }
+}
+
+
+/** A page read's results' own saved facts (their runs, tasks, verdicts, acceptances, reviews, files, check levels and
+ * follow-up check lines), read for all of them at once and saved as the one-row reads would answer them; nothing
+ * outside a page read (work-reads.ts). The sidebar's states read the same results' checks. */
+export function prefetchResultRuns(store: Store, runIds: readonly number[], reads: WorkReads | null = workReadsOf(store)): void {
+  if (reads === null || runIds.length === 0) return;
   const all = (sql: string, ...params: unknown[]) => store.handle.prepare(sql).all(...params);
   const keyed = (list: Record<string, unknown>[], column: string) => new Map(list.map(row => [row[column], row] as const));
   const ids = JSON.stringify(runIds);
@@ -797,7 +822,6 @@ function prefetchResults(reads: WorkReads, store: Store, rows: readonly Row[]): 
   for (const artifact of all('SELECT * FROM artifact WHERE run IN (SELECT value FROM json_each(?)) ORDER BY id', ids)) files.get(Number(artifact['run']))?.push(artifact);
   reads.seed('SELECT * FROM artifact WHERE run = ? ORDER BY id', 'all', runIds.map(id => [[id], files.get(id)] as const));
   // The result's own ledger lines, in its task's project (check-levels.ts runCheckLevel, result-follow-ups.ts ledgerFor).
-  const picked = (row: Record<string, unknown>, names: readonly string[]) => Object.assign(Object.create(null) as Record<string, unknown>, Object.fromEntries(names.map(name => [name, row[name]])));
   const ledger = all(`SELECT run_id, repo, id, actor, at, outcome, detail, action FROM action_ledger WHERE run_id IN (SELECT value FROM json_each(?)) AND action IN (?, ?, ?, ?) ORDER BY id`,
     ids, RUN_LEVEL_ACTION, CHECKS_REQUESTED, CHECKS_STARTED, CHECKS_FINISHED);
   for (const id of runIds) {
@@ -811,18 +835,6 @@ function prefetchResults(reads: WorkReads, store: Store, rows: readonly Row[]): 
       [[[...params, id, RUN_LEVEL_ACTION], level === undefined ? undefined : picked(level, ['actor', 'at', 'outcome'])]]);
     reads.seed(`SELECT id, actor, at, outcome, detail, action FROM action_ledger WHERE ${where} AND run_id = ? AND action IN (?, ?, ?) ORDER BY id`, 'all',
       [[[...params, id, CHECKS_REQUESTED, CHECKS_STARTED, CHECKS_FINISHED], own.filter(row => row['action'] !== RUN_LEVEL_ACTION).map(row => picked(row, ['id', 'actor', 'at', 'outcome', 'detail', 'action']))]]);
-  }
-  // Each shown task's own check choice (check-levels.ts taskCheckLevel's first step): its ref and its newest choice.
-  const taskIds = [...new Set(rows.filter(row => n(row, 'result_id') > 0).map(row => String(row['id'])))];
-  const tasks = keyed(all('SELECT * FROM task_ref WHERE backend = ? AND external_id IN (SELECT value FROM json_each(?))', BUILT_IN, JSON.stringify(taskIds)), 'external_id');
-  reads.seed('SELECT * FROM task_ref WHERE backend = ? AND external_id = ?', 'get', taskIds.map(id => [[BUILT_IN, id], tasks.get(id)] as const));
-  const chosen = all('SELECT task_id, repo, actor, at, outcome FROM action_ledger WHERE task_id IN (SELECT value FROM json_each(?)) AND action = ? ORDER BY id DESC', JSON.stringify(taskIds), TASK_LEVEL_ACTION);
-  for (const id of taskIds) {
-    const ref = tasks.get(id);
-    const [where, params] = repoClause(ref === undefined || ref['repo'] === null ? null : String(ref['repo']));
-    const newest = chosen.find(row => row['task_id'] === id && (params.length === 0 ? row['repo'] === null : row['repo'] === params[0]));
-    reads.seed(`SELECT actor, at, outcome FROM action_ledger WHERE ${where} AND task_id = ? AND action = ? ORDER BY id DESC LIMIT 1`, 'get',
-      [[[...params, id, TASK_LEVEL_ACTION], newest === undefined ? undefined : picked(newest, ['actor', 'at', 'outcome'])]]);
   }
 }
 

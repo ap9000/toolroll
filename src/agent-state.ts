@@ -10,7 +10,7 @@ import { wasInterrupted } from "./run-ending.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import type { Store } from "./store.js";
 import { runActivityOf } from "./task-activity.js";
-import { workStateRows, type WorkStateRow } from "./work-index.js";
+import { prefetchResultRuns, workStateRows, type WorkStateRow } from "./work-index.js";
 import { assignmentChecksForRun } from "./assignment.js";
 import { workReadsOf } from "./work-reads.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
@@ -128,8 +128,10 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
       WHERE r.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(families.flatMap(row => row.resultRun ?? []))).map(row => [Number(row["id"]), row]));
   // The result's checks as the result reads them (follow-up checks included); the recorded check only when nothing
   // else was read, so a passing follow-up clears an earlier failure.
-  // Read through the request's saved reads (work-reads.ts): the same results' checks the lists beside it read.
-  const reader = workReadsOf(store)?.store ?? store;
+  // Read through the request's saved reads (work-reads.ts): the same results' checks the lists beside it read, the
+  // results waiting on a person read together.
+  const reads = workReadsOf(store), reader = reads?.store ?? store;
+  prefetchResultRuns(store, families.flatMap(row => (row.code === "ready-to-check" || row.code === "result-needs-attention") && row.resultRun !== null ? [row.resultRun] : []), reads);
   const checksFailed = (run: number) => {
     const status = assignmentChecksForRun(reader, root, run, now).status;
     if (status === "failed" || status === "passed") return status === "failed";
