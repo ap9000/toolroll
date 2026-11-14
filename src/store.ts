@@ -27338,14 +27338,18 @@ export function passwordResetRefusal(store: Store, name: string, passwordsOnlyFo
   return null;
 }
 
-export type PasswordResetResult = { ok: true; generation: number } | { ok: false; reason: PasswordResetRefusal | "changed" };
+export type PasswordResetResult = { ok: true; generation: number; leadTokens: number } | { ok: false; reason: PasswordResetRefusal | "changed" };
 
 /**
  * `toolroll password reset` (a forgotten password, at the computer running Toolroll): in ONE transaction, the account
  * is proved resettable again (passwordResetRefusal) and unchanged since the person was told what would end (its
  * generation then, `expectedGeneration`), the new hash is written, the generation moves, and everything derived from
  * the old credential ends exactly as on any credential rotation (revokeDerivedAuthority "credential-rotation": every
- * browser session, chat pairing, push enrollment and lead session of the account). The ledger says it was reset here.
+ * browser session, chat pairing, push enrollment and lead session of the account). A reset also ends the account's
+ * lead tokens (an ordinary password change keeps them): each was minted with a password, and a reset is the road taken
+ * when the old one may be known to someone else; minting a new one is one command. API and MCP tokens and coordinator
+ * credentials stay, as on any password change — the person is told so, and where to revoke them, before typing. The
+ * ledger says it was reset here.
  * The caller proved a person at this computer's terminal; reaching this database at all is the trust boundary.
  */
 export function resetAccountPassword(store: Store, name: string, credentialHash: string, expectedGeneration: number, passwordsOnlyForOperators: boolean, now: Date): PasswordResetResult {
@@ -27356,8 +27360,9 @@ export function resetAccountPassword(store: Store, name: string, credentialHash:
       WHERE name = ? AND generation = ? AND password_set = 1 AND revoked_at IS NULL AND credential_hash NOT LIKE 'sso-only$%'`).run(credentialHash, name, expectedGeneration);
     if (Number(written.changes) !== 1) return { ok: false, reason: "changed" };
     store.revokeDerivedAuthority(name, "credential-rotation", now);
+    const leadTokens = store.revokeLeadCredentials(name, name, now);
     store.recordAction({ at: now.toISOString(), actor: name, repo: null, taskId: null, runId: null, action: "password reset at this computer", outcome: "changed", source: "access",
-      detail: `every session of ${name} ended (generation ${expectedGeneration + 1})` });
-    return { ok: true, generation: expectedGeneration + 1 };
+      detail: `every session of ${name} ended (generation ${expectedGeneration + 1})${leadTokens > 0 ? `; ${leadTokens} lead token${leadTokens === 1 ? "" : "s"} ended` : ""}` });
+    return { ok: true, generation: expectedGeneration + 1, leadTokens };
   });
 }

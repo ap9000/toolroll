@@ -14921,10 +14921,11 @@ async function passwordResetCommand(rest: readonly string[], flags: Map<string, 
   if (typeof asked === "string") {
     account = asked;
   } else {
-    const approvers = store.listApprovers().map(one => one.name).filter(name => { const one = store.accountOf(name); return one !== null && one.revokedAt === null && one.role === "approver"; });
-    if (approvers.length === 0) return fail(write, json, command, "no-account", "No one signs in to this Toolroll yet. Nothing changed.", EXIT.refused);
-    if (approvers.length > 1) return fail(write, json, command, "several", `Several people sign in here (${approvers.join(", ")}). Say whose: \`toolroll password reset --as <name>\`.`, EXIT.usage);
-    account = approvers[0]!;
+    // Only when exactly one account of any role can sign in here is it chosen without a name: never someone else's.
+    const people = store.listApprovers().map(one => one.name).filter(name => store.accountOf(name)?.revokedAt === null);
+    if (people.length === 0) return fail(write, json, command, "no-account", "No one signs in to this Toolroll yet. Nothing changed.", EXIT.refused);
+    if (people.length > 1) return fail(write, json, command, "several", `Several people sign in here (${people.join(", ")}). Say whose: \`toolroll password reset --as <name>\`.`, EXIT.usage);
+    account = people[0]!;
   }
   const sso = (await import("./sso-settings.js")).readSsoSettings(dirname(context.databaseFile));
   const operatorsOnly = sso !== null && sso.passwords === "operators";
@@ -14938,7 +14939,8 @@ async function passwordResetCommand(rest: readonly string[], flags: Map<string, 
   if (before !== null) return fail(write, json, command, before, refusalWords(before), EXIT.refused);
   const generation = store.accountOf(account)!.generation;
   write(`Reset the password for ${account}.`);
-  write(`Every place ${account} is signed in ends: browser tabs, remembered passwords, the terminal UI, paired chats and phone notifications. Sign in again with the new password.`);
+  write(`This ends ${account}'s browser sessions and remembered passwords, the terminal UI's sign-in, paired chats, phone notifications, lead sessions and lead tokens (mint a new one with \`toolroll lead token\`).`);
+  write("It keeps API and MCP tokens (revoke them in Settings → Sessions & tokens) and coordinator credentials (`toolroll coordinator revoke`). Revoke those too if someone else may know the old password.");
   const typeHidden = context.easySeams?.askHidden ?? askHidden;
   const chosen = await typeHidden("New password: ");
   if (chosen.length < 8) return fail(write, json, command, "weak-password", "A password needs at least 8 characters. Nothing changed.", EXIT.refused);
@@ -14946,9 +14948,14 @@ async function passwordResetCommand(rest: readonly string[], flags: Map<string, 
   if (again !== chosen) return fail(write, json, command, "mismatch", "The two passwords didn't match. Nothing changed.", EXIT.refused);
   const reset = resetAccountPassword(store, account, hashPassword(chosen), generation, operatorsOnly, context.clock());
   if (!reset.ok) return fail(write, json, command, reset.reason, refusalWords(reset.reason), EXIT.refused);
-  const removed = removeStaleSavedLogin(dirname(context.databaseFile), account, chosen);
-  return succeed(write, json, command, { account, generation: reset.generation, removed }, () => [
+  const cleanup = removeStaleSavedLogin(dirname(context.databaseFile), account, chosen);
+  const { shownPath } = await import("./server/login-help.js");
+  const shown = (path: string): string => shownPath(path, homedir(), null) ?? path;
+  return succeed(write, json, command, { account, generation: reset.generation, removed: cleanup.removed }, () => [
     `Password reset for ${account}. Every session of ${account} has ended; sign in with the new password.`,
-    ...removed.map(path => `Removed ${path}: it held the old password.`),
+    ...(reset.leadTokens > 0 ? [`${account}'s lead token ended: mint a new one with \`toolroll lead token\`.`] : []),
+    ...cleanup.removed.map(path => `Removed ${shown(path)}: it held the old password.`),
+    ...cleanup.stale.map(path => `The saved first password at ${shown(path)} no longer works; delete it yourself.`),
+    ...cleanup.unchecked.map(path => `${shown(path)} isn't a plain file in Toolroll's folder, so it was left alone. If it holds ${account}'s old password, delete it yourself.`),
   ]);
 }

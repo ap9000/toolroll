@@ -96,7 +96,7 @@ function loginFoot(sso: { label: string; operatorsOnly: boolean } | null, help: 
   if (sso !== null || help.kind === "none") return invite;
   const reset = html`<code class="k-nowrap">toolroll password reset</code>`;
   const forgot = help.kind === "local"
-    ? html`Signing in without a password works only on the computer running Toolroll. There, run <code class="k-nowrap">toolroll open --web</code>.${help.passwordSet ? html` Forgot your password? Run ${reset} there.` : ""}`
+    ? html`Signing in without a password works only on the computer running Toolroll. There, run <code class="k-nowrap">toolroll open --web</code>.${help.passwordSet !== false ? html` Forgot your password? Run ${reset} there.` : ""}`
     : help.savedAt === null
       ? html`Forgot your password? Run ${reset} on the computer running Toolroll.`
       : html`Forgot your password? On the computer running Toolroll, your first password is saved in <code data-saved-login>${joinHtml(help.savedAt.split("/").map((part, index) => index === 0 ? html`${part}` : html`/<wbr>${part}`))}</code> (until you change it). Changed it and forgot? Run ${reset} there.`;

@@ -30,10 +30,14 @@ it. **Audit log** (filter Sign-ins) shows the attempts.
 
 **Forgot your password.** On the computer running Toolroll, your first
 password is saved in `~/.config/toolroll/.toolroll-secrets/up-login.txt`
-until you change it (the sign-in page shows the exact path). Changed it and
-forgot? Run `toolroll password reset` in a terminal on that computer: type
-the new one twice. Every session of that account ends, and the saved file
-is removed once it no longer works. With several people, add `--as <name>`.
+until you change it (the sign-in page, opened on that computer, shows the
+exact path). Changed it and forgot? Run `toolroll password reset` in a
+terminal on that computer: type the new one twice. Its browser sessions,
+remembered passwords, paired chats, phone notifications, lead sessions and
+lead tokens end; API and MCP tokens and coordinator credentials stay (revoke
+them in Settings → Sessions & tokens and with `toolroll coordinator revoke`).
+The saved file is removed once it no longer works. With more than one
+person, add `--as <name>`.
 Anyone who can run commands as you on that computer can do this, just as
 they could read the saved file. Accounts that sign in with an identity
 provider reset their password there instead.

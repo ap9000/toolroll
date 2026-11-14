@@ -9,7 +9,7 @@
  * writes "password reset at this computer" to the ledger and removes the saved first password it made stale.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -18,7 +18,8 @@ import { runAsLocalOwner } from "./local-owner.js";
 import { addApprover, verifyCredential } from "./scope.js";
 import { enrollOwnerPassword, initLocalMode, localModeOf, openStore, type Store } from "./store.js";
 import { mintApiToken } from "./api-tokens.js";
-import { createDecisionServer } from "./serve.js";
+import { createDecisionServer, type DecisionServer } from "./serve.js";
+import { removeStaleSavedLogin } from "./login-secrets.js";
 import { loginPage } from "./server/render-people.js";
 import { htmlString } from "./html.js";
 import { loginHelpOf, shownPath } from "./server/login-help.js";
@@ -72,7 +73,7 @@ describe("the sign-in page footer, by install kind", () => {
   test("a password install: the saved path with the home folder as ~, only when the file is there; never an absolute home folder", () => {
     passwordInstall();
     withStore(store => {
-      const help = loginHelpOf(store, { home: root, user: "someone" });
+      const help = loginHelpOf(store, { here: true, home: root, user: "someone" });
       expect(help).toEqual({ kind: "password", savedAt: "~/config/.toolroll-secrets/up-login.txt" });
       const page = htmlString(loginPage(null, "/", null, help));
       expect(page).toContain("Forgot your password? On the computer running Toolroll, your first password is saved in");
@@ -81,12 +82,12 @@ describe("the sign-in page footer, by install kind", () => {
       expect(page).not.toContain(root);
       expect(page).toContain("No account? Ask whoever runs this Toolroll for an invite link.");
       // The real home folder never shows either (the database here is not under it).
-      expect(htmlString(loginPage(null, "/", null, loginHelpOf(store)))).not.toContain(homedir());
+      expect(htmlString(loginPage(null, "/", null, loginHelpOf(store, { here: true })))).not.toContain(homedir());
     });
     // No file: no path sentence, the reset line alone.
     rmSync(savedFile);
     withStore(store => {
-      const help = loginHelpOf(store, { home: root, user: "someone" });
+      const help = loginHelpOf(store, { here: true, home: root, user: "someone" });
       expect(help).toEqual({ kind: "password", savedAt: null });
       const page = htmlString(loginPage(null, "/", null, help));
       expect(page).toContain("Forgot your password? Run <code class=\"k-nowrap\">toolroll password reset</code> on the computer running Toolroll.");
@@ -94,28 +95,48 @@ describe("the sign-in page footer, by install kind", () => {
     });
     // An older version's file directly beside the database counts too.
     writeFileSync(join(configDir, "up-login.txt"), `alex ${OLD}\n`, { mode: 0o600 });
-    withStore(store => expect(loginHelpOf(store, { home: root, user: "someone" })).toEqual({ kind: "password", savedAt: "~/config/up-login.txt" }));
+    withStore(store => expect(loginHelpOf(store, { here: true, home: root, user: "someone" })).toEqual({ kind: "password", savedAt: "~/config/up-login.txt" }));
   });
 
-  test("a path outside the home folder shows as it is, unless it names the user; never the old relative words", () => {
-    expect(shownPath("/srv/toolroll/.toolroll-secrets/up-login.txt", "/home/sam", "sam")).toBe("/srv/toolroll/.toolroll-secrets/up-login.txt");
+  test("only a path under the home folder shows, as ~/…, and never one naming the user; never an absolute path", () => {
+    expect(shownPath("/srv/toolroll/.toolroll-secrets/up-login.txt", "/home/sam", "sam")).toBeNull();
     expect(shownPath("/Users/sam/elsewhere/up-login.txt", "/var/empty", "sam")).toBeNull();
     expect(shownPath("/home/sam/.config/toolroll/x", "/home/sam", "sam")).toBe("~/.config/toolroll/x");
-    expect(shownPath("/home/samuel/x", "/home/sam", null)).toBe("/home/samuel/x");
+    expect(shownPath("/home/sam/shared/sam/x", "/home/sam", "sam")).toBeNull();
+    expect(shownPath("/home/samuel/x", "/home/sam", null)).toBeNull();
     expect(htmlString(loginPage(null))).not.toContain("Your first login was shown");
+  });
+
+  test("a visitor from another device gets the generic recovery words: no path, and nothing about whether a password exists", () => {
+    passwordInstall();
+    withStore(store => {
+      const help = loginHelpOf(store, { here: false, home: root, user: "someone" });
+      expect(help).toEqual({ kind: "password", savedAt: null });
+      const page = htmlString(loginPage(null, "/", null, help));
+      expect(page).toContain("Forgot your password? Run <code class=\"k-nowrap\">toolroll password reset</code> on the computer running Toolroll.");
+      expect(page).not.toContain("up-login.txt");
+    });
+    rmSync(file); rmSync(join(configDir, ".toolroll-secrets"), { recursive: true });
+    withStore(store => {
+      if (!initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW }).ok) throw Error("local mode");
+      // No password exists, yet the remote footer reads the same as when one does.
+      const remote = htmlString(loginPage(null, "/", null, loginHelpOf(store, { here: false })));
+      expect(remote).toContain("Forgot your password? Run <code class=\"k-nowrap\">toolroll password reset</code> there.");
+      expect(htmlString(loginPage(null, "/", null, loginHelpOf(store, { here: true })))).not.toContain("password reset");
+    });
   });
 
   test("a password-free install: why it asks, the command on its own computer, and the reset only once a password exists", () => {
     withStore(store => {
       if (!initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW }).ok) throw Error("local mode");
-      const help = loginHelpOf(store, { home: root, user: "someone" });
+      const help = loginHelpOf(store, { here: true, home: root, user: "someone" });
       expect(help).toEqual({ kind: "local", passwordSet: false });
       const page = htmlString(loginPage(null, "/", null, help));
       expect(page).toContain("Signing in without a password works only on the computer running Toolroll. There, run <code class=\"k-nowrap\">toolroll open --web</code>.");
       expect(page).not.toContain("password reset");
       expect(page).toContain("No account? Ask whoever runs this Toolroll for an invite link.");
       expect(enrollOwnerPassword(store, "alex", hashPassword(NEW), localModeOf(store)!.generation, NOW).ok).toBe(true);
-      const after = htmlString(loginPage(null, "/", null, loginHelpOf(store, { home: root, user: "someone" })));
+      const after = htmlString(loginPage(null, "/", null, loginHelpOf(store, { here: true, home: root, user: "someone" })));
       expect(after).toContain("Forgot your password? Run <code class=\"k-nowrap\">toolroll password reset</code> there.");
     });
   });
@@ -203,7 +224,7 @@ describe("toolroll password reset", () => {
       expect(store.revokeAccount("cara", "alex", NOW).ok).toBe(true);
       expect(store.signInWithSso({ issuer: "https://idp.example", subject: "s-1", email: null, label: "Okta" }, { role: "viewer", projects: null }, () => "dana", NOW).ok).toBe(true);
     });
-    expect((await reset()).out).toContain("Several people sign in here (alex, bob). Say whose: `toolroll password reset --as <name>`.");
+    expect((await reset()).out).toContain("Several people sign in here (alex, bob, dana). Say whose: `toolroll password reset --as <name>`.");
     expect((await reset(["--as", "cara"])).out).toContain("cara was removed and can't sign in. Nothing changed.");
     expect((await reset(["--as", "dana"])).out).toContain("dana signs in with your identity provider and has no password to reset. Nothing changed.");
     expect((await reset(["--as", "nobody"])).out).toContain("No account named `nobody`. Nothing changed.");
@@ -215,6 +236,31 @@ describe("toolroll password reset", () => {
     expect(facts()).toMatchObject({ resets: 0, sessions: 1 });
   });
 
+  test("one approver and one viewer: a name is required, never the approver by default", async () => {
+    passwordInstall();
+    withStore(store => {
+      const invite = store.mintInvite("viewer", "alex", NOW);
+      expect(store.consumeInviteAndCreateAccount({ tokenValue: invite.token, name: "vic", credentialHash: hashPassword("vic password 1") }, NOW).ok).toBe(true);
+    });
+    const { code, out } = await reset();
+    expect(code).toBe(EXIT.usage);
+    expect(out).toContain("Several people sign in here (alex, vic). Say whose: `toolroll password reset --as <name>`.");
+    expect(facts()).toMatchObject({ resets: 0 });
+    expect((await reset(["--as", "vic"])).out).toContain("Password reset for vic.");
+  });
+
+  test("an identity provider that allows passwords only for instance operators: a viewer's is refused", async () => {
+    passwordInstall();
+    withStore(store => {
+      const invite = store.mintInvite("viewer", "alex", NOW);
+      expect(store.consumeInviteAndCreateAccount({ tokenValue: invite.token, name: "vic", credentialHash: hashPassword("vic password 1") }, NOW).ok).toBe(true);
+    });
+    writeFileSync(join(configDir, "sign-in.json"), JSON.stringify({ issuer: "https://idp.example", clientId: "c", label: "Okta", rules: [], passwords: "operators" }));
+    const { code, out } = await reset(["--as", "vic"]);
+    expect(code).toBe(EXIT.refused);
+    expect(out).toContain("vic signs in with Okta: passwords are only for instance operators here. Nothing changed.");
+  });
+
   test("a password-free owner who never set one is pointed at password set", async () => {
     withStore(store => { if (!initLocalMode(store, { owner: "alex", fenceAvailable: true, now: NOW }).ok) throw Error("local mode"); });
     const { code, out } = await reset();
@@ -224,14 +270,22 @@ describe("toolroll password reset", () => {
 
   test("success: told what ends first, the generation moves, every session ends, the ledger says so, the stale saved file goes", async () => {
     passwordInstall();
+    let minted = "";
+    expect(await runOperate("lead", ["token", "--as", "alex", "--token", OLD, "--json", "--db", file], text => { minted += text; }, { now: NOW })).toBe(EXIT.ok);
+    const leadToken = (JSON.parse(minted) as { token: string }).token;
+    withStore(store => expect(store.leadFor(leadToken)).not.toBeNull());
     const before = facts();
     const asked: string[] = [];
     const { code, out } = await reset([], { terminal: true, askHidden: async question => { asked.push(question); return NEW; } });
     expect(code, out).toBe(EXIT.ok);
     expect(asked).toEqual(["New password: ", "Type it again: "]);
-    expect(out.indexOf("Every place alex is signed in ends")).toBeGreaterThanOrEqual(0);
+    // What ends and what stays, said before the first prompt.
+    expect(out).toContain("This ends alex's browser sessions and remembered passwords, the terminal UI's sign-in, paired chats, phone notifications, lead sessions and lead tokens");
+    expect(out).toContain("It keeps API and MCP tokens (revoke them in Settings → Sessions & tokens) and coordinator credentials (`toolroll coordinator revoke`).");
+    expect(out).toContain("alex's lead token ended: mint a new one with `toolroll lead token`.");
+    withStore(store => expect(store.leadFor(leadToken)).toBeNull());
     expect(out).toContain("Password reset for alex. Every session of alex has ended; sign in with the new password.");
-    expect(out).toContain(`Removed ${savedFile}: it held the old password.`);
+    expect(out).toContain(`Removed ${shownPath(savedFile, homedir(), null) ?? savedFile}: it held the old password.`);
     expect(out).not.toContain(NEW);
     const after = facts();
     expect(after.generation).toBe(before.generation + 1);
@@ -242,8 +296,43 @@ describe("toolroll password reset", () => {
   });
 });
 
+describe("removing the stale saved first password", () => {
+  test("a link anywhere in its path: left alone, and the person is told", async () => {
+    passwordInstall(false);
+    const outside = join(root, "outside"); mkdirSync(outside, { mode: 0o700 });
+    writeFileSync(join(outside, "up-login.txt"), `alex ${OLD}\n`, { mode: 0o600 });
+    symlinkSync(outside, join(configDir, ".toolroll-secrets"));
+    const { code, out } = await reset();
+    expect(code, out).toBe(EXIT.ok);
+    expect(existsSync(join(outside, "up-login.txt"))).toBe(true);
+    expect(out).toContain("isn't a plain file in Toolroll's folder, so it was left alone. If it holds alex's old password, delete it yourself.");
+  });
+
+  test("replaced or rewritten in place between the check and the removal: left, and said to be stale", () => {
+    passwordInstall();
+    // Replaced: another file now holds the name.
+    const replaced = removeStaleSavedLogin(configDir, "alex", NEW, path => { writeFileSync(`${path}.new`, `alex ${OLD}\n`, { mode: 0o600 }); renameSync(`${path}.new`, path); });
+    expect(replaced).toEqual({ removed: [], stale: [savedFile], unchecked: [] });
+    expect(existsSync(savedFile)).toBe(true);
+    // Rewritten in place: the same file (same inode), other contents.
+    const rewritten = removeStaleSavedLogin(configDir, "alex", NEW, path => { writeFileSync(path, `alex ${OLD} changed\n`); });
+    expect(rewritten).toEqual({ removed: [], stale: [savedFile], unchecked: [] });
+    expect(existsSync(savedFile)).toBe(true);
+    // A second name for the file (a hard link): not proved to be only Toolroll's, left unchecked.
+    linkSync(savedFile, join(root, "other-name"));
+    expect(removeStaleSavedLogin(configDir, "alex", NEW)).toEqual({ removed: [], stale: [], unchecked: [savedFile] });
+    rmSync(join(root, "other-name"));
+    // Untouched otherwise: another account's, or the new password's; then the stale one goes.
+    expect(removeStaleSavedLogin(configDir, "bob", NEW)).toEqual({ removed: [], stale: [], unchecked: [] });
+    writeFileSync(savedFile, `alex ${NEW}\n`);
+    expect(removeStaleSavedLogin(configDir, "alex", NEW)).toEqual({ removed: [], stale: [], unchecked: [] });
+    writeFileSync(savedFile, `alex ${OLD}\n`);
+    expect(removeStaleSavedLogin(configDir, "alex", NEW)).toEqual({ removed: [savedFile], stale: [], unchecked: [] });
+  });
+});
+
 describe("over a real console", () => {
-  let server: Server | null = null;
+  let server: Server | DecisionServer | null = null;
   afterEach(async () => { if (server !== null) await new Promise<void>(resolve => server!.close(() => resolve())); server = null; });
 
   test("the footer names the saved file as ~/…, a reset ends the signed-in session, the new password signs in and the footer drops the file", async () => {
@@ -258,6 +347,12 @@ describe("over a real console", () => {
       const footer = await (await fetch(`${base}/login`)).text();
       expect(footer.replace(/<wbr>/g, "")).toContain("~/config/.toolroll-secrets/up-login.txt");
       expect(footer).not.toContain(root);
+      // Through a proxy (another device): the generic words, no path.
+      const proxied = await (await fetch(`${base}/login`, { headers: { "x-forwarded-for": "100.64.0.7" } })).text();
+      expect(proxied).not.toContain("up-login.txt");
+      expect(proxied).toContain("Forgot your password? Run <code class=\"k-nowrap\">toolroll password reset</code> on the computer running Toolroll.");
+      // A one-time sign-in link minted before the reset, not yet used.
+      const unused = (server as DecisionServer).mintSignInLink("alex")!;
       const signed = await signIn(OLD);
       expect(signed.status).toBe(303);
       const cookie = (signed.headers.get("set-cookie") ?? "").split(";")[0]!;
@@ -277,6 +372,15 @@ describe("over a real console", () => {
       expect((await fetch(`${base}/session/forget-password`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: "", redirect: "manual" })).headers.get("location") ?? "").not.toContain("/settings");
       expect((await signIn(OLD)).status).toBe(403);
       expect((await signIn(NEW)).status).toBe(303);
+      // The link minted under the old password signs no one in; one minted now does.
+      const stale = await fetch(`${base}${unused}`, { redirect: "manual" });
+      expect(stale.status).toBe(410);
+      expect(stale.headers.get("set-cookie") ?? "").not.toContain("session=");
+      expect((await fetch(`${base}${(server as DecisionServer).mintSignInLink("alex")!}`, { redirect: "manual" })).status).toBe(303);
+      // An ordinary password change (the existing rotation writer) ends an unused link the same way.
+      const before = (server as DecisionServer).mintSignInLink("alex")!;
+      store.saveApprover("alex", hashPassword("third password 3"), new Date());
+      expect((await fetch(`${base}${before}`, { redirect: "manual" })).status).toBe(410);
       const now = await (await fetch(`${base}/login`)).text();
       expect(now).not.toContain("up-login.txt");
       expect(now).toContain("Forgot your password? Run <code class=\"k-nowrap\">toolroll password reset</code> on the computer running Toolroll.");

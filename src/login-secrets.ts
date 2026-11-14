@@ -152,26 +152,51 @@ export function migrateLegacyLogin(stateDir: string): LoginMigration {
   return { kind: "moved", from, to };
 }
 
+/** What `toolroll password reset` did with the saved first passwords: removed, known stale but left (it changed while
+ * being removed, or couldn't be removed), or left unchecked (not a plain file of this user's inside the state folder). */
+export type StaleLoginCleanup = { removed: string[]; stale: string[]; unchecked: string[] };
+
 /**
  * After `toolroll password reset`: remove each saved first password (the reserved folder's, and an older version's
- * beside the database) that is this account's and no longer its password — it is stale, and a stale file only
- * misleads. Another account's file, a file that holds the new password, a link, anything not this user's own regular
- * file, or one replaced since it was read, stays. Returns the paths removed. Never throws.
+ * beside the database) that is this account's and no longer its password — stale, it only misleads. Removed only when
+ * every part of its path below the state folder is proved, by lstat from the state folder down, to be a real folder or
+ * file of this user's (no link anywhere, one name for the file), and only when the file read just before removal is
+ * the same file (device, inode) with the same bytes as the one judged stale. Anything else is left for the person and
+ * reported: another account's file and one holding the new password are not touched at all. `beforeRemove` (tests)
+ * runs between the judgement and the removal. Never throws.
  */
-export function removeStaleSavedLogin(stateDir: string, account: string, current: string): string[] {
-  const removed: string[] = [];
-  for (const path of [loginFileOf(stateDir), legacyLoginFileOf(stateDir)]) {
+export function removeStaleSavedLogin(stateDir: string, account: string, current: string, beforeRemove?: (path: string) => void): StaleLoginCleanup {
+  const done: StaleLoginCleanup = { removed: [], stale: [], unchecked: [] };
+  const uid = process.getuid?.();
+  /** "absent", "contained" (every part below the state folder proved), or "doubtful". */
+  const proved = (parts: readonly string[]): "absent" | "contained" | "doubtful" => {
+    for (let index = 1; index <= parts.length; index += 1) {
+      let held;
+      try { held = lstatSync(join(stateDir, ...parts.slice(0, index))); } catch { return "absent"; }
+      const last = index === parts.length;
+      if (held.isSymbolicLink() || (uid !== undefined && held.uid !== uid)) return "doubtful";
+      if (last ? !held.isFile() || held.nlink !== 1 : !held.isDirectory()) return "doubtful";
+    }
+    return "contained";
+  };
+  for (const parts of [[SECRETS_DIR, LOGIN_FILE_NAME], [LOGIN_FILE_NAME]] as const) {
+    const path = join(stateDir, ...parts);
+    const first = proved(parts);
+    if (first === "absent") continue;
+    if (first === "doubtful") { done.unchecked.push(path); continue; }
     const held = ownRegularBytes(path, LOGIN_LIMIT);
-    if (held === null) continue;
+    if (held === null) { done.unchecked.push(path); continue; }
     const raw = held.bytes.toString("utf8").trim();
     const cut = raw.indexOf(" ");
     if (cut <= 0 || raw.slice(0, cut) !== account || raw.slice(cut + 1) === current) continue;
+    beforeRemove?.(path);
+    const again = proved(parts) === "contained" ? ownRegularBytes(path, LOGIN_LIMIT) : null;
+    if (again === null || again.dev !== held.dev || again.ino !== held.ino || !again.bytes.equals(held.bytes)) { done.stale.push(path); continue; }
     try {
-      const now = lstatSync(path);
-      if (!now.isFile() || now.dev !== held.dev || now.ino !== held.ino) continue;
       unlinkSync(path);
-      removed.push(path);
-    } catch { /* left for the person */ }
+      fsyncFolder(join(stateDir, ...parts.slice(0, -1)));
+      done.removed.push(path);
+    } catch { done.stale.push(path); }
   }
-  return removed;
+  return done;
 }
