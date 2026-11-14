@@ -68,7 +68,8 @@ export type TuiAct =
   | { readonly kind: "build"; readonly preview: string; readonly digest: string }
   | { readonly kind: "approve"; readonly id: string; readonly digest: string }
   | { readonly kind: "stop"; readonly id: string; readonly runId: number }
-  | { readonly kind: "revise"; readonly id: string; readonly text: string }
+  /** Send back: exactly the build the screen read when b was pressed (the command refuses it once a newer one is current). */
+  | { readonly kind: "revise"; readonly id: string; readonly text: string; readonly runId: number }
   /** Accept: exactly the result the Accept screen read (its build and receipt, pinned when it opened), with the person's
    * explicit yes to their own check, or an exception's reason, when the result owes one. */
   | { readonly kind: "complete"; readonly id: string; readonly runId: number; readonly digest: string; readonly checked: boolean; readonly reason: string | null }

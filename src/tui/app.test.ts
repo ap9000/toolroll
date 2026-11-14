@@ -220,6 +220,27 @@ describe("terminal UI", () => {
       expect(source.acts).toEqual([]);
     });
 
+    it("b pins the build it read before the note is typed, and sends exactly that build back; a task with no result says so", async () => {
+      let reads = 0;
+      const source = scripted({ result: async id => { reads += 1; return id === "t2" ? sample() : null; } });
+      const app = render(createElement(App, { source, session: sampleSession(), pollMs: 20 }));
+      const shows = show(app);
+      await shows("> Sample: upgrade the test runner");
+      await mounted();
+      app.stdin.write("b");
+      await shows("This task has no finished result to send back.");
+      app.stdin.write("j"); app.stdin.write("j");
+      await shows("> Sample: add CSV export");
+      app.stdin.write("b");
+      await shows("What should change?");
+      app.stdin.write("Round the totals");
+      await shows("Round the totals");
+      app.stdin.write("\r");
+      await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "revise", id: "t2", text: "Round the totals", runId: 2 }]));
+      // Read once, when b was pressed (and once for the task with none): never again before it is sent.
+      expect(reads).toBe(2);
+    });
+
     it("an exception asks why: empty or spaces send nothing; the words typed are sent with the pins", async () => {
       const source = scripted({ result: async () => sample({ owed: "exception", requirements: [{ word: "Not shown yet", statement: "A screenshot of the export." }] }) });
       const { app, shows } = await onResult(source);

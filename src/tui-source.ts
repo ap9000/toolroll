@@ -155,7 +155,8 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. It starts next."; break;
         case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
-        case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
+        // Send back: the build the screen read when b was pressed, never the one current when this is sent.
+        case "revise": argv = ["task", "revise", act.id, "--run", String(act.runId), "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
         // The sample project: the command takes nothing from the screen (no folder, no name).
         case "sample": argv = ["welcome", "sample"]; done = "Added the sample project. Press n to write a first task."; break;

@@ -93,7 +93,7 @@ import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
 import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
-import { proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runTaskMergeCommand, runTaskOutcomeCommand } from "./task-outcome-cli.js";
+import { passwordFreeOwner, passwordFreeShell, passwordFreeShellWords, proveTaskBuildsStopped, pullRequestLines, runLocalCompletion, runLocalRevision, runTaskMergeCommand, runTaskOutcomeCommand, type ShellCaller } from "./task-outcome-cli.js";
 import { requestPlanAsLocalOwner, retryAsLocalOwner } from "./local-owner-acts.js";
 import { withTaskAlias } from "./task-aliases.js";
 import { checklistLines, mergeChecklistOf } from "./merge-checklist.js";
@@ -9447,12 +9447,14 @@ function taskAction(
       // Local-owner slice 1: the terminal's local owner accepts on its own road, which never checks a password; chosen
       // only inside its chain, where an owner that no longer stands is refused there, never sent down the road below.
       if (action === "complete" && currentLocalOwner() !== null) return runLocalCompletion(rest, flags, context);
+      // The terminal's Send back, the same way (task-outcome-cli.ts runLocalRevision): its own pinned road, never a password.
+      if (action === "revise" && currentLocalOwner() !== null) return runLocalRevision(rest, flags, context);
       return runTaskOutcomeCommand(action, rest, flags, { ...context, operator: async () => {
         const acting = await askCredentials(flags, context);
         if (acting === null) return null;
         const authenticated = verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
         return authenticated.ok ? authenticated.who : null;
-      } });
+      }, caller: () => shellCallerFacts(context) });
     case "merge":
       return runTaskMergeCommand(rest, flags, { store: context.store, json: context.json, write: context.write, clock: context.clock,
         demo: context.store.isDemo(), credentials: () => askCredentials(flags, context), ...(context.publishExec === undefined ? {} : { exec: context.publishExec }) });
@@ -10204,7 +10206,7 @@ async function acceptTaskProof(
       if (acting === null) return null;
       const authenticated = verifyApproverByPassword(context.store, acting.name, acting.token, context.store.knownRepos().filter(repo => context.store.accountCanAccess(acting.name, repo)));
       return authenticated.ok ? authenticated.who : null;
-    } });
+    }, caller: () => shellCallerFacts(context) });
   }
   const id = positional[0];
   if (id === undefined) return fail(write, json, "task accept", "usage", "`toolroll task accept <id> --despite \"<reason>\" --as <you> --token <t>`", EXIT.usage);
@@ -11085,6 +11087,10 @@ async function approveTask(
   const { store, write, json, now } = context;
   const id = positional[0];
   if (id === undefined) return fail(write, json, "task approve", "usage", "which task?", EXIT.usage);
+  // A password-free owner has no password to approve with from a shell: refused before the plan prints or anything
+  // asks for a username or password (the eight plan, F-lite), with why and the terminal UI's key. Words only: the
+  // approval below would refuse it anyway.
+  if (passwordFreeShell(store)) return fail(write, json, "task approve", "local-owner", passwordFreeShellWords("a", shellCallerFacts(context)), EXIT.refused);
 
   const scope = store.getScope(id);
   if (scope === null) return fail(write, json, "task approve", "no-scope", `${id} has no scope to approve — write one first`, EXIT.refused);
@@ -11266,7 +11272,7 @@ async function proposalsCommand(positional: readonly string[], flags: Map<string
   if (!outcome.ok) return fail(write, json, "proposals confirm", outcome.reason, outcome.reason === "needs-confirm" ? `${outcome.said} — read the consequences above, then pass --yes` : outcome.said, EXIT.refused);
   return succeed(write, json, "proposals confirm", { proposal: id, kind: outcome.kind, said: outcome.said, ...(outcome.taskId === null ? {} : { task: outcome.taskId }) }, () => [
     outcome.said,
-    ...(outcome.kind === "scope" && outcome.taskId !== null ? [`approve it with your password: toolroll task approve ${outcome.taskId}`] : []),
+    ...(outcome.kind === "scope" && outcome.taskId !== null ? [passwordFreeOwner(store) ? `approve it in \`toolroll\`: press a on ${outcome.taskId}` : `approve it with your password: toolroll task approve ${outcome.taskId}`] : []),
   ]);
 }
 
@@ -14004,6 +14010,8 @@ async function stopCommand(positional: readonly string[], flags: Map<string, str
 /** Tests: a person at a terminal, the easy start's seams, the agents' sign-in check, and the prompts. */
 export type EasyCommandSeams = {
   terminal?: boolean;
+  /** Whether a coding agent runs this command (tests; otherwise read from this process). */
+  agent?: boolean;
   seams?: Partial<import("./easy-start.js").EasyStartSeams>;
   check?: import("./provider-connection.js").ConnectionChecker;
   ask?: (question: string) => Promise<string>;
@@ -14337,7 +14345,7 @@ async function keepGrownCommand(positional: readonly string[], flags: Map<string
   if (acting === null || !verified?.ok) return refuseApprover(context, "task keep", verified, "keeping a change takes `--as <you> --token <t>`", id);
   const kept = keepGrownChange(store, id, clock());
   if (!kept.ok) return fail(write, json, "task keep", "refused", kept.message, EXIT.refused);
-  return succeed(write, json, "task keep", { id, digest: kept.digest }, () => [`Its plan now names the exact commit. Approve it with \`toolroll task approve ${id}\`.`]);
+  return succeed(write, json, "task keep", { id, digest: kept.digest }, () => [`Its plan now names the exact commit. ${passwordFreeOwner(store) ? "Approve it in `toolroll`: press a on the task." : `Approve it with \`toolroll task approve ${id}\`.`}`]);
 }
 
 /** One resume at a time per process; a release's own steps can take many minutes. */
@@ -14947,4 +14955,14 @@ async function welcomeSampleCommand(positional: readonly string[], flags: Map<st
     added.added ? `Added the sample project: ${added.repo}` : `The sample project is already added: ${added.repo}`,
     "Next: write a first task. Run `toolroll` and press n.",
   ]);
+}
+
+/** A shell command's own caller facts, for a password-free owner's refusal words (the eight plan, F-lite): its test
+ * seams, else this process's terminal and environment. Words only: it decides what a refusal says, never what is allowed. */
+function shellCallerFacts(context: Context): ShellCaller {
+  return {
+    json: context.json,
+    agent: context.easySeams?.agent ?? underAgent(process.env),
+    terminal: context.easySeams?.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true),
+  };
 }

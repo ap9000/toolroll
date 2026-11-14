@@ -2240,9 +2240,24 @@ const LOCAL_RETRY_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
   imported: "A task from outside needs your password to retry.",
 };
 
+/** What a local owner hears when a result isn't one it may send back without a password (the eight plan, F-lite). */
+const LOCAL_REVISE_WORDS: Readonly<Record<LocalApprovalRefusal, string>> = {
+  "local-mode-off": "Local mode is off, so sending this result back needs your password.",
+  "not-owner": "Only this computer's owner sends results back here without a password.",
+  "no-scope": "This task has no plan, so sending its result back needs your password.",
+  release: "Sending a release back needs your password.",
+  protected: "This result is protected work, so sending it back needs your password.",
+  escalated: "Work with wider permissions needs your password to send back.",
+  coordinator: "Work a coordinator filed needs your password to send back.",
+  unsandboxed: "This project's checks run without a sandbox, so sending back needs your password.",
+  // Not a send-back refusal (it keeps completion's rule); the type needs words for it.
+  imported: "A task from outside needs your password to send back.",
+};
+
 /** The act a local owner's work rule is read for: approving a plan, or completing (accepting) a result whose build
- * changed `changed` (the build's own diff; null when it can't be read, which counts as protected). */
-export type LocalWorkPurpose = { act: "approve" } | { act: "complete"; changed: readonly string[] | null } | { act: "plan" } | { act: "retry" };
+ * changed `changed` (the build's own diff; null when it can't be read, which counts as protected). Sending a result back
+ * (`revise`) is read exactly as completing it is. */
+export type LocalWorkPurpose = { act: "approve" } | { act: "complete" | "revise"; changed: readonly string[] | null } | { act: "plan" } | { act: "retry" };
 
 /**
  * Whether the local owner may do this act on this task without a password: ONE rule (easy-start C5, split out for
@@ -2254,10 +2269,12 @@ export type LocalWorkPurpose = { act: "approve" } | { act: "complete"; changed: 
  * Asking for a plan (local-owner slice 2) reads approve's rule for a task that may have no scope yet (no declared paths
  * count as protected; the task's own permission mode counts as escalated), the release records too, and also refuses a
  * task from outside (an imported issue): a new act, so no existing act changes. Retrying (slice 3) is approve's rule
- * exactly (work the owner could approve again now), plus the release records and a task from outside.
+ * exactly (work the owner could approve again now), plus the release records and a task from outside. Sending a result
+ * back (the terminal's send back) is completion's rule exactly, in its own words.
  */
 export function localWorkEligible(store: Store, by: string, taskId: string, purpose: LocalWorkPurpose): { ok: true } | { ok: false; reason: LocalApprovalRefusal; message: string } {
-  const words = purpose.act === "approve" ? LOCAL_APPROVAL_WORDS : purpose.act === "complete" ? LOCAL_COMPLETION_WORDS : purpose.act === "plan" ? LOCAL_PLAN_WORDS : LOCAL_RETRY_WORDS;
+  const words = purpose.act === "approve" ? LOCAL_APPROVAL_WORDS : purpose.act === "complete" ? LOCAL_COMPLETION_WORDS : purpose.act === "revise" ? LOCAL_REVISE_WORDS
+    : purpose.act === "plan" ? LOCAL_PLAN_WORDS : LOCAL_RETRY_WORDS;
   const no = (reason: LocalApprovalRefusal) => ({ ok: false as const, reason, message: words[reason] });
   if (!localModeOn(store)) return no("local-mode-off");
   const owner = store.handle.prepare("SELECT owner FROM local_mode WHERE id = 1").get()?.["owner"];
@@ -2286,7 +2303,7 @@ export function localWorkEligible(store: Store, by: string, taskId: string, purp
   }
   if (ref === undefined || ref["coordinator_cid"] != null) return no("coordinator");
   // What the build may do was agreed at its approval; a result already built is judged by what it is and changed.
-  if (purpose.act === "complete") return { ok: true };
+  if (purpose.act === "complete" || purpose.act === "revise") return { ok: true };
   // Asking for a plan (a new act, so no behaviour changes): never a task from outside (a GitHub import, or a revision of one).
   if ((purpose.act === "plan" || purpose.act === "retry") && issueImported(store, taskId)) return no("imported");
   // The stored level, never the launch cap: a project saved as unsandboxed is refused even though local mode confines it.
