@@ -581,7 +581,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     // The source result itself: the exact run's checks, never the latest run by guess.
     script.updates.push([textUpdate(nextUpdate++, "/task payout")]);
     expect(await pass()).toMatchObject({ ok: true, report: { statusReplies: 1 } });
-    expect(urlButtons(script.sends().at(-1))).toEqual([["Open changes", `https://console.example/chat?task=payout&result=${run}&tab=changes`]]);
+    expect(urlButtons(script.sends().at(-1))).toEqual([["Open changes", `https://console.example/t/payout?tab=result&run=${run}&section=changes`]]);
   });
 
   test("the same journey under a signed automatic-approval mode: the phone's revision is approved under that policy and runs unattended; nothing asks for a password", async () => {
@@ -2059,7 +2059,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
       expect(toolResult("get_acceptance_evidence")).toMatchObject({ status: "You check the remaining requirements", run, accepted: false, criteria: [{ requirement: "Inspect the phone layout", reviewer: { judgement: "upholds" } }] });
       expect(script.documents()).toHaveLength(2);
-      expect(urlButtons(script.sends().at(-1))).toEqual([["Inspect result", `https://console.example/review?result=payout&run=${run}&tab=checks`]]);
+      expect(urlButtons(script.sends().at(-1))).toEqual([["Inspect result", `https://console.example/t/payout?tab=result&run=${run}&section=checks#result-decision`]]);
       expect(store.proofAcceptance(run)).toBeNull();
       expect(store.getTask("payout")?.state).toBe("done");
     });
@@ -2236,7 +2236,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
         ["image", "sent", "102", 1, 0, null],
       ]);
       expect(script.texts()).toEqual(["Two screenshots follow.", `payout · result #${run} · screenshot 1 of 2 was not sent: the saved file is missing or changed. Open the result to view it.`]);
-      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/chat?task=payout&result=${run}`]]);
+      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/t/payout?tab=result&run=${run}`]]);
       expect(script.documents()).toHaveLength(1);
       expect(script.documents()[0]!.upload!.bytes.equals(JPEG)).toBe(true);
       expect(row()).toMatchObject({ state: "done", outcome: "replayed" });
@@ -2381,7 +2381,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       ]);
       expect(script.texts()).toEqual(["One screenshot follows.", `payout · result #${run} · screenshot 1 of 1 was not sent: the saved file is missing or changed. Open the result to view it.`]);
       expect(script.sends().at(-1)!.params["reply_parameters"]).toEqual({ message_id: Number(row().messageId) });
-      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/chat?task=payout&result=${run}`]]);
+      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/t/payout?tab=result&run=${run}`]]);
       expect(script.documents()).toHaveLength(0);
       expect(row()).toMatchObject({ state: "done", outcome: "replayed" });
       expect(requests).toHaveLength(2);
@@ -2441,7 +2441,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(parts().map(one => [one.kind, one.state, one.taskId, one.run])).toEqual([["reply", "sent", null, null], ["image", "dropped", "payout", run], ["image", "sent", "payout", run]]);
       // The exact identity still binds a reply to the image, and the console link still names the exact task.
       expect(store.telegramMessageBindings(binding(), String(script.documents()[0]!.messageId))).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo, image: { run, artifact: second, sha256: createHash("sha256").update(JPEG).digest("hex") } }]);
-      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/chat?task=payout&result=${run}`]]);
+      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/t/payout?tab=result&run=${run}`]]);
       expect(requests).toHaveLength(2);
       expect(turns()).toBe(1);
     });

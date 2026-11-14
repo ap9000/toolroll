@@ -2,8 +2,8 @@
   "about": "Ceilings for scripts/click-paths-journey.mjs: clicks, fields typed into, full document loads and ceremony loads (a page with a password field, or a ceremony route in test/destinations.json) per job, from Home on the demo at 1440x900. A run over any number fails. A change that shortens a path lowers its numbers here in the same change (--write-ceilings rewrites them from a run); raising one needs a line in the pull request saying why.",
   "flows": {
     "approve-plan": {"clicks":1,"typed":0,"loads":0,"ceremonyLoads":0},
-    "review-accept": {"clicks":3,"typed":0,"loads":2,"ceremonyLoads":0},
-    "send-back": {"clicks":4,"typed":1,"loads":2,"ceremonyLoads":0},
+    "review-accept": {"clicks":3,"typed":0,"loads":1,"ceremonyLoads":0},
+    "send-back": {"clicks":4,"typed":1,"loads":1,"ceremonyLoads":0},
     "watch-running": {"clicks":3,"typed":0,"loads":0,"ceremonyLoads":0},
     "start-task": {"clicks":2,"typed":1,"loads":2,"ceremonyLoads":0},
     "add-project": {"clicks":3,"typed":1,"loads":1,"ceremonyLoads":0},

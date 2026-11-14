@@ -55,6 +55,7 @@ import { TEXT_LIMITS } from "../text-limits.js";
 import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,whenTime } from "./chrome.js";
 import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
+import { taskLinkFromLegacy,taskLinkOf } from "../task-link.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
 import { completionReceiptCard, type CompletionReceiptView, criterionMatrixHtml, type EvidenceLinkMap, evidenceWords, homePhaseWords, incidentWords, pullRequestCardHtml, reasonWords, receiptStatusOf, repairChainHtml, reportItemsHtml, reviewRetryPanel, runNoun, runOutcomeBadge, semanticCoverageHtml, type TaskPullRequest, verificationExplanation, verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
@@ -1579,6 +1580,8 @@ export function revisionLineageHtml(lineage: RevisionLineage | null): Html {
 export function taskBodyParts(data: {
   /** Until the first Ready result: show the task's way there (onboarding). */
   guide?: boolean;
+  /** The selected result's section (task-views.ts), placed under the outcome when the page leads with it. */
+  resultSection?: Html | null;
   /** What the last attempt missed and what to change, shown when the task failed. */
   failure?: FailureExplanation | null;
   /** Run checks in place, for a status row that offers it. */
@@ -1778,7 +1781,7 @@ export function taskBodyParts(data: {
   cancelDraft?: string;
   problem: string | null;
   now: Date;
-}): { html: Html; view: BrowserTaskView } {
+}): { html: Html; view: BrowserTaskView; bare?: Html } {
   const { task, scope } = data;
   const stopControlsActive = data.control !== undefined && ["stopping", "paused", "review-stopped"].includes(data.control.kind);
   // The result's shared status (workspace package 1): the same projection
@@ -2494,7 +2497,7 @@ export function taskBodyParts(data: {
       : data.approvalRules.words] });
   }
   // v103: everything an auditor asks about this task, printable or as JSON.
-  facts.push({ label: "Audit", parts: [{ label: "Audit record", href: `${taskHref(task.id)}/evidence` }] });
+  facts.push({ label: "Audit", parts: [{ label: "Audit record", href: taskLinkOf({ task: task.id, record: true }) }] });
   if (data.budgetHold != null) facts.push({ label: "Budget", parts: [`${data.budgetHold} · `, { label: "Spend", href: "/spend" }] });
   if (data.policyHold != null) facts.push({ label: "Policy", parts: [`${data.policyHold} · `, { label: "Policy", href: "/settings/policy" }] });
   // The pull-request card already says this once, with its action.
@@ -3003,11 +3006,8 @@ export function taskBodyParts(data: {
     ? { action: `${taskHref(task.id)}/requeue`, pins: data.retryPins ?? null, ...(data.failure == null ? {} : { note: retryNoteOf(data.failure.suggestion) }) } : null;
   // Run checks happens in place: a status row's Run checks posts here and comes back; with nothing to run, the row offers nothing.
   const runChecks = data.runChecks ?? null;
-  // A row's link to a result in Chat opens that result's own page instead: Chat would only lead back here.
-  const resultPageOf = (href: string | null): string | null => {
-    const chat = href === null ? null : /^\/chat\?task=([A-Za-z0-9._~%-]{1,200})&result=([0-9]{1,15})(?:&tab=(changes|checks))?(#[A-Za-z0-9_-]{1,80})?$/.exec(href);
-    return chat === null ? href : `/review?result=${chat[1]}&run=${chat[2]}${chat[3] === undefined ? "" : `&tab=${chat[3]}`}${chat[4] ?? ""}`;
-  };
+  // A row's link to a result opens the one result view, this task's Result section (task-link.ts): Chat would only lead back here.
+  const resultPageOf = (href: string | null): string | null => href === null ? null : taskLinkFromLegacy(href) ?? href;
   const inPlaceChecks = (card: AssignmentCard): AssignmentCard => {
     const status = data.demo === true ? demoChecksOf(card.status) : card.status;
     return { ...card, status: { ...status, details: status.details.map(one =>
@@ -3118,7 +3118,7 @@ export function taskBodyParts(data: {
     approve: data.archived != null || sheetInput === null || dependencyChoiceNeeded || data.csrf === "" ? null : approveKitOf(sheetInput, data.approvalFresh ?? null),
     approved: scope !== null && approval.approved ? approvedKitOf(scope, approval, data.approvalProof ?? null) : null,
     more,
-    audit: facts.some(one => one.label === "Audit") ? { label: "Full record", href: `${taskHref(rootOf)}/evidence` } : null,
+    audit: facts.some(one => one.label === "Audit") ? { label: "Full record", href: taskLinkOf({ task: rootOf, record: true }) } : null,
     recheckStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "recheck-stopped" && data.assignment.primaryAction.target.runId !== null
       ? { action: `${taskHref(data.assignment.rootId)}/recheck-stopped`, run: data.assignment.primaryAction.target.runId } : null,
     rebuild,
@@ -3173,20 +3173,34 @@ export function taskBodyParts(data: {
   };
   // Without script the steps are the page too: every row open, in order, each holding its own part.
   const rowFacts = data.archived != null ? null : stepRowsOf(view);
-  const rowsHtml = rowFacts === null ? null : (() => {
+  // `section`: the selected result's section, composed under the outcome when the page leads with it (the no-script
+  // page in the app's order: status, result, then the steps folded). Null: the page appends it itself.
+  let composed = false;
+  const rowsHtmlOf = (section: Html | null): Html | null => rowFacts === null ? null : (() => {
     const here = rowFacts.find(row => row.state === "current" || row.state === "stuck") ?? rowFacts.find(row => row.open) ?? rowFacts.at(-1)!;
+    // Outcome first (one-workspace plan S1), as the app does: a result waiting on review, or a finished task, says its
+    // status before the steps that got it there.
+    const ready = rowFacts.find(row => row.key === "ready");
+    const outcomeFirst = view.approve == null && view.status !== null && ready !== undefined
+      && (ready.state === "current" || ready.state === "stuck" || rowFacts.every(row => row.state === "done" || row.state === "skipped"));
     const bodyOf = (key: StepRow["key"]): Html => joinHtml([
-      key === here.key ? statusHtml : "",
+      key === here.key && !outcomeFirst ? statusHtml : "",
       key === "plan" ? planCard : "",
       // The shared approval sheet, its Plan details open here: nothing the yes agrees to is folded on this page.
       key === "approve" ? (approvalHtml !== "" ? approvalHtml : view.approved == null ? "" : html`<p class="meta">${view.approved.automatic ? `Approved automatically by ${view.approved.rule ?? "a rule"}` : `Approved by ${view.approved.by}`} · ${whenTime(view.approved.at)}</p>`) : "",
       key === "build" ? joinHtml([controlHtml, progressCard, revisionLedgerCard]) : "",
       key === "ready" && previousResult !== null ? html`<section class="task-previous-result" aria-label="${previousResult.title}">${previousResult.html}</section>` : "",
     ]);
-    return stepRows(rowFacts.map(row => ({ key: row.key, label: row.label, mark: row.mark, sentence: row.sentence, needsYou: row.needsYou, current: row.state === "current" || row.state === "stuck",
+    const rows = stepRows(rowFacts.map(row => ({ key: row.key, label: row.label, mark: row.mark, sentence: row.sentence, needsYou: row.needsYou, current: row.state === "current" || row.state === "stuck",
       at: row.at, when: row.at === null ? "" : whenText(row.at), body: bodyOf(row.key), open: true })));
+    if (!outcomeFirst) return rows;
+    if (section !== null) composed = true;
+    return joinHtml([html`<div class="task-outcome" data-task-outcome>${statusHtml}${section ?? ""}</div>`,
+      html`<details class="k-disclose task-steps" data-task-steps><summary>Plan and steps</summary>${rows}</details>`]);
   })();
-  return { html: nativeBody(rowsHtml), view };
+  const withResult = nativeBody(rowsHtmlOf(data.resultSection ?? null));
+  // Composed in: the page string the app takes (`bare`) leaves the result out, as it always has (the view carries it).
+  return { html: withResult, view, ...(composed ? { bare: nativeBody(rowsHtmlOf(null)) } : {}) };
 }
 
 export function taskBody(data: Parameters<typeof taskBodyParts>[0]): Html {
@@ -3201,11 +3215,12 @@ export function taskPage(chrome: Chrome, data: Parameters<typeof taskBody>[0]): 
   // page re-renders degraded — no poller, static attempt line, link-only
   // decisions — and ships no functional script at all.
   const first = taskBodyParts(data);
+  // The task's own body decides (a composed result section is judged where it always was, by the page's sender).
   const sensitive =
-    SENSITIVE_INPUT.test(htmlString(first.html)) || (chrome.listPane !== undefined && SENSITIVE_INPUT.test(htmlString(chrome.listPane)));
+    SENSITIVE_INPUT.test(htmlString(first.bare ?? first.html)) || (chrome.listPane !== undefined && SENSITIVE_INPUT.test(htmlString(chrome.listPane)));
   if (sensitive) {
     const degraded = taskBodyParts({ ...data, degraded: "sensitive" });
-    return screen(`task \u00b7 ${data.task.id}`, degraded.html, { chrome, workspace: { view: degraded.view } });
+    return screen(`task \u00b7 ${data.task.id}`, degraded.html, { chrome, workspace: { view: degraded.view, ...(degraded.bare === undefined ? {} : { pageHtml: degraded.bare }) } });
   }
   const liveRunId = data.liveRunId ?? null;
   const liveRun = liveRunId === null ? undefined : data.runs.find(one => one.id === liveRunId);
@@ -3221,7 +3236,8 @@ export function taskPage(chrome: Chrome, data: Parameters<typeof taskBody>[0]): 
   if (answers) app.push({ kind: "answer" });
   return screen(`task \u00b7 ${data.task.id}`, first.html, {
     chrome,
-    workspace: { view: first.view },
+    // A composed result: the app's page string is the body without it (the view carries the result).
+    workspace: { view: first.view, ...(first.bare === undefined ? {} : { pageHtml: first.bare }) },
     ...(script === "" ? {} : { functional: { script, fetches: true, app } }),
   });
 }

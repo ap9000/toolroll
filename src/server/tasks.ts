@@ -45,7 +45,7 @@ import { closeFinding, familyInWebReach, familyRootOf, getFinding, NOT_ON_TASK, 
 import { labelProviderCapture, providerCapture } from "../provider-capture.js";
 import { fastStartBuild, keepGrownChange, prepareFastStart, type PasswordFacts } from "../fast-start.js";
 import { evidencePack } from "../evidence-pack.js";
-import { decisionPage, evidenceRecordPage, runPage } from "./render-history.js";
+import { decisionPage, evidenceRecordPage, evidenceRecordSection, runPage } from "./render-history.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
 import { computeGaps } from "../gaps.js";
 import { limitsView } from "../limits-ui.js";
@@ -109,8 +109,9 @@ import type { HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
-import { retiredRedirect } from "./retired-routes.js";
+import { retiredRedirect, TASK_VIEW_REDIRECTS } from "./retired-routes.js";
 import { answersInPlace,chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
+import { taskLinkOf } from "../task-link.js";
 import { putAwayPage,boardBody,boardWorkers,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { timingFor } from "../latency-timeline.js";
@@ -365,6 +366,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (expectedRun !== null && (!/^[1-9]\d*$/.test(expectedRun) || selectedRow?.runId !== Number(expectedRun))) {
       return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This acceptance link no longer matches the current result. Review the current task before accepting.</p><p class="refusal-back"><a class="button-link" href="/tasks?view=ready">Review results</a></p>`, { chrome: chromeFor(project, "runs") }));
     }
+    // One result view (one-workspace plan S1): a result this address shows lives on its task page now, at exactly the
+    // run, section and feedback the address named (task-link.ts). The refusals above stay this address's own: a stale
+    // run is still "Result changed", an unseen one still not found. The task page admits the person again itself.
+    const resultHome = wantedId !== null && chosen !== null ? TASK_VIEW_REDIRECTS.review(url) : null;
+    if (resultHome !== null) return redirect(response, resultHome);
     const selected = picked !== null ? picked.selected : selectedRow === null ? null : reviewCockpitViewOf(selectedRow, who, now);
     // Opening a run's own result page is viewing it: the shell says so with a keyed POST /agents/seen (easy-start N1:
     // a page load never writes), which leaves this person's unread Done once the run has finished.
@@ -480,24 +486,48 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // revision becoming current. A run of no version of this family is no result of it.
     const owner = named === null || version !== null ? null : (() => { const ref = store.getRun(named)?.taskRef; const id = ref === undefined ? null : store.externalIdFor(ref); return id !== null && family.versions.some(one => one.id === id) ? id : null; })();
     const shown = version ?? owner ?? family.current.id;
-    const picked = selectResultFor(shown, named, ctx.project, who, ctx.now);
-    if (named !== null && picked.chosen?.runId !== named) return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));
+    // A task's results are read in the task's own project (as its old result page read them, serve.ts): the task was
+    // admitted above, and viewing it never changes the session's project.
+    const readProject = (() => { const repo = store.lookupRef(shown)?.repo ?? null; return repo !== null && visible(repo) ? repo : ctx.project; })();
+    const picked = selectResultFor(shown, named, readProject, who, ctx.now);
+    if (named !== null && picked.chosen?.runId !== named) {
+      // A result of this very task that is no longer the one shown here (a newer one replaced it): the same "Result
+      // changed" the old result page said, with the way to the current one. Anything else is no result of it.
+      const ran = store.getRun(named);
+      const ours = ran !== null && runVisible(ran) && family.versions.some(one => one.refId === ran.taskRef) && runIsTaskResult(ran);
+      if (ours) return sendScreen(response, 409, screen("Result changed", html`<h1>Result changed</h1><p>This link no longer matches the current result. Review the current result before accepting.</p><p class="refusal-back"><a class="button-link" href="${taskLinkOf({ task: family.root.id, result: true })}">Open the current result</a></p>`, { chrome: chromeFor(family.root.repo, "tasks") }));
+      return refuse(response, who, 404, "No such result for this task.", taskHref(family.root.id));
+    }
     const base = `${taskHref(family.root.id)}?${shown !== family.current.id ? `version=${encodeURIComponent(shown)}&` : ""}tab=result`;
     const csrf = who.via === "cookie" ? who.session.csrf : "";
     const result = picked.selected === null ? null : (() => {
-      const parts = reviewCockpitDetailParts(picked.selected, csrf, url.searchParams.get("noted") !== null, who.via === "cookie" && who.role === "approver",
-        parseResultTab(url.searchParams.get("section")), who.name, { kind: "task", base });
       // Current: the result the task itself would show (its latest), however the address named it — the header then
       // owns its status and ceremonies, so no form is ever on the page twice.
-      const latest = named === null ? picked.chosen?.runId ?? null : selectResultFor(shown, null, ctx.project, who, ctx.now).chosen?.runId ?? null;
-      return { html: parts.html, selected: parts.selected, current: shown === family.current.id && latest !== null && latest === picked.chosen?.runId };
+      const latest = named === null ? picked.chosen?.runId ?? null : selectResultFor(shown, null, readProject, who, ctx.now).chosen?.runId ?? null;
+      // (A result with no run, a task done by hand, is current when it is the version's own.)
+      const current = shown === family.current.id && (picked.chosen?.runId ?? null) === latest;
+      // An earlier result is its own page, with no task header: its document says its own status (a failed one, Failed).
+      const parts = reviewCockpitDetailParts(picked.selected, csrf, url.searchParams.get("noted") !== null, who.via === "cookie" && who.role === "approver",
+        parseResultTab(url.searchParams.get("section")), who.name, { kind: "task", base, alone: !current });
+      // What this person's last post from the result was refused for, said on it (the old result page's `refused=`).
+      const refusedCode = url.searchParams.get("refused") ?? "";
+      const refusal = Object.hasOwn(RESULT_REFUSALS, refusedCode) ? RESULT_REFUSALS[refusedCode]! : null;
+      return { html: refusal === null ? parts.html : html`<p class="problem" data-result-refusal>${refusal}</p>${parts.html}`,
+        selected: refusal === null ? parts.selected : { ...parts.selected, problem: refusal },
+        current };
     })();
+    // The task's Record section (`?tab=record`, which /t/:id/evidence now opens): read only when asked for.
+    const record = url.searchParams.get("tab") === "record" ? (() => {
+      const access = workAccess();
+      const pack = evidencePack(store, family.root.id, access, who.name, ctx.now, evidenceRoot);
+      return pack === null ? null : evidenceRecordSection(pack);
+    })() : null;
     // The attempts the picker offers: exactly the runs this page would show for their version (the same rule as above).
     const admissible = new Set(family.versions.flatMap(one => {
       const ref = store.lookupRef(one.id);
-      return ref === null ? [] : store.runsFor(ref.id).filter(run => resultRunAdmissible(one.id, run, ctx.project)).map(run => run.id);
+      return ref === null ? [] : store.runsFor(ref.id).filter(run => resultRunAdmissible(one.id, run, readProject)).map(run => run.id);
     }));
-    return taskScreen(response, who, shown, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan", { tab, result, admissible });
+    return taskScreen(response, who, shown, null, 200, undefined, undefined, url.searchParams.get("edit") === "plan", { tab, result, admissible, record });
   }
 
   // v103: a task's evidence pack, as a printable page or JSON (the whole family, sealed ledger entries included).
@@ -509,6 +539,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const family = store.taskFamilyOf(evidence.taskId, access.repos, access.includeUnplaced);
     if (family === null || !visible(family.root.repo)) return refuse(response, who, 404, "no such task", "/tasks");
     if (evidence.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}/evidence${url.search}`);
+    // The record reads on the task page now, as its Record section (one-workspace plan S1); the download and the
+    // printable page keep their addresses here.
+    const recordHome = TASK_VIEW_REDIRECTS["task.evidence"](url, family.root.id);
+    if (recordHome !== null) return redirectGet(response, recordHome);
     const pack = evidencePack(store, family.root.id, access, who.name, now, evidenceRoot);
     if (pack === null) return refuse(response, who, 404, "no such task", "/tasks");
     if (url.searchParams.get("format") === "json") {
@@ -630,15 +664,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // One result page (2026-10-02): a builder's finished result opens on
     // its task's result page, titled with the task. The raw run record
     // waits there under Details, and here with ?record=1.
-    if (url.searchParams.get("record") === null && !running && found.role === "builder" && (found.outcome === "built" || found.outcome === "no-change") &&
+    // The same conditions as ever decide it; where it lands is the one result view, the task page at this run.
+    const resultHome = TASK_VIEW_REDIRECTS["run.page"](url, taskId, found.id);
+    if (resultHome !== null && !running && found.role === "builder" && (found.outcome === "built" || found.outcome === "no-change") &&
         completedRowFor(taskId, null)?.runId === found.id) {
-      const tab = parseResultTab(url.searchParams.get("tab"));
-      return redirect(response, `${reviewHref(taskId, found.id)}${tab === "summary" ? "" : `&tab=${tab}`}`);
+      return redirect(response, resultHome);
     }
     // A build that failed or stopped opens on its own result page too: its changes, its checks and what went wrong.
-    if (url.searchParams.get("record") === null && !running && (found.role === "builder" || found.role === "scout") && attemptRowFor(taskId, found.id, null) !== null) {
-      const tab = parseResultTab(url.searchParams.get("tab"));
-      return redirect(response, `${reviewHref(taskId, found.id)}${tab === "summary" ? "" : `&tab=${tab}`}`);
+    if (resultHome !== null && !running && (found.role === "builder" || found.role === "scout") && attemptRowFor(taskId, found.id, null) !== null) {
+      return redirect(response, resultHome);
     }
     // Pollers exist only for a LIVE run — an orphaned null-outcome run
     // would otherwise be refetched forever (finding 15). The nonce is
@@ -1405,7 +1439,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const asked = requestFollowUpChecks(store, { runId: id, level, actor: who.name }, now);
       if (!asked.ok) return refuse(response, who, 409, asked.message, back);
       // Back where it was asked: the task page's status row says the checks are running; a result page shows them under #follow-ups.
-      return redirect(response, back.startsWith("/t/") ? back : `${back.split("#")[0]}#follow-ups`);
+      // The task page's Result section is the one result view: there too, under #follow-ups.
+      return redirect(response, back.startsWith("/t/") && !/[?&]tab=result(?:[&#]|$)/.test(back) ? back : `${back.split("#")[0]}#follow-ups`);
     }
     const filed = fileAddTestsTask(store, evidenceRoot, { runId: id, actor: who.name, filedVia: "console", ...(admissionList() === null ? {} : { admittedRepos: admissionList()! }) }, now);
     if (!filed.ok) return refuse(response, who, 409, filed.message, back);
@@ -2383,7 +2418,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (note === null && store.getTask(taskId)?.state === "failed") {
           // Posted from the result page: back there, where the reason field is, with the refusal said on it.
           const back = body.get("return") === null ? null : safeReturn(body.get("return"));
-          if (back !== null && back.startsWith("/review?")) return redirect(response, withRefusal(back, "reason"));
+          if (back !== null && (back.startsWith("/review?") || /^\/t\/[^/?#]+\?(?:[^#]*&)?tab=result(?:[&#]|$)/.test(back))) return redirect(response, withRefusal(back, "reason"));
           return taskScreen(response, who, taskId, ACCEPT_ANYWAY_NEEDS_REASON, 400);
         }
         store.acceptProof(latest.id, verifiedAuthor(who.name), note, now);

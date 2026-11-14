@@ -110,6 +110,10 @@ test("each of Home's counts equals the list its link opens (Queued included), on
     expect(home.groups.map(one => one.label)).toEqual(home.groups.map(one => ({ release: "Approve a release", approve: "Approve a plan", answer: "Answer a question", flow: "Flow decisions", wrong: "Something went wrong", review: "Review results", setup: "Finish setting up", other: "Needs you" })[one.key]));
     // The tasks' groups add up to the figure; a flow card or a setup step is never a task.
     expect(home.groups.filter(one => one.key !== "flow" && one.key !== "setup").reduce((sum, one) => sum + one.count, 0)).toBe(home.counts[0]!.value);
+    // A result to review opens the one result view (task-link.ts): its task page at that exact run, never the old page.
+    const reviews = home.groups.find(one => one.key === "review")?.rows ?? [];
+    expect(reviews.length).toBeGreaterThan(0);
+    for (const row of reviews) expect(row.action?.href, row.id).toMatch(/^\/t\/[^?#]+\?tab=result&run=[1-9][0-9]*$/);
     const labels: Record<string, string> = { needs: "Needs you", running: "Running", queued: "Queued", finished: "Finished" };
     for (const count of home.counts) {
       const list = (await read(count.href)).view as BrowserTasksView;

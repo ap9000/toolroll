@@ -834,6 +834,58 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(leads).toMatchObject([{ state: 'done', lines: ['All 24 tests passed.'] }]);
   });
 
+  test('fluid pages 1b: a frames reader hears where the conversation stands before `synced` (none running, running, just finished); a plain reader is unchanged', async () => {
+    store.setChatConfig({ provider: 'claude-subscription', model: 'default', dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, 'alex', T0);
+    const cookie = await login(), csrf = csrfFrom(await page(cookie));
+    if (store.activeLeadSession('alex') === null) expect((await post(cookie, '/chat/mate/mint', { csrf, token: approverToken })).status).toBe(303);
+    const session = String(store.activeLeadSession('alex')!.id);
+    /** A frames stream's events until `synced` (or the wait runs out), then closed. */
+    const framesUntilSynced = async (room: string, framed = true) => {
+      const controller = new AbortController();
+      const response = await fetch(url(`/live?room=${encodeURIComponent(room)}`), { headers: { cookie, ...(framed ? { 'x-toolroll-live': '1' } : {}) }, signal: controller.signal });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader(), decoder = new TextDecoder();
+      const events: { event: string; data: Record<string, unknown> }[] = [];
+      let buffer = '';
+      const deadline = Date.now() + (framed ? 3_000 : 400);
+      while (!events.some(one => one.event === 'synced') && Date.now() < deadline) {
+        const next = await Promise.race([reader.read(), new Promise<null>(resolve => setTimeout(() => resolve(null), Math.max(1, deadline - Date.now())))]);
+        if (next === null || next.done) break;
+        buffer += decoder.decode(next.value, { stream: true });
+        for (let cut = buffer.indexOf('\n\n'); cut >= 0; cut = buffer.indexOf('\n\n')) {
+          const block = buffer.slice(0, cut); buffer = buffer.slice(cut + 2);
+          const name = /^event: (.+)$/m.exec(block)?.[1], data = /^data: (.+)$/m.exec(block)?.[1];
+          if (name !== undefined && data !== undefined) events.push({ event: name, data: JSON.parse(data) as Record<string, unknown> });
+        }
+      }
+      controller.abort();
+      return events;
+    };
+    // None running: an explicit idle word, then `synced`.
+    expect((await framesUntilSynced('chat?task=a')).map(one => [one.event, one.data['state'] ?? null])).toEqual([['hello', null], ['turn', 'idle'], ['synced', null]]);
+    // Running: its first snapshot, then `synced`.
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    subscriptionAnswers.push(async request => {
+      request.onText?.('Looking at the run now.');
+      await gate;
+      return { ok: true, answer: { text: 'All done.', calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } };
+    });
+    expect((await sendJson(cookie, { csrf, task: 'a', message: 'How is it going?', request: 'a'.repeat(32), 'request-session': session })).status).toBe(202);
+    for (let wait = 0; wait < 100 && (await framesUntilSynced('chat?task=a')).every(one => one.event !== 'turn' || one.data['done'] !== false); wait += 1) await new Promise(done => setTimeout(done, 20));
+    const running = await framesUntilSynced('chat?task=a');
+    expect(running.map(one => one.event)).toEqual(['hello', 'turn', 'synced']);
+    expect(running[1]!.data).toMatchObject({ done: false, seq: expect.any(Number) });
+    // Just finished: the finished reply's last snapshot, then `synced` (never nothing, so a replacement can't keep a partial one).
+    release();
+    await settle();
+    const finished = await framesUntilSynced('chat?task=a');
+    expect(finished.map(one => one.event)).toEqual(['hello', 'turn', 'synced']);
+    expect(finished[1]!.data).toMatchObject({ done: true, ok: true });
+    // A plain (EventSource) reader hears nothing new: no hello, no idle or finished word, no `synced`.
+    expect(await framesUntilSynced('chat?task=a', false)).toEqual([]);
+  });
+
   test('responsive chat slice 1: membership partials reach the room settled, shaped and checked, never raw; a held-back key closes the preview; a failed reply is read back from its saved turn', async () => {
     store.setChatConfig({ provider: 'claude-subscription', model: 'default', dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, 'alex', T0);
     const cookie = await login(), csrf = csrfFrom(await page(cookie));
@@ -1749,7 +1801,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     store.recordOutcomeFacts(run, { headRevision: "2".repeat(40), handoff: "Done." });
     store.finishRun(run, { outcome: "built", committed: true, now: clockNow });
     store.setTaskState("a", "done", clockNow);
-    const result = await fetch(url(`/review?result=a&run=${run}&format=workspace`), { headers: { cookie } });
+    const result = await fetch(url(`/t/a?tab=result&run=${run}&format=workspace`), { headers: { cookie } });
     expect(result.status).toBe(200);
     const shown = await result.json() as import("./browser-workspace.js").BrowserWorkspace;
     expect(shown.conversation?.sessionId).toBe(0);

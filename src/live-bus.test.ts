@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flowTaskFixture } from "../test/flow-card-task.js";
 import { createFlowRooms, flowFingerprint } from "./flow-live.js";
 import { createLiveBus, createLiveRooms, followWorkspace, LiveStream, STREAM_LIMIT_BYTES, type LiveBus, type LiveViewer, type WorkspaceFollower, LiveConnection } from "./live-bus.js";
+import { createLiveSender } from "./live-reply.js";
 import { heartbeat } from "./runner.js";
 import { openStore, type Store } from "./store.js";
 import { createTaskRooms, taskFingerprint } from "./task-live.js";
@@ -161,7 +162,8 @@ describe("rooms on the bus", () => {
     valid = false;
     framed.sent = [];
     vi.advanceTimersByTime(15_000);
-    expect(framed.sent).toEqual([`event: gone\ndata: ${JSON.stringify({ room: "task:t-1" })}\n\n`, "event: ended\ndata: {}\n\n"]);
+    // A frames reader's room frames carry the server's order (`seq`, fluid pages 1b); the plain reader's are unchanged.
+    expect(framed.sent).toEqual([expect.stringMatching(/^event: gone\ndata: \{"room":"task:t-1","seq":[1-9][0-9]*\}\n\n$/), "event: ended\ndata: {}\n\n"]);
     rooms.close();
   });
 
@@ -471,5 +473,83 @@ describe("a room whose read is costly", () => {
     expect(page.events("gone")).toHaveLength(1);
     expect(reads - joined).toBe(1);
     rooms.close();
+  });
+});
+
+/** Fluid pages 1b: the order a handover compares, and `synced` after every room's first word. */
+describe("order and synced, for a page handing over", () => {
+  const frames = (page: Page) => page.sent.map(one => ({ event: /^event: (\S+)/.exec(one)?.[1], data: JSON.parse(one.split("\ndata: ")[1]!.trim()) as Record<string, unknown> }));
+
+  test("a room's order is its own: other rooms' reads, presence and other people's activity never move it", () => {
+    let state = "s1";
+    const mine = createLiveRooms<string, LiveViewer>(() => state, null, { bus });
+    const others = createLiveRooms<string, LiveViewer>(key => `${key}:${Math.random()}`, (viewers, me) => viewers.filter(one => one.name !== me).map(one => one.name), { bus });
+    const page = new Page();
+    mine.join("r", { name: "alex", room: "summary", connection: new LiveConnection(response(page), { frames: true }), valid: () => true });
+    const [joined] = frames(page);
+    // Twenty other people open and read twenty other rooms (each with presence) in the same instant.
+    for (let one = 0; one < 20; one += 1) others.join(`t-${one}`, { name: `p${one}`, room: `task:t-${one}`, connection: new LiveConnection(response(new Page()), { frames: true }), valid: () => true });
+    bus.publish({ revision: "v1:2" });
+    state = "s2";
+    bus.publish({ revision: "v1:3" });
+    const [, next] = frames(page);
+    // The clock stood still (fake timers): this room's next order is its last plus one, whatever happened elsewhere.
+    expect(next!.data).toMatchObject({ at: "s2" });
+    expect(next!.data["seq"]).toBe((joined!.data["seq"] as number) + 1);
+    mine.close(); others.close();
+  });
+
+  test("two streams in one room hear each change with the order of the read it came from: equal for the same read, higher for a later one", () => {
+    let state = "s1";
+    const rooms = createLiveRooms<string, LiveViewer>(() => state, null, { bus });
+    const a = new Page(), b = new Page();
+    const first = new LiveConnection(response(a), { frames: true }), second = new LiveConnection(response(b), { frames: true });
+    rooms.join("r", { name: "alex", room: "summary", connection: first, valid: () => true });
+    vi.advanceTimersByTime(5_000);
+    // The second joins later, but is handed the same read: the same order.
+    rooms.join("r", { name: "alex", room: "summary", connection: second, valid: () => true });
+    const [joinA] = frames(a), [joinB] = frames(b);
+    expect(joinA!.data["seq"]).toBe(joinB!.data["seq"]);
+    state = "s2";
+    bus.publish({ revision: "v1:2" });
+    const [, nextA] = frames(a), [, nextB] = frames(b);
+    expect(nextA!.data).toMatchObject({ at: "s2" });
+    expect(nextA!.data["seq"]).toBe(nextB!.data["seq"]);
+    expect(nextA!.data["seq"] as number).toBeGreaterThan(joinA!.data["seq"] as number);
+    rooms.close();
+  });
+
+  test("`synced` waits for a room's first delivery still on its way (a running reply's first snapshot), then goes once", async () => {
+    vi.useRealTimers();
+    const page = new Page();
+    const connection = new LiveConnection(response(page), { frames: true, conn: "0123456789abcdef01234567" });
+    connection.hello({ incarnation: "run-1", tick: 15_000 });
+    const written = connection.holdSynced();
+    // Chat's sender: one in flight, its standing re-proved first (asynchronously), then the snapshot.
+    const sender = createLiveSender<{ text: string }>({ send: view => { connection.send("chat", "turn", view, 7); written(); }, standing: async () => true, spacingMs: 0 });
+    sender.offer({ text: "thinking" });
+    connection.synced();
+    expect(page.sent.map(one => /^event: (\S+)/.exec(one)?.[1])).toEqual(["hello"]);
+    await new Promise(done => setTimeout(done, 10));
+    expect(frames(page).map(one => one.event)).toEqual(["hello", "turn", "synced"]);
+    expect(frames(page)[1]!.data).toEqual({ room: "chat", text: "thinking", seq: 7 });
+    // Later holds (a reply that starts after) never send it again.
+    connection.holdSynced()();
+    connection.synced();
+    expect(frames(page).filter(one => one.event === "synced")).toHaveLength(1);
+    void sender.close();
+    connection.close();
+  });
+
+  test("with nothing on its way `synced` follows at once; a first delivery that never comes never lets it go (the page's own deadline decides)", () => {
+    const quick = new Page(), stalled = new Page();
+    const one = new LiveConnection(response(quick), { frames: true }), two = new LiveConnection(response(stalled), { frames: true });
+    one.synced();
+    expect(frames(quick).map(frame => frame.event)).toEqual(["synced"]);
+    two.holdSynced();
+    two.synced();
+    vi.advanceTimersByTime(60_000);
+    expect(frames(stalled).map(frame => frame.event)).not.toContain("synced");
+    one.close(); two.close();
   });
 });

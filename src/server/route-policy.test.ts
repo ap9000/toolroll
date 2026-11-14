@@ -48,6 +48,13 @@ test('reviewed live transport delta replaces four streams with room-owned admiss
     expect(evaluateRoutePolicy(live, { caller, capability }, () => true).ok, `${caller}:${capability}`)
       .toBe(READ_BROWSER.includes(`${caller}:${capability}`));
   }
+  // Fluid pages 1b: the probe of a page's own stream admits a browser session alone (a token never pings), read or act.
+  const ping = matchRoute('GET', '/live/ping')!;
+  expect(ping).toMatchObject({ id: 'live.ping', stage: 'edge', proof: 'adapter', project: 'adapter', callers: ['cookie'], scope: 'read' });
+  for (const caller of callers) for (const capability of ['none', 'read', 'act'] as const) {
+    expect(evaluateRoutePolicy(ping, { caller, capability }, () => true).ok, `ping ${caller}:${capability}`)
+      .toBe(['cookie:read', 'cookie:act'].includes(`${caller}:${capability}`));
+  }
   // The viewer preference remains cookie-only even though project selection still admits an act bearer.
   const selection = matchRoute('POST', '/projects/select')!;
   expect(evaluateRoutePolicy(selection, { caller: 'cookie', capability: 'read', viewer: true }, () => true)).toEqual({ ok: true });

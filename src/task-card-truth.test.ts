@@ -245,9 +245,9 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     if (one.expect !== "passed" && one.expect !== "running") expect(listed!.status.detail ?? "", `${one.id}: list sentence`).not.toMatch(PASSED_CLAIM);
 
     // ---- the result page: its headline, its own Checks row, its status and its Checks tab
-    const html = await page(`/review?result=${one.id}&run=${run}&tab=checks`);
-    const result = workspaceOf(html).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
-    const selected = result.selected!;
+    // The one result view (task-link.ts): the task page's Result section at this run.
+    const html = await page(`/t/${one.id}?tab=result&run=${run}&section=checks`);
+    const selected = (workspaceOf(html).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected;
     expect(selected.status.label, `${one.id}: result page headline`).toBe(status.headline);
     const panel = selected.panel!.status!;
     expect(panel.headline, `${one.id}: result panel headline`).toBe(status.headline);
@@ -275,7 +275,7 @@ test("no surface claims a pass beside a check row that says otherwise", async ()
     const task = workspaceOf(await page(`/t/${one.id}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
     const row = task.status!.status.details.find(detail => detail.key === "checks")?.text ?? "";
     if (/^Passed/.test(row) || /running/i.test(row)) continue;
-    const result = workspaceOf(await page(`/review?result=${one.id}&run=${runs[one.id]}&tab=checks`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
+    const result = { selected: (workspaceOf(await page(`/t/${one.id}?tab=result&run=${runs[one.id]}&section=checks`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected };
     const checksTab = result.selected!.panel!.views.find(view => view.key === "checks")?.html ?? "";
     const verdictLine = /<p class="row result-verdict"[\s\S]*?<\/p>/.exec(checksTab)?.[0] ?? "";
     const html = await page(`/t/${one.id}`);

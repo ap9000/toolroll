@@ -315,6 +315,9 @@ export type BrowserTaskView = {
     /** What the result shows, as one stamp (every check, note and control in it; never a form's fresh request token): the
      * page holds the result it loaded and says when a newer one is ready, so its evidence and decision always agree. */
     revision: string } | null;
+  /** An earlier result, not the task's current work (one-workspace plan S1): the page shows that result and a way to the
+   * current work, and nothing that acts on the current work (no Stop, note, approval, retry or completion of it). */
+  historical?: { label: string; href: string } | null;
   /** Where the approval sits: under the header when it is the thing to do now, else at the top of the Plan tab. */
   approvalPlacement?: "lead" | "plan";
   /** The kit approval box (src/design/KIT.md): the act's form and the facts that decide password, one click or none;

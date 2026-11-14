@@ -20,7 +20,7 @@ import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
 import { recentGitReads, taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
-import { html, joinHtml, type Html } from "../html.js";
+import { html, htmlString, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
 import { assignmentOf,personCompletionRefusal,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";
@@ -89,6 +89,7 @@ type Task,
 type TaskState
 } from "../store.js";
 import { taskControlOf } from "../task-control.js";
+import { taskLinkFromLegacy,taskLinkOf } from "../task-link.js";
 import {
 lastErrorLineOf,missedRequirementOf,
 workStatusOf,
@@ -764,7 +765,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
    * check log: the requirement or the reason, from the database alone. */
   function explainAttempt(run: Run, receipt: AssignmentSnapshot["receipt"] | null, readLog = true): FailureExplanation {
     const taskId = runtime.store.externalIdFor(run.taskRef) ?? "";
-    const page = `${reviewHref(taskId)}&run=${run.id}`;
+    const page = taskLinkOf({ task: taskId, run: run.id });
     const see = taskId === "" ? null : { label: `See build #${run.id}`, href: page };
     const artifacts = runtime.store.artifactsFor(run.id);
     const logArtifact = !readLog ? null : receipt?.checks.status === "failed" && receipt.checks.logArtifactId !== null
@@ -780,7 +781,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       if (found !== null) {
         const line = oneLineOf(found.text, 140);
         return { kind: "check", line: `The check failed: ${line}`, evidence: null, suggestion: failingCheckSuggestion(line),
-          link: taskId === "" ? null : { label: `Check output, line ${found.line}`, href: `${page}&tab=checks#check-log-L${found.line}` } };
+          link: taskId === "" ? null : { label: `Check output, line ${found.line}`, href: taskLinkOf({ task: taskId, run: run.id, section: "checks", anchor: `check-log-L${found.line}` }) } };
       }
     }
     const verdict = runtime.store.proofVerdictFor(run.id);
@@ -817,10 +818,15 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const tabHref = (taskId: string, run: number | null, section: string | null, hash: string): string =>
       `${taskHref(root)}?${taskId !== current ? `version=${encodeURIComponent(taskId)}&` : ""}tab=result${run === null ? "" : `&run=${run}`}${section === null || section === "summary" ? "" : `&section=${section}`}${hash}`;
     const toTab = (href: string): string => {
-      const review = /^\/review\?result=([A-Za-z0-9._~%-]{1,200})(?:&run=([0-9]{1,15}))?(?:&tab=(summary|changes|checks))?(#[A-Za-z0-9_-]{1,120})?$/.exec(href);
-      if (review !== null) {
-        const taskId = decodeURIComponent(review[1]!);
-        if (versions.has(taskId)) return tabHref(taskId, review[2] === undefined ? null : Number(review[2]), review[3] ?? null, review[4] ?? "");
+      // A result's one address (task-link.ts), or an old one it replaced, at any version of this family: this page's
+      // Result section, spelled from its root (the run's own version when the address named the root).
+      const canonical = taskLinkFromLegacy(href) ?? href;
+      const result = /^\/t\/([A-Za-z0-9._~%-]{1,200})\?tab=result(?:&run=([0-9]{1,15}))?(?:&section=(summary|changes|checks))?(#[A-Za-z0-9_.:-]{1,160})?$/.exec(canonical);
+      if (result !== null) {
+        const named = decodeURIComponent(result[1]!);
+        const run = result[2] === undefined ? null : Number(result[2]);
+        const taskId = run !== null && named === root && results.has(run) ? results.get(run)! : named;
+        if (versions.has(taskId)) return tabHref(taskId, run, result[3] ?? null, result[4] ?? "");
       }
       const record = /^\/r\/([0-9]{1,15})$/.exec(href);
       if (record !== null && results.has(Number(record[1]))) return tabHref(results.get(Number(record[1]))!, Number(record[1]), null, "");
@@ -862,8 +868,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     extras: TaskPageExtras = {},
   ): void {
     const admittedFamily = runtime.familyOf(taskId);
+    // A history that can't be read still shows the result the address named (the one result view): its own warning
+    // says the history is unavailable, and its forms stay this result's.
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
-      html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
+      html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>${extras.result == null ? "" : html`<section class="task-result-tab" id="task-result" aria-label="Result" data-result-task="${extras.result.selected.taskId}">${extras.result.html}</section>`}`,
+      { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks"), ...(extras.result == null ? {} : { functional: { script: `${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}` } }) }));
     // A read ahead (x-toolroll-read: prefetch, live-pages-and-home.md A1.4) mints nothing: its plan form says "unminted".
     const data = taskViewData(taskId, who, problem, { mintNonce: requestContext.getStore()?.readPurpose !== "prefetch" });
     if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
@@ -878,6 +887,10 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     if (scopeDraft !== undefined) presentedData.scopeDraft = scopeDraft;
     if (cancelDraft !== undefined) presentedData.cancelDraft = cancelDraft;
     if (editPlan) presentedData.editPlan = true;
+    // The selected result's section: the no-script page composes it under its outcome when it leads with one.
+    const resultSection = extras.result == null ? null
+      : html`<section class="task-result-tab" id="task-result" aria-label="Result" data-result-task="${extras.result.selected.taskId}">${extras.result.html}</section>`;
+    if (resultSection !== null && extras.result!.current) (presentedData as { resultSection?: Html | null }).resultSection = resultSection;
     (presentedData as { pullRequest?: TaskPullRequest | null }).pullRequest = taskPullRequestOf(taskId, who);
     // The thread reads the whole family: the original, its revisions, and every attempt across them.
     if (family !== null && family.problem === null) {
@@ -928,10 +941,37 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     }
     // The step rows read the view as the page will show it (its result, its release, its checks words).
     if (oneTaskView?.kind === "task") oneTaskView.steps = stepRowsOf(oneTaskView);
-    // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
-    const taskBody = page.body;
-    if (extras.result != null) {
-      page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
+    // An earlier result, not the task's current work (one-workspace plan S1): the page is that result and a way to the
+    // current work, and nothing else. No control that acts on the current work (Stop, a note, the approval, Retry,
+    // completion, the conversation's composer) is on it, in the document or the view.
+    if (oneTaskView?.kind === "task" && extras.result != null && resultSection !== null && !extras.result.current) {
+      const rootId = family?.root.id ?? taskId;
+      const build = extras.result.selected.build;
+      const historical = { label: build === null ? "The task has moved on since." : `Build #${build}. The task has moved on since.`, href: taskHref(rootId) };
+      const view: BrowserTaskView = { kind: "task", id: oneTaskView.id, title: oneTaskView.title, project: oneTaskView.project, scout: oneTaskView.scout, tabs: [],
+        version: oneTaskView.version, status: null, statusHtml: "", approval: "", lead: [], questions: "", facts: [], sections: [], manage: [], cancel: null, thread: [],
+        tab: "result", result: oneTaskView.result ?? null, historical, more: [{ group: "share", label: "Copy link", kind: "copy" }] };
+      const top = html`<h1 class="task-main-title">${view.title}</h1><div class="task-historical" data-task-historical><h2>Earlier result</h2><p>${historical.label}</p><p><a class="button-link" href="${historical.href}" data-open-current>Open current work</a></p></div>`;
+      page.body = html`${top}${resultSection}`;
+      page.functional = { script: `${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, app: [{ kind: "result" }] };
+      page.workspace = { view, pageHtml: top };
+      page.refreshSeconds = runtime.liveRefreshSeconds();
+      return runtime.sendScreen(response, status, page);
+    }
+    // The Record section (`?tab=record`, /t/:id/evidence's place now): read-only, last under the page, in both the app's
+    // view and the document.
+    if (extras.record != null) {
+      if (oneTaskView?.kind === "task") oneTaskView.sections = [...oneTaskView.sections.filter(one => one.id !== "record"), { id: "record", title: "Record", html: htmlString(extras.record), open: true, count: null }];
+      const recordSection = html`<section class="task-record" id="record" aria-label="Record"><h2>Record</h2>${extras.record}</section>`;
+      page.body = html`${page.body}${recordSection}`;
+      if (page.workspace?.pageHtml != null) page.workspace = { ...page.workspace, pageHtml: html`${page.workspace.pageHtml}${recordSection}` };
+    }
+    // The Result tab's no-script page: composed under the outcome when the page leads with one (render-tasks.ts), else
+    // under the task's own; the same HTML its result page served, and its script.
+    const composed = resultSection !== null && page.workspace?.pageHtml != null;
+    const taskBody = composed ? page.workspace!.pageHtml! : page.body;
+    if (extras.result != null && resultSection !== null) {
+      if (!composed) page.body = html`${page.body}${resultSection}`;
       // The result's own script, as its result page ships it (a password form there keeps it too: Request changes and
       // the line notes need it).
       // The app runs its own version (browser/work/result.ts), so a task with a result can open in place.
