@@ -17,6 +17,7 @@ import { type UnattendedPermissionMode } from "./scope.js";
 import { type QualityMode, qualityModeTitle } from "./quality.js";
 import { type ResultScreenshots } from "./store.js";
 import { kitSectionForm, SECRET_OPT_OUTS } from "./settings-kit.js";
+import { START_BUILDER_HREF } from "./needs-you.js";
 import {
   btn, chip, codeLine, disclose, formRow, infoLine, input, needsPanel, note, notice, radios, select, settingsLink, settingsLinks, settingsRecord,
   settingsSection, settingsShell, switchInput,
@@ -98,8 +99,8 @@ export type NeedsFacts = Pick<SettingsFacts, "workers" | "approver" | "backup"> 
 export function settingsNeeds(facts: NeedsFacts): NeedsItem[] {
   const out: NeedsItem[] = [];
   if (facts.workers !== null && facts.approver && !facts.workers.some(one => one.tone === "ok")) {
-    out.push({ group: "agents", title: facts.workers.length === 0 ? "Nothing is taking work" : "Nothing is taking work right now",
-      text: "Approved work waits until a computer builds it. Run toolroll up on the computer with your projects.", action: ["Start taking work", "/settings/agents#workers"] });
+    out.push({ group: "computers", title: facts.workers.length === 0 ? "Nothing is taking work" : "Nothing is taking work right now",
+      text: "Approved work waits until a computer builds it. Run toolroll up on the computer with your projects.", action: ["Start taking work", START_BUILDER_HREF] });
   }
   if (facts.telegram.failing) out.push({ group: "alerts", title: "Telegram isn’t delivering", text: facts.telegram.delivery ?? "Alerts to your phone are failing.", action: ["Open Telegram", "/settings/telegram"] });
   if (facts.backup?.failed) out.push({ group: "system", title: "The last backup failed", text: facts.backup.words, action: ["Open backups", "/settings/backups"] });
@@ -118,9 +119,12 @@ export const flagsOf = (counts: Record<string, number>): Record<string, boolean>
 const themeWords = (theme: string): string => theme === "light" ? "Light" : theme === "dark" ? "Dark" : "Match this device";
 function agentsWords(facts: SettingsFacts): string {
   const signed = facts.providers?.find(one => one.connection !== null && one.tone === "ok") ?? facts.providers?.find(one => one.tone === "ok");
-  const builders = facts.workers === null ? null : facts.workers.filter(one => one.tone === "ok").length;
-  return [signed ? `${signed.name}: ${signed.words}` : facts.providers === null ? "Models, chat and tools" : "No agent signed in yet",
-    builders === null ? null : builders === 0 ? "not taking work yet" : "taking work"].filter(Boolean).join(" · ");
+  return signed ? `${signed.name}: ${signed.words}` : facts.providers === null ? "Models, chat and tools" : "No agent signed in yet";
+}
+function computersWords(facts: SettingsFacts): string {
+  if (facts.workers === null) return "Connect a builder: the computer that does the work";
+  const taking = facts.workers.filter(one => one.tone === "ok").length;
+  return taking === 0 ? "Nothing is taking work yet" : `${plural(taking, "computer", "computers")} taking work`;
 }
 function alertsWords(facts: SettingsFacts): string {
   const configured = facts.messaging?.configured ?? [];
@@ -162,6 +166,7 @@ export function settingsHub(facts: SettingsFacts): Html {
   const words: Record<string, string> = {
     general: [`Theme: ${themeWords(facts.theme).toLowerCase()}`, facts.version === null ? null : `Toolroll ${facts.version}`, `advanced features ${advancedOn(facts) ? "on" : "off"}`].filter(Boolean).join(" · "),
     agents: agentsWords(facts),
+    computers: computersWords(facts),
     alerts: alertsWords(facts),
     approval: approvalWords(facts),
     projects: facts.projects.length === 0 ? "No projects yet" : `${plural(facts.projects.length, "project", "projects")} · network, checks, pull requests and tools for each`,
@@ -185,7 +190,7 @@ export function settingsHub(facts: SettingsFacts): Html {
 
 /** The hub's old anchors, forwarded to their group (fragments never reach the server). */
 export const HUB_ANCHORS: Readonly<Record<string, string>> = {
-  providers: "/settings/agents#providers", workers: "/settings/agents#workers", email: "/settings/alerts#email", "settings-chat-apps": "/settings/alerts#chat-apps",
+  providers: "/settings/agents#providers", workers: "/settings/computers#workers", email: "/settings/alerts#email", "settings-chat-apps": "/settings/alerts#chat-apps",
   "telegram-token": "/settings/alerts#telegram-token", phone: "/settings/alerts#phone", notifications: "/settings/alerts#notifications",
   updates: "/settings/system#updates", accent: "/settings/general#appearance", appearance: "/settings/general#appearance",
 };
@@ -210,21 +215,6 @@ function providerRecord(one: ProviderFacts): Html {
   return settingsRecord({ title: html`${one.name} ${toneChip(one.tone, one.words)}`, sub: one.connection === null ? one.usage : `${one.connection.words}${one.connection.facts ? ` · ${one.connection.facts}` : ""}`,
     attrs: { "data-provider": one.provider }, more: disclose(`Manage ${one.name}`, joinHtml([form, remove])) });
 }
-function workersSection(workers: WorkerFacts[]): Html {
-  return settingsSection({
-    id: "workers", title: "Builders", lead: "The computers that build approved work, and what each runs now.",
-    body: workers.length === 0
-      ? joinHtml([note("No builder is connected. Run this on the computer with your projects:"), codeLine("toolroll up")])
-      : joinHtml([
-          ...workers.map(one => settingsRecord({
-            title: html`<span class="k-mono">${one.name}</span> ${chip(one.state, one.tone === "ok" ? "done" : one.tone === "off" ? "failed" : "")}`,
-            sub: one.running.length === 0 ? "Nothing running" : joinHtml(one.running.map(task => html`<a class="k-link" href="${task.href}">${task.title}</a>${task.project === null ? "" : html` <span class="k-muted">${task.project}</span>`}`), " · "),
-            when: html`<span class="k-num">${one.busy} of ${one.capacity}</span> running`, attrs: { "data-worker": one.name },
-          })),
-          note(html`To change how many a builder runs at once: <code class="k-mono">toolroll runner capacity &lt;name&gt; &lt;n&gt;</code>`),
-        ]),
-  });
-}
 export function agentsGroup(facts: SettingsFacts, flags: Record<string, boolean>): Html {
   const providers = facts.providers === null ? "" : settingsSection({
     id: "providers", title: "How agents are paid for", lead: "A plan first; an API key is used when the agent is set to it, or for agents without a plan. Keys stay on this computer.",
@@ -241,7 +231,8 @@ export function agentsGroup(facts: SettingsFacts, flags: Record<string, boolean>
   ]);
   return settingsShell({
     group: "agents", title: "Agents and models", lead: "Which agent does the work, how it’s paid for, and which model plans, builds and reviews.", flags,
-    body: joinHtml([answered(facts), providers, facts.workers === null ? "" : workersSection(facts.workers), links]),
+    // Builders are Settings → Computers now (settings plan F2); #workers stays for old links, leading there.
+    body: joinHtml([answered(facts), providers, facts.workers === null ? "" : html`<div id="workers">${settingsLinks(null, [settingsLink({ href: "/settings/computers?section=builders", title: "Computers that build", status: "In Settings → Computers" })], { label: "Computers" })}</div>`, links]),
   });
 }
 
@@ -521,10 +512,8 @@ export function systemGroup(facts: SettingsFacts, flags: Record<string, boolean>
     ...(advancedOn(facts) ? [settingsLink({ href: "/settings/monitoring", title: "Monitoring", status: "Send the audit stream and traces to your own systems" })] : []),
     settingsLink({ href: "/settings/data", title: "Data export", status: "Everything except secrets, as one download" }),
     settingsLink({ href: "/settings/integrations", title: "Integrations", status: "Which connected services work" }),
-    ...(advancedOn(facts) ? [settingsLink({ href: "/fleet", title: "Builders", status: "Every computer that builds, on Agents" })] : []),
   ]) : settingsLinks("In this group", [
     settingsLink({ href: "/settings/integrations", title: "Integrations", status: "Which connected services work" }),
-    ...(advancedOn(facts) ? [settingsLink({ href: "/fleet", title: "Builders", status: "Every computer that builds" })] : []),
   ]);
   return settingsShell({ group: "system", title: "System", lead: "This Toolroll’s version, backups, storage and what leaves this computer.", flags,
     body: joinHtml([answered(facts), facts.updates === null ? "" : updatesSection(facts.updates), links]) });

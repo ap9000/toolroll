@@ -27,6 +27,5 @@ export const ADVANCED_PAGES: readonly AdvancedPage[] = Object.freeze([
   { title: "Sign-in with a provider", href: "/settings/sign-in", words: "Let people sign in with your identity provider", operator: true },
   { title: "Passwordless", href: "/settings/passwordless", words: "Sign in once; most approvals then need no password", operator: true },
   { title: "Monitoring", href: "/settings/monitoring", words: "Send the audit stream and traces to your own systems", operator: true },
-  { title: "Builders", href: "/fleet", words: "Every computer that builds" },
   { title: "For each project", href: "/settings/projects", words: "Fallback agents, live view commands, code map and flaky tests, on each project’s page" },
 ]);

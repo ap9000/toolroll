@@ -368,7 +368,7 @@ test("past the kept limit, every row keeps its own identity: no duplicates as ol
   expect(new Set(conversation.items.map(item => item.key)).size).toBe(KEEP_ITEMS);
 });
 
-describe("Agents on the kit (UI revamp wave B): the window, the computers, register and retire", () => {
+describe("Agents on the kit (UI revamp wave B): the window and the computers", () => {
   const computer = (extra: Partial<BrowserComputer> = {}): BrowserComputer => ({
     name: "night-shift-1", host: "mac-mini", state: "building", capacity: 2, retired: false,
     building: [{ taskId: "t-8", title: "Task 8", href: "/t/t-8", project: "shop-web" }], hidden: 0,
@@ -400,56 +400,26 @@ describe("Agents on the kit (UI revamp wave B): the window, the computers, regis
     expect(host.querySelector("[data-agent-phases]")).toBeNull();
   });
 
-  test("computers are rows with resource chips (never the needs tone), Details opens a drawer, an offline one says how to bring it back", () => {
+  // Settings → Computers (settings plan F2) registers, retires and details computers; Agents keeps how many there are,
+  // the way there, and what to do about one that stopped answering. #computers keeps old links landing here.
+  test("computers: a count and the way to Settings → Computers; an offline one says how to bring it back; no register or retire here", () => {
     renderIn(listView({ computers: { list: [computer(), computer({ name: "studio-linux", host: "linux-box", state: "offline", building: [], reserved: [], heardAt: ago(180) })], manage: true, queueRevision: 4, shared: 0 },
       phases: [{ phase: "build", model: "Claude Sonnet", problem: null, source: "Set for the whole installation by alex", noDollars: false }], system: null }));
-    const rows = [...host.querySelectorAll("[data-computer]")];
-    expect(rows.map(one => one.querySelector(".k-chip")?.textContent)).toEqual(["Building", "Offline"]);
+    const section = host.querySelector("section#computers[data-computers]")!;
+    expect(section.textContent).toContain("1 computer taking work.");
+    expect(section.querySelector('a[href="/settings/computers?section=builders"]')?.textContent).toBe("Manage");
+    const offline = host.querySelector('[data-computer-offline="studio-linux"]')!;
+    expect(offline.textContent).toContain("toolroll up");
+    expect(offline.querySelector("a")?.getAttribute("href")).toBe("/settings/computers?section=builders&open=1&computer=studio-linux#builders");
     expect(host.querySelectorAll("[data-computers] .k-chip.needs, [data-computers] .k-chip.ask")).toHaveLength(0);
-    expect(host.querySelector('[data-computer-offline="studio-linux"]')?.textContent).toContain("toolroll up");
     expect(host.querySelector('[data-phase="build"]')?.textContent).toContain("Claude Sonnet");
-    act(() => { rows[0]!.querySelector<HTMLButtonElement>(".k-row-a button")!.click(); });
-    const panel = document.querySelector('[data-computer-panel="night-shift-1"]')!;
-    expect(panel.textContent).toContain("Task 8");
-    // Reserved work moves with the queue's own handler, from the fleet (no project revision).
-    const move = panel.querySelector<HTMLFormElement>('form[action="/queue/move"]')!;
-    expect([...move.querySelectorAll<HTMLInputElement>('input[type="hidden"]')].map(one => [one.name, one.value])).toEqual(expect.arrayContaining([["queueRevision", "4"], ["task", "t-20"], ["csrf", "csrf-1"]]));
-    expect(move.querySelector("input[name=projectRevision]")).toBeNull();
-    expect(panel.querySelector('form[action="/queue/note"] input[name="from"]')?.getAttribute("value")).toBe("fleet");
+    expect(host.querySelector("[data-computer-register], [data-computer-retire], [data-computer-panel]")).toBeNull();
+    expect(host.innerHTML).not.toContain("/fleet/runner/");
   });
 
-  test("retire is step-up: the password, or one click with Passwordless, posting to the retire handler", async () => {
-    const fetched: Array<{ url: string; body: string }> = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string, init: RequestInit) => { fetched.push({ url: input, body: String(init.body) }); return { type: "basic", status: 403 } as Response; }));
-    const view = listView({ computers: { list: [computer()], manage: true, queueRevision: 1, shared: 0 }, phases: [], system: null });
-    renderIn(view, true);
-    act(() => { host.querySelector<HTMLButtonElement>("[data-computer] .k-row-a button")!.click(); });
-    const retire = [...document.querySelectorAll<HTMLButtonElement>("[data-computer-retire] button")].find(one => one.textContent === "Retire computer")!;
-    expect(retire.getAttribute("aria-haspopup")).toBeNull();
-    await act(async () => { retire.click(); await Promise.resolve(); });
-    expect(fetched[0]?.url).toBe("/fleet/runner/retire");
-    expect(new URLSearchParams(fetched[0]!.body).get("name")).toBe("night-shift-1");
-    expect(new URLSearchParams(fetched[0]!.body).get("token")).toBe("");
-    // The refusal is said in place; nothing changed.
-    expect(document.querySelector("[data-computer-retire] .k-notice")?.textContent).toContain("Nothing changed");
-  });
-
-  test("register is a new way in: always the password typed now, even with Passwordless; a bad name is refused next to its field first", () => {
+  test("no computer yet: the one command to connect one", () => {
     renderIn(listView({ computers: { list: [], manage: true, queueRevision: 1, shared: 0 }, phases: [], system: null }), true);
     expect(host.querySelector("[data-computer-none]")?.textContent).toContain("toolroll up");
-    act(() => { [...host.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent?.includes("Add a computer"))!.click(); });
-    const form = host.querySelector("[data-computer-register]")!;
-    expect(form.textContent).toContain("so it still asks for your password");
-    const register = () => [...form.querySelectorAll<HTMLButtonElement>("button")].find(one => one.textContent === "Register computer")!;
-    act(() => { register().click(); });
-    expect(form.querySelector(".k-err")?.textContent).toBe("Name the computer first.");
-    expect(document.querySelector(".k-pop")).toBeNull();
-    const name = form.querySelector<HTMLInputElement>("input.k-input")!;
-    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "builder-2"); name.dispatchEvent(new Event("input", { bubbles: true })); });
-    expect(register().getAttribute("aria-haspopup")).toBe("dialog");
-    act(() => { register().click(); });
-    expect(document.querySelector('.k-pop input[name="token"][type="password"]')).not.toBeNull();
-    expect(document.querySelector(".k-pop .k-pop-terms")?.textContent).toBe("Register builder-2: up to 1 at a time.");
   });
 
   test("a viewer watches: the agent page says why they can't send a note, and offers no controls", () => {

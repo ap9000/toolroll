@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import { assertRouteTable, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
-import { RETIRED_ROUTES, TASK_VIEW_REDIRECTS } from "./retired-routes.js";
+import { RETIRED_ROUTES, SETTINGS_RETIRED, TASK_VIEW_REDIRECTS } from "./retired-routes.js";
 
 const consoleRoutes = ROUTES.filter(route => route.stage === "console");
 const edgeRoutes = ROUTES.filter(route => route.stage === "edge");
@@ -35,9 +35,9 @@ const LIMITED_ACCESS = {
   'chat.page': 'conversation', 'routine.page': 'resource', 'chat.action': 'proposal',
   'settings.skills': 'unscoped', 'settings.flows': 'collection', 'settings.knowledge': 'unscoped',
   'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
-  'settings.group-general': 'unscoped', 'settings.group-agents': 'unscoped', 'settings.group-alerts': 'unscoped', 'settings.group-projects': 'unscoped', 'settings.group-access': 'unscoped', 'settings.group-system': 'unscoped', 'settings.group-advanced': 'unscoped',
+  'settings.group-general': 'unscoped', 'settings.group-agents': 'unscoped', 'settings.group-alerts': 'unscoped', 'settings.group-projects': 'unscoped', 'settings.group-access': 'unscoped', 'settings.group-system': 'unscoped', 'settings.group-advanced': 'unscoped', 'settings.group-computers': 'unscoped',
   // Settings change documents (settings plan v2 §2.2) carry their section's own policy; the handler admits the section again.
-  'settings.change.local-mode': 'unscoped',
+  'settings.change.local-mode': 'unscoped', 'settings.change.register-computer': 'unscoped',
   'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
   'code.other': 'self', 'code.changes-read': 'self', 'code.ship-preview': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
   // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.
@@ -157,14 +157,14 @@ describe("the route table", () => {
 describe("retired pages (docs/plans/plain-toolroll.md P1.4)", () => {
   const retired = ROUTES.filter(route => route.retired === true);
   test("every retired GET is a redirect row with a target and no page of its own; Home, Tasks and results keep theirs", () => {
-    expect(ids(retired).sort()).toEqual(["board", "done", "inbox", "next", "queue", "settings.group-advanced", "work", "work.put-away", "workbench"]);
+    expect(ids(retired).sort()).toEqual(["board", "done", "inbox", "next", "queue", "settings.group-advanced", "start-builder", "work", "work.put-away", "workbench"]);
     for (const route of retired) {
       expect(route.method, route.id).toBe("GET");
       expect(RETIRED_ROUTES[route.id], route.id).toBeDefined();
       // Admitted exactly as the page it leads to: never sent to the project opener first, a listing for a limited person
       // (a retired Settings page: unscoped, as its area page is).
       expect(route.needsProject, route.id).toBe(false);
-      expect(route.limited, route.id).toBe(route.id.startsWith("settings.") ? "unscoped" : "collection");
+      expect(route.limited, route.id).toBe(SETTINGS_RETIRED[route.id] !== undefined ? "unscoped" : "collection");
     }
     for (const id of ["home", "tasks", "review", "tasks.archive", "task.page"]) expect(ROUTES.find(route => route.id === id)?.retired, id).toBeUndefined();
   });

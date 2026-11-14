@@ -11,7 +11,7 @@ import { createHmac,randomBytes } from "node:crypto";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
 import { basename,dirname,join,resolve } from "node:path";
-import { builderReadyFor, buildersFor, firstRunBuilderRepo } from "../dispatch.js";
+import { builderReadyFor, firstRunBuilderRepo } from "../dispatch.js";
 import { withBuilderStep } from "../first-run.js";
 import { folderFacts,listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
@@ -71,8 +71,9 @@ import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { taskLinkOf } from "../task-link.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
-import { githubIdentityOf,homePage,startBuilderHtml } from "./render-pages.js";
+import { githubIdentityOf,homePage } from "./render-pages.js";
 import { retiredRedirect } from "./retired-routes.js";
+import { RUNNER_REGISTER } from "./settings-computers.js";
 import { codeMapStatus, openMap } from "../code-map-read.js";
 import { requestRefresh } from "../code-map-store.js";
 import { codeMapReport } from "../code-map-report.js";
@@ -93,7 +94,7 @@ import { homeView } from "./home.js";
 import { flowAsks, releaseAsks, setupAsks, type HomeAsks } from "./home-asks.js";
 import { workIndexPage } from "../work-index.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows, outsideAdmissions } = runtime;
+  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, consumeApprovalNonce, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows, outsideAdmissions } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -486,8 +487,9 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return sendScreen(response, 200, screen("Agents", fallback, { chrome: chromeFor(project, "runs"), workspace: { view }, ...(refreshSeconds === undefined ? {} : { refreshSeconds }) }));
   }
 
-  // Fleet became the computers on Agents (UI revamp wave B): register, retire, reserved work and notes are there.
-  const fleetPage = aliasTo("/agents#computers");
+  // Fleet became the computers on Agents (UI revamp wave B), and those are Settings → Computers now (settings plan F2):
+  // register, retire, reserved work and notes are there.
+  const fleetPage = aliasTo("/settings/computers?section=builders");
 
   async function ledgerExport(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response, now } = ctx;
@@ -737,33 +739,41 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { who, request, response, posted, now } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.runnerRegister);
     if (who.via !== "cookie") return refuse(response, who, 403, "runner registration is a browser surface");
+    const name = (body.get("name") ?? "").trim();
+    const capacityField = (body.get("capacity") ?? "1").trim() || "1";
+    // Settings plan v2 §2.6: a refusal goes back to the register document with its safe drafts (the name and how many
+    // at a time, never the password), and nothing is registered.
+    const again = (problem: string, field?: "name" | "capacity"): void => {
+      const query = new URLSearchParams({ problem });
+      if (name !== "" && name.length <= 60 && !/[\r\n\t]/.test(name) && !hasForbiddenControls(name)) query.set("name", name);
+      if (/^[0-9]{1,2}$/.test(capacityField)) query.set("capacity", capacityField);
+      if (field !== undefined) query.set("field", field);
+      return redirect(response, `/settings/change/register-computer?${query}`);
+    };
+    // One register form, one post: its nonce (bound to this person) is spent before anything else is checked, so a
+    // replayed or doubled post registers nothing; the document mints a fresh one.
+    if (!consumeApprovalNonce(body.get("nonce") ?? "", who.name, RUNNER_REGISTER, "")) return again("That form was already used or has expired. Nothing was registered; check the details and register again.");
     const token = body.get("token") ?? "";
     // A worker credential is minted here: a credential act, a password typed now even with Passwordless on.
-    if (!authenticateCredential(who, token).ok) {
-      return refuse(response, who, 403, "registering a worker takes your password, typed again", "/agents#computers");
-    }
-    const name = (body.get("name") ?? "").trim();
-    if (name === "" || name.length > 60 || /[\r\n\t]/.test(name) || hasForbiddenControls(name)) {
-      return refuse(response, who, 400, "a worker's name is one short line, no control characters", "/agents#computers");
-    }
-    const capacity = Number((body.get("capacity") ?? "1").trim() || "1");
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 64) {
-      return refuse(response, who, 400, "capacity is a whole number of tasks, 1 to 64", "/agents#computers");
-    }
+    if (!authenticateCredential(who, token).ok) return again("Registering a computer takes your password, typed now. Nothing was registered.");
+    if (name === "" || name.length > 60 || /[\r\n\t]/.test(name) || hasForbiddenControls(name)) return again("A computer's name is one short line, no control characters.", "name");
+    const capacity = Number(capacityField);
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 64) return again("Tasks at a time is a whole number from 1 to 64.", "capacity");
     const { token: minted } = registerRunner(store, { name, host: hostname(), capacity, now });
-    // A kit reading page (UI revamp wave B), back to the computers on Agents. The token is text to select: a Copy
-    // button would need a script, and this page carries none.
+    // A kit reading page, back to Settings → Computers. The token is text to select: a Copy button would need a script,
+    // and this page carries none.
+    const home = "/settings/computers?section=builders";
     const tokenScreen = screen(
       "fleet",
-      html`<div data-kit-page>${kit.phoneHeader("Computer registered", { back: "/agents#computers" })}${kit.doc(
-        kit.docHeader({ title: `${name} is registered`, back: ["/agents#computers", "Agents"], same: true, meta: html`Takes up to ${capacity} ${capacity === 1 ? "task" : "tasks"} at a time` }),
+      html`<div data-kit-page>${kit.phoneHeader("Computer registered", { back: home })}${kit.doc(
+        kit.docHeader({ title: `${name} is registered`, back: [home, "Computers"], same: true, meta: html`Takes up to ${capacity} ${capacity === 1 ? "task" : "tasks"} at a time` }),
         kit.slots({
           status: html`<h2>Its token, shown once</h2>`,
           text: "Only a hash is kept, so copy it now.",
           acts: html`<code class="k-code" data-runner-token>${minted}</code>`,
           terms: "Keep it beside the computer, in a file only you can read (0600) or a secrets manager. If it's lost, register the name again; its old claims are taken back.",
         }),
-        kit.acts(kit.btn("Back to Agents", { href: "/agents#computers" })),
+        kit.acts(kit.btn("Back to Computers", { href: home })),
       )}</div>`,
       // A one-time secret on screen: no script of any kind rides along.
       { chrome: chromeFor(projectOf(who, request) ?? null, "fleet"), forceSensitive: true },
@@ -775,15 +785,19 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { who, response, posted, now } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.runnerRetire);
     if (who.via !== "cookie") return refuse(response, who, 403, "runner retirement is a browser surface");
-    const token = body.get("token") ?? "";
-    if (!authenticateApprover(who, token).ok) {
-      return refuse(response, who, 403, "retiring a worker takes your password, typed again", "/agents#computers");
-    }
     const name = (body.get("name") ?? "").trim();
+    // A refusal goes back to the retire document for the same computer, with nothing changed.
+    const again = (problem: string): void => {
+      const query = new URLSearchParams();
+      if (name !== "" && name.length <= 60 && !hasForbiddenControls(name)) query.set("computer", name);
+      query.set("problem", problem);
+      return redirect(response, `/settings/change/retire-computer?${query}`);
+    };
+    const token = body.get("token") ?? "";
+    if (!authenticateApprover(who, token).ok) return again("Retiring a computer takes your password. Nothing changed.");
     const retired = store.retireRunner(name, now);
-    if (!retired) return refuse(response, who, 404, `no worker \`${name}\``, "/agents#computers");
-    // Agents says it in fixed words, naming the computer only once the store knows it as retired (retiredSaid).
-    return redirect(response, `/agents?retired=${encodeURIComponent(name)}#computers`);
+    if (!retired) return again("There's no computer by that name to retire. Nothing changed.");
+    return redirect(response, `/settings/computers?section=builders&said=${encodeURIComponent(`${name} is retired. It takes no more work.`)}`);
   }
 
   async function onboardPreview(ctx: HandlerContext): Promise<void> {
@@ -1207,20 +1221,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
 
   /** Start a builder (Settings revamp S4): the command, and whether a builder that may build the open project is
    * checking in, as dispatch decides. Read-only; a project-limited person sees only a project they may see. */
-  async function startBuilderPage(ctx: HandlerContext): Promise<void> {
-    const { response, now, project, url, who } = ctx;
-    // ?task=<id>: that task's own saved project (a builder there, as dispatch decides for it), never the open one; the
-    // session's selection is left alone. Unknown, unplaced or not visible to this person: 404, the same answer.
-    const taskId = url.searchParams.get("task");
-    const ref = taskId === null ? null : store.lookupRef(taskId.slice(0, 200));
-    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/tasks");
-    const shown = ref !== null ? ref.repo : project !== null && visible(project) ? project : null;
-    const connected = shown === null ? null : buildersFor(store, shown, now, ref?.assignedRunner ?? null).alive.length > 0;
-    return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({
-      heading: "h1", project: shown === null ? null : basename(shown), connected, managed: !restricted(),
-    }), { chrome: chromeFor(project, "none") }));
-  }
-
   const registrations = handlersOf("pages", {
     "projects.browse": projectsBrowse,
     "projects.github": projectsGithub,
@@ -1237,7 +1237,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "ledger": ledgerPage,
     "activity": activityPage,
     "system": systemScreen,
-    "start-builder": startBuilderPage,
+    "start-builder": async ctx => retiredRedirect("start-builder", ctx.url, ctx.response),
     "peek": peekPage,
     "agents": agentsPage,
     "agents.live": agentsLive,

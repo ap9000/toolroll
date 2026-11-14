@@ -18,6 +18,7 @@ import { holdsRole } from "./route-policy.js";
 import { ROUTES } from "./route-table.js";
 import { SCRIPT_INVENTORY } from "./settings-scripts.js";
 import { CHANGE_DOCUMENTS, SETTINGS_SECTIONS, type SectionDeclaration, type SectionPolicy } from "./settings-section-table.js";
+import { computersSections } from "./settings-computers.js";
 import {
   PROJECT_NOT_AVAILABLE, admitSection, askedSection, changeDocument, generalSections, openProjectAgain, renderArea, resolveSettingsProject, sessionProjectCheck,
   type GeneralDeps, type SectionImpl, type SectionImpls, type SectionPerson,
@@ -33,6 +34,9 @@ const PINNED: Record<string, SectionPolicy> = {
   "settings.group-general": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
   "settings.group-advanced": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
   "settings.group-access": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
+  // Settings → Computers (F2): Start a builder admitted a project-limited person; /fleet (the computers) didn't.
+  "start-builder": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
+  "fleet": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "deny", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
 };
 const policyOf = (row: (typeof ROUTES)[number]): SectionPolicy => ({ callers: row.callers, scope: row.scope, project: row.project, limited: row.limited, needsProject: row.needsProject,
   role: row.role, roleBrowser: row.roleBrowser, ...(row.roleRefusal === undefined ? {} : { roleRefusal: row.roleRefusal }), viewer: row.viewer, local: row.local });
@@ -50,16 +54,20 @@ describe("every section keeps the route policy of the page it came from", () => 
     for (const one of CHANGE_DOCUMENTS) {
       const row = rows.find(each => each.id === `settings.change.${one.id}`)!;
       expect([row.stage, row.method, row.sample, row.retired]).toEqual(["console", "GET", `/settings/change/${one.id}`, undefined]);
-      expect(policyOf(row)).toEqual(one.policy);
+      expect(policyOf(row)).toEqual(one.section.policy);
       // Its form's proof row exists, and posts to a route of its own (the document never posts anywhere new).
-      expect(PROOF_INVENTORY.find(proof => proof.id === one.change!.proof)?.routes.length).toBeGreaterThan(0);
-      expect(Object.keys(one.act)).toContain(one.change!.act);
+      expect(PROOF_INVENTORY.find(proof => proof.id === one.proof)?.routes.length).toBeGreaterThan(0);
+      expect(Object.keys(one.section.act)).toContain(one.act);
     }
   });
   test("ids are unique, and every section of the table has an implementation", () => {
     expect(new Set(SETTINGS_SECTIONS.map(one => one.id)).size).toBe(SETTINGS_SECTIONS.length);
+    expect(new Set(CHANGE_DOCUMENTS.map(one => one.id)).size).toBe(CHANGE_DOCUMENTS.length);
     const general = generalSections(DEPS);
     expect(Object.keys(general).sort()).toEqual(SETTINGS_SECTIONS.filter(one => one.area === "general").map(one => one.id).sort());
+    const computers = computersSections({} as never, { task: null, computer: null, drafts: {} });
+    expect(Object.keys(computers).sort()).toEqual(SETTINGS_SECTIONS.filter(one => one.area === "computers").map(one => one.id).sort());
+    expect([...new Set(SETTINGS_SECTIONS.map(one => one.area))].sort()).toEqual(["computers", "general"]);
   });
 });
 
@@ -82,7 +90,7 @@ test("holdsRole is the console's role rule exactly (dispatchConsole calls it; so
 // ---- personas and the zero-loader matrix ---------------------------------------------------------------------------
 
 const OPERATOR: SectionPerson = { name: "alex", via: "cookie", role: "approver", authority: "full", operator: true, restricted: false, installation: true, passwordSet: true,
-  principal: { caller: "cookie", capability: "act", viewer: false, token: false }, unscopedConsole: false };
+  principal: { caller: "cookie", capability: "act", viewer: false, token: false }, unscopedConsole: false, demo: false };
 const PERSONAS: Record<string, SectionPerson> = {
   operator: OPERATOR,
   "installation approver": { ...OPERATOR, name: "ines", operator: false },
@@ -350,7 +358,7 @@ describe("the script and proof inventories", () => {
   });
   // A secret shown once (a worker's token, an invite link, an API token) is answered on its own sensitive document.
   const REVEALS: Record<string, { file: string; pins: RegExp[] }> = {
-    "runner-register": { file: "./pages.ts", pins: [/if \(!authenticateCredential\(who, token\)\.ok\) \{/, /\{ chrome: chromeFor\(projectOf\(who, request\) \?\? null, "fleet"\), forceSensitive: true \}/] },
+    "runner-register": { file: "./pages.ts", pins: [/if \(!authenticateCredential\(who, token\)\.ok\) return again\(/, /\{ chrome: chromeFor\(projectOf\(who, request\) \?\? null, "fleet"\), forceSensitive: true \}/] },
     "sessions-token": { file: "./people-tokens.ts", pins: [/screen\("API token", tokenShownHtml\(name, minted\.token, access, expiresAt\), \{ chrome: chromeFor\(projectOf\(who, request\) \?\? null, "settings"\), forceSensitive: true \}\)/] },
     "people-invite": { file: "./people-tokens.ts", pins: [/\{ chrome: chromeFor\(projectOf\(who, request\) \?\? null, "people"\), forceSensitive: true \}/] },
   };

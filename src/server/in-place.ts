@@ -10,7 +10,7 @@
 /** The Settings pages (route-table.ts): the overview, its groups and each section page. Not the Slack manifest file. */
 const SETTINGS_PAGES = [
   "settings.page",
-  ...["general", "agents", "alerts", "projects", "access", "system"].map(one => `settings.group-${one}`),
+  ...["general", "agents", "computers", "alerts", "projects", "access", "system"].map(one => `settings.group-${one}`),
   ...["models", "tools", "project", "approval", "policy", "sessions", "integrations", "monitoring", "updates", "retention", "storage",
     "pull-requests", "checks", "backups", "data", "sign-in", "lead", "teams", "discord", "slack",
     "skills", "flows", "knowledge", "learning", "spend", "passwordless"].map(one => `settings.${one}`),

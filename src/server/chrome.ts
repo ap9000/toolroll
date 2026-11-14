@@ -909,15 +909,15 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
 export function settingsRows(scoped = false, offersSettings = false, advanced = true): NavRow[] {
   const rows: NavRow[] = [
     ...(offersSettings ? [{ key: "settings" as const, href: "/settings", label: "Settings", hint: "agent defaults, alerts, credentials" }] : []),
-    { key: "fleet", href: "/fleet", label: "Fleet", hint: "who is working, and on what" },
+    { key: "fleet", href: "/settings/computers", label: "Computers", hint: "the computers that build, and connecting one" },
     { key: "caps", href: "/caps", label: "Requirements", hint: "tools and credentials builds need" },
     { key: "people", href: "/people", label: "People", hint: "who can sign in, and what they have done" },
     { key: "mode", href: "/mode", label: "Operating mode", hint: "how much this project may do without asking" },
     { key: "system", href: "/system", label: "System", hint: "workers, providers, and grants" },
   ];
-  // Settings → Advanced off: no Fleet or Operating mode rows (Settings → Advanced lists both; an active mode keeps its
-  // banner on every page it rides). Requirements stays: it says what waiting work is missing.
-  const shown = advanced ? rows : rows.filter(row => row.key !== "fleet" && row.key !== "mode");
+  // Settings → Advanced off: no Operating mode row (General's Advanced section lists it; an active mode keeps its banner
+  // on every page it rides). Computers and Requirements stay: connecting a builder is part of the main loop.
+  const shown = advanced ? rows : rows.filter(row => row.key !== "mode");
   return scoped ? shown.filter(row => row.key === "people" || row.key === "settings") : shown;
 }
 /** Which accordion group opens by default for a given active page. */
