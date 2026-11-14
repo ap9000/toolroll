@@ -14,10 +14,11 @@ import { setLimitOverride } from "../request-budget.js";
 import { addApprover } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
 import { openStore, type Store } from "../store.js";
+import { createDemoSandbox } from "../demo.js";
 import { inPlaceRoute } from "./in-place.js";
 
-let store: Store, server: Server, base: string, dir: string, repo: string, other: string, password = "", token = "";
-const sessions: Record<"operator" | "limited" | "viewer", { cookie: string; csrf: string }> = {} as never;
+let store: Store, server: Server, base: string, dir: string, repo: string, other: string, password = "", inesPassword = "", token = "";
+const sessions: Record<"operator" | "limited" | "viewer" | "approver", { cookie: string; csrf: string }> = {} as never;
 const T0 = new Date();
 
 beforeAll(async () => {
@@ -30,6 +31,9 @@ beforeAll(async () => {
   password = alex.token;
   const lim = addApprover(store, "lim", T0, { name: "alex", token: alex.token }); if (!lim.ok) throw new Error("limited");
   const vera = addApprover(store, "vera", T0, { name: "alex", token: alex.token }); if (!vera.ok) throw new Error("viewer");
+  // A second approver with access to everything: another person who may register computers too.
+  const ines = addApprover(store, "ines", T0, { name: "alex", token: alex.token }); if (!ines.ok) throw new Error("approver");
+  inesPassword = ines.token;
   store.raw().prepare("UPDATE approver SET role = 'viewer' WHERE name = 'vera'").run();
   store.raw().prepare("UPDATE approver SET projects_json = ? WHERE name = 'lim'").run(JSON.stringify([repo]));
   const minted = mintApiToken();
@@ -44,7 +48,7 @@ beforeAll(async () => {
   server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repos: [repo, other], configDir: join(dir, "config"), telegramTokenFile: join(dir, "config", "telegram-token") });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  for (const [key, name, secret] of [["operator", "alex", alex.token], ["limited", "lim", lim.token], ["viewer", "vera", vera.token]] as const) {
+  for (const [key, name, secret] of [["operator", "alex", alex.token], ["limited", "lim", lim.token], ["viewer", "vera", vera.token], ["approver", "ines", ines.token]] as const) {
     const login = await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name, token: secret }), redirect: "manual" });
     const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0]!;
     const page = await (await fetch(`${base}/settings/computers`, { headers: { cookie } })).text();
@@ -130,7 +134,7 @@ describe("registering a computer", () => {
     expect(again).toMatch(/<option value="4" selected>/);
     expect(again).toContain("Registering a computer takes your password");
   });
-  test("its form token is spent once: the post registers and shows the token once; a replay or a doubled post registers nothing", async () => {
+  test("its form token is spent once: the post registers and shows the token once; the same post replayed registers nothing", async () => {
     const { nonce } = await document();
     const form = { csrf: sessions.operator.csrf, name: "attic", capacity: "2", token: password, nonce };
     const created = await post("/fleet/runner/register", sessions.operator.cookie, form);
@@ -142,15 +146,75 @@ describe("registering a computer", () => {
     expect(shown).toContain('href="/settings/computers?section=builders"');
     const after = runnerRows();
     expect(store.getRunner("attic")?.runner.capacity).toBe(2);
-    // The same post again (a replay, a double click, a back button): refused, and the token minted above still stands.
+    // The same post again (a replay, a back button): refused, and the token minted above still stands.
     const replay = await post("/fleet/runner/register", sessions.operator.cookie, form);
     expect(replay.status).toBe(303);
     expect(replay.headers.get("location")).toMatch(/^\/settings\/change\/register-computer\?problem=That\+form\+was\+already\+used/);
     expect(runnerRows()).toBe(after);
-    // A nonce minted for another person is not this person's.
-    const viewerNonce = nonceOf(await (await get("/settings/change/register-computer", { cookie: sessions.operator.cookie })).text());
-    expect((await post("/fleet/runner/register", sessions.viewer.cookie, { csrf: sessions.viewer.csrf, name: "x", capacity: "1", token: password, nonce: viewerNonce })).status).not.toBe(200);
-    expect(store.getRunner("x")).toBeNull();
+  });
+  test("two identical posts at once (a double click): exactly one registers", async () => {
+    const { nonce } = await document();
+    const form = { csrf: sessions.operator.csrf, name: "twin", capacity: "1", token: password, nonce };
+    const answers = await Promise.all([post("/fleet/runner/register", sessions.operator.cookie, form), post("/fleet/runner/register", sessions.operator.cookie, form)]);
+    expect(answers.map(one => one.status).sort()).toEqual([200, 303]);
+    expect(answers.find(one => one.status === 303)!.headers.get("location")).toMatch(/problem=That\+form\+was\+already\+used/);
+    expect(store.raw().prepare("SELECT COUNT(*) AS n FROM runner WHERE name = 'twin'").get()?.["n"]).toBe(1);
+  });
+  test("a wrong password spends the form's token: retrying it with the right one registers nothing", async () => {
+    const { nonce } = await document();
+    const before = runnerRows();
+    const wrong = await post("/fleet/runner/register", sessions.operator.cookie, { csrf: sessions.operator.csrf, name: "retry", capacity: "1", token: "nope", nonce });
+    expect(wrong.headers.get("location")).toMatch(/problem=Registering/);
+    const retry = await post("/fleet/runner/register", sessions.operator.cookie, { csrf: sessions.operator.csrf, name: "retry", capacity: "1", token: password, nonce });
+    expect(retry.headers.get("location")).toMatch(/problem=That\+form\+was\+already\+used/);
+    expect(runnerRows()).toBe(before);
+  });
+  test("another approver can't spend (or burn) someone else's form: refused, and the owner's form still works", async () => {
+    const { nonce } = await document();
+    const before = runnerRows();
+    // Ines may register computers herself, with her own password; alex's form token is not hers.
+    const theirs = await post("/fleet/runner/register", sessions.approver.cookie, { csrf: sessions.approver.csrf, name: "borrowed", capacity: "1", token: inesPassword, nonce });
+    expect(theirs.status).toBe(303);
+    expect(theirs.headers.get("location")).toMatch(/problem=That\+form\+was\+already\+used/);
+    expect(runnerRows()).toBe(before);
+    // The owner submits the form they were shown: it still works.
+    const owner = await post("/fleet/runner/register", sessions.operator.cookie, { csrf: sessions.operator.csrf, name: "kept", capacity: "1", token: password, nonce });
+    expect(owner.status).toBe(200);
+    expect(store.getRunner("kept")).not.toBeNull();
+    expect(store.getRunner("borrowed")).toBeNull();
+  });
+});
+
+describe("the demo", () => {
+  test("registers and retires no computer, even by a direct post: refused before any form token or proof", async () => {
+    const made = createDemoSandbox(new Date());
+    const demo = createDecisionServer({ store: made.store, evidenceRoot: made.evidenceRoot, clock: () => new Date(), repos: made.seed.repos, demoLead: made.lead });
+    await new Promise<void>(resolve => demo.listen(0, "127.0.0.1", resolve));
+    try {
+      const at = `http://127.0.0.1:${(demo.address() as { port: number }).port}`;
+      const signed = await fetch(at + demo.mintSignInLink(made.seed.login.name)!, { redirect: "manual" });
+      const cookie = signed.headers.getSetCookie().map(one => one.split(";")[0]).join("; ");
+      const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(`${at}/settings/general`, { headers: { cookie } })).text())![1]!;
+      made.store.saveRunner({ name: "demo-box", host: "here", capacity: 1, repos: [], agents: [], registeredAt: T0.toISOString(), heartbeatAt: T0.toISOString(), retiredAt: null }, "hash-demo");
+      const rows = () => JSON.stringify(made.store.raw().prepare("SELECT * FROM runner ORDER BY name").all());
+      const before = rows();
+      const send = (path: string, form: Record<string, string>) => fetch(at + path, { method: "POST", redirect: "manual",
+        headers: { cookie, origin: at, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, ...form }) });
+      const register = await send("/fleet/runner/register", { name: "sneaky", capacity: "1", token: "x", nonce: "0".repeat(32) });
+      expect(register.status).toBe(403);
+      expect(await register.text()).toContain("The demo doesn&#39;t register computers.");
+      const retire = await send("/fleet/runner/retire", { name: "demo-box", token: "x" });
+      expect(retire.status).toBe(403);
+      expect(await retire.text()).toContain("The demo doesn&#39;t retire computers.");
+      expect(rows()).toBe(before);
+      // Its pages offer neither.
+      expect((await fetch(`${at}/settings/change/register-computer`, { headers: { cookie } })).status).toBe(403);
+    } finally {
+      made.lead.stop();
+      await new Promise<void>(resolve => demo.close(() => resolve()));
+      made.store.close();
+      rmSync(made.sandbox, { recursive: true, force: true });
+    }
   });
 });
 

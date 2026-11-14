@@ -739,6 +739,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { who, request, response, posted, now } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.runnerRegister);
     if (who.via !== "cookie") return refuse(response, who, 403, "runner registration is a browser surface");
+    // The demo's sandbox registers no computer: refused before its form token or any proof is looked at.
+    if (store.isDemo()) return refuse(response, who, 403, "The demo doesn't register computers.", "/settings/computers");
     const name = (body.get("name") ?? "").trim();
     const capacityField = (body.get("capacity") ?? "1").trim() || "1";
     // Settings plan v2 §2.6: a refusal goes back to the register document with its safe drafts (the name and how many
@@ -785,6 +787,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { who, response, posted, now } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.runnerRetire);
     if (who.via !== "cookie") return refuse(response, who, 403, "runner retirement is a browser surface");
+    // The demo's sandbox retires no computer: refused before any proof is looked at.
+    if (store.isDemo()) return refuse(response, who, 403, "The demo doesn't retire computers.", "/settings/computers");
     const name = (body.get("name") ?? "").trim();
     // A refusal goes back to the retire document for the same computer, with nothing changed.
     const again = (problem: string): void => {
