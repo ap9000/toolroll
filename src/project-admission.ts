@@ -131,15 +131,22 @@ export async function admitProject(store: Store, input: {
     if (input.registryFile === null || !enrolledHere) return failure;
     let problem: string | null;
     try {
-      const removed = await updateRepos(input.registryFile, repos => removeRepos(repos, [repo]));
+      // Under the registry's lock, and only while the line is still nobody's: once another admission committed the
+      // project (its row is saved), the line is that admission's and stays.
+      const removed = await updateProjectRegistry(input.registryFile, current =>
+        !current.repos.includes(repo) || store.listProjects().some(one => one.path === repo) ? current : { ...current, repos: removeRepos(current.repos, [repo]) });
       problem = removed.ok ? null : removed.message;
     } catch (error) { problem = error instanceof Error ? error.message : String(error); }
     if (problem === null) return failure;
+    let unrecorded = "";
     try {
       store.recordAction({ at: input.now.toISOString(), actor: input.actor.label, repo, taskId: null, runId: null, action: PROJECT_ADD_INCOMPLETE, outcome: "rollback-failed", source: "access",
         detail: `its line in the project list couldn't be taken back: ${problem}` });
-    } catch { /* the person's message below still says it */ }
-    return { ok: false, reason: "incomplete", message: `${projectName(repo)} wasn't added, and its line in the project list couldn't be taken back (${problem}). Remove it with \`toolroll repos remove ${repo}\`.` };
+    } catch (error) {
+      // Said, not swallowed: the person hears that the ledger couldn't record it either.
+      unrecorded = ` It couldn't be recorded in the history either (${error instanceof Error ? error.message : String(error)}).`;
+    }
+    return { ok: false, reason: "incomplete", message: `${projectName(repo)} wasn't added, and its line in the project list couldn't be taken back (${problem}). Remove it with \`toolroll repos remove ${repo}\`.${unrecorded}` };
   };
   let added: boolean | null;
   try {

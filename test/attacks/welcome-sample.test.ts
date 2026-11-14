@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanup, render } from "ink-testing-library";
@@ -262,6 +262,59 @@ describe("addSampleProject: the one operation, re-checked after its waits", () =
   }, 30_000);
 });
 
+describe("one sample add at a time, and cleanup only of the folder this call made", () => {
+  const actor = { label: "alex", origin: "cli" as const };
+  const registryCeiling = (registry?: { repos: readonly string[]; roots: readonly string[] }) => {
+    const read = registry ?? readProjectRegistryNow(registry === undefined ? registryPath() : "");
+    return "error" in read ? { repos: [], roots: [] } : resolveCeiling(read.repos, read.roots).ceiling;
+  };
+  const registryPath = () => registry;
+  /** A store whose project write fails: an add that fails inside its admission, after the folder was made. */
+  const failingStore = (): Store => { const one = openStore(file); one.upsertProject = () => { throw new Error("disk full"); }; return one; };
+  /** Resolves the first folder only after `ms` (a slow disk): the window another request would use. */
+  const slowFirst = (ms: number, meanwhile: () => void = () => {}) => { let first = true; return async (path: string) => {
+    if (first) { first = false; await new Promise(resolve => setTimeout(resolve, ms)); meanwhile(); } return realpathSync(path); }; };
+
+  test("two at once, the first failing after it made the sample: exactly one sample, registered, with its check; nothing of the one that succeeded is removed", async () => {
+    const a = failingStore(), b = openStore(file);
+    try {
+      const first = addSampleProject({ store: a, registryFile: registry, now, ceiling: registryCeiling, authority: { actor, stands: () => true }, resolveFolder: slowFirst(1_500) });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const second = addSampleProject({ store: b, registryFile: registry, now, ceiling: registryCeiling, authority: { actor, stands: () => true } });
+      const [one, two] = await Promise.all([first, second]);
+      expect(one.ok).toBe(false);
+      expect(two).toMatchObject({ ok: true, created: true, checkSet: true });
+    } finally { a.close(); b.close(); }
+    expect(readdirSync(projects).filter(one => !one.startsWith("."))).toEqual(["toolroll-sample"]);
+    expect(existsSync(join(sample(), ".git", "toolroll-sample"))).toBe(true);
+    expect(listed().repos).toEqual([sample()]);
+    expect(added()).toMatchObject({ projects: [sample()], checks: 1 });
+  }, 60_000);
+
+  test("a marker-bearing folder put in place of the one this call made is never removed", async () => {
+    const a = failingStore();
+    try {
+      const result = await addSampleProject({ store: a, registryFile: registry, now, ceiling: registryCeiling, authority: { actor, stands: () => true },
+        // While it waits, the folder it made is moved away and another real sample (ours by marker, a different folder) takes its place.
+        resolveFolder: slowFirst(10, () => { renameSync(sample(), join(root, "moved")); execFileSync("git", ["init", "-q", sample()]); writeFileSync(join(sample(), ".git", "toolroll-sample"), "Made by Toolroll's welcome as the sample project.\n"); }) });
+      expect(result.ok).toBe(false);
+    } finally { a.close(); }
+    expect(existsSync(join(sample(), ".git", "toolroll-sample"))).toBe(true);
+    expect(existsSync(join(root, "moved", "README.md"))).toBe(true);
+    expect(listed().repos).toEqual([]);
+  }, 30_000);
+
+  test("the registry line is taken back only while nobody's project names it", async () => {
+    // A failing add whose line a saved project names (another admission committed it): the line stays with that project.
+    const repo = join(projects, "shop");
+    mkdirSync(repo); execFileSync("git", ["init", "-q", repo]);
+    withStore(store => store.upsertProject(repo, "shop", now, { remoteUrl: null }));
+    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now, withinAdmission: () => { throw new Error("no"); } }));
+    expect(result.ok).toBe(false);
+    expect(listed().repos).toEqual([repo]);
+  }, 30_000);
+});
+
 describe("admitProject: rollback that only takes back its own line, and says when it can't", () => {
   const actor = { label: "alex", origin: "cli" as const };
   let repo: string;
@@ -288,6 +341,14 @@ describe("admitProject: rollback that only takes back its own line, and says whe
     expect(result.ok === false && result.message).toContain(`toolroll repos remove ${repo}`);
     const ledger = withStore(store => store.actionLedger({ repos: [repo], instance: true, limit: 10 }).map(one => `${one.action} ${one.outcome}`));
     expect(ledger).toContain("project add incomplete rollback-failed");
+  });
+
+  test("a history row that can't be written either is said too, never swallowed", async () => {
+    // The history fails from inside the admission on (the project write itself may record history first).
+    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now,
+      withinAdmission: () => { writeFileSync(registry, "{ not json"); store.recordAction = () => { throw new Error("ledger locked"); }; throw new Error("no"); } }));
+    expect(result).toMatchObject({ ok: false, reason: "incomplete" });
+    expect(result.ok === false && result.message).toContain("couldn't be recorded in the history either (ledger locked)");
   });
 
   test("registryAllowed decides on the registry as its lock holds it (its projects folders too)", async () => {

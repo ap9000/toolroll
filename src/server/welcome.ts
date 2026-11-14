@@ -14,6 +14,8 @@ import { firstTaskSuggestions, SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, welcomeM
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { START_BUILDER_HREF } from "../needs-you.js";
 import { addSampleProject } from "../sample-project.js";
+import { resolveCeiling } from "../project.js";
+import { readProjectRegistryNow, type ProjectRegistry } from "../repos.js";
 import { type Chrome, refuse, screen, type Screen } from "./chrome.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
@@ -158,8 +160,20 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
     // This browser session, still saved, still an approver of the same generation: asked before anything is made, after
     // each wait, and inside the admission's own writes (a local owner's chain is re-proved by every write as well).
     const stands = (): boolean => { const again = rereadBrowser(runtime, request, who); return again !== null && again.role === "approver" && !store.isDemo(); };
+    // What this console serves. An `up` console (it serves the registry's admitted set) decides on the registry as it is
+    // now — under its lock when given it — so a projects folder taken out of the registry is no longer served for this;
+    // a flag-only `serve` has no registry folders and keeps its own --project-root ceiling.
+    const registryPath = options.registryPath ?? null;
+    const registryBacked = registryPath !== null && options.admittedRepos !== undefined;
+    const ceiling = (registry?: ProjectRegistry) => {
+      const live = liveCeiling();
+      if (!registryBacked) return live;
+      const read = registry ?? readProjectRegistryNow(registryPath);
+      const current = "error" in read ? [] : resolveCeiling([], read.roots).ceiling.roots;
+      return { ...live, roots: live.roots.filter(root => current.includes(root)) };
+    };
     const added = await addSampleProject({
-      store, registryFile: options.registryPath ?? null, ceiling: liveCeiling, now, visible,
+      store, registryFile: registryPath, ceiling, now, visible,
       authority: { actor: { label: who.name, origin: "console" }, stands },
       resolveFolder: identities.resolveNow, generation: () => identities.generation(),
     });

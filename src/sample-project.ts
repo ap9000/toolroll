@@ -12,8 +12,9 @@
  * terminal UI's `s` and `toolroll welcome sample`. Each passes its own proven authority and the projects it serves;
  * the operation never widens either.
  */
-import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { lstatSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { SAMPLE_PROJECT_NAME } from "./first-run.js";
 import { admitProject, type AdmissionActor, type FolderResolver } from "./project-admission.js";
@@ -101,28 +102,30 @@ function removeMade(target: string, made: { dev: number; ino: number }): boolean
   } catch { return false; }
 }
 
-/** Remove a finished sample this call made and didn't get to add (a refusal after making it): only while it is ours —
- * a real folder, not a link, with our marker in its .git — so the next try makes it afresh and arms its check. */
-export function removeOwnSample(target: string): boolean {
-  if (!isAbsolute(target) || !isOurs(target)) return false;
-  try { rmSync(target, { recursive: true, force: true }); } catch { return false; }
-  return kindOf(target) === "missing";
-}
-
 /**
  * Make (or find again) the sample project in `root`, the folder projects go in. `guard`: the caller's authority and
  * served folder, asked before the folder is claimed, after each git step and before each later write; when it says no,
  * the folder this call made is removed (removeMade) and nothing is added.
  */
 export async function createSampleProject(root: string | null, git: GitRun = run, guard: () => boolean = () => true): Promise<SampleOutcome> {
+  const made = await claimSample(root, git, guard);
+  return made.ok ? { ok: true, path: made.path, created: made.created } : made;
+}
+
+/** The folder a sample made by this call was, when made (its device and inode): what cleanup proves before removing. */
+type MadeIdentity = { dev: number; ino: number };
+type Claimed = { ok: true; path: string; created: boolean; identity: MadeIdentity | null } | Extract<SampleOutcome, { ok: false }>;
+
+/** createSampleProject, with the identity of the folder this call made (null when it found one again). */
+async function claimSample(root: string | null, git: GitRun, guard: () => boolean): Promise<Claimed> {
   if (root === null || root === "" || !isAbsolute(root) || kindOf(root) !== "dir") {
     return { ok: false, reason: "no-root", message: "There's no project folder to put the sample in." };
   }
   const target = join(root, SAMPLE_PROJECT_NAME);
-  if (isOurs(target)) return { ok: true, path: target, created: false };
-  const refused: SampleOutcome = { ok: false, reason: "refused", message: "Your access changed while the sample was being made. Nothing was added." };
+  if (isOurs(target)) return { ok: true, path: target, created: false, identity: null };
+  const refused: Claimed = { ok: false, reason: "refused", message: "Your access changed while the sample was being made. Nothing was added." };
   if (!guard()) return refused;
-  let identity: { dev: number; ino: number };
+  let identity: MadeIdentity;
   try {
     mkdirSync(target); // the claim: exclusive, and never through a link
     const seen = lstatSync(target);
@@ -130,11 +133,11 @@ export async function createSampleProject(root: string | null, git: GitRun = run
   } catch {
     return { ok: false, reason: "exists", message: `A folder named ${SAMPLE_PROJECT_NAME} is already there, so nothing was changed.` };
   }
-  const fail = (): SampleOutcome => {
+  const fail = (): Claimed => {
     removeMade(target, identity); // left for a person to remove when it isn't provably this call's
     return { ok: false, reason: "failed", message: "The sample project couldn't be made. Nothing was added." };
   };
-  const stop = (): SampleOutcome => { removeMade(target, identity); return refused; };
+  const stop = (): Claimed => { removeMade(target, identity); return refused; };
   try {
     for (const [file, body] of Object.entries(FILES)) {
       const path = join(target, file);
@@ -152,7 +155,7 @@ export async function createSampleProject(root: string | null, git: GitRun = run
   } catch {
     return fail();
   }
-  return { ok: true, path: target, created: true };
+  return { ok: true, path: target, created: true, identity };
 }
 
 /** The sample's own check: its one test file, run by Node's test runner. Fixed here; never anyone's input. */
@@ -229,7 +232,7 @@ export async function addSampleProject(input: {
   generation?: () => number;
   git?: GitRun;
 }): Promise<SampleAdded> {
-  const { store, authority } = input;
+  const { authority } = input;
   if (!authority.stands()) return { ok: false, reason: "refused" };
   const root = sampleRootOf(input.ceiling());
   if (root === null) return { ok: false, reason: "no-root" };
@@ -237,10 +240,28 @@ export async function addSampleProject(input: {
   const rootServed = (ceiling: ProjectCeiling): boolean => !unscoped(ceiling) && ceiling.roots.some(one => one.replace(/\/+$/, "") === root);
   /** Why it can't go on now: the person no longer stands, or the projects folder is no longer served; null: it can. */
   const standing = (): "refused" | "not-added" | null => !authority.stands() ? "refused" : !rootServed(input.ceiling()) ? "not-added" : null;
-  const made = await createSampleProject(root, input.git, () => standing() === null);
+  // One sample add at a time, from making it to its cleanup: no other request can find, adopt or remove this sample
+  // in between. Taken before the registry's lock (inside admitProject), always in that order.
+  const lock = sampleLock(input.registryFile === null ? join(root, ".toolroll-sample.lock") : `${input.registryFile}.sample.lock`);
+  if (!(await lock.take())) return { ok: false, reason: "not-added" };
+  try {
+    return await addHolding(input, root, expected, rootServed, standing);
+  } finally { lock.release(); }
+}
+
+/** addSampleProject's body, run while it holds the sample lock. */
+async function addHolding(input: Parameters<typeof addSampleProject>[0], root: string, expected: string,
+  rootServed: (ceiling: ProjectCeiling) => boolean, standing: () => "refused" | "not-added" | null): Promise<SampleAdded> {
+  const { store, authority } = input;
+  const made = await claimSample(root, input.git ?? run, () => standing() === null);
   if (!made.ok) return { ok: false, reason: made.reason === "refused" ? standing() ?? "refused" : made.reason };
-  /** A refusal after making it: the folder this call made goes again (only while it is ours). */
-  const undo = (reason: "refused" | "not-added"): SampleAdded => { if (made.created) removeOwnSample(made.path); return { ok: false, reason }; };
+  /** A refusal after making it: the folder this call made goes again — only while it is still that very folder (its
+   * device and inode when made), a real folder with our marker or none. A sample found again is never removed. */
+  const undo = (reason: "refused" | "not-added"): SampleAdded => {
+    // Never one a project row names (another road — `repos add` — admitted it meanwhile).
+    if (made.identity !== null && !store.listProjects().some(one => one.path === made.path)) removeMade(made.path, made.identity);
+    return { ok: false, reason };
+  };
   const after = standing();
   if (after !== null) return undo(after);
   const decidedOn = input.generation?.() ?? null;
@@ -269,4 +290,43 @@ export async function addSampleProject(input: {
     return undo(standing() ?? "not-added");
   }
   return { ok: true, repo: admitted.repo, created: made.created, added: admitted.added, checkSet };
+}
+
+/**
+ * The sample lock: one sample add at a time per registry (or projects folder, with no registry), held from making the
+ * sample to its cleanup. An exclusive-create file holding its owner's pid and a token; a lock whose owner process is
+ * gone is taken over, a live owner's is waited for (at most a minute). Released only while it is still ours.
+ */
+function sampleLock(path: string): { take: () => Promise<boolean>; release: () => void } {
+  const token = `${process.pid}.${randomBytes(8).toString("hex")}`;
+  let held = false;
+  return {
+    async take() {
+      try { mkdirSync(dirname(path), { recursive: true }); } catch { return false; }
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        try {
+          writeFileSync(path, token, { flag: "wx", mode: 0o600 });
+          held = true;
+          return true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+        }
+        let seen = "";
+        try { seen = readFileSync(path, "utf8"); } catch { continue; }
+        const owner = Number(seen.split(".")[0]);
+        let gone = !Number.isInteger(owner) || owner <= 0;
+        if (!gone) { try { process.kill(owner, 0); } catch (error) { gone = (error as NodeJS.ErrnoException).code === "ESRCH"; } }
+        // A dead owner's lock goes only while it is still that same lock.
+        if (gone) { try { if (readFileSync(path, "utf8") === seen) unlinkSync(path); } catch { /* taken meanwhile */ } continue; }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return false;
+    },
+    release() {
+      if (!held) return;
+      held = false;
+      try { if (readFileSync(path, "utf8") === token) unlinkSync(path); } catch { /* already gone */ }
+    },
+  };
 }
