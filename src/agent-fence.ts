@@ -42,6 +42,9 @@ import { protectedStorageDenies, protectedStorageNames, type ProtectedStorage } 
 import { ensureSecretsDir, legacyLoginFileOf, SECRETS_DIR, secretsDirOf } from "./login-secrets.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
 
+/** The folder beside the database that holds Flexible threads' own folders (flexible-thread.ts). */
+export const FLEXIBLE_THREADS_DIR = "threads";
+
 /** How a launch was fenced, as recorded on the run and said on the task. */
 export type FenceMethod = "codex-profile" | "macos-sandbox" | "linux-bubblewrap" | "claude-rules" | "none";
 
@@ -129,6 +132,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   const fence = new Set<string>();
   /** The console's run folder: kept by its own pathname through canonicalization (and its target's too). */
   let runFolder: string | null = null;
+  /** Kept by their own pathname alone, never by where a link there leads (the threads folder). */
+  const literal = new Set<string>();
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -156,6 +161,22 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     try { mkdirSync(backups, { mode: 0o700 }); } catch { /* name and target remain denied */ }
     fence.add(backups);
     fence.add(real(backups));
+    // Flexible threads' own folders (flexible-thread.ts): denied whole to every launch but a thread's own, whose fence
+    // denies the other threads itself (as a checkout pool, its own folder given back). Made first (owner-only) when it
+    // isn't there, so every backend denies a folder that exists and a thread made after this launch is inside it; if it
+    // can't be made, its name is denied anyway.
+    // Only a real folder is the threads folder: a link (or anything else) at that name is denied by its name alone, never
+    // followed (its target is neither denied in its place nor taken as holding this launch's own thread), and said; a
+    // thread launch refuses it outright (flexible-thread.ts ownFolder).
+    const threads = join(state, FLEXIBLE_THREADS_DIR);
+    try { mkdirSync(threads, { mode: 0o700 }); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") process.stderr.write(`toolroll: fence: couldn't make ${threads} (${(error as Error).message}); it is denied by name, and no Flexible thread starts\n`);
+    }
+    let threadsFolder = false, threadsThere = false;
+    try { const held = lstatSync(threads); threadsThere = true; threadsFolder = held.isDirectory() && !held.isSymbolicLink(); } catch { threadsThere = false; }
+    if (threadsThere && !threadsFolder) process.stderr.write(`toolroll: fence: ${threads} isn't a folder (a link?); it is denied by name and never followed\n`);
+    const ownThread = threadsFolder && worktree !== null && (worktree === threads || inside(worktree, threads));
+    if (!ownThread) { fence.add(threads); literal.add(threads); }
     // Saved credentials (the remembered login, login-secrets.ts) live in a reserved owner-only folder, made here before
     // any launch and denied whole, so one first written after this launch is behind this fence too: a listing can't
     // name a file that isn't there yet, and bubblewrap can't deny one. If it can't be made or proven, its name is
@@ -201,7 +222,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.extra ?? []) fence.add(real(path));
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => literal.has(path) ? [path] : path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]));
   // Protected storage (chat apps, browser profiles, password managers): every launch, every policy, never exemptible,
   // kept by the name it was resolved under as well as where it leads.
   const storage = options.protectedStorage ?? protectedStorageDenies(home);
@@ -209,7 +230,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...[...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
+  return [...new Set([...[...fence].flatMap(path => literal.has(path) ? [path] : path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -411,7 +432,17 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   writeDenies?: string[];
   /** Protected storage (protected-storage.ts): denied to read and write by every backend, and no grant equal to or
    * inside one survives (a sandbox that lets the more specific path win can't reopen it). */
-  protectedStorage?: string[] };
+  protectedStorage?: string[];
+  /** A Flexible thread's launch (flexible-thread.ts): none of the sandbox runtime's shared write folders (/tmp/claude),
+   * which every other launch on this computer may also write; its temp is its own. */
+  noSharedTemp?: true;
+  /** Denied to read, never to write (a Flexible thread's state folder: its own folder inside it is read back, and
+   * written only where its write allowlist says, which a write deny around it would take away). */
+  readDenyOnly?: string[];
+  /** Read back inside the pool deny instead of the whole own folder (a Flexible thread's: its repository, temp, caches
+   * and configuration home). On Linux the runtime binds a read-back path read-only after it binds the write paths, so a
+   * read-back of a folder that holds write paths would leave them read-only; naming the parts keeps them writable. */
+  ownReadBack?: string[] };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -898,6 +929,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   const denyWrite = new Set<string>([...fence, ...grants.readOnly].map(real));
   for (const path of grants.writeDenies ?? []) denyWrite.add(path);
   for (const name of grants.homeNames ?? []) { denyRead.add(name); denyWrite.add(name); }
+  for (const path of grants.readDenyOnly ?? []) denyRead.add(real(path));
   for (const file of grants.signIns?.read ?? []) allowRead.add(file);
   // Every other launch's private folder unread by pattern (one made after this launch too), this launch's own read
   // again. Writes are denied to those there at launch, under every root: the runtime can't write back inside a write
@@ -920,8 +952,9 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   if (pool !== undefined) {
     // Under v1 the pools are unread too, the build's own checkout read again; under v2 they are read (owner Q-C).
     if (pool.readable !== true) for (const root of pool.deny) denyRead.add(root);
-    // The build's own checkout is read again inside whatever is denied around it (the pools, a flow's sealed scratch).
-    if (pool.own !== null) allowRead.add(pool.own);
+    // The build's own checkout is read again inside whatever is denied around it (the pools, a flow's sealed scratch), or
+    // only the named parts of it (ownReadBack).
+    if (pool.own !== null) for (const path of grants.ownReadBack ?? [pool.own]) allowRead.add(real(path));
     // Never written but the build's own checkout: the runtime can't write back inside a write deny, so each other
     // entry on the way is denied instead (codexPool's split, as Codex takes it).
     for (const path of codexPool(pool).deny) denyWrite.add(path);
@@ -943,7 +976,8 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   // Writing anywhere: everything but the denies. The launch's own checkout and folder are named too, so a backend that
   // binds a read deny's re-allowed paths back (bubblewrap) binds those back writable.
   const allowOnly = writes === undefined ? ["/", ...(pool?.own == null ? [] : [real(pool.own)]), ...(folders?.own == null ? [] : [folders.own])]
-    : [...writes.subpaths, ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })];
+    : [...writes.subpaths, ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })
+      .filter(path => grants.noSharedTemp !== true || !SHARED_TEMP.includes(path))];
   const network = grants.network;
   return {
     readConfig,
@@ -957,6 +991,10 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
     },
   };
 }
+
+/** The sandbox runtime's default write folders that every launch on this computer shares (sandbox-utils
+ * SANDBOX_OWN_WRITE_PATHS): left out of a Flexible thread's writes (FenceGrants.noSharedTemp). */
+const SHARED_TEMP: readonly string[] = ["/tmp/claude", "/private/tmp/claude"];
 
 /** The spawn that runs `file args` from `cwd` inside the sandbox runtime's sandbox (sandbox-runtime.ts srtSpawn), and the
  * environment it needs beside the caller's. */
