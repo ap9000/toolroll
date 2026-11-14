@@ -127,6 +127,8 @@ export interface TuiSource {
 export interface TuiSession {
   /** Quitting would stop the Toolroll this terminal started (no background service runs it). */
   owned(): boolean;
+  /** The Toolroll this terminal started stopped on its own (a non-zero exit): the line to show, else null. */
+  stopped?(): string | null;
   /** Open this computer's browser on the console, signed in. Resolves with what to say. */
   openBrowser(): Promise<string>;
   /** Whether to ask, now, "Keep Toolroll running in the background?" (once per installation). */

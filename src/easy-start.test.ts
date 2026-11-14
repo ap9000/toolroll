@@ -22,10 +22,10 @@ const NONE: AttachProof = { ok: false, state: "none", message: "no console is ru
 function fakeChild(pid = fakePid(2)) {
   let running = true, resolveExit: (code: number | null) => void = () => {};
   const exited = new Promise<number | null>(resolve => { resolveExit = resolve; });
-  const child: OwnedUp & { stopped: number; dies: (lines?: string[]) => void } = {
+  const child: OwnedUp & { stopped: number; dies: (lines?: string[], code?: number | null) => void } = {
     pid, exited, stopped: 0, running: () => running, tail: () => tailLines,
     stop: () => { child.stopped += 1; running = false; resolveExit(0); },
-    dies: lines => { tailLines = lines ?? []; running = false; resolveExit(1); },
+    dies: (lines, code = 1) => { tailLines = lines ?? []; running = false; resolveExit(code); },
   };
   let tailLines: string[] = [];
   return child;
@@ -92,6 +92,9 @@ describe("which invocations are an easy start", () => {
     expect(easyStartArgs(["--web", "--project-root", "/p"])).toEqual({ web: true, projectRoot: "/p", port: null });
     // Eight W2: --port <n> too (checked where it is used, so a bad one is told as such).
     expect(easyStartArgs(["--port", "4351", "--project-root", "/p"])).toEqual({ web: false, projectRoot: "/p", port: "4351" });
+    // --verbose: `up`'s own, and its last output printed here if it stops on its own.
+    expect(easyStartArgs(["--verbose"])).toEqual({ web: false, projectRoot: null, port: null, verbose: true });
+    expect(easyStartArgs(["--verbose", "--verbose"])).toBeNull();
     for (const argv of [["--json"], ["--web", "--json"], ["--project-root"], ["--project-root", "--web"], ["scan"], ["/some/path"], ["--web", "--web"], ["--local"], ["--port"], ["--port", "--web"], ["--port", "1", "--port", "2"]]) expect(easyStartArgs(argv), argv.join(" ")).toBeNull();
     const person = { stdin: true, stdout: true, agent: false };
     expect(easyStartApplies([], person)).toBe(true);
@@ -416,5 +419,57 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
     expect(code).toBe(3);
     expect(out.join("\n")).toContain("sudo apt update && sudo apt install socat (Fedora: sudo dnf install socat)");
     expect(existsSync(file)).toBe(false);
+  });
+});
+
+describe("the `up` it started stops on its own (stranger test, Linux stall 1)", () => {
+  const STOPPED = "Toolroll's background worker stopped. Run `toolroll --verbose` to see why.";
+  const OUTPUT = ["[worker] Error: VIEWs and/or subqueries nested too deep", "[worker]     at prepare (work-index.js:503:9)", "up: VIEWs and/or subqueries nested too deep"];
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+
+  test("a non-zero exit: the screen hears it at once, quitting says it again, the exit is 1, and its output stays off the terminal", async () => {
+    const heard: (string | null)[] = [];
+    const { seams, lines, children } = scripted({ proofs: [NONE, NONE, LIVE], local: ["absent", "on"], tui: async session => {
+      heard.push(session.stopped?.() ?? null);
+      children[0]!.dies(OUTPUT);
+      await tick();
+      heard.push(session.stopped?.() ?? null);
+      return "leave";
+    } });
+    expect(await runEasyStart("start", bare, seams)).toBe(1);
+    expect(heard).toEqual([null, STOPPED]);
+    expect(lines.at(-1)).toBe(STOPPED);
+    expect(lines.join("\n")).not.toContain("VIEWs");
+    expect(lines).not.toContain("Toolroll stopped.");
+  });
+
+  test("--verbose goes to `up`, and only then is its last output printed here, before the line", async () => {
+    const { seams, lines, calls, children } = scripted({ proofs: [NONE, NONE, LIVE], local: ["absent", "on"], tui: async () => {
+      children[0]!.dies(OUTPUT);
+      await tick();
+      return "leave";
+    } });
+    expect(await runEasyStart("start", { ...bare, verbose: true }, seams)).toBe(1);
+    expect(calls[0]).toBe("spawn --laptop --no-open --verbose");
+    expect(lines.slice(-4)).toEqual([...OUTPUT, STOPPED]);
+  });
+
+  test("a stop the person or Toolroll asked for (Stop on quit, a signal), or a clean exit, is never said; the exit is 0", async () => {
+    const quit = scripted({ proofs: [NONE, NONE, LIVE], local: ["absent", "on"], tui: async () => "stop" });
+    expect(await runEasyStart("start", bare, quit.seams)).toBe(0);
+    expect(quit.lines.at(-1)).toBe("Toolroll stopped.");
+    expect(quit.lines).not.toContain(STOPPED);
+    for (const code of [0, null]) {
+      const heard: (string | null)[] = [];
+      const ended = scripted({ proofs: [NONE, NONE, LIVE], local: ["absent", "on"], tui: async session => {
+        ended.children[0]!.dies(["draining"], code);
+        await tick();
+        heard.push(session.stopped?.() ?? null);
+        return "leave";
+      } });
+      expect(await runEasyStart("start", bare, ended.seams), String(code)).toBe(0);
+      expect(heard).toEqual([null]);
+      expect(ended.lines).not.toContain(STOPPED);
+    }
   });
 });

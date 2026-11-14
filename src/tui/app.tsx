@@ -73,6 +73,13 @@ export function inHomeOrder(rows: readonly TuiRow[]): TuiRow[] {
 /** A group's heading in the list; work in no group (cancelled, replaced) is listed under Other. */
 const groupHeading = (row: TuiRow): string => row.group === null ? "Other" : HOME_GROUP_LABEL[row.group];
 
+/** With the Toolroll this terminal started stopped, a task never reads Planning or Building (nothing plans or builds it),
+ * and nothing runs on it. */
+export function honestRow<T extends { status: string; detail: string; liveRunId: number | null }>(row: T, stopped: boolean): T {
+  if (!stopped || (row.status !== "Planning" && row.status !== "Building")) return row;
+  return { ...row, status: "Waiting", detail: "Toolroll's background worker isn't running.", liveRunId: null };
+}
+
 /** Printable characters typed or pasted into a composer (control characters dropped). */
 const typed = (input: string): string => [...input].filter(char => char >= " " && char !== "\u007f").join("");
 
@@ -85,11 +92,13 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [live, setLive] = useState<readonly string[]>([]);
+  // The Toolroll this terminal started, stopped on its own: the session knows at once (easy-start.ts).
+  const [stopped, setStopped] = useState<string | null>(() => session.stopped?.() ?? null);
   const seen = useRef<number | null>(null);
   const ticks = useRef(0);
   const ended = useRef(false);
 
-  const rows: readonly TuiRow[] = inHomeOrder(snapshot?.rows ?? []);
+  const rows: readonly TuiRow[] = inHomeOrder(snapshot?.rows ?? []).map(row => honestRow(row, stopped !== null));
   const current: TuiRow | undefined = rows[Math.min(selected, Math.max(rows.length - 1, 0))];
 
   const refresh = useCallback(async () => {
@@ -101,6 +110,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     const timer = setInterval(() => {
+      const said = session.stopped?.() ?? null;
+      setStopped(before => (before === said ? before : said));
       ticks.current += 1;
       const now = source.changed();
       if (now !== seen.current || ticks.current % 5 === 0) {
@@ -109,7 +120,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       }
     }, pollMs);
     return () => clearInterval(timer);
-  }, [source, refresh, pollMs]);
+  }, [source, session, refresh, pollMs]);
   // The selected task's live output, read again each tick.
   const currentId = current?.id ?? null;
   useEffect(() => {
@@ -314,7 +325,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
   keyHandler.current = onKey;
   useInput(useCallback((input: string, key: Key) => keyHandler.current(input, key), []));
 
-  const footer = busy ?? message;
+  // A stopped worker is said in place of anything that would claim progress ("Filed. Planning…").
+  const footer = busy ?? stopped ?? message;
   return (
     <Box flexDirection="column">
       <Box justifyContent="space-between">
@@ -323,7 +335,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         {snapshot?.learning ? <SafeText dimColor>{snapshot.learning}</SafeText> : null}
       </Box>
       {body()}
-      {footer === null ? null : <SafeText>{footer}</SafeText>}
+      {footer === null ? null : <SafeText {...(busy === null && stopped !== null ? { bold: true } : {})}>{footer}</SafeText>}
       <Text dimColor>{hints()}</Text>
     </Box>
   );
@@ -429,7 +441,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
           </Box>
         );
       case "task": {
-        const { task } = screen;
+        const task = honestRow(screen.task, stopped !== null);
         const question = task.decisions[0];
         return (
           <Box flexDirection="column" borderStyle="single" paddingX={1}>

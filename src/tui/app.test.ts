@@ -317,5 +317,34 @@ describe("terminal UI", () => {
     const frame = app.lastFrame() ?? "";
     for (const trick of ["\x1b[2J", "\x1b]8;;", "\x1b]0;", "\x1b[1A", "\x1b[2K", "\x9b", "\r", "evil.example"]) expect(frame).not.toContain(trick);
   });
-});
 
+  it("its `up` stopping on its own is said at once in place of progress; no task then reads Planning or Building", async () => {
+    const STOPPED = "Toolroll's background worker stopped. Run `toolroll --verbose` to see why.";
+    const base = sampleSource();
+    const snapshot = await base.snapshot();
+    const planning = { ...snapshot.rows[1]!, title: "Add a subtract function", status: "Planning", detail: "The lead is writing the plan." };
+    const acts: TuiAct[] = [];
+    const source = scripted({
+      snapshot: async () => ({ ...snapshot, rows: [planning] }),
+      act: async one => { acts.push(one); return { ok: true, message: "Filed. Planning: you'll approve the plan before anything is built." }; },
+    });
+    let alive = true;
+    const session: TuiSession = { ...sampleSession(), owned: () => alive, stopped: () => (alive ? null : STOPPED) };
+    const app = render(createElement(App, { source, session, pollMs: 20 }));
+    const shows = show(app);
+    await shows("> Add a subtract function Planning");
+    await mounted();
+    alive = false;
+    await shows(STOPPED);
+    await shows("> Add a subtract function Waiting");
+    expect(app.lastFrame()).not.toContain("Planning");
+    app.stdin.write("n");
+    await shows("New task");
+    app.stdin.write("Add a divide function");
+    await shows("Add a divide function");
+    app.stdin.write("\r");
+    await vi.waitFor(() => expect(acts).toHaveLength(1));
+    await shows(STOPPED);
+    expect(app.lastFrame()).not.toContain("Planning");
+  });
+});
