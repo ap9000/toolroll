@@ -95,3 +95,12 @@ jobs:
     permissions:
       contents: read
       actions: read
+
+  # The wire budgets on main (wire-budgets.yml): its report artifact is what a pull request's run compares against.
+  # Advisory, like its pull-request run; nothing a release waits for.
+  wire:
+    name: main · wire budgets
+    uses: ./.github/workflows/wire-budgets.yml
+    permissions:
+      contents: read
+      actions: read
