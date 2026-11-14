@@ -1801,7 +1801,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     store.recordOutcomeFacts(run, { headRevision: "2".repeat(40), handoff: "Done." });
     store.finishRun(run, { outcome: "built", committed: true, now: clockNow });
     store.setTaskState("a", "done", clockNow);
-    const result = await fetch(url(`/review?result=a&run=${run}&format=workspace`), { headers: { cookie } });
+    const result = await fetch(url(`/t/a?tab=result&run=${run}&format=workspace`), { headers: { cookie } });
     expect(result.status).toBe(200);
     const shown = await result.json() as import("./browser-workspace.js").BrowserWorkspace;
     expect(shown.conversation?.sessionId).toBe(0);

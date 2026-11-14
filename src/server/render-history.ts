@@ -235,7 +235,41 @@ function stateChip(state: string): Html {
 
 /** A task's full record, read-only: what was asked and approved, every agent that ran, the result, and its sealed audit
  * log entries, with the JSON download and Print. The same facts as the pack's JSON (evidence-pack.ts). */
+/** The task page's Record section (one-workspace plan S1): the same record, read-only, with Print (the printable page)
+ * and Download JSON at their own addresses. */
+export function evidenceRecordSection(pack: EvidencePack): Html {
+  const href = `/t/${encodeURIComponent(pack.task.id)}/evidence`;
+  const parts = evidenceRecordParts(pack);
+  return html`<div class="h-record" data-evidence-pack="${pack.task.id}" data-evidence-section>\
+<p class="k-acts h-record-tools">${btn("Print", { sm: true, variant: "ghost", href: `${href}?print=1`, attrs: { "data-evidence-print": true } })}${btn("Download JSON", { sm: true, variant: "ghost", href: `${href}?format=json`, attrs: { download: true } })}</p>\
+${parts.broken}${parts.summary}${parts.versions}${parts.agents}${parts.outcome}${parts.log}${parts.foot}</div>`;
+}
+
 export function evidenceRecordPage(chrome: Chrome, pack: EvidencePack): Screen {
+  const task = pack.task;
+  const href = `/t/${encodeURIComponent(task.id)}`;
+  const { summary, broken, versions, agents, outcome, log, foot } = evidenceRecordParts(pack);
+  const json = `${href}/evidence?format=json`;
+  const tools = html`<span class="k-acts h-tools">${btn("Download JSON", { sm: true, href: json, attrs: { download: true } })}${btn("Print", { sm: true, variant: "ghost", attrs: { "data-k-print": true } })}</span>`;
+  const body = kitPage(html` data-evidence-pack="${task.id}"`,
+    phoneHeader("Full record", { back: href }),
+    doc(
+      docHeader({ title: "Full record", back: [href, "Task"], meta: html`${task.title}${task.project === null ? "" : ` · ${task.project}`} · <span class="k-mono">${task.id}</span>`, right: tools }),
+      html`<p class="k-note h-lead">Read-only. Everything below is sealed in the audit log; nothing here can be changed.</p>`,
+      broken,
+      summary,
+      versions,
+      agents,
+      outcome,
+      log,
+      foot,
+      html`<div class="h-phone-tools">${btn("Download JSON", { href: json, attrs: { download: true } })}</div>`,
+    ),
+  );
+  return screen(`Full record · ${task.title}`, body, { chrome });
+}
+
+function evidenceRecordParts(pack: EvidencePack): { summary: Html; broken: Html | ""; versions: Html[]; agents: Html; outcome: Html; log: Html; foot: Html } {
   const task = pack.task;
   const href = `/t/${encodeURIComponent(task.id)}`;
   const chain = pack.ledger.chain;
@@ -302,22 +336,6 @@ ${runs.map(run => html`<div class="h-tr" role="row"><span role="cell"><a class="
     requests > 0 ? note(`Plus ${requests} ${requests === 1 ? "request" : "requests"} made through the console (accepted or refused), listed in the JSON.`) : ""}${
     pack.ledger.truncated ? note(`This record holds ${entries.length} of the task's entries and the newest ${requests} requests; the audit log export has the rest.`) : ""}`);
 
-  const json = `${href}/evidence?format=json`;
-  const tools = html`<span class="k-acts h-tools">${btn("Download JSON", { sm: true, href: json, attrs: { download: true } })}${btn("Print", { sm: true, variant: "ghost", attrs: { "data-k-print": true } })}</span>`;
-  const body = kitPage(html` data-evidence-pack="${task.id}"`,
-    phoneHeader("Full record", { back: href }),
-    doc(
-      docHeader({ title: "Full record", back: [href, "Task"], meta: html`${task.title}${task.project === null ? "" : ` · ${task.project}`} · <span class="k-mono">${task.id}</span>`, right: tools }),
-      html`<p class="k-note h-lead">Read-only. Everything below is sealed in the audit log; nothing here can be changed.</p>`,
-      broken,
-      summary,
-      versions,
-      agents,
-      outcome,
-      log,
-      html`<p class="k-note h-foot">Record digest <span class="k-mono">${pack.digest}</span>. Each entry's seal can be rechecked from the JSON: <span class="k-mono">${pack.ledger.recipe}</span>.</p>`,
-      html`<div class="h-phone-tools">${btn("Download JSON", { href: json, attrs: { download: true } })}</div>`,
-    ),
-  );
-  return screen(`Full record · ${task.title}`, body, { chrome });
+  const foot = html`<p class="k-note h-foot">Record digest <span class="k-mono">${pack.digest}</span>. Each entry's seal can be rechecked from the JSON: <span class="k-mono">${pack.ledger.recipe}</span>.</p>`;
+  return { summary, broken, versions, agents, outcome, log, foot };
 }

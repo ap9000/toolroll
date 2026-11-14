@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import { assertRouteTable, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
-import { RETIRED_ROUTES } from "./retired-routes.js";
+import { RETIRED_ROUTES, TASK_VIEW_REDIRECTS } from "./retired-routes.js";
 
 const consoleRoutes = ROUTES.filter(route => route.stage === "console");
 const edgeRoutes = ROUTES.filter(route => route.stage === "edge");
@@ -191,6 +191,28 @@ describe("retired pages (docs/plans/plain-toolroll.md P1.4)", () => {
     expect(at("review", "/review")).toBe("/tasks?view=ready");
     expect(at("work.put-away", "/work/put-away?days=30")).toBe("/tasks/archive?days=30");
     expect(at("work.put-away", "/work/put-away?days=../x")).toBe("/tasks/archive");
+  });
+
+  test("one task view (one-workspace plan S1): the old result addresses and the full record lead to the task page, exactly as named", () => {
+    // Not retired rows: each keeps its handler (its refusals, a running build's record, the JSON and print), and leads
+    // only what it would have shown to the place it named.
+    for (const id of ["review", "run.page", "task.evidence"]) {
+      expect(ROUTES.find(route => route.id === id)?.retired, id).toBeUndefined();
+      expect(TASK_VIEW_REDIRECTS[id as keyof typeof TASK_VIEW_REDIRECTS], id).toBeDefined();
+    }
+    const at = (path: string) => new URL(path, "http://x");
+    expect(TASK_VIEW_REDIRECTS.review(at("/review?result=T&run=4&tab=changes"))).toBe("/t/T?tab=result&run=4&section=changes");
+    expect(TASK_VIEW_REDIRECTS.review(at("/review?result=T"))).toBe("/t/T?tab=result");
+    expect(TASK_VIEW_REDIRECTS.review(at("/review?result=T&run=4&noted=1"))).toBe("/t/T?tab=result&run=4&noted=1");
+    expect(TASK_VIEW_REDIRECTS.review(at("/review?result=T&refused=reason&evil=1"))).toBe("/t/T?tab=result&refused=reason");
+    expect(TASK_VIEW_REDIRECTS.review(at("/review"))).toBeNull();
+    expect(TASK_VIEW_REDIRECTS["run.page"](at("/r/7"), "T", 7)).toBe("/t/T?tab=result&run=7");
+    expect(TASK_VIEW_REDIRECTS["run.page"](at("/r/7?tab=checks"), "T", 7)).toBe("/t/T?tab=result&run=7&section=checks");
+    expect(TASK_VIEW_REDIRECTS["run.page"](at("/r/7?record=1"), "T", 7)).toBeNull();
+    expect(TASK_VIEW_REDIRECTS["run.page"](at("/r/7?fragment=facts"), "T", 7)).toBeNull();
+    expect(TASK_VIEW_REDIRECTS["task.evidence"](at("/t/T/evidence"), "T")).toBe("/t/T?tab=record#record");
+    expect(TASK_VIEW_REDIRECTS["task.evidence"](at("/t/T/evidence?format=json"), "T")).toBeNull();
+    expect(TASK_VIEW_REDIRECTS["task.evidence"](at("/t/T/evidence?print=1"), "T")).toBeNull();
   });
 
   test("/n/<number> is its own row outside /t/, numbers only", () => {

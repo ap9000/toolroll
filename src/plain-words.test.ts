@@ -236,7 +236,7 @@ describe("product copy says no banned word; preserved content renders unchanged"
 
   test("result pages", async () => {
     for (const id of ["ready", "accepted", "refuted", "short"]) {
-      const text = await consolePage(`/review?result=${id}&run=${runs[id]}`);
+      const text = await consolePage(`/t/${id}?tab=result&run=${runs[id]}`);
       expect(offences(text).join("\n"), id).toBe("");
       expect(text, id).toContain(S.handoff);
     }

@@ -48,7 +48,8 @@ test('one family once: retries, explicit revisions, failed checks, scouts, actor
   expect(report.families.find(one => one.root === 'research')?.totalUsd).toBeNull();
   expect(report.families.map(one => one.root)).not.toContain('secret');
   expect(report.families.map(one => one.root)).not.toContain('old');
-  expect(report.families.find(one => one.root === ready.id)?.href).toContain(`result=${ready.run}`);
+  // A family's result opens on its task page at that exact run (task-link.ts).
+  expect(report.families.find(one => one.root === ready.id)?.href).toBe(`/t/${ready.id}?tab=result&run=${ready.run}`);
   expect(workIndexPage(store, now, access).totals.completed).toBe(report.completed.count + 1);
   expect(() => projectOutcomes(store, '/projects/other', now, access)).toThrow();
   const who = verifyApproverByPassword(store, 'inspector', f.password, [repo]);

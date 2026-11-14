@@ -4,6 +4,7 @@
  * target admits the person and filters what they may see, exactly as if they had opened it. */
 import type { ServerResponse } from "node:http";
 import { SAFETY } from "./http.js";
+import { taskLinkFromLegacy, taskLinkOf, type TaskLinkSection } from "../task-link.js";
 
 /** The Tasks page's own address for a view, a project and the other keys it knows. */
 export function tasksHref(over: { view?: string | null; project?: string | null; scope?: "all" | null; state?: string | null; cursor?: string | null } = {}): string {
@@ -40,11 +41,28 @@ export const RETIRED_ROUTES: Readonly<Record<string, (url: URL) => string>> = {
     : url.searchParams.get("scope") === "all" ? tasksHref({ view: "board", scope: "all" }) : tasksHref({ view: "board", project: projectOf(url) }),
   queue: url => tasksHref({ view: "order", project: projectOf(url) }),
   done: url => tasksHref({ view: "done", project: projectOf(url) }),
-  // The old review list (a result keeps its own page: /review?result=…).
+  // The old review list (a result leads to its task page: TASK_VIEW_REDIRECTS below).
   review: url => tasksHref({ view: "ready", project: projectOf(url) }),
   // Archive old tasks' preview moved beside Tasks; its POST keeps /work/put-away exactly.
   "work.put-away": url => { const days = url.searchParams.get("days"); return days !== null && /^[0-9]{1,3}$/.test(days) ? `/tasks/archive?days=${days}` : "/tasks/archive"; },
 };
+
+/** One task view (one-workspace plan S1): the old result addresses and the task's full-record page lead to the task page.
+ * These rows are not retired: each handler keeps its own refusals (a stale run is "Result changed", an unseen one not
+ * found, a running build keeps its record page) and redirects only what it would have shown, to exactly the place the
+ * address named (task-link.ts). The task page then admits the person itself. */
+export const TASK_VIEW_REDIRECTS = {
+  /** `/review?result=T&run=N&tab=S` (with its `noted`/`refused` feedback) → `/t/T?tab=result&run=N&section=S`. */
+  review: (url: URL): string | null => url.searchParams.has("result") ? taskLinkFromLegacy(`${url.pathname}${url.search}`) : null,
+  /** A finished build's `/r/N` (its result) → its task's Result section at N; `record=`, fragments and running builds stay. */
+  "run.page": (url: URL, taskId: string, runId: number): string | null =>
+    url.searchParams.has("record") || url.searchParams.has("fragment") ? null : taskLinkOf({ task: taskId, run: runId, section: sectionOf(url.searchParams.get("tab")) }),
+  /** `/t/T/evidence` → the task page's Record section; its JSON download and printable page keep this address. */
+  "task.evidence": (url: URL, rootId: string): string | null =>
+    url.searchParams.get("format") === "json" || url.searchParams.has("print") ? null : taskLinkOf({ task: rootId, record: true }),
+} as const;
+
+const sectionOf = (raw: string | null): TaskLinkSection | null => raw === "changes" || raw === "checks" || raw === "summary" ? raw : null;
 
 /** A retired GET's answer: 301 to where it lives now. Permanent: the old address never comes back. */
 export function retiredRedirect(id: string, url: URL, response: ServerResponse): void {

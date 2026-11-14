@@ -112,7 +112,7 @@ async function openProject(world: { base: string; cookie: string }, path: string
 let demo: World, operator: World;
 /** The demo's own samples where a row's generic sample names nothing there. `${api}` is the demo's payments project. */
 const DEMO_PATHS: Record<string, string> = {
-  "task.page": "/t/fix-payout-rounding", "task.evidence": "/t/fix-payout-rounding/evidence", "task.release": "/t/fix-payout-rounding/release",
+  "review": "/review?result=fix-payout-rounding&run=6", "task.page": "/t/fix-payout-rounding", "task.release": "/t/fix-payout-rounding/release",
   "run.evidence": "/r/6/evidence/8", "flow.page": "/flows/3", "flow.insights": "/flows/3/insights", "flow.export": "/flows/3/export",
   "recipes.start": "/recipes/start?recipe=small-feature", "recipes.edit": "/recipes/edit?recipe=small-feature",
   "recipes.export": "/recipes/export?recipe=small-feature", "recipes.from-task": "/recipes/from-task?task=fix-payout-rounding",
@@ -136,7 +136,7 @@ const ABSENT: Record<string, { status: number; why: string }> = {
 };
 /** Each mixed row's two answers, as the demo gives them (welcome's page: the empty console's first run). */
 const MIXED: Record<string, { page: { world: "demo" | "operator"; path: string }; alias: { world: "demo" | "operator"; path: string } }> = {
-  review: { page: { world: "demo", path: "/review?result=fix-payout-rounding&run=6" }, alias: { world: "demo", path: "/review" } },
+  "task.evidence": { page: { world: "demo", path: "/t/fix-payout-rounding/evidence?print=1" }, alias: { world: "demo", path: "/t/fix-payout-rounding/evidence" } },
   "run.page": { page: { world: "demo", path: "/r/5" }, alias: { world: "demo", path: "/r/6" } },
   welcome: { page: { world: "operator", path: "/welcome" }, alias: { world: "demo", path: "/welcome" } },
 };

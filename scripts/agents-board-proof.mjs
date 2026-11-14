@@ -342,7 +342,7 @@ let seeded;
   await Promise.all([page.waitForNavigation(), page.click('[data-agent-detail] header a[href^="/r/"]')]);
   await page.waitForLoadState('load');
   await page.waitForTimeout(400);
-  check('desktop: a finished agent opens its result page, where feedback and revision live', page.url().includes(`/review?result=billing-rename&run=${seeded.done.run}`), `${resultHref} → ${page.url().replace(base, '')}`);
+  check('desktop: a finished agent opens its result page, where feedback and revision live', page.url().includes(`/t/billing-rename?tab=result&run=${seeded.done.run}`), `${resultHref} → ${page.url().replace(base, '')}`);
   await shot(page, 'desktop-6-result', 'Desktop 1440px: the Done agent’s result page, where feedback and a revision are requested (synthetic)');
   // Feedback, then a revision: the result page's own Request changes (unchanged by the board).
   await page.locator('a[href="#request-changes"], button:has-text("Request changes")').first().click();

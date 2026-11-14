@@ -59,39 +59,76 @@ test("a password is needed: Approve opens a password popover, and only its submi
 });
 
 const NONCE = "cd".repeat(16);
+/** The nonce the press's own read mints: never the one the page was rendered with. */
+const FRESH = "ef".repeat(16);
+const D1 = "1".repeat(32), D2 = "2".repeat(32);
 const inPlaceAnswer = (outcome: string, words: string, status = 200) => new Response(JSON.stringify({ outcome, words }), { status, headers: { "content-type": "application/json" } });
-/** One click posts in place (live-pages-and-home.md B2.4): every POST the page's fetch sent, and what it answers. */
-const stubPosts = (answer: () => Response | Promise<Response>) => {
-  const posts: { url: string; headers: Record<string, string>; body: string }[] = [];
-  vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => { posts.push({ url, headers: { ...(init.headers as Record<string, string>) }, body: String(init.body) }); return answer(); }));
-  return posts;
+/** The task page read as data, as the press's minting read gets it: `approve` (null: none any more). */
+const taskRead = (approve: Partial<Approve> | null) => new Response(JSON.stringify({
+  version: 1, path: "/t/t-1", title: "t-1", user: "alex", csrf: "csrf", sensitive: false, refreshUrl: "/t/t-1", crewTruncated: false,
+  catchUpHtml: "", controlsHtml: "", notices: [], pageHtml: null, navigation: [], projects: [], crew: [], focus: null, result: null, receipt: null, conversation: null,
+  view: { kind: "task", id: "t-1", approve: approve === null ? null : { ...approveOf({ passwordless: true, remembered: false }, D1), fields: { nonce: FRESH, digest: D1 }, ...approve } },
+}), { status: 200, headers: { "content-type": "application/json" } });
+type Call = { url: string; method: string; headers: Record<string, string>; body: string };
+/** One click posts in place (live-pages-and-home.md B2.4) after reading the task again: every request the page's fetch
+ * sent, the read answering `read()` and the post `answer()`. */
+const stubPosts = (answer: () => Response | Promise<Response>, read: () => Response | Promise<Response> = () => taskRead({})) => {
+  const calls: Call[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+    const call = { url, method: init.method ?? "GET", headers: { ...(init.headers as Record<string, string>) }, body: init.body === undefined ? "" : String(init.body) };
+    calls.push(call);
+    return call.method === "POST" ? answer() : read();
+  }));
+  return calls;
 };
+const postsOf = (calls: Call[]) => calls.filter(one => one.method === "POST");
 const settled = () => act(async () => { await new Promise(done => setTimeout(done, 0)); });
+const oneClick = (over: Partial<Approve> = {}): Approve => ({ ...approveOf({ passwordless: true, remembered: false }, D1), fields: { nonce: NONCE, digest: D1 }, ...over });
 
-test("Passwordless on, or a password remembered here: one click, no popover, posted in place with the page's own nonce and never a password", async () => {
+test("Passwordless on, or a password remembered here: one click, no popover; the press reads the task again and posts the nonce that read minted, never a password", async () => {
   for (const facts of [{ passwordless: true, remembered: false }, { passwordless: false, remembered: true }]) {
     submitted = [];
-    const posts = stubPosts(() => inPlaceAnswer("approved", "Approved."));
-    show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf(facts, "d1", facts.remembered ? "2026-11-02T10:47:00.000Z" : null), fields: { nonce: NONCE, digest: "d1" } } }), JSON.stringify(facts));
+    const calls = stubPosts(() => inPlaceAnswer("approved", "Approved."), () => taskRead({ facts }));
+    show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf(facts, D1, facts.remembered ? "2026-11-02T10:47:00.000Z" : null), fields: { nonce: NONCE, digest: D1 } } }), JSON.stringify(facts));
     expect(host.textContent).toContain("No password needed");
     pressApprove();
-    await settled();
+    await settled(); await settled();
     expect(popover()).toBeNull();
-    // Not the native form: one in-place post, its fields exactly the snapshot's.
+    // Criteria 2 and 3: first a minting read of this task as data (no read-ahead header), then one in-place post.
     expect(submitted).toEqual([]);
-    expect(posts).toHaveLength(1);
-    expect(posts[0]!.url).toBe("/t/t-1/approve");
-    expect(posts[0]!.headers["x-toolroll-act"]).toBe("in-place");
-    expect([...new URLSearchParams(posts[0]!.body)]).toEqual([["csrf", "csrf"], ["nonce", NONCE], ["digest", "d1"], ["return", "next"]]);
+    expect(calls.map(one => `${one.method} ${one.url}`)).toEqual(["GET /t/t-1?format=workspace", "POST /t/t-1/approve"]);
+    expect(calls[0]!.headers["x-toolroll-read"]).toBeUndefined();
+    const post = postsOf(calls)[0]!;
+    expect(post.headers["x-toolroll-act"]).toBe("in-place");
+    // The fresh nonce, for exactly the digest shown: not the one the page was rendered with.
+    expect([...new URLSearchParams(post.body)]).toEqual([["csrf", "csrf"], ["nonce", FRESH], ["digest", D1], ["return", "next"]]);
     expect(host.querySelector("[data-task-approval]")?.textContent).toContain("Approved.");
+  }
+});
+
+test("one click in place: what the press read again moved (the plan, the rebuild, or a password now asked) posts nothing and says so", async () => {
+  const moved: Partial<Approve>[] = [
+    { fields: { nonce: FRESH, digest: D2 } },
+    { fields: { nonce: FRESH, digest: D1, rebuild: "12" } },
+    { facts: { passwordless: false, remembered: false } },
+  ];
+  for (const [index, over] of moved.entries()) {
+    const calls = stubPosts(() => inPlaceAnswer("approved", "Approved."), () => taskRead(over));
+    show(viewOf(cardOf("Needs you", null), { approve: oneClick() }), `moved-${index}`);
+    pressApprove();
+    await settled(); await settled();
+    expect(postsOf(calls), JSON.stringify(over)).toEqual([]);
+    const box = host.querySelector("[data-task-approval]")!;
+    expect(box.textContent).toContain("The plan changed since this page loaded. Nothing was approved");
+    expect([...box.querySelectorAll("button")].map(one => one.textContent)).toEqual(["Reload"]);
   }
 });
 
 test("one click in place: a refusal says the server's words and that nothing changed, and offers Reload, never the spent form", async () => {
   stubPosts(() => inPlaceAnswer("refused", "that approval form is stale — read it again", 409));
-  show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf({ passwordless: true, remembered: false }), fields: { nonce: NONCE, digest: "d1" } } }));
+  show(viewOf(cardOf("Needs you", null), { approve: oneClick() }));
   pressApprove();
-  await settled();
+  await settled(); await settled();
   const box = host.querySelector("[data-task-approval]")!;
   expect(box.textContent).toContain("That approval form is stale — read it again. Nothing changed.");
   expect([...box.querySelectorAll("button")].map(one => one.textContent)).toEqual(["Reload"]);
@@ -101,19 +138,50 @@ test("one click in place: an answer that is not the route's own loads the task p
   const assign = vi.fn();
   vi.spyOn(window.location, "assign").mockImplementation(assign);
   stubPosts(() => new Response("<html>Sign in</html>", { status: 200, headers: { "content-type": "text/html" } }));
-  show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf({ passwordless: true, remembered: false }), fields: { nonce: NONCE, digest: "d1" } } }));
+  show(viewOf(cardOf("Needs you", null), { approve: oneClick() }));
   pressApprove();
-  await settled();
+  await settled(); await settled();
   expect(assign).toHaveBeenCalledWith("/t/t-1");
 });
 
-test("one click with a form that holds no minted nonce posts nothing", async () => {
-  const posts = stubPosts(() => inPlaceAnswer("approved", "Approved."));
-  show(viewOf(cardOf("Needs you", null), { approve: { ...approveOf({ passwordless: true, remembered: false }), fields: { nonce: "unminted", digest: "d1" } } }));
+test("one click in place: the person moves to another page while the answer is on its way: nothing of this task is drawn, read again or followed there", async () => {
+  const assign = vi.fn(), reload = vi.fn();
+  vi.spyOn(window.location, "assign").mockImplementation(assign);
+  vi.spyOn(window.location, "reload").mockImplementation(reload);
+  let release: (response: Response) => void = () => {};
+  const calls = stubPosts(() => new Promise<Response>(done => { release = done; }));
+  show(viewOf(cardOf("Needs you", null), { approve: oneClick() }));
   pressApprove();
-  await settled();
-  expect(posts).toEqual([]);
+  await settled(); await settled();
+  expect(postsOf(calls)).toHaveLength(1);
+  // An in-place change to another page (app.tsx remounts the page): this box is gone.
+  show(viewOf(cardOf("Building", null), { id: "t-9", title: "Another task" }), "another-page");
+  for (const answer of [new Response("<html>Sign in</html>", { status: 200, headers: { "content-type": "text/html" } })]) {
+    await act(async () => { release(answer); await new Promise(done => setTimeout(done, 0)); });
+  }
+  expect(assign).not.toHaveBeenCalled();
+  expect(reload).not.toHaveBeenCalled();
+  expect(calls.filter(one => one.method === "GET")).toHaveLength(1);
+  expect(host.textContent).not.toContain("Approved");
+  expect(host.textContent).toContain("Another task");
+});
+
+test("one click whose read again holds no minted nonce posts nothing", async () => {
+  const calls = stubPosts(() => inPlaceAnswer("approved", "Approved."), () => taskRead({ fields: { nonce: "unminted", digest: D1 } }));
+  show(viewOf(cardOf("Needs you", null), { approve: oneClick() }));
+  pressApprove();
+  await settled(); await settled();
+  expect(postsOf(calls)).toEqual([]);
   expect(submitted).toEqual([]);
+  expect(host.querySelector("[data-task-approval]")?.textContent).not.toContain("Approved.");
+});
+
+test("a password is asked: the press never reads or posts in place, only the native form on the page sends it (criterion 6)", () => {
+  const calls = stubPosts(() => inPlaceAnswer("approved", "Approved."));
+  show(viewOf(cardOf("Needs you", null), { approve: approveOf({ passwordless: false, remembered: false }) }));
+  pressApprove();
+  expect(calls).toEqual([]);
+  expect(popover()!.querySelector<HTMLInputElement>('input[name="token"]')!.type).toBe("password");
 });
 
 test("a rule approves automatically: nothing to press", () => {

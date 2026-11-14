@@ -552,7 +552,7 @@ async function sameTaskJourney() {
     const brief = fixture.store.artifactsFor(originalRun).find(one => one.kind === 'revision-brief');
     fixture.store.markRevision(fixture.store.lookupRef(damagedTask).id, 'missing-synthetic-ancestor', brief.id);
     await goto(page, `/review?result=${damagedTask}`);
-    check(`${name}: Review keeps the broken-lineage result with a safe warning`, await page.locator(`.cockpit-row.current[href="/review?result=${damagedTask}"]`).count() === 1 && await page.locator('[data-history-problem]').count() > 0 && !(await page.locator('main').innerText()).includes('missing-synthetic-ancestor') && (await noOverflow(page)).ok);
+    check(`${name}: Review keeps the broken-lineage result with a safe warning`, await page.locator(`[data-result-task="${damagedTask}"]`).count() === 1 && await page.locator('[data-history-problem]').count() > 0 && !(await page.locator('main').innerText()).includes('missing-synthetic-ancestor') && (await noOverflow(page)).ok);
     check(`${name}: broken history describes the task in plain English`, (await page.locator('main').innerText()).includes('This task is shown separately.'));
     await shot(page, `${name}-same-task-review`, `${viewport.width}×${viewport.height}: broken-lineage result retained in Review with a history warning (synthetic fixture).`);
     const csrf = await page.locator('input[name=csrf]').first().getAttribute('value');
