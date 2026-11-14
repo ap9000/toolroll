@@ -37,7 +37,16 @@ changes, browser terminals, team conversations, and letting an MCP client
 sign in. Where one of these is refused, the page offers **Set a password**
 (or `toolroll password set` at your terminal). Setting it signs every tab
 and the terminal in again; local mode stays on, so attended work still
-needs none. An instance operator can turn local mode off in **Settings →
+needs none. A forgotten password is reset the same way, at the computer
+running Toolroll: `toolroll password reset` (typed twice, at a real terminal,
+never under a coding agent, a remote token or `--json`). It ends that
+account's sessions, remembered passwords, chat pairings, phone notifications,
+lead sessions and lead tokens, and is recorded as "password reset at this
+computer". API and MCP tokens and coordinator credentials stay, as on any
+password change: revoke them yourself if someone else may know the old
+password. The line Toolroll draws is this computer's account: anyone who
+can run commands as you here can reach its database, and so reset a
+password, exactly as they could read the saved first password. An instance operator can turn local mode off in **Settings →
 People and sign-in**, with the password; it is never turned back on from
 there.
 

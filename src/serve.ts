@@ -399,7 +399,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const known = store.accountOf(account);
     // A full link is for an account with a password: a local owner without one gets only mintLocalLink's.
     if (known === null || known.role !== "approver" || known.revokedAt !== null || !known.passwordSet) return null;
-    return holdSignInLink({ kind: "full", account, expires: Date.now() + SIGN_IN_LINK_MS });
+    return holdSignInLink({ kind: "full", account, accountGeneration: known.generation, expires: Date.now() + SIGN_IN_LINK_MS });
   }
   /** v147: this console start's key epoch (easy-start C2): the browser-key wave binds each session's mutation key to it. */
   const keyEpoch = options.keyEpoch ?? randomBytes(16).toString("hex");

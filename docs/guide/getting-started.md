@@ -113,6 +113,11 @@ set one first. When you reach one, the page says **Set a password**; or run
 file). Every open tab and the terminal then sign in again, and approving
 your own work still needs no password.
 
+Forgot it later? Run `toolroll password reset` in a terminal on the
+computer running Toolroll and type a new one twice. Every session of that
+account ends. Anyone who can run commands as you on that computer can reset
+it, so keep that computer's account to yourself.
+
 ### Starting with `toolroll up`
 
 `toolroll up` is the start for a team server, a computer reached from a

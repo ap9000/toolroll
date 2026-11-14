@@ -309,7 +309,7 @@ import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordina
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
 import { hashPassword } from "./scope.js";
-import { noticeDueOnce, CONTAINMENT_NOTICE_FACT } from "./store.js";
+import { noticeDueOnce, CONTAINMENT_NOTICE_FACT, passwordResetRefusal, resetAccountPassword } from "./store.js";
 import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
@@ -381,7 +381,7 @@ import { reevaluateResultRecords } from "./route-results.js";
 import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js";
 import { ruleHoldOf } from "./route-store.js";
 import { wasInterrupted } from "./run-ending.js";
-import { loginFileOf, migrateLegacyLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
+import { loginFileOf, migrateLegacyLogin, removeStaleSavedLogin, savedLoginFile, writableLoginFile } from "./login-secrets.js";
 
 export type Write = (line: string) => void;
 
@@ -631,6 +631,14 @@ External trackers — build what a tracker nominates, under local approvals
                                         person say yes; the bootstrap for
                                         every approving act
   toolroll approver list
+  toolroll password reset [--as <name>]
+                                        a forgotten password: typed twice,
+                                        hidden, at this computer's own
+                                        terminal; every session of that
+                                        account ends. Anyone who can run
+                                        commands as you on this computer can
+                                        reset it, as they could read the
+                                        saved first password
   toolroll task scope <id> --goal <what success is>
       [--not <text>] [--touches a,b] [--budget-usd <n>]
   toolroll task approve <id>         the yes — interactive, or
@@ -14090,7 +14098,8 @@ async function passwordCommand(positional: readonly string[], flags: Map<string,
   const { write, json, store } = context;
   const [action, ...rest] = positional;
   const command = action === undefined ? "password" : `password ${action}`;
-  if (action !== "set" || rest.length > 0) return fail(write, json, command, "usage", "Use `toolroll password set`.", EXIT.usage);
+  if (action === "reset") return passwordResetCommand(rest, flags, context);
+  if (action !== "set" || rest.length > 0) return fail(write, json, command, "usage", "Use `toolroll password set` (a first password) or `toolroll password reset` (a forgotten one).", EXIT.usage);
   for (const name of flags.keys()) if (!["db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a password set option: the password is only ever typed.`, EXIT.usage);
   if (context.principal !== undefined) return fail(write, json, command, "not-remote", "A password is set on Toolroll's own computer.", EXIT.refused);
   if (localOwnerRequested() || !personAtTerminal(context)) return fail(write, json, command, "not-a-terminal", "Set your password yourself at a terminal: run `toolroll password set`.", EXIT.refused);
@@ -14954,6 +14963,76 @@ async function welcomeSampleCommand(positional: readonly string[], flags: Map<st
   return succeed(write, json, command, { repo: added.repo, created: added.created, added: added.added, checkSet: added.checkSet }, () => [
     added.added ? `Added the sample project: ${added.repo}` : `The sample project is already added: ${added.repo}`,
     "Next: write a first task. Run `toolroll` and press n.",
+  ]);
+}
+
+/**
+ * `toolroll password reset [--as <name>]`: a forgotten password, reset at the computer running Toolroll. Only a person
+ * at this computer's own terminal (stdin and stdout a TTY, not under a coding agent, not --json, not a remote run, a
+ * lead token or the terminal UI's local owner) — the same gate as `password set` — and never from a flag, a file or
+ * the environment: the new password is typed twice, hidden. The trust boundary is this computer's account: anyone who
+ * can run commands as you here can reach Toolroll's database, and so reset it, exactly as they could read the saved
+ * first password. Whose: the one approver, or `--as <name>`. The person is told what ends before typing; one
+ * transaction (store.ts resetAccountPassword) proves the account again and unchanged, writes the hash, moves its
+ * generation (every session and remembered password of it ends) and writes the ledger line. A saved first password of
+ * that account that no longer works is removed after. Identity-provider accounts, removed accounts and a password-free
+ * owner who never set one are refused.
+ */
+async function passwordResetCommand(rest: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json, store } = context;
+  const command = "password reset";
+  if (rest.length > 0) return fail(write, json, command, "usage", "Use `toolroll password reset` (or `--as <name>` when several people sign in here).", EXIT.usage);
+  for (const name of flags.keys()) if (!["db", "json", "as"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a password reset option: the new password is only ever typed.`, EXIT.usage);
+  // A lead token anywhere (this command's, or one set in this shell for the lead) means this is not a person's own shell.
+  const leadInShell = envValue(process.env, "LEAD_TOKEN");
+  if (context.principal !== undefined || activeRemote() !== null || context.leadToken !== undefined || (leadInShell !== undefined && leadInShell !== "")) {
+    return fail(write, json, command, "not-remote", "A password is reset by a person at the computer running Toolroll, from their own shell (not with a remote or lead token).", EXIT.refused);
+  }
+  if (localOwnerRequested() || !personAtTerminal(context)) {
+    return fail(write, json, command, "not-a-terminal", "Reset the password yourself at a terminal on the computer running Toolroll: run `toolroll password reset`.", EXIT.refused);
+  }
+  const asked = flags.get("as");
+  if (asked === true || asked === "") return fail(write, json, command, "usage", "Say whose password: `--as <name>`.", EXIT.usage);
+  let account: string;
+  if (typeof asked === "string") {
+    account = asked;
+  } else {
+    // Only when exactly one account of any role can sign in here is it chosen without a name: never someone else's.
+    const people = store.listApprovers().map(one => one.name).filter(name => store.accountOf(name)?.revokedAt === null);
+    if (people.length === 0) return fail(write, json, command, "no-account", "No one signs in to this Toolroll yet. Nothing changed.", EXIT.refused);
+    if (people.length > 1) return fail(write, json, command, "several", `Several people sign in here (${people.join(", ")}). Say whose: \`toolroll password reset --as <name>\`.`, EXIT.usage);
+    account = people[0]!;
+  }
+  const sso = (await import("./sso-settings.js")).readSsoSettings(dirname(context.databaseFile));
+  const operatorsOnly = sso !== null && sso.passwords === "operators";
+  const refusalWords = (reason: string): string => reason === "no-account" ? `No account named \`${account}\`. Nothing changed.`
+    : reason === "revoked" ? `${account} was removed and can't sign in. Nothing changed.`
+      : reason === "sso-only" ? `${account} signs in with ${sso?.label ?? "your identity provider"} and has no password to reset. Nothing changed.`
+        : reason === "no-password" ? `${account} has no password yet. Set one with \`toolroll password set\`. Nothing changed.`
+          : reason === "password-not-allowed" ? `${account} signs in with ${sso?.label ?? "your identity provider"}: passwords are only for instance operators here. Nothing changed.`
+            : "The account changed while you were typing. Nothing changed; run `toolroll password reset` again.";
+  const before = passwordResetRefusal(store, account, operatorsOnly);
+  if (before !== null) return fail(write, json, command, before, refusalWords(before), EXIT.refused);
+  const generation = store.accountOf(account)!.generation;
+  write(`Reset the password for ${account}.`);
+  write(`This ends ${account}'s browser sessions and remembered passwords, the terminal UI's sign-in, paired chats, phone notifications, lead sessions and lead tokens (mint a new one with \`toolroll lead token\`).`);
+  write("It keeps API and MCP tokens (revoke them in Settings → Sessions & tokens) and coordinator credentials (`toolroll coordinator revoke`). Revoke those too if someone else may know the old password.");
+  const typeHidden = context.easySeams?.askHidden ?? askHidden;
+  const chosen = await typeHidden("New password: ");
+  if (chosen.length < 8) return fail(write, json, command, "weak-password", "A password needs at least 8 characters. Nothing changed.", EXIT.refused);
+  const again = await typeHidden("Type it again: ");
+  if (again !== chosen) return fail(write, json, command, "mismatch", "The two passwords didn't match. Nothing changed.", EXIT.refused);
+  const reset = resetAccountPassword(store, account, hashPassword(chosen), generation, operatorsOnly, context.clock());
+  if (!reset.ok) return fail(write, json, command, reset.reason, refusalWords(reset.reason), EXIT.refused);
+  const cleanup = removeStaleSavedLogin(dirname(context.databaseFile), account, chosen);
+  const { shownPath } = await import("./server/login-help.js");
+  const shown = (path: string): string => shownPath(path, homedir(), null) ?? path;
+  return succeed(write, json, command, { account, generation: reset.generation, removed: cleanup.removed }, () => [
+    `Password reset for ${account}. Every session of ${account} has ended; sign in with the new password.`,
+    ...(reset.leadTokens > 0 ? [`${account}'s lead token ended: mint a new one with \`toolroll lead token\`.`] : []),
+    ...cleanup.removed.map(path => `Removed ${shown(path)}: it held the old password.`),
+    ...cleanup.stale.map(path => `The saved first password at ${shown(path)} no longer works; delete it yourself.`),
+    ...cleanup.unchecked.map(path => `${shown(path)} isn't a plain file in Toolroll's folder, so it was left alone. If it holds ${account}'s old password, delete it yourself.`),
   ]);
 }
 

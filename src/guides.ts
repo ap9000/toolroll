@@ -306,7 +306,9 @@ ${AUTHORITY_LINE}
   database in \`.toolroll-secrets/up-login.txt\` (every start prints that path and the
   \`cat\` command that shows the password, never the password itself),
   registers the machine as a worker, runs the console, opens the browser. Later starts ask for the
-  password at most once and remember it on that machine.
+  password at most once and remember it on that machine. A forgotten
+  password: the person runs \`toolroll password reset\` in a terminal on that
+  computer (typed twice; never you, never under an agent).
 - From a phone over a tailnet: add \`--host 0.0.0.0 --allow-host
   <name>:4180\`.
 - Console only, no worker: \`toolroll serve --repo .\`. With no
