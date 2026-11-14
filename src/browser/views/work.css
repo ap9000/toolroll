@@ -49,7 +49,7 @@
 [data-view] .so-work .so-work-steps { display: grid; gap: 6px; margin: 0; padding-left: 20px; font-size: 13.5px; line-height: 1.45; color: var(--so-muted); }
 [data-view] .so-work .so-work-steps [data-step-state="completed"], [data-view] .so-work .so-work-steps [data-step-state="current"] { color: var(--so-ink); }
 [data-view] .so-work .so-work-steps [data-step-state="current"] { font-weight: 500; }
-[data-view] .so-work .so-work-steps [data-step-state="blocked"] { color: var(--so-danger); }
+[data-view] .so-work .so-work-steps [data-step-state="blocked"] { color: var(--so-ink); font-weight: 600; }
 [data-view] .so-work .so-work-decide { display: grid; gap: var(--so-space-md); min-width: 0; }
 [data-view] .so-work .so-work-send { margin: 0; }
 

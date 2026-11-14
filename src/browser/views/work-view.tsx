@@ -334,7 +334,7 @@ function TaskPanel({ item, kicker, onDone, onSettled }: { item: Item; kicker: Re
     <h2 className="so-open-t">{view.title}</h2>
     {state && <p className="so-open-chip" data-work-state><KChip word={state.headline} tone={toneOf(view)} /><span>{state.sentence}</span></p>}
     {outcome && <p className="so-open-x" data-work-outcome>{outcome}</p>}
-    {view.progress?.line && <p className="so-open-x" data-work-progress>{view.progress.line}</p>}
+    {view.progress?.line && view.progress.line !== state?.sentence && <p className="so-open-x" data-work-progress>{view.progress.line}</p>}
     {caveats.map(one => <p key={one} className="so-work-caveat" data-work-caveat>{one}</p>)}
     {checks && <p className={`so-work-checks${checks.problem ? " is-problem" : ""}`} data-work-checks>{checks.detail}</p>}
     {act}
