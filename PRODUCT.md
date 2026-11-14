@@ -29,7 +29,8 @@ One central installation, many surfaces, one truth: browser, CLI and every chat 
 
 ## Capabilities and Constraints
 
-- Server-rendered HTML with a React workspace shell for the browser; no CDN assets; strict CSP with nonces; pages must work without JavaScript beyond the shell.
+- A React workspace for the browser; no CDN assets; strict CSP with nonces.
+- The everyday pages (Work, the task page and Chat) render with React only. Server-rendered HTML that works without JavaScript is kept for sign-in and for ceremony pages (password steps, one-time secrets, releases); other pages move to React as they are rebuilt (owner decision, 2026-11-14).
 - Sensitive pages (password entry, one-time secrets) strip chrome scripts by design.
 - Terminology that must stay stable: Ready, Complete, revision, scope, approval, lead, crew, task, result, project knowledge, decisions.
 - Truthful status is non-negotiable: never hide a failing check, a limitation or an unknown spend.
