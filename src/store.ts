@@ -15146,12 +15146,24 @@ export class Store {
     const hours = (iso: unknown): number => Math.max(0, Math.round((now.getTime() - Date.parse(String(iso))) / 3_600_000));
     return this.transact(() => {
       const families = this.taskFamiliesAdmitted(admittedRepos, false, { limit: 61 });
-      const taskRows = families.slice(0, 61).map(family => {
+      // Each shown family's ref, newest finished build or report, its verdict and whether it was accepted, read for all of
+      // them at once (fast reads: four reads per family before).
+      const shown = families.slice(0, 61);
+      const refs = new Map(this.db.prepare("SELECT * FROM task_ref WHERE backend = ? AND external_id IN (SELECT value FROM json_each(?))")
+        .all(BUILT_IN, JSON.stringify(shown.map(family => family.current.id))).map(row => [String(row["external_id"]), readTaskRef(row)] as const));
+      const results = new Map(this.db.prepare(`SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run WHERE task_ref IN (SELECT value FROM json_each(?))
+          AND finished_at IS NOT NULL AND role IN ('builder','scout') GROUP BY task_ref)`)
+        .all(JSON.stringify([...refs.values()].map(ref => ref.id))).map(row => readRun(row)).map(run => [run.taskRef, run] as const));
+      const resultIds = JSON.stringify([...results.values()].map(run => run.id));
+      const verdicts = new Map(this.db.prepare("SELECT * FROM proof_verdict WHERE run IN (SELECT value FROM json_each(?))").all(resultIds)
+        .map(row => readProofVerdict(row as Record<string, unknown>)).map(verdict => [verdict.run, verdict] as const));
+      const acceptances = new Set(this.db.prepare("SELECT run FROM proof_acceptance WHERE run IN (SELECT value FROM json_each(?))").all(resultIds).map(row => Number(row["run"])));
+      const taskRows = shown.map(family => {
         const current = family.current;
-        const ref = this.lookupRef(current.id)!;
-        const run = this.runsFor(ref.id).find(one => one.finishedAt !== null && (one.role === "builder" || one.role === "scout"));
-        const proof = current.state === "done" && run !== undefined ? this.proofVerdictFor(run.id) : null;
-        return { family, current, ref, proof, accepted: run !== undefined && this.proofAcceptance(run.id) !== null };
+        const ref = refs.get(current.id)!;
+        const run = results.get(ref.id);
+        const proof = current.state === "done" && run !== undefined ? verdicts.get(run.id) ?? null : null;
+        return { family, current, ref, proof, accepted: run !== undefined && acceptances.has(run.id) };
       });
       const decisionRows = this.db
         .prepare(
