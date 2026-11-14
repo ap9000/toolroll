@@ -9,7 +9,7 @@
  *   and has caught up: for every room both streams spoke of, its words are at least as new as what the page applied.
  *   Then, in one step, the old stream is aborted, the replacement becomes the stream, and its held frames are applied.
  * - Order across streams: every room frame carries the server's `seq`, the order of the read its content came from
- *   (live-bus.ts nextLiveOrder). Per room and kind of frame, within one server run (`hello.incarnation`), a frame no
+ *   (live-bus.ts liveOrderAfter, scoped to the room). Per room and kind of frame, within one server run (`hello.incarnation`), a frame no
  *   newer than what the page already applied is dropped, from either stream: a duplicate, or an older state that
  *   arrived late. What the page shows never goes backwards. A replacement that is no longer wanted (the page went back
  *   to the rooms the open stream holds) is dropped, never promoted.
@@ -445,18 +445,25 @@ export class LiveSupervisor {
     return true;
   }
 
-  /** A replacement that said `synced` takes over once, for every room both streams spoke of, its newest word is at least
-   * as new as what the page applied (else it waits for its rooms to catch up, within the handover's bounds). */
+  /** A replacement that said `synced` takes over once it has caught up: for every room it holds that the page has heard
+   * (each kind of frame but a refusal), it has said something too, and where both carry orders from this server run,
+   * its newest is at least as new as what the page applied. Else it waits (within the handover's bounds). */
   private promoteIfCaughtUp(stream: Stream): void {
     if (stream !== this.candidate || !stream.synced) return;
-    const newest = new Map<string, number>();
+    const newest = new Map<string, number | null>();
     for (const frame of stream.held) {
       const key = frameKey(frame);
-      if (key?.seq != null) newest.set(key.slot, Math.max(newest.get(key.slot) ?? 0, key.seq));
+      if (key === null) continue;
+      const had = newest.get(key.slot);
+      newest.set(key.slot, key.seq === null ? had ?? null : Math.max(had ?? 0, key.seq));
     }
-    for (const [slot, seq] of newest) {
-      const applied = this.heard.get(slot);
-      if (applied !== undefined && applied.seq !== null && applied.incarnation === stream.incarnation && seq < applied.seq) return;
+    const rooms = new Set(new URLSearchParams(stream.url.slice(stream.url.indexOf("?") + 1)).getAll("room"));
+    for (const [slot, applied] of this.heard) {
+      const [room = "", event = ""] = slot.split("\u0000");
+      if (!rooms.has(room) || event === "gone") continue;
+      if (!newest.has(slot)) return;
+      const seq = newest.get(slot) ?? null;
+      if (seq !== null && applied.seq !== null && applied.incarnation === stream.incarnation && seq < applied.seq) return;
     }
     this.takeOver();
   }
@@ -468,10 +475,16 @@ export class LiveSupervisor {
     this.events.opened(stream.url);
     const frames = stream.held;
     stream.held = [];
-    // Each room's last frame of each kind is the one that stands (a change, a presence, a reply's snapshot, a refusal).
+    // Each room's newest frame of each kind is the one that stands (a change, a presence, a reply's snapshot, a refusal):
+    // the highest order, whatever order they arrived in (the last to arrive where none carries an order).
     const keys = frames.map(frameKey);
     const last = new Map<string, number>();
-    keys.forEach((key, at) => { if (key !== null) last.set(key.slot, at); });
+    keys.forEach((key, at) => {
+      if (key === null) return;
+      const kept = last.get(key.slot);
+      const keptSeq = kept === undefined ? null : keys[kept]?.seq ?? null;
+      if (kept === undefined || key.seq === null || keptSeq === null || key.seq >= keptSeq) last.set(key.slot, at);
+    });
     for (const [at, frame] of frames.entries()) {
       if (this.current !== stream) return;
       const key = keys[at] ?? null;
@@ -488,7 +501,8 @@ export class LiveSupervisor {
       const applied = this.heard.get(key.slot);
       if (applied !== undefined) {
         const comparable = key.seq !== null && applied.seq !== null && applied.incarnation === stream.incarnation;
-        if (comparable ? key.seq! <= applied.seq! : applied.same === key.same) return;
+        // No newer than what the page has (or the very same words): dropped.
+        if ((comparable && key.seq! <= applied.seq!) || applied.same === key.same) return;
       }
       this.heard.set(key.slot, { same: key.same, incarnation: stream.incarnation, seq: key.seq });
     }

@@ -123,21 +123,21 @@ export function followWorkspace(store: Store, current: () => string, bus: LiveBu
 }
 
 /**
- * The order of what this server run has read for its live frames (fluid pages 1b). Each room frame a frames reader gets
- * carries `seq`: the number of the read its content came from (a room's fingerprint, a presence list, a reply's
- * snapshot), or of its sending for a frame that carries no read (`gone`). Reads in one process are serialized (SQLite is
- * synchronous here), so a frame with a higher `seq` never shows an older state than one with a lower `seq`: a page that
- * hears the same room on two streams during a handover keeps the newer and drops the older. Meaningful only within one
- * server run (`hello.incarnation`).
+ * The order of what a room has read for its live frames (fluid pages 1b). Each room frame a frames reader gets carries
+ * `seq`: the order of the read its content came from (a room's fingerprint, a presence list, a reply's snapshot), or of
+ * its sending for a frame that carries no read (`gone`). The order is scoped to the room (or the conversation viewer):
+ * it is the wall clock in microseconds, raised just past the room's own last order when the clock hasn't moved. So a
+ * room's orders only ever grow, two streams in the same room are handed the same order for the same read, a later read
+ * of a room never has a lower order, and the numbers say nothing about any other room's or person's activity (no
+ * shared counter). A page hearing the same room on two streams during a handover keeps the newer and drops the older.
  */
-let liveOrder = 0;
-export function nextLiveOrder(): number { liveOrder += 1; return liveOrder; }
+export function liveOrderAfter(previous: number): number {
+  return Math.max(previous + 1, Date.now() * 1_000);
+}
 
 /** About every 30 s a room checks itself; a keep-alive goes between. */
 export const SAFETY_NET_MS = 30_000;
 export const KEEP_ALIVE_MS = 15_000;
-/** The longest `synced` waits for rooms' first deliveries. */
-const SYNCED_HOLD_MS = 1_000;
 /** What a page's stream may hold unsent before it is "behind". */
 export const STREAM_LIMIT_BYTES = 32 * 1024;
 
@@ -194,8 +194,8 @@ export class LiveConnection {
   private readonly timer: NodeJS.Timeout;
   private closed = false;
   private refusing = false;
-  /** The reader asked for frames (`hello`, named `tick`) instead of comment keep-alives. */
-  private readonly frames: boolean;
+  /** The reader asked for frames (`hello`, named `tick`, `seq`, `synced`) instead of comment keep-alives. */
+  readonly frames: boolean;
   /** Run once when the connection ends; never counted as rooms (a ping's binding goes with them). */
   private readonly ends = new Set<() => void>();
   /** This stream's server-minted name, for its own page's probe (GET /live/ping); null when it has none. */
@@ -204,7 +204,6 @@ export class LiveConnection {
   private syncHolds = 0;
   private syncWanted = false;
   private syncSent = false;
-  private syncTimer: NodeJS.Timeout | null = null;
   constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number; frames?: boolean; conn?: string } = {}) {
     this.frames = options.frames === true;
     this.conn = this.frames ? options.conn ?? null : null;
@@ -232,14 +231,12 @@ export class LiveConnection {
   synced(): void {
     if (!this.frames || this.syncWanted) return;
     this.syncWanted = true;
-    // A room whose first delivery never comes (a sender that stalls) never holds a handover past this.
-    this.syncTimer = setTimeout(() => { this.syncHolds = 0; this.flushSynced(); }, SYNCED_HOLD_MS);
-    this.syncTimer.unref();
     this.flushSynced();
   }
   /** A room whose first delivery is still on its way (a running reply's first snapshot) holds `synced` until it is
    * written; the release (call it once it is written, or when the room goes) is idempotent. Once `synced` went, a
-   * no-op. */
+   * no-op. There is no time limit: `synced` never goes without every room's first word (a page whose replacement never
+   * says it falls to its own absolute handover deadline, still order-checked). */
   holdSynced(): () => void {
     if (!this.frames || this.syncSent) return () => {};
     this.syncHolds += 1;
@@ -254,8 +251,6 @@ export class LiveConnection {
   private flushSynced(): void {
     if (!this.syncWanted || this.syncSent || this.syncHolds > 0) return;
     this.syncSent = true;
-    if (this.syncTimer !== null) clearTimeout(this.syncTimer);
-    this.syncTimer = null;
     if (this.open) this.stream.send("synced", {});
   }
   /** The answer to the page's probe (GET /live/ping): a delivery like a tick, so every room proves its viewer first and
@@ -273,7 +268,7 @@ export class LiveConnection {
   /** An event for one room: its data says which. A frames reader also hears its `seq`: `order` (the read its content
    * came from), else the moment of sending. */
   send(room: string, event: string, data: Record<string, unknown> = {}, order?: number): void {
-    this.stream.send(event, this.frames ? { room, ...data, seq: order ?? nextLiveOrder() } : { room, ...data });
+    this.stream.send(event, this.frames ? { room, ...data, seq: order ?? liveOrderAfter(0) } : { room, ...data });
   }
   /** A room leaves because its proof failed (a sign-out, a revoked or narrowed account): if that departure ends the
    * connection, the page is told the stream `ended` and stops, rather than reconnecting at once into a request that
@@ -289,8 +284,6 @@ export class LiveConnection {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.timer);
-    if (this.syncTimer !== null) clearTimeout(this.syncTimer);
-    this.syncTimer = null;
     for (const leave of [...this.leaves]) leave();
     this.leaves.clear();
     this.proofs.clear();
@@ -326,8 +319,9 @@ const PRESENCE_SETTLE_MS = 150;
 
 type Room<V> = { viewers: Map<V, () => void>; last: string | null; timer: NodeJS.Timeout; settling: NodeJS.Timeout | null; retry: NodeJS.Timeout | null;
   saidAt: number; holding: NodeJS.Timeout | null; revision: string | null; reading: NodeJS.Timeout | null;
-  /** The order of the read `last` came from (nextLiveOrder); 0 before any read. */
-  lastOrder: number };
+  /** The order of the read `last` came from; 0 before any read. `order`: the room's last order handed out
+   * (liveOrderAfter). */
+  lastOrder: number; order: number };
 
 /**
  * Rooms of open pages that hear the bus. `presence` says who else is here, as
@@ -351,7 +345,8 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     if (room.settling !== null) clearTimeout(room.settling);
     room.settling = setTimeout(() => {
       room.settling = null;
-      for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "here", { people: presence([...room.viewers.keys()], viewer.name) }, nextLiveOrder());
+      const order = room.order = liveOrderAfter(room.order);
+      for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "here", { people: presence([...room.viewers.keys()], viewer.name) }, order);
     }, PRESENCE_SETTLE_MS);
     room.settling.unref();
   };
@@ -402,7 +397,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     if (now === null) { for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "gone"); return; }
     if (now === room.last) return;
     room.last = now;
-    room.lastOrder = nextLiveOrder();
+    room.lastOrder = room.order = liveOrderAfter(room.order);
     room.revision = revision ?? bus?.revision() ?? null;
     if (room.holding !== null) return;
     const wait = room.saidAt + minIntervalMs - Date.now();
@@ -429,8 +424,8 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
       let room = rooms.get(key);
       if (room === undefined) {
         let last: string | null = null, lastOrder = 0;
-        try { last = fingerprint(key); lastOrder = nextLiveOrder(); } catch { /* the next signal or the safety net reads it */ }
-        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => refresh(key, created, null), safetyNetMs), settling: null, retry: null, saidAt: 0, holding: null, revision: null, reading: null, lastOrder };
+        try { last = fingerprint(key); lastOrder = liveOrderAfter(0); } catch { /* the next signal or the safety net reads it */ }
+        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => refresh(key, created, null), safetyNetMs), settling: null, retry: null, saidAt: 0, holding: null, revision: null, reading: null, lastOrder, order: lastOrder };
         created.timer.unref();
         room = created;
         rooms.set(key, room);
@@ -441,7 +436,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
       const unprove = viewer.connection.onKeepAlive(() => { deliver(key, joined, viewer); });
       room.viewers.set(viewer, () => { forget(); unprove(); });
       if (!deliver(key, room, viewer, "change", { at: room.last, revision: bus?.revision() ?? null }, room.lastOrder || undefined) || presence === null) return;
-      if (deliver(key, room, viewer, "here", { people: presence([...room.viewers.keys()], viewer.name) }, nextLiveOrder())) announce(key, room);
+      if (deliver(key, room, viewer, "here", { people: presence([...room.viewers.keys()], viewer.name) }, room.order = liveOrderAfter(room.order))) announce(key, room);
     },
     close() {
       for (const [key, room] of [...rooms]) for (const viewer of [...room.viewers.keys()]) leave(key, viewer);

@@ -480,6 +480,25 @@ describe("a room whose read is costly", () => {
 describe("order and synced, for a page handing over", () => {
   const frames = (page: Page) => page.sent.map(one => ({ event: /^event: (\S+)/.exec(one)?.[1], data: JSON.parse(one.split("\ndata: ")[1]!.trim()) as Record<string, unknown> }));
 
+  test("a room's order is its own: other rooms' reads, presence and other people's activity never move it", () => {
+    let state = "s1";
+    const mine = createLiveRooms<string, LiveViewer>(() => state, null, { bus });
+    const others = createLiveRooms<string, LiveViewer>(key => `${key}:${Math.random()}`, (viewers, me) => viewers.filter(one => one.name !== me).map(one => one.name), { bus });
+    const page = new Page();
+    mine.join("r", { name: "alex", room: "summary", connection: new LiveConnection(response(page), { frames: true }), valid: () => true });
+    const [joined] = frames(page);
+    // Twenty other people open and read twenty other rooms (each with presence) in the same instant.
+    for (let one = 0; one < 20; one += 1) others.join(`t-${one}`, { name: `p${one}`, room: `task:t-${one}`, connection: new LiveConnection(response(new Page()), { frames: true }), valid: () => true });
+    bus.publish({ revision: "v1:2" });
+    state = "s2";
+    bus.publish({ revision: "v1:3" });
+    const [, next] = frames(page);
+    // The clock stood still (fake timers): this room's next order is its last plus one, whatever happened elsewhere.
+    expect(next!.data).toMatchObject({ at: "s2" });
+    expect(next!.data["seq"]).toBe((joined!.data["seq"] as number) + 1);
+    mine.close(); others.close();
+  });
+
   test("two streams in one room hear each change with the order of the read it came from: equal for the same read, higher for a later one", () => {
     let state = "s1";
     const rooms = createLiveRooms<string, LiveViewer>(() => state, null, { bus });
@@ -522,17 +541,15 @@ describe("order and synced, for a page handing over", () => {
     connection.close();
   });
 
-  test("with nothing on its way `synced` follows at once; a first delivery that never comes holds it 1 s at most", () => {
+  test("with nothing on its way `synced` follows at once; a first delivery that never comes never lets it go (the page's own deadline decides)", () => {
     const quick = new Page(), stalled = new Page();
     const one = new LiveConnection(response(quick), { frames: true }), two = new LiveConnection(response(stalled), { frames: true });
     one.synced();
     expect(frames(quick).map(frame => frame.event)).toEqual(["synced"]);
     two.holdSynced();
     two.synced();
-    vi.advanceTimersByTime(999);
-    expect(stalled.sent).toEqual([]);
-    vi.advanceTimersByTime(1);
-    expect(frames(stalled).map(frame => frame.event)).toEqual(["synced"]);
+    vi.advanceTimersByTime(60_000);
+    expect(frames(stalled).map(frame => frame.event)).not.toContain("synced");
     one.close(); two.close();
   });
 });

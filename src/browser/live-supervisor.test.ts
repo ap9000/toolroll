@@ -439,6 +439,55 @@ describe("handover order and identity", () => {
     expect(at(seen.frames, "summary")).toEqual(["s1", "s2", "s3"]);
   });
 
+  test("promotion keeps each room's highest order, not the last to arrive", async () => {
+    const { supervisor, server, seen } = supervised();
+    supervisor.want("/live?room=summary");
+    await settle();
+    server.calls[0]!.write(hello() + frame("change", { room: "summary", at: "s1", seq: 10 }));
+    await settle();
+    supervisor.want("/live?room=summary&room=workspace");
+    await settle();
+    // Delivered late and out of order on the replacement: s3 (a later read) before s2.
+    server.calls[1]!.write(hello("fedcba9876543210fedcba98") + frame("change", { room: "summary", at: "s3", seq: 30 }) + frame("change", { room: "summary", at: "s2", seq: 20 })
+      + frame("change", { room: "workspace", at: "w", seq: 5 }) + frame("synced"));
+    await settle();
+    expect(server.calls[0]!.aborted).toBe(true);
+    expect(at(seen.frames, "summary")).toEqual(["s1", "s3"]);
+  });
+
+  test("a reply that finished just as the replacement joined: its last snapshot is applied, and a partial one is never what the page keeps", async () => {
+    const { supervisor, server, seen } = supervised();
+    supervisor.want("/live?room=chat");
+    await settle();
+    server.calls[0]!.write(hello() + frame("turn", { room: "chat", text: "Checking", done: false, seq: 10 }));
+    await settle();
+    supervisor.want("/live?room=chat&room=workspace");
+    await settle();
+    // The reply finished; the replacement joined after, so its first word for the conversation is the finished reply.
+    server.calls[1]!.write(hello("fedcba9876543210fedcba98") + frame("turn", { room: "chat", text: "", done: true, ok: true, seq: 20 }) + frame("change", { room: "workspace", at: "w", seq: 21 }) + frame("synced"));
+    await settle();
+    expect(server.calls[0]!.aborted).toBe(true);
+    const turns = seen.frames.filter(([event]) => event === "turn").map(([, data]) => JSON.parse(data) as { done: boolean });
+    expect(turns.at(-1)!.done).toBe(true);
+  });
+
+  test("a replacement that says `synced` with no word yet for a room the page follows is not caught up: it waits (here, to the deadline)", async () => {
+    const { supervisor, server } = supervised();
+    supervisor.want("/live?room=chat");
+    await settle();
+    server.calls[0]!.write(hello() + frame("turn", { room: "chat", text: "Checking", done: false, seq: 10 }));
+    await settle();
+    supervisor.want("/live?room=chat&room=workspace");
+    await settle();
+    server.calls[1]!.write(hello("fedcba9876543210fedcba98") + frame("change", { room: "workspace", at: "w", seq: 21 }) + frame("synced"));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(server.calls[0]!.aborted).toBe(false);
+    // The old stream finishes the reply meanwhile: the page hears it.
+    server.calls[0]!.write(frame("turn", { room: "chat", text: "", done: true, ok: true, seq: 20 }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(server.calls[0]!.aborted).toBe(true);
+  });
+
   test("a replacement that never catches up still takes over at the absolute deadline, dropping its older words", async () => {
     const { supervisor, server, seen } = supervised();
     supervisor.want("/live?room=summary");

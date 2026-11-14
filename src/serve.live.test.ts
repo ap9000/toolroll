@@ -407,12 +407,13 @@ describe("the probe", () => {
     page.close();
   });
 
-  test("a conversation with no reply running has nothing on its way: its stream says `synced` right after its rooms join", async () => {
+  test("a conversation with no reply running says so (an idle word), and its stream says `synced` right after its rooms join", async () => {
     const cookie = await login("alex", alexToken);
     const page = await stream(live("chat", "workspace"), cookie, { [LIVE_FRAMES_HEADER]: "1" });
     expect(page.response.status).toBe(200);
     await page.until(all => all.some(one => one.event === "synced"), 2_000);
-    expect(page.events.map(one => one.event)).toEqual(["hello", "change", "synced"]);
+    expect(page.events.map(one => one.event)).toEqual(["hello", "turn", "change", "synced"]);
+    expect(page.events[1]!.data).toMatchObject({ room: "chat", state: "idle", seq: expect.any(Number) });
     page.close();
   });
 

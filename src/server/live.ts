@@ -20,7 +20,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { agentRunFingerprint } from "../agents-board.js";
-import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, nextLiveOrder, type LiveBus, type LiveViewer } from "../live-bus.js";
+import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, liveOrderAfter, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { reproveRemote } from "../operate-remote.js";
 import { rowVisible } from "../project.js";
 import type { LeadThreadScope } from "../store.js";
@@ -140,7 +140,9 @@ export function parseLiveRoom(name: string): LiveRoom | null {
 
 type Viewer = LiveViewer;
 type FlowRoomViewer = LiveViewer & { card: number | null; editing: boolean };
-type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void };
+type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void;
+  /** The last order this viewer's snapshots were stamped with (live-bus.ts liveOrderAfter): its own, never shared. */
+  order: number };
 
 /** The same session, still signed in, from the cookie and the account (never this request's context): a live room's and
  * a live terminal's re-proof. Null when it was signed out, ended elsewhere, revoked, rotated or re-roled. */
@@ -218,9 +220,9 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     if (turn === undefined || turn.done || viewer.detach !== null) return;
     // The running reply's first snapshot is this room's first word: a new stream's `synced` waits for it.
     const firstWritten = viewer.connection.holdSynced();
-    // Each snapshot carries the order of the moment it was taken (live-bus.ts nextLiveOrder), not of its sending.
+    // Each snapshot carries the order of the moment it was taken (live-bus.ts liveOrderAfter), not of its sending.
     type Taken = { snapshot: ChatSnapshot; order: number };
-    const take = (): Taken => ({ snapshot: chatSnapshot(turn), order: nextLiveOrder() });
+    const take = (): Taken => ({ snapshot: chatSnapshot(turn), order: viewer.order = liveOrderAfter(viewer.order) });
     const send = (taken: Taken): void => { viewer.connection.send(viewer.room, "turn", taken.snapshot, taken.order); firstWritten(); };
     const sender = createLiveSender<Taken>({ send, standing: () => admitted(viewer, thread), spacingMs: TURN_SETTLE_MS });
     const listener = (): void => {
@@ -370,7 +372,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           return scope.kind !== "project" || live.chatProjectOf([scope.key]) === scope.key;
         });
         joins.push(connection => {
-          const viewer: ChatViewer = { name: who.name, room: name, connection, scope, valid, detach: null, leave: () => {
+          const viewer: ChatViewer = { name: who.name, room: name, connection, scope, valid, detach: null, order: 0, leave: () => {
             viewer.detach?.(); chatViewers.delete(viewer); unregister(); unprove();
             if (connection.rooms === 0) connection.close();
           } };
@@ -378,7 +380,15 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           const unregister = connection.onClose(() => { viewer.detach?.(); chatViewers.delete(viewer); });
           const unprove = connection.onKeepAlive(() => { admitted(viewer); });
           const thread = store.liveLeadThreadFor(who.name, scope);
-          if (thread !== null) follow(viewer, thread.id);
+          const turn = thread === null ? undefined : liveTurns.get(thread.id);
+          if (thread !== null && turn !== undefined && !turn.done) { follow(viewer, thread.id); return; }
+          // A frames reader (one that may hand over) always hears where the conversation stands before `synced`: the
+          // reply that just finished (its last snapshot), or that none is running. A page replacing its stream then
+          // never keeps a partial reply the old stream would have finished.
+          if (!connection.frames || !admitted(viewer, thread?.id)) return;
+          const order = viewer.order = liveOrderAfter(viewer.order);
+          if (turn !== undefined) connection.send(name, "turn", chatSnapshot(turn), order);
+          else connection.send(name, "turn", { state: "idle" }, order);
         });
       } else {
         const proved = teamActorOf(request, who);
