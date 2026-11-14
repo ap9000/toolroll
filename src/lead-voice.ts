@@ -33,13 +33,14 @@ const BATCH_LINES = 8;
 const ENDS_SQL = LEAD_ENDS.map(one => `'${one}'`).join(",");
 
 /** The work index's reading of a claim, per row of its `classified` projection: 0 none, 1 on it, 2 lapsed. Only the
- * viewer's own lead counts (`$leadOf`, "lead for <viewer>"; null for nobody): another person's lead is not yours. */
+ * viewer's own lead counts (`$leadOf`, "lead for <viewer>"; null for nobody): another person's lead is not yours.
+ * The family's versions are the row's own lists (`fam_ids`, `fam_refs`): the index reads each CTE once (work-index.ts). */
 export const LEAD_CLAIM_SQL = `COALESCE((SELECT CASE
-      WHEN EXISTS(SELECT 1 FROM action_ledger e WHERE e.task_id IN (SELECT m.id FROM ordered m WHERE m.root_ref = c.root_ref)
+      WHEN EXISTS(SELECT 1 FROM action_ledger e WHERE e.task_id IN (SELECT value FROM json_each(c.fam_ids))
         AND e.id > claim.id AND e.actor = claim.actor AND e.action IN (${ENDS_SQL})) THEN 0
-      WHEN EXISTS(SELECT 1 FROM task_act t WHERE t.task_ref IN (SELECT m.ref_id FROM ordered m WHERE m.root_ref = c.root_ref)
+      WHEN EXISTS(SELECT 1 FROM task_act t WHERE t.task_ref IN (SELECT value FROM json_each(c.fam_refs))
         AND t.act IN (${DONE_ACTS_SQL}) AND t.at >= claim.at) THEN 0
-      WHEN (SELECT MAX(a.at) FROM action_ledger a WHERE a.task_id IN (SELECT m.id FROM ordered m WHERE m.root_ref = c.root_ref)
+      WHEN (SELECT MAX(a.at) FROM action_ledger a WHERE a.task_id IN (SELECT value FROM json_each(c.fam_ids))
         AND a.id >= claim.id AND a.actor = claim.actor) > $leadIdleSince THEN 1 ELSE 2 END
     FROM action_ledger claim WHERE claim.id = (SELECT MAX(id) FROM action_ledger WHERE task_id = c.root_id AND action = '${LEAD_CLAIMED}' AND actor = $leadOf)), 0)`;
 

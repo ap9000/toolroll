@@ -20,7 +20,7 @@ body:
     attributes:
       label: Environment
       description: OS, Node version (`node --version`), and how it was running (cron, `watch`, `daemon`, by hand).
-      placeholder: macOS 15 · Node 22.13 · daemon (launchd)
+      placeholder: macOS 15 · Node 22.20 · daemon (launchd)
     validations:
       required: true
   - type: textarea

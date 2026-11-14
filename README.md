@@ -14,7 +14,7 @@ Approve each plan once. Get results back Ready with the diff, the check status a
 [![CI](https://github.com/ap9000/toolroll/actions/workflows/ci.yml/badge.svg)](https://github.com/ap9000/toolroll/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-171717)](LICENSE)
 [![Homebrew](https://img.shields.io/badge/homebrew-ap9000%2Ftoolroll-171717)](https://github.com/ap9000/homebrew-toolroll)
-![node](https://img.shields.io/badge/node-%E2%89%A5%2022.13-171717)
+![node](https://img.shields.io/badge/node-%E2%89%A5%2022.20-171717)
 
 **[Website](https://toolroll.dev)** · [Docs](docs/guide/README.md) · [For agents](docs/agents.md) · [Use cases](https://toolroll.dev/use-cases) · [Changelog](CHANGELOG.md)
 
@@ -29,7 +29,7 @@ Approve each plan once. Get results back Ready with the diff, the check status a
 
 ## Quick start
 
-macOS or Linux, Node.js 22.13+, git 2.41+, and Claude Code (`claude`) or
+macOS or Linux, Node.js 22.20+, git 2.41+, and Claude Code (`claude`) or
 Codex (`codex`) signed in on this computer. On Linux, also the sandbox tools:
 `sudo apt install bubblewrap socat ripgrep`.
 

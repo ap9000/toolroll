@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 #
-# It checks what it needs (Node.js 22.13 or newer, git 2.41 or newer), installs
+# It checks what it needs (Node.js 22.20 or newer, git 2.41 or newer), installs
 # the `toolroll` command with npm (`standing-orders`, the older name, still
 # works), and opens it in this terminal on the repository you run it in.
 # Outside one, it says how to start it in a project instead. Nothing runs as
@@ -29,14 +29,14 @@ else
   node_how="Install it from https://nodejs.org/en/download, or with \`brew install node\`"
 fi
 if ! command -v node >/dev/null 2>&1; then
-  stop "it needs Node.js 22.13 or newer, and none was found. $node_how. Then run this again."
+  stop "it needs Node.js 22.20 or newer, and none was found. $node_how. Then run this again."
 fi
 version=$(node -p 'process.versions.node')
 major=${version%%.*}
 rest=${version#*.}
 minor=${rest%%.*}
-if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 13 ]; }; then
-  stop "it needs Node.js 22.13 or newer; this computer has $version. $node_how. Then run this again."
+if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 20 ]; }; then
+  stop "it needs Node.js 22.20 or newer; this computer has $version. $node_how. Then run this again."
 fi
 command -v git >/dev/null 2>&1 || stop "it needs git 2.41 or newer. Install it, then run this again."
 # "git version 2.39.5 (Apple Git-154)" -> 2 39. A version it can't read is not refused here.

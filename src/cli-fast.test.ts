@@ -25,16 +25,37 @@ beforeAll(() => {
   // Stands in for an older Node or for Bun, before the bin's own checks read process.versions.
   writeFileSync(join(scratch, "runtime.mjs"),
     'Object.defineProperty(process, "versions", { value: { ...process.versions, ...JSON.parse(process.env.FAKE_VERSIONS) } });\n');
+  // Stands in for a SQLite built without FTS5: node:sqlite resolves to a module whose fts5 tables fail as such a build's do.
+  writeFileSync(join(scratch, "no-fts5-sqlite.mjs"), [
+    'import { createRequire } from "node:module";',
+    'const real = createRequire(import.meta.url)("node:sqlite");',
+    'export class DatabaseSync extends real.DatabaseSync {',
+    '  exec(sql) { if (/USING\\s+fts5/i.test(sql)) throw new Error("no such module: fts5"); return super.exec(sql); }',
+    '}',
+    'export const StatementSync = real.StatementSync;',
+  ].join("\n"));
+  writeFileSync(join(scratch, "no-fts5.mjs"), [
+    'import { registerHooks } from "node:module";',
+    'import { pathToFileURL } from "node:url";',
+    `const fake = pathToFileURL(${JSON.stringify(join(scratch, "no-fts5-sqlite.mjs"))}).href;`,
+    'registerHooks({ resolve(specifier, context, next) { return specifier === "node:sqlite" && !context.parentURL?.startsWith(fake) ? { url: fake, shortCircuit: true } : next(specifier, context); } });',
+  ].join("\n"));
 });
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 /** One run of the built bin: its output, and every module it loaded (ours relative to dist/). */
 type Run = { status: number | null; stdout: string; stderr: string; ours: string[]; all: string[] };
 
-function runBin(args: readonly string[], versions?: Record<string, string>): Run {
+/** bin.ts's how-to for this platform (#383's words, as install.sh says them). */
+const INSTALL_NODE = (process.platform === "linux"
+  ? "Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource (https://github.com/nodesource/distributions); `apt install nodejs` is usually too old."
+  : "Install it from https://nodejs.org/en/download" + (process.platform === "darwin" ? ", or with `brew install node`." : ".")) + "\n";
+
+/** `noFts5`: node:sqlite stands in for a SQLite built without FTS5 (its CREATE VIRTUAL TABLE … USING fts5 fails). */
+function runBin(args: readonly string[], versions?: Record<string, string>, noFts5 = false): Run {
   const trace = join(scratch, `trace-${Math.random().toString(36).slice(2)}.txt`);
   writeFileSync(trace, "");
-  const preloads = ["--import", join(scratch, "trace.mjs"), ...(versions ? ["--import", join(scratch, "runtime.mjs")] : [])];
+  const preloads = ["--import", join(scratch, "trace.mjs"), ...(versions ? ["--import", join(scratch, "runtime.mjs")] : []), ...(noFts5 ? ["--import", join(scratch, "no-fts5.mjs")] : [])];
   const result = spawnSync(process.execPath, [...preloads, BIN, ...args], {
     encoding: "utf8",
     env: { ...process.env, TRACE_FILE: trace, FAKE_VERSIONS: JSON.stringify(versions ?? {}) },
@@ -72,17 +93,38 @@ describe("the bin's fast path", () => {
   });
 
   test("the Node engine check still answers first, with exit 2", () => {
-    const old = runBin(["--version"], { node: "22.12.0" });
-    expect(old.status).toBe(2);
-    expect(old.stdout).toBe("");
-    expect(old.stderr).toMatch(/^Toolroll needs Node 22\.13 or newer \(this is 22\.12\.0\): it uses node:sqlite\.\nInstall it from https:\/\/nodejs\.org\/en\/download.*\n$/);
-    expect(old.ours).toEqual(["bin.js"]);
+    // 22.13–22.15 bundle SQLite without FTS5 and 22.16–22.19's node:sqlite fails the store's writes: the floor is 22.20.
+    for (const node of ["22.12.0", "22.15.1", "22.19.0"]) {
+      const old = runBin(["--version"], { node });
+      expect(old.status).toBe(2);
+      expect(old.stdout).toBe("");
+      expect(old.stderr).toBe(`Toolroll needs Node 22.20 or newer (this is ${node}): it uses node:sqlite.\n${INSTALL_NODE}`);
+      expect(old.stderr).toMatch(/\nInstall it from https:\/\/nodejs\.org\/en\/download.*\n$/);
+      expect(old.ours).toEqual(["bin.js"]);
+    }
 
     const bun = runBin(["--help"], { bun: "1.2.0" });
     expect(bun.status).toBe(2);
     expect(bun.stdout).toBe("");
     expect(bun.stderr).toContain("Bun's runtime has no node:sqlite");
     expect(bun.ours).toEqual(["bin.js"]);
+  });
+
+  test("a Node whose SQLite has no FTS5 stops on the way into the CLI, with the same how-to; --version still answers", () => {
+    const fake = { sqlite: "3.49.1" };
+    const missing = runBin(["status"], fake, true);
+    expect(missing.status).toBe(2);
+    expect(missing.stdout).toBe("");
+    expect(missing.stderr).toBe(`Toolroll needs a Node whose SQLite has full-text search (FTS5); this Node (${process.versions.node}, SQLite 3.49.1) doesn't.\n${INSTALL_NODE}`);
+    expect(missing.ours).not.toContain("cli.js");
+    // The fast answers never load SQLite, so they still answer on that Node.
+    const version = runBin(["--version"], fake, true);
+    expect(version.status).toBe(0);
+    expect(version.stdout).toBe(`${VERSION}\n`);
+    // A Node whose SQLite has it goes on into the CLI, its experimental notice still quiet.
+    const ok = runBin(["--nope"]);
+    expect(ok.ours).toContain("cli.js");
+    expect(ok.stderr).not.toContain("ExperimentalWarning");
   });
 
   test("anything else still runs the CLI: usage errors exit 2, envelopes are unchanged", () => {

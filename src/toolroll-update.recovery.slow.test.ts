@@ -17,7 +17,7 @@ import {
   releaseStalledUpdate, startRuntimeRollback, startRuntimeUpdate, updateWaitingOf, waitingUpdate, PROVENANCE_ISSUER, PROVENANCE_REPOSITORY, PROVENANCE_WORKFLOW, UPDATE_JOB_LABEL, UPDATER_START_MS, UPDATE_STEPS, type RuntimePhase, type UpdateSystem,
 } from "./toolroll-update.js";
 import { REGISTRY, setUpdateChecks } from "./releases.js";
-import { runUpdateCommand } from "./toolroll-update-cli.js";
+import { oldReleaseProblem, runUpdateCommand } from "./toolroll-update-cli.js";
 import { updatesHtml } from "./toolroll-update-ui.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -401,8 +401,13 @@ test("r7: a refused attempt after a completed update leaves --rollback working",
     expect(refused.phase).toBe("refused");
     expect(readRuntimeUpdate(f.stateDir)).toMatchObject({ phase: "refused", to: { version: "0.8.0" } });
     const lines: string[] = [];
-    expect(await runUpdateCommand(["--rollback"], line => lines.push(line), { system: f.system, current: update.journal!.to, databaseFile: f.databaseFile, method: { kind: "managed", updateCommand: "toolroll update" } })).toBe(0);
+    expect(await runUpdateCommand(["--rollback"], line => lines.push(line), { system: f.system, current: update.journal!.to, databaseFile: f.databaseFile, method: { kind: "managed", updateCommand: "toolroll update" }, sqlite: "3.50.4" })).toBe(0);
     expect(lines[0]).toMatch(/^Roll back 0\.7\.0 → 0\.6\.0/);
+    // On a Node whose SQLite is 3.54 or newer, 0.6.0 (like every release up to 0.9.105) couldn't start: refused, with why.
+    const refusedOld: string[] = [];
+    expect(await runUpdateCommand(["--rollback", "--yes"], line => refusedOld.push(line), { system: f.system, current: update.journal!.to, databaseFile: f.databaseFile, method: { kind: "managed", updateCommand: "toolroll update" }, sqlite: "3.54.1" })).toBe(1);
+    expect(refusedOld).toEqual([oldReleaseProblem("0.6.0", "3.54.1")]);
+    expect(refusedOld[0]).toContain("Toolroll 0.6.0 can't start on this Node: its SQLite (3.54.1)");
     const rollback = await startRuntimeRollback({ stateDir: f.stateDir, databaseFile: f.databaseFile, current: update.journal!.to, actor: "ada", when: "when-idle" }, f.system);
     expect(rollback.phase).toBe("complete");
     for (const link of f.links) expect(readlinkSync(link)).toBe(join(f.oldDist, "bin.js"));

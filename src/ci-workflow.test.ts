@@ -106,6 +106,8 @@ const SCOPE = "area lanes · scope";
 const NATIVE_SCOPE = "native lanes · scope";
 const NATIVE = Object.values(NATIVE_JOBS) as string[];
 const REPEAT = "Windows Job Object containment · c2 repeat";
+/** The newest Node's SQLite checks (ci.yml node-latest): an ordinary check on every pull request, never a required one. */
+const LATEST = "node 26 · SQLite";
 /** Checks a pull request also runs that no release waits for (youiyoux.yml: it fails a pull request that adds UI
  * drift, but a release never waits for it). */
 const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path"];
@@ -192,14 +194,17 @@ describe("the CI workflows", () => {
   test("every pull request reports every required check; Node 24 on Linux and macOS and the area lanes run, Node 22 only on a release-* branch", () => {
     expect(workflow("ci.yml").on["pull_request"]).toBeNull();
     expect(workflow("release-candidate.yml").on["pull_request"]).toBeNull();
-    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort();
+    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), LATEST, SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort();
     const change = pr(["src/release.ts"]);
     // Skipped, Node 22's shards report once each, unexpanded (GitHub skips a matrix job before expanding it); the
     // required names are written out, so they report exactly.
     const skippedShards = ["node 22 · shard ${{ matrix.shard }}/6", "node 22 · macos shard ${{ matrix.shard }}/3"];
     expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
     // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
-    expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort());
+    expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), LATEST, SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort());
+    // The newest Node's SQLite checks run on every pull request, on the newest patch release, and are never required.
+    expect((REQUIRED_PR_CHECKS as readonly string[]).includes(LATEST)).toBe(false);
+    expect(workflow("ci.yml").jobs["node-latest"]?.steps?.find(step => step.uses?.startsWith("actions/setup-node@"))?.with).toMatchObject({ "node-version": "26", "check-latest": true });
     // A release candidate's pull request runs everything, and its package.json change runs the install smoke.
     expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual([...all, ...INSTALL_SMOKE].sort());
     // The macOS suite runs on the candidate before it merges, sharded; its joins run on Linux.
@@ -210,6 +215,20 @@ describe("the CI workflows", () => {
     expect(reported(change).find(one => one.name === "native · linux cgroup")?.runner).toBe("ubuntu-latest");
     // The Windows repeat job only joins pull requests that touch Windows containment; it is never a required check.
     expect(names(pr(["src/containment.ts"])).filter(name => !all.includes(name) && !skippedShards.includes(name))).toEqual([REPEAT]);
+  });
+
+  test("every job that installs the candidate takes its Node's newest patch release: a cached older one hid SQLite 3.54.1 from 0.9.105's suite", () => {
+    const steps = workflows.flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => (job.steps ?? [])
+      .filter(step => step.uses?.startsWith("actions/setup-node@") && step.with?.["cache"] === "npm").map(step => ({ where: `${one.file} ${id}`, step }))));
+    expect(steps.length).toBeGreaterThan(10);
+    // The one exception, by name: the upgrade test rolls back to old releases, and every release up to 0.9.105 refuses
+    // the Tasks list on SQLite 3.54+. It runs an exact Node 22 at or above the engines floor whose SQLite is older.
+    const PINNED: Record<string, string> = { "upgrade-path.yml upgrade": "22.22.0" };
+    for (const { where, step } of steps) {
+      if (where in PINNED) { expect(step.with?.["node-version"], where).toBe(PINNED[where]); expect(step.with?.["check-latest"], where).toBeUndefined(); continue; }
+      expect(step.with?.["check-latest"], where).toBe(true);
+    }
+    expect(steps.filter(({ where }) => where in PINNED).length).toBe(Object.keys(PINNED).length);
   });
 
   test("the youiyoux UI check fails a pull request that adds drift (strict, pinned) but is never a required check a release waits for", () => {
@@ -266,7 +285,7 @@ describe("the CI workflows", () => {
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {
     const docs = pr(["docs/plans/test-matrix.md", "CHANGELOG.md", "README.md"]);
     expect(names(docs)).toEqual(names(pr(["src/release.ts"])));
-    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", SCOPE, NATIVE_SCOPE, ...ADVISORY.filter(name => name !== "upgrade path")].sort());
+    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", LATEST, SCOPE, NATIVE_SCOPE, ...ADVISORY.filter(name => name !== "upgrade path")].sort());
     // One file beyond documentation, or a release branch, runs every lane.
     for (const event of [pr(["docs/a.md", "src/x.ts"]), pr(["docs/a.md"], "release-0.9.80"), pr(["docs/a.json"]), pr(["test/attacks/a.test.ts"])]) {
       expect(executed(event).filter(name => AREA.includes(name)).sort(), JSON.stringify(event)).toEqual([...AREA].sort());
@@ -593,7 +612,7 @@ describe("H1: the root lanes run in a workflow run of their own", () => {
 });
 
 describe("H1: every phase that loads a candidate's code runs as its own user", () => {
-  const HARDENED = [["ci.yml", "test-shard"], ["ci.yml", "macos-shard"], ["ci.yml", "git-floor"], ["ci.yml", "git-247"], ["release-candidate.yml", "test-shard"], ["release-candidate.yml", "macos-shard"]] as const;
+  const HARDENED = [["ci.yml", "test-shard"], ["ci.yml", "macos-shard"], ["ci.yml", "node-latest"], ["ci.yml", "git-floor"], ["ci.yml", "git-247"], ["release-candidate.yml", "test-shard"], ["release-candidate.yml", "macos-shard"]] as const;
   const LOADS_CANDIDATE = /\bnpm (ci|run|test|install)\b|\bnpx\b|\bvitest\b|\btsc\b|\bnode scripts\/|^scripts\//;
   test.each(HARDENED)("%s %s: nothing of the candidate's runs outside the harness, the canary runs inside the job, and no token is left to find", (file, id) => {
     const job = workflow(file).jobs[id]!;

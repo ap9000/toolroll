@@ -28,6 +28,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
+          # The newest patch release: a cached older one hid SQLite 3.54.1 from the suite (0.9.105).
+          check-latest: true
           cache: npm
       - run: npm ci
       - run: npm run build

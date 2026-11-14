@@ -1,6 +1,6 @@
 # Contributing
 
-Toolroll is small on purpose: Node ≥ 22.13, a short list of pinned runtime
+Toolroll is small on purpose: Node ≥ 22.20, a short list of pinned runtime
 dependencies, one SQLite file, and a design document that says no more often
 than yes.
 Contributions that fit that shape are very welcome.

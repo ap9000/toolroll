@@ -15,7 +15,7 @@ systems and native facilities do, so those stay — but each once, at the right 
 
 | Stage | Runs | Doesn't run |
 |---|---|---|
-| Pull request | Node 24 unit shards on Linux and macOS. Area lanes: Windows Job Object, Linux fence, Linux cgroup, git 2.41 and 2.47 | The area lanes on a documentation-only pull request (see below). Node 22 |
+| Pull request | Node 24 unit shards on Linux and macOS. The newest Node's SQLite checks (`node 26 · SQLite`). Area lanes: Windows Job Object, Linux fence, Linux cgroup, git 2.41 and 2.47 | The area lanes on a documentation-only pull request (see below). Node 22 |
 | Release candidate (a `release-*` branch's pull request) | Everything a pull request runs, plus Node 22 unit shards on Linux and macOS, on the exact candidate | — |
 | Owner's Mac (release check) | Unchanged: the full unit suite locally, scripted journeys, real-model journeys when model-facing code changed, the upgrade path when its rule says so. Native attacks must run | — |
 | Tag / Publish | The release proof (below), then npm publish with provenance and the GitHub release | Any test. The two tag macOS legs are gone |
@@ -52,6 +52,15 @@ carry `nightly floor / ` in front, so they never stand in for the required ones 
 workflow itself would report the required names from a run the release gate binds to no pull request, which it
 refuses, so that workflow has no manual trigger). Its required names (`node 22 · ubuntu-latest`, `node 22 · macos-latest`) stay in `REQUIRED_PR_CHECKS`,
 mapped to that workflow, so a release can't proceed without them executed on its exact head.
+
+## The newest Node
+
+Every job that installs the candidate takes its Node's newest patch release (`check-latest`). 0.9.105 shipped broken on
+every current Node: Node 22.23, 24.22 and 26.13 bundle SQLite 3.54.1, which refuses a statement whose CTE copies open
+1,000 cursors, and the Tasks list's did; CI's cached Node 24 still bundled an older SQLite, so nothing failed. The
+`node 26 · SQLite` job runs the SQLite checks (`src/sqlite-compat.test.ts`: every Tasks list read prepares, each in a
+third of SQLite's limit, and the store's own tests) on the newest Node 26 on every pull request. It isn't a required
+check, but it's an ordinary one: a release waits for it, and its failure fails the release.
 
 ## Native attacks fail closed
 

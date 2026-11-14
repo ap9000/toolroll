@@ -64,7 +64,7 @@
     "standing-orders": "dist/bin.js"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.20.0"
   },
   "devDependencies": {
     "@radix-ui/react-collapsible": "1.1.20",

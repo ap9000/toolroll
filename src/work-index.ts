@@ -145,6 +145,14 @@ const ASK_GROUP_SQL = `CASE WHEN code='needs-approval' AND c.id IN (SELECT value
 const ORDER = `(CASE WHEN rank=0 THEN ask_rank WHEN rank=1 THEN 3 ELSE 4 END)`;
 /** A row whose build may still be running (the store's reading, custodyReadings): Waiting, not Needs you. */
 const CUSTODY_WAITS = `(custody_unresolved AND code IN ('process-needs-attention','result-needs-attention') AND ref_id IN (SELECT value FROM json_each($waitingCustody)))`;
+/** ONE_READ: every CTE of the projection is read once by the CTE after it, never twice. SQLite copies a CTE's whole
+ * body, its own CTE references included, into every place that names it, and from SQLite 3.54 (its fix of
+ * 2026-10-04; bundled from Node 22.23, 24.22 and 26.13 on) it refuses a statement once those copies have opened
+ * SQLITE_LIMIT_EXPR_DEPTH (1000) cursors: "VIEWs and/or subqueries nested too deep". Read as a DAG this projection
+ * opened about 1,350 cursors and the Tasks page about 4,000. So a family's facts ride on each version (window functions
+ * over the family) with the family's versions as JSON lists built once per family (`versions`, which reads only
+ * `admitted` and `lineage` again), and the page's totals ride on its rows; nothing reads `members`, `ordered`, `ready`
+ * or `ranked` a second time. src/sqlite-compat.test.ts holds every read to a third of the limit. */
 const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   SELECT t.id, t.title, t.state, t.created_at, t.updated_at, r.id ref_id, r.repo,
     r.revision_of, r.revision_brief_artifact, r.assigned_runner, r.plan,
@@ -182,32 +190,32 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
       AND a.ref_id NOT IN (SELECT value FROM json_each($settledCustody)) custody_unresolved
   FROM admitted a LEFT JOIN lineage l ON l.ref_id=a.ref_id
   LEFT JOIN questions q ON q.task_ref=a.ref_id LEFT JOIN custody cu ON cu.task_ref=a.ref_id
-), family_heads AS MATERIALIZED (
-  SELECT root_ref,COUNT(*) version_count,MAX(updated_at) family_updated,
-    CAST(substr(MAX((CASE WHEN ref_id=root_ref THEN '0' ELSE '1' END)||created_at||printf('%020d',ref_id)),-20) AS INTEGER) current_ref,
-    -- A put-away version (v145) is history: it never counts as an earlier active version or brings its question along.
-    SUM(NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved)) active_count,
-    MIN(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) first_active,
-    MAX(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) last_active,
-    MAX(live_lease IS NOT NULL) family_running,MIN(CASE WHEN NOT member_archived THEN decision_id END) question_id
-  FROM members GROUP BY root_ref
 ), ordered AS MATERIALIZED (
-  SELECT m.*,CASE WHEN m.ref_id=f.current_ref THEN 1 ELSE 2 END version_rank
-  FROM members m JOIN family_heads f USING(root_ref)
-), families AS MATERIALIZED (
-  SELECT f.root_ref,f.version_count,f.family_updated,f.family_running,
-    f.active_count-(NOT c.member_archived AND (c.state IN ('queued','running') OR c.live_lease IS NOT NULL OR c.unfinished IS NOT NULL OR c.custody_unresolved)) earlier_active,
-    earlier.id earlier_id,COALESCE(c.decision_id,f.question_id) question_id
-  FROM family_heads f JOIN members c ON c.ref_id=f.current_ref
-  LEFT JOIN admitted earlier ON earlier.ref_id=CASE WHEN f.first_active=f.current_ref THEN f.last_active ELSE f.first_active END
+  -- Every version carries its family's facts (window functions over the family: see ONE_READ).
+  SELECT o.*,CASE WHEN o.ref_id=o.current_ref THEN 1 ELSE 2 END version_rank FROM (
+    SELECT m.*,COUNT(*) OVER family fam_version_count,MAX(updated_at) OVER family fam_updated,
+      CAST(substr(MAX((CASE WHEN ref_id=root_ref THEN '0' ELSE '1' END)||created_at||printf('%020d',ref_id)) OVER family,-20) AS INTEGER) current_ref,
+      -- A put-away version (v145) is history: it never counts as an earlier active version or brings its question along.
+      SUM(NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved)) OVER family fam_active_count,
+      MIN(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) OVER family fam_first_active,
+      MAX(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) OVER family fam_last_active,
+      MAX(live_lease IS NOT NULL) OVER family fam_running,MIN(CASE WHEN NOT member_archived THEN decision_id END) OVER family fam_question_id
+    FROM members m WINDOW family AS (PARTITION BY root_ref)) o
+), versions AS MATERIALIZED (
+  -- Each family's versions as JSON lists, ordered by task_ref, built once per family (never on every version), for the
+  -- later reads that look across a family. Members' own family: admitted joined to its lineage, as members reads it.
+  SELECT COALESCE(l.root_ref,a.ref_id) root_ref,json_group_array(a.ref_id ORDER BY a.ref_id) fam_refs,json_group_array(a.id ORDER BY a.ref_id) fam_ids
+  FROM admitted a LEFT JOIN lineage l ON l.ref_id=a.ref_id GROUP BY COALESCE(l.root_ref,a.ref_id)
 ), workers AS MATERIALIZED (
   SELECT r.name,r.capacity,r.heartbeat_at,j.value repo,
     (SELECT COUNT(*) FROM claim c WHERE c.runner=r.name AND c.released_at IS NULL AND c.expires_at>$now
       AND c.lease_generation=(SELECT MAX(newest.lease_generation) FROM claim newest WHERE newest.task_ref=c.task_ref)) occupied
   FROM runner r,json_each(CASE WHEN json_valid(r.repos) THEN r.repos ELSE '[]' END) j WHERE r.retired_at IS NULL
 ), facts AS MATERIALIZED (
-  SELECT c.*,f.version_count,f.family_updated,f.earlier_active,f.earlier_id,f.family_running,f.question_id,
-    root.id root_id,root.title root_title,
+  SELECT c.*,c.fam_version_count version_count,c.fam_updated family_updated,
+    c.fam_active_count-(NOT c.member_archived AND (c.state IN ('queued','running') OR c.live_lease IS NOT NULL OR c.unfinished IS NOT NULL OR c.custody_unresolved)) earlier_active,
+    earlier.id earlier_id,c.fam_running family_running,COALESCE(c.decision_id,c.fam_question_id) question_id,
+    root.id root_id,root.title root_title,fam.fam_refs,fam.fam_ids,
     result.role result_role,result.outcome result_outcome,result.head_revision,result.scope_digest,result.finished_at,
     (SELECT id FROM run WHERE task_ref=c.ref_id AND lease_id=c.live_lease AND outcome IS NULL ORDER BY id DESC LIMIT 1) live_run,
     h.owner_kind hold_kind,h.reason hold_reason,h.until hold_until,
@@ -266,7 +274,8 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     COALESCE((SELECT substr(actor,13) FROM action_ledger WHERE task_id=root.id AND action='assignment claimed' AND source='work' ORDER BY id DESC LIMIT 1),root.coordinator_cid) owner_id,
     ${HELD_FINDINGS} held_findings,
     pub.pr_url publication_url
-  FROM ordered c JOIN families f USING(root_ref) JOIN admitted root ON root.ref_id=c.root_ref
+  FROM ordered c JOIN admitted root ON root.ref_id=c.root_ref JOIN versions fam ON fam.root_ref=c.root_ref
+  LEFT JOIN admitted earlier ON earlier.ref_id=CASE WHEN c.fam_first_active=c.current_ref THEN c.fam_last_active ELSE c.fam_first_active END
   LEFT JOIN run result INDEXED BY work_result ON result.task_ref=c.ref_id AND result.id=c.result_id
     AND result.finished_at IS NOT NULL AND result.role IN ('builder','scout') LEFT JOIN hold h ON h.id=c.hold_id
   LEFT JOIN task_scope sc ON sc.task_id=c.id LEFT JOIN publication pub ON pub.run=c.result_id
@@ -277,25 +286,26 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     AND digest=scope_digest AND ((result_role='scout' AND result_outcome='built') OR
       (result_role='builder' AND result_outcome IN ('built','no-change') AND length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*')) ready
   FROM facts f
-), completion_families AS MATERIALIZED (
-  SELECT root_ref FROM ready f WHERE f.ready AND EXISTS(SELECT 1 FROM action_ledger a
-    WHERE a.task_id=f.root_id AND a.run_id=f.result_id AND a.action='assignment handoff checked' AND a.source='work')
-), completion_metadata AS MATERIALIZED (
-  SELECT m.root_ref,MAX((SELECT MAX(a.id) FROM action_ledger a WHERE a.task_id=m.id
-    AND a.action IN ('task state changed','scope approved','task placed','run started','run finished'))) changed_id,
-    MAX((SELECT MAX(ar.created_at) FROM run r JOIN artifact ar ON ar.run=r.id WHERE r.task_ref=m.ref_id)) artifact_at
-  FROM completion_families f JOIN ordered m ON m.root_ref=f.root_ref GROUP BY m.root_ref
 ), checked AS MATERIALIZED (
   SELECT f.*,(SELECT a.id FROM action_ledger a WHERE f.ready AND a.task_id=f.root_id AND a.run_id=f.result_id
     AND a.action='assignment handoff checked' AND a.source='work' AND a.repo IS f.repo
     AND length(a.outcome)=64 AND a.outcome NOT GLOB '*[^a-f0-9]*'
     AND a.at>=f.family_updated AND a.at>=f.finished_at AND a.at>=f.approved_at AND a.at>=f.proposed_at
     AND (a.actor GLOB 'operator:?*' OR a.actor GLOB 'coordinator:?*' OR a.actor GLOB 'lead:?*' OR a.actor='${LANDED_ACTOR}')
-    AND (cm.changed_id IS NULL OR a.id>=cm.changed_id) AND (cm.artifact_at IS NULL OR a.at>=cm.artifact_at)
+    AND (f.completion_changed IS NULL OR a.id>=f.completion_changed) AND (f.completion_artifact_at IS NULL OR a.at>=f.completion_artifact_at)
     AND NOT EXISTS(SELECT 1 FROM proof_verdict p WHERE p.run=f.result_id AND p.decided_at>a.at)
     AND NOT EXISTS(SELECT 1 FROM proof_acceptance p WHERE p.run=f.result_id AND p.accepted_at>a.at)
     ORDER BY a.id DESC LIMIT 1) checked_id
-  FROM ready f LEFT JOIN completion_metadata cm ON cm.root_ref=f.root_ref
+  FROM (
+    -- A ready family whose handoff was checked: the newest change and artifact of any of its versions, which a check must postdate.
+    SELECT f.*,CASE WHEN f.ready AND EXISTS(SELECT 1 FROM action_ledger a
+        WHERE a.task_id=f.root_id AND a.run_id=f.result_id AND a.action='assignment handoff checked' AND a.source='work')
+      THEN (SELECT MAX(a.id) FROM json_each(f.fam_ids) m JOIN action_ledger a ON a.task_id=m.value
+        AND a.action IN ('task state changed','scope approved','task placed','run started','run finished')) END completion_changed,
+      CASE WHEN f.ready AND EXISTS(SELECT 1 FROM action_ledger a
+        WHERE a.task_id=f.root_id AND a.run_id=f.result_id AND a.action='assignment handoff checked' AND a.source='work')
+      THEN (SELECT MAX(ar.created_at) FROM json_each(f.fam_refs) m JOIN run r ON r.task_ref=m.value JOIN artifact ar ON ar.run=r.id) END completion_artifact_at
+    FROM ready f) f
 ), classified AS MATERIALIZED (
   SELECT f.*,CASE
     WHEN broken THEN 'history-problem'
@@ -452,6 +462,20 @@ const GROUP_TOTALS = `COALESCE(SUM(rank=0 AND ask_rank=0 AND archived=0),0) deci
 const ASK_TOTALS = WORK_ASK_GROUPS.map(group => `COALESCE(SUM(needs AND ask_group='${group}'),0) ask_${group}_count`).join(',')
   + `,COALESCE(SUM(code='complete' AND archived=0 AND $completedSince IS NOT NULL AND sort_at>=$completedSince),0) completed_since_count`
   + `,COALESCE(SUM(needs AND code IN ('no-worker-registered','no-worker-online')),0) builder_wait_count`;
+/** Sums as window functions (`window`: '' over every row, or a PARTITION BY), each column named `prefix` + its own name. */
+function over(sums: string, window: string, prefix = ''): string {
+  const windowed = sums.replace(/\),0\) (\w+)/g, (_, name: string) => `) OVER (${window}),0) ${prefix}${name}`);
+  if (windowed.split(' OVER (').length !== sums.split('COALESCE(SUM(').length) throw new Error('Every total must read COALESCE(SUM(...),0) <name>.');
+  return windowed;
+}
+const namesOf = (sums: string) => [...sums.matchAll(/\),0\) (\w+)/g)].map(match => match[1]!);
+const TOTAL_NAMES = namesOf(TOTALS);
+/** The page's totals and each project's, read in the same pass as its rows. */
+const PAGE_TOTALS = over(`${TOTALS},${GROUP_TOTALS},${ASK_TOTALS}`, '');
+const PAGE_TOTAL_NAMES = namesOf(`${TOTALS},${GROUP_TOTALS},${ASK_TOTALS}`);
+const PROJECT_TOTALS = `${over(TOTALS, 'PARTITION BY repo', 'project_')},SUM(state='queued' AND family_running=0 AND archived=0) OVER (PARTITION BY repo) project_queued,
+  SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) OVER (PARTITION BY repo) project_done_recently`;
+const PROJECT_TOTAL_NAMES = [...TOTAL_NAMES.map(name => `project_${name}`), 'project_queued', 'project_done_recently'];
 function askCounts(row: Row): Record<WorkAskGroup, number> {
   return Object.fromEntries(WORK_ASK_GROUPS.map(group => [group, n(row, `ask_${group}_count`)])) as Record<WorkAskGroup, number>;
 }
@@ -507,21 +531,24 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'ready' ? READY : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0 AND ($completedSince IS NULL OR sort_at>=$completedSince)" : 'archived=0';
-  const rows = prepared(store, `${projection}, selected_page AS MATERIALIZED (
-    SELECT * FROM ranked WHERE ($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR root_ref IN (SELECT root_ref FROM members WHERE id=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
-      ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot))))
-    ORDER BY ${ORDER},sort_at DESC,root_ref DESC LIMIT $limit
-  ), page AS (SELECT p.*,COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) page_result_id FROM selected_page p), totals AS (SELECT ${TOTALS},${GROUP_TOTALS},${ASK_TOTALS} FROM ranked), project_totals AS (
-    SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
-      SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo
+  // One read of ranked serves the page, its totals and each project's totals (window functions; see ONE_READ): the page's
+  // rows (`is_row`, in list order), and each project's first row (`is_project`) to carry that project's totals.
+  const rows = prepared(store, `${projection}, page AS (
+    SELECT p.*,p.in_page AND p.page_order<=$limit is_row,p.repo_order=1 is_project,
+      CASE WHEN p.in_page AND p.page_order<=$limit THEN COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) END page_result_id
+    FROM (SELECT s.*,ROW_NUMBER() OVER (PARTITION BY s.in_page ORDER BY ${ORDER},sort_at DESC,root_ref DESC) page_order,
+        ROW_NUMBER() OVER (PARTITION BY repo ORDER BY root_ref) repo_order,DENSE_RANK() OVER (ORDER BY repo) repo_rank
+      FROM (SELECT r.*,($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR EXISTS(SELECT 1 FROM json_each(r.fam_ids) WHERE value=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
+          ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot)))) in_page,
+          ${PAGE_TOTALS},${PROJECT_TOTALS}
+        FROM ranked r) s) p
+    WHERE (p.in_page AND p.page_order<=$limit) OR p.repo_order=1
   )
-  SELECT 0 record_kind,totals.*,(SELECT json_group_array(json_object('repo',repo,'all_count',all_count,'needs_count',needs_count,'ready_count',ready_count,
-    'running_count',running_count,'queued_count',queued_count,'completed_count',completed_count,'archived_count',archived_count,'queued',queued,'done_recently',done_recently)) FROM project_totals) row_json FROM totals
-  UNION ALL SELECT 1,0,0,0,0,0,0,0,0,0,0,0,0,${WORK_ASK_GROUPS.map(() => '0,').join('')}0,0,json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
+  SELECT is_row,is_project,repo_rank,repo,${PAGE_TOTAL_NAMES.join(',')},${PROJECT_TOTAL_NAMES.join(',')},CASE WHEN is_row THEN json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
     'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
     'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
     'state',state,'created_at',created_at,'family_updated',family_updated,'version_count',version_count,'earlier_active',earlier_active,
-    'earlier_id',earlier_id,'route_change',(SELECT rc.words FROM route_change rc JOIN task_scope rs ON rs.task_id=page.id AND rs.digest=rc.scope_digest AND rs.approved_digest IS NOT rs.digest WHERE rc.task_ref=page.ref_id),'retry_stopped',(SELECT stopped FROM retry_episode WHERE task_ref=page.ref_id),'retry_stopped_run',(SELECT stopped_run FROM retry_episode WHERE task_ref=page.ref_id),'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
+    'earlier_id',earlier_id,'route_change',(SELECT rc.words FROM route_change rc JOIN task_scope rs ON rs.task_id=page.id AND rs.digest=rc.scope_digest AND rs.approved_digest IS NOT rs.digest WHERE rc.task_ref=page.ref_id),'retry_stopped',(SELECT stopped FROM retry_episode WHERE task_ref=page.ref_id),'retry_stopped_run',(SELECT stopped_run FROM retry_episode WHERE task_ref=page.ref_id),'broken',broken,'live_run',live_run,'result_id',page_result_id,'result_outcome',(SELECT outcome FROM run WHERE id=page_result_id),'attempt_reason',(SELECT substr(reason,1,1000) FROM run WHERE task_ref IN (SELECT value FROM json_each(page.fam_refs)) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
     'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
@@ -531,18 +558,20 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'ask_group',ask_group,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
-    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT ref_id FROM members WHERE root_ref=page.root_ref) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,600),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
+    'dependency_id',dependency_id,'dependency_state',dependency_state,'hold_until',hold_until,'attempt_run',(SELECT id FROM run WHERE task_ref IN (SELECT value FROM json_each(page.fam_refs)) AND (finished_at IS NOT NULL OR outcome IS NOT NULL) AND role NOT IN ('planner','reviewer') ORDER BY id DESC LIMIT 1),'custody_unresolved',custody_unresolved,'hold_kind',hold_kind,'hold_reason',substr(hold_reason,1,600),'hold_id',hold_id,'live_lease',live_lease IS NOT NULL,'approved',COALESCE(approved,0),
     'plan_changed',scope_digest IS NOT NULL AND digest IS NOT scope_digest,'head_ok',length(head_revision)=40 AND head_revision NOT GLOB '*[^a-f0-9]*','stop_run',stop_run,'unfinished',unfinished,'signed_out',signed_out,'no_agent',no_agent,'models_cleared',models_cleared,
     'question_run',(SELECT run FROM decision WHERE id=page.question_id),'agent_ask',page.agent_ask,
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),'machine_check',COALESCE(machine_check,0),
-    'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) FROM page`)
+    'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) END row_json
+  FROM page ORDER BY is_row DESC,page_order`)
     .all({ ...parameters(store, now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $completedSince: options.completedSince ?? null, $recent: new Date(now.getTime()-86_400_000).toISOString() });
-  const selected = rows.slice(1).map(row => JSON.parse(String(row['row_json'])) as Row);
+  const selected = rows.filter(row => n(row, 'is_row') === 1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,
     rank: n(last, 'list_order'), at: s(last, 'sort_at'), root: n(last, 'root_ref') })).toString('base64url') : null;
-  const projects = (JSON.parse(String(rows[0]?.['row_json'] ?? '[]')) as Row[]).map(row => ({ repo: s(row, 'repo'), totals: counts(row), queued: n(row, 'queued'), doneRecently: n(row, 'done_recently') }));
+  const projects = rows.filter(row => n(row, 'is_project') === 1).sort((a, b) => n(a, 'repo_rank') - n(b, 'repo_rank')).map(row => ({ repo: s(row, 'repo'),
+    totals: counts(Object.fromEntries(TOTAL_NAMES.map(name => [name, row[`project_${name}`]]))), queued: n(row, 'project_queued'), doneRecently: n(row, 'project_done_recently') }));
   // A row whose build Toolroll can't confirm stopped reads the store's own answer, as the task page does.
   const probe = (taskId: string) => {
     const ref = store.lookupRef(taskId);
@@ -592,7 +621,7 @@ export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess
         COALESCE((SELECT created_at FROM decision WHERE id=question_id),''),COALESCE((SELECT asked_at FROM agent_question WHERE id=agent_ask),''),
         COALESCE((SELECT held_at FROM hold WHERE id=hold_id),''),COALESCE((SELECT requested_at FROM run_stop WHERE run=stop_run),'')),''),sort_at) ask_at,
       COALESCE(live_run,(SELECT run FROM decision WHERE id=question_id),(SELECT run FROM agent_question WHERE id=agent_ask)) ask_run,
-      (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members FROM ranked WHERE archived=0`)
+      fam_refs members FROM ranked WHERE archived=0`)
     .all(parameters(store, now, access, {}, custodyReadings(store)))
     .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
       leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
@@ -607,28 +636,26 @@ export function workOutcomeRows(store: Store, now: Date, access: WorkSummaryAcce
     SELECT * FROM ranked WHERE archived=0 AND (code='ready-to-check' OR code='history-problem'
       OR (code='complete' AND checked_at >= $since AND checked_at <= $now))
     ORDER BY sort_at DESC,root_ref DESC LIMIT $outcomeLimit
-  ), amounts AS (
-    -- reported-usage.ts runAmountOf, row for row: only evidenced billing on a run whose cost was reported is known;
-    -- an API run counts its priced spend as dollars (a safe integer), a subscription run its reported cost as usage,
-    -- never dollars. TOTAL sums as a float, so no family's sum can overflow.
-    SELECT m.root_ref,r.cost_usd,s.microusd,
-      CASE WHEN r.billing_basis IS NOT 'evidence' OR COALESCE(r.cost_unknown,1)<>0 THEN 'unknown'
-        WHEN s.billing='subscription' THEN 'subscription'
-        WHEN s.billing='api-key' AND typeof(s.microusd)='integer' AND s.microusd>=0 AND s.microusd<=9007199254740991 THEN 'api'
-        ELSE 'unknown' END amount
-    FROM selected f JOIN members m ON m.root_ref=f.root_ref JOIN run r ON r.task_ref=m.ref_id LEFT JOIN run_spend s ON s.run=r.id
-  ), attempts AS (
-    SELECT root_ref,COUNT(*) runs,COUNT(CASE WHEN amount='api' THEN 1 END) api_runs,
-      TOTAL(CASE WHEN amount='api' THEN microusd END) api_microusd,
-      COUNT(CASE WHEN amount='subscription' THEN 1 END) subscription_runs,
-      SUM(CASE WHEN amount='subscription' AND typeof(cost_usd) IN ('integer','real') AND cost_usd>=0 THEN cost_usd END) subscription_usd
-    FROM amounts GROUP BY root_ref
   ) SELECT f.root_id,f.id task_id,f.root_title title,f.code,f.finished_at,f.result_id,f.result_role,
     f.version_count,f.checked_at,f.checked_actor,f.checked_detail,
     (SELECT lead FROM task_act WHERE task_ref=f.root_ref AND act='completed' AND at=f.checked_at ORDER BY id DESC LIMIT 1) completed_by_lead,
     (SELECT status FROM run_check WHERE run=f.result_id) check_status,
-    COALESCE(a.runs,0) runs,COALESCE(a.api_runs,0) api_runs,a.api_microusd,COALESCE(a.subscription_runs,0) subscription_runs,a.subscription_usd
-    FROM selected f LEFT JOIN attempts a ON a.root_ref=f.root_ref ORDER BY f.sort_at DESC,f.root_ref DESC`)
+    COUNT(f.attempt) runs,COUNT(CASE WHEN amount='api' THEN 1 END) api_runs,
+    CASE WHEN COUNT(f.attempt)>0 THEN TOTAL(CASE WHEN amount='api' THEN microusd END) END api_microusd,
+    COUNT(CASE WHEN amount='subscription' THEN 1 END) subscription_runs,
+    SUM(CASE WHEN amount='subscription' AND typeof(cost_usd) IN ('integer','real') AND cost_usd>=0 THEN cost_usd END) subscription_usd
+    FROM (
+      -- Each family's runs, across its versions, with their amounts; one row with no run for a family that has none.
+      -- reported-usage.ts runAmountOf, row for row: only evidenced billing on a run whose cost was reported is known;
+      -- an API run counts its priced spend as dollars (a safe integer), a subscription run its reported cost as usage,
+      -- never dollars. TOTAL sums as a float, so no family's sum can overflow.
+      SELECT f.*,r.id attempt,r.cost_usd,s.microusd,
+        CASE WHEN r.billing_basis IS NOT 'evidence' OR COALESCE(r.cost_unknown,1)<>0 THEN 'unknown'
+          WHEN s.billing='subscription' THEN 'subscription'
+          WHEN s.billing='api-key' AND typeof(s.microusd)='integer' AND s.microusd>=0 AND s.microusd<=9007199254740991 THEN 'api'
+          ELSE 'unknown' END amount
+      FROM selected f LEFT JOIN json_each(f.fam_refs) m LEFT JOIN run r ON r.task_ref=m.value LEFT JOIN run_spend s ON s.run=r.id) f
+    GROUP BY f.root_ref ORDER BY f.sort_at DESC,f.root_ref DESC`)
     .all({ ...parameters(store, now, access, { project }, custodyReadings(store)), $since: since, $outcomeLimit: limit + 1 });
 }
 
@@ -847,8 +874,7 @@ export function workTidyRows(store: Store, now: Date, access: WorkSummaryAccess)
   const projection = registerValidators(store);
   return store.handle.prepare(`${projection} SELECT root_id,id,root_title,repo,state,code,archived,broken,family_updated,
       (family_running OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved OR stop_run IS NOT NULL AND stop_settled IS NULL OR state='running') live,
-      (SELECT json_group_array(m.ref_id) FROM members m WHERE m.root_ref=ranked.root_ref) members,
-      (SELECT json_group_array(m.id) FROM members m WHERE m.root_ref=ranked.root_ref) member_ids FROM ranked`)
+      fam_refs members,fam_ids member_ids FROM ranked`)
     .all(parameters(store, now, access, {}, custodyReadings(store)))
     .map(row => ({ rootId: String(row['root_id']), currentId: String(row['id']), title: String(row['root_title']), repo: s(row, 'repo'),
       state: String(row['state']) as TaskState, code: String(row['code']), live: n(row, 'live') === 1, archived: n(row, 'archived') === 1, broken: n(row, 'broken') === 1,
