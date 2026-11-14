@@ -42,6 +42,9 @@ import { protectedStorageDenies, protectedStorageNames, type ProtectedStorage } 
 import { ensureSecretsDir, legacyLoginFileOf, SECRETS_DIR, secretsDirOf } from "./login-secrets.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
 
+/** The folder beside the database that holds Flexible threads' own folders (flexible-thread.ts). */
+export const FLEXIBLE_THREADS_DIR = "threads";
+
 /** How a launch was fenced, as recorded on the run and said on the task. */
 export type FenceMethod = "codex-profile" | "macos-sandbox" | "linux-bubblewrap" | "claude-rules" | "none";
 
@@ -156,6 +159,12 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     try { mkdirSync(backups, { mode: 0o700 }); } catch { /* name and target remain denied */ }
     fence.add(backups);
     fence.add(real(backups));
+    // Flexible threads' own folders (flexible-thread.ts): denied whole to every launch but a thread's own, whose fence
+    // denies the other threads itself (as a checkout pool, its own folder given back). By name where the sandbox
+    // denies a missing path without making it (Seatbelt; Codex's profile gets the same list); on Linux once it exists.
+    const threads = join(state, FLEXIBLE_THREADS_DIR);
+    const ownThread = worktree !== null && (worktree === real(threads) || inside(worktree, real(threads)));
+    if (!ownThread && (process.platform === "darwin" || existsSync(threads))) { fence.add(threads); fence.add(real(threads)); }
     // Saved credentials (the remembered login, login-secrets.ts) live in a reserved owner-only folder, made here before
     // any launch and denied whole, so one first written after this launch is behind this fence too: a listing can't
     // name a file that isn't there yet, and bubblewrap can't deny one. If it can't be made or proven, its name is
@@ -411,7 +420,10 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   writeDenies?: string[];
   /** Protected storage (protected-storage.ts): denied to read and write by every backend, and no grant equal to or
    * inside one survives (a sandbox that lets the more specific path win can't reopen it). */
-  protectedStorage?: string[] };
+  protectedStorage?: string[];
+  /** A Flexible thread's launch (flexible-thread.ts): none of the sandbox runtime's shared write folders (/tmp/claude),
+   * which every other launch on this computer may also write; its temp is its own. */
+  noSharedTemp?: true };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -943,7 +955,8 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   // Writing anywhere: everything but the denies. The launch's own checkout and folder are named too, so a backend that
   // binds a read deny's re-allowed paths back (bubblewrap) binds those back writable.
   const allowOnly = writes === undefined ? ["/", ...(pool?.own == null ? [] : [real(pool.own)]), ...(folders?.own == null ? [] : [folders.own])]
-    : [...writes.subpaths, ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })];
+    : [...writes.subpaths, ...writes.prefixes.map(one => `${one.path}*`), ...signInWrites, ...getDefaultWritePaths({ denyRead: readConfig.denyOnly, allowRead: readConfig.allowWithinDeny })
+      .filter(path => grants.noSharedTemp !== true || !SHARED_TEMP.includes(path))];
   const network = grants.network;
   return {
     readConfig,
@@ -957,6 +970,10 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
     },
   };
 }
+
+/** The sandbox runtime's default write folders that every launch on this computer shares (sandbox-utils
+ * SANDBOX_OWN_WRITE_PATHS): left out of a Flexible thread's writes (FenceGrants.noSharedTemp). */
+const SHARED_TEMP: readonly string[] = ["/tmp/claude", "/private/tmp/claude"];
 
 /** The spawn that runs `file args` from `cwd` inside the sandbox runtime's sandbox (sandbox-runtime.ts srtSpawn), and the
  * environment it needs beside the caller's. */

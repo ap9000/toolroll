@@ -16,6 +16,7 @@ import { addApprover } from "./scope.js";
 import { runOperate, EXIT } from "./operate.js";
 import { createDecisionServer } from "./serve.js";
 import { ROUTES } from "./server/route-table.js";
+import { flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread } from "./flexible-thread.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
 const NOW = new Date();
@@ -63,6 +64,24 @@ describe("switched off", () => {
     expect(flexibleDelegationAtUse(store, { repo, starter: { name: "alex", generation: store.accountOf("alex")!.generation }, digest, level: "supervised", freshProof: true })).toEqual(refused);
     expect(rows()).toEqual(before);
     expect(flexibleSettingsView(store, repo, { name: "alex", canChange: true })).toBeUndefined();
+  });
+
+  test("the thread engine refuses to make, remove, fence or start a thread, and makes nothing", async () => {
+    const refused = { ok: false, reason: "not-available", message: FLEXIBLE_UNAVAILABLE };
+    store.upsertProject(repo, "shop", NOW);
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "first"], { cwd: repo });
+    expect(await prepareFlexibleThread(store, { repo, base: "HEAD", by: "alex", now: NOW })).toEqual(refused);
+    expect(existsSync(join(dir, "threads"))).toBe(false);
+    // A thread planted as if a later build had made it: still nothing runs.
+    const id = "a".repeat(32);
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'alex', ?, 'ready')`)
+      .run(id, repo, sha, `refs/toolroll/threads/${id}/base`, join(dir, "threads", id), NOW.toISOString());
+    const launch = { id, network: { proxyPort: 41_000, token: "t" }, storage: { names: [], denies: [] } };
+    expect(flexibleThreadFence(store, launch)).toEqual(refused);
+    expect(await flexibleThreadSpawn(store, { ...launch, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"])).toEqual(refused);
+    expect(await removeFlexibleThread(store, { id, by: "alex", now: NOW })).toEqual(refused);
+    expect(store.handle.prepare("SELECT state FROM flexible_thread WHERE id = ?").get(id)!["state"]).toBe("ready");
   });
 
   test.each([["show"], ["enable"], ["lower"], ["off"]])("the CLI refuses project flexible %s", async action => {
@@ -122,7 +141,7 @@ describe("the switch can't become a runtime override", () => {
   test("product code only imports it by name: no assignment, no environment or config key, no re-export", () => {
     const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
     const users = product.filter(one => code(one.text).includes("FLEXIBLE_AVAILABLE") && one.path !== join("src", "flexible-available.ts"));
-    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "operate.ts"), join("src", "server", "settings.ts")].sort());
+    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "operate.ts"), join("src", "server", "settings.ts")].sort());
     for (const one of users) {
       expect(one.text, one.path).toMatch(/import \{ FLEXIBLE_AVAILABLE \} from "\.\.?\/flexible-available\.js";/);
       expect(one.text, one.path).not.toMatch(/FLEXIBLE_AVAILABLE\s*(?:=(?!=)|\+\+|--)|export\s*\{[^}]*FLEXIBLE_AVAILABLE|as\s+FLEXIBLE_AVAILABLE/);
@@ -141,6 +160,15 @@ describe("the switch can't become a runtime override", () => {
     }
     expect(readFileSync("src/server/settings.ts", "utf8")).toMatch(/async function projectFlexible\(ctx: HandlerContext\): Promise<void> \{\n    const \{ response, now, posted \} = ctx;\n    const who = browserCaller\(ctx\.who\);\n    if \(!FLEXIBLE_AVAILABLE\) return refuse/);
     expect(readFileSync("src/operate.ts", "utf8")).toMatch(/const \{ write, json \} = context;\n  if \(!FLEXIBLE_AVAILABLE\) return fail\(write, json, command, "not-available"/);
+    // The thread engine (F2a): every entry point that makes, removes, fences or starts a thread.
+    const thread = readFileSync("src/flexible-thread.ts", "utf8");
+    const entries = [...thread.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!);
+    expect(entries).toEqual(expect.arrayContaining(["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn"]));
+    for (const name of ["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn"]) {
+      expect(thread, name).toMatch(new RegExp(`export (?:async )?function ${name}\\([^]*?\\{\\n  if \\(!FLEXIBLE_AVAILABLE\\) return refuse\\("not-available"\\);`));
+    }
+    // Nothing outside the thread engine (and its tests) calls into it yet: no route, CLI command, MCP tool or chat action.
+    for (const one of product.filter(file => file.path !== join("src", "flexible-thread.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
   });
 
   test("only a browser sign-in reaches the one Flexible route; no token, MCP tool or chat action names it", () => {
