@@ -438,6 +438,9 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
   const { keychain: _never, pool, ...rest } = made.fenceGrants;
   const unread = pool === undefined ? undefined : (({ readable: _read, ...held }) => held)(pool);
   const grants: FenceGrants = { ...rest, readable: [...rest.readable, objects], exactFiles: [...rest.exactFiles ?? [], objects], noSharedTemp: true, readDenyOnly: [state],
+    // The thread's own folder read back by its parts, never whole: bubblewrap would otherwise bind the folder read-only
+    // over its writable repository, temp and caches.
+    ownReadBack: [paths.repo, paths.tmp, paths.cache, paths.home],
     ...(unread === undefined ? {} : { pool: unread }) };
   return { ok: true, launch: { ...made, fenceGrants: grants }, paths, thread };
 }

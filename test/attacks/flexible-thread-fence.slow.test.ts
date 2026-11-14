@@ -77,10 +77,12 @@ async function startInThread(id: string, script: string, proxyPort = 1): Promise
 }
 const inThread = async (id: string, script: string, proxyPort = 1): Promise<Ran> => (await startInThread(id, script, proxyPort)).done;
 /** Until `test` holds, a tenth of a second at a time (at most ten seconds). */
-async function until(test: () => boolean): Promise<void> {
+async function until(test: () => boolean, why?: () => string): Promise<void> {
   for (let waited = 0; waited < 100 && !test(); waited++) await new Promise(done => setTimeout(done, 100));
-  expect(test()).toBe(true);
+  expect(test(), why?.()).toBe(true);
 }
+/** Prints whether the launch can write its own temp folder (no secret): what a missing descendant's file means. */
+const TMP_CHECK = `(echo t > "$TMPDIR/.writable" && echo "tmp-writable $TMPDIR") 2>/dev/null || echo "tmp-not-writable $TMPDIR"`;
 
 /** Each attack as `name: command`; the probe prints `ALLOWED <name>` for any that worked. */
 const attempts = (rows: readonly [string, string][]): string => rows.map(([name, command]) => `if (${command}) >/dev/null 2>&1; then echo "ALLOWED ${name}"; fi`).join("\n");
@@ -193,12 +195,11 @@ describe("attack: a Flexible thread leaving its fence", () => {
     // The control: outside the fence, the same reads and the same fill print the secret.
     expect(spawnSync("/bin/sh", ["-c", `${reads}; ${fill}`], { encoding: "utf8", env: { ...process.env, HOME: home, GIT_TERMINAL_PROMPT: "0" } }).stdout).toContain(secret);
     const descendant = `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; sleep 1; exec "/bin/sh", "-c", shift' ${q(`(${reads}; ${fill}; echo done) > "$TMPDIR/descendant.out" 2>&1`)}`;
-    const out = await inThread(id, `${reads}; ${fill}; sh -c ${q(reads)}; ${descendant}; echo started`);
+    const out = await inThread(id, `${TMP_CHECK}; ${reads}; ${fill}; sh -c ${q(reads)}; ${descendant}; echo started`);
     expect(out.stdout, out.stderr).toContain("started");
     expect(out.stdout).not.toContain(secret);
     const result = join(paths.tmp, "descendant.out");
-    for (let waited = 0; waited < 100 && !(existsSync(result) && readFileSync(result, "utf8").includes("done")); waited++) await new Promise(done => setTimeout(done, 100));
-    expect(readFileSync(result, "utf8")).toContain("done");
+    await until(() => existsSync(result) && readFileSync(result, "utf8").includes("done"), () => `the descendant's output never reached ${result}; the launch said: ${out.stdout.split("\n").filter(line => line.startsWith("tmp-")).join(" ")} ${out.stderr.slice(0, 500)}`);
     expect(readFileSync(result, "utf8")).not.toContain(secret);
   }, 60_000);
 
@@ -319,9 +320,10 @@ describe("attack: a Flexible thread leaving its fence", () => {
     const dirs = [".vscode", ".idea", ".claude/commands", ".claude/agents"].flatMap(dir => [[`fill ${dir}`, `echo x > ${q(`${dir}/planted`)}`], [`remove ${dir}`, `rm -rf ${q(dir)} && ! test -e ${q(dir)}`]] as [string, string][]);
     const moves: [string, string][] = [["move .claude aside", "mv .claude .claude-old && mkdir -p .claude && echo planted > .claude/settings.json"]];
     const descendant = `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "/bin/sh", "-c", shift' ${q(`(${attempts([[".envrc from a descendant", "echo planted >> .envrc"]])}; echo done) > "$TMPDIR/descendant.out" 2>&1`)}`;
-    const out = await inThread(id, [attempts([...rows, ...dirs, ...moves]), descendant].join("\n"));
+    const out = await inThread(id, [TMP_CHECK, attempts([...rows, ...dirs, ...moves]), descendant].join("\n"));
     expect(allowed(out), out.stderr).toEqual([]);
-    await until(() => existsSync(join(paths.tmp, "descendant.out")) && readFileSync(join(paths.tmp, "descendant.out"), "utf8").includes("done"));
+    await until(() => existsSync(join(paths.tmp, "descendant.out")) && readFileSync(join(paths.tmp, "descendant.out"), "utf8").includes("done"),
+      () => `the descendant's output never reached the thread's temp; the launch said: ${out.stdout.split("\n").filter(line => line.startsWith("tmp-")).join(" ")} ${out.stderr.slice(0, 500)}`);
     expect(readFileSync(join(paths.tmp, "descendant.out"), "utf8")).not.toContain("ALLOWED");
     for (const name of names) expect(readFileSync(join(paths.repo, name), "utf8"), name).toBe(before[name]);
     // The next launch: the same names, the same contents, still read-only.

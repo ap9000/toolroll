@@ -438,7 +438,11 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   noSharedTemp?: true;
   /** Denied to read, never to write (a Flexible thread's state folder: its own folder inside it is read back, and
    * written only where its write allowlist says, which a write deny around it would take away). */
-  readDenyOnly?: string[] };
+  readDenyOnly?: string[];
+  /** Read back inside the pool deny instead of the whole own folder (a Flexible thread's: its repository, temp, caches
+   * and configuration home). On Linux the runtime binds a read-back path read-only after it binds the write paths, so a
+   * read-back of a folder that holds write paths would leave them read-only; naming the parts keeps them writable. */
+  ownReadBack?: string[] };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -948,8 +952,9 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   if (pool !== undefined) {
     // Under v1 the pools are unread too, the build's own checkout read again; under v2 they are read (owner Q-C).
     if (pool.readable !== true) for (const root of pool.deny) denyRead.add(root);
-    // The build's own checkout is read again inside whatever is denied around it (the pools, a flow's sealed scratch).
-    if (pool.own !== null) allowRead.add(pool.own);
+    // The build's own checkout is read again inside whatever is denied around it (the pools, a flow's sealed scratch), or
+    // only the named parts of it (ownReadBack).
+    if (pool.own !== null) for (const path of grants.ownReadBack ?? [pool.own]) allowRead.add(real(path));
     // Never written but the build's own checkout: the runtime can't write back inside a write deny, so each other
     // entry on the way is denied instead (codexPool's split, as Codex takes it).
     for (const path of codexPool(pool).deny) denyWrite.add(path);

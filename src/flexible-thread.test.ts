@@ -174,7 +174,9 @@ describe("the thread fence's terms", () => {
     for (const path of [world.project, world.other, world.databaseFile, join(world.state, "threads")]) expect(terms.readConfig.denyOnly, path).toContain(path);
     expect(terms.readConfig.allowWithinDeny).toContain(world.objects);
     expect(terms.readConfig.allowWithinDeny).not.toContain(join(world.project, ".git"));
-    expect(terms.readConfig.allowWithinDeny).toContain(paths.folder);
+    // Read back by its parts, never the whole folder (on Linux a read-back folder is bound read-only over its write paths).
+    for (const path of [paths.repo, paths.tmp, paths.cache, paths.home]) expect(terms.readConfig.allowWithinDeny).toContain(path);
+    expect(terms.readConfig.allowWithinDeny).not.toContain(paths.folder);
     // The whole state folder unread (so an entry made there after launch is too), never write-denied around its own folder.
     expect(terms.readConfig.denyOnly).toContain(world.state);
     expect(terms.writeConfig.denyWithinAllow).not.toContain(world.state);
