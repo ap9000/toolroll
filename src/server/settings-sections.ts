@@ -18,6 +18,7 @@ import type { Authority } from "../local-owner.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { kitSectionForm } from "../settings-kit.js";
 import { evaluateRoutePolicy, holdsRole, type RoutePrincipal } from "./route-policy.js";
+import type { LimitedAccess, ProjectResolver } from "./route-table.js";
 import { btn, codeLine, disclose, doc, docHeader, formRow, infoLine, input, notice, phoneHeader, select, settingsLink, settingsSection } from "./kit.js";
 import { changeHref, sectionHref, SETTINGS_SECTIONS, sectionDeclaration, type SectionDeclaration, type SectionGate, type SettingsArea } from "./settings-section-table.js";
 
@@ -66,11 +67,19 @@ export type Admission =
  * project: the project-limited rule and a project the page needs); holdsRole; then the section's own read checks.
  * Runs before any of the section's loaders.
  */
+/** The project resolvers and project-limited rules a Settings section may carry; anything else is refused. */
+const SECTION_RESOLVERS: ReadonlySet<ProjectResolver> = new Set<ProjectResolver>(["none", "session", "form", "form-path"]);
+const SECTION_LIMITED: ReadonlySet<LimitedAccess> = new Set<LimitedAccess>(["deny", "collection", "unscoped", "self", "conversation"]);
+
 export function admitSection(declaration: Pick<SectionDeclaration, "policy" | "read" | "scope" | "act">, person: SectionPerson, project: string | null = null): Admission {
   const policy = declaration.policy;
   if (person.via === "cookie" && person.authority !== "full" && policy.local !== "allow") return { ok: false, why: "local" };
   let why: "limited" | "project" | null = null;
-  const projectAdmits = (): boolean => {
+  const projectAdmits = (source: ProjectResolver): boolean => {
+    // Only the project rules Settings sections are built for: a section page resolves no other kind of object (a task,
+    // a run, a proposal, a conversation, an adapter), so any other resolver or limited rule is refused before a loader
+    // runs rather than approximated (fail closed; Codex settings F0 r2).
+    if (!SECTION_RESOLVERS.has(source) || !SECTION_LIMITED.has(policy.limited)) { why = "project"; return false; }
     // guards.ts projectRequestAllowed: what a project-limited account may do here, by the policy's `limited` column.
     if (person.restricted && (policy.limited === "deny" || policy.limited === "conversation")) { why = "limited"; return false; }
     if (person.restricted && policy.limited !== "unscoped" && policy.limited !== "self" && project === null) { why = "limited"; return false; }

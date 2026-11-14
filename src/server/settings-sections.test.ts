@@ -155,6 +155,11 @@ describe("admission runs before any loader: a denied section is never read", () 
     ["a page that needs a project, none open", synthetic({ needsProject: true }), null, ["API token", "read-only token"]],
     ["a page that needs a project, one open", synthetic({ needsProject: true }), "/w/a", ALL],
     ["a project collection, none open", synthetic({ limited: "collection" }), null, ["operator", "installation approver", "viewer", "API token", "read-only token", "local owner"]],
+    // Project rules a section can't prove (a proposal's owner and room, a resource, an adapter) are refused outright.
+    ["a proposal's limited rule", synthetic({ limited: "proposal", project: "proposal" }), "/w/a", []],
+    ["a resource's limited rule", synthetic({ limited: "resource" }), "/w/a", []],
+    ["an adapter's project", synthetic({ project: "adapter" }), "/w/a", []],
+    ["a task's project", synthetic({ project: "task" }), "/w/a", []],
     ["installation settings", synthetic({}, ["installation"]), null, ["operator", "installation approver", "viewer", "API token", "read-only token", "local owner"]],
   ] as const)("%s", (_name, declaration, project, admitted) => {
     for (const [name, person] of Object.entries(PERSONAS)) {
