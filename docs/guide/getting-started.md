@@ -38,11 +38,13 @@ each agent is doing and what needs you.
 - **Three steps to a first result.** Until your first task, the terminal
   lists three steps and what each still needs: an agent (Claude Code or
   Codex; it shows the command that signs one in), a project, and a first
-  task. The terminal shows these steps but does not pick the agent or add a
-  project for you: add a project with `toolroll repos add <folder>`, or press
-  `w` and use the browser's welcome page to choose the agent and add a
-  folder, one of your GitHub repositories, or a small sample project. Then
-  press `n` to write the first task; the steps suggest a few starters.
+  task. With no project yet, press `s` to try the sample project: a tiny
+  repository with one function and its test, made in your projects folder
+  (`toolroll welcome sample` does the same from a shell while no password
+  is set). Or add your own with `toolroll repos add <folder>`, or press `w`
+  and use the browser's welcome page to choose the agent and add a folder or
+  one of your GitHub repositories. Then press `n` to write the first task;
+  the steps suggest a few starters.
 - **Approve and collect.** `a` shows the plan in full, and `y` approves it,
   with no password. The result comes back **Ready**: mark it Complete with
   `c`, or send it back for a revision with `b` (it asks what to change). `r`

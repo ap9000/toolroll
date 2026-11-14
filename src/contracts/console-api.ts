@@ -198,7 +198,7 @@ export const CONSOLE_FORMS = {
   google: formContract("POST /settings/google, /settings/google/disconnect", ["clientId", "clientSecret"]),
   projectsSelect: formContract("POST /projects/select", ["path", "return"]),
   projectsRemove: formContract("POST /projects/remove", ["repo"]),
-  projectsOpen: formContract("POST /projects/open", ["path", "return"]),
+  projectsOpen: formContract("POST /projects/open", ["path", "return", "via", "password"]),
   codeMap: formContract("POST /settings/project/code-map, /settings/project/code-map/holdout", ["repo", "on"]),
   codeMapRefresh: formContract("POST /projects/<project>/map/refresh", []),
   tasksFast: formContract("POST /tasks/fast", ["preview", "digest"]),

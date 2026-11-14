@@ -3,7 +3,7 @@
  * ours, and never anything in a folder that isn't.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -79,6 +79,41 @@ describe("createSampleProject", () => {
     expect(await createSampleProject(null)).toMatchObject({ ok: false, reason: "no-root" });
     expect(await createSampleProject("relative/path")).toMatchObject({ ok: false, reason: "no-root" });
     expect(await createSampleProject(join(dir, "missing"))).toMatchObject({ ok: false, reason: "no-root" });
+  });
+});
+
+describe("createSampleProject's guard", () => {
+  test("asked before the claim and after each git step: a no stops it, and only the folder this call made is removed", async () => {
+    expect(await createSampleProject(root, run, () => false)).toMatchObject({ ok: false, reason: "refused" });
+    expect(existsSync(join(root, "toolroll-sample"))).toBe(false);
+    // The folder made is swapped for a link to someone else's during git: the link is never followed, nothing of theirs goes.
+    const theirs = join(dir, "theirs");
+    mkdirSync(theirs);
+    writeFileSync(join(theirs, "keep.txt"), "mine\n");
+    let allowed = true;
+    const swapping = async (file: string, args: readonly string[], options: RunOptions): Promise<ExecResult> => {
+      const ran = await run(file, args, options);
+      renameSync(join(root, "toolroll-sample"), join(dir, "moved"));
+      symlinkSync(theirs, join(root, "toolroll-sample"));
+      allowed = false;
+      return ran;
+    };
+    expect(await createSampleProject(root, swapping, () => allowed)).toMatchObject({ ok: false, reason: "refused" });
+    expect(readdirSync(theirs)).toEqual(["keep.txt"]);
+    expect(existsSync(join(dir, "moved", "README.md"))).toBe(true);
+    // Swapped for another real folder (not the one this call made): left exactly as it is.
+    rmSync(join(root, "toolroll-sample"));
+    allowed = true;
+    const replacing = async (file: string, args: readonly string[], options: RunOptions): Promise<ExecResult> => {
+      const ran = await run(file, args, options);
+      renameSync(join(root, "toolroll-sample"), join(dir, "moved-again"));
+      mkdirSync(join(root, "toolroll-sample"));
+      writeFileSync(join(root, "toolroll-sample", "keep.txt"), "mine\n");
+      allowed = false;
+      return ran;
+    };
+    expect(await createSampleProject(root, replacing, () => allowed)).toMatchObject({ ok: false, reason: "refused" });
+    expect(readdirSync(join(root, "toolroll-sample"))).toEqual(["keep.txt"]);
   });
 });
 

@@ -156,3 +156,103 @@ export function rowVisible(ceiling: ProjectCeiling, repo: string | null): boolea
 export function projectName(path: string): string {
   return basename(path);
 }
+
+/**
+ * A typed path with `~` spelled out as the home folder of the user Toolroll runs as: "~" and "~/…". A path naming
+ * another user's home ("~alex/…") is null: the server never guesses whose folder that is.
+ */
+export function expandHomePath(path: string, home: string): string | null {
+  if (path === "~") return home;
+  if (path.startsWith("~/")) return resolve(home, path.slice(2));
+  if (path.startsWith("~")) return null;
+  return path;
+}
+
+/** Folders the system owns: a projects folder or an added repository is never one of these, nor inside one. */
+export const SYSTEM_TREES = ["/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/dev", "/private", "/var", "/proc", "/sys", "/boot", "/run", "/lib", "/lib64", "/cores", "/Network"];
+/** Folders that hold everyone's folders: never a projects folder themselves (a folder inside one may be). */
+export const SYSTEM_TOPS = ["/Applications", "/Volumes", "/Users", "/home", "/opt", "/mnt", "/media", "/srv", "/tmp", "/root", "/snap"];
+
+/** A folder as the console's bounded look found it (folder-look.ts `folderFacts`): its real path in the disk's own
+ * spelling and the identity (device:inode, from bigint stats) of it and of every folder above it, itself first. */
+export type FolderIdentity = { kind: "found"; real: string; dir: boolean; uid: number; chain: readonly string[] };
+/** There (its identity); not there (ENOENT/ENOTDIR: its path, in the disk's spelling as far as the path exists); or a
+ * read that failed any other way — never taken for "not there". */
+export type FolderSeen = FolderIdentity | { kind: "missing"; path: string } | { kind: "unreadable" };
+
+/** What a widening choice is compared with, each as the same look found it. */
+export type FolderComparisons = {
+  root: FolderSeen;
+  home: FolderSeen;
+  library: FolderSeen;
+  /** Toolroll's own settings, records, evidence, tool secrets and task checkouts. */
+  protectedDirs: readonly FolderSeen[];
+  tops: readonly FolderSeen[];
+  trees: readonly FolderSeen[];
+};
+
+/** The paths `folderRefusal` compares with, in the order `comparisonsOf` reads them back. */
+export function comparisonPaths(home: string, protectedDirs: readonly string[]): string[] {
+  return ["/", home, resolve(home, "Library"), ...protectedDirs, ...SYSTEM_TOPS, ...SYSTEM_TREES];
+}
+export function comparisonsOf(found: readonly FolderSeen[], protectedCount: number): FolderComparisons {
+  const after = 3 + protectedCount;
+  const unread: FolderSeen = { kind: "unreadable" };
+  return {
+    root: found[0] ?? unread, home: found[1] ?? unread, library: found[2] ?? unread,
+    protectedDirs: found.slice(3, after), tops: found.slice(after, after + SYSTEM_TOPS.length), trees: found.slice(after + SYSTEM_TOPS.length),
+  };
+}
+
+/**
+ * Why a folder can't be the projects folder (`kind` "folder") or a repository can't be added ("repo"), or null.
+ * Judged on identity, never spelling: a folder is "inside" another when that one's device and inode are among the
+ * folders above it, so a case alias (`/users/…` on a case-insensitive disk), a firmlink or a link never passes for a
+ * different folder. A folder compared with that isn't there (a pool or evidence folder not made yet) still excludes by
+ * its path, compared without case; one that couldn't be read refuses outright (fail closed). Refused: the disk's top,
+ * the home folder and anything holding it, ~/Library, any hidden folder (any name in its real path starting with "."),
+ * anything holding or inside Toolroll's own state, the system's folders.
+ */
+export function folderRefusal(kind: "folder" | "repo", target: FolderIdentity, facts: FolderComparisons): string | null {
+  const id = (one: FolderIdentity): string => one.chain[0]!;
+  const lower = (path: string): string => path.toLowerCase();
+  const underPath = (path: string, outer: string): boolean => lower(path) === lower(outer) || lower(path).startsWith(outer === "/" ? "/" : `${lower(outer)}/`);
+  /** Whether `one` is `outer` or inside it; null when `outer` couldn't be read. */
+  const within = (one: FolderIdentity, outer: FolderSeen): boolean | null =>
+    outer.kind === "found" ? one.chain.includes(id(outer)) : outer.kind === "missing" ? underPath(one.real, outer.path) : null;
+  /** Whether `inner` is `one` or inside it; null when `inner` couldn't be read. */
+  const holds = (one: FolderIdentity, inner: FolderSeen): boolean | null =>
+    inner.kind === "found" ? inner.chain.includes(id(one)) : inner.kind === "missing" ? underPath(inner.path, one.real) : null;
+  const same = (one: FolderIdentity, other: FolderSeen): boolean | null =>
+    other.kind === "found" ? id(other) === id(one) : other.kind === "missing" ? lower(other.path) === lower(one.real) : null;
+  const cant = (why: string): string => kind === "folder" ? `${why} can’t be the projects folder` : `${why} can’t be added`;
+  const unchecked = cant("a folder Toolroll couldn’t check against its own and the system’s folders");
+  const { root, home, library } = facts;
+  if (root.kind !== "found" || home.kind !== "found") return unchecked;
+  if (id(target) === id(root)) return cant("the top of the disk");
+  if (id(target) === id(home)) return kind === "folder" ? "your home folder itself can’t be the projects folder. Choose a folder inside it, like ~/Developer" : "your home folder itself can’t be added";
+  if (holds(target, home)) return `that folder holds your home folder, so it can’t be ${kind === "folder" ? "the projects folder" : "added"}`;
+  for (const dir of facts.protectedDirs) {
+    const inDir = within(target, dir);
+    // The home folder itself as a state folder (a database right in it) excludes only what is inside it, not home's own.
+    const holdsDir = dir.kind === "found" && id(dir) === id(home) ? false : holds(target, dir);
+    if (inDir === null || holdsDir === null) return unchecked;
+    if ((dir.kind === "found" && id(dir) === id(home) ? false : inDir) || holdsDir) return cant("a folder holding Toolroll’s own settings, records or task checkouts");
+  }
+  const inLibrary = within(target, library);
+  if (inLibrary === null) return unchecked;
+  if (inLibrary) return cant("a folder in ~/Library");
+  if (target.real.split("/").some(name => name.startsWith("."))) return cant("a hidden folder");
+  if (within(target, home)) return null;
+  for (const top of facts.tops) {
+    const is = same(target, top);
+    if (is === null) return unchecked;
+    if (is) return cant("a system folder");
+  }
+  for (const tree of facts.trees) {
+    const under = within(target, tree);
+    if (under === null) return unchecked;
+    if (under) return cant("a system folder");
+  }
+  return null;
+}

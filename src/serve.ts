@@ -207,6 +207,7 @@ import {
 LEAD_THREAD,
 latestLeadTurnOfThread,
 localOwnerBinding,
+projectRowKnown,
 type Decision,
 type LeadAsk,type LeadThreadScope
 } from "./store.js";
@@ -483,11 +484,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** Per-row visibility under the ceiling — the authorization question for reads. */
   /** The exact repositories this console serves now: `up`'s live admitted set when it supplies one, else startup's. */
   const exactRepos = (): readonly string[] => options.admittedRepos?.() ?? ceiling.repos;
+  /** Repositories this console added outside every projects folder (pages.ts projectsOpen, a password typed now):
+   * served at once, before the builder connects them; one deleted or removed here leaves with it. */
+  const consoleAdmitted = new Set<string>();
   const liveCeiling = () => {
-    const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? [])];
+    const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? []), ...stillAdmitted(consoleAdmitted, deletedRepos, repo => projectRowKnown(store, repo))];
     // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
     return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.strict };
   };
+  const outsideAdmissions = outsideAdmissionsOf(consoleAdmitted);
   /** The explicit, currently proved project list. The callback is supplied
    * only by `up`, after it has independently checked git-ness and the root
    * ceiling; this server still filters every row through its own ceiling. */
@@ -2349,6 +2354,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get identities(): ServerRuntime['identities'] { return identities; },
     get keyEpoch(): ServerRuntime['keyEpoch'] { return keyEpoch; },
     get browserKeys(): ServerRuntime['browserKeys'] { return browserKeys; },
+    get outsideAdmissions(): ServerRuntime['outsideAdmissions'] { return outsideAdmissions; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
@@ -2526,4 +2532,17 @@ function consoleFolders<T>(options: ServeOptions, identities: ProjectIdentities,
     consoleGates.set(options, gate);
   }
   return inFolderScope(gate, work);
+}
+
+/** The repositories a console added from outside every projects folder that are still added: not deleted or removed
+ * here, and still holding their admission (a removal anywhere, `repos remove` or the lead, drops the project row). One
+ * that was removed leaves for good: adding it again takes the password again. Checked on every read of the ceiling. */
+function stillAdmitted(admitted: Set<string>, gone: ReadonlySet<string>, added: (repo: string) => boolean): string[] {
+  for (const repo of admitted) if (gone.has(repo) || !added(repo)) admitted.delete(repo);
+  return [...admitted];
+}
+
+/** Where pages.ts puts a repository it added from outside every projects folder: this console's live set (above). */
+function outsideAdmissionsOf(admitted: Set<string>): ServerRuntime["outsideAdmissions"] {
+  return { admit: repo => { admitted.add(repo); } };
 }
