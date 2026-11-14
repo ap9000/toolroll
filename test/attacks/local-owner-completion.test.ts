@@ -306,7 +306,8 @@ describe("a revision whose source build saved no diff inventory, as the local ow
 describe("the result page, as the local owner: never a plain Accept or Mark complete the completion then refuses", () => {
   type Selected = { complete: unknown; decision: { ready: boolean } | null; acts: { primary: string | null; line: string | null } };
   const selectedOf = async (cookie: string, id: string, runId: number): Promise<Selected> =>
-    (JSON.parse((await world.send(`/review?result=${id}&run=${runId}&format=workspace`, "GET", { cookie })).body) as { view: { selected: Selected } }).view.selected;
+    // The one result view (task-link.ts): the task page's Result section at this run.
+    (JSON.parse((await world.send(`/t/${id}?tab=result&run=${runId}&format=workspace`, "GET", { cookie })).body) as { view: { result: { selected: Selected } } }).view.result.selected;
 
   for (const kind of REFUSED) {
     test(`a ${kind} result with its check passed and every requirement met: no completion offered, and the line says what to do`, async () => {

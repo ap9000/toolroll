@@ -31,6 +31,7 @@ import { ACCEPT_NEEDS_REASON,acceptWordsOf,cantAcceptYetOf,type DisplayStatus,ev
 import { createHash,randomBytes } from "node:crypto";
 import { buildsViews,type Chrome,oneLineOf,projectChip,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,when,whenTime } from "./chrome.js";
 import { chatResultHref,reviewHref,taskChatHref,taskHref } from "./http.js";
+import { taskLinkOf } from "../task-link.js";
 import { attributes, type Html, html, htmlString, joinHtml, postForm, reauth } from "../html.js";
 import { chip, facts } from "./kit.js";
 import { publicationFactsOf,statusActionHref,statusLineHtml } from "./render-tasks.js";
@@ -714,7 +715,8 @@ export function reviewCockpitPage(
 /** Where a result is shown: its own page (/review), or the Result tab of its task's page (docs/plans/one-page-task-and-agent.md),
  * whose address is `base` (the task page with tab=result, and its version when not the current one). The result's own
  * view (Summary / Changes / Checks) rides `section=` there, so it never fights the task page's `tab`. */
-export type ResultHost = { kind: "review" } | { kind: "task"; base: string };
+/** `alone`: the result is its own page (an earlier result, task-views.ts), with no task header to say its status. */
+export type ResultHost = { kind: "review" } | { kind: "task"; base: string; alone?: boolean };
 
 export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, noted: boolean, canRetryReview: boolean, tab: ResultTab, user: string, host: ResultHost = { kind: "review" }): { html: Html; selected: NonNullable<BrowserResultView["selected"]> } {
   const parts: Html[] = [];
@@ -805,11 +807,10 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   // changes beside it. The cockpit adds its own acts under Checks: the
   // v50 review-retry panel and the accept-with-exception form.
   const extraChecks = reviewRetryPanel(view.taskId, run.id, view.reviewRetry, { csrf, canAct: false, returnTo: null });
-  const here = reviewHref(view.taskId);
   /** This result's own address on its host, at one of its views (summary when none). */
   const at = (section: ResultTab = "summary"): string => host.kind === "task"
     ? `${host.base}&run=${run.id}${section === "summary" ? "" : `&section=${section}`}`
-    : `${here}&run=${run.id}${section === "summary" ? "" : `&tab=${section}`}`;
+    : taskLinkOf({ task: view.taskId, run: run.id, section });
   const assignment = view.assignment === null ? null : assignmentWithEvidence(view.assignment, receiptStatusOf(view.detail.receipt), run.id);
   const saved = assignment?.receipt?.checks;
   // The approved check as the task page reads it (task-status.ts approvedCheckOf): one answer for this whole page.
@@ -817,7 +818,16 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     : { ...saved, ...(receiptChecksOf(assignment.receipt) ?? {}), detail: saved.detail };
   if (checks !== undefined) parts.push(html`<p class="${checks.status === "failed" || checks.status === "unavailable" ? "problem" : "meta"}" data-actual-checks="${checks.status}">${checks.status === "unavailable" && saved!.cause === "command-changed" ? CHECK_COMMAND_CHANGED : html`${checks.status === "unavailable" && saved!.status !== "unavailable" ? `${CHECK_UNREADABLE} ` : ""}${checks.detail}`}${checks.logArtifactId === null ? "" : html` <a href="/r/${run.id}/evidence/${checks.logArtifactId}">Open check output</a>`}</p>`);
   if (assignment?.completion != null) parts.push(html`<p class="meta" data-result-completed>Accepted by ${assignment.completion.actor.replace(/^operator:/, "")}.</p>`);
+  // This result's own address (task-link.ts): a link to it, or to one of its sections, is this same result.
+  const own = taskLinkOf({ task: view.taskId, run: run.id });
+  const ownOr = (href: string): string | null => href === own || /^[&#]/.test(href.slice(own.length)) && href.startsWith(own) ? href.slice(own.length) : null;
+  const failure = view.failure == null ? null : { line: view.failure.line, evidence: view.failure.evidence, suggestion: view.failure.suggestion, retry: view.failure.retry,
+    link: view.failure.link === null || (ownOr(view.failure.link.href) !== null && !view.failure.link.href.includes("#")) ? null
+      : host.kind === "task" && ownOr(view.failure.link.href)?.startsWith("&section=") === true ? { ...view.failure.link, href: `${host.base}&run=${run.id}${ownOr(view.failure.link.href)!}` } : view.failure.link,
+    ...(view.failure.acceptAnyway == null ? {} : { acceptAnyway: { ...view.failure.acceptAnyway, returnTo: at() } }) };
   const panel = resultPanelParts(view.detail, {
+    // Its own page (an earlier result): a failed attempt says Failed and what went wrong, as the app says it.
+    ...(host.kind === "task" && host.alone === true && failure !== null ? { failed: { line: failure.line, evidence: failure.evidence, link: failure.link } } : {}),
     place: "review",
     tab,
     csrf,
@@ -878,10 +888,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const need = panel.panel.need;
   const nextKind = selected.next?.kind;
   // A failed build: what went wrong is the card, Retry the act; a link to this same page goes nowhere, so it isn't one.
-  const failure = view.failure == null ? null : { line: view.failure.line, evidence: view.failure.evidence, suggestion: view.failure.suggestion, retry: view.failure.retry,
-    link: view.failure.link === null || (view.failure.link.href.startsWith(`${here}&run=${run.id}`) && !view.failure.link.href.includes("#")) ? null
-      : host.kind === "task" && view.failure.link.href.startsWith(`${here}&run=${run.id}&tab=`) ? { ...view.failure.link, href: view.failure.link.href.replace(`${here}&run=${run.id}&tab=`, `${host.base}&run=${run.id}&section=`) } : view.failure.link,
-    ...(view.failure.acceptAnyway == null ? {} : { acceptAnyway: { ...view.failure.acceptAnyway, returnTo: at() } }) };
+
   const actFacts: ResultActFacts = failure !== null
     ? { accept: null, runChecks: runChecks !== null, checksRunning, blocked: null, canRequest: false, need: null, next: null, failed: { retry: failure.retry !== null, acceptAnyway: failure.acceptAnyway !== undefined } }
     : {
@@ -1974,6 +1981,9 @@ export type ResultPanelOptions = {
   headStatus?: boolean;
   /** The cockpit renders its own next-action card: no panel action. */
   action?: boolean;
+  /** A failed attempt shown on its own page: its headline is Failed, its sentence what went wrong, with the evidence
+   * behind it (the words the app's result status card says), never the saved receipt's heading. */
+  failed?: { line: string; evidence: string | null; link: { label: string; href: string } | null } | null;
   /** Accept and finish sits beside the panel: it records the person's own checks too, so the panel offers no separate Accept. */
   finishes?: boolean;
 };
@@ -2378,10 +2388,13 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     o.back === null ? "" : html`<p class="result-back"><a href="${o.back.href}" data-result-back>← ${o.back.label}</a></p>`,
     (detail.history ?? ""),
     // One headline: with the shared status, its words lead (task-status.ts); "Changes saved" would compete with them.
-    taskStatus !== null && o.headStatus !== false
+    o.failed != null
+      ? html`<header class="result-head" data-result-failed><div data-headline-tone="danger"><h2 class="status-headline" data-work-status="failed"><i aria-hidden="true"></i>Failed</h2><p class="status-sentence" data-failure-reason>${o.failed.line}</p>${
+        o.failed.evidence === null && o.failed.link === null ? "" : html`<p class="meta" data-failure-evidence>${o.failed.evidence ?? ""}${o.failed.evidence !== null && o.failed.link !== null ? " " : ""}${o.failed.link === null ? "" : html`<a href="${o.failed.link.href}" data-failure-log>${o.failed.link.label}</a>`}</p>`}</div></header>`
+      : taskStatus !== null && o.headStatus !== false
       ? html`<header class="result-head"><div data-headline-tone="${taskStatus.tone}"><h2 class="status-headline" data-work-status="${status.token}"><i aria-hidden="true"></i>${taskStatus.headline}</h2><p class="status-sentence">${taskStatus.sentence}</p></div></header>`
       : html`<header class="result-head"><div><h2>${heading}</h2></div>${o.headStatus === false ? "" : statusLineHtml(status)}</header>`,
-    html`<p class="result-summary">${outcome}</p>`,
+    o.failed != null ? "" : html`<p class="result-summary">${outcome}</p>`,
     current == null || o.place === "review" && (current.state === "ready-to-check" || current.state === "complete") ? "" :
       html`<div class="verdict" data-current-outcome data-headline="${taskStatus!.headline}">${statusDetailsHtml(taskStatus!)}${statusWhyHtml(taskStatus!)}</div>`,
     attentionHtml,

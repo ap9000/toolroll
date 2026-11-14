@@ -19,7 +19,7 @@ import {
 import { ACCEPT_NEEDS_REASON, acceptWithChecksOf, requirementsWordsOf, resultActsOf, type ResultActKind, type ResultActs } from "../../result-acts.js";
 import { toneOf } from "./tone.js";
 import { RecheckStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
-import { Html, ResultStatusAct, RetryForm, threadWhen, whenTitle } from "./task-view.js";
+import { Html, ResultStatusAct, ResultStatusWarnings, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 import { KButton, KInput, KLinkButton } from "../kit/index.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
@@ -564,8 +564,11 @@ export function SelectedResult({ selected, csrf, inTask }: { selected: Selected;
   // A task page's Ready status box takes the status's one act (task-view.tsx ResultStatusAct); only for the current result.
   const slot = useContext(ResultStatusAct);
   const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} statusSlot={inTask?.current === true ? slot : null} />;
+  // Leading a task page, the result's own warnings read in its status box, above the act that completes it.
+  const warnings = useContext(ResultStatusWarnings);
+  const card = <StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />;
   return <>
-    <StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />
+    {inTask?.current === true && warnings !== null ? createPortal(card, warnings) : card}
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the
         decision itself, so it can never rise over the status or the Summary facts above them. */}
     {selected.panel !== null ? <Panel panel={selected.panel}><div className="flex flex-col gap-4">{checks}{decide}</div></Panel> : <div className="flex flex-col gap-4">{checks}{decide}</div>}

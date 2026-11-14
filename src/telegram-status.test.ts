@@ -130,7 +130,7 @@ describe("read-only phone status", () => {
     origin = "https://console.example";
     s.updates.push([command(3, "/task verified-one")]);
     expect(await passWith()).toMatchObject({ ok: true, report: { statusReplies: 1 } });
-    expect(sends().at(-1)!.params["reply_markup"]).toEqual({ inline_keyboard: [[{ text: "Open checks", url: `https://console.example/chat?task=verified-one&result=${run}&tab=checks` }]] });
+    expect(sends().at(-1)!.params["reply_markup"]).toEqual({ inline_keyboard: [[{ text: "Open checks", url: `https://console.example/t/verified-one?tab=result&run=${run}&section=checks` }]] });
     // /status and /help never carry a button, and nothing changed.
     s.updates.push([command(4, "/status"), command(5, "/help")]);
     expect(await passWith()).toMatchObject({ ok: true, report: { statusReplies: 2 } });

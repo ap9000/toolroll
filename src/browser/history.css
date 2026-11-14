@@ -4,6 +4,8 @@
  * timed lines, a small table, the audit rows. Tokens only; phones are 760px and narrower. */
 
 .h-page { min-width: 0; }
+/* The task page's Record section (/t/<id>?tab=record): the full record's parts, spaced as its own page spaces them. */
+.h-record { display: grid; gap: var(--so-space-xl); min-width: 0; }
 
 /* Reading text and machine output inside a doc column. */
 .h-read { margin: 0; font-size: 14px; line-height: 1.7; max-width: 66ch; }

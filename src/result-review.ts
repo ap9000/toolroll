@@ -242,9 +242,10 @@ export function resultReturnTarget(raw: string | null | undefined, runId: number
     if (chat !== null && Number(chat[2]) === runId) return raw;
     // The run's own task page, which offered Run checks in place; never another task's.
     if (tasks.some(task => raw === `/t/${encodeURIComponent(task)}`)) return raw;
-    // That task page's Result tab at this run (docs/plans/one-page-task-and-agent.md), its version and view kept.
-    const tab = /^\/t\/([A-Za-z0-9._~%-]{1,200})\?(?:version=[A-Za-z0-9._~%-]{1,200}&)?tab=result&run=([0-9]{1,15})(?:&section=(?:summary|changes|checks))?$/.exec(raw);
-    if (tab !== null && Number(tab[2]) === runId && tasks.some(task => tab[1] === encodeURIComponent(task))) return raw;
+    // That task page's Result tab at this run (docs/plans/one-page-task-and-agent.md), its version and view kept; or
+    // its Result tab naming no run (task-link.ts: the version's own result, which the form's run belongs to).
+    const tab = /^\/t\/([A-Za-z0-9._~%-]{1,200})\?(?:version=[A-Za-z0-9._~%-]{1,200}&)?tab=result(?:&run=([0-9]{1,15}))?(?:&section=(?:summary|changes|checks))?$/.exec(raw);
+    if (tab !== null && (tab[2] === undefined || Number(tab[2]) === runId) && tasks.some(task => tab[1] === encodeURIComponent(task))) return raw;
   }
   return `/r/${runId}`;
 }
