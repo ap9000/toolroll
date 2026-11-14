@@ -6249,6 +6249,9 @@ CREATE INDEX IF NOT EXISTS work_live_claim ON claim (task_ref, lease_generation 
 CREATE INDEX IF NOT EXISTS work_runner_claim ON claim (runner, expires_at) WHERE released_at IS NULL;
 CREATE INDEX IF NOT EXISTS work_completion ON action_ledger (task_id, action, source, run_id, id DESC);
 CREATE INDEX IF NOT EXISTS work_task_ledger ON action_ledger (task_id, id DESC);
+-- A build's own ledger lines (its check level, follow-up checks, check outcomes), newest first: the lists and the result
+-- page read these for every row they show (fast reads); by project alone they scanned the project's whole ledger.
+CREATE INDEX IF NOT EXISTS action_ledger_run ON action_ledger (run_id, action, id DESC);
 CREATE INDEX IF NOT EXISTS work_artifact_run ON artifact (run, created_at);
 CREATE INDEX IF NOT EXISTS work_open_decision ON decision (run, id DESC) WHERE state <> 'answered' AND answered_at IS NULL;
 CREATE INDEX IF NOT EXISTS run_task_outcome ON run (task_ref, outcome, id DESC);
