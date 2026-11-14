@@ -219,6 +219,47 @@ requests that touch the server, the browser app, the work index or the store, an
 the pull request raises, and it uploads the report as the `wire-budgets` artifact. It is advisory: not one of
 `REQUIRED_PR_CHECKS`, and the release verdict leaves it out (`ADVISORY_PR_CHECKS`).
 
+## Destinations and click paths
+
+Slice S0 of the one-workspace plan measures how many places a person can land on and how many clicks the common jobs
+take, so each later slice proves it made the app smaller and shorter.
+
+`test/destinations.json` declares every address a signed-in browser can land on: each GET row of
+`src/server/route-table.ts` that admits a cookie at the console stage, keyed by route id, as a **page** (a destination),
+an **alias** (only redirects, with its target), a **ceremony** (a password, sign-in or one-time-secret step that stays
+its own document), **data** (JSON, files, sockets, a catch-all's not-found), or **mixed** (a page or an alias, with the
+conditions written down). `src/server/destinations.test.ts`, part of the unit suite, fails when a route row has no
+entry (so a new page is declared on purpose), when an entry names no row, when pages plus mixed rows go over
+`ceiling.destinations`, or when a ceremony is a page that changes in place. It then requests every entry from the demo
+(signed in through its one-time link) and from an empty console with an instance operator (for the rows the demo
+account may not open) and checks each answers as its kind: a page is a full document, an alias redirects to its
+target, data is never a page. Rows neither console has the object for are held to the status they answer instead,
+with the reason in the test. On main at 4f6cda50: 77 pages, 3 mixed (`/review`, `/r/<n>`, `/welcome`), 3 ceremonies,
+25 aliases and 24 data rows, so 80 destinations. A slice that removes pages lowers the ceiling in the same change.
+
+`npm run e2e:click-paths` (`scripts/click-paths-journey.mjs`; run by hand, not in CI) drives the demo in a browser at
+1440x900 and counts, from Home, the clicks, the fields typed into, the full document loads and the ceremony loads
+(a page with a password field, or a ceremony route) for: approve a plan, review and accept a result, send a result back,
+watch a running agent, start a task and add a project, with Passwordless on; and the same approval with it off, up to
+the password field (nothing is typed). Each job runs on a fresh demo and ends when the console shows it done. Every
+number is held to its ceiling in `test/click-path-ceilings.json`, and a run over any of them fails. Shorten a path and
+lower its numbers in the same change (`--write-ceilings` rewrites them from a run). The report is
+`output/click-paths/report.json`. `--port <n>` serves the demo on that port (default: one the system picks),
+`--only <pattern>` runs some jobs, and `--playwright`/`--chromium` name a Playwright copy and its browser.
+
+| Job (main at 4f6cda50) | Clicks | Typed | Loads | Ceremony loads |
+|---|---|---|---|---|
+| Approve a plan | 1 | 0 | 0 | 0 |
+| Review and accept a result | 3 | 0 | 2 | 0 |
+| Send a result back | 4 | 1 | 2 | 0 |
+| Watch a running agent | 3 | 0 | 0 | 0 |
+| Start a task | 2 | 1 | 2 | 0 |
+| Add a project | 3 | 1 | 1 | 0 |
+| Approve a plan, password on (to the password field) | 2 | 0 | 0 | 1 |
+
+The baseline screenshots for this plan (every page at 1440x900 light and the main ones at 390x844, demo data, main at
+4f6cda50) are kept with the plan's notes, outside the repository; none are committed.
+
 ## Releasing
 
 To drain the built-in worker, use `toolroll runner list --json` to find its name
