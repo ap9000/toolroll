@@ -93,9 +93,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: "24"
-          # The newest patch release: a cached older one hid SQLite 3.54.1 (Node 22.23, 24.22) from the suite.
-          check-latest: true
+          # Exact, never the newest patch: this job rolls back to old releases, and every release up to 0.9.105 refuses
+          # the Tasks list on SQLite 3.54+ ("VIEWs and/or subqueries nested too deep"; Node 22.23, 24.22 and 26.13 on).
+          # 22.22.0 bundles SQLite 3.50.4 and is at the engines floor (22.20) or above, so every tested release runs.
+          node-version: "22.22.0"
           cache: npm
       - name: The candidate's user and its copy of the checkout
         shell: bash

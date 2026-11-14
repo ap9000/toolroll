@@ -221,7 +221,14 @@ describe("the CI workflows", () => {
     const steps = workflows.flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => (job.steps ?? [])
       .filter(step => step.uses?.startsWith("actions/setup-node@") && step.with?.["cache"] === "npm").map(step => ({ where: `${one.file} ${id}`, step }))));
     expect(steps.length).toBeGreaterThan(10);
-    for (const { where, step } of steps) expect(step.with?.["check-latest"], where).toBe(true);
+    // The one exception, by name: the upgrade test rolls back to old releases, and every release up to 0.9.105 refuses
+    // the Tasks list on SQLite 3.54+. It runs an exact Node 22 at or above the engines floor whose SQLite is older.
+    const PINNED: Record<string, string> = { "upgrade-path.yml upgrade": "22.22.0" };
+    for (const { where, step } of steps) {
+      if (where in PINNED) { expect(step.with?.["node-version"], where).toBe(PINNED[where]); expect(step.with?.["check-latest"], where).toBeUndefined(); continue; }
+      expect(step.with?.["check-latest"], where).toBe(true);
+    }
+    expect(steps.filter(({ where }) => where in PINNED).length).toBe(Object.keys(PINNED).length);
   });
 
   test("the youiyoux UI check fails a pull request that adds drift (strict, pinned) but is never a required check a release waits for", () => {

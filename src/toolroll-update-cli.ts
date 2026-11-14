@@ -31,7 +31,16 @@ toolroll update --yes           update: verify, let running work finish, back up
   --at HH:MM                    wait until then (e.g. --at 03:00)
   --allow-downgrade             with --version, go back to an older release
 toolroll update --rollback [--yes]   return to the previous version and its database backup
-toolroll update --status | --resume | --cancel`;
+toolroll update --status | --resume | --cancel
+Releases 0.9.105 and earlier don't start on a Node whose SQLite is 3.54 or newer (Node 22.23, 24.22, 26.13 and later).`;
+
+/** Releases up to 0.9.105 read the Tasks list in one statement SQLite 3.54 refuses ("VIEWs and/or subqueries nested too
+ * deep"), so on a Node that bundles 3.54 or newer they can't start: going back to one is refused, with why. */
+export function oldReleaseProblem(target: string, sqlite: string | undefined): string | null {
+  const [major = 0, minor = 0] = (sqlite ?? "").split(".").map(part => Number.parseInt(part, 10) || 0);
+  if ((major < 3 || (major === 3 && minor < 54)) || isNewer(target, "0.9.105")) return null;
+  return `Toolroll ${target} can't start on this Node: its SQLite (${sqlite}) refuses that release's Tasks list ("VIEWs and/or subqueries nested too deep"). Releases 0.9.105 and earlier need a Node whose SQLite is older than 3.54, such as Node 22.22.0.`;
+}
 
 export type UpdateCliDeps = {
   system?: UpdateSystem;
@@ -41,6 +50,8 @@ export type UpdateCliDeps = {
   databaseFile?: string;
   /** Where the console's one-off update job's definition lives (tests). */
   home?: string;
+  /** The running Node's SQLite version (tests); it decides whether an old release can start here (oldReleaseProblem). */
+  sqlite?: string;
 };
 
 export async function runUpdateCommand(args: readonly string[], write: (line: string) => void, deps: UpdateCliDeps = {}): Promise<number> {
@@ -85,6 +96,8 @@ export async function runUpdateCommand(args: readonly string[], write: (line: st
   if (has("rollback")) {
     const last = lastCompletedUpdate(stateDir);
     if (!last) { write("There is no completed update to roll back."); return 1; }
+    const old = oldReleaseProblem(last.from.version, deps.sqlite ?? process.versions.sqlite);
+    if (old !== null) { write(old); return 1; }
     if (!has("yes")) {
       write(`Roll back ${last.to.version} → ${last.from.version}, with the database as it was before the update (${last.finishedAt?.slice(0, 16).replace("T", " ") ?? "unknown"} UTC).`);
       const since = recordsSince(databaseFile, last.finishedAt ?? last.updatedAt);
@@ -104,6 +117,8 @@ export async function runUpdateCommand(args: readonly string[], write: (line: st
   if (version === current.version) { write(`Toolroll ${version} is current.`); return 0; }
   const downgrade = !isNewer(version, current.version);
   if (downgrade && !has("allow-downgrade")) { write(`Toolroll ${version} is older than ${current.version}. Add --allow-downgrade to go back to it.`); return 1; }
+  const old = downgrade ? oldReleaseProblem(version, deps.sqlite ?? process.versions.sqlite) : null;
+  if (old !== null) { write(old); return 1; }
   if (!has("yes")) {
     write(`Update Toolroll ${current.version} → ${version}.`);
     write(`${when === "now" ? "Refuses if any work is running" : when === "at" ? `Waits until ${at}, then pauses new work and lets running work finish` : "Pauses new work and lets running work finish"}; verifies the package came from ap9000/toolroll's publish workflow; backs up and rehearses the database; keeps ${current.version} for toolroll update --rollback.`);
