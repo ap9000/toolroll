@@ -1,7 +1,7 @@
 import { advancedShownNow } from "../advanced-view.js";
 import { titleWithin } from "../task-text.js";
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
-import { archiveTaskFamily, dropFeedbackImage, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runCheckStamp, runLiveCommands } from "../store.js";
+import { archiveTaskFamily, dropFeedbackImage, markTypedByPerson, typedNotesFor, releaseAuthorityOfTask, restoreTaskFamily, revokeRelease, runCheckStamp, runLiveCommands } from "../store.js";
 import { ranWords } from "../check-stamp.js";
 import { applyTidy, approverStandsNow, familyRepoOf, releaseFactsOf, tidyDays, tidyDigest, tidyPreview, TIDY_DEFAULT_DAYS } from "../tidy.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
@@ -1304,7 +1304,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
         // A browser session is a person's proof; a bearer credential is a machine's.
-        origin: who.via === "cookie" ? "person" : "machine",
+        origin: who.via === "cookie" ? "person" : "machine", typedInBrowser: who.via === "cookie",
         note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"), image,
       }, now);
       if (!result.ok) {
@@ -1351,10 +1351,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const saved = store.transact((): { problem: string } | { inserted: number | null } => {
       const imageProblem = feedbackImageProblem(store, evidenceRoot, id, image);
       if (imageProblem !== null) return { problem: imageProblem };
-      return { inserted: store.addDiffComment(
+      const inserted = store.addDiffComment(
         { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, image, ...(sourceKey === undefined ? {} : { sourceKey }) },
         now,
-      ) };
+      );
+      // A browser session typed these words (one-workspace S5): the one road that may later quote them as a person's.
+      if (inserted !== null && who.via === "cookie") markTypedByPerson(store, { comment: inserted }, who.name, now);
+      return { inserted };
     });
     if ("problem" in saved) return refuse(response, who, 409, saved.problem, `/r/${id}?record=1#request-changes`);
     const inserted = saved.inserted;
@@ -1717,7 +1720,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             return taskScreen(response, who, taskId, "that note did not say which agent it came from, so nothing was sent", 400);
           }
           // The same receipt as a send to that run: a draft already filed while it ran comes back as sent, not twice.
-          const filed = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: ended.id, key: keyRaw, onward: true });
+          const filed = typedSteer(store, who, () => store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: ended.id, key: keyRaw, onward: true }), now);
           // From the task page or a flow card: back there with the draft's key (only that draft clears), or the refusal in words.
           if (afterBack !== null) {
             if (filed.ok) return redirect(response, afterFlow !== null ? `/flows/${afterFlow.flow}?card=${afterFlow.card}&sent=${keyRaw}` : `${taskHref(taskId)}?sent=${keyRaw}#steering`);
@@ -1743,7 +1746,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           if (capability !== null && capability.send === null) {
             return from === "agents" ? redirect(response, `/agents?run=${shown.id}&said=steer-no-notes`) : taskScreen(response, who, taskId, capability.words, 409);
           }
-          const bound = store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: shown.id, key: keyRaw });
+          const bound = typedSteer(store, who, () => store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: shown.id, key: keyRaw }), now);
           // From the task page: back to its steering card, or the refusal in words (the page keeps nothing to restore).
           if (from === "task") {
             // Back where it was written (the task page, or a flow card's task), with its draft's key: only that draft clears.
@@ -1758,7 +1761,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           return redirect(response, `/agents?run=${shown.id}&said=steer-stale`);
         }
         // The session IS the verified principal here — cookie + CSRF proved it.
-        const filed = store.fileSteerNote(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now);
+        const filed = typedSteer(store, who, () => store.fileSteerNote(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now), now);
         if (!filed.ok) {
           const said =
             filed.reason === "task-finished"
@@ -1781,7 +1784,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const asked = Number.isSafeInteger(id) && id > 0 ? agentQuestion(store, id) : null;
         if (asked === null || asked.taskRef !== ref.id) return taskScreen(response, who, taskId, "that question is not on this task", 404);
         const answered = answerAgentQuestion(store, { question: id, answer: body.get("answer") ?? "", author: who.name, at: now,
-          file: (task, note) => store.fileSteerNote(task, verifiedAuthor(who.name), note, now) });
+          file: (task, note) => typedSteer(store, who, () => store.fileSteerNote(task, verifiedAuthor(who.name), note, now), now) });
         const said = answered.ok ? "replied" : answered.reason === "invalid-answer" || answered.reason === "not-saved" ? "reply-invalid" : answered.reason === "closed" ? "reply-closed" : "reply-stale";
         return redirect(response, `/agents?run=${asked.run}&said=${said}`);
       }
@@ -1941,7 +1944,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           }
         }
         if (note !== "" && !replayed) {
-          const filed = store.fileSteerNote(taskId, verifiedAuthor(who.name), note, now);
+          const filed = typedSteer(store, who, () => store.fileSteerNote(taskId, verifiedAuthor(who.name), note, now), now);
           if (!filed.ok) return taskScreen(response, who, taskId, "Retried. The note wasn't saved; add it under Steering.", 409);
         }
         // Allow-listed return only — never an arbitrary URL from the form.
@@ -2515,7 +2518,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         // Resume: the paused build goes on where it stopped; no note is filed.
         const asked = body.get("mode") === "resume"
           ? store.requestResume({ taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", requestId: body.get("request") ?? "" }, now)
-          : store.requestPause({ taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", requestId: body.get("request") ?? "", ...(note === "" ? {} : { note }) }, now);
+          : typedSteer(store, who, () => { const paused = store.requestPause({ taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", requestId: body.get("request") ?? "", ...(note === "" ? {} : { note }) }, now);
+              return paused.ok && !paused.duplicate && paused.note !== null ? { ...paused, id: paused.note } : paused; }, now);
         if (!asked.ok) {
           const words: Record<string, string> = {
             stale: `build #${named} has stopped taking notes — reload to see the current attempt`,
@@ -2789,6 +2793,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       reviewRetry: store.reviewRetryStateOf(run.id),
       review: reviewFactsFor(run.id),
       notes: store.notesForRun(run.id),
+      // One-workspace S5: only the words a signed-in person typed for this version, never planned scope or a reviewer's.
+      youSaid: typedNotesFor(store, row.taskId, YOU_SAID_CAP),
     };
   }
 
@@ -3342,3 +3348,16 @@ export function localOwnerRetry(store: Store, taskId: string, run: string | null
   const done = retryAsLocalOwner(store, taskId, { run: Number(run), digest }, now);
   return done.ok ? { ok: true, replayed: done.replayed } : { ok: false, status: done.reason === "local-owner" || done.reason === "refused" || done.reason === "limit" ? 403 : 409, message: done.message };
 }
+
+/** A note to the agent a browser session filed (one-workspace S5): in the same transaction, recorded as typed by that
+ * session's own person, the one road that may later quote it as theirs. Any other caller files it unrecorded. */
+function typedSteer<T extends { ok: boolean; id?: number }>(store: Store, who: Who, file: () => T, now: Date): T {
+  return store.transact(() => {
+    const filed = file();
+    if (filed.ok && typeof filed.id === "number" && who.via === "cookie") markTypedByPerson(store, { steer: filed.id }, who.name, now);
+    return filed;
+  });
+}
+
+/** The most "You said" quotes a result reads (one-workspace S5): the newest; the page folds all but a few. */
+export const YOU_SAID_CAP = 8;

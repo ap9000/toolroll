@@ -105,7 +105,8 @@ index 11aa0b2..c44d1f7 100644
 function demoHandoffBytes(
   store: Store,
   runId: number,
-  told: Pick<HandoffArtifact, "outcome" | "committed" | "conclusion" | "changes" | "verification" | "followUps" | "decisionsIncorporated">,
+  told: Pick<HandoffArtifact, "outcome" | "committed" | "conclusion" | "changes" | "verification" | "followUps" | "decisionsIncorporated">
+    & Partial<Pick<HandoffArtifact, "decisions" | "assumptions" | "notDone" | "risks">>,
 ): Buffer {
   const run = store.getRun(runId)!;
   const head = run.headRevision ?? run.baseRevision ?? "0".repeat(40);
@@ -129,6 +130,9 @@ const DEMO_HANDOFF = {
   ],
   verification: ["All 214 tests pass, including the new rounding boundary cases."],
   followUps: [],
+  decisions: ["Rounded each line at cent precision in settle(), not when the total is displayed."],
+  assumptions: ["The ledger fixtures cover every currency payouts are made in."],
+  risks: ["Totals for settlements already paid at the old precision are not recalculated."],
   decisionsIncorporated: [],
 };
 
@@ -238,6 +242,9 @@ const DEMO_COPY_HANDOFF = {
   changes: ["Replaced the empty-state body copy in src/inbox-copy.ts."],
   verification: ["Opened the inbox pane with zero items and read the new copy."],
   followUps: [],
+  decisions: ["Kept the copy to one sentence and a link to filters, with no illustration."],
+  assumptions: ["An empty inbox usually means a filter is on, not that there is no mail."],
+  notDone: ["The copy is English only; the other locales still show the old line."],
   decisionsIncorporated: [],
 };
 

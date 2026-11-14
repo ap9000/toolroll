@@ -4,7 +4,7 @@ import { verifyResultImage } from "./chat-evidence.js";
  * displayed note batch, then uses the existing atomic revision/approval boundary.
  */
 import { createHash, randomBytes } from "node:crypto";
-import type { Store, DiffComment } from "./store.js";
+import { markTypedByPerson, type Store, type DiffComment } from "./store.js";
 import { EVIDENCE_CAPS, readVerifiedArtifact, writeEvidenceFile } from "./evidence.js";
 import { parseFeedbackImage, sameFeedbackImage, type FeedbackImage, isRevisionFeedback, parseRevisionBatch, revisionSourceOf, commentSourceKey, REQUEST_TOKEN } from "./result-review.js";
 import { validateNote, hasForbiddenControls } from "./decision.js";
@@ -36,6 +36,9 @@ export function feedbackImageProblem(store: Store, root: string, runId: number, 
  * saved notes. A refusal rolls back the note; a replay returns the same task. */
 export function requestResultChanges(store: Store, evidenceRoot: string, input: RevisionInput & {
   note: string; path: string; line: string; request: string | null; image?: FeedbackImage | null;
+  /** One-workspace S5: a signed-in browser session typed this note (the result form's own road, never the CLI, chat or a
+   * token), so it may later be quoted as that person's words. */
+  typedInBrowser?: boolean;
 }, now: Date): RevisionResult {
   try {
     return store.transact(() => store.savepoint((): RevisionResult => {
@@ -70,6 +73,7 @@ export function requestResultChanges(store: Store, evidenceRoot: string, input: 
       }
       const noteId = earlier?.id ?? store.addDiffComment({ artifactId: artifact.id, runId: run.id, path, line, note: valid.note, author: input.actor, sourceKey, image: input.image ?? null }, now);
       if (noteId === null) return fail(409, "This feedback changed while saving. Your draft is unchanged; reopen the result.");
+      if (earlier === null && input.typedInBrowser === true) markTypedByPerson(store, { comment: noteId }, input.actor, now);
       const result = createResultRevision(store, evidenceRoot, { ...input, batch: [...new Set([...batch, noteId])].sort((a, b) => a - b).join(",") }, now);
       if (!result.ok) return fail(result.status, result.message);
       return result;

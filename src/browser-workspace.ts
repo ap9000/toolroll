@@ -485,6 +485,13 @@ export type BrowserResultView = {
     noRun: string | null;
     panel: BrowserResultPanel | null;
     notes: { author: string; at: string; note: string }[];
+    /** One-workspace S5: what the agent says about its own work (decisions, assumptions, what it left undone, risks):
+     * agent-written plain text, never a check, never a link. Empty lists: it didn't report them (said so, never "none").
+     * Null: no finished build to report on. */
+    agentReport?: import("./result-evidence-readers.js").AgentReport | null;
+    /** One-workspace S5: words a signed-in person typed for this version, newest first, each with its author (`you`:
+     * the viewer's own) and time. Only those: never planned scope, a reviewer's observation, or a note any other road filed. */
+    youSaid?: { kind: "sent-back" | "to-agent"; author: string; you: boolean; at: string; note: string }[];
   } | null;
 };
 export type BrowserFailure = { line: string; evidence: string | null; suggestion: string; link: { label: string; href: string } | null };

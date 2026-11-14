@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { openStore, type Store } from "./store.js";
+import { openStore, verifiedAuthor, type Store } from "./store.js";
 import { acceptAndCompleteAsOperator, assignmentOf } from "./assignment.js";
 import { verifyApproverByPassword } from "./principal.js";
 import { acquire, release } from "./claim.js";
@@ -1478,6 +1478,52 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(pages.detail).toContain('data-result-place="chat"');
     expect(pages.run).toContain('data-result-place="run"');
     expect(pages.review).toContain('data-result-place="review"');
+  });
+
+  test("one-workspace S5: the agent's report reads as the agent's, and You said quotes only what a signed-in person typed", async () => {
+    const ref = seed("t-said", "Retry webhook deliveries", "/repo/main", { goal: "PLANNED: retry with backoff, never twice." });
+    const run = build("t-said", ref, { ...RICH, handoff: { ...RICH.handoff, decisions: ["Keyed retries by delivery id."], risks: ["Backoff limits are constants."] } });
+    store.stampRun(run, { scopeDigest: store.getScope("t-said")!.digest });
+    const robin = addApprover(store, "robin", T0, { name: "alex", token: approverToken });
+    if (!robin.ok) throw new Error("second approver");
+    await boot();
+    const cookie = await login();
+    const robinCookie = (((await fetch(url("/login"), { method: "POST", body: new URLSearchParams({ name: "robin", token: robin.token }), redirect: "manual" })).headers.get("set-cookie")) ?? "").split(";")[0] as string;
+    const read = async (who: string) => (await fetch(url(`/chat?task=t-said&result=${run}`), { headers: { cookie: who } })).text();
+    // A browser session types a note; another person types one; an API caller files one with the same words' shape.
+    expect((await post(cookie, `/r/${run}/comment`, { csrf: csrfOf(await read(cookie)), note: "Don't change the public webhook payload.", request: "1".repeat(32) })).status).toBe(303);
+    expect((await post(robinCookie, `/r/${run}/comment`, { csrf: csrfOf(await read(robinCookie)), note: "Keep the retry count at five.", request: "2".repeat(32) })).status).toBe(303);
+    const bearer = await fetch(url(`/r/${run}/comment`), { method: "POST", headers: { authorization: `Bearer alex:${approverToken}`, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ note: "A token filed this.", request: "3".repeat(32) }), redirect: "manual" });
+    expect(bearer.status).toBe(303);
+    expect(store.allDiffComments(run).map(one => one.note)).toContain("A token filed this.");
+    // Sent back from the browser: a fresh typed note seals with the saved ones into the next version.
+    const sealed = await post(cookie, `/r/${run}/comment`, { csrf: csrfOf(await read(cookie)), intent: "revise", request: "4".repeat(32), note: "Use exponential backoff.", ...revisionFormOf(await read(cookie)) });
+    expect(sealed.status).toBe(303);
+    const child = store.revisionsFromRun(run)[0]!.id;
+    plannerKeptTerms(store, child);
+    const agreed = approve(store, child, "alex", T0, store.getScope(child)!.digest, approverToken);
+    if (!agreed.ok) throw new Error(agreed.reason);
+    // A note to the agent typed on the task page counts; one the CLI or a lead's chat card filed (same store road) doesn't.
+    const page = await (await fetch(url(`/t/${child}`), { headers: { cookie } })).text();
+    expect((await post(cookie, `/t/${child}/steer`, { csrf: csrfOf(page), note: "Log each give-up." })).status).toBe(303);
+    expect(store.fileSteerNote(child, verifiedAuthor("alex"), "The lead drafted this.", new Date()).ok).toBe(true);
+    const childRun = build(child, store.lookupRef(child)!.id, RICH);
+    const said = (await resultView(cookie, child, childRun)).selected!;
+    expect(said.youSaid!.map(one => [one.author, one.you, one.note])).toEqual([
+      ["alex", true, "Log each give-up."],
+      ["alex", true, "Use exponential backoff."],
+      ["robin", false, "Keep the retry count at five."],
+      ["alex", true, "Don't change the public webhook payload."],
+    ]);
+    // Never the planned scope, the token's note or the agent's own words.
+    const quoted = JSON.stringify(said.youSaid);
+    for (const never of ["PLANNED", "A token filed this.", "The lead drafted this.", "Edited the value."]) expect(quoted).not.toContain(never);
+    // The same quotes from robin's seat: robin's own is "you", alex's is alex's.
+    expect((await resultView(robinCookie, child, childRun)).selected!.youSaid!.map(one => [one.author, one.you])).toEqual([["alex", false], ["alex", false], ["robin", true], ["alex", false]]);
+    // The first version's agent report is its own; the second reported none, and says so by empty lists.
+    expect((await resultView(cookie, "t-said", run)).selected!.agentReport).toEqual({ decisions: ["Keyed retries by delivery id."], assumptions: [], notDone: [], risks: ["Backoff limits are constants."] });
+    expect(said.agentReport).toEqual({ decisions: [], assumptions: [], notDone: [], risks: [] });
   });
 
   test("request changes directly combines typed feedback with displayed notes, replays once, and rolls back refusals", async () => {

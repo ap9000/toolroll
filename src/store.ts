@@ -21,6 +21,7 @@ import { V159_ADDED_COLUMNS, V159_SCHEMA, V159_STEPS } from "./one-step-chat-sch
 import { V160_BACKFILL, V160_SCHEMA, V160_STEPS } from "./advanced-schema.js";
 import { V161_SCHEMA, V161_STEPS } from "./flexible-schema.js";
 import { V162_SCHEMA, V162_STEPS } from "./flexible-thread-schema.js";
+import { V163_SCHEMA, V163_STEPS } from "./typed-words-schema.js";
 import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
@@ -1225,7 +1226,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (flexible_terms, a new table; flexible-schema.ts). A project with no row is Secure, as every saved project reads.
 // v162 adds, and changes no saved row (the Flexible plan v2, slice F2a): Flexible threads' own repositories
 // (flexible_thread, a new table; flexible-thread-schema.ts). Nothing reads it while Flexible isn't available.
-export const SCHEMA_VERSION = 162;
+// v163 adds, and changes no saved row (one-workspace S5): which result notes and notes to the agent a signed-in person
+// typed in a browser form (typed_by_person, a new table; typed-words-schema.ts). A saved note has no row: it is never
+// quoted as a person's words.
+export const SCHEMA_VERSION = 163;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1363,7 +1367,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1627,7 +1631,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2037,7 +2041,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6022,7 +6026,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6454,6 +6458,12 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const threadDamaged = flexibleThreadShapeProblem(db);
   if (threadDamaged !== null) throw new Error(`${file}: refusing to open — ${threadDamaged}`);
   step("flexible-thread");
+  // v163: which notes a signed-in person typed (a new table and its written-once trigger). Idempotent; a table already
+  // here (a resumed epoch, a later upgrade) must be exactly this build's shape.
+  db.exec(V163_SCHEMA);
+  const typedDamaged = typedByPersonShapeProblem(db);
+  if (typedDamaged !== null) throw new Error(`${file}: refusing to open — ${typedDamaged}`);
+  step("typed-by-person");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -27443,4 +27453,50 @@ function flexibleThreadShapeProblem(db: Database): string | null {
 export function accountAccessOf(store: Store, name: string): (repo: string | null) => boolean {
   const account = store.accountOf(name);
   return repo => account !== null && account.revokedAt === null && projectAccessAllows(account.projects, repo);
+}
+
+/** v163's table and written-once trigger, as a current or resumed file must hold them (typed-words-schema.ts): each
+ * there, and exactly this build's DDL. Null when they are; else what is wrong, in words. */
+function typedByPersonShapeProblem(db: Database): string | null {
+  const statements = V163_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
+  for (const [type, name] of [["table", "typed_by_person"], ["trigger", "typed_by_person_written_once"]] as const) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+    if (row === undefined) return `the typed_by_person ${type} ${name} is missing`;
+    const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
+    if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want).trim()) return `the typed_by_person ${type} ${name} has an unknown shape`;
+  }
+  return null;
+}
+
+/** One-workspace S5: record that a signed-in person typed this note themselves, in a Toolroll browser form. Call it in
+ * the transaction that saved the note, only from a browser session's own act, under that session's account. A repeat
+ * (a replayed form landing on the same note) records nothing more. Nothing else ever writes this. */
+export function markTypedByPerson(store: Store, note: { comment: number } | { steer: number }, author: string, now: Date): void {
+  const comment = "comment" in note ? note.comment : null, steer = "steer" in note ? note.steer : null;
+  store.handle.prepare("INSERT INTO typed_by_person (comment, steer, author, typed_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
+    .run(comment, steer, author, now.toISOString());
+}
+
+/** One quoted note: the person's own words, their account and when they wrote them. */
+export type TypedNote = { kind: "sent-back" | "to-agent"; id: number; author: string; at: string; note: string };
+
+/** The words a person typed for this task version (one-workspace S5, "You said"), newest first, at most `cap`: the
+ * notes sent back that made this version (each its signed-in typist's, consumed into it) and the notes sent to its
+ * agents. Only notes with a typed_by_person row naming the note's own author: a reviewer's observation, a GitHub
+ * comment, a note filed by an API token, the CLI or a lead's chat card, and every note saved before v163 are not. An
+ * imageless copy of a typed note (a dropped screenshot) is the same person's same words. */
+export function typedNotesFor(store: Store, taskId: string, cap: number): TypedNote[] {
+  const ref = store.handle.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
+  const rows = store.handle.prepare(`
+    SELECT 'sent-back' AS kind, c.id AS id, c.author AS author, c.created_at AS at, c.note AS note FROM diff_comment c
+     WHERE c.consumed_by = ? AND c.reviewer_run IS NULL
+       AND EXISTS (SELECT 1 FROM typed_by_person t JOIN diff_comment o ON o.id = t.comment
+                    WHERE (o.id = c.id OR o.superseded_by = c.id) AND o.note = c.note AND o.author = c.author AND t.author = c.author)
+    UNION ALL
+    SELECT 'to-agent' AS kind, s.id AS id, s.author AS author, s.created_at AS at, s.note AS note FROM task_steer s
+      JOIN typed_by_person t ON t.steer = s.id AND t.author = s.author
+     WHERE s.task_ref = ? AND s.authorship_state = 'verified'
+    ORDER BY at DESC, id DESC LIMIT ?`).all(taskId, ref === undefined ? -1 : Number(ref["id"]), Math.max(0, cap));
+  return rows.map(row => ({ kind: row["kind"] === "sent-back" ? "sent-back" as const : "to-agent" as const, id: Number(row["id"]), author: String(row["author"]),
+    at: String(row["at"]), note: String(row["note"]) }));
 }

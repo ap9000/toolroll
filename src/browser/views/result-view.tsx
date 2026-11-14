@@ -21,6 +21,7 @@ import { toneOf } from "./tone.js";
 import { RecheckStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
 import { Html, ResultStatusAct, ResultStatusWarnings, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 import { KButton, KInput, KLinkButton } from "../kit/index.js";
+import { AgentReport } from "./agent-report.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
 
@@ -566,7 +567,10 @@ export function SelectedResult({ selected, csrf, inTask }: { selected: Selected;
   const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} statusSlot={inTask?.current === true ? slot : null} />;
   // Leading a task page, the result's own warnings read in its status box, above the act that completes it.
   const warnings = useContext(ResultStatusWarnings);
-  const card = <StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />;
+  // What the agent says about its own work, and what a person said (one-workspace S5): after the outcome and caveats,
+  // before the evidence and the act, so what it left undone and its risks are read before anyone accepts.
+  const card = <><StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />
+    <AgentReport report={selected.agentReport} said={selected.youSaid} /></>;
   return <>
     {inTask?.current === true && warnings !== null ? createPortal(card, warnings) : card}
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the

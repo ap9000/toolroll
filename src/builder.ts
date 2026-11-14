@@ -74,7 +74,7 @@ import { missingCapability } from "./dispatch.js";
 import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
 import { keepCheckTimeline } from "./latency-timeline.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
-import { parseDecision, parseHandoff, repairPrompt, HEADLESS_RULE, HANDOFF_CONCLUSION_CAP, HANDOFF_ITEM_CAP, HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, type ParsedDecision, type Problem } from "./decision.js";
+import { parseDecision, parseHandoff, repairPrompt, HEADLESS_RULE, HANDOFF_CONCLUSION_CAP, HANDOFF_ITEM_CAP, HANDOFF_LIST_CAP, HANDOFF_REPORT_CAP, handoffReportOf, HANDOFF_PAYLOAD_CAP, type ParsedDecision, type Problem } from "./decision.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { fencedCommands, invokeAgent, type AgentOutcome, type InvokeResult } from "./invoke.js";
 import { TELEGRAM_TOKEN_ENVS } from "./names.js";
@@ -2194,6 +2194,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       changes: handoff.changes,
       verification: handoff.verification,
       followUps: handoff.followUps,
+      ...handoffReportOf(handoff),
       freshness: { stampedAt: clock().toISOString(), currentAsOf: baseRevision },
     }, clock());
     if (observation) {
@@ -2285,6 +2286,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
         changes: handoff.changes,
         verification: handoff.verification,
         followUps: handoff.followUps,
+        ...handoffReportOf(handoff),
         freshness: { stampedAt: clock().toISOString(), currentAsOf: head },
       }, clock());
 
@@ -3987,6 +3989,12 @@ function brief(
     `  at most ${HANDOFF_LIST_CAP} items each, ${HANDOFF_ITEM_CAP} characters per item. The conclusion is the operator's`,
     "  compact result, not a transcript: never include a preamble, file dump,",
     "  or repeated explanation. The machine stores full diffs separately.",
+    "  Also tell the person who reviews this what they can't see in the diff,",
+    `  in four optional lists of at most ${HANDOFF_REPORT_CAP} short lines each: "decisions" (choices`,
+    '  you made that they might have made differently), "assumptions" (what you',
+    '  took as true without checking), "notDone" (what the goal asked for that',
+    '  you left out) and "risks" (what could go wrong). Leave a list out rather',
+    "  than pad it; the person sees these before deciding, labelled as yours.",
     `  The whole file must be under ${HANDOFF_PAYLOAD_CAP} bytes, and the conclusion and every`,
     "  list item is ONE line of plain text — a newline or other control",
     "  character in any of them refuses the whole file, not just that field.",
