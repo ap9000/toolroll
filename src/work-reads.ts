@@ -91,6 +91,10 @@ export type WorkReads = {
   ranked(key: string, now: Date, fill: (table: string) => void): string | null;
   /** Forget the projection kept for `key` (it could not be read). */
   forget(key: string): void;
+  /** Answers read together in one statement, saved as the one-row statement `sql` would have answered each entry's
+   * parameters (`method`: get, a row or undefined; all, rows). The caller reads them just now, at this proof; a
+   * statement with any other text simply reads the database. */
+  seed(sql: string, method: "get" | "all", entries: Iterable<readonly [unknown[], Record<string, unknown> | Record<string, unknown>[] | undefined]>): void;
 };
 
 /** This request's work reads on `store`'s connection, proved current; null outside a request's reads. */
@@ -138,6 +142,14 @@ export function workReadsOf(store: Store): WorkReads | null {
       return table;
     },
     forget(key) { forgetRanked(db, current, key); },
+    seed(sql, method, entries) {
+      if (!pureRead(sql)) return;
+      for (const [params, answer] of entries) {
+        const key = keyOf(sql, method, params);
+        if (key === null || current.answers.size >= MAX_SAVED) continue;
+        current.answers.set(key, answer === undefined ? undefined : Array.isArray(answer) ? answer.map(copied) : copied(answer));
+      }
+    },
   };
 }
 

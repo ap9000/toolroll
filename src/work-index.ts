@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { readProjectAccess } from './project-access.js';
 import { pauseOnTaskProviders, signInReason } from './provider-auth.js';
 import type { ProviderId } from './provider.js';
-import { scopeTermsProblem, stopFactOf, type Store, type TaskState } from './store.js';
+import { BUILT_IN, scopeTermsProblem, stopFactOf, type Store, type TaskState } from './store.js';
 import { assignmentChecksForRun, type AssignmentSnapshot } from './assignment.js';
 import type { WorkAction, WorkSummaryAccess } from './work-summary.js';
 import type { WorkStatus, WorkView } from './workspace-ui.js';
@@ -18,9 +18,9 @@ import { approvedCheckOf, checkBackingOf, completionBlockersOf, leadOnIt, plainR
 import { releaseCoverageOf, type ReleaseMemo } from './release-coverage.js';
 import { buildReviewOf } from './review-switch.js';
 import { shownVerdictOf } from './proof.js';
-import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
+import { isCheckLevel, repoClause, requiredCheckCommandFor, RUN_LEVEL_ACTION, TASK_LEVEL_ACTION } from './check-levels.js';
 import { MARKER } from './worktree.js';
-import { withFollowUps } from './result-follow-ups.js';
+import { CHECKS_FINISHED, CHECKS_REQUESTED, CHECKS_STARTED, withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
 import { ASKS, CODE_READING, STORAGE_HOLD_PREFIX, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
 import { agentlessCommand, NO_AGENT_TITLE, noAgentWords, retryWhenWords, signInAgainWords } from './dispatch.js';
@@ -618,6 +618,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   // A finished result reads the same readiness the task page does (task-status.ts): its requirements, acceptance,
   // automatic review and, with checks Off, the release check that covers it.
   const memo: ReleaseMemo = new Map();
+  if (reads !== null) prefetchResults(reads, store, page);
   const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(facts, now, options.root, row, checks, memo);
   return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined, now)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
     groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), asks: rows[0] === undefined ? { ...NO_ASKS } : askCounts(rows[0]),
@@ -763,6 +764,60 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
     criteriaPassed: requirements === null || requirements.met === requirements.total });
   const blockers = completionBlockersOf({ report, checks, checkRequired, matrix: proof?.matrix, verdict: proof?.verdict ?? null, accepted, high });
   return { checks, requirements: unverifiedWhenRefuted(requirements, verdict), ...(accepted ? { accepted } : {}), ...(blockers.length === 0 ? {} : { blockers }) };
+}
+
+/** The saved facts every shown result's readiness reads one at a time (resultReadinessFacts: its run and task, verdict,
+ * acceptance, review, files, check level and follow-up checks; each row's own check choice), read for the whole page in
+ * a few statements and saved as the one-row reads would have answered them (work-reads.ts seed). The SQL texts are the
+ * readers' own (store.ts, check-levels.ts, result-follow-ups.ts, review-switch.ts): one that drifts only reads again. */
+function prefetchResults(reads: WorkReads, store: Store, rows: readonly Row[]): void {
+  const runIds = [...new Set(rows.map(row => n(row, 'result_id')).filter(id => id > 0))];
+  if (runIds.length === 0) return;
+  const all = (sql: string, ...params: unknown[]) => store.handle.prepare(sql).all(...params);
+  const keyed = (list: Record<string, unknown>[], column: string) => new Map(list.map(row => [row[column], row] as const));
+  const ids = JSON.stringify(runIds);
+  const runs = keyed(all('SELECT * FROM run WHERE id IN (SELECT value FROM json_each(?))', ids), 'id');
+  reads.seed('SELECT * FROM run WHERE id = ?', 'get', runIds.map(id => [[id], runs.get(id)] as const));
+  const refIds = [...new Set([...runs.values()].map(run => Number(run['task_ref'])))];
+  const refs = keyed(all('SELECT id, external_id, repo FROM task_ref WHERE id IN (SELECT value FROM json_each(?)) AND backend = ?', JSON.stringify(refIds), BUILT_IN), 'id');
+  reads.seed('SELECT id, external_id, repo FROM task_ref WHERE id = ? AND backend = ?', 'get', refIds.map(id => [[id, BUILT_IN], refs.get(id)] as const));
+  for (const table of ['proof_verdict', 'proof_acceptance', 'build_review']) {
+    let found: Map<unknown, Record<string, unknown>>;
+    // An older file without the table: its one-row reader says so itself.
+    try { found = keyed(all(`SELECT * FROM ${table} WHERE run IN (SELECT value FROM json_each(?))`, ids), 'run'); } catch { continue; }
+    reads.seed(`SELECT * FROM ${table} WHERE run = ?`, 'get', runIds.map(id => [[id], found.get(id)] as const));
+  }
+  const files = new Map<number, Record<string, unknown>[]>(runIds.map(id => [id, []]));
+  for (const artifact of all('SELECT * FROM artifact WHERE run IN (SELECT value FROM json_each(?)) ORDER BY id', ids)) files.get(Number(artifact['run']))?.push(artifact);
+  reads.seed('SELECT * FROM artifact WHERE run = ? ORDER BY id', 'all', runIds.map(id => [[id], files.get(id)] as const));
+  // The result's own ledger lines, in its task's project (check-levels.ts runCheckLevel, result-follow-ups.ts ledgerFor).
+  const picked = (row: Record<string, unknown>, names: readonly string[]) => Object.assign(Object.create(null) as Record<string, unknown>, Object.fromEntries(names.map(name => [name, row[name]])));
+  const ledger = all(`SELECT run_id, repo, id, actor, at, outcome, detail, action FROM action_ledger WHERE run_id IN (SELECT value FROM json_each(?)) AND action IN (?, ?, ?, ?) ORDER BY id`,
+    ids, RUN_LEVEL_ACTION, CHECKS_REQUESTED, CHECKS_STARTED, CHECKS_FINISHED);
+  for (const id of runIds) {
+    const run = runs.get(id);
+    if (run === undefined) continue;
+    const repo = refs.get(Number(run['task_ref']))?.['repo'];
+    const [where, params] = repoClause(repo === undefined || repo === null ? null : String(repo));
+    const own = ledger.filter(row => row['run_id'] === id && (params.length === 0 ? row['repo'] === null : row['repo'] === params[0]));
+    const level = own.filter(row => row['action'] === RUN_LEVEL_ACTION).at(-1);
+    reads.seed(`SELECT actor, at, outcome FROM action_ledger WHERE ${where} AND run_id = ? AND action = ? ORDER BY id DESC LIMIT 1`, 'get',
+      [[[...params, id, RUN_LEVEL_ACTION], level === undefined ? undefined : picked(level, ['actor', 'at', 'outcome'])]]);
+    reads.seed(`SELECT id, actor, at, outcome, detail, action FROM action_ledger WHERE ${where} AND run_id = ? AND action IN (?, ?, ?) ORDER BY id`, 'all',
+      [[[...params, id, CHECKS_REQUESTED, CHECKS_STARTED, CHECKS_FINISHED], own.filter(row => row['action'] !== RUN_LEVEL_ACTION).map(row => picked(row, ['id', 'actor', 'at', 'outcome', 'detail', 'action']))]]);
+  }
+  // Each shown task's own check choice (check-levels.ts taskCheckLevel's first step): its ref and its newest choice.
+  const taskIds = [...new Set(rows.filter(row => n(row, 'result_id') > 0).map(row => String(row['id'])))];
+  const tasks = keyed(all('SELECT * FROM task_ref WHERE backend = ? AND external_id IN (SELECT value FROM json_each(?))', BUILT_IN, JSON.stringify(taskIds)), 'external_id');
+  reads.seed('SELECT * FROM task_ref WHERE backend = ? AND external_id = ?', 'get', taskIds.map(id => [[BUILT_IN, id], tasks.get(id)] as const));
+  const chosen = all('SELECT task_id, repo, actor, at, outcome FROM action_ledger WHERE task_id IN (SELECT value FROM json_each(?)) AND action = ? ORDER BY id DESC', JSON.stringify(taskIds), TASK_LEVEL_ACTION);
+  for (const id of taskIds) {
+    const ref = tasks.get(id);
+    const [where, params] = repoClause(ref === undefined || ref['repo'] === null ? null : String(ref['repo']));
+    const newest = chosen.find(row => row['task_id'] === id && (params.length === 0 ? row['repo'] === null : row['repo'] === params[0]));
+    reads.seed(`SELECT actor, at, outcome FROM action_ledger WHERE ${where} AND task_id = ? AND action = ? ORDER BY id DESC LIMIT 1`, 'get',
+      [[[...params, id, TASK_LEVEL_ACTION], newest === undefined ? undefined : picked(newest, ['actor', 'at', 'outcome'])]]);
+  }
 }
 
 function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (taskId: string) => StopFact | null, leadName?: string,
