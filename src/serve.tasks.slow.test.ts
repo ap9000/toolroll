@@ -19,7 +19,7 @@ import { createDecisionServer, SENSITIVE_INPUT } from "./serve.js";
 import { routeOfTask } from "./agentconfig.js";
 import { projectRoute } from "./phase-routing.js";
 import { Window } from "happy-dom";
-import { presented, renderedHtmlOf, sealScopeFixture, T0, workListOf, workspaceOf } from "../test/serve-kit.js";
+import { presented, renderedHtmlOf, sealScopeFixture, T0, workListOf, workNeedsRowsOf, workspaceOf } from "../test/serve-kit.js";
 import type { BrowserTaskView, BrowserWorkView } from "./browser-workspace.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { decisionAnswerScript } from "./server/render-tasks.js";
@@ -512,7 +512,7 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
 
     // Admitted rows render; the hidden project's rows and dollars do not.
     const homeView = workspaceOf(home).view as BrowserWorkView;
-    const homeRows = homeView.needs.flatMap(group => group.rows);
+    const homeRows = workNeedsRowsOf(workspaceOf(home));
     expect(homeRows.find(row => row.id === "d-main")?.line).toBe("Answer the admitted question?");
     const tasksView = workListOf(workspaceOf(tasks));
     expect(tasksView.rows.map(row => row.id).sort()).toEqual(["d-main", "r-main", "r-side"]);
@@ -562,7 +562,7 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     const landed = await fetch(url("/inbox"), { headers: { cookie } });
     expect(new URL(landed.url).pathname).toBe("/");
     for (const rollup of [await landed.text(), await (await fetch(url(`/?project=${encodeURIComponent("/repo/main")}`), { headers: { cookie } })).text()]) {
-      const row = (workspaceOf(rollup).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "d-one");
+      const row = workNeedsRowsOf(workspaceOf(rollup)).find(one => one.id === "d-one");
       expect(row).toMatchObject({ line: "Which way?", question: null });
       expect(row?.action?.href).toMatch(/^\/(?:t|d)\//);
       expect(rollup).not.toContain("decide-inline");
@@ -594,7 +594,7 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     const cookie = await login();
     const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
     // Unplaced work asks for its project first: Home's row is a link to the task, whose own page keeps the question.
-    const row = (workspaceOf(inbox).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "d-free");
+    const row = workNeedsRowsOf(workspaceOf(inbox)).find(one => one.id === "d-free");
     expect(row).toMatchObject({ project: "Unplaced", question: null, action: { label: "Choose a project", href: "/t/d-free?version=d-free" } });
     expect(inbox).not.toContain("decide-inline");
     expect(inbox).not.toMatch(/<form[^>]*\/answer/);
@@ -2189,7 +2189,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     const home = await page(cookie, "/");
     expect(home).not.toContain('name="token"');
     expect(ceremonyOf(home, "\\/t\\/payouts\\/approve")).toBe("");
-    const row = (workspaceOf(home).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "payouts");
+    const row = workNeedsRowsOf(workspaceOf(home)).find(one => one.id === "payouts");
     expect(row?.action?.href).toMatch(/^\/t\/payouts(?:[?#]|$)/);
     sheet(ceremonyOf(await page(cookie, row!.action!.href), "\\/t\\/payouts\\/approve"), "task");
     // Changing an agent invalidates the approval every surface signed under.
@@ -2213,7 +2213,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     })).status).toBe(303);
     store.setPlanState(store.refFor("built-in", "payouts").id, "drafted");
     const home = await page(cookie, "/");
-    const row = (workspaceOf(home).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "payouts");
+    const row = workNeedsRowsOf(workspaceOf(home)).find(one => one.id === "payouts");
     expect(home).not.toContain('name="token"');
     for (const path of ["/t/payouts", "/chat?task=payouts", row!.action!.href]) {
       const shown = await page(cookie, path);
@@ -2362,7 +2362,7 @@ describe("Home says when nothing will build (install review)", () => {
       const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
       const view = workspaceOf(home).view as BrowserWorkView;
       // What it asks (Home's own kind), or "working" for a row Work lists below Needs you.
-      const waiting = view.needs.flatMap(group => group.rows.map(row => ({ ...row, group: row.ask as string })));
+      const waiting = workNeedsRowsOf(workspaceOf(home)).map(row => ({ ...row, group: row.ask as string }));
       return [...waiting, ...view.list.rows.filter(row => row.ask === null).map(row => ({ ...row, line: row.detail, group: "working" }))].find(row => row.id === "t-idle");
     };
     let row = await rowOf();

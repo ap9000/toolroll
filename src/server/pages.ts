@@ -244,8 +244,13 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     // ride the first unfiltered page.
     const needs = workNeeds({ store, now, access, evidenceRoot, project, projects: chrome.projects ?? [], chat: false, canAnswer: approver, approver, closedDoor,
       asks: who.via === "cookie" && !found.filtered ? homeAsksFor(who, access, now, project) : NO_HOME_ASKS }, found.work, found.filtered);
+    // Needs you is the page's own rows: each waiting task's row carries what it asks; the groups keep their counts and the
+    // asks that are no task's row (one copy of every row, S2a review round 2).
+    const asked = new Map(needs.groups.flatMap(group => group.rows).map(row => [row.id, row] as const));
+    const rows = list.rows.map(row => { const need = asked.get(row.id); return need === undefined ? row : { ...row, need }; });
+    const onRows = new Set(rows.flatMap(row => row.need === undefined ? [] : [row.id]));
     const view: BrowserWorkView = {
-      kind: "work", list, needs: needs.groups, needsCount: needs.total, project,
+      kind: "work", list: { ...list, rows }, needs: needs.groups.map(group => ({ ...group, rows: group.rows.filter(row => !onRows.has(row.id)) })), needsCount: needs.total, project,
       projectName: project === null ? "All projects" : (chrome.projects ?? []).find(one => one.path === project)?.name ?? projectName(project),
       // Until the first result: the welcome's three steps stay one link away.
       setup: firstRunStepsNow(now) !== null ? "/welcome" : null,

@@ -12,7 +12,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { BrowserHomeRow, BrowserTasksView, BrowserTaskView, BrowserWorkspace, BrowserWorkView } from "../browser-workspace.js";
-import { WorkView } from "./views/work-view.js";
+import { forgetPendingActs, WorkView } from "./views/work-view.js";
 import { FormToken } from "./ui/index.js";
 import { WORKSPACE_NUDGE } from "./live-task.js";
 import { holdsFormControl, postInPlace, REDRAW_HOLD_MS } from "./act.js";
@@ -73,8 +73,9 @@ const noPasswordField = () => expect(document.querySelector('input[type="passwor
 
 beforeEach(() => {
   document.body.innerHTML = "";
-  // A selection lives in the address (`?task=`): every test starts on Work itself.
+  // A selection lives in the address (`?task=`), a pending act outside the panel: every test starts clean on Work.
   window.history.replaceState(null, "", "/");
+  forgetPendingActs();
   calls = [];
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -626,6 +627,67 @@ test("a lost Accept is done only when the task shows this very result complete; 
       expect(acceptButton(), name).toBeNull();
       expect(pane().querySelector("[data-work-send-back]"), name).toBeNull();
     }
-    await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
+    await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = []; forgetPendingActs();
   }
+});
+
+test("a lost Send back stays pending outside the panel: away and back offers no second press, only the same request again, so exactly one revision is filed", async () => {
+  const filed = new Map<string, string>();
+  let lose = true;
+  answer = call => {
+    if (call.method === "POST") {
+      const request = new URLSearchParams(call.body).get("request")!;
+      // The server's own replay rule: one revision per request token.
+      if (!filed.has(request)) filed.set(request, `a-v${filed.size + 2}`);
+      if (lose) { lose = false; return Promise.reject(new TypeError("network")); }
+      return json({ outcome: "done", words: "Sent back. The revision is filed." });
+    }
+    return json(resultOf(call.url.split("?")[0]!.slice(3), { request: reads().length }));
+  };
+  await mount(homeOf([], ["a", "b"]));
+  await settle();
+  await typeNote("Round half-cents up.");
+  await act(async () => { pane().querySelector<HTMLFormElement>("[data-work-send-back]")!.requestSubmit(); });
+  await wait(0); await wait(0); await wait(0);
+  expect(posts()).toHaveLength(1);
+  const first = new URLSearchParams(posts()[0]!.body).get("request");
+  expect(pane().querySelector("[data-work-said-act=unconfirmed]")).not.toBeNull();
+  // Away to B and back to A: the panel remounts, and still offers no new Send back, only the same request again.
+  await act(async () => document.querySelector<HTMLElement>('[data-row="b"]')!.click());
+  await settle();
+  await act(async () => document.querySelector<HTMLElement>('[data-row="a"]')!.click());
+  await settle();
+  expect(pane().querySelector("[data-work-send-back]")).toBeNull();
+  expect(acceptButton()).toBeNull();
+  const again = pane().querySelector<HTMLButtonElement>("[data-work-replay]")!;
+  expect(again.textContent).toBe("Send it again");
+  const click = (trusted: boolean) => Object.defineProperty(new MouseEvent("click", { bubbles: true, cancelable: true }), "isTrusted", { value: trusted });
+  await act(async () => { again.dispatchEvent(click(true)); });
+  await wait(0); await wait(0);
+  expect(posts()).toHaveLength(2);
+  expect([...new URLSearchParams(posts()[1]!.body)]).toEqual([...new URLSearchParams(posts()[0]!.body)]);
+  expect(new URLSearchParams(posts()[1]!.body).get("request")).toBe(first);
+  expect(filed.size).toBe(1);
+  expect(said()).toBe("Task a Sent back. The revision is filed.");
+});
+
+test("a Send back still on its way when the person leaves and comes back: no second press until its answer is in", async () => {
+  let release: (response: Response) => void = () => undefined;
+  answer = call => call.method === "POST" ? new Promise<Response>(done => { release = done; }) : json(resultOf(call.url.split("?")[0]!.slice(3)));
+  await mount(homeOf([], ["a", "b"]));
+  await settle();
+  await typeNote("Round half-cents up.");
+  await act(async () => { pane().querySelector<HTMLFormElement>("[data-work-send-back]")!.requestSubmit(); });
+  await wait(0); await wait(0);
+  await act(async () => document.querySelector<HTMLElement>('[data-row="b"]')!.click());
+  await settle();
+  await act(async () => document.querySelector<HTMLElement>('[data-row="a"]')!.click());
+  await settle();
+  expect(pane().querySelector("[data-work-said-act=in-flight]")?.textContent).toBe("Sending back… Wait for the answer.");
+  expect(pane().querySelector("[data-work-send-back]")).toBeNull();
+  await act(async () => { release(json({ outcome: "refused", words: "this result already has a newer version" }, 409)); });
+  await wait(0); await wait(0);
+  // Answered: the panel takes presses again, for the terms it reads now.
+  expect(pane().querySelector("[data-work-said-act=in-flight]")).toBeNull();
+  expect(posts()).toHaveLength(1);
 });

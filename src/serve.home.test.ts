@@ -120,7 +120,7 @@ test("each of Work's views is the list its segment opens (Queued included), and 
     const others = work.needs.flatMap(one => one.rows).filter(row => row.id.includes(":")).length;
     expect(work.needsCount - others).toBe(work.list.needsYou);
     // A result to review opens the one result view (task-link.ts): its task page at that exact run, never the old page.
-    const reviews = work.needs.find(one => one.key === "review")?.rows ?? [];
+    const reviews = work.list.rows.flatMap(row => row.need?.group === "review" ? [row.need] : []);
     expect(reviews.length).toBeGreaterThan(0);
     for (const row of reviews) expect(row.action?.href, row.id).toMatch(/^\/t\/[^?#]+\?tab=result&run=[1-9][0-9]*$/);
     for (const tab of work.list.tabs.filter(one => ["needs-you", "running", "queued", "completed"].includes(one.key ?? ""))) {

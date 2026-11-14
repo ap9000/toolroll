@@ -91,5 +91,9 @@ export function workListOf(workspace: import('../src/browser-workspace.js').Brow
 export function workNeedsRowsOf(workspace: import('../src/browser-workspace.js').BrowserWorkspace): import('../src/browser-workspace.js').BrowserHomeRow[] {
   const view = workspace.view;
   if (view?.kind !== 'work') throw new Error(`not Work: ${view?.kind ?? 'no view'}`);
-  return view.needs.flatMap(group => group.rows);
+  // The tasks' rows ride the list's own rows (`need`); the groups hold the asks that are no task's row.
+  const order = { decide: 0, review: 1, unblock: 2 } as const;
+  const tasks = view.list.rows.flatMap(row => row.need === undefined ? [] : [row.need]);
+  return view.needs.flatMap(group => [...tasks.filter(row => row.group === group.key), ...group.rows]).concat(tasks.filter(row => row.group === undefined))
+    .sort((a, b) => (order[a.group ?? 'unblock'] - order[b.group ?? 'unblock']));
 }

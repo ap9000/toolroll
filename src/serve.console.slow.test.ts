@@ -22,7 +22,7 @@ import { createDecisionServer } from "./serve.js";
 import { parseExecutionPlanDocument, milestonesOf } from "./plan.js";
 import { resolveAgentAuthority } from "./agentconfig.js";
 import { Window } from "happy-dom";
-import { presented, T0, renderedHtmlOf, workspaceOf, workListOf, revisionIdOf, plannerKeptTerms, revisionFormOf, sealScopeFixture } from "../test/serve-kit.js";
+import { presented, T0, renderedHtmlOf, workspaceOf, workListOf, workNeedsRowsOf, revisionIdOf, plannerKeptTerms, revisionFormOf, sealScopeFixture } from "../test/serve-kit.js";
 import { handoffBytes } from "../test/handoff-fixture.js";
 
 /** Work's rows (its Needs you, then its list) and a Board column, as the page's own snapshot carries them (Work and the
@@ -30,7 +30,7 @@ import { handoffBytes } from "../test/handoff-fixture.js";
 const homeRowsOf = (html: string): (BrowserHomeRow | BrowserTaskRow)[] => {
   const workspace = workspaceOf(html);
   const view = workspace.view;
-  const needs = view?.kind === "work" ? view.needs.flatMap(group => group.rows) : [];
+  const needs = view?.kind === "work" ? workNeedsRowsOf(workspace) : [];
   return [...needs, ...workListOf(workspace).rows.filter(row => !needs.some(one => one.id === row.id))];
 };
 const homeRowOf = (html: string, id: string) => homeRowsOf(html).find(one => one.id === id) ?? null;

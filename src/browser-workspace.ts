@@ -195,6 +195,9 @@ export type BrowserTaskRow = {
   action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
   /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
   tidy?: { action: string; label: 'Archive' | 'Restore'; returnTo: string } | null;
+  /** Work (S2a): what this waiting row asks, as Home said it (its ask, line, one act, an agent's question), on the very
+   * row the list sends: Needs you is the page's own rows, never a second copy. */
+  need?: BrowserHomeRow;
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;
@@ -899,6 +902,8 @@ export type BrowserHomeView = {
 export type BrowserWorkView = {
   kind: 'work';
   list: BrowserTasksView;
+  /** Each group's exact count, and the rows of it that are no task of the list (a held release, a flow card, a setup
+   * step); the group's task rows are the list's own rows that carry `need`. */
   needs: { key: WorkNeedsGroup; label: string; count: number; rows: BrowserHomeRow[] }[];
   /** Everything that waits on this person in view: tasks and the asks that aren't tasks. */
   needsCount: number;

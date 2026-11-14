@@ -116,9 +116,13 @@ const REST: readonly { key: string; label: string; ranks: readonly number[]; act
  * the list's own rows. */
 export function sectionsOf(view: BrowserWorkView, gone: ReadonlySet<string>): Section[] {
   const current = view.list.tabs.find(tab => tab.active)?.key ?? "all";
+  // A group's rows: the list's own waiting rows (each carrying what it asks), then the asks that are no task's row.
+  const waitingRows = view.list.rows.flatMap(row => row.need === undefined ? [] : [row.need]);
+  const groupOfRow = (row: BrowserHomeRow): string => row.group ?? (row.ask === "review" ? "review" : row.ask === "wrong" || row.ask === "setup" || row.ask === "other" ? "unblock" : "decide");
   const needs: Section[] = view.needs.map(group => {
-    const items = group.rows.filter(row => !gone.has(row.id)).map(homeItem);
-    return { key: group.key, label: group.label, count: Math.max(0, group.count - (group.rows.length - items.length)), items };
+    const all = [...waitingRows.filter(row => groupOfRow(row) === group.key), ...group.rows];
+    const items = all.filter(row => !gone.has(row.id)).map(homeItem);
+    return { key: group.key, label: group.label, count: Math.max(0, group.count - (all.length - items.length)), items };
   }).filter(section => section.items.length > 0 || section.count > 0);
   if (current === "needs-you") return needs;
   if (current !== "all") {
@@ -126,9 +130,9 @@ export function sectionsOf(view: BrowserWorkView, gone: ReadonlySet<string>): Se
     return rows.length === 0 ? [] : [{ key: current, label: view.list.tabs.find(tab => tab.active)?.label ?? "", count: rows.length,
       items: rows.map(row => taskItem(row, row.ask === "decide" ? "Approve" : row.ask === "review" ? "Review" : REST.find(one => one.ranks.includes(row.rank))?.act ?? "Open")) }];
   }
-  // A row that waits on you is listed once, under its Needs-you group (past the rows listed there, its "more" link).
-  const waiting = new Set(view.needs.flatMap(group => group.rows.map(row => row.id)));
-  const rows = view.list.rows.filter(row => !gone.has(row.id) && !waiting.has(row.id) && row.ask === null);
+  // A row that waits on you is listed once, under its Needs-you group.
+  const grouped = new Set(view.needs.flatMap(group => group.rows.map(row => row.id)));
+  const rows = view.list.rows.filter(row => !gone.has(row.id) && row.need === undefined && !grouped.has(row.id) && row.ask === null);
   return [...needs, ...REST.map(one => {
     const items = rows.filter(row => one.ranks.includes(row.rank)).map(row => taskItem(row, one.act));
     return { key: one.key, label: one.label, count: items.length, items };
@@ -451,8 +455,9 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
   const [said, setSaid] = useState<{ tone: "refused" | "words"; text: string } | null>(null);
   const [changed, setChanged] = useState(false);
   const [note, setNote] = useState("");
-  // A press whose answer was lost and whose outcome the task doesn't show: nothing more is pressed here.
-  const [unconfirmed, setUnconfirmed] = useState(false);
+  // A press still on its way, or whose answer was lost: kept for this task outside the panel (pendingActs), so leaving and
+  // coming back never offers a second press while the first may have been kept.
+  const pending = usePendingAct(item.id);
   const pressing = useRef(false);
   const alive = useRef(true);
   const holdTimer = useRef<number | undefined>(undefined);
@@ -463,14 +468,22 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
     window.clearTimeout(holdTimer.current);
     holdTimer.current = window.setTimeout(() => { armedRef.current = true; setArmed(true); }, REDRAW_HOLD_MS);
   };
-  useEffect(() => { redraw(resultSnapshotOf(workspace)); }, [workspace]);
+  useEffect(() => {
+    redraw(resultSnapshotOf(workspace));
+    // A lost Accept this read shows kept (that run's result, complete) is done, whichever panel sent it.
+    const held = pendingAct(item.id);
+    if (held !== null && held.state === "unconfirmed" && held.act === "accept" && acceptedHere(workspace, { taskId: held.task, run: held.run })) {
+      setPendingAct(item.id, null);
+      onDone(item.id, "Accepted. The task is complete.");
+    }
+  }, [workspace]);
   useEffect(() => () => { alive.current = false; window.clearTimeout(holdTimer.current); }, []);
   // Work never shows a password field: one found takes the acts off.
   useLayoutEffect(() => { if (pane.current?.querySelector('input[type="password"]') && pinned.current !== null) { pinned.current = null; setSnapshot(null); } });
 
   const press = async (kind: "accept" | "send") => {
     const shown = pinned.current;
-    if (pressing.current || !armedRef.current || shown === null || (kind === "accept" ? shown.accept === null : shown.sendBack === null || note.trim() === "")) return;
+    if (pressing.current || pendingAct(item.id) !== null || !armedRef.current || shown === null || (kind === "accept" ? shown.accept === null : shown.sendBack === null || note.trim() === "")) return;
     pressing.current = true;
     setBusy(kind === "accept" ? "accepting" : "sending"); setSaid(null);
     const finish = () => { pressing.current = false; if (alive.current) setBusy(null); };
@@ -493,7 +506,12 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
       body.set("intent", "revise"); body.set("batch", shown.sendBack!.batch); body.set("source", shown.sendBack!.source);
       body.set("request", latest!.sendBack!.request); body.set("note", note.trim());
     }
-    const answer = await postAct(kind === "accept" ? shown.accept!.action : shown.sendBack!.action, body);
+    const action = kind === "accept" ? shown.accept!.action : shown.sendBack!.action;
+    // The act's identity is kept outside this panel until its answer is in (or for good, when the answer is lost).
+    const identity: PendingAct = { task: item.id, run: shown.run, act: kind, action, fields: [...body].filter(([key]) => key !== "csrf"), state: "in-flight" };
+    setPendingAct(item.id, identity);
+    const answer = await postAct(action, body);
+    setPendingAct(item.id, answer.kind === "lost" ? { ...identity, state: "unconfirmed" } : null);
     // The selection moved while the answer was on its way: this panel is gone. Say what became of it, for its own task.
     if (!alive.current) {
       onSettled(item.title, answer.kind === "answer" ? answer.outcome === "refused" ? `${sentence(answer.words)} Nothing changed.` : sentence(answer.words)
@@ -514,16 +532,39 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
     setBusy("checking");
     const after = await again();
     if (after === undefined || !alive.current) { pressing.current = false; return; }
-    if (kind === "accept" && acceptedHere(after, shown)) { onDone(item.id, "Accepted. The task is complete."); return; }
-    setUnconfirmed(true);
-    setSaid({ tone: "words", text: "We couldn’t confirm this. Check the task before doing anything else." });
-    pressing.current = true;
-    setBusy(null);
+    if (kind === "accept" && acceptedHere(after, shown)) { setPendingAct(item.id, null); onDone(item.id, "Accepted. The task is complete."); return; }
+    finish();
   };
 
-  if (unconfirmed) return <div className="so-work-decide" ref={pane} data-work-decide="unconfirmed">
-    <p className="so-home-said" role="status" data-work-said-act="unconfirmed">{said?.text}</p>
-    <div className="k-acts"><KLinkButton variant="primary" label="Check the task" href={item.href} data-full-load="" data-work-check="" /></div>
+  /** Send it again: the very same request (its token, note, notes and diff), so the server's own replay rule answers
+   * with the revision the first one filed, if it was filed; never a second one. A person's press only. */
+  const replay = async () => {
+    const held = pendingAct(item.id);
+    if (pressing.current || held === null || held.state !== "unconfirmed" || held.act !== "send") return;
+    pressing.current = true;
+    setBusy("sending"); setSaid(null);
+    setPendingAct(item.id, { ...held, state: "in-flight" });
+    const answer = await postAct(held.action, new URLSearchParams([["csrf", csrf], ...held.fields]));
+    setPendingAct(item.id, answer.kind === "lost" ? { ...held, state: "unconfirmed" } : null);
+    if (!alive.current) { pressing.current = false; return; }
+    pressing.current = false; setBusy(null);
+    if (answer.kind === "elsewhere") { window.location.assign(item.href); return; }
+    if (answer.kind === "answer" && answer.outcome === "done") { onDone(item.id, sentence(answer.words)); return; }
+    if (answer.kind === "answer") { setSaid({ tone: "refused", text: `${sentence(answer.words)} Nothing changed.` }); void again(); }
+  };
+
+  if (pending !== null && !pressing.current && pending.state === "in-flight") return <div className="so-work-decide" ref={pane} data-work-decide="in-flight">
+    <p className="so-home-said" role="status" data-work-said-act="in-flight">{pending.act === "accept" ? "Accepting…" : "Sending back…"} Wait for the answer.</p>
+  </div>;
+  if (pending !== null && pending.state === "unconfirmed") return <div className="so-work-decide" ref={pane} data-work-decide="unconfirmed">
+    <p className="so-home-said" role="status" data-work-said-act="unconfirmed">We couldn’t confirm this. Check the task before doing anything else.</p>
+    {said && <p className="so-home-said is-refused" role="status">{said.text}</p>}
+    <div className="k-acts">
+      {pending.act === "send" && <KButton variant="primary" label="Send it again" busy={busy === "sending" ? "Sending…" : false} data-work-replay=""
+        onClick={event => { if (pressedByPerson(event)) void replay(); }} />}
+      <KLinkButton variant={pending.act === "send" ? "outline" : "primary"} label="Check the task" href={item.href} data-full-load="" data-work-check=""
+        onClick={() => setPendingAct(item.id, null)} />
+    </div>
   </div>;
   if (snapshot === null) return <div className="k-acts" ref={pane}><KLinkButton variant="primary" label="Review the result" href={item.href} data-full-load="" data-work-review="" /></div>;
   return <div className="so-work-decide" ref={pane} data-work-decide={snapshot.accept !== null ? "accept" : "send-back"}>
@@ -546,8 +587,54 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
 
 /** Whether a read shows this very accept kept: the pinned run's result is the task's current one, and the task is
  * complete. A permission change (no read), a newer result or acts that merely went away are not that. */
-export function acceptedHere(workspace: BrowserWorkspace | null, shown: ResultSnapshot): boolean {
+export function acceptedHere(workspace: BrowserWorkspace | null, shown: Pick<ResultSnapshot, "taskId" | "run">): boolean {
   const view = taskViewOf(workspace);
   if (view === null || view.id !== shown.taskId || view.result?.current !== true || view.historical != null) return false;
   return view.result.selected.build === shown.run && view.status?.status.headline === "Complete";
+}
+
+/** An act sent from Work's panel, by its task: the run, the act, the route and exactly the fields it posted (its request
+ * token among them; never the form token). `in-flight` until its answer is in; `unconfirmed` for good when the answer
+ * was lost, until the person checks the task or the act is resolved (a replay of the same request, or a read that shows
+ * it kept). Kept for the page's life, and in this tab's storage across a reload. */
+export type PendingAct = { task: string; run: number; act: "accept" | "send"; action: string; fields: [string, string][]; state: "in-flight" | "unconfirmed" };
+const PENDING_KEY = "toolroll.work.pending";
+const pendingActs = new Map<string, PendingAct>();
+const pendingListeners = new Set<() => void>();
+let pendingLoaded = false;
+function loadPending(): void {
+  if (pendingLoaded) return;
+  pendingLoaded = true;
+  try {
+    const raw: unknown = JSON.parse(window.sessionStorage.getItem(PENDING_KEY) ?? "[]");
+    if (!Array.isArray(raw)) return;
+    for (const one of raw as PendingAct[]) {
+      if (one === null || typeof one !== "object" || typeof one.task !== "string" || !Number.isSafeInteger(one.run) || (one.act !== "accept" && one.act !== "send")
+        || typeof one.action !== "string" || !one.action.startsWith("/") || !Array.isArray(one.fields)) continue;
+      // Stored, no answer can still arrive in this document: whatever it was, it is unconfirmed now.
+      pendingActs.set(one.task, { ...one, state: "unconfirmed" });
+    }
+  } catch { /* nothing kept: this document's own map is all there is */ }
+}
+/** The act this tab has pending for a task, or null. */
+export function pendingAct(task: string): PendingAct | null {
+  loadPending();
+  return pendingActs.get(task) ?? null;
+}
+export function setPendingAct(task: string, act: PendingAct | null): void {
+  loadPending();
+  if (act === null) pendingActs.delete(task); else pendingActs.set(task, act);
+  try { window.sessionStorage.setItem(PENDING_KEY, JSON.stringify([...pendingActs.values()])); } catch { /* kept in memory, for this document */ }
+  for (const listener of [...pendingListeners]) listener();
+}
+/** TESTS ONLY: forget every pending act (a test's document is not a new one). */
+export function forgetPendingActs(): void { pendingActs.clear(); pendingLoaded = false; try { window.sessionStorage.removeItem(PENDING_KEY); } catch { /* none */ } }
+function usePendingAct(task: string): PendingAct | null {
+  const [, render] = useState(0);
+  useEffect(() => {
+    const listener = () => render(n => n + 1);
+    pendingListeners.add(listener);
+    return () => { pendingListeners.delete(listener); };
+  }, []);
+  return pendingAct(task);
 }
