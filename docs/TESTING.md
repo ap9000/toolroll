@@ -219,12 +219,14 @@ requests that touch the server, the browser app, the work index or the store, an
 the pull request raises, and it uploads the report as the `wire-budgets` artifact. It is advisory: not one of
 `REQUIRED_PR_CHECKS`, and the release verdict leaves it out (`ADVISORY_PR_CHECKS`).
 
-What each account sees stays byte for byte the same when reads get cheaper. `src/fast-reads.slow.test.ts` renders, on
-a smaller wire world, Home, Tasks (list, second page, failed filter, completed, archived, one project, board), two
-result pages, a task page, Projects and Chat for four browser sessions (the operator, an approver on every project, an
-approver on two, a viewer on one; some answers are refusals, held too), sequentially at a fixed clock, and holds every
-answer to the digest main sent (`src/fast-reads.golden.json`, written from main's code with `FAST_READS_WRITE_GOLDEN=1`;
-rewrite it only for a change meant to alter what people see; `FAST_READS_OUT=<folder>` keeps any body that changed).
+What each account sees is exactly what the plain reads give. `src/fast-reads.slow.test.ts` renders, on a smaller wire
+world, Home, Tasks (list, second page, failed filter, completed, archived, one project, board), two result pages, a task
+page, Projects and Chat for four browser sessions (the operator, an approver on every project, an approver on two, a
+viewer on one; some answers are refusals, compared too), sequentially at a fixed clock, and serves each read twice on
+the same code: with the request's work reads and without them (the plain path, with the workspace revision moved
+before each read so no per-revision cache answers it). The bodies must match byte for byte; nothing is frozen, so a UI
+change needs no golden. The test also proves the plain side opened no work reads, and that a divergence seeded on the
+fast side alone is caught. `FAST_READS_OUT=<folder>` keeps both bodies of a pair that differs.
 `src/fast-reads-boundaries.slow.test.ts` serves each read with and without the request's work reads and requires the
 same answer for an API token, a token that expires between reads, a local owner, an account narrowed then revoked, an
 account deleted outright, overlapping requests, another process's commit, results' check lines and the live summary
