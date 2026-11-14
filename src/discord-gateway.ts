@@ -24,6 +24,9 @@ export const DISCORD_GATEWAY_BOT = "https://discord.com/api/v10/gateway/bot";
 const MAX_BUFFERED = 1024 * 1024;
 /** A connection that has stayed up this long resets the backoff and invalid-session counts. */
 const STABLE_MS = 60_000;
+/** More heartbeat requests than this in HEARTBEAT_FLOOD_MS is not Discord asking: close the connection. */
+const HEARTBEAT_FLOOD = 20;
+const HEARTBEAT_FLOOD_MS = 10_000;
 
 /** Close codes after which reconnecting would only repeat the refusal. */
 const FATAL: Record<number, string> = {
@@ -98,7 +101,8 @@ export class DiscordGateway extends EventEmitter {
   #attempt = 0;
   #invalid = 0;
   #hello = false;
-  #lastBeat = 0;
+  #requests: number[] = [];
+  #stuck = false;
   #done = false;
   #timers = new Set<NodeJS.Timeout>();
   #beat: NodeJS.Timeout | null = null;
@@ -229,6 +233,9 @@ export class DiscordGateway extends EventEmitter {
     this.#socket = socket;
     this.#acked = true;
     this.#hello = false;
+    this.#requests = [];
+    // A new connection replays (on resume) from the stored sequence, so a dispatch that failed is delivered again.
+    this.#stuck = false;
     this.#later(() => {
       if (this.#socket === socket && !this.#hello) this.#drop(4000);
     }, this.#options.helloTimeoutMs);
@@ -240,13 +247,17 @@ export class DiscordGateway extends EventEmitter {
       } catch {
         return this.#drop(4000);
       }
-      if (packet === null || typeof packet !== "object" || typeof packet.op !== "number") return this.#drop(4000);
-      // Server data is untrusted: anything malformed (or a listener that throws) closes and reconnects, never throws.
-      try {
-        this.#packet(socket, packet, resume);
-      } catch {
-        if (this.#socket === socket) this.#drop(4000);
-      }
+      // Server data is untrusted: a malformed frame closes and reconnects. Each field is type-checked where it is
+      // read, without coercion; listener (application) failures are not protocol errors (see #deliver).
+      if (
+        packet === null ||
+        typeof packet !== "object" ||
+        typeof packet.op !== "number" ||
+        (packet.s !== null && packet.s !== undefined && typeof packet.s !== "number") ||
+        (packet.t !== null && packet.t !== undefined && typeof packet.t !== "string")
+      )
+        return this.#drop(4000);
+      this.#packet(socket, packet, resume);
     });
     // A failed handshake or a dropped socket ends in "close"; the error itself carries nothing to keep.
     socket.on("error", () => {});
@@ -275,7 +286,6 @@ export class DiscordGateway extends EventEmitter {
           // No ACK since the last beat: the connection is a zombie; close it and resume.
           if (!this.#acked) return this.#drop(4000);
           this.#acked = false;
-          this.#lastBeat = Date.now();
           this.#send(socket, { op: 1, d: this.#seq });
         };
         // The first beat after a random part of the interval, then every interval from there: each beat always gets a
@@ -292,12 +302,15 @@ export class DiscordGateway extends EventEmitter {
       case 11:
         this.#acked = true;
         return;
-      case 1:
-        // Answer a heartbeat request at once, but at most once a second, however often it is asked.
-        if (Date.now() - this.#lastBeat < 1000) return;
-        this.#lastBeat = Date.now();
+      case 1: {
+        // Discord expects every heartbeat request answered at once. A flood is not Discord asking: close, saying why.
+        const now = Date.now();
+        this.#requests = this.#requests.filter((at) => now - at < HEARTBEAT_FLOOD_MS);
+        this.#requests.push(now);
+        if (this.#requests.length > HEARTBEAT_FLOOD) return this.#drop(4000, undefined, "heartbeat request flood");
         this.#send(socket, { op: 1, d: this.#seq });
         return;
+      }
       case 7:
         return this.#drop(4000);
       case 9: {
@@ -330,8 +343,11 @@ export class DiscordGateway extends EventEmitter {
   }
 
   #dispatch(packet: Packet): void {
-    if (typeof packet.s === "number" && Number.isSafeInteger(packet.s)) this.#seq = packet.s;
-    if (typeof packet.t !== "string") return;
+    const seq = typeof packet.s === "number" && Number.isSafeInteger(packet.s) ? packet.s : null;
+    if (typeof packet.t !== "string") {
+      if (seq !== null && !this.#stuck) this.#seq = seq;
+      return;
+    }
     if (packet.t === "READY") {
       const d = record(packet.d);
       this.#session = typeof d.session_id === "string" && d.session_id.length <= 200 ? d.session_id : null;
@@ -343,14 +359,38 @@ export class DiscordGateway extends EventEmitter {
         this.#attempt = 0;
         this.#invalid = 0;
       }, STABLE_MS);
-    this.emit("raw", { op: 0, t: packet.t, s: packet.s, d: packet.d });
+    const delivered = this.#deliver("raw", { op: 0, t: packet.t, s: packet.s, d: packet.d });
+    // The stored sequence is what a RESUME asks Discord to replay after. It stops at the last dispatch before one a
+    // listener failed on, until the next connection: a resume then replays the failed event (and the ones after it;
+    // the follower's saved-event receipts make those repeats no-ops) instead of skipping it. Advancing past it would
+    // drop it for good. The connection stays up, and the failure is reported as an "error".
+    if (!delivered) this.#stuck = true;
+    else if (seq !== null && !this.#stuck) this.#seq = seq;
     if (this.#done) return;
     if (packet.t === "READY") {
-      this.emit("shardReady", 0);
+      this.#deliver("shardReady", 0);
       this.#settle();
     } else if (packet.t === "RESUMED") {
-      this.emit("shardResume", 0);
+      this.#deliver("shardResume", 0);
       this.#settle();
+    }
+  }
+
+  /** Emits to the application's listeners; one that throws is reported as an "error" (with the exception as its
+   * cause), never turned into a reconnect or thrown into the socket's handler. */
+  #deliver(event: string, ...args: unknown[]): boolean {
+    try {
+      this.emit(event, ...args);
+      return true;
+    } catch (cause) {
+      const error = new DiscordGatewayError("An incoming Discord event could not be handled. It is delivered again after the next reconnect.", null, false);
+      (error as Error & { cause?: unknown }).cause = cause;
+      try {
+        if (this.listenerCount("error") > 0) this.emit("error", error);
+      } catch {
+        /* an error listener that throws has nothing left to report to */
+      }
+      return false;
     }
   }
 
@@ -361,12 +401,12 @@ export class DiscordGateway extends EventEmitter {
   }
 
   /** Closes this socket with a non-1000 code (the session stays resumable) and reconnects. */
-  #drop(code: number, delay?: number): void {
+  #drop(code: number, delay?: number, reason?: string): void {
     const socket = this.#socket;
     this.#socket = null;
     this.#clear();
     if (socket) {
-      if (socket.readyState === WebSocket.OPEN) socket.close(code);
+      if (socket.readyState === WebSocket.OPEN) socket.close(code, reason);
       else socket.terminate();
       const force = setTimeout(() => socket.terminate(), 2000);
       force.unref();

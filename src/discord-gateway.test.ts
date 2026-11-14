@@ -307,16 +307,63 @@ describe("Discord gateway client: hostile or broken servers (Codex review round 
     expect(beats()[1]! - beats()[0]!).toBeGreaterThanOrEqual(370);
   });
 
-  test("a flood of heartbeat requests gets at most one answer a second", async () => {
-    const { fake, url, client } = await setup();
+  test("every heartbeat request is answered at once, even right after a scheduled beat; a flood closes", async () => {
+    const { fake, url, client } = await setup({ jitter: () => 0 });
     fake.onPayload = (socket, payload) => {
       if (payload.op === 2) fake.ready_(socket, url);
+      if (payload.op === 1) socket.send(JSON.stringify({ op: 11, d: null, s: null, t: null }));
     };
     await client.login(TOKEN);
     const c = fake.connections[0]!;
-    for (let i = 0; i < 50; i++) c.socket.send(JSON.stringify({ op: 1, d: null, s: null, t: null }));
-    await wait(200);
-    expect(c.sent.filter((p) => p.op === 1).length).toBeLessThanOrEqual(1);
+    const beats = () => c.sent.filter((p) => p.op === 1).length;
+    await until(() => beats() === 1); // the scheduled first beat (jitter 0)
+    await wait(100);
+    c.socket.send(JSON.stringify({ op: 1, d: null, s: null, t: null }));
+    await until(() => beats() === 2, 500);
+    await wait(100);
+    expect(beats()).toBe(2);
+    // 21 requests inside ten seconds is not Discord asking: the client closes with a reason and reconnects.
+    const reasons: string[] = [];
+    c.socket.on("close", (_code, reason) => reasons.push(String(reason)));
+    for (let i = 0; i < 25; i++) c.socket.send(JSON.stringify({ op: 1, d: null, s: null, t: null }));
+    await until(() => c.closed !== undefined);
+    expect(c.closed).toBe(4000);
+    expect(reasons).toEqual(["heartbeat request flood"]);
+    expect(beats()).toBeLessThanOrEqual(2 + 20);
+    await until(() => fake.connections.length === 2);
+  });
+
+  test("a listener that throws is reported as an error, keeps the connection, and its event is replayed on resume", async () => {
+    const { fake, url, client, raws } = await setup();
+    const errors: Error[] = [];
+    client.on("error", (e: Error) => errors.push(e));
+    let failOnce = true;
+    client.on("raw", (packet: { s: number }) => {
+      if (packet.s === 2 && failOnce) {
+        failOnce = false;
+        throw new Error("listener bug");
+      }
+    });
+    fake.onPayload = (socket, payload) => {
+      if (payload.op === 2) {
+        fake.ready_(socket, url, 1);
+        fake.dispatch(socket, "MESSAGE_CREATE", 2, { id: "2" });
+        fake.dispatch(socket, "MESSAGE_CREATE", 3, { id: "3" });
+      }
+      if (payload.op === 6) fake.dispatch(socket, "RESUMED", 4, {});
+    };
+    await client.login(TOKEN);
+    await until(() => raws.length === 3);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(DiscordGatewayError);
+    expect((errors[0] as Error & { cause?: Error }).cause?.message).toBe("listener bug");
+    await wait(150);
+    expect(fake.connections).toHaveLength(1);
+    expect(fake.connections[0]!.closed).toBeUndefined();
+    // The next reconnect resumes after seq 1, so Discord replays 2 (and 3) instead of skipping the failed event.
+    fake.connections[0]!.socket.send(JSON.stringify({ op: 7, d: null, s: null, t: null }));
+    await until(() => fake.connections.length === 2 && fake.connections[1]!.sent.length > 0);
+    expect(fake.connections[1]!.sent[0]).toEqual({ op: 6, d: { token: TOKEN, session_id: "session-1", seq: 1 } });
   });
 
   test("a peer that stops reading (a full send buffer) is closed, not queued to", async () => {
