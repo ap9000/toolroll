@@ -1,3 +1,5 @@
+import { taskLinkOf } from "./task-link.js";
+
 /** Fixed destinations only. A model cannot supply a URL or an executable action.
  * These open the existing authenticated controls, never grant their authority.
  */
@@ -36,22 +38,22 @@ export type ChatControl = keyof typeof CHAT_CONTROLS;
 export function isChatControl(value: unknown): value is ChatControl {
   return typeof value === "string" && Object.hasOwn(CHAT_CONTROLS, value);
 }
-/** The exact recorded result of one execution, opened where the console's
- * own result panel lives: the task lens names the execution, the run names
- * the result, and the tab names what to read first. Never the latest run. */
+/** The exact recorded result of one execution, opened on its task page (task-link.ts, the one result view): the task
+ * names the execution, the run names the result, and the tab names what to read first. Never the latest run. */
 export type ChatResultTab = "summary" | "checks" | "changes";
 export function chatResultHref(task: string, run: number, tab: ChatResultTab = "summary"): string {
-  return `/chat?task=${encodeURIComponent(task)}&result=${run}${tab === "summary" ? "" : `&tab=${tab}`}`;
+  return taskLinkOf({ task, run, section: tab });
 }
 export function chatControlHref(control: ChatControl, task: string, run?: unknown, project?: unknown): string {
   const entry = CHAT_CONTROLS[control];
   if (control === "skills" || control === "tools") return CHAT_CONTROLS[control].href + (typeof project === "string" && project ? "?repo=" + encodeURIComponent(project) : "");
   if ("href" in entry) return entry.href;
-  if (control === "acceptance") return `/review?result=${encodeURIComponent(task)}&run=${Number.isSafeInteger(run) && Number(run) > 0 ? run : 0}&tab=checks`;
+  // The acceptance: the result's checks, at its decision (the one address names the place, so it reads "Inspect result").
+  if (control === "acceptance") return taskLinkOf({ task, run: Number.isSafeInteger(run) && Number(run) > 0 ? Number(run) : null, section: "checks", anchor: "result-decision" });
   if (control === "result" && Number.isSafeInteger(run) && Number(run) > 0) return chatResultHref(task, Number(run));
   const base = "/chat?task=" + encodeURIComponent(task);
   // Task details owns cancel, retry, publication and other dedicated ceremonies.
-  if (control === "cancel" || control === "recovery" || control === "publish") return "/t/" + encodeURIComponent(task);
-  if (control === "findings") return `/t/${encodeURIComponent(task)}#findings`;
+  if (control === "cancel" || control === "recovery" || control === "publish") return taskLinkOf({ task });
+  if (control === "findings") return taskLinkOf({ task, anchor: "findings" });
   return base + (control === "approval" || control === "planning" ? "#task-chat-action" : "");
 }

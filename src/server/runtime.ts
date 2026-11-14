@@ -222,4 +222,6 @@ export interface ServerRuntime {
  * selected result (its no-script HTML and its view), whether it is the task's current one. Refusals re-render without. */
 export type TaskPageExtras = { tab?: BrowserTaskTab; result?: { html: Html; selected: NonNullable<BrowserResultView["selected"]>; current: boolean } | null;
   /** The result runs the attempt picker may offer (the Result tab would show each); absent: every finished result run. */
-  admissible?: ReadonlySet<number> };
+  admissible?: ReadonlySet<number>;
+  /** The task's Record section (`?tab=record`): the evidence record, read only when the address asked for it. */
+  record?: Html | null };

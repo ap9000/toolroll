@@ -194,9 +194,9 @@ export function chatText(text: string, tasks: readonly (string | null | undefine
 /** The one button a plain fact may carry: its label names where its machine-minted console path goes; nothing in
  * it comes from the fact's text. */
 export function factLinkLabel(path: string): string {
-  if (/^\/review\?result=[^&]+&run=\d+&tab=checks$/.test(path)) return "Inspect result";
+  if (/^\/review\?result=[^&]+&run=\d+&tab=checks$/.test(path) || /^\/t\/[^?#]+\?tab=result&run=\d+&section=checks#result-decision$/.test(path)) return "Inspect result";
   if (/^\/t\/[^?#]+#merge$/.test(path)) return "Merge";
-  if (/^\/chat\?task=[^&]+&result=/.test(path)) return "Open result";
+  if (/^\/chat\?task=[^&]+&result=/.test(path) || /^\/t\/[^?#]+\?tab=result\b/.test(path)) return "Open result";
   if (/^\/(?:chat\?task=|t\/)/.test(path)) return "Open task";
   if (/^\/d\//.test(path)) return "Open decision";
   return "Open console";

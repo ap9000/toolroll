@@ -98,7 +98,8 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     // never carries free text.
     for (const row of life()) {
       const id = encodeURIComponent(row.taskId ?? "");
-      expect(row.link).toMatch(new RegExp(`^(?:/chat\\?task=${id}(?:&result=\\d+(?:&tab=(?:checks|changes))?|#task-chat-action)?|/t/${id}|/review\\?result=${id}&run=\\d+&tab=checks)$`));
+      // A result is its task page's Result section (task-link.ts), at its run, its section and the acceptance's place.
+      expect(row.link).toMatch(new RegExp(`^(?:/chat\\?task=${id}(?:#task-chat-action)?|/t/${id}|/t/${id}\\?tab=result&run=\\d+(?:&section=(?:checks|changes))?(?:#result-decision)?)$`));
     }
     store.close();
   });
@@ -218,7 +219,7 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     store.setRunPhase(run, "validating-handoff", now);
     expect(life().slice(-2).map(row => row.subject)).toEqual([`Build #${run}: agent working`, `Build #${run}: checking the handoff`]);
     store.finishRun(run, { outcome: "built", committed: true, now });
-    expect(life().at(-1)).toMatchObject({ kind: "run-finished", subject: `Build #${run} built`, body: "The result is saved locally. It is not yet independently reviewed or published.", link: `/chat?task=alpha-1&result=${run}&tab=changes` });
+    expect(life().at(-1)).toMatchObject({ kind: "run-finished", subject: `Build #${run} built`, body: "The result is saved locally. It is not yet independently reviewed or published.", link: `/t/alpha-1?tab=result&run=${run}&section=changes` });
     // A reason restated on the closed run is the same ending; a leftover phase is history.
     store.finishRun(run, { outcome: "built", reason: "report-delivered (task external-closed)", committed: true, now });
     store.setRunPhase(run, "committing", now);
@@ -255,14 +256,14 @@ describe("lifecycle producers: the shared mutations record each fact once, atomi
     store.saveProofVerdict(run, "attested", ["no check log"], now, [{ id: "c1", state: "pass", how: "manual", evidence: [] }] as never);
     const asked = store.requestReview(run, "alex", now);
     expect(asked).toMatchObject({ ok: true, attempt: 1 });
-    expect(life().at(-1)).toMatchObject({ kind: "review-requested", run, subject: "Independent review requested", body: `Requested by alex for build #${run}'s saved result. A connected reviewer runs it next.`, link: `/chat?task=alpha-1&result=${run}&tab=checks` });
+    expect(life().at(-1)).toMatchObject({ kind: "review-requested", run, subject: "Independent review requested", body: `Requested by alex for build #${run}'s saved result. A connected reviewer runs it next.`, link: `/t/alpha-1?tab=result&run=${run}&section=checks` });
     if (!asked.ok) return;
     const reviewer = store.startRun({ taskRef: ref, leaseId: "l-r", runner: RUNNER, role: "reviewer", parentRun: run, request: asked.id, ...bareLegacy("review", "claude", "sonnet"), now });
     expect(life().at(-1)).toMatchObject({ kind: "run-started", run: reviewer, subject: "Independent review started (attempt 1)", body: `Reviewing the saved result of build #${run}. Running on claude · sonnet.` });
     // The fold lands the verdict before the root reviewer is concluded (ingestReview's order).
     store.saveProofVerdict(run, "verified", [], now, [{ id: "c1", state: "pass", how: "manual", evidence: [] }] as never, "attested");
     store.finishRun(reviewer, { outcome: "no-change", reason: "reviewed — 0 comment(s), 1 judgement(s)", now });
-    expect(life().at(-1)).toMatchObject({ kind: "review-finished", run: reviewer, subject: "Independent review finished: checks verified", body: "Every requirement was checked against the saved result.", link: `/chat?task=alpha-1&result=${run}&tab=checks` });
+    expect(life().at(-1)).toMatchObject({ kind: "review-finished", run: reviewer, subject: "Independent review finished: checks verified", body: "Every requirement was checked against the saved result.", link: `/t/alpha-1?tab=result&run=${run}&section=checks` });
     store.finishRun(reviewer, { outcome: "no-change", reason: "reviewed — restated", now });
     expect(life().filter(row => row.kind === "review-finished")).toHaveLength(1);
   });
@@ -380,7 +381,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(edits.at(-1)?.params["text"]).toContain("○ Project checks · Didn't run");
     expect(edits.at(-1)?.params["text"]).toContain("○ Pull request · None");
     expect(edits.at(-1)?.params["text"]).not.toMatch(/Review|reviewer/);
-    expect(script.buttons(edits.at(-1)!)).toEqual([{ text: "Open result", url: `${ORIGIN}/chat?task=clear-acceptance&result=${run}` }]);
+    expect(script.buttons(edits.at(-1)!)).toEqual([{ text: "Open result", url: `${ORIGIN}/t/clear-acceptance?tab=result&run=${run}` }]);
     expect(store.telegramMessageBindings(store.liveTelegramBinding(BOT)!, "100")).toEqual([{ taskId: "clear-acceptance", taskRef: ref, run, project: ALPHA }]);
     expect(receipts().filter(one => one.run !== null).every(one => one.deliveredAt !== null)).toBe(true);
     expect(store.proofAcceptance(run)).toBeNull();
@@ -599,7 +600,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     sealVerificationReceipt(store, dir, run, "a".repeat(40), store.liveVerifyCommand(ALPHA)!, { configured: true, ran: true, exitCode: 0 }, now);
     const view = () => telegramProgressCard(store, store.getRun(run)!, "ready-1", ALPHA, now, dir);
     expect(view().text).toContain("✅ Ready for review\nChecks passed on aaaaaaa. Review the change, then accept it.\n\n✓ Project checks · Passed on aaaaaaa");
-    expect(view().link).toEqual({ label: "Open result", path: `/chat?task=ready-1&result=${run}` });
+    expect(view().link).toEqual({ label: "Open result", path: `/t/ready-1?tab=result&run=${run}` });
     const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [ALPHA]);
     if (!who.ok) throw new Error("approver fixture");
     const receipt = assignmentOf(store, "ready-1", now, { principal: "operator", repos: [ALPHA] }, dir)!.receipt!;
@@ -630,7 +631,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     store.close(); store = openStore(file);
     expect((await pass(script)).ok).toBe(true);
     expect(script.calls.filter(one => one.method === "sendDocument")).toHaveLength(2);
-    expect(script.buttons(script.sends().at(-1)!)).toEqual([{ text: "Inspect result", url: `${ORIGIN}/review?result=alpha-1&run=${run}&tab=checks` }]);
+    expect(script.buttons(script.sends().at(-1)!)).toEqual([{ text: "Inspect result", url: `${ORIGIN}/t/alpha-1?tab=result&run=${run}&section=checks#result-decision` }]);
     expect(receipts().filter(one => one.kind === "acceptance-evidence").every(one => one.deliveredAt !== null)).toBe(true);
     expect(script.texts().at(-1)).toContain("Project checks: No machine verification receipt available");
     expect(script.texts().at(-1)).toContain("Saved material problem: No readable saved proof is available.");
@@ -847,7 +848,7 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(script.texts().at(-1)!.split("\n").at(-1)).toBe("alpha");
     expect(script.texts().at(-1)).toContain("○ Project checks · Didn't run");
     expect(script.calls.filter(call => call.method === "editMessageText")).toHaveLength(1);
-    expect(script.buttons(script.sends().at(-1)!)).toEqual([{ text: "Open result", url: `${ORIGIN}/chat?task=alpha-1&result=${run}` }]);
+    expect(script.buttons(script.sends().at(-1)!)).toEqual([{ text: "Open result", url: `${ORIGIN}/t/alpha-1?tab=result&run=${run}` }]);
     expect(script.calls.filter(call => ["sendMessage", "editMessageText"].includes(call.method)).slice(-4).every(send => String(send.params["chat_id"]) === String(CHAT + 1))).toBe(true);
   });
 });

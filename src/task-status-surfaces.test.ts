@@ -207,7 +207,7 @@ describe("one headline on every surface", () => {
     const failing = await page(`/chat?task=coupon-stacking&result=${runs["coupon-stacking"]}`);
     expect(failing).toContain('data-headline="Failed"');
     expect(failing).toContain('data-status-detail="checks" data-mark="failed"');
-    const review = workspaceOf(await page(`/review?result=fix-checkout-tax&run=${runs["fix-checkout-tax"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
+    const review = { selected: (workspaceOf(await page(`/t/fix-checkout-tax?tab=result&run=${runs["fix-checkout-tax"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected };
     expect(review.selected!.status.label).toBe("Complete");
     expect(review.selected!.panel?.status?.headline ?? review.selected!.status.label).toBe("Complete");
   });

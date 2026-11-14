@@ -115,7 +115,7 @@ describe("quiet chat on Telegram", () => {
     // The one ping, when the result is saved: its state in the assignment's own words, and that exact result.
     // (This fixture has no approved scope, so the assignment honestly asks for a decision rather than reading Ready.)
     expect(String(sends[1]!.params["text"])).toBe("Make status replies clear needs your decision before it can continue.");
-    expect(script.buttons(sends[1]!)).toEqual([{ text: "Open result", url: `${ORIGIN}/chat?task=status-replies&result=${run}` }]);
+    expect(script.buttons(sends[1]!)).toEqual([{ text: "Open result", url: `${ORIGIN}/t/status-replies?tab=result&run=${run}` }]);
     // Every other step edited that one card (a step that reads the same as the last is not re-sent).
     const edits = script.edits();
     expect(edits.length).toBeGreaterThanOrEqual(3);

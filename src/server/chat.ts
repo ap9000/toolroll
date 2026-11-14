@@ -66,7 +66,7 @@ import type { ServerRuntime } from './runtime.js';
 import { html,htmlString,postForm,reauth } from "../html.js";
 import { requestContext } from "./request-context.js";
 import { refuse,screen,whenTime,type Screen } from "./chrome.js";
-import { chatResultHref,chatReturnWithLatest,chatRefusal,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
+import { chatPanelResultHref,chatReturnWithLatest,chatRefusal,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
 import { chatAckPage,chatPage,NOT_STARTED_SESSION,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
@@ -224,8 +224,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
             user: who.name,
             noted: url.searchParams.get("noted") !== null,
             requestToken: randomBytes(16).toString("hex"),
-            hrefFor: one => resultLink(chatResultHref(focusTask?.id ?? "", resultRun.id, one)),
-            returnTo: resultLink(chatResultHref(focusTask?.id ?? "", resultRun.id)),
+            hrefFor: one => resultLink(chatPanelResultHref(focusTask?.id ?? "", resultRun.id, one)),
+            returnTo: resultLink(chatPanelResultHref(focusTask?.id ?? "", resultRun.id)),
             back: { href: roomId ? "/chat?conversation=" + encodeURIComponent(roomId) : taskChatHref(focusTask?.id ?? ""), label: "Back to chat" },
             finishes,
           })}${finishes && focusTask?.assignment?.receipt != null
