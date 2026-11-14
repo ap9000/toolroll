@@ -330,5 +330,12 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     const fallback = page.replace(/<script type="application\/json" id="standing-orders-workspace-data"[^>]*>[\s\S]*?<\/script>/, "");
     expect(fallback.split('<section class="task-result-tab" id="task-result" aria-label="Result" data-result-task="shipped">').length - 1).toBe(1);
     expect(fallback.split("data-result-panel").length - 1).toBe(1);
+    // In the app's order (review finding 3): the outcome, the result under it, then the steps folded.
+    const outcomeAt = fallback.indexOf("data-task-outcome"), resultAt = fallback.indexOf('class="task-result-tab"'), stepsAt = fallback.indexOf("data-task-steps");
+    expect(outcomeAt).toBeGreaterThan(-1);
+    expect(outcomeAt).toBeLessThan(resultAt);
+    expect(resultAt).toBeLessThan(stepsAt);
+    expect(fallback).toMatch(/<details class="k-disclose task-steps" data-task-steps><summary>Plan and steps<\/summary>/);
+    expect(fallback.slice(stepsAt)).not.toContain('class="task-result-tab"');
   });
 });

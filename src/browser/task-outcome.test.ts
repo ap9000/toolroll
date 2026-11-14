@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AssignmentCard } from "../assignment-ui.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
 import { TaskView } from "./views/task-view.js";
+import { SelectedResult } from "./views/result-view.js";
 import { FormToken } from "./ui/post-form.js";
 import { taskRoad } from "../first-run.js";
 import { stepRowsOf } from "../workspace-ui.js";
@@ -69,6 +70,51 @@ test("a failed check reads in the leading status, before its act: never only in 
   const act = outcome.querySelector("[data-primary-action]")!;
   expect(before(outcome.querySelector("[data-task-status] h2")!, act)).toBe(true);
   expect(failure!.closest("[data-task-status]")).toBe(act.closest("[data-task-status]"));
+  // Read before the act, in order: the failed check comes ahead of the control that completes the work.
+  expect(before(failure!, act)).toBe(true);
+});
+
+test("the result's own caveats and its mismatch read above Mark complete, never under it (review finding 2)", () => {
+  const selected = { taskId: "t-1", title: "Fix the payout rounding drift", project: null, build: 6, taskHref: "/t/t-1", chatHref: "/chat?task=t-1",
+    status: { label: "Ready for review", tone: "success", token: "assignment-ready" }, problem: "Only the USD path was exercised.", next: null,
+    complete: { action: "/t/t-1/complete", receipt: "r".repeat(64), run: 6, returnTo: "/t/t-1" },
+    decision: { label: "Accept", ready: true, why: null, effect: "Finishes the task." }, checks: null, mismatch: null,
+    acts: { primary: "accept", secondary: null, line: null }, runChecks: null, intent: null, noRun: null, panel: null, notes: [], record: null, failure: null,
+  } as unknown as NonNullable<BrowserTaskView["result"]>["selected"];
+  const view = viewOf(cardOf("Ready for review"), { stage: "needs-you", need: "review-result" }, true, { result: { selected, current: true, attempts: [], revision: "r1" }, tab: "result" });
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(TaskView, { view, details: false, csrf: "csrf",
+    result: (one, token, current) => createElement(SelectedResult, { selected: one, csrf: token, inTask: { current } }) }))));
+  const markComplete = [...host.querySelectorAll<HTMLElement>("[data-task-outcome] [data-task-status] button")].find(one => one.textContent?.trim() === "Mark complete");
+  expect(markComplete).toBeDefined();
+  const caveat = [...host.querySelectorAll<HTMLElement>("[data-result-warnings]")].find(one => one.textContent?.includes("Only the USD path was exercised."));
+  expect(caveat).toBeDefined();
+  // In the status box, above the act: never below it.
+  expect(caveat!.closest("[data-task-status]")).toBe(markComplete!.closest("[data-task-status]"));
+  expect(before(caveat!, markComplete!)).toBe(true);
+  expect(host.querySelectorAll("[data-result-warnings]")).toHaveLength(1);
+});
+
+test("an earlier result shows that result and Open current work, and none of the current work's controls (review finding 1)", () => {
+  const selected = { taskId: "t-1", title: "Fix the payout rounding drift", project: null, build: 4, taskHref: "/t/t-1", chatHref: "/chat?task=t-1",
+    status: { label: "Failed", tone: "danger", token: "failed" }, problem: null, next: null, complete: null, decision: null, checks: null, mismatch: null,
+    acts: { primary: null, secondary: null, line: null }, runChecks: null, intent: null, noRun: null, panel: null, notes: [], record: null, failure: null,
+  } as unknown as NonNullable<BrowserTaskView["result"]>["selected"];
+  // Even handed a view that still carries the live run's controls, the page renders none of them.
+  const view = viewOf(cardOf("Building"), { stage: "building" }, false, {
+    historical: { label: "Build #4. The task has moved on since.", href: "/t/t-1" },
+    result: { selected, current: false, attempts: [], revision: "r1" }, tab: "result",
+    stop: { action: "/t/t-1/stop", run: 5 }, retry: { action: "/t/t-1/requeue", pins: null },
+    approve: { action: "/t/t-1/approve", fields: { nonce: "n", digest: "d" }, label: "Approve", heading: "Plan ready", text: "", kind: "standard", facts: { passwordless: true, remembered: false }, rememberedUntil: null, planHtml: "" },
+  });
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(TaskView, { view, details: false, csrf: "csrf",
+    result: one => createElement("div", { "data-shown": one.build }) }))));
+  expect(host.querySelector("[data-shown]")?.getAttribute("data-shown")).toBe("4");
+  expect(host.querySelector<HTMLAnchorElement>("[data-open-current]")?.getAttribute("href")).toBe("/t/t-1");
+  expect(host.textContent).toContain("Earlier result");
+  expect(host.textContent).toContain("Build #4. The task has moved on since.");
+  expect(host.querySelectorAll("form")).toHaveLength(0);
+  for (const gone of ["[data-task-status]", "[data-task-approval]", "[data-task-panel]", "[data-step-row]", "[data-task-more-about]", ".so-task-tools"]) expect(host.querySelector(gone), gone).toBeNull();
+  expect(document.querySelector(".k-dock")).toBeNull();
 });
 
 test("a finished task leads with its outcome too; the plan opens from the fold when asked", () => {

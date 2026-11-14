@@ -887,6 +887,10 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     if (scopeDraft !== undefined) presentedData.scopeDraft = scopeDraft;
     if (cancelDraft !== undefined) presentedData.cancelDraft = cancelDraft;
     if (editPlan) presentedData.editPlan = true;
+    // The selected result's section: the no-script page composes it under its outcome when it leads with one.
+    const resultSection = extras.result == null ? null
+      : html`<section class="task-result-tab" id="task-result" aria-label="Result" data-result-task="${extras.result.selected.taskId}">${extras.result.html}</section>`;
+    if (resultSection !== null && extras.result!.current) (presentedData as { resultSection?: Html | null }).resultSection = resultSection;
     (presentedData as { pullRequest?: TaskPullRequest | null }).pullRequest = taskPullRequestOf(taskId, who);
     // The thread reads the whole family: the original, its revisions, and every attempt across them.
     if (family !== null && family.problem === null) {
@@ -937,16 +941,37 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     }
     // The step rows read the view as the page will show it (its result, its release, its checks words).
     if (oneTaskView?.kind === "task") oneTaskView.steps = stepRowsOf(oneTaskView);
+    // An earlier result, not the task's current work (one-workspace plan S1): the page is that result and a way to the
+    // current work, and nothing else. No control that acts on the current work (Stop, a note, the approval, Retry,
+    // completion, the conversation's composer) is on it, in the document or the view.
+    if (oneTaskView?.kind === "task" && extras.result != null && resultSection !== null && !extras.result.current) {
+      const rootId = family?.root.id ?? taskId;
+      const build = extras.result.selected.build;
+      const historical = { label: build === null ? "The task has moved on since." : `Build #${build}. The task has moved on since.`, href: taskHref(rootId) };
+      const view: BrowserTaskView = { kind: "task", id: oneTaskView.id, title: oneTaskView.title, project: oneTaskView.project, scout: oneTaskView.scout, tabs: [],
+        version: oneTaskView.version, status: null, statusHtml: "", approval: "", lead: [], questions: "", facts: [], sections: [], manage: [], cancel: null, thread: [],
+        tab: "result", result: oneTaskView.result ?? null, historical, more: [{ group: "share", label: "Copy link", kind: "copy" }] };
+      const top = html`<h1 class="task-main-title">${view.title}</h1><div class="task-historical" data-task-historical><h2>Earlier result</h2><p>${historical.label}</p><p><a class="button-link" href="${historical.href}" data-open-current>Open current work</a></p></div>`;
+      page.body = html`${top}${resultSection}`;
+      page.functional = { script: `${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, app: [{ kind: "result" }] };
+      page.workspace = { view, pageHtml: top };
+      page.refreshSeconds = runtime.liveRefreshSeconds();
+      return runtime.sendScreen(response, status, page);
+    }
     // The Record section (`?tab=record`, /t/:id/evidence's place now): read-only, last under the page, in both the app's
     // view and the document.
     if (extras.record != null) {
       if (oneTaskView?.kind === "task") oneTaskView.sections = [...oneTaskView.sections.filter(one => one.id !== "record"), { id: "record", title: "Record", html: htmlString(extras.record), open: true, count: null }];
-      page.body = html`${page.body}<section class="task-record" id="record" aria-label="Record"><h2>Record</h2>${extras.record}</section>`;
+      const recordSection = html`<section class="task-record" id="record" aria-label="Record"><h2>Record</h2>${extras.record}</section>`;
+      page.body = html`${page.body}${recordSection}`;
+      if (page.workspace?.pageHtml != null) page.workspace = { ...page.workspace, pageHtml: html`${page.workspace.pageHtml}${recordSection}` };
     }
-    // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
-    const taskBody = page.body;
-    if (extras.result != null) {
-      page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result" data-result-task="${extras.result.selected.taskId}">${extras.result.html}</section>`;
+    // The Result tab's no-script page: composed under the outcome when the page leads with one (render-tasks.ts), else
+    // under the task's own; the same HTML its result page served, and its script.
+    const composed = resultSection !== null && page.workspace?.pageHtml != null;
+    const taskBody = composed ? page.workspace!.pageHtml! : page.body;
+    if (extras.result != null && resultSection !== null) {
+      if (!composed) page.body = html`${page.body}${resultSection}`;
       // The result's own script, as its result page ships it (a password form there keeps it too: Request changes and
       // the line notes need it).
       // The app runs its own version (browser/work/result.ts), so a task with a result can open in place.

@@ -69,7 +69,13 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
   const mainOf = (html: string): string => html.slice(html.indexOf("<main>"), html.indexOf("</main>"));
   const queueOf = (html: string): string => /<ol class="cockpit-queue-list">(.*?)<\/ol>/s.exec(html)?.[1] ?? "";
   /** The task page's Result section: the one result view (task-link.ts), where a result's own forms are. */
-  const resultOf = (html: string): string => { const at = html.indexOf('<section class="task-result-tab"'); return at < 0 ? "" : html.slice(at, html.indexOf("</main>", at)); };
+  const resultOf = (html: string): string => {
+    const at = html.indexOf('<section class="task-result-tab"');
+    if (at < 0) return "";
+    // Composed under the outcome, the folded steps follow it; appended, the page ends.
+    const steps = html.indexOf("data-task-steps", at);
+    return html.slice(at, steps < 0 ? html.indexOf("</main>", at) : steps);
+  };
   /** A result read as data: the task page's Result section at this run. */
   const resultView = async (cookie: string, task: string, run: number): Promise<import("./browser-workspace.js").BrowserResultView> =>
     ({ selected: ((await (await fetch(url(`/t/${task}?tab=result&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace & { view: import("./browser-workspace.js").BrowserTaskView }).view.result?.selected ?? null } as import("./browser-workspace.js").BrowserResultView);

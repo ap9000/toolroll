@@ -511,7 +511,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const refusal = Object.hasOwn(RESULT_REFUSALS, refusedCode) ? RESULT_REFUSALS[refusedCode]! : null;
       return { html: refusal === null ? parts.html : html`<p class="problem" data-result-refusal>${refusal}</p>${parts.html}`,
         selected: refusal === null ? parts.selected : { ...parts.selected, problem: refusal },
-        current: shown === family.current.id && latest !== null && latest === picked.chosen?.runId };
+        // (A result with no run, a task done by hand, is current when it is the version's own.)
+        current: shown === family.current.id && (picked.chosen?.runId ?? null) === latest };
     })();
     // The task's Record section (`?tab=record`, which /t/:id/evidence now opens): read only when asked for.
     const record = url.searchParams.get("tab") === "record" ? (() => {

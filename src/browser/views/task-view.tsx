@@ -425,9 +425,12 @@ function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): stri
  * slots). A live build says the step it is on, or the step it is stuck on with the act that helps; Pause, Resume and
  * Stop sit beside it. A failed task says what it missed and offers Retry with its note. The recorded reasons sit
  * under More. */
-function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false, unsent = true, resultAct = null, lead = false }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
-  /** Leading the page (outcome first): no step row above says Needs you, so the box does, once, beside its heading. */
+function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false, unsent = true, resultAct = null, lead = false, resultWarnings = null }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
+  /** Leading the page (outcome first): no step row above says Needs you, so the box does, once, beside its heading; its
+   * facts and the result's warnings read before its act. */
   lead?: boolean;
+  /** Where the result below puts its own warnings (ResultStatusWarnings), above this box's act. */
+  resultWarnings?: ((node: HTMLElement | null) => void) | null;
   /** An unsent note shows here (the work panel, when open, shows it instead: one place at a time). */
   unsent?: boolean;
   /** "Watch the work": opens the Activity panel beside the live build's acts. */
@@ -475,12 +478,16 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
         {view.activity != null && <ActivityLine activity={view.activity} />}
         {failed && failure != null && <FailureEvidence failure={failure} />}
       </>}
+      {...(lead ? { body: <>
+        <StatusFacts card={card} runChecks={view.runChecks ?? null} only={checksElsewhere ? key => key !== "checks" : null} />
+        {resultHere && resultWarnings !== null && <div data-result-status-warnings="" ref={resultWarnings} />}
+      </> } : {})}
       acts={acts} terms={terms} />
     {pause !== null && steering && <PauseSteerForm key={pause.run} pause={pause} onCancel={() => setSteering(false)} />}
     {/* A note written for an attempt that ended before it went: shown, with a way to send it to the next one. The note
         box itself is the work panel's (Watch the work). */}
     {unsent && <Unsent view={view} csrf={csrf} />}
-    <StatusFacts card={card} runChecks={view.runChecks ?? null} only={checksElsewhere ? key => key !== "checks" : null} />
+    {!lead && <StatusFacts card={card} runChecks={view.runChecks ?? null} only={checksElsewhere ? key => key !== "checks" : null} />}
     {why.length > 0 && <KDisclose summary="More">{why.map(one => <KNote key={one}>{one}</KNote>)}</KDisclose>}
   </div>;
 }
@@ -802,6 +809,8 @@ function WorkPanel({ view, chat, csrf, open, onClose, onClick }: { view: Browser
 export function TaskView({ view, chat = null, csrf = "", result }: { view: BrowserTaskView; chat?: ThreadChat | null; details?: boolean; csrf?: string; result?: ResultSlot }) {
   // The Ready status box's act slot: the result below renders its one act there (ResultStatusAct).
   const [statusAct, setStatusAct] = useState<HTMLElement | null>(null);
+  // The leading status box's place for the current result's own warnings, above its act (ResultStatusWarnings).
+  const [statusWarnings, setStatusWarnings] = useState<HTMLElement | null>(null);
   // The result the page loaded with (a later one is announced in its row, never swapped in).
   const loadedResult = useRef(view.result ?? null);
   const hasResult = loadedResult.current !== null;
@@ -961,7 +970,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     // In a row, the Approval row says who approved: the status box doesn't repeat it. Leading the page, it says every
     // fact itself (a failed check included): nothing it would warn about waits in a fold below its act.
     ? <StatusBox view={view} card={view.status} csrf={csrf} approved={key === null ? view.approved ?? null : null} watch={key === "build" && view.stop != null ? openActivity : null} unsent={!activity}
-      checksElsewhere={!top && checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} resultAct={setStatusAct} lead={top} />
+      checksElsewhere={!top && checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} resultAct={setStatusAct} lead={top}
+      resultWarnings={top ? setStatusWarnings : null} />
     : <Html html={view.statusHtml} />;
   const bodyOf = (row: StepRow): ReactNode => {
     // Leading the page, the status and the result are above the steps: the Ready row holds nothing more.
@@ -1005,7 +1015,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       at: row.at, when: row.at === null ? "" : threadWhen(row.at), body: row.opens || here ? bodyOf(row) : undefined,
       toggle: row.opens && !here && !(row.key === "approve" && approve !== null), open: here || opened.has(row.key) || (row.key === "approve" && approve !== null) };
   });
-  return <ResultStatusAct.Provider value={statusAct}><div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
+  if (view.historical != null) return <HistoricalResult view={view} loaded={loadedResult.current} csrf={csrf} result={result} />;
+  return <ResultStatusAct.Provider value={statusAct}><ResultStatusWarnings.Provider value={outcomeFirst ? statusWarnings : null}><div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
     <div className="k-doc" onClick={inPage}>
       <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
@@ -1051,7 +1062,23 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     <WorkPanel view={view} chat={chat} csrf={csrf} open={activity} onClose={closeActivity} onClick={inPage} />
     {details !== null && <KOverlay kind="drawer" title="Details" trigger={details} onClose={() => setDetails(null)}><TaskDetails view={view} /></KOverlay>}
     {primary !== null && <KDock>{primary}</KDock>}
-  </div></ResultStatusAct.Provider>;
+  </div></ResultStatusWarnings.Provider></ResultStatusAct.Provider>;
+}
+
+/** An earlier result (one-workspace plan S1): that result, with what it is and a way to the current work, and nothing
+ * that acts on the current work — no status box, no steps, no approval, no work panel, no dock, no task options. The
+ * result's own acts are its own run's. */
+function HistoricalResult({ view, loaded, csrf, result }: { view: BrowserTaskView; loaded: BrowserTaskView["result"]; csrf: string; result: ResultSlot | undefined }) {
+  const historical = view.historical!;
+  const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span></>;
+  return <div data-kit-page data-task-page={view.id} data-task-historical="" className="so-task-page">
+    <div className="k-doc">
+      <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta} />
+      <KSlots status={<h2>Earlier result</h2>} text={historical.label}
+        acts={<KLinkButton variant="primary" label="Open current work" href={historical.href} data-open-current="" />} terms="" />
+      <ResultPanel view={{ ...view, result: loaded ?? view.result ?? null }} loaded={loaded ?? view.result ?? null} csrf={csrf} result={result === undefined ? undefined : (selected, token) => result(selected, token, false)} />
+    </div>
+  </div>;
 }
 
 /** The form token React builds into its own forms (PostForm adds it); exported for the result view's native forms. */
@@ -1061,6 +1088,10 @@ export const useFormToken = (): string => useContext(FormToken);
  * its own Accept form as Mark complete when nothing more is owed, else Review and accept, which takes the person to
  * their check or the decision. Null anywhere else (the result page alone, tests): the result keeps its acts below. */
 export const ResultStatusAct = createContext<HTMLElement | null>(null);
+
+/** Where a task page's leading status box takes the current result's own warnings (its mismatch and caveats): above
+ * the status's one act, so nothing the result warns about is under the act that completes it. Null anywhere else. */
+export const ResultStatusWarnings = createContext<HTMLElement | null>(null);
 
 /** A sentence whose `backticked` parts are commands to type (a sign-in's `claude auth login`): those parts as code. */
 function WithCode({ text }: { text: string }) {
