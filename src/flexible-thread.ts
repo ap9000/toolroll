@@ -28,7 +28,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
@@ -455,6 +455,18 @@ export function flexibleThreadEnv(paths: FlexibleThreadPaths, proxy: Record<stri
   };
 }
 
+/**
+ * The environment the process that makes the sandbox starts with. On Linux that is the launch helper (sandbox-launch.ts),
+ * which makes the runtime's network relay sockets in its own temp folder: a unix socket path must fit in about 108
+ * bytes, and a thread's temp folder (deep under the state folder) leaves too little room, so the relays never start. The
+ * helper keeps Toolroll's own temp folder (where every other launch's relays are made, and which no thread writes);
+ * inside the sandbox the runtime sets TMPDIR to the thread's own temp itself (CLAUDE_CODE_TMPDIR, from the launch's
+ * `temp`). On a Mac the runtime's command sets it the same way, so nothing changes there.
+ */
+function outerEnv(env: Record<string, string>, platform: NodeJS.Platform): Record<string, string> {
+  return platform === "linux" ? { ...env, TMPDIR: tmpdir() } : env;
+}
+
 /** Why `launch`'s own terms would let a thread out, or null: a keychain, or a network other than the proxy. */
 function termsProblem(launch: LaunchFence): string | null {
   const terms = srtTermsOf(launch.fence, launch.fenceGrants);
@@ -484,21 +496,24 @@ async function probeContainment(launch: LaunchFence, paths: FlexibleThreadPaths,
   const writable = join(paths.root, `.probe-${token}-written`);
   writeFileSync(readable, token, { mode: 0o600, flag: "wx" });
   try {
-    const script = 'if (: > "$1") 2>/dev/null; then echo wrote; fi; cat "$2" 2>/dev/null; echo; echo probe-ran';
+    // Judged by the real disk, read from outside: on Linux the runtime hides a read-denied folder under an in-memory one
+    // of the launch's own, so the write can succeed in there and reach nothing; what counts is that no canary appears on
+    // this computer's disk and the planted secret never comes back.
+    const script = '(: > "$1") 2>/dev/null; cat "$2" 2>/dev/null; echo; echo probe-ran';
     let spawned: { file: string; args: string[]; env: Record<string, string> };
     try { spawned = confined("/bin/sh", ["-c", script, "probe", writable, readable], { fence: launch.fence, fenceGrants: launch.fenceGrants, confinement: "required", cwd: paths.repo, temp: paths.tmp }); }
     catch (error) { return error instanceof ContainmentRefusal ? error.message : "the sandbox couldn't be made"; }
     const problem = spawnProblem(spawned, platform);
     if (problem !== null) return problem;
     const ran = await new Promise<{ code: number | null; stdout: string }>(done => {
-      const child = spawn(spawned.file, spawned.args, { cwd: paths.repo, env: { ...env, ...spawned.env }, stdio: ["ignore", "pipe", "ignore"] });
+      const child = spawn(spawned.file, spawned.args, { cwd: paths.repo, env: { ...outerEnv(env, platform), ...spawned.env }, stdio: ["ignore", "pipe", "ignore"] });
       let stdout = "";
       const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
       child.stdout.on("data", chunk => { if (stdout.length < 4096) stdout += String(chunk); });
       child.on("error", () => { clearTimeout(timer); done({ code: null, stdout }); });
       child.on("close", code => { clearTimeout(timer); done({ code, stdout }); });
     });
-    if (existsSync(writable) || ran.stdout.includes(token) || ran.stdout.includes("wrote")) return "the sandbox let the probe reach Toolroll's state";
+    if (existsSync(writable) || ran.stdout.includes(token)) return "the sandbox let the probe reach Toolroll's state";
     if (ran.code !== 0 || ran.stdout.trim() !== "probe-ran") return "the sandbox didn't start";
     return null;
   } finally {
@@ -555,7 +570,7 @@ async function spawnLocked(store: Store, input: FlexibleThreadLaunchInput & { pr
   catch (error) { return refuse("containment", error instanceof Error ? error.message : undefined); }
   const problem = spawnProblem(spawned, platform);
   if (problem !== null) return refuse("containment", problem);
-  const pid = start({ file: spawned.file, args: spawned.args, env: { ...env, ...spawned.env }, cwd: paths.repo });
+  const pid = start({ file: spawned.file, args: spawned.args, env: { ...outerEnv(env, platform), ...spawned.env }, cwd: paths.repo });
   // Anything that goes wrong from here (a bad pid, a record that moved, the write itself throwing) ends the group it
   // started and leaves the record as it was: nothing runs that isn't on the record, and nothing is on it that doesn't run.
   let registered = false;

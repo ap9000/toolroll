@@ -85,6 +85,14 @@ async function until(test: () => boolean): Promise<void> {
 /** Each attack as `name: command`; the probe prints `ALLOWED <name>` for any that worked. */
 const attempts = (rows: readonly [string, string][]): string => rows.map(([name, command]) => `if (${command}) >/dev/null 2>&1; then echo "ALLOWED ${name}"; fi`).join("\n");
 const allowed = (out: { stdout: string }): string[] => out.stdout.split("\n").filter(line => line.startsWith("ALLOWED "));
+/**
+ * The rows that did more than a throwaway write. On Linux the sandbox runtime hides a read-denied folder under an
+ * in-memory one of the launch's own (bubblewrap --tmpfs), so a write "into" it can succeed there and reach nothing; such
+ * a row (named in `masked`) may say ALLOWED only on Linux, and every test checks the real disk itself, from outside, as
+ * fence-git-views and fence-code-map-file do. On a Mac every row must be refused.
+ */
+const realWrites = (out: { stdout: string }, masked: readonly string[] = []): string[] =>
+  allowed(out).filter(line => !(process.platform === "linux" && masked.includes(line.slice("ALLOWED ".length))));
 
 describe("attack: a Flexible thread leaving its fence", () => {
   test("native: ordinary work in the thread's repository works, and every commit, gc and repack lands in its own objects", async ctx => {
@@ -115,7 +123,11 @@ describe("attack: a Flexible thread leaving its fence", () => {
     const refs = tgit(world.project, "for-each-ref", "--format=%(refname) %(objectname)");
     const config = readFileSync(join(git, "config"), "utf8");
     const before = objectsInventory(world.objects);
+    const readme = readFileSync(join(world.project, "README.md"), "utf8");
     const out = await inThread(id, attempts([
+      // Reads first: on Linux a later row's write lands in the launch's own stand-in folder, which a read after it would see.
+      ["read its files", `cat ${q(join(world.project, "README.md"))}`],
+      ["read its config", `cat ${q(join(git, "config"))}`],
       ["delete a pack", `rm -f ${q(join(world.objects, "pack", pack))}`],
       ["overwrite a pack", `: > ${q(join(world.objects, "pack", pack))}`],
       ["delete a loose object", `rm -f ${q(loose)}`],
@@ -128,8 +140,6 @@ describe("attack: a Flexible thread leaving its fence", () => {
       ["write a hook", `mkdir -p ${q(join(git, "hooks"))} && echo x > ${q(join(git, "hooks", "pre-commit"))}`],
       ["add a worktree pointer", `mkdir -p ${q(join(git, "worktrees", "evil"))}`],
       ["write its files", `echo x >> ${q(join(world.project, "README.md"))}`],
-      ["read its files", `cat ${q(join(world.project, "README.md"))}`],
-      ["read its config", `cat ${q(join(git, "config"))}`],
       ["write the thread's config", "echo '[core]' >> .git/config"],
       ["write the thread's hooks", "echo x > .git/hooks/post-checkout"],
       ["write the thread's alternates", "echo /tmp > .git/objects/info/alternates"],
@@ -139,8 +149,11 @@ describe("attack: a Flexible thread leaving its fence", () => {
       ["plant an MCP server", "echo '{}' > .mcp.json"],
       ["plant a config home setting", `echo '{}' > ${q(join(paths.home, "settings.json"))}`],
     ]));
-    expect(allowed(out), out.stderr).toEqual([]);
+    expect(realWrites(out, ["write a ref", "git update-ref there", "write packed-refs", "write its config", "write a hook", "add a worktree pointer", "write its files"]), out.stderr).toEqual([]);
     expect(objectsInventory(world.objects)).toEqual(before);
+    expect(readFileSync(join(world.project, "README.md"), "utf8")).toBe(readme);
+    expect(existsSync(join(git, "packed-refs")) && readFileSync(join(git, "packed-refs"), "utf8").includes("\nx\n")).toBe(false);
+    for (const planted of [join(git, "hooks", "pre-commit"), join(git, "worktrees", "evil"), join(git, "refs", "heads", "evil")]) expect(existsSync(planted), planted).toBe(false);
     expect(tgit(world.project, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(refs);
     expect(readFileSync(join(git, "config"), "utf8")).toBe(config);
     expect(readFileSync(join(paths.repo, ".git", "objects", "info", "alternates"), "utf8")).toBe(`${world.objects}\n`);
@@ -161,8 +174,9 @@ describe("attack: a Flexible thread leaving its fence", () => {
       attempts([["write there", `echo x > ${q(join(theirs.paths.repo, "planted.txt"))}`], ["write the threads folder", `echo x > ${q(join(dirname(theirs.paths.folder), "planted"))}`]])].join("\n"));
     expect(out.stdout).not.toContain(secret);
     expect(out.stdout).not.toContain("secret.txt");
-    expect(allowed(out)).toEqual([]);
+    expect(realWrites(out, ["write the threads folder"])).toEqual([]);
     expect(existsSync(join(theirs.paths.repo, "planted.txt"))).toBe(false);
+    expect(existsSync(join(dirname(theirs.paths.folder), "planted"))).toBe(false);
   }, 60_000);
 
   test("native: credential files, other projects and a stored Git credential are unreadable, from the agent and from a detached descendant", async ctx => {
@@ -258,8 +272,11 @@ describe("attack: a Flexible thread leaving its fence", () => {
       ["write the shared temp", `echo x > ${shared}/${planted}`],
     ])].join("\n"));
     expect(out.stdout).not.toContain(secret);
-    expect(allowed(out), out.stderr).toEqual([]);
+    expect(realWrites(out, ["write the state folder", "write the database"]), out.stderr).toEqual([]);
     expect(existsSync(join(shared, planted))).toBe(false);
+    expect(existsSync(join(world.state, "planted"))).toBe(false);
+    expect(readFileSync(world.databaseFile).subarray(-2).toString("latin1")).not.toBe("x\n");
+    expect(existsSync(join(home, "planted.txt")) || existsSync(join(runtime, "planted.js"))).toBe(false);
   }, 60_000);
 
   test("native: a thread's folder is out of reach of every other launch, where the database is kept in a shared folder too", async ctx => {
@@ -281,7 +298,11 @@ describe("attack: a Flexible thread leaving its fence", () => {
     const out = underSandbox([`cat ${q(join(paths.repo, "secret.txt"))} 2>/dev/null`, attempts([["write a thread's repository", `echo x > ${q(join(paths.repo, "planted.txt"))}`], ["write the threads folder", `echo x > ${q(join(paths.root, "planted"))}`]])].join("\n"),
       build.fence, build.fenceGrants, { cwd: worktree });
     expect(out.stdout, out.stderr).not.toContain(secret);
-    expect(allowed(out)).toEqual([]);
+    // On Linux the denied threads folder is an in-memory stand-in inside that launch: a write there succeeds and reaches
+    // nothing. The real folder, read from outside, is what must be untouched.
+    expect(realWrites(out, ["write the threads folder"])).toEqual([]);
+    expect(existsSync(join(paths.root, "planted"))).toBe(false);
+    expect(existsSync(join(paths.repo, "planted.txt"))).toBe(false);
   }, 60_000);
 
   test("native: protected names can't be made, replaced or removed, from the agent or a descendant, and still hold at the next launch", async ctx => {

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V162_STEPS } from "./store.js";
 import { V162_TABLES } from "./flexible-thread-schema.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -62,9 +63,9 @@ describe("v162", () => {
     }
     db.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ?").run(ID);
     // A launch's registration: a positive pid and when, both or neither.
-    expect(() => db.prepare("UPDATE flexible_thread SET live_pid = 42 WHERE id = ?").run(ID)).toThrow();
+    expect(() => db.prepare("UPDATE flexible_thread SET live_pid = ? WHERE id = ?").run(fakePid(1), ID)).toThrow();
     expect(() => db.prepare("UPDATE flexible_thread SET live_pid = 0, live_since = ? WHERE id = ?").run(T0, ID)).toThrow();
-    db.prepare("UPDATE flexible_thread SET live_pid = 42, live_since = ? WHERE id = ?").run(T0, ID);
+    db.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ?").run(fakePid(1), T0, ID);
     expect(() => db.prepare("UPDATE flexible_thread SET state = 'preparing' WHERE id = ?").run(ID)).toThrow(/only moves forward/);
     db.prepare("UPDATE flexible_thread SET state = 'removing' WHERE id = ?").run(ID);
     expect(() => db.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ?").run(ID)).toThrow(/only moves forward/);
