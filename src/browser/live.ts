@@ -20,7 +20,9 @@
  * with fetch by one supervisor (live-supervisor.ts) that owns every retry, sees the server's tick, wakes on focus,
  * network and sleep, and says where the connection stands (useLiveConnection). There a hidden tab leaves its watching
  * rooms (a task's, a flow's, an agent's: presence and watches) at once and keeps the observational ones (the
- * workspace, the summary, a conversation) for LIVE_HIDDEN_GRACE_MS, then closes its stream. Anywhere else, or if the
+ * workspace, the summary, a conversation) for LIVE_HIDDEN_GRACE_MS, then closes its stream; a page that is shown and
+ * changes its rooms hands over to the new stream without a gap, and a wakeup probes the stream rather than replacing
+ * it (GET /live/ping). Anywhere else, or if the
  * fetch reader can't work here, the page keeps its EventSource exactly as before.
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
@@ -237,7 +239,8 @@ export class LiveHub {
     this.unsettle();
     if (url === "") delete document.documentElement.dataset["live"];
     else document.documentElement.dataset["live"] = "1";
-    supervisor.want(url);
+    // A hidden tab lets its rooms go at once (the old stream first); a page that is shown hands over without a gap.
+    supervisor.want(url, document.hidden);
   }
 
   private startSupervisor(): LiveSupervisor {

@@ -4,6 +4,7 @@
  * changes outside the allowed bookkeeping, no child process starts, nothing reaches the network, and no notification is
  * queued.
  */
+import { request as httpRequest } from "node:http";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 const effects = vi.hoisted(() => ({ list: [] as string[], on: false }));
@@ -109,4 +110,33 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
   expect(world.openModes()).toBe(1);
   expect(world.pauseOpen()).toBe(true);
   expect(world.notifications()).toBe(notified);
+});
+
+test("a probe of a real open stream (GET /live/ping, fluid pages 1b) only reads: no writes beyond bookkeeping, no process, no network", async () => {
+  const { cookie } = await world.signIn();
+  // The page's frames stream, held open; its hello names it.
+  const opened = await new Promise<{ conn: string; close: () => void }>((resolve, reject) => {
+    const request = httpRequest({ host: "127.0.0.1", port: world.port, path: "/live?room=workspace", method: "GET",
+      headers: { host: `127.0.0.1:${world.port}`, cookie, accept: "text/event-stream", "x-toolroll-live": "1" } }, response => {
+      let text = "";
+      response.setEncoding("utf8");
+      response.on("data", chunk => {
+        text += chunk;
+        const conn = /event: hello\ndata: (\{[^\n]*\})/.exec(text)?.[1];
+        if (conn !== undefined && text.includes("event: synced")) resolve({ conn: (JSON.parse(conn) as { conn: string }).conn, close: () => request.destroy() });
+      });
+    });
+    request.on("error", reject); request.end();
+  });
+  await new Promise(done => setTimeout(done, 50));
+  const before = world.snapshot(), files = world.files();
+  effects.list.length = 0; effects.on = true;
+  const answer = await world.send(`/live/ping?conn=${opened.conn}&n=1`, "GET", { cookie });
+  await new Promise(done => setTimeout(done, 20));
+  effects.on = false;
+  opened.close();
+  expect(answer.status).toBe(204);
+  expect(world.changed(before, world.snapshot())).toEqual([]);
+  expect(world.changed(files, world.files())).toEqual([]);
+  expect(effects.list).toEqual([]);
 });
