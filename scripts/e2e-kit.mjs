@@ -596,3 +596,34 @@ export function mailSink() {
   });
   return new Promise(done => server.listen(0, "127.0.0.1", () => done({ server, port: server.address().port, received })));
 }
+
+/**
+ * Eight k1: Toolroll hands a one-time sign-in link to the browser only through a 0600 page, started with the platform's
+ * own opener (`open` on macOS, `xdg-open` on Linux) and the page's path as its one argument — never through
+ * TOOLROLL_BROWSER_COMMAND. A journey puts this recording stand-in first on the started Toolroll's PATH under that name:
+ * it records every argument it was given (`<record>.argv`, one per line) and copies the page it was handed to `record`
+ * (same user; the page itself goes once the link is used), as a browser reads it. Returns the stand-in's name.
+ */
+export function signInOpenerStandIn(bin, record) {
+  const name = process.platform === "darwin" ? "open" : "xdg-open";
+  const word = text => `'${String(text).replace(/'/g, "'\\''")}'`;
+  writeFileSync(join(bin, name), `#!/bin/sh\numask 077\nfor arg in "$@"; do printf '%s\\n' "$arg" >> ${word(`${record}.argv`)}; done\n`
+    + `cp "$1" ${word(`${record}.part`)} && mv ${word(`${record}.part`)} ${word(record)}\n`, { mode: 0o755 });
+  return name;
+}
+
+/**
+ * The address the last page handed to the stand-in moves the browser on to (its location.replace, as a browser follows
+ * it), or null before one was handed over. Throws if the stand-in was ever given anything but a sign-in page's path:
+ * a `/login/once/` address or a code in its arguments is exactly what must never happen (GiveUp: a wait stops at once).
+ */
+export function signInLinkFrom(record) {
+  if (!existsSync(record)) return null;
+  const argv = existsSync(`${record}.argv`) ? readFileSync(`${record}.argv`, "utf8").split("\n").filter(line => line !== "") : [];
+  for (const arg of argv) {
+    if (arg.includes("/login/once/") || /[A-Za-z0-9_-]{43}/.test(arg) || !/\/sign-in-[A-Za-z0-9]{6}\/open\.html$/.test(arg)) throw new GiveUp(`the browser opener was handed ${arg.includes("/login/once/") ? "a sign-in link" : "something other than a sign-in page"} in its arguments`);
+  }
+  const page = readFileSync(record, "utf8");
+  const target = /location\.replace\(("(?:[^"\\]|\\.)*")\)/.exec(page);
+  return target === null ? null : JSON.parse(target[1]);
+}

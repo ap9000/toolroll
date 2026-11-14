@@ -255,7 +255,7 @@ export type MainOptions = {
   /** Tests: bare `toolroll` at a person's terminal (easy-start.ts) — the terminal and agent checks, and its seams. */
   easyStart?: { terminal?: boolean; underAgent?: boolean; seams?: Partial<import("./easy-start.js").EasyStartSeams> };
   /** Tests: `toolroll demo` — the terminal and agent checks, the browser it opens, and when it stops (instead of Ctrl-C). */
-  demo?: { terminal?: boolean; underAgent?: boolean; openPage?: (file: string) => void; stop?: Promise<void> };
+  demo?: { terminal?: boolean; underAgent?: boolean; opener?: import("./sign-in-page.js").SignInOpener; stop?: Promise<void> };
 };
 
 /**
@@ -1507,7 +1507,25 @@ async function runDemoCommand(argv: readonly string[], write: Write, seams: Main
   // --json or on a wildcard/LAN bind, and never printed.
   const terminal = seams.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true);
   const demoSignIn = await import("./demo-sign-in.js");
-  const signIn = demoSignIn.demoSignInLink(server, seed.login.name, { stdin: terminal, stdout: terminal, agent: seams.underAgent ?? underAgent(process.env), json });
+  // Where this computer has no opener a page can be handed to (sign-in-page.ts), nothing is minted at all.
+  const signInPage = await import("./sign-in-page.js");
+  const canOpen = signInPage.platformOpener() !== null;
+  // The page goes no later than the link's own deadline, counted from before it is minted.
+  const { SIGN_IN_LINK_MS } = await import("./server/session.js");
+  const linkExpiresAt = Date.now() + SIGN_IN_LINK_MS;
+  const signIn = canOpen ? demoSignIn.demoSignInLink(server, seed.login.name, { stdin: terminal, stdout: terminal, agent: seams.underAgent ?? underAgent(process.env), json }) : null;
+
+  // Never in an opener's arguments: a 0600 page in the sandbox moves the browser on to the link, and only the platform's
+  // own opener gets that page's path (sign-in-page.ts). The page goes once the link is spent, or expires, or on stop.
+  // Opened before the greeting, so it says "opened" only when the opener actually started and succeeded.
+  let removePage = (): void => {};
+  let opened = false;
+  if (signIn !== null) {
+    const page = await signInPage.openSignInLink(signIn, { parent: sandbox, spent: signInPage.ledgerSpent(store, "one-time link", seed.login.name), expiresAt: linkExpiresAt,
+      ...(seams.opener === undefined ? {} : { opener: seams.opener }) });
+    removePage = page.stop;
+    opened = page.opened;
+  }
 
   if (json) {
     // The password is deliberately NOT here (adoption review, finding 9):
@@ -1520,8 +1538,11 @@ async function runDemoCommand(argv: readonly string[], write: Write, seams: Main
     write(`  login     ${seed.login.name} / ${seed.login.password}`);
     write(`  sandbox   ${sandbox}`);
     write("");
-    if (signIn !== null) {
+    if (opened) {
       write("Opened in your browser, signed in.");
+      write("");
+    } else if (signIn !== null) {
+      write("Your browser didn't open: go to the address above and sign in with the login above.");
       write("");
     }
     write("Open Chat and ask for a change, like \"fix the flaky refund test\".");
@@ -1532,16 +1553,6 @@ async function runDemoCommand(argv: readonly string[], write: Write, seams: Main
         ? "Ctrl-C stops the server; the sandbox is KEPT. It stays a demo forever — every spending command refuses it."
         : "Ctrl-C stops the server and deletes the sandbox. --keep preserves it (still fenced from spending).",
     );
-  }
-
-  // Never in an opener's arguments: a 0600 page in the sandbox moves the browser on to the link, and only the platform's
-  // own opener gets that page's path (demo-sign-in.ts). The page goes once the link is spent, or expires, or on stop.
-  let removePage = (): void => {};
-  if (signIn !== null) {
-    const page = demoSignIn.writeSignInPage(sandbox, signIn);
-    removePage = demoSignIn.removeSignInPageWhenSpent(store, page, seed.login.name);
-    if (seams.openPage !== undefined) seams.openPage(page);
-    else demoSignIn.openSignInPage(page);
   }
 
   await new Promise<void>(done => {

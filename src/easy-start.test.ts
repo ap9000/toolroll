@@ -71,7 +71,7 @@ function scripted(script: Script = {}) {
     spawnUp: args => { calls.push(`spawn ${args.join(" ")}`); const child = fakeChild(fakePid(2 + children.length)); children.push(child); return child; },
     runUpForeground: async args => { calls.push(`foreground ${args.join(" ")}`.trim()); return 0; },
     openBrowser: url => { calls.push(`browser ${url}`); },
-    requestLink: async () => { calls.push("link"); return { ok: true, url: `${LIVE.ok ? LIVE.url : ""}/login/once/abc` }; },
+    openSignedIn: async () => { calls.push("signed-in browser"); return { ok: true, wait: async () => { calls.push("wait for the browser"); } }; },
     openTui: async session => { calls.push("tui"); return script.tui === undefined ? "stop" : script.tui(session); },
     backgroundOn: async foreground => { calls.push(`background ${foreground?.controllerPid ?? "-"}`); return script.backgroundOk === false ? { ok: false, message: "no" } : { ok: true, message: "Toolroll now runs in the background." }; },
     backgroundAsked: () => asked,
@@ -177,8 +177,27 @@ describe("bare toolroll at a terminal", () => {
     expect(cold.calls).toEqual(["foreground --laptop"]);
     const warm = scripted({ proofs: [LIVE] });
     expect(await runEasyStart("open", { web: true, projectRoot: null }, warm.seams)).toBe(0);
-    expect(warm.calls).toEqual(["link", "browser http://127.0.0.1:4999/login/once/abc"]);
+    // The link never comes back here: openSignedIn hands it to the browser itself (openLocalSignIn), never openBrowser.
+    // Nothing else keeps this process (the console was already running): it waits for the browser to use the link, so
+    // the page isn't deleted on exit before the browser reads it (eight k1).
+    expect(warm.calls).toEqual(["signed-in browser", "wait for the browser"]);
+    expect(warm.lines).toEqual(["Toolroll is on http://127.0.0.1:4999", "Opening Toolroll in your browser…"]);
     expect(warm.lines.join("\n")).not.toContain("/login/once/");
+  });
+});
+
+describe("the terminal UI's w (eight k1)", () => {
+  test("opens the browser only through the signed-in road (a page and the platform's opener), never openBrowser with a link", async () => {
+    let said = "";
+    const { seams, calls } = scripted({ proofs: [LIVE], tui: async session => { said = await session.openBrowser(); return "leave"; } });
+    expect(await runEasyStart("start", bare, seams)).toBe(0);
+    expect(calls).toEqual(["tui", "signed-in browser"]);
+    expect(said).toBe("Opened in your browser.");
+    const refused = scripted({ proofs: [LIVE], tui: async session => { said = await session.openBrowser(); return "leave"; } });
+    refused.seams.openSignedIn = async () => ({ ok: false, message: "this computer has no browser opener Toolroll can use" });
+    expect(await runEasyStart("start", bare, refused.seams)).toBe(0);
+    expect(said).toBe("The browser couldn't be opened: this computer has no browser opener Toolroll can use.");
+    expect(refused.calls).toEqual(["tui"]);
   });
 });
 

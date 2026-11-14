@@ -82,7 +82,7 @@ const startUp = (port: number, extra: string[] = []) => {
   let finished = false;
   // No terminal: the handoff and every role's log line come to `lines` (with --json they would go to stderr).
   const running = runOperate("up", ["--repo", repo, "--port", String(port), "--stop-grace", "2000", ...extra], line => lines.push(line),
-    { databaseFile: db, upSeams: { terminal: false, openBrowser: () => {} } })
+    { databaseFile: db, upSeams: { terminal: false } })
     .finally(() => { finished = true; });
   return { running, finished: () => finished };
 };

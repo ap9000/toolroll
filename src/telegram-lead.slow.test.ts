@@ -2787,7 +2787,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const port = 43000 + (process.pid % 2000);
       let ended = false;
       const running = runOperate("up", ["--repo", repo, "--repo", second, "--port", String(port), "--for", "60000"], line => lines.push(line),
-        { databaseFile: file, telegramTransport: traced, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {}, openBrowser: () => {} } }).finally(() => { ended = true; });
+        { databaseFile: file, telegramTransport: traced, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {} } }).finally(() => { ended = true; });
       try {
         const deadline = Date.now() + 30_000;
         while (!ended && !observer.listTelegramConversations(BOT).some(one => one.state === "done" || one.state === "failed") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
@@ -2820,7 +2820,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const lines: string[] = [];
       const port = 45000 + (process.pid % 2000);
       const running = runOperate("up", ["--repo", repo, "--port", String(port), "--for", "600000"], line => lines.push(line),
-        { databaseFile: file, telegramTransport: script.transport, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {}, openBrowser: () => {} } });
+        { databaseFile: file, telegramTransport: script.transport, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {} } });
       const owner = () => {
         const catalog = new DatabaseSync(`${file}.coding.sqlite`, { readOnly: true });
         try { return catalog.prepare("SELECT token, pid, native_pid, clean FROM coding_owner").get(); } finally { catalog.close(); }

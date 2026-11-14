@@ -32,6 +32,13 @@ import type { TuiExit, TuiSession } from "./tui-contract.js";
 export { easyStartApplies, easyStartArgs, type EasyStartArgs } from "./easy-start-args.js";
 import type { EasyStartArgs } from "./easy-start-args.js";
 
+/** What opening the browser signed in did: opened (with `wait`, which keeps this process until the browser has used
+ * the link, at most the time given, then deletes the page), or why not. */
+export type SignedInOpen = { ok: true; wait: (ms: number) => Promise<void> } | { ok: false; message: string };
+
+/** How long `toolroll open --web`, with nothing else to wait for, stays so the browser can read the page (eight k1). */
+export const SIGN_IN_HANDOFF_MS = 60_000;
+
 /** The `up` this process started and owns. */
 export type OwnedUp = { pid: number; exited: Promise<number | null>; running(): boolean; stop(): void; tail(): readonly string[] };
 
@@ -62,9 +69,12 @@ export type EasyStartSeams = {
   spawnUp: (args: readonly string[]) => OwnedUp;
   /** `up` (with these arguments) in this terminal, until it stops: today's foreground start. */
   runUpForeground: (args: readonly string[]) => Promise<number>;
+  /** Open an address that carries no credential (the console's own address) in the browser. */
   openBrowser: (url: string) => void | Promise<void>;
-  /** A local owner's one-time sign-in address from the live console (the socket `link` verb). */
-  requestLink: () => Promise<{ ok: true; url: string } | { ok: false; message: string }>;
+  /** Open this computer's browser signed in as the local owner: a one-time link from the live console (the socket `link`
+   * verb), handed to the browser only through a 0600 page and the platform's own opener (openLocalSignIn). The link
+   * never comes back here. */
+  openSignedIn: () => Promise<SignedInOpen>;
   /** The terminal UI, in this process, as the local owner, until the person quits. */
   openTui: (session: TuiSession) => Promise<TuiExit>;
   /** `background on`, handing over from the `up` this process owns (when it owns one). */
@@ -232,15 +242,21 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   }
 
   if (args.web) {
-    const link = await seams.requestLink();
-    if (!link.ok) {
-      write(`Toolroll is on ${url}, but it couldn't sign you in: ${link.message}.`);
+    const opened = await seams.openSignedIn();
+    if (!opened.ok) {
+      write(`Toolroll is on ${url}, but it couldn't sign you in: ${opened.message}.`);
       const child = ownedNow();
       if (child !== null) stopOwned(child);
       return EXIT.refused;
     }
     write(`Toolroll is on ${url}`);
-    await seams.openBrowser(link.url);
+    // Nothing else keeps this process (the console was already running): it stays until the browser has used the link,
+    // at most a minute, so the page isn't deleted before the browser reads it. Then the page goes either way.
+    if (ownedNow() === null) {
+      write("Opening Toolroll in your browser…");
+      await opened.wait(SIGN_IN_HANDOFF_MS);
+      return EXIT.ok;
+    }
     return waitOwned();
   }
 
@@ -261,10 +277,8 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     owned: () => ownedNow() !== null,
     stopped: stoppedOnItsOwn,
     openBrowser: async () => {
-      const link = await seams.requestLink();
-      if (!link.ok) return `The browser couldn't be opened: ${link.message}.`;
-      await seams.openBrowser(link.url);
-      return "Opened in your browser.";
+      const opened = await seams.openSignedIn();
+      return opened.ok ? "Opened in your browser." : `The browser couldn't be opened: ${opened.message}.`;
     },
     shouldAskBackground: () => ownedNow() !== null && !seams.serviceInstalled() && !seams.backgroundAsked(),
     answerBackground: async yes => {
@@ -366,11 +380,7 @@ export function defaultEasyStartSeams(options: {
     spawnUp: args => spawnOwnedUp(args, { cwd, databaseFile: file }),
     runUpForeground: async args => (await import("./operate.js")).runOperate("up", [...args, "--db", file], options.write, options.operate ?? {}),
     openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
-    requestLink: async () => {
-      const store = openStoreReadOnly(file);
-      if (store === null) return { ok: false, message: "Toolroll's database can't be read" };
-      try { return await requestLocalLink(file, store, options.build); } finally { store.close(); }
-    },
+    openSignedIn: () => openLocalSignIn(file, options.build),
     openTui: async session => {
       const { createTuiSource } = await import("./tui-source.js");
       const { runAsLocalOwner } = await import("./local-owner.js");
@@ -431,4 +441,49 @@ export function localModeRead(file: string): "on" | "off" | "absent" | "candidat
     if (localModeOf(store)?.enabled === true) return "on";
     return localModeCandidate(store) ? "candidate" : "off";
   } catch { return "off"; } finally { store.close(); }
+}
+
+/**
+ * The terminal UI's `w` and `toolroll open --web`: this computer's browser, signed in as the local owner. The live
+ * console mints the one-time link (the socket `link` verb); it is handed to the browser only through a 0600 page in a
+ * fresh 0700 folder inside the database's private run folder, opened by the platform's own opener with the page's path
+ * as its one argument (sign-in-page.ts) — never in any program's arguments, never through TOOLROLL_BROWSER_COMMAND, never
+ * printed. The page goes once the console's ledger records the sign-in, when the link expires, or when this process
+ * ends. With no opener here, nothing is minted.
+ */
+export async function openLocalSignIn(databaseFile: string, build: string, seams: {
+  request?: (store: import("./store.js").Store) => Promise<{ ok: true; url: string } | { ok: false; message: string }>;
+  opener?: import("./sign-in-page.js").SignInOpener;
+  platform?: NodeJS.Platform;
+  everyMs?: number;
+  expiresMs?: number;
+} = {}): Promise<SignedInOpen> {
+  const { ledgerSpent, NO_SAFE_OPENER, openSignInLink, platformOpener } = await import("./sign-in-page.js");
+  if (platformOpener(seams.platform) === null) return { ok: false, message: NO_SAFE_OPENER };
+  const { instanceRunDir, prepareRunDir } = await import("./console-instance.js");
+  const parent = instanceRunDir(databaseFile);
+  const problem = prepareRunDir(parent);
+  if (problem !== null) return { ok: false, message: problem };
+  const store = openStoreReadOnly(databaseFile);
+  if (store === null) return { ok: false, message: "Toolroll's database can't be read" };
+  let handed = false;
+  try {
+    // Rows from before the link was asked for never count as its sign-in, and the page goes no later than the link's
+    // own deadline, counted from before it was minted.
+    const spent = ledgerSpent(store, "local link", null);
+    const expiresAt = Date.now() + (seams.expiresMs ?? (await import("./server/session.js")).SIGN_IN_LINK_MS);
+    const link = await (seams.request ?? (one => requestLocalLink(databaseFile, one, build)))(store);
+    if (!link.ok) return link;
+    // The page's watcher reads the ledger until the page goes; it closes this store then.
+    handed = true;
+    const opened = await openSignInLink(link.url, {
+      parent, spent, expiresAt, onEnd: () => store.close(),
+      ...(seams.opener === undefined ? {} : { opener: seams.opener }),
+      ...(seams.platform === undefined ? {} : { platform: seams.platform }),
+      ...(seams.everyMs === undefined ? {} : { everyMs: seams.everyMs }),
+    });
+    return opened.opened ? { ok: true, wait: opened.wait } : { ok: false, message: "the browser opener didn't start or failed" };
+  } finally {
+    if (!handed) store.close();
+  }
 }
