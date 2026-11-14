@@ -56,6 +56,8 @@ export function browserWorkspaceDocument(document: Html, workspace: BrowserWorks
   let out = replaceMarkup(document, /<\/head>/, () =>
     // A page showing a password keeps to its one script (the sensitivity contract), so it goes without.
     html`<link rel="stylesheet" href="/assets/workspace.css">${workspace.sensitive ? "" : scriptElement(settleFades, { nonce })}</head>`);
-  out = replaceMarkup(out, /<body>/, () => html`<body><div id="standing-orders-workspace">`);
+  // The workspace reads its live stream with fetch (browser/live-supervisor.ts): this server sends the frames it needs
+  // (`hello`, named `tick`). Without the mark the page keeps its EventSource.
+  out = replaceMarkup(out, /<body>/, () => html`<body><div id="standing-orders-workspace" data-live-reader="stream">`);
   return replaceMarkup(out, /<\/body>/, () => html`</div>${beside}${jsonScript(workspace, { id: "standing-orders-workspace-data", nonce })}${scriptElement(initialize, { nonce })}<script type="module" src="/assets/workspace.js" nonce="${nonce}"></script></body>`);
 }

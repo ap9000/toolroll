@@ -14,6 +14,7 @@ import type { KitIcon } from "../design/kit.js";
 import { PostForm } from "./ui/index.js";
 import { chimeOn, setChime } from "./chime.js";
 import { ASK_LABEL } from "../needs-you.js";
+import { useLiveConnection } from "./live.js";
 import "./shell.css";
 
 /** The one Needs-you count, its words and the list it opens. */
@@ -266,3 +267,25 @@ export function NeedsDock({ workspace }: { workspace: BrowserWorkspace }) {
 
 /** Chat's icon: a speech bubble, drawn like the kit's icons (the kit's set has none for it yet). */
 const ChatIcon = () => <svg className="k-i" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>;
+
+/** A dropped line is often back within a second or two: say "Reconnecting…" only once it has lasted this long. */
+const LIVE_STATE_DELAY_MS = 1_500;
+
+/**
+ * Where the page's live connection stands, in one small line (fluid pages slice 1a): "Reconnecting…" while the stream
+ * is down and being tried again, "Offline" when the browser is offline and the stream can't reach Toolroll. Nothing
+ * while it is fine, while the page reads no stream, or when signed out (the page's own read says that). Neutral words,
+ * no colour: it is a resource state, never a wait on the person. `quietOffline`: the page already says it is offline
+ * (a chat's composer), so it isn't said twice.
+ */
+export function LiveState({ quietOffline = false }: { quietOffline?: boolean }) {
+  const state = useLiveConnection();
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    if (state !== "reconnecting") { setLate(false); return; }
+    const timer = window.setTimeout(() => setLate(true), LIVE_STATE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  const words = state === "offline" ? (quietOffline ? null : "Offline") : state === "reconnecting" && late ? "Reconnecting…" : null;
+  return <div className="so-live-state" role="status" data-live-indicator={words === null ? undefined : state}>{words !== null && <KChip word={words} />}</div>;
+}
