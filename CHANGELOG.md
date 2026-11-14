@@ -4,6 +4,31 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.106 — 2026-11-13
+
+Toolroll runs on the Node you just installed, and Linux says exactly what it needs.
+
+### Fixed
+
+- **Toolroll starts on current Node.** On Node 22.23+, 24.22+ or 26.13+ (SQLite 3.54) adding a project crashed the
+  background worker; the Tasks list query now fits SQLite's new limit, and CI tests each Node's newest release.
+- **No more "Planning…" forever after that crash.** The Tasks list loads again, including for very large task families.
+
+### Changed
+
+- **Node 22.20 or newer.** Older Node 22 releases can't open Toolroll's database; Toolroll now says so up front with
+  how to get a newer Node.
+- **Linux names every sandbox tool.** `toolroll` lists the missing ones (bubblewrap, socat, ripgrep) with one install
+  line and creates nothing until they're there; then it starts without a password.
+- **Quieter first minutes.** The installer outside a repository says how to start instead of starting in an empty
+  folder, the log-in question waits for your first accepted result, and the containment note shows once.
+- **The demo looks right.** Its Ready results show a real checked commit, and the phone banner wraps.
+
+### Action needed
+
+- Rolling back to 0.9.105 or earlier needs a Node whose SQLite is older than 3.54 (such as Node 22.22.0);
+  `toolroll update --rollback` says so instead of starting a release that can't run.
+
 ## 0.9.105 — 2026-11-13
 
 A first run that works without help: one way in, plain words, and results that say what's true.
