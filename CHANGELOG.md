@@ -4,6 +4,26 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.108 — 2026-11-14
+
+Add projects from the browser, get back in when you forget your password, and pages that reconnect on their own.
+
+### New
+
+- **Browse… on Projects.** Pick a repository from a folder list instead of typing its path; `~/code/app` works in the
+  path box too. A repository outside your projects folder can be added after you type your password.
+- **`toolroll password reset`** gets you back in when you've forgotten your password, on the computer Toolroll runs on.
+  It ends that account's sessions and lead tokens and says so before you confirm.
+- **Try the sample project from the terminal:** press `s` on Setup, or run `toolroll welcome sample`.
+
+### Changed
+
+- **The sign-in page says how to get in** on this computer (where the saved password is, or how to reset it).
+- **Pages reconnect by themselves** after your phone wakes or the connection drops, and show a small "Reconnecting…"
+  or "Offline" only while that's true.
+- **Send back works in the terminal app without a password** when you're the computer's local owner; approve,
+  complete and send back in the shell say why when they can't and where to do it instead.
+
 ## 0.9.107 — 2026-11-13
 
 A smoother install, an honest terminal when something stops, and sign-in links that stay private.
