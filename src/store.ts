@@ -27308,3 +27308,12 @@ function viewPreferenceShapeProblem(db: Database): string | null {
   const want = canonicalDdl(V160_SCHEMA.trim().replace(/;$/, "")).trim();
   return canonicalDdl(String(row["sql"])).trim() === want ? null : "the view_preference table has an unknown shape";
 }
+
+/** l1: the installation fact that records the containment notice was shown to a person at a terminal. */
+export const CONTAINMENT_NOTICE_FACT = "containment-notice-shown";
+
+/** l1: whether a one-time notice is due, recording that it is shown — true exactly once per installation (one INSERT
+ * OR IGNORE: a racing start sees false), false after. */
+export function noticeDueOnce(store: Store, key: string, now: Date): boolean {
+  return Number(store.handle.prepare("INSERT OR IGNORE INTO installation_fact (key, value, created_at) VALUES (?, 'yes', ?)").run(key, now.toISOString()).changes) === 1;
+}

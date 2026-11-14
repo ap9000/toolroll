@@ -25,6 +25,7 @@ import { buildCacheEnv, buildCacheFolder, checkLaunchRoot, fenceFor, linuxFenceA
 import type { FlowScriptRow, Store } from "./store.js";
 import { readDenyPath } from "./project-sandbox.js";
 import { poolRootOf } from "./worktree.js";
+import { linuxSandboxToolsWords } from "./sandbox-runtime.js";
 import { SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { scrubSecrets } from "./flow-secrets.js";
@@ -185,7 +186,7 @@ export async function flowLaunch(store: Store, options: { repo: string; folder: 
   // Asked first: a launch with no fence of its own (an instance operator allowed it, as inside another sandbox) makes
   // its folder in the temp folder it was given, never among the fenced launches' (which an outer sandbox may hold).
   if (!fenced && !store.unfencedAgentsAllowed()) {
-    return { problem: "This machine can't confine the flow's script (no macOS sandbox, no working bubblewrap), so it didn't run. Install bubblewrap, socat and ripgrep (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
+    return { problem: "This machine can't confine the flow's script (no macOS sandbox, no working bubblewrap), so it didn't run. Install " + linuxSandboxToolsWords() + " (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
   }
   let own: string;
   try { own = realpathSync(mkdtempSync(join(fenced ? checkLaunchRoot() : tmpdir(), "so-cmd-"))); }
