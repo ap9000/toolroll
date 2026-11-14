@@ -31,6 +31,7 @@ const REVISION_CALLERS: readonly EvalHook[] = [
   { file: "src/chat-review.ts", inside: "applyChatReview", calls: "createResultRevision", from: "./result-actions.js", args: true, why: "a confirmed review card passes the origin it was given" },
   { file: "src/lead-doors.ts", inside: "executeProposal", calls: "applyChatReview", from: "./chat-review.js", args: true, why: "a review card a person confirms is the person's; under a lead chain or remote run, the lead's" },
   { file: "src/task-outcome-cli.ts", inside: "runTaskOutcomeCommand", calls: "requestResultChanges", from: "./result-actions.js", args: true, why: "the command line tells a person from a lead or a machine" },
+  { file: "src/task-outcome-cli.ts", inside: "reviseAsLocalOwner", calls: "requestResultChanges", from: "./result-actions.js", args: true, why: "the terminal's local owner is the person at this computer, in their own words" },
   { file: "src/server/tasks.ts", inside: "createTasksHandlers", calls: "requestResultChanges", from: "../result-actions.js", args: true, why: "a browser session is a person; a bearer credential a machine" },
   { file: "src/server/tasks.ts", inside: "createTasksHandlers", calls: "createResultRevision", from: "../result-actions.js", args: true, why: "a browser session is a person; a bearer credential a machine" },
 ];

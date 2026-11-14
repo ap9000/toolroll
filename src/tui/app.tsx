@@ -39,7 +39,8 @@ type Screen =
   /** Accept this result? The result as read when it opened (its build and receipt are what the answer names); `reason`:
    * an exception's words being typed; `changed`: the result changed meanwhile, and this is the new one. */
   | { kind: "accept"; result: TuiResult; reason: string; changed: boolean }
-  | { kind: "compose"; purpose: "new" | "revise"; id: string | null; text: string; project: number }
+  /** `runId`: the build a send back names, read once when b was pressed (null for a new task). */
+  | { kind: "compose"; purpose: "new" | "revise"; id: string | null; text: string; project: number; runId: number | null }
   | { kind: "build"; terms: TuiFastTerms; text: string; repo: string | null }
   | { kind: "password"; message: string }
   | { kind: "help" }
@@ -186,6 +187,13 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (answer.needsPassword) setScreen({ kind: "password", message: answer.message });
     else { setMessage(answer.message); setScreen({ kind: "main" }); }
   };
+  /** `b`: the build to send back, read once and pinned before the note is typed; the command refuses it once a newer one
+   * is current. */
+  const askSendBack = async (id: string) => {
+    const result = await source.result(id);
+    if (result === null) { setMessage("This task has no finished result to send back."); return; }
+    setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0, runId: result.runId });
+  };
   /** `r`: the build to retry, read once and pinned, before anything is sent. */
   const askRetry = (id: string) => openTask(id, task => {
     if (task.retry == null) setMessage("Nothing to retry on this task.");
@@ -214,7 +222,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     if (pendingG.current) { pendingG.current = false; if (input === "h" || input === "t") { setScreen({ kind: "main" }); return true; } }
     if (input === "g") { pendingG.current = true; return true; }
     if (input === "/") { const gap = SHORTCUTS.find(one => one.keys === "/")!.tui; setMessage(typeof gap === "string" ? null : gap.none); return true; }
-    if (input === "n") { setScreen({ kind: "compose", purpose: "new", id: null, text: "", project: 0 }); return true; }
+    if (input === "n") { setScreen({ kind: "compose", purpose: "new", id: null, text: "", project: 0, runId: null }); return true; }
     if (input === "w") { browser(); return true; }
     if (input === "?") { setScreen({ kind: "help" }); return true; }
     if (input === "q") { quit(); return true; }
@@ -222,7 +230,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     // One keymap (docs/plans/plain-toolroll.md P1.3): a the page's ink act (Approve, or Accept), c Accept, b Send back, r Retry.
     if (input === "a") { void approveOrAccept(id); return true; }
     if (input === "s") { stop(id, runId); return true; }
-    if (input === "b") { setScreen({ kind: "compose", purpose: "revise", id, text: "", project: 0 }); return true; }
+    if (input === "b") { void askSendBack(id); return true; }
     if (input === "r") { void askRetry(id); return true; }
     if (input === "c") { void reviewResult(id); return true; }
     if (input === "p") { void askPlan(id); return true; }
@@ -291,7 +299,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         if (key.return) {
           const text = screen.text.trim();
           if (text === "") return;
-          const sent: TuiAct = screen.purpose === "new" ? { kind: "new", text, repo: projects[screen.project] ?? null } : { kind: "revise", id: screen.id!, text };
+          const sent: TuiAct = screen.purpose === "new" ? { kind: "new", text, repo: projects[screen.project] ?? null } : { kind: "revise", id: screen.id!, text, runId: screen.runId! };
           setScreen({ kind: "main" });
           // A small task shows its exact terms and Enter is Build; anything else files as it always has.
           if (sent.kind === "new") { setBusy("Reading it…"); void source.fastTerms(text, sent.repo).catch(() => null).then(terms => { setBusy(null); if (terms === null) void act(sent); else setScreen({ kind: "build", terms, text, repo: sent.repo }); }); return; }
