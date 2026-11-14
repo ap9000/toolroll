@@ -4,6 +4,24 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.107 — 2026-11-13
+
+A smoother install, an honest terminal when something stops, and sign-in links that stay private.
+
+### Changed
+
+- **The installer checks everything first.** On a fresh machine it lists every missing piece (Node, git, the Linux
+  sandbox tools) with one block of install commands, so you fix it once. Install lines start with `apt update`.
+- **Codex reads "(optional)" in setup** once Claude Code is installed: you need one coding agent, not both.
+- **Sign-in links stay private.** `w`, `toolroll open --web`, `up` and the demo open the browser through a private page,
+  so other users on the computer can't see the one-time link. `toolroll open --web` now waits until you're signed in.
+
+### Fixed
+
+- **The terminal says when Toolroll's background worker stops** on its own, instead of "Filed. Planning…".
+  `toolroll --verbose` shows why.
+- **A browser that can't be opened is said, not claimed.** On Windows, Toolroll tells you to set a password and sign in.
+
 ## 0.9.106 — 2026-11-13
 
 Toolroll runs on the Node you just installed, and Linux says exactly what it needs.
