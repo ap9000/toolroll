@@ -481,8 +481,11 @@ await journey("console", SCRIPTED, "Audit: the ledger chain verifies, a checkpoi
   if (verified.ok !== true || verified.outside?.ok !== true) throw new Error(`ledger verify: ${JSON.stringify(verified).slice(0, 300)}`);
   await shot("ledger-chain");
   const id = "e2e-rules";
+  // The task's Full record is its Record section (one-workspace plan S1); the old address opens it too.
   await page.goto(`${base}/t/${id}`);
-  await Promise.all([page.waitForNavigation(), page.locator(`a[href="/t/${id}/evidence"]`).first().click()]);
+  if (await page.locator(`a[href="/t/${id}?tab=record#record"]`).count() === 0) throw new Error("the task page has no Full record link to its Record section");
+  await page.goto(`${base}/t/${id}/evidence`);
+  if (!new URL(page.url()).search.includes("tab=record")) throw new Error(`the old record address landed on ${page.url()}`);
   const pack = page.locator(`[data-evidence-pack="${id}"]`);
   await pack.waitFor({ timeout: 15_000 });
   if (await pack.locator("script").count() !== 0) throw new Error("the evidence pack carries a script");
@@ -789,26 +792,27 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   const run = await builtAndChecked(firstTask);
   const diff = execFileSync("git", ["-C", repo, "diff", "main", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${run.id}`)[0].branch}`, "--", "src/math.js"], { encoding: "utf8" });
   if (!/subtract/.test(diff)) throw new Error(`the build's branch doesn't add subtract: ${diff.slice(0, 300)}`);
-  // One page per task, the steps are the page (docs/plans/task-page-steps.md): the Ready row is open on the result, the
-  // one thing that waits on the person — the result never leaves the task.
+  // One task view, outcome first (one-workspace plan S1): the result leads the task's own page — its status, then the
+  // result — the one thing that waits on the person; the steps that got it there fold under "Plan and steps".
   await page.goto(`${base}/t/${encodeURIComponent(firstTask)}`);
   const opened = page.url();
-  await until("the Ready row, open", async () => await page.locator('[data-step-row="ready"][aria-current="step"] .k-steprow-body:not([hidden]) [data-result-panel]').count() > 0, { timeoutMs: 10_000, everyMs: 200 });
+  await until("the result, leading the page", async () => await page.locator('[data-task-outcome] [data-result-panel]').count() > 0, { timeoutMs: 10_000, everyMs: 200 });
   if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
-  const panel = page.locator('[data-step-row="ready"] [data-result-panel]').first();
+  if ((await page.locator("[data-task-steps] details").first().getAttribute("open")) !== null) throw new Error("the steps are open ahead of the result");
+  const panel = page.locator('[data-task-outcome] [data-result-panel]').first();
   await panel.waitFor({ timeout: 20_000 });
   // One vocabulary (docs/plans/plain-toolroll.md P1.1): the task page's own words say "plan", never scope, a digest or "signs".
   const said = await page.locator("body").innerText();
   const internal = /\b(?:scope|signs|sealed|binds|digest)\b|\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,64}\b/i.exec(said);
   if (internal !== null) throw new Error(`the task page says "${internal[0]}": …${said.slice(Math.max(0, internal.index - 80), internal.index + 40)}…`);
   // How it ran: one line in the result's record — its time and tokens as recorded (docs/plans/run-efficiency.md).
-  const ran = await page.locator('[data-step-row="ready"] #how-it-ran summary').first().innerText();
+  const ran = await page.locator('[data-task-outcome] #how-it-ran summary').first().innerText();
   if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
   // What a person sees: checks passed (the task's header says it once), and the decision after the evidence says what
   // accepting does: plain Accept once the person's own checks are answered, since the machine's saved requirement list
   // is on record and every requirement is met (never "Accept without checks" when the checks passed).
-  // The checks fact is the Checks row's own.
-  const status = (await page.locator('[data-step-row="checks"] [data-status-detail="checks"]').first().textContent()) ?? "";
+  // The checks fact reads in the leading status, before its act.
+  const status = (await page.locator('[data-task-outcome] [data-task-status] [data-status-detail="checks"]').first().textContent()) ?? "";
   if (!/Passed/.test(status)) throw new Error(`the task's checks say: ${status.slice(0, 200)}`);
   const checks = "passed";
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
@@ -3525,10 +3529,13 @@ await journey("easy-start", SCRIPTED, "A new laptop install opens signed in with
   const proof = laptopRows(`SELECT detail FROM action_ledger WHERE task_id = '${id}' AND action LIKE '%approv%' ORDER BY rowid DESC LIMIT 1`)[0];
   // Ready, then Complete.
   const run = await laptopReady(id);
-  // The Ready row is open on the result (docs/plans/task-page-steps.md): its decision is right there.
+  // The result leads the task page (one-workspace plan S1, outcome first): its decision is right there.
   await on.goto(`${install.base}/t/${encodeURIComponent(id)}`);
   await waitFor(on.locator(`form[action="/t/${id}/complete"] button[data-accept-result]`).first(), "the completion on the result", { timeoutMs: 30_000, seen: () => saysNow(on) });
-  // How it was approved, in its own words (never "password typed"): the Approval row says it when opened.
+  // How it was approved, in its own words (never "password typed"): the Approval row says it when opened, in the
+  // steps folded under "Plan and steps".
+  const steps = on.locator("[data-task-steps] details").first();
+  if (await steps.count() > 0 && (await steps.getAttribute("open")) === null) await on.locator("[data-task-steps] summary").first().click();
   await on.locator('[data-step-row="approve"] button.k-steprow-head').click();
   const approvedLine = (await on.locator('[data-step-row="approve"]').first().innerText()).replace(/\s+/g, " ");
   if (!/on this computer, no password/.test(approvedLine)) throw new Error(`the approval reads: ${approvedLine.slice(0, 300)}`);
