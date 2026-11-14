@@ -122,7 +122,7 @@ describe("toolroll open", () => {
     const seams: Partial<EasyStartSeams> = {
       prove: async () => ({ ok: true, url: "http://127.0.0.1:4999", port: 4999, pid: fakePid(1), build: "x" }),
       localMode: () => "on", serviceInstalled: () => false,
-      openSignedIn: async () => { opened.push("signed in"); return { ok: true }; },
+      openSignedIn: async () => { opened.push("signed in"); return { ok: true, wait: async () => {} }; },
       openBrowser: url => { opened.push(url); },
     };
     const { code, out } = await run("open", ["--web"], { terminal: true, seams });

@@ -11,7 +11,8 @@ import type { AddressInfo } from "node:net";
 import { main } from "./cli.js";
 import { createDemoSandbox } from "./demo.js";
 import { demoLoopbackOrigin, demoSignInLink, type DemoCaller } from "./demo-sign-in.js";
-import { ledgerSpent, openSignInPage, removeSignInPageWhenSpent, writeSignInPage } from "./sign-in-page.js";
+import { spawn } from "node:child_process";
+import { ledgerSpent, removeSignInPageWhenSpent, writeSignInPage } from "./sign-in-page.js";
 import { createDecisionServer } from "./serve.js";
 
 const PERSON: DemoCaller = { stdin: true, stdout: true, agent: false, json: false };
@@ -126,13 +127,13 @@ describe("toolroll demo", () => {
   /** `toolroll demo` until its greeting is out, then stopped (its stop seam), with what it opened. */
   /** `toolroll demo` until its greeting is out (or, with `whileUp`, until that is done too), then stopped (its stop
    * seam), with the page paths it handed the opener. */
-  async function runDemo(argv: string[], caller: { terminal: boolean; underAgent: boolean }, whileUp: (opened: string[]) => Promise<void> = async () => {}): Promise<{ out: string[]; opened: string[] }> {
+  async function runDemo(argv: string[], caller: { terminal: boolean; underAgent: boolean }, whileUp: (opened: string[]) => Promise<void> = async () => {}, openerExits = 0): Promise<{ out: string[]; opened: string[] }> {
     const out: string[] = [], opened: string[] = [];
     let stop: () => void = () => {};
     const stopped = new Promise<void>(resolve => { stop = resolve; });
     const code = await main(["demo", "--port", "0", ...argv], line => { out.push(line); if (/Ctrl-C|"command":\s*"demo"/.test(line)) void whileUp(opened).finally(stop); }, {
       // The platform opener's channel itself (sign-in-page.ts): what it would be started with, never a real browser.
-      demo: { ...caller, opener: (command, args) => { expect(command).toBe(process.platform === "darwin" ? "open" : "xdg-open"); opened.push(...args); return { unref: () => {} }; }, stop: stopped },
+      demo: { ...caller, opener: (command, args) => { expect(command).toBe(process.platform === "darwin" ? "open" : "xdg-open"); opened.push(...args); return spawn(process.execPath, ["-e", `process.exit(${openerExits})`], { stdio: "ignore" }); }, stop: stopped },
     });
     expect(code).toBe(0);
     return { out, opened };
@@ -161,6 +162,15 @@ describe("toolroll demo", () => {
     expect(out).toContain("For your own project, run `toolroll` in its folder.");
   });
 
+  test("an opener that fails: the greeting never says it opened, and says how to sign in instead; no page is left", async () => {
+    const { out, opened } = await runDemo([], { terminal: true, underAgent: false }, async () => {}, 1);
+    expect(opened).toHaveLength(1);
+    expect(existsSync(opened[0]!)).toBe(false);
+    expect(out).not.toContain("Opened in your browser, signed in.");
+    expect(out).toContain("Your browser didn't open: go to the address above and sign in with the login above.");
+    expect(out.join("\n")).not.toContain("/login/once/");
+  });
+
   test("an unspent page is deleted when the demo stops", async () => {
     const { opened } = await runDemo([], { terminal: true, underAgent: false });
     expect(opened).toHaveLength(1);
@@ -183,24 +193,7 @@ describe("toolroll demo", () => {
 });
 
 describe("how the link reaches the browser", () => {
-  test("only the platform's own opener, handed the page's path: TOOLROLL_BROWSER_COMMAND is not honoured for a credential", () => {
-    const was = process.env["TOOLROLL_BROWSER_COMMAND"];
-    process.env["TOOLROLL_BROWSER_COMMAND"] = "/tmp/logs-every-argument";
-    try {
-      for (const [platform, command] of [["darwin", "open"], ["linux", "xdg-open"]] as const) {
-        const calls: { command: string; args: string[] }[] = [];
-        expect(openSignInPage("/sandbox/sign-in-x/open.html", (one, args) => { calls.push({ command: one, args }); return { unref: () => {} }; }, platform)).toBe(true);
-        expect(calls).toEqual([{ command, args: ["/sandbox/sign-in-x/open.html"] }]);
-      }
-      const none: string[] = [];
-      expect(openSignInPage("/sandbox/sign-in-x/open.html", one => { none.push(one); return { unref: () => {} }; }, "win32")).toBe(false);
-      expect(none).toEqual([]);
-    } finally {
-      if (was === undefined) delete process.env["TOOLROLL_BROWSER_COMMAND"];
-      else process.env["TOOLROLL_BROWSER_COMMAND"] = was;
-    }
-  });
-
+  // The opener itself (path-only arguments, no override, real failures) is proved in sign-in-page.test.ts.
   test("the page: 0600 in a fresh 0700 folder; an unspent one goes when the link expires", async () => {
     const one = await demo("127.0.0.1");
     const link = demoSignInLink(one.server, one.seed.login.name, PERSON)!;
@@ -208,7 +201,7 @@ describe("how the link reaches the browser", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
     expect(readFileSync(file, "utf8")).toContain(`location.replace(${JSON.stringify(link)})`);
-    removeSignInPageWhenSpent(file, ledgerSpent(one.store, "one-time link", one.seed.login.name), { everyMs: 20, expiresMs: 150 });
+    removeSignInPageWhenSpent(file, ledgerSpent(one.store, "one-time link", one.seed.login.name), { everyMs: 20, expiresAt: Date.now() + 150 });
     expect(existsSync(file)).toBe(true);
     for (const deadline = Date.now() + 3_000; existsSync(file) && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 20));
     expect(existsSync(file)).toBe(false);

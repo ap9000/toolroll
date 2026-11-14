@@ -73,7 +73,8 @@ function signInOpener(opened: string[], onLink: (link: string) => void = () => {
     const link = /location\.replace\("([^"]+)"\)/.exec(readFileSync(args[0]!, "utf8"))![1]!;
     opened.push(link);
     onLink(link);
-    return { unref: () => {} };
+    // A real program that exits at once, successfully: the opener's channel waits on its exit.
+    return spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
   };
 }
 
@@ -806,6 +807,23 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     } finally { store.close(); }
   }
   const loginFile = () => join(base, ".toolroll-secrets", "up-login.txt");
+
+  test("a computer with no opener Toolroll can hand a page to (Windows): no link is minted or opened, and the greeting says what to do instead", async () => {
+    const started: string[] = [];
+    lines = [];
+    const code = await runOperate("up", ["--laptop", "--repo", repo, "--port", String(PORT + 90), "--for", "1500"], line => lines.push(line), {
+      databaseFile: db, inferProjectFromCwd: false,
+      upSeams: { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true, signInPlatform: "win32",
+        signInOpener: (command, args) => { started.push([command, ...args].join(" ")); return spawn(process.execPath, ["-e", ""], { stdio: "ignore" }); } },
+    });
+    expect(code, lines.join("\n")).toBe(0);
+    expect(started).toEqual([]);
+    const text = lines.join("\n");
+    expect(text).toContain("This computer can't open a browser for Toolroll safely. To use the browser, run `toolroll password set` and sign in with that password.");
+    expect(text).not.toContain("Opening it in your browser");
+    expect(text).not.toContain("/login/once/");
+    expect(existsSync(join(instanceRunDir(db))) ? readdirSync(instanceRunDir(db)).filter(name => name.startsWith("sign-in-")) : []).toEqual([]);
+  });
 
   test("a new laptop install opens signed in as its owner with no password, before and after a password is set", async () => {
     const first = await interactive(["--laptop", "--repo", repo], PORT + 40);

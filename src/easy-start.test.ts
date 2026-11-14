@@ -71,7 +71,7 @@ function scripted(script: Script = {}) {
     spawnUp: args => { calls.push(`spawn ${args.join(" ")}`); const child = fakeChild(fakePid(2 + children.length)); children.push(child); return child; },
     runUpForeground: async args => { calls.push(`foreground ${args.join(" ")}`.trim()); return 0; },
     openBrowser: url => { calls.push(`browser ${url}`); },
-    openSignedIn: async () => { calls.push("signed-in browser"); return { ok: true }; },
+    openSignedIn: async () => { calls.push("signed-in browser"); return { ok: true, wait: async () => { calls.push("wait for the browser"); } }; },
     openTui: async session => { calls.push("tui"); return script.tui === undefined ? "stop" : script.tui(session); },
     backgroundOn: async foreground => { calls.push(`background ${foreground?.controllerPid ?? "-"}`); return script.backgroundOk === false ? { ok: false, message: "no" } : { ok: true, message: "Toolroll now runs in the background." }; },
     backgroundAsked: () => asked,
@@ -178,7 +178,10 @@ describe("bare toolroll at a terminal", () => {
     const warm = scripted({ proofs: [LIVE] });
     expect(await runEasyStart("open", { web: true, projectRoot: null }, warm.seams)).toBe(0);
     // The link never comes back here: openSignedIn hands it to the browser itself (openLocalSignIn), never openBrowser.
-    expect(warm.calls).toEqual(["signed-in browser"]);
+    // Nothing else keeps this process (the console was already running): it waits for the browser to use the link, so
+    // the page isn't deleted on exit before the browser reads it (eight k1).
+    expect(warm.calls).toEqual(["signed-in browser", "wait for the browser"]);
+    expect(warm.lines).toEqual(["Toolroll is on http://127.0.0.1:4999", "Opening Toolroll in your browser…"]);
     expect(warm.lines.join("\n")).not.toContain("/login/once/");
   });
 });

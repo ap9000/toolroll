@@ -153,7 +153,7 @@ import { LOCAL_POLICY } from "./surface.js";
 import { asLocalOwner, currentLocalOwner, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
-import { ledgerSpent, openSignInLink, platformOpener } from "./sign-in-page.js";
+import { ledgerSpent, NO_SAFE_OPENER, openSignInLink, platformOpener } from "./sign-in-page.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createConnection as createNetConnection, createServer as createNetServer } from "node:net";
@@ -210,7 +210,7 @@ import {
   scopeApprovedForDispatch,
 } from "./dispatch.js";
 
-import { createDecisionServer, type DecisionServer } from "./serve.js";
+import { createDecisionServer, SIGN_IN_LINK_MS, type DecisionServer } from "./serve.js";
 import { readTailnetNames } from "./tailnet.js";
 import {
   daemonLaunchCommand,
@@ -450,7 +450,7 @@ export type OperateOptions = {
   /** Injected by tests: `onboard`'s home folder, terminal and probes. */
   onboardSeams?: OnboardSeams;
   /** Injected by tests: whether `up` has a person at a terminal, and how it opens a browser. */
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; /** The one-time sign-in link's opener (sign-in-page.ts): tests see exactly what it is started with. */ signInOpener?: import("./sign-in-page.js").SignInOpener; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; /** The one-time sign-in link's opener (sign-in-page.ts): tests see exactly what it is started with. */ signInOpener?: import("./sign-in-page.js").SignInOpener; /** The platform that opener is chosen for (tests: one with none). */ signInPlatform?: NodeJS.Platform; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
   /** Injected by tests: `open`, `welcome` and `password set` — the terminal, the easy start's seams, the prompts. */
@@ -1447,7 +1447,7 @@ type Context = {
   releaseIo?: ReleaseIo;
   installBin?: string;
   onboardSeams?: OnboardSeams;
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; /** The one-time sign-in link's opener (sign-in-page.ts): tests see exactly what it is started with. */ signInOpener?: import("./sign-in-page.js").SignInOpener; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; /** The one-time sign-in link's opener (sign-in-page.ts): tests see exactly what it is started with. */ signInOpener?: import("./sign-in-page.js").SignInOpener; /** The platform that opener is chosen for (tests: one with none). */ signInPlatform?: NodeJS.Platform; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
   easySeams?: EasyCommandSeams;
@@ -8341,7 +8341,10 @@ async function upCommand(
       // through TOOLROLL_BROWSER_COMMAND (sign-in-page.ts). No opener here, or a run folder that isn't this user's
       // alone: nothing is minted, and the greeting says how to sign in instead.
       const pageParent = instanceRunDir(context.databaseFile);
-      const canOpen = platformOpener() !== null && prepareRunDir(pageParent) === null;
+      const hasOpener = platformOpener(context.upSeams?.signInPlatform) !== null;
+      const canOpen = hasOpener && prepareRunDir(pageParent) === null;
+      // The page goes no later than the link's own deadline, counted from before it is minted.
+      const linkExpiresAt = Date.now() + SIGN_IN_LINK_MS;
       const link = request === null || flags.has("no-open") || !canOpen ? null : await new Promise<string | null>(resolveLink => {
         const id = ++linkRequests;
         const timer = setTimeout(() => { pendingLinks.delete(id); resolveLink(null); }, 10_000);
@@ -8357,11 +8360,12 @@ async function upCommand(
         ? `sign in as one of ${approverPlan2.approvers.join(", ")}`
         : showCommand === null ? `sign in as ${account} with your password` : `sign in as ${account}`;
       // The page goes once the console's ledger records this sign-in, when the link expires, or when `up` stops.
-      const opened = link === null ? false : (() => {
+      const opened = link === null ? false : await (async () => {
         const outcome = localStart ? "local link" as const : "one-time link" as const;
-        const page = openSignInLink(new URL(link, url).toString(), {
-          parent: pageParent, spent: ledgerSpent(store, outcome, localStart ? null : account),
+        const page = await openSignInLink(new URL(link, url).toString(), {
+          parent: pageParent, spent: ledgerSpent(store, outcome, localStart ? null : account), expiresAt: linkExpiresAt,
           ...(context.upSeams?.signInOpener === undefined ? {} : { opener: context.upSeams.signInOpener }),
+          ...(context.upSeams?.signInPlatform === undefined ? {} : { platform: context.upSeams.signInPlatform }),
         });
         removeSignInPageNow = page.stop;
         return page.opened;
@@ -8374,7 +8378,9 @@ async function upCommand(
           write("Opening it in your browser now, already signed in.");
           write("If it doesn't open, stop it with Ctrl-C and run the same command again.");
         } else if (flags.has("no-open")) write("To sign in from this computer's browser, run the same command again without --no-open.");
-        else write("Toolroll couldn't open this computer's browser from here.");
+        // No opener Toolroll can hand a page to (Windows): no link was minted; a password is the way in.
+        else if (!hasOpener) write(`${NO_SAFE_OPENER.charAt(0).toUpperCase()}${NO_SAFE_OPENER.slice(1)}.`);
+        else write("Your browser didn't open. Stop it with Ctrl-C and run the same command again.");
       } else if (opened) {
         write("Opening it in your browser now, already signed in.");
         write(`If it doesn't open, go to that address and ${signInWords}.`);
