@@ -250,6 +250,7 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.password-set-page": { local: "allow", why: "reads only: the local owner's form for a first password, or \"already set — sign in\"" },
   "edge.password-set": { local: "allow", why: "the one credential act a local owner may make: its first password (Origin, CSRF and key proved by the handler; enrollOwnerPassword re-checks local mode, the owner and password_set=0 in its own transaction); a session with a password set is refused" },
   live: { local: "allow", why: "observational only; the agent watch lease is a keyed POST (agents.watch)" },
+  "live.ping": { local: "allow", why: "observational only: asks this session's own open stream for a pong; writes nothing" },
 });
 function localMarkOf(stage: Stage, method: RouteMethod, id: string): Pick<RouteDeclaration, "local" | "localAct"> {
   if (stage === "edge") {
@@ -443,6 +444,9 @@ get("flows", "recipes.other", "^\\/recipes\\/.*$", { sample: "/recipes/unknown" 
 get("tasks", "routines", "/routines", { limited: "collection" });
 // One live stream per page: every room it shows (server/live.ts). Each room admits its own callers; a token reads only the team room.
 edge("live", "live", "GET", "/live", { callers: ["cookie", "bearer"], scope: "read", project: "adapter", proof: "adapter" });
+// A page's probe of its own stream (fluid pages 1b): a pong on the connection this browser session opened, then 204. Bound
+// to that connection and that session; never extends the session (the live domain is noTouch in serve.ts).
+edge("live", "live.ping", "GET", "/live/ping", { callers: ["cookie"], scope: "read", project: "adapter", proof: "adapter" });
 get("chat", "chat.mate-status", "/chat/mate/status", { ...free, role: "approver", roleBrowser: true, roleRefusal: SESSION_JSON });
 get("chat", "chat.demo-live", "/chat/demo/live", free);
 get("chat", "chat.page", "/chat", { project: "conversation", limited: "conversation", ...free });
