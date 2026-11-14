@@ -17,7 +17,7 @@
  * EventSource reconnects (live-bus.ts).
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { agentRunFingerprint } from "../agents-board.js";
 import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
@@ -45,6 +45,10 @@ import { leadTilesFor } from "./agents-live-lead.js";
 export const LIVE_FRAMES_HEADER = "x-toolroll-live";
 /** This server run, in each `hello`: a page that sees it change knows the server restarted. */
 const INCARNATION = randomBytes(9).toString("hex");
+/** A stream's name for its own page's probe: server-minted, 24 hex, bound to the browser session that opened it. */
+const CONN_NAME = /^[0-9a-f]{24}$/;
+/** A probe's number: the page counts its pings; the pong repeats it. */
+const PING_NUMBER = /^(0|[1-9][0-9]{0,8})$/;
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 6;
 const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
@@ -158,6 +162,10 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   const liveLeads = new Map<string, () => unknown>();
   const agentsLive = createAgentsLiveRooms<Viewer>({ store, bus: live.bus, evidenceRoot: runtime.evidenceRoot, localRunner: runtime.options.localRunner, clock, visible,
     leads: key => liveLeads.get(key)?.() ?? null, forget: key => liveLeads.delete(key) });
+
+  /** Each open frames stream a browser session opened, by its server-minted name: what a probe (GET /live/ping) may reach.
+   * The entry goes when the connection ends, however it ends. */
+  const conns = new Map<string, { connection: LiveConnection; sessionHash: string; name: string; generation: number }>();
 
   const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => rereadBrowser(runtime, request, who);
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
@@ -355,20 +363,57 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     }
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
     response.flushHeaders();
-    const connection = new LiveConnection(response, { frames: request.headers[LIVE_FRAMES_HEADER] === "1" });
+    const frames = request.headers[LIVE_FRAMES_HEADER] === "1";
+    // A browser session's frames stream gets a name its own page can probe (GET /live/ping), bound to this saved session.
+    const sessionHash = frames && who.via === "cookie" ? runtime.sessions.hashOf(who.session) : null;
+    const conn = sessionHash === null ? undefined : randomBytes(12).toString("hex");
+    const connection = new LiveConnection(response, { frames, ...(conn === undefined ? {} : { conn }) });
+    if (conn !== undefined && sessionHash !== null && who.via === "cookie") {
+      conns.set(conn, { connection, sessionHash, name: who.name, generation: who.session.generation });
+      connection.onEnd(() => { if (conns.get(conn)?.connection === connection) conns.delete(conn); });
+    }
     connection.hello({ incarnation: INCARNATION, tick: KEEP_ALIVE_MS });
     // Each join below adds its room before the next speaks; a chat room alone keeps the stream open too.
     for (const join of joins) if (connection.open) join(connection);
     // A page whose only room was refused at its join ends now (`ended`), its keep-alive stopped, not left open.
     if (refusedJoin && connection.rooms === 0) connection.refuse(() => connection.close());
+    // Every room has said where it stands: a page handing over from an older stream may switch to this one.
+    connection.synced();
     request.once("close", () => connection.close());
+  }
+
+  /**
+   * GET /live/ping?conn=<name>&n=<k>: the page's probe of its own stream (eight/fluid plan v2 §9). The stream named
+   * `conn` must be open and must have been opened by this same saved browser session (same session row, account and
+   * generation); unknown, ended and another session's streams all hear the same 404, so a probe never tells them apart.
+   * The pong is a delivery: every room on that stream proves its viewer first, as before a tick. A ping is quiet: the
+   * live domain never touches the session (serve.ts noTouch) and this writes nothing.
+   */
+  async function livePing(ctx: EdgeContext): Promise<void> {
+    const { url, who, request, response } = ctx;
+    request.resume();
+    if (who === null) return json(response, 401, { error: "session" });
+    if (who.via !== "cookie") return json(response, 403, { error: "session" });
+    const params = url.searchParams, conn = params.get("conn") ?? "", n = params.get("n") ?? "";
+    if ([...params.keys()].some(key => key !== "conn" && key !== "n") || params.getAll("conn").length !== 1 || params.getAll("n").length !== 1
+      || !CONN_NAME.test(conn) || !PING_NUMBER.test(n)) return json(response, 400, { error: "ping" });
+    // The pinging session still stands: its saved row, its account, its generation (not only the cookie in memory).
+    const again = readBrowser(request, who);
+    const hash = again === null ? null : runtime.sessions.hashOf(again.session);
+    if (again === null || hash === null) return json(response, 401, { error: "session" });
+    const held = conns.get(conn);
+    const same = held !== undefined && held.connection.open && held.name === again.name && held.generation === again.session.generation
+      && held.sessionHash.length === hash.length && timingSafeEqual(Buffer.from(held.sessionHash), Buffer.from(hash));
+    if (!same || !held.connection.pong(Number(n))) return json(response, 404, { error: "conn" });
+    response.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    response.end();
   }
 
   const detachChat = live.bus.subscribe(() => {
     for (const viewer of [...chatViewers]) admitted(viewer);
   });
   return {
-    registrations: handlersOf("live", {}, { live: liveStream }),
+    registrations: handlersOf("live", {}, { live: liveStream, "live.ping": livePing }),
     turnStarted,
     close(): void {
       detachChat();

@@ -183,23 +183,46 @@ export class LiveConnection {
   private refusing = false;
   /** The reader asked for frames (`hello`, named `tick`) instead of comment keep-alives. */
   private readonly frames: boolean;
-  constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number; frames?: boolean } = {}) {
+  /** Run once when the connection ends; never counted as rooms (a ping's binding goes with them). */
+  private readonly ends = new Set<() => void>();
+  /** This stream's server-minted name, for its own page's probe (GET /live/ping); null when it has none. */
+  readonly conn: string | null;
+  constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number; frames?: boolean; conn?: string } = {}) {
     this.frames = options.frames === true;
+    this.conn = this.frames ? options.conn ?? null : null;
     this.stream = new LiveStream(response, options.limitBytes, () => this.close());
     this.timer = setInterval(() => this.keepAlive(), options.keepAliveMs ?? KEEP_ALIVE_MS);
     this.timer.unref();
     response.once("close", () => this.close());
   }
+  /** Every room proves its viewer again; false when the connection did not survive it. */
+  private prove(): boolean {
+    for (const prove of [...this.proofs]) { if (!this.open) return false; prove(); }
+    return this.open;
+  }
   private keepAlive(): void {
-    for (const prove of [...this.proofs]) { if (!this.open) return; prove(); }
-    if (!this.open) return;
+    if (!this.prove()) return;
     if (this.frames) this.stream.tick(); else this.stream.keepAlive();
   }
-  /** The stream's first frame for a reader that asked for frames: which server run it is (a new one after a restart) and
-   * how often it ticks. Never any room's data, and nothing about the viewer. */
+  /** The stream's first frame for a reader that asked for frames: which server run it is (a new one after a restart), how
+   * often it ticks, and its own name for a probe (`conn`). Never any room's data, and nothing about the viewer. */
   hello(data: { incarnation: string; tick: number }): void {
-    if (this.frames && this.open) this.stream.send("hello", data);
+    if (this.frames && this.open) this.stream.send("hello", this.conn === null ? data : { ...data, conn: this.conn });
   }
+  /** Every room this stream asked for has been admitted and has said where it stands (its join frames went first): a
+   * page replacing its stream may switch to this one now (browser/live-supervisor.ts handover). Frames readers only. */
+  synced(): void {
+    if (this.frames && this.open) this.stream.send("synced", {});
+  }
+  /** The answer to the page's probe (GET /live/ping): a delivery like a tick, so every room proves its viewer first and
+   * a viewer who no longer passes hears its rooms go, never the pong. Returns whether the stream is still open. */
+  pong(n: number): boolean {
+    if (!this.frames || !this.prove()) return false;
+    this.stream.send("pong", { n });
+    return this.open;
+  }
+  /** Run once when the connection ends, whatever ends it. Not a room: it never keeps the connection open. */
+  onEnd(run: () => void): void { this.ends.add(run); }
   /** Run before each keep-alive: a room proves its viewer again (and leaves if it no longer passes). Returns the undo. */
   onKeepAlive(prove: () => void): () => void { this.proofs.add(prove); return () => { this.proofs.delete(prove); }; }
   get open(): boolean { return !this.closed && this.stream.open; }
@@ -222,6 +245,8 @@ export class LiveConnection {
     for (const leave of [...this.leaves]) leave();
     this.leaves.clear();
     this.proofs.clear();
+    for (const end of [...this.ends]) { try { end(); } catch { /* one ending never stops another */ } }
+    this.ends.clear();
     if (this.refusing && this.stream.open) { this.response.end("event: ended\ndata: {}\n\n"); return; }
     if (!this.response.writableEnded) this.response.end();
   }

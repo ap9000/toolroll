@@ -1,7 +1,7 @@
 /** One live stream per page through the server (GET /live): each room is admitted with its page's own checks, a write
  * reaches the rooms it touches at once, who else is here, the last-activity line on Task, Home and Crew, and the
  * stream's rooms: workspace, task, flow, team. */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,14 +126,19 @@ describe("the task room", () => {
     const framed = await stream(live(taskRoom("t-hello")), cookie, { [LIVE_FRAMES_HEADER]: "1" });
     const again = await stream(live("workspace"), cookie, { [LIVE_FRAMES_HEADER]: "1" });
     const plain = await stream(live(taskRoom("t-hello")), cookie);
-    const [hello, first] = await framed.until(all => all.some(one => one.event === "here"));
-    expect(hello).toEqual({ event: "hello", data: { incarnation: expect.stringMatching(/^[0-9a-f]{18}$/), tick: 15_000 } });
+    const [hello, first] = await framed.until(all => all.some(one => one.event === "synced"));
+    // The hello names this stream for its own page's probe (fluid pages 1b): server-minted, one per stream.
+    expect(hello).toEqual({ event: "hello", data: { incarnation: expect.stringMatching(/^[0-9a-f]{18}$/), tick: 15_000, conn: expect.stringMatching(/^[0-9a-f]{24}$/) } });
     expect(first).toMatchObject({ event: "change", data: { room: "task:t-hello" } });
+    // `synced` comes after every room's first words (the task's change and who is here).
+    expect(framed.events.map(one => one.event).slice(0, 4)).toEqual(["hello", "change", "here", "synced"]);
     const [helloAgain] = await again.until(all => all.length > 0);
-    expect(helloAgain).toEqual(hello);
+    const conn = (one: { data: unknown }) => (one.data as { conn: string }).conn;
+    expect(helloAgain).toEqual({ event: "hello", data: { ...(hello!.data as object), conn: expect.stringMatching(/^[0-9a-f]{24}$/) } });
+    expect(conn(helloAgain!)).not.toBe(conn(hello!));
     const [plainFirst] = await plain.until(all => all.some(one => one.event === "here"));
     expect(plainFirst).toMatchObject({ event: "change", data: { room: "task:t-hello" } });
-    expect(plain.events.some(one => one.event === "hello")).toBe(false);
+    expect(plain.events.some(one => one.event === "hello" || one.event === "synced")).toBe(false);
     for (const one of [framed, again, plain]) one.close();
   });
 
@@ -324,6 +329,115 @@ describe("one stream per page", () => {
     const heard = await page.until(all => all.some(one => one.event === "here"));
     expect(heard.find(one => one.event === "here")!.data).toEqual({ room: `flow:${own}?editing=1`, people: [] });
     page.close();
+  });
+});
+
+/** GET /live/ping (fluid pages 1b): a page's probe of its own stream, bound to that stream and the session that opened it. */
+describe("the probe", () => {
+  const ping = (query: string, headers: Record<string, string> = {}) => fetch(url(`/live/ping?${query}`), { headers, redirect: "manual" });
+  /** A page's frames stream and the name its hello gave it. */
+  async function framedPage(cookie: string, ...rooms: string[]) {
+    const page = await stream(live(...(rooms.length === 0 ? ["workspace"] : rooms)), cookie, { [LIVE_FRAMES_HEADER]: "1" });
+    expect(page.response.status).toBe(200);
+    await page.until(all => all.some(one => one.event === "synced"));
+    const conn = (page.events[0]!.data as { conn: string }).conn;
+    expect(conn).toMatch(/^[0-9a-f]{24}$/);
+    return { ...page, conn };
+  }
+
+  test("a ping answers 204 and the pong arrives on that very stream, with the page's number", async () => {
+    const cookie = await login("alex", alexToken);
+    const page = await framedPage(cookie);
+    const other = await framedPage(cookie);
+    const answer = await ping(`conn=${page.conn}&n=7`, { cookie });
+    expect(answer.status).toBe(204);
+    expect(answer.headers.get("cache-control")).toBe("no-store");
+    await page.until(all => all.some(one => one.event === "pong"));
+    expect(page.events.find(one => one.event === "pong")!.data).toEqual({ n: 7 });
+    // Only that stream: the page's other stream hears nothing of it.
+    await other.until(() => false, 300);
+    expect(other.events.some(one => one.event === "pong")).toBe(false);
+    page.close(); other.close();
+  });
+
+  test("foreign, ended and unknown connections all hear the same 404, and no stream hears a pong", async () => {
+    const alex = await login("alex", alexToken), robin = await login("robin", robinToken), alexElsewhere = await login("alex", alexToken);
+    const page = await framedPage(alex);
+    const refusal = async (cookie: string, conn: string) => {
+      const answer = await ping(`conn=${conn}&n=1`, { cookie });
+      return [answer.status, answer.headers.get("content-type"), await answer.text()];
+    };
+    const notFound = [404, "application/json", JSON.stringify({ error: "conn" })];
+    // Another account's session, and another session of the same account: foreign.
+    expect(await refusal(robin, page.conn)).toEqual(notFound);
+    expect(await refusal(alexElsewhere, page.conn)).toEqual(notFound);
+    // Never minted.
+    expect(await refusal(alex, "0123456789abcdef01234567")).toEqual(notFound);
+    expect(page.events.some(one => one.event === "pong")).toBe(false);
+    // Its own session still reaches it, until it ends.
+    expect((await ping(`conn=${page.conn}&n=2`, { cookie: alex })).status).toBe(204);
+    page.close();
+    const deadline = Date.now() + 3_000;
+    let ended = await refusal(alex, page.conn);
+    while (ended[0] !== 404 && Date.now() < deadline) { await new Promise(done => setTimeout(done, 25)); ended = await refusal(alex, page.conn); }
+    expect(ended).toEqual(notFound);
+    // A stream read without frames has no name to probe at all.
+    const plain = await stream(live("workspace"), alex);
+    await plain.until(all => all.length > 0);
+    expect(plain.events.some(one => one.event === "hello")).toBe(false);
+    plain.close();
+  });
+
+  test("only a browser session pings, with exactly a conn and a number", async () => {
+    const cookie = await login("alex", alexToken);
+    const page = await framedPage(cookie);
+    for (const query of ["", `conn=${page.conn}`, "n=1", `conn=${page.conn}&n=1&room=workspace`, `conn=${page.conn}&conn=${page.conn}&n=1`,
+      `conn=${page.conn.toUpperCase()}&n=1`, `conn=${page.conn}&n=01`, `conn=${page.conn}&n=1234567890`, `conn=${page.conn}x&n=1`]) {
+      const answer = await ping(query, { cookie });
+      expect([answer.status, await answer.text()], query).toEqual([400, JSON.stringify({ error: "ping" })]);
+    }
+    // Signed out: no ping, only the way to sign in.
+    const anonymous = await ping(`conn=${page.conn}&n=1`);
+    expect([200, 204]).not.toContain(anonymous.status);
+    // A token never pings, even its owner's.
+    const minted = mintApiToken();
+    store.createApiToken({ id: minted.id, account: "alex", name: "reader", secretHash: minted.hash, access: "read", projects: null, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
+    expect((await ping(`conn=${page.conn}&n=1`, { authorization: `Bearer ${minted.token}` })).status).toBe(403);
+    expect(page.events.some(one => one.event === "pong")).toBe(false);
+    page.close();
+  });
+
+  test("a pong is a delivery: a viewer who no longer passes hears its rooms go and the stream end, never the pong", async () => {
+    running("t-b", repoB);
+    const robin = await login("robin", robinToken);
+    const page = await framedPage(robin, taskRoom("t-b"));
+    // Robin loses project B with nothing else changing about the session (no generation bump): only a delivery's proof sees it.
+    store.raw().prepare("UPDATE approver SET projects_json = ? WHERE name = 'robin'").run(JSON.stringify([repoA]));
+    const answer = await ping(`conn=${page.conn}&n=1`, { cookie: robin });
+    expect(answer.status).toBe(404);
+    await page.until(all => all.some(one => one.event === "ended"), 2_000);
+    expect(page.events.filter(one => one.event === "gone").map(one => one.data)).toEqual([{ room: "task:t-b" }]);
+    expect(page.events.some(one => one.event === "pong")).toBe(false);
+    page.close();
+  });
+
+  test("a ping never extends the session: a tab that only pings idles out on time", async () => {
+    const real = Date.now();
+    const at = (hours: number) => vi.spyOn(Date, "now").mockReturnValue(real + hours * 3_600_000);
+    try {
+      const pinging = await login("alex", alexToken), browsing = await login("alex", alexToken);
+      const pinged = await framedPage(pinging), browsed = await framedPage(browsing);
+      at(11);
+      expect((await ping(`conn=${pinged.conn}&n=1`, { cookie: pinging })).status).toBe(204);
+      // The control: an ordinary page visit at the same time does extend its session.
+      expect((await fetch(url("/settings"), { headers: { cookie: browsing }, redirect: "manual" })).status).toBe(200);
+      at(13);
+      expect((await fetch(url("/settings"), { headers: { cookie: browsing }, redirect: "manual" })).status).toBe(200);
+      const idle = await fetch(url("/settings"), { headers: { cookie: pinging }, redirect: "manual" });
+      expect(idle.status).not.toBe(200);
+      expect(idle.headers.get("location") ?? "").toContain("/login");
+      pinged.close(); browsed.close();
+    } finally { vi.restoreAllMocks(); }
   });
 });
 

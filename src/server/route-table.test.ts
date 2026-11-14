@@ -133,6 +133,11 @@ describe("the route table", () => {
     for (const old of ["/t/one/live", "/flows/7/live", "/chat/stream"]) expect(matchRoute("GET", old, "console"), old).toBeNull();
     expect(matchRoute("GET", "/api/team/events")).toBeNull();
     expect(matchRoute("POST", "/live", "console")).toBeNull();
+    // Fluid pages 1b: a page's probe of its own stream. A browser session only, a read, and the local owner's like /live.
+    const ping = matchRoute("GET", "/live/ping", "edge");
+    expect(ping).toMatchObject({ id: "live.ping", domain: "live", callers: ["cookie"], scope: "read", project: "adapter", proof: "adapter", needsProject: false, local: "allow", localAct: "read" });
+    for (const method of ["POST", "GET,HEAD"]) expect(ROUTES.filter(one => one.method === method && new RegExp(one.pattern).test("/live/ping")), method).toEqual([]);
+    expect(matchRoute("GET", "/live/ping/x")).toBeNull();
   });
 
   test("undeclared paths and wrong methods match nothing", () => {
