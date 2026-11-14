@@ -150,8 +150,9 @@ const CUSTODY_WAITS = `(custody_unresolved AND code IN ('process-needs-attention
  * 2026-10-04; bundled from Node 22.23, 24.22 and 26.13 on) it refuses a statement once those copies have opened
  * SQLITE_LIMIT_EXPR_DEPTH (1000) cursors: "VIEWs and/or subqueries nested too deep". Read as a DAG this projection
  * opened about 1,350 cursors and the Tasks page about 4,000. So a family's facts ride on each version (window functions
- * over the family) with the family's versions as JSON lists, and the page's totals ride on its rows; nothing reads
- * `members`, `ordered`, `ready` or `ranked` a second time. src/sqlite-compat.test.ts holds every read to a third of the limit. */
+ * over the family) with the family's versions as JSON lists built once per family (`versions`, which reads only
+ * `admitted` and `lineage` again), and the page's totals ride on its rows; nothing reads `members`, `ordered`, `ready`
+ * or `ranked` a second time. src/sqlite-compat.test.ts holds every read to a third of the limit. */
 const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   SELECT t.id, t.title, t.state, t.created_at, t.updated_at, r.id ref_id, r.repo,
     r.revision_of, r.revision_brief_artifact, r.assigned_runner, r.plan,
@@ -190,8 +191,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   FROM admitted a LEFT JOIN lineage l ON l.ref_id=a.ref_id
   LEFT JOIN questions q ON q.task_ref=a.ref_id LEFT JOIN custody cu ON cu.task_ref=a.ref_id
 ), ordered AS MATERIALIZED (
-  -- Every version carries its family's facts (window functions over the family: see ONE_READ) and the family's
-  -- versions as JSON lists, ordered by task_ref, for the later reads that look across a family.
+  -- Every version carries its family's facts (window functions over the family: see ONE_READ).
   SELECT o.*,CASE WHEN o.ref_id=o.current_ref THEN 1 ELSE 2 END version_rank FROM (
     SELECT m.*,COUNT(*) OVER family fam_version_count,MAX(updated_at) OVER family fam_updated,
       CAST(substr(MAX((CASE WHEN ref_id=root_ref THEN '0' ELSE '1' END)||created_at||printf('%020d',ref_id)) OVER family,-20) AS INTEGER) current_ref,
@@ -199,10 +199,13 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
       SUM(NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved)) OVER family fam_active_count,
       MIN(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) OVER family fam_first_active,
       MAX(CASE WHEN NOT member_archived AND (state IN ('queued','running') OR live_lease IS NOT NULL OR unfinished IS NOT NULL OR custody_unresolved) THEN ref_id END) OVER family fam_last_active,
-      MAX(live_lease IS NOT NULL) OVER family fam_running,MIN(CASE WHEN NOT member_archived THEN decision_id END) OVER family fam_question_id,
-      json_group_array(ref_id) OVER versions fam_refs,json_group_array(id) OVER versions fam_ids
-    FROM members m WINDOW family AS (PARTITION BY root_ref),
-      versions AS (PARTITION BY root_ref ORDER BY ref_id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)) o
+      MAX(live_lease IS NOT NULL) OVER family fam_running,MIN(CASE WHEN NOT member_archived THEN decision_id END) OVER family fam_question_id
+    FROM members m WINDOW family AS (PARTITION BY root_ref)) o
+), versions AS MATERIALIZED (
+  -- Each family's versions as JSON lists, ordered by task_ref, built once per family (never on every version), for the
+  -- later reads that look across a family. Members' own family: admitted joined to its lineage, as members reads it.
+  SELECT COALESCE(l.root_ref,a.ref_id) root_ref,json_group_array(a.ref_id ORDER BY a.ref_id) fam_refs,json_group_array(a.id ORDER BY a.ref_id) fam_ids
+  FROM admitted a LEFT JOIN lineage l ON l.ref_id=a.ref_id GROUP BY COALESCE(l.root_ref,a.ref_id)
 ), workers AS MATERIALIZED (
   SELECT r.name,r.capacity,r.heartbeat_at,j.value repo,
     (SELECT COUNT(*) FROM claim c WHERE c.runner=r.name AND c.released_at IS NULL AND c.expires_at>$now
@@ -212,7 +215,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
   SELECT c.*,c.fam_version_count version_count,c.fam_updated family_updated,
     c.fam_active_count-(NOT c.member_archived AND (c.state IN ('queued','running') OR c.live_lease IS NOT NULL OR c.unfinished IS NOT NULL OR c.custody_unresolved)) earlier_active,
     earlier.id earlier_id,c.fam_running family_running,COALESCE(c.decision_id,c.fam_question_id) question_id,
-    root.id root_id,root.title root_title,
+    root.id root_id,root.title root_title,fam.fam_refs,fam.fam_ids,
     result.role result_role,result.outcome result_outcome,result.head_revision,result.scope_digest,result.finished_at,
     (SELECT id FROM run WHERE task_ref=c.ref_id AND lease_id=c.live_lease AND outcome IS NULL ORDER BY id DESC LIMIT 1) live_run,
     h.owner_kind hold_kind,h.reason hold_reason,h.until hold_until,
@@ -271,7 +274,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
     COALESCE((SELECT substr(actor,13) FROM action_ledger WHERE task_id=root.id AND action='assignment claimed' AND source='work' ORDER BY id DESC LIMIT 1),root.coordinator_cid) owner_id,
     ${HELD_FINDINGS} held_findings,
     pub.pr_url publication_url
-  FROM ordered c JOIN admitted root ON root.ref_id=c.root_ref
+  FROM ordered c JOIN admitted root ON root.ref_id=c.root_ref JOIN versions fam ON fam.root_ref=c.root_ref
   LEFT JOIN admitted earlier ON earlier.ref_id=CASE WHEN c.fam_first_active=c.current_ref THEN c.fam_last_active ELSE c.fam_first_active END
   LEFT JOIN run result INDEXED BY work_result ON result.task_ref=c.ref_id AND result.id=c.result_id
     AND result.finished_at IS NOT NULL AND result.role IN ('builder','scout') LEFT JOIN hold h ON h.id=c.hold_id
