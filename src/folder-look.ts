@@ -46,7 +46,14 @@ export type FolderLookRequest =
   /** Where each path really is (its real path, when that is a folder): a project's identity, resolved off the thread. */
   | { op: "identities"; paths: readonly string[] }
   /** A project's own `.mcp.json`, read as a plain bounded file and parsed (null when absent or not a JSON object). */
-  | { op: "projectMcp"; path: string };
+  | { op: "projectMcp"; path: string }
+  /** What a folder really is, for a choice that widens what the server may open (the projects folder, a repository
+   * added from outside it): its real path in the disk's own spelling (realpath.native: on a case-insensitive disk
+   * `/users/x` answers `/Users/x`), whether it is a folder, its owner, and the identity (device and inode) of it and of
+   * every folder above it; the same for each folder it is compared with. */
+  | { op: "folder"; path: string; compare: readonly string[] }
+  /** `list` with real paths in the disk's own spelling (the folder pickers). */
+  | { op: "list"; path: string; roots: readonly string[]; home: string; native: true };
 
 /** One look under way: its answer, and when its process has ended (a stuck child can outlive its answer). */
 export type FolderLookRun = { answer: Promise<unknown>; ended: Promise<void> };
@@ -106,7 +113,7 @@ function children(folder, roots, links) {
       const spelled = path.join(folder, entry.name);
       if (offLimits(spelled, roots)) continue;
       let real, stat;
-      try { real = fs.realpathSync(spelled); } catch { continue; }
+      try { real = (request.native === true ? fs.realpathSync.native : fs.realpathSync)(spelled); } catch { continue; }
       if (offLimits(real, roots) || !roots.some(root => within(real, root))) continue;
       try { stat = fs.statSync(real); } catch { continue; }
       if (!stat.isDirectory()) continue;
@@ -117,7 +124,25 @@ function children(folder, roots, links) {
   } finally { dir.closeSync(); }
   return out;
 }
+// A folder's identity and the identities of the folders above it, by device and inode: what containment is judged on.
+function facts(p) {
+  try {
+    const real = fs.realpathSync.native(path.resolve(p));
+    const stat = fs.statSync(real);
+    const chain = [];
+    let at = real;
+    for (let depth = 0; depth < 256; depth++) {
+      const one = fs.statSync(at);
+      chain.push(one.dev + ":" + one.ino);
+      const up = path.dirname(at);
+      if (up === at) break;
+      at = up;
+    }
+    return { real, dir: stat.isDirectory(), uid: stat.uid, chain };
+  } catch { return null; }
+}
 function look() {
+  if (request.op === "folder") return { target: facts(request.path), compare: request.compare.slice(0, 64).map(facts) };
   if (request.op === "projectMcp") {
     const text = readBounded(path.join(request.path, ".mcp.json"), 1024 * 1024, 1024 * 1024);
     if (text === null) return { config: null };
@@ -131,8 +156,9 @@ function look() {
     }) };
   }
   const roots = request.roots;
+  const realOf = request.native === true ? fs.realpathSync.native : fs.realpathSync;
   if (request.op === "list") {
-    const at = fs.realpathSync(request.path);
+    const at = realOf(request.path);
     const root = rootOf(at, roots);
     if (root === undefined || offLimits(at, roots) || !fs.statSync(at).isDirectory()) return { at: null, entries: [] };
     // A folder on another drive than the root that allows it is not entered (the root itself may be one).
@@ -209,7 +235,8 @@ let starts = 0;
 function lookKey(request: FolderLookRequest): string {
   const sorted = (paths: readonly string[]) => paths.map(one => resolve(one)).sort();
   switch (request.op) {
-    case "list": return JSON.stringify([request.op, resolve(request.path), sorted(request.roots), request.home]);
+    case "list": return JSON.stringify([request.op, resolve(request.path), sorted(request.roots), request.home, "native" in request]);
+    case "folder": return JSON.stringify([request.op, resolve(request.path), sorted(request.compare)]);
     case "origins": return JSON.stringify([request.op, sorted(request.registered), sorted(request.roots), request.home]);
     case "identities": return JSON.stringify([request.op, sorted(request.paths)]);
     case "projectMcp": return JSON.stringify([request.op, resolve(request.path)]);
@@ -259,9 +286,10 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 export type FolderEntry = { name: string; path: string; git: boolean };
 export type FolderLookOptions = { runner?: FolderLookRunner; deadlineMs?: number; home?: string };
 
-/** A folder's sub-folders for the browse page (null `at`: outside every root, or not a folder). */
-export async function listFolder(path: string, roots: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ at: string | null; entries: FolderEntry[] }>> {
-  const looked = await lookFolders({ op: "list", path, roots: [...roots], home: options.home ?? homedir() }, options);
+/** A folder's sub-folders for the browse page (null `at`: outside every root, or not a folder). `native`: real paths in
+ * the disk's own spelling (the folder pickers). */
+export async function listFolder(path: string, roots: readonly string[], options: FolderLookOptions & { native?: boolean } = {}): Promise<FolderLook<{ at: string | null; entries: FolderEntry[] }>> {
+  const looked = await lookFolders(options.native === true ? { op: "list", path, roots: [...roots], home: options.home ?? homedir(), native: true } : { op: "list", path, roots: [...roots], home: options.home ?? homedir() }, options);
   if (!looked.ok) return looked;
   const value = looked.value as { at?: unknown; entries?: unknown } | null;
   if (value === null || typeof value !== "object" || !(value.at === null || text(value.at)) || !Array.isArray(value.entries)) return { ok: false, why: "failed" };
@@ -307,4 +335,22 @@ export async function lookProjectMcp(repo: string, options: FolderLookOptions = 
   if (value === null || typeof value !== "object") return { ok: false, why: "failed" };
   const config = value.config;
   return { ok: true, value: config !== null && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : null };
+}
+
+/** One folder as the "folder" look found it (null: missing or unreadable). */
+export type FolderFacts = { real: string; dir: boolean; uid: number; chain: readonly string[] };
+const factsOf = (value: unknown): FolderFacts | null => {
+  const one = value as { real?: unknown; dir?: unknown; uid?: unknown; chain?: unknown } | null;
+  if (one === null || typeof one !== "object" || !text(one.real) || typeof one.dir !== "boolean" || typeof one.uid !== "number" || !Array.isArray(one.chain)) return null;
+  const chain = one.chain.filter((id: unknown): id is string => typeof id === "string" && /^\d+:\d+$/.test(id));
+  return chain.length === one.chain.length && chain.length > 0 ? { real: one.real, dir: one.dir, uid: one.uid, chain } : null;
+};
+/** What `path` really is, and each of `compare`, off the console's thread under the look's deadline (folder-look's
+ * "folder" request). */
+export async function folderFacts(path: string, compare: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ target: FolderFacts | null; compare: (FolderFacts | null)[] }>> {
+  const looked = await lookFolders({ op: "folder", path, compare: [...compare] }, options);
+  if (!looked.ok) return looked;
+  const value = looked.value as { target?: unknown; compare?: unknown } | null;
+  if (value === null || typeof value !== "object" || !Array.isArray(value.compare)) return { ok: false, why: "failed" };
+  return { ok: true, value: { target: factsOf(value.target), compare: value.compare.map(factsOf) } };
 }

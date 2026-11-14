@@ -168,51 +168,60 @@ export function expandHomePath(path: string, home: string): string | null {
   return path;
 }
 
-/** Folders the system owns: a projects folder is never one of these, nor inside one. */
-const SYSTEM_TREES = ["/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/dev", "/private", "/var", "/proc", "/sys", "/boot", "/run", "/lib", "/lib64", "/cores", "/Network"];
+/** Folders the system owns: a projects folder or an added repository is never one of these, nor inside one. */
+export const SYSTEM_TREES = ["/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/dev", "/private", "/var", "/proc", "/sys", "/boot", "/run", "/lib", "/lib64", "/cores", "/Network"];
 /** Folders that hold everyone's folders: never a projects folder themselves (a folder inside one may be). */
-const SYSTEM_TOPS = ["/Applications", "/Volumes", "/Users", "/home", "/opt", "/mnt", "/media", "/srv", "/tmp", "/root", "/snap"];
+export const SYSTEM_TOPS = ["/Applications", "/Volumes", "/Users", "/home", "/opt", "/mnt", "/media", "/srv", "/tmp", "/root", "/snap"];
 
-/**
- * Why a folder can't be the projects folder (Settings → Projects), or null when it may be. `path` and `home` are real
- * paths; `protectedDirs` are Toolroll's own settings and records folders (the database's folder, task checkouts,
- * evidence, tool secrets). Choosing a projects folder widens what the server may open, so the folders a person would
- * never mean are refused by name: the home folder itself and anything holding it, hidden folders and ~/Library, the
- * system's folders, and anything holding or inside Toolroll's own state.
- */
-export function projectsFolderRefusal(path: string, facts: { home: string; protectedDirs: readonly string[] }): string | null {
-  const inside = (one: string, root: string): boolean => one === root || one.startsWith(root === "/" ? "/" : `${root}/`);
-  const { home } = facts;
-  if (path === "/") return "the top of the disk can’t be the projects folder";
-  if (path === home) return "your home folder itself can’t be the projects folder. Choose a folder inside it, like ~/Developer";
-  if (inside(home, path)) return "that folder holds your home folder. Choose a folder inside your home folder";
-  for (const dir of facts.protectedDirs) {
-    if (inside(dir, path) || (dir !== home && inside(path, dir))) return "that folder holds Toolroll’s own settings and records";
-  }
-  if (inside(path, home)) {
-    const below = path.slice(home.length + 1).split("/");
-    if (below[0] === "Library") return "folders in ~/Library can’t be the projects folder";
-    if (below.some(one => one.startsWith("."))) return "hidden folders can’t be the projects folder";
-    return null;
-  }
-  if (SYSTEM_TOPS.includes(path) || SYSTEM_TREES.some(tree => inside(path, tree))) return "that’s a system folder";
-  return null;
+/** A folder as the console's bounded look found it (folder-look.ts `folderFacts`): its real path in the disk's own
+ * spelling and the identity (device:inode) of it and of each folder above it, itself first. */
+export type FolderIdentity = { real: string; dir: boolean; uid: number; chain: readonly string[] };
+
+/** What a widening choice is compared with, each as the same look found it (null: not there). */
+export type FolderComparisons = {
+  root: FolderIdentity | null;
+  home: FolderIdentity | null;
+  library: FolderIdentity | null;
+  /** Toolroll's own settings, records, evidence, tool secrets and task checkouts. */
+  protectedDirs: readonly (FolderIdentity | null)[];
+  tops: readonly (FolderIdentity | null)[];
+  trees: readonly (FolderIdentity | null)[];
+};
+
+/** The paths `folderRefusal` compares with, in the order `comparisonsOf` reads them back. */
+export function comparisonPaths(home: string, protectedDirs: readonly string[]): string[] {
+  return ["/", home, resolve(home, "Library"), ...protectedDirs, ...SYSTEM_TOPS, ...SYSTEM_TREES];
+}
+export function comparisonsOf(found: readonly (FolderIdentity | null)[], protectedCount: number): FolderComparisons {
+  const after = 3 + protectedCount;
+  return {
+    root: found[0] ?? null, home: found[1] ?? null, library: found[2] ?? null,
+    protectedDirs: found.slice(3, after), tops: found.slice(after, after + SYSTEM_TOPS.length), trees: found.slice(after + SYSTEM_TOPS.length),
+  };
 }
 
 /**
- * Why a repository from outside every projects folder can't be added (the console's exact path, a password typed now),
- * or null. `repo` is its real checkout root. The same folders as the projects folder are refused — the disk's top, the
- * home folder and what holds it, ~/Library, the system's folders, Toolroll's own settings, records and task checkouts —
- * except that a hidden folder in the home folder (a dotfiles repository) may be one.
+ * Why a folder can't be the projects folder (`kind` "folder") or a repository added from outside it ("repo"), or null.
+ * Judged on identity, never spelling: a folder is "inside" another when that one's device and inode are among the
+ * folders above it, so a case alias (`/users/…` on a case-insensitive disk), a firmlink or a link never passes for a
+ * different folder. Refused: the disk's top, the home folder and anything holding it, ~/Library, any hidden folder
+ * (any name in its real path starting with "."), anything holding or inside Toolroll's own state, the system's folders.
  */
-export function repositoryRefusal(repo: string, facts: { home: string; protectedDirs: readonly string[] }): string | null {
-  const inside = (one: string, root: string): boolean => one === root || one.startsWith(root === "/" ? "/" : `${root}/`);
-  const { home } = facts;
-  if (repo === "/" || inside(home, repo)) return "that repository holds your home folder, so it can't be added";
+export function folderRefusal(kind: "folder" | "repo", target: FolderIdentity, facts: FolderComparisons): string | null {
+  const id = (one: FolderIdentity): string => one.chain[0]!;
+  const inside = (one: FolderIdentity, outer: FolderIdentity | null): boolean => outer !== null && one.chain.includes(id(outer));
+  const noun = kind === "folder" ? "the projects folder" : "added";
+  const cant = (why: string): string => kind === "folder" ? `${why} can’t be the projects folder` : `${why} can’t be added`;
+  if (facts.root !== null && id(target) === id(facts.root)) return cant("the top of the disk");
+  if (facts.home !== null && id(target) === id(facts.home)) return kind === "folder" ? "your home folder itself can’t be the projects folder. Choose a folder inside it, like ~/Developer" : "your home folder itself can’t be added";
+  if (facts.home !== null && inside(facts.home, target)) return `that folder holds your home folder, so it can’t be ${noun === "added" ? "added" : "the projects folder"}`;
   for (const dir of facts.protectedDirs) {
-    if (inside(dir, repo) || (dir !== home && inside(repo, dir))) return "that folder holds Toolroll’s own settings, records or task checkouts, so it can’t be added";
+    if (dir === null) continue;
+    if (inside(target, dir) || (facts.home === null || id(dir) !== id(facts.home)) && inside(dir, target)) return cant("a folder holding Toolroll’s own settings, records or task checkouts");
   }
-  if (inside(repo, home)) return repo.slice(home.length + 1).split("/")[0] === "Library" ? "repositories in ~/Library can’t be added" : null;
-  if (SYSTEM_TOPS.includes(repo) || SYSTEM_TREES.some(tree => inside(repo, tree))) return "that’s a system folder, so it can’t be added";
+  if (inside(target, facts.library)) return cant("a folder in ~/Library");
+  if (target.real.split("/").some(name => name.startsWith("."))) return cant("a hidden folder");
+  if (inside(target, facts.home)) return null;
+  if (facts.tops.some(top => top !== null && id(top) === id(target)) || facts.trees.some(tree => inside(target, tree))) return cant("a system folder");
   return null;
 }

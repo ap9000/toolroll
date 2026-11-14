@@ -207,6 +207,7 @@ import {
 LEAD_THREAD,
 latestLeadTurnOfThread,
 localOwnerBinding,
+projectRowKnown,
 type Decision,
 type LeadAsk,type LeadThreadScope
 } from "./store.js";
@@ -487,7 +488,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * served at once, before the builder connects them; one deleted or removed here leaves with it. */
   const consoleAdmitted = new Set<string>();
   const liveCeiling = () => {
-    const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? []), ...stillAdmitted(consoleAdmitted, deletedRepos)];
+    const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? []), ...stillAdmitted(consoleAdmitted, deletedRepos, repo => projectRowKnown(store, repo))];
     // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
     return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.strict };
   };
@@ -2570,7 +2571,10 @@ function consoleProjectRoots(deps: {
   };
 }
 
-/** The repositories a console added from outside every projects folder, less those deleted or removed here since. */
-function stillAdmitted(admitted: ReadonlySet<string>, gone: ReadonlySet<string>): string[] {
-  return [...admitted].filter(repo => !gone.has(repo));
+/** The repositories a console added from outside every projects folder that are still added: not deleted or removed
+ * here, and still holding their admission (a removal anywhere, `repos remove` or the lead, drops the project row). One
+ * that was removed leaves for good: adding it again takes the password again. Checked on every read of the ceiling. */
+function stillAdmitted(admitted: Set<string>, gone: ReadonlySet<string>, added: (repo: string) => boolean): string[] {
+  for (const repo of admitted) if (gone.has(repo) || !added(repo)) admitted.delete(repo);
+  return [...admitted];
 }

@@ -27317,3 +27317,8 @@ export const CONTAINMENT_NOTICE_FACT = "containment-notice-shown";
 export function noticeDueOnce(store: Store, key: string, now: Date): boolean {
   return Number(store.handle.prepare("INSERT OR IGNORE INTO installation_fact (key, value, created_at) VALUES (?, 'yes', ?)").run(key, now.toISOString()).changes) === 1;
 }
+
+/** Whether a project is added now: its row (an admission; removing or deleting a project drops it). One indexed read. */
+export function projectRowKnown(store: Store, path: string): boolean {
+  return store.handle.prepare("SELECT 1 FROM project WHERE path = ?").get(path) !== undefined;
+}

@@ -8,13 +8,12 @@ import { html, joinHtml, postForm, type Html, reauth } from "../html.js";
 import * as kit from "./kit.js";
 /** pages handlers, moved without changing their route bodies. */
 import { createHmac,randomBytes } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
 import { basename,dirname,join,resolve } from "node:path";
 import { builderReadyFor, buildersFor, firstRunBuilderRepo } from "../dispatch.js";
 import { withBuilderStep } from "../first-run.js";
-import { listFolder,localOrigins } from "../folder-look.js";
+import { folderFacts,listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
@@ -42,13 +41,17 @@ import { readMonitoring } from "../monitoring-settings.js";
 import { targetOf } from "../monitoring.js";
 import { cloneGithubRepo,isLargeRepo,listGithubRepos,parseGithubRepo,previewGithubRepo } from "../onboard.js";
 import { admitProject,proveProjectRoot,releaseProject } from "../project-admission.js";
+import { typedPasswordNow } from "../scope.js";
 import {
 authorizedProject,
 canonicalProject,
 expandHomePath,
 isGitRepo,
-projectsFolderRefusal,
-repositoryRefusal,
+comparisonPaths,
+comparisonsOf,
+folderRefusal,
+type FolderComparisons,
+type FolderIdentity,
 projectName,
 sameRepo
 } from "../project.js";
@@ -665,17 +668,18 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       }
       const password = body.get("password") ?? "";
       if (password === "") return say(`${outsideWords}. To add it anyway, enter your Toolroll password`, 403);
-      const proved = authenticateCredential(who, password);
-      if (!proved.ok || proved.method !== "password-now") return say("that password didn't match", 403);
+      if (!typedPasswordNow(authenticateCredential(who, password))) return say("that password didn't match", 403);
       const root = await proveProjectRoot(canonical, undefined, identities.resolveNow);
       if (!root.ok) return say(root.reason === "not-git" ? "that path is not a git repository" : root.message, 400);
-      const home = await identities.resolveNow(homedir());
-      if (typeof home !== "string") return say("your home folder didn't answer — try again in a moment", 503);
-      const refusal = repositoryRefusal(root.repo, { home, protectedDirs: toolrollStateFolders(home) });
+      // What the checkout really is, read by the bounded look (never on this thread): judged on identity, not spelling.
+      const seen = await widenFacts(root.repo);
+      if (!seen.ok) return say(seen.words, 503);
+      if (seen.target === null || !seen.target.dir) return say("that path is not a git repository", 400);
+      const refusal = folderRefusal("repo", seen.target, seen.facts);
       if (refusal !== null) return say(refusal, 400);
-      let owned = false;
-      try { owned = identities.answering(root.repo) && (process.getuid === undefined || statSync(root.repo).uid === process.getuid()); } catch { owned = false; }
-      if (!owned) return say(`${shortPathOf(root.repo)} must be a repository you own`, 403);
+      if (process.getuid !== undefined && seen.target.uid !== process.getuid()) return say(`${shortPathOf(root.repo)} must be a repository you own`, 403);
+      // Saved as the disk spells it: a case alias (or any other spelling) of the checkout is refused, never recorded.
+      if (seen.target.real !== root.repo) return say(`use the folder's own name: ${shortPathOf(seen.target.real)}`, 400);
       target = root.repo;
       outside = true;
     } else if (!(await isGitRepo(canonical))) {
@@ -1300,25 +1304,41 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     query.set(key, words);
     return redirect(response, `/settings/projects-folder?${query.toString()}`);
   }
-  /** The folders Toolroll keeps its own settings and records in: a projects folder never holds one or sits inside one. */
+  /** The folders Toolroll keeps its own settings and records in, as configured (the bounded look resolves them): a
+   * projects folder or an added repository never holds one or sits inside one. */
   function toolrollStateFolders(home: string): string[] {
-    const real = (path: string): string => { try { return realpathSync(path); } catch { return resolve(path); } };
     const base = configBase(process.env, home);
     return [...new Set([
       options.configDir, options.registryPath === undefined ? undefined : dirname(options.registryPath), evidenceRoot, options.poolRoot, options.toolHome,
       ...NAMES.map(name => join(base, name)), ...NAMES.map(name => join(home, `.${name}`)),
-    ].filter((one): one is string => typeof one === "string" && one !== "").map(real))];
+    ].filter((one): one is string => typeof one === "string" && one !== "").map(one => resolve(one)))];
   }
-  /** The home folder of the user this server runs as, as its real path (off the console's thread); null if it didn't answer. */
-  async function realHome(): Promise<string | null> {
-    const found = await identities.resolveNow(homedir());
-    return typeof found === "string" ? found : null;
+  /** The console's bounded look options (folder-look.ts): off its thread, under the deadline. */
+  const lookOptions = () => ({ home: homedir(), ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) });
+  /** A folder a widening choice names, and everything it is judged against, in one bounded look: never on this thread,
+   * so a disconnected drive (a pool or evidence folder elsewhere included) answers "didn't answer" instead of freezing. */
+  async function widenFacts(path: string): Promise<{ ok: true; target: FolderIdentity | null; home: FolderIdentity; facts: FolderComparisons; protectedReal: string[] } | { ok: false; words: string }> {
+    const home = homedir();
+    const protect = toolrollStateFolders(home);
+    const looked = await folderFacts(path, comparisonPaths(home, protect), lookOptions());
+    if (!looked.ok) return { ok: false, words: looked.why === "no-answer" ? "That folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment." : "That folder couldn't be read." };
+    const facts = comparisonsOf(looked.value.compare, protect.length);
+    if (facts.home === null) return { ok: false, words: "Your home folder couldn't be read. Try again in a moment." };
+    return { ok: true, target: looked.value.target, home: facts.home, facts, protectedReal: facts.protectedDirs.flatMap(one => one === null ? [] : [one.real]) };
   }
   /** Whether this session still stands as an instance operator with full authority: re-read right before a write. */
   function folderStandingNow(who: Who): boolean {
     if (who.via !== "cookie" || who.authority !== "full") return false;
     const account = store.accountOf(who.name);
     return account !== null && account.revokedAt === null && account.role === "approver" && account.generation === who.session.generation && store.isInstanceOperator(who.name);
+  }
+  /** Projects-folder changes one at a time, each published and applied in its own turn: a save that started earlier
+   * can never land after a later Stop using, and the live folders always follow the latest publication. */
+  let folderTurn: Promise<unknown> = Promise.resolve();
+  function inFolderTurn<T>(work: () => Promise<T>): Promise<T> {
+    const turn = folderTurn.then(work, work);
+    folderTurn = turn.catch(() => undefined);
+    return turn;
   }
 
   /** The picker's look (folder-look.ts, the browse page's own reads and limits: directory names only, off the console's
@@ -1332,21 +1352,24 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const back: readonly [string, string] = mode === "repo" ? ["/projects", "Projects"] : ["/settings/projects", "Settings → Projects"];
     const inside = (one: string, root: string): boolean => one === root || one.startsWith(`${root}/`);
     const base = { mode, problem: url.searchParams.get("problem"), said: url.searchParams.get("said"), back, typed: mode === "folder" ? pickFolderTyped(returnTo) : null };
-    const home = await realHome();
-    if (home === null) {
-      return sendScreen(response, 200, folderPickerPage(chrome, { ...base, at: null, entries: [], shortcuts: [], chosen: null, lookProblem: "Your home folder didn't answer. Try again in a moment." }));
+    const seenHome = await widenFacts(homedir());
+    if (!seenHome.ok) {
+      return sendScreen(response, 200, folderPickerPage(chrome, { ...base, at: null, entries: [], shortcuts: [], chosen: null, lookProblem: seenHome.words }));
     }
+    const home = seenHome.home.real;
     const roots = [home, ...ceiling.roots.filter(root => !inside(root, home) && !inside(home, root))];
     const hrefOf = (path: string): string => `${mode === "repo" ? "/projects/pick" : "/settings/projects-folder"}?at=${encodeURIComponent(path)}${returnTo === back[0] || (mode === "repo" && returnTo === "/projects") ? "" : `&return=${encodeURIComponent(returnTo)}`}`;
     const fallback = mode === "repo" ? ceiling.roots[0] ?? home : home;
     const expanded = expandHomePath((url.searchParams.get("at") ?? "").trim(), home);
     const spelled = expanded === null || !expanded.startsWith("/") ? fallback : resolve(expanded);
     const start = roots.some(root => inside(spelled, root)) ? spelled : fallback;
-    const lookOptions = { home, ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) };
-    const protectedDirs = toolrollStateFolders(home);
-    // Browsing through a folder that holds Toolroll's state is fine (choosing it is refused); entering that state is not.
-    const kept = (path: string): boolean => roots.some(root => inside(path, root)) && !protectedDirs.some(dir => inside(path, dir));
-    const looked = await listFolder(start, roots, lookOptions);
+    const listOptions = { ...lookOptions(), home, native: true };
+    const protectedDirs = seenHome.protectedReal;
+    // Browsing through a folder that holds Toolroll's state is fine (choosing it is refused); entering that state is not,
+    // nor entering a hidden folder (any name below its root starting with "."), however the address spells it.
+    const hiddenBelow = (path: string): boolean => { const root = roots.find(one => inside(path, one)); return root !== undefined && path.slice(root.length).split("/").some(name => name.startsWith(".")); };
+    const kept = (path: string): boolean => roots.some(root => inside(path, root)) && !protectedDirs.some(dir => inside(path, dir)) && !hiddenBelow(path);
+    const looked = await listFolder(start, roots, listOptions);
     const at = looked.ok ? looked.value.at : null;
     if (!looked.ok || at === null || !kept(at)) {
       const lookProblem = looked.ok ? "This folder couldn't be read." : looked.why === "no-answer" ? "This folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment." : "This folder couldn't be read.";
@@ -1362,7 +1385,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       ...parts.map((part, index) => ({ label: part, href: index === parts.length - 1 ? null : hrefOf(`${root}/${parts.slice(0, index + 1).join("/")}`) }))];
     const up = at === root ? null : hrefOf(at.slice(0, at.lastIndexOf("/")) || root);
     // Shortcuts: the common places in the home folder that exist, and the projects folders.
-    const homeLook = at === home ? looked : await listFolder(home, roots, lookOptions);
+    const homeLook = at === home ? looked : await listFolder(home, roots, listOptions);
     const homeNames = new Set(homeLook.ok ? homeLook.value.entries.map(one => one.name) : []);
     const shortcuts = [
       ...(at === home ? [] : [{ label: "Home folder", href: hrefOf(home) }]),
@@ -1372,7 +1395,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     let chosen: Html | null = null;
     if (mode === "folder") {
       // At the home folder there is nothing to choose yet: its folders are the choices.
-      chosen = at === home ? null : pickFolderChosen({ path: at, returnTo, refusal: projectsFolderRefusal(at, { home, protectedDirs }) });
+      if (at !== home) {
+        const seen = await widenFacts(at);
+        const refusal = !seen.ok ? seen.words : seen.target === null ? "that folder couldn't be read" : folderRefusal("folder", seen.target, seen.facts);
+        chosen = pickFolderChosen({ path: at, returnTo, refusal });
+      }
     } else if (at !== home) {
       // A repository here (proved, not taken from the address): what adding it takes.
       const proved = await proveProjectRoot(at, undefined, identities.resolveNow);
@@ -1382,7 +1409,9 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         else if (await authorizedProject(liveCeiling(), at)) chosen = pickRepoChosen({ name, path: at, state: "inside", refusal: null });
         else {
           const may = who.via === "cookie" && who.role === "approver" && who.authority === "full" && !store.isDemo() && !restricted();
-          chosen = pickRepoChosen({ name, path: at, state: may ? "outside" : "blocked", refusal: repositoryRefusal(at, { home, protectedDirs }) });
+          const seen = await widenFacts(at);
+          const refusal = !seen.ok ? seen.words : seen.target === null ? "that folder couldn't be read" : folderRefusal("repo", seen.target, seen.facts);
+          chosen = pickRepoChosen({ name, path: at, state: may ? "outside" : "blocked", refusal });
         }
       }
     }
@@ -1404,57 +1433,63 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return pickerScreen(ctx, "repo");
   }
 
-  /** POST /settings/projects-folder: the step-up that chooses it. Saved, then live; the ledger keeps before → after. */
+  /** POST /settings/projects-folder: the step-up that chooses it. The folder is judged inside the registry's lock, right
+   * before publication (identity, exclusions, owner, standing), published as the disk spells it, and applied to the live
+   * ceiling in the same turn; any refusal leaves the registry and the live folders as they were. The ledger keeps
+   * before → after with the folder's identity. */
   async function projectsFolderSave(ctx: HandlerContext): Promise<void> {
     const { who, response, posted, now } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.projectsFolder);
     const returnTo = safeReturn(body.get("return") ?? "/settings/projects");
     if (who.via !== "cookie") return refuse(response, who, 403, "Choosing the projects folder is a browser session's act.", "/settings/projects");
-    if (projectRoots.blockedFor(who) !== null || options.registryPath === undefined) return refuse(response, who, 403, "This Toolroll's projects folder can't be changed from here.", "/settings/projects");
+    const registryFile = options.registryPath;
+    if (projectRoots.blockedFor(who) !== null || registryFile === undefined) return refuse(response, who, 403, "This Toolroll's projects folder can't be changed from here.", "/settings/projects");
     const raw = (body.get("path") ?? "").trim();
-    const back = (words: string, at: string | null = null) => projectsFolderBack(response, "problem", words, returnTo, at);
+    const back = (words: string) => projectsFolderBack(response, "problem", words, returnTo);
     if (raw === "") return back("Enter a folder, or choose one above. Nothing changed.");
     if (raw.length > 4096 || hasForbiddenControls(raw) || /[\r\n\t]/.test(raw)) return back("That isn't a folder path. Nothing changed.");
-    const home = await realHome();
-    if (home === null) return back("Your home folder didn't answer. Try again in a moment. Nothing changed.");
-    const expanded = expandHomePath(raw, home);
+    const expanded = expandHomePath(raw, homedir());
     if (expanded === null) return back("Only ~ for your own home folder works here, like ~/Developer. Nothing changed.");
     if (!expanded.startsWith("/")) return back("Enter a full path, like ~/Developer. Nothing changed.");
     // A password typed now by an instance operator: never a session, a remembered password or a re-check (it widens).
-    const proved = authenticateCredential(who, body.get("password") ?? "");
-    if (!proved.ok || proved.method !== "password-now" || !store.isInstanceOperator(who.name)) {
-      return back("Enter your Toolroll password to choose the projects folder. Nothing changed.", expanded.startsWith(`${home}/`) ? expanded : null);
+    if (!typedPasswordNow(authenticateCredential(who, body.get("password") ?? "")) || !store.isInstanceOperator(who.name)) {
+      return back("Enter your Toolroll password to choose the projects folder. Nothing changed.");
     }
-    // The folder as it really is, read off the console's thread: the spelling never decides.
-    const found = await identities.resolveNow(expanded);
-    if (found === "no-answer") return back("That folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment. Nothing changed.");
-    if (found === null) return back(`${shortPathOf(resolve(expanded))} isn't a folder on this computer. Nothing changed.`);
-    const refusal = projectsFolderRefusal(resolve(expanded), { home, protectedDirs: toolrollStateFolders(home) }) ?? projectsFolderRefusal(found, { home, protectedDirs: toolrollStateFolders(home) });
-    if (refusal !== null) return back(`${sentence(refusal)}. Nothing changed.`);
-    // Owned by the user Toolroll runs as. Read only now that the folder answered a look (folder-gate.ts).
-    let owned = false;
-    try { owned = identities.answering(found) && statSync(found).isDirectory() && (process.getuid === undefined || statSync(found).uid === process.getuid()); } catch { owned = false; }
-    if (!owned) return back(`${shortPathOf(found)} must be a folder you own. Nothing changed.`);
-    // Check and write together: the standing is read again inside the registry's lock, right before the write.
-    let before: string[] = [];
-    let stood = true;
-    const saved = await updateProjectRegistry(options.registryPath, current => {
-      before = [...current.roots];
-      if (!folderStandingNow(who)) { stood = false; return current; }
-      return { repos: current.repos, roots: [found] };
+    return inFolderTurn(async () => {
+      let refusal: string | null = null;
+      let stood = true;
+      let before: string[] = [];
+      let chosen: FolderIdentity | null = null;
+      const saved = await updateProjectRegistry(registryFile, async current => {
+        before = [...current.roots];
+        if (!folderStandingNow(who)) { stood = false; return current; }
+        const seen = await widenFacts(expanded);
+        if (!seen.ok) { refusal = `${seen.words} Nothing changed.`; return current; }
+        const target = seen.target;
+        if (target === null || !target.dir) { refusal = `${shortPathOf(resolve(expanded))} isn't a folder on this computer. Nothing changed.`; return current; }
+        const why = folderRefusal("folder", target, seen.facts);
+        if (why !== null) { refusal = `${sentence(why)}. Nothing changed.`; return current; }
+        if (process.getuid !== undefined && target.uid !== process.getuid()) { refusal = `${shortPathOf(target.real)} must be a folder you own. Nothing changed.`; return current; }
+        // The live ceiling resolves its folders through the console's identities: this exact path answers as itself.
+        if ((await identities.resolveNow(target.real)) !== target.real) { refusal = "That folder changed while it was being checked. Try again. Nothing changed."; return current; }
+        if (!folderStandingNow(who)) { stood = false; return current; }
+        chosen = target;
+        return { repos: current.repos, roots: [target.real] };
+      });
+      if (!saved.ok) return back(`The projects folder wasn't saved: ${saved.message}. Nothing changed.`);
+      if (!stood) return refuse(response, who, 403, "Your access changed. Sign in again. Nothing changed.", "/settings/projects");
+      const picked = chosen as FolderIdentity | null;
+      if (refusal !== null || picked === null) return back(refusal ?? "Nothing changed.");
+      // Applied in the same turn as its publication: nothing publishes or applies between the two.
+      projectRoots.set([picked.real]);
+      try {
+        store.recordAction({ at: now.toISOString(), actor: who.name, repo: null, taskId: null, runId: null, action: PROJECTS_FOLDER_CHANGED, outcome: "chosen", source: "access",
+          detail: `${before.length === 0 ? "none" : before.join(", ")} → ${picked.real} (folder ${picked.chain[0]})` });
+      } catch { /* the registry holds the change; the ledger write failing never undoes it */ }
+      const words = `${shortPathOf(picked.real)} is the projects folder. Projects already added stay.`;
+      if (returnTo === "/projects/browse" || returnTo === "/projects/pick") return redirect(response, `${returnTo}?at=${encodeURIComponent(picked.real)}`);
+      return redirect(response, `${returnTo === "/settings/projects-folder" ? "/settings/projects" : returnTo}${returnTo.includes("?") ? "&" : "?"}said=${encodeURIComponent(words)}`);
     });
-    if (!saved.ok) return back(`The projects folder wasn't saved: ${saved.message}. Nothing changed.`);
-    if (!stood) return refuse(response, who, 403, "Your access changed. Sign in again. Nothing changed.", "/settings/projects");
-    // Live from now on, as exactly what was saved: its identity answered before it joins (project-identity.ts).
-    if ((await identities.resolveNow(found)) !== found) return back("That folder changed while it was being saved. Try again.");
-    projectRoots.set([found]);
-    try {
-      store.recordAction({ at: now.toISOString(), actor: who.name, repo: null, taskId: null, runId: null, action: PROJECTS_FOLDER_CHANGED, outcome: "chosen", source: "access",
-        detail: `${before.length === 0 ? "none" : before.join(", ")} → ${found}` });
-    } catch { /* the registry holds the change; the ledger write failing never undoes it */ }
-    const words = `${shortPathOf(found)} is the projects folder. Projects already added stay.`;
-    if (returnTo === "/projects/browse" || returnTo === "/projects/pick") return redirect(response, `${returnTo}?at=${encodeURIComponent(found)}`);
-    return redirect(response, `${returnTo === "/settings/projects-folder" ? "/settings/projects" : returnTo}${returnTo.includes("?") ? "&" : "?"}said=${encodeURIComponent(words)}`);
   }
 
   /** POST /settings/projects-folder/remove: stop using one folder. Narrowing only; projects already added stay. */
@@ -1462,26 +1497,29 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { who, response, posted, now } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.projectsFolderRemove);
     if (who.via !== "cookie") return refuse(response, who, 403, "Choosing the projects folder is a browser session's act.", "/settings/projects");
-    if (projectRoots.blockedFor(who) !== null || options.registryPath === undefined) return refuse(response, who, 403, "This Toolroll's projects folder can't be changed from here.", "/settings/projects");
+    const registryFile = options.registryPath;
+    if (projectRoots.blockedFor(who) !== null || registryFile === undefined) return refuse(response, who, 403, "This Toolroll's projects folder can't be changed from here.", "/settings/projects");
     const path = body.get("path") ?? "";
-    let before: string[] = [];
-    let stood = true;
-    const saved = await updateProjectRegistry(options.registryPath, current => {
-      before = [...current.roots];
-      if (!folderStandingNow(who)) { stood = false; return current; }
-      return { repos: current.repos, roots: current.roots.filter(one => one !== path) };
-    });
     const said = (key: "said" | "problem", words: string) => redirect(response, `/settings/projects?${key}=${encodeURIComponent(words)}`);
-    if (!saved.ok) return said("problem", `Nothing changed: ${saved.message}.`);
-    if (!stood) return refuse(response, who, 403, "Your access changed. Sign in again. Nothing changed.", "/settings/projects");
-    // Narrowing only: the live set loses this folder and gains nothing, whatever else the registry holds.
-    projectRoots.set(projectRoots.paths().filter(one => one !== path && identities.known(one) !== path));
-    if (!before.includes(path)) return said("said", "Nothing changed.");
-    try {
-      store.recordAction({ at: now.toISOString(), actor: who.name, repo: null, taskId: null, runId: null, action: PROJECTS_FOLDER_CHANGED, outcome: "removed", source: "access",
-        detail: `${before.join(", ")} → ${saved.registry.roots.length === 0 ? "none" : saved.registry.roots.join(", ")}` });
-    } catch { /* as above */ }
-    return said("said", `Stopped using ${shortPathOf(path)}. Projects already added stay.`);
+    return inFolderTurn(async () => {
+      let before: string[] = [];
+      let stood = true;
+      const saved = await updateProjectRegistry(registryFile, current => {
+        before = [...current.roots];
+        if (!folderStandingNow(who)) { stood = false; return current; }
+        return { repos: current.repos, roots: current.roots.filter(one => one !== path) };
+      });
+      if (!saved.ok) return said("problem", `Nothing changed: ${saved.message}.`);
+      if (!stood) return refuse(response, who, 403, "Your access changed. Sign in again. Nothing changed.", "/settings/projects");
+      // Narrowing only, in the same turn: the live set loses this folder and gains nothing, whatever else the registry holds.
+      projectRoots.set(projectRoots.paths().filter(one => one !== path && identities.known(one) !== path));
+      if (!before.includes(path)) return said("said", "Nothing changed.");
+      try {
+        store.recordAction({ at: now.toISOString(), actor: who.name, repo: null, taskId: null, runId: null, action: PROJECTS_FOLDER_CHANGED, outcome: "removed", source: "access",
+          detail: `${before.join(", ")} → ${saved.registry.roots.length === 0 ? "none" : saved.registry.roots.join(", ")}` });
+      } catch { /* as above */ }
+      return said("said", `Stopped using ${shortPathOf(path)}. Projects already added stay.`);
+    });
   }
 
   return { registrations, projectsScreen };

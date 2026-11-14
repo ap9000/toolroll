@@ -52,6 +52,8 @@ const COOKIE_ONLY_POSTS = [
   // Settings → Lead → Quick answers (responsive-chat.md §8): an operator's installation-wide switch for which model
   // answers plain questions, from a browser. No password, and never a bearer's choice.
   'settings.lead-quick',
+  // Settings → Projects → Projects folder: choosing it (a password typed now) and stopping using one (narrowing only).
+  'projects.folder-save', 'projects.folder-remove',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {
@@ -75,6 +77,7 @@ const PASSWORD_CEREMONIES = [
   '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off',
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
   '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
+  '/settings/projects-folder',
 ];
 
 test('every password ceremony has a cookie-only step-up declaration', () => {
