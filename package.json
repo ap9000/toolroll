@@ -1,6 +1,6 @@
 {
   "name": "toolroll",
-  "version": "0.9.106",
+  "version": "0.9.107",
   "description": "Your agents build. You decide. A control plane for coding agents — Claude Code, Codex, Gemini: approve the exact scope once, get results back Ready with the diff, the passing check and screenshots. Runs on your machine.",
   "directories": {
     "doc": "docs"
