@@ -26,6 +26,7 @@ import { ASKS, CODE_READING, STORAGE_HOLD_PREFIX, NEED_ASK, NEEDS, askChipOf, fa
 import { agentlessCommand, NO_AGENT_TITLE, noAgentWords, retryWhenWords, signInAgainWords } from './dispatch.js';
 import { releaseTaskOf } from './release-approval.js';
 import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
+import { workReadsOf, type WorkReads } from './work-reads.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
 export type WorkIndexItem = {
@@ -435,9 +436,9 @@ function releaseTaskIds(store: Store): string {
   return JSON.stringify(sealed.filter(taskId => releaseTaskOf(store, taskId) !== null));
 }
 
-function parameters(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, custody: ReturnType<typeof custodyReadings>) {
+function parameters(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, custody: ReturnType<typeof custodyReadings>, reads: WorkReads | null = null) {
   const ids = (keep: (ref: number, fact: StopFact | null) => boolean) => JSON.stringify([...custody.readings].filter(([ref, fact]) => keep(ref, fact)).map(([ref]) => ref));
-  return { $releaseTasks: releaseTaskIds(store), $settledCustody: ids((_, fact) => fact === null), $waitingCustody: ids((_, fact) => fact !== null && 'wait' in (processNeedOf(fact) ?? {})),
+  return { $releaseTasks: reads === null ? releaseTaskIds(store) : reads.value('release-tasks', () => releaseTaskIds(store)), $settledCustody: ids((_, fact) => fact === null), $waitingCustody: ids((_, fact) => fact !== null && 'wait' in (processNeedOf(fact) ?? {})),
     $workspaceCustody: ids((ref, fact) => fact !== null && custody.workspace.has(ref)),
     $now: now.toISOString(), $alive: new Date(now.getTime() - 180_000).toISOString(),
     $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []),
@@ -445,6 +446,38 @@ function parameters(store: Store, now: Date, access: WorkSummaryAccess, options:
     $projectSet: options.project != null ? 1 : 0, $project: options.project ?? null, $state: options.state ?? null, $leadId: options.leadId ?? null,
     $leadIdleSince: new Date(now.getTime() - LEAD_IDLE_MS).toISOString(),
     $leadOf: access.principal === 'operator' && access.viewer != null && access.viewer !== '' ? `lead for ${access.viewer}` : null };
+}
+/** The custody readings, once per request while nothing changes (work-reads.ts). */
+function custodyOf(store: Store, reads: WorkReads | null): ReturnType<typeof custodyReadings> {
+  return reads === null ? custodyReadings(store) : reads.value('custody', () => custodyReadings(store));
+}
+/** The inputs that decide the projection's rows, the clock aside (a kept copy is reused only near the instant it was read
+ * for: work-reads.ts WORK_READ_REUSE_MS). Every authorization input is one of them. */
+const TIME_INPUTS = new Set(['$now', '$alive', '$leadIdleSince']);
+/** Only the parameters a statement names: a read from the kept copy no longer names the projection's own. */
+function bound(sql: string, params: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(params).filter(([name]) => new RegExp(`\\${name}\\b`).test(sql)));
+}
+/** Rows of one read over the projection: `query` names the statement it runs after the projection's text (ending at
+ * `ranked`) and its own parameters. It runs over this request's kept copy of the projection for exactly these inputs
+ * when it holds one or can make one (work-reads.ts), else over the projection itself, as every read did before. A kept
+ * copy that can't be read is forgotten and the projection read instead. `cached`: the statement is compiled once per
+ * connection (the page query is long). */
+function projectionRows(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, custody: ReturnType<typeof custodyReadings>,
+  reads: WorkReads | null, query: (projection: string) => { sql: string; params: Record<string, unknown>; cached?: boolean }): Record<string, unknown>[] {
+  const projection = registerValidators(store), inputs = parameters(store, now, access, options, custody, reads);
+  const run = (text: string) => {
+    const one = query(text), sql = `${text}${one.sql}`;
+    return (one.cached === true ? prepared(store, sql) : store.handle.prepare(sql)).all(bound(sql, { ...inputs, ...one.params }));
+  };
+  if (reads !== null) {
+    const key = JSON.stringify(Object.entries(inputs).filter(([name]) => !TIME_INPUTS.has(name)).sort(([a], [b]) => a.localeCompare(b)));
+    const table = reads.ranked(key, now, name => { prepared(store, `CREATE TEMP TABLE "${name}" AS ${projection} SELECT * FROM ranked`).run(inputs); });
+    if (table !== null) {
+      try { return run(`WITH ranked AS (SELECT * FROM temp."${table}")`); } catch { reads.forget(key); }
+    }
+  }
+  return run(projection);
 }
 function counts(row: Row): WorkIndexCounts {
   return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), ready: n(row, 'ready_count'), running: n(row, 'running_count'), queued: n(row, 'queued_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
@@ -525,15 +558,15 @@ export function workIndexTask(store: Store, taskId: string, now: Date, access: W
 }
 
 function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, taskId: string | null = null): WorkIndexPage {
-  const projection = registerValidators(store);
-  const custody = custodyReadings(store);
+  const reads = workReadsOf(store);
+  const custody = custodyOf(store, reads);
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'ready' ? READY : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0 AND ($completedSince IS NULL OR sort_at>=$completedSince)" : 'archived=0';
   // One read of ranked serves the page, its totals and each project's totals (window functions; see ONE_READ): the page's
   // rows (`is_row`, in list order), and each project's first row (`is_project`) to carry that project's totals.
-  const rows = prepared(store, `${projection}, page AS (
+  const rows = projectionRows(store, now, access, options, custody, reads, () => ({ cached: true, sql: `, page AS (
     SELECT p.*,p.in_page AND p.page_order<=$limit is_row,p.repo_order=1 is_project,
       CASE WHEN p.in_page AND p.page_order<=$limit THEN COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) END page_result_id
     FROM (SELECT s.*,ROW_NUMBER() OVER (PARTITION BY s.in_page ORDER BY ${ORDER},sort_at DESC,root_ref DESC) page_order,
@@ -564,8 +597,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),'machine_check',COALESCE(machine_check,0),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) END row_json
-  FROM page ORDER BY is_row DESC,page_order`)
-    .all({ ...parameters(store, now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $completedSince: options.completedSince ?? null, $recent: new Date(now.getTime()-86_400_000).toISOString() });
+  FROM page ORDER BY is_row DESC,page_order`, params: { $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $completedSince: options.completedSince ?? null, $recent: new Date(now.getTime()-86_400_000).toISOString() } }));
   const selected = rows.filter(row => n(row, 'is_row') === 1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,
@@ -573,8 +605,9 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const projects = rows.filter(row => n(row, 'is_project') === 1).sort((a, b) => n(a, 'repo_rank') - n(b, 'repo_rank')).map(row => ({ repo: s(row, 'repo'),
     totals: counts(Object.fromEntries(TOTAL_NAMES.map(name => [name, row[`project_${name}`]]))), queued: n(row, 'project_queued'), doneRecently: n(row, 'project_done_recently') }));
   // A row whose build Toolroll can't confirm stopped reads the store's own answer, as the task page does.
+  const facts = reads?.store ?? store;
   const probe = (taskId: string) => {
-    const ref = store.lookupRef(taskId);
+    const ref = facts.lookupRef(taskId);
     return ref === null ? null : custody.readings.get(ref.id) ?? null;
   };
   // A claimed row says the viewer's own name for their lead.
@@ -582,17 +615,17 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   // A finished result reads the same readiness the task page does (task-status.ts): its requirements, acceptance,
   // automatic review and, with checks Off, the release check that covers it.
   const memo: ReleaseMemo = new Map();
-  const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(store, now, options.root, row, checks, memo);
+  const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(facts, now, options.root, row, checks, memo);
   return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined, now)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
     groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), asks: rows[0] === undefined ? { ...NO_ASKS } : askCounts(rows[0]),
     completedSince: rows[0] === undefined ? 0 : n(rows[0], 'completed_since_count'), builderWaits: rows[0] === undefined ? 0 : n(rows[0], 'builder_wait_count'), nextCursor, limit, view };
 }
 
 export function workCountsByProject(store: Store, now: Date, access: WorkSummaryAccess): WorkProjectCounts[] {
-  const projection = registerValidators(store);
-  return store.handle.prepare(`${projection} SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
-    SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo ORDER BY repo`)
-    .all({ ...parameters(store, now, access, {}, custodyReadings(store)), $recent: new Date(now.getTime()-86_400_000).toISOString() })
+  const reads = workReadsOf(store);
+  return projectionRows(store, now, access, {}, custodyOf(store, reads), reads, () => ({ sql: ` SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
+    SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo ORDER BY repo`,
+    params: { $recent: new Date(now.getTime()-86_400_000).toISOString() } }))
     .map(row => ({ repo: s(row, 'repo'), totals: counts(row), queued: n(row, 'queued'), doneRecently: n(row, 'done_recently') }));
 }
 
@@ -614,15 +647,14 @@ export type WorkStateRow = { repo: string | null; rootId: string; code: string; 
   /** Every task_ref of the family (its versions), for counting each of its live attempts. */
   members: number[] };
 export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess): WorkStateRow[] {
-  const projection = registerValidators(store);
-  return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,rank,
+  const reads = workReadsOf(store);
+  return projectionRows(store, now, access, {}, custodyOf(store, reads), reads, () => ({ params: {}, sql: ` SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,rank,
       code||':'||COALESCE(question_id,'')||':'||COALESCE(agent_ask,'')||':'||COALESCE(hold_id,'')||':'||COALESCE(result_id,'')||':'||COALESCE(stop_run,'')||':'||COALESCE(digest,'')||':'||COALESCE(scope_digest,'') version,
       COALESCE(NULLIF(MAX(COALESCE(proposed_at,''),COALESCE(finished_at,''),
         COALESCE((SELECT created_at FROM decision WHERE id=question_id),''),COALESCE((SELECT asked_at FROM agent_question WHERE id=agent_ask),''),
         COALESCE((SELECT held_at FROM hold WHERE id=hold_id),''),COALESCE((SELECT requested_at FROM run_stop WHERE run=stop_run),'')),''),sort_at) ask_at,
       COALESCE(live_run,(SELECT run FROM decision WHERE id=question_id),(SELECT run FROM agent_question WHERE id=agent_ask)) ask_run,
-      fam_refs members FROM ranked WHERE archived=0`)
-    .all(parameters(store, now, access, {}, custodyReadings(store)))
+      fam_refs members FROM ranked WHERE archived=0` }))
     .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
       leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
       resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, version: String(row['version']), at: String(row['ask_at'] ?? ''), askRun: row['ask_run'] == null ? null : n(row, 'ask_run'), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));

@@ -64,6 +64,7 @@ import { createPersonalQueueRuntime } from './lead-queue-runtime.js';
 import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
 import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
+import { withWorkReads } from "./work-reads.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
@@ -1039,7 +1040,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
             if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
           }
-          return handleGet(route, url, who, request, response);
+          // One read of the work projection and its rows' saved facts for the whole page (work-reads.ts): this request's
+          // own, gone when it ends.
+          return withWorkReads(() => handleGet(route, url, who, request, response));
         }
         return handlePost(route, url, who, request, response, body!);
       };

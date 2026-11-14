@@ -12,6 +12,7 @@ import type { Store } from "./store.js";
 import { runActivityOf } from "./task-activity.js";
 import { workStateRows, type WorkStateRow } from "./work-index.js";
 import { assignmentChecksForRun } from "./assignment.js";
+import { workReadsOf } from "./work-reads.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { DISPLAY_STATES, NO_COUNTS, rollUp, type DisplayState, type StateCounts } from "./agent-state-words.js";
 
@@ -127,8 +128,10 @@ export function projectStates(store: Store, access: WorkSummaryAccess, account: 
       WHERE r.id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(families.flatMap(row => row.resultRun ?? []))).map(row => [Number(row["id"]), row]));
   // The result's checks as the result reads them (follow-up checks included); the recorded check only when nothing
   // else was read, so a passing follow-up clears an earlier failure.
+  // Read through the request's saved reads (work-reads.ts): the same results' checks the lists beside it read.
+  const reader = workReadsOf(store)?.store ?? store;
   const checksFailed = (run: number) => {
-    const status = assignmentChecksForRun(store, root, run, now).status;
+    const status = assignmentChecksForRun(reader, root, run, now).status;
     if (status === "failed" || status === "passed") return status === "failed";
     return resultFacts.get(run)?.["recorded"] === "failed";
   };
