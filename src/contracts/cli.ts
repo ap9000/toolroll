@@ -239,7 +239,7 @@ export const COMMAND_OUTPUTS = {
   "skills list": answers("skills list", { guides: rows({ name: str, title: str, oneLiner: str }) }),
   // The welcome's three steps (first-run.ts welcomeModel), the same model the console's /welcome shows.
   welcome: answers("welcome", {
-    agent: z.looseObject({ done: z.boolean(), checking: z.boolean(), agents: rows({ id: str, name: str, state: str, command: nullable(str), inUse: z.boolean(), canUse: z.boolean() }), inUse: nullable(str), buildsWith: nullable(str) }),
+    agent: z.looseObject({ done: z.boolean(), checking: z.boolean(), agents: rows({ id: str, name: str, state: str, command: nullable(str), inUse: z.boolean(), canUse: z.boolean(), optional: z.boolean() }), inUse: nullable(str), buildsWith: nullable(str) }),
     project: z.looseObject({ done: z.boolean(), projects: rows({ name: str, path: str }), sample: nullable(str), notTakingWork: z.boolean() }),
     task: z.looseObject({ done: z.boolean(), open: z.boolean(), starters: rows({ label: str, draft: str, href: str }) }),
     next: nullable(z.enum(["agent", "project", "task"])),

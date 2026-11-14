@@ -17,12 +17,21 @@ export function parseGitVersion(text: string): { major: number; minor: number; w
   return found === null ? null : { major: Number(found[1]), minor: Number(found[2]), words: `${found[1]}.${found[2]}${found[3] === undefined ? "" : `.${found[3]}`}` };
 }
 
-/** Why `version` (`git --version`'s answer) is below the floor, in one sentence, or null when it isn't (or can't be read). */
-export function gitFloorWords(versionText: string): string | null {
+/** Where a newer git than this computer's comes from, as install.sh says it: on Linux the distribution's own is often the
+ * old one (Ubuntu 22.04's is 2.34, Debian 12's 2.39), so it points past it. */
+export function newerGitHow(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "linux") return "get one from https://git-scm.com/downloads/linux (Ubuntu: `sudo add-apt-repository ppa:git-core/ppa && sudo apt update && sudo apt install git`)";
+  if (platform === "darwin") return "`brew install git`, or update Xcode's Command Line Tools in Software Update";
+  return "get one from https://git-scm.com/downloads";
+}
+
+/** Why `version` (`git --version`'s answer) is below the floor, with how to get a newer one, or null when it isn't (or
+ * can't be read). */
+export function gitFloorWords(versionText: string, platform: NodeJS.Platform = process.platform): string | null {
   const version = parseGitVersion(versionText);
   if (version === null) return null;
   if (version.major > GIT_FLOOR.major || (version.major === GIT_FLOOR.major && version.minor >= GIT_FLOOR.minor)) return null;
-  return `Toolroll needs git ${GIT_FLOOR_WORDS} or newer, and this machine's git is ${version.words}. Install a newer git (and put it first on PATH), then start Toolroll again.`;
+  return `Toolroll needs git ${GIT_FLOOR_WORDS} or newer, and this machine's git is ${version.words}. Install a newer git (and put it first on PATH): ${newerGitHow(platform)}. Then start Toolroll again.`;
 }
 
 let probed: string | null | undefined;

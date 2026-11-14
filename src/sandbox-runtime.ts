@@ -108,9 +108,9 @@ export function missingLinuxSandboxTools(path: string = process.env["PATH"] ?? "
   return LINUX_SANDBOX_TOOLS.filter(tool => !found(tool.command)).map(tool => tool.package);
 }
 
-/** The line that installs these packages: apt, then dnf. */
+/** The line that installs these packages: apt (its package lists refreshed first: a fresh image's are empty), then dnf. */
 export function linuxSandboxInstallLine(packages: readonly string[] = LINUX_SANDBOX_TOOLS.map(tool => tool.package)): string {
-  return `sudo apt install ${packages.join(" ")} (Fedora: sudo dnf install ${packages.join(" ")})`;
+  return `sudo apt update && sudo apt install ${packages.join(" ")} (Fedora: sudo dnf install ${packages.join(" ")})`;
 }
 
 /** "bubblewrap, socat and ripgrep": what every "Install …" sentence names. */

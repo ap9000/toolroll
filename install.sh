@@ -3,7 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 #
-# It checks what it needs (Node.js 22.20 or newer, git 2.41 or newer), installs
+# It checks everything it needs first (Node.js 22.20 or newer, git 2.41 or newer,
+# and on Linux the sandbox tools); if anything is missing, it lists all of it with
+# the commands that install it, and stops. Then it installs
 # the `toolroll` command with npm (`standing-orders`, the older name, still
 # works), and opens it in this terminal on the repository you run it in.
 # Outside one, it says how to start it in a project instead. Nothing runs as
@@ -16,39 +18,95 @@ set -eu
 say() { printf '%s\n' "$*"; }
 stop() { printf '\nToolroll: %s\n' "$*" >&2; exit 1; }
 
-case "$(uname -s)" in
+os=$(uname -s)
+case "$os" in
   Darwin|Linux) ;;
   *) stop "this installer is for macOS and Linux. On Windows, use WSL, or run: npx toolroll up" ;;
 esac
 
+# Everything it needs is checked before anything is installed, and whatever is missing is said once: one list, one
+# block of commands that installs all of it, then it stops (not once for Node, again for git, again for the sandbox).
+needs="" # what is missing, one "  - …" line each
+hows=""  # how to get each, one line each
+pkgs=""  # what the distribution's packages install, in one apt (and dnf) line: git, the sandbox tools
+count=0
+need() { needs="$needs
+  - $1"; count=$((count + 1)); }
+how() { hows="$hows
+  $1"; }
+
 # How to get a new enough Node, said the same way whether none was found or it is too old. On Linux, the
 # distribution's own nodejs package is usually older than 22 (Ubuntu 24.04's is 18), so it points at nvm or NodeSource.
-if [ "$(uname -s)" = "Linux" ]; then
-  node_how="Install it from https://nodejs.org/en/download (choose nvm: \`nvm install 22\`), or from NodeSource (https://github.com/nodesource/distributions); \`apt install nodejs\` is usually too old"
+if [ "$os" = "Linux" ]; then
+  node_how="install it from https://nodejs.org/en/download (choose nvm: \`nvm install 22\`), or from NodeSource (https://github.com/nodesource/distributions); \`apt install nodejs\` is usually too old"
 else
-  node_how="Install it from https://nodejs.org/en/download, or with \`brew install node\`"
+  node_how="install it from https://nodejs.org/en/download, or with \`brew install node\`"
 fi
 if ! command -v node >/dev/null 2>&1; then
-  stop "it needs Node.js 22.20 or newer, and none was found. $node_how. Then run this again."
-fi
-version=$(node -p 'process.versions.node')
-major=${version%%.*}
-rest=${version#*.}
-minor=${rest%%.*}
-if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 20 ]; }; then
-  stop "it needs Node.js 22.20 or newer; this computer has $version. $node_how. Then run this again."
-fi
-command -v git >/dev/null 2>&1 || stop "it needs git 2.41 or newer. Install it, then run this again."
-# "git version 2.39.5 (Apple Git-154)" -> 2 39. A version it can't read is not refused here.
-gitv=$(git --version 2>/dev/null | sed -n 's/^git version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
-if [ -n "$gitv" ]; then
-  gmajor=${gitv% *}
-  gminor=${gitv#* }
-  if [ "$gmajor" -lt 2 ] || { [ "$gmajor" -eq 2 ] && [ "$gminor" -lt 41 ]; }; then
-    stop "it needs git 2.41 or newer; this computer has $gmajor.$gminor. Update git (https://git-scm.com/downloads, or \`brew install git\`), then run this again."
+  need "Node.js 22.20 or newer (none was found)"
+  how "Node.js: $node_how"
+else
+  version=$(node -p 'process.versions.node')
+  major=${version%%.*}
+  rest=${version#*.}
+  minor=${rest%%.*}
+  if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 20 ]; }; then
+    need "Node.js 22.20 or newer (this computer has $version)"
+    how "Node.js: $node_how"
+  elif ! command -v npm >/dev/null 2>&1; then
+    need "npm, which comes with Node.js"
+    how "npm: install Node.js again from https://nodejs.org/en/download"
   fi
 fi
-command -v npm >/dev/null 2>&1 || stop "it needs npm, which comes with Node.js."
+
+# git 2.41 or newer. A missing one comes from the distribution (or Apple's Command Line Tools); an older one needs a
+# newer source, because the distribution's own is the old one (Ubuntu 22.04's is 2.34, Debian 12's 2.39).
+if ! command -v git >/dev/null 2>&1; then
+  need "git 2.41 or newer (none was found)"
+  if [ "$os" = "Linux" ]; then pkgs="$pkgs git"
+  else how "git: \`xcode-select --install\` (or \`brew install git\`)"; fi
+else
+  # "git version 2.39.5 (Apple Git-154)" -> 2 39. A version it can't read is not refused here.
+  gitv=$(git --version 2>/dev/null | sed -n 's/^git version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
+  if [ -n "$gitv" ]; then
+    gmajor=${gitv% *}
+    gminor=${gitv#* }
+    if [ "$gmajor" -lt 2 ] || { [ "$gmajor" -eq 2 ] && [ "$gminor" -lt 41 ]; }; then
+      need "git 2.41 or newer (this computer has $gmajor.$gminor)"
+      # The same words as src/git-floor.ts newerGitHow (src/install-sh.test.ts holds them to it).
+      if [ "$os" = "Linux" ]; then
+        how "git: get one from https://git-scm.com/downloads/linux (Ubuntu: \`sudo add-apt-repository ppa:git-core/ppa && sudo apt update && sudo apt install git\`)"
+      else
+        how "git: \`brew install git\`, or update Xcode's Command Line Tools in Software Update"
+      fi
+    fi
+  fi
+fi
+
+# On Linux, agents run in a sandbox that needs these programs, each <command>:<package> (the same list as
+# LINUX_SANDBOX_TOOLS in src/sandbox-runtime.ts; src/sandbox-runtime.test.ts keeps the two the same). Toolroll starts
+# only once they are all there, so they are one of the things it needs first, unless it is only installed
+# (SO_NO_START=1), when they are named after the install instead.
+sandbox_missing=""
+if [ "$os" = "Linux" ]; then
+  for tool in bwrap:bubblewrap socat:socat rg:ripgrep; do
+    command -v "${tool%%:*}" >/dev/null 2>&1 || sandbox_missing="$sandbox_missing ${tool#*:}"
+  done
+fi
+if [ -n "$sandbox_missing" ] && [ "${SO_NO_START:-}" != "1" ]; then
+  need "the sandbox tools agents run in:$sandbox_missing"
+  pkgs="$pkgs$sandbox_missing"
+fi
+
+if [ "$count" -gt 0 ]; then
+  if [ -n "$pkgs" ]; then
+    how "sudo apt update && sudo apt install$pkgs"
+    how "(Fedora: sudo dnf install$pkgs)"
+  fi
+  if [ "$count" -eq 1 ]; then first="this"; them="it"; else first="these"; them="them"; fi
+  printf '\nToolroll needs %s first:%s\n\nInstall %s:%s\n\nThen run this again.\n' "$first" "$needs" "$them" "$hows" >&2
+  exit 1
+fi
 
 agents=""
 for one in claude codex; do
@@ -76,19 +134,11 @@ if [ -z "$agents" ]; then
   say "npm install -g @anthropic-ai/claude-code (or npm install -g @openai/codex),"
   say "then sign in with claude auth login (or codex login)."
 fi
-# On Linux, agents run in a sandbox that needs these programs, each <command>:<package> (the same list as
-# LINUX_SANDBOX_TOOLS in src/sandbox-runtime.ts; src/sandbox-runtime.test.ts keeps the two the same). Toolroll starts
-# only once they are all there.
-sandbox_missing=""
-if [ "$(uname -s)" = "Linux" ]; then
-  for tool in bwrap:bubblewrap socat:socat rg:ripgrep; do
-    command -v "${tool%%:*}" >/dev/null 2>&1 || sandbox_missing="$sandbox_missing ${tool#*:}"
-  done
-fi
+# Installed only (SO_NO_START=1) with sandbox tools missing: they are needed before it starts.
 if [ -n "$sandbox_missing" ]; then
   say ""
-  say "Toolroll runs agents in a sandbox, which on this computer needs:$sandbox_missing. Install them:"
-  say "sudo apt install$sandbox_missing (Fedora: sudo dnf install$sandbox_missing)"
+  say "Before you start it, install the sandbox tools agents run in:"
+  say "sudo apt update && sudo apt install$sandbox_missing (Fedora: sudo dnf install$sandbox_missing)"
 fi
 
 projects="${SO_PROJECTS:-}"
@@ -123,7 +173,7 @@ repo_here() {
 here=""
 if [ -z "${SO_PROJECTS:-}" ]; then here=$(repo_here); fi
 
-if [ "${SO_NO_START:-}" = "1" ] || [ -n "$sandbox_missing" ]; then
+if [ "${SO_NO_START:-}" = "1" ]; then
   say ""
   if [ -n "$here" ]; then say "Start it in $here with: $cli"
   elif [ -n "$projects" ]; then say "Start it with: $cli --project-root $(q "$projects")"

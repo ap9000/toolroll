@@ -4,7 +4,7 @@
 
 On macOS or Linux, with Node.js 22.20 or newer, git 2.41 or newer, and
 Claude Code (`claude`) or Codex (`codex`) signed in on this computer (on
-Linux, also `sudo apt install bubblewrap socat ripgrep`; see
+Linux, also `sudo apt update && sudo apt install bubblewrap socat ripgrep`; see
 [Linux](linux.md)):
 
 ```sh
