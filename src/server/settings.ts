@@ -47,6 +47,7 @@ import type { ServerRuntime } from './runtime.js';
 import { refuse,screen,when } from "./chrome.js";
 import { requestContext } from "./request-context.js";
 import { btn,empty,infoLine,settingsSection } from "./kit.js";
+import { shortPathOf } from "./render-projects.js";
 import { approvalGroup,projectPicker,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
 import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
@@ -787,6 +788,9 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
         return { owner: who.authority !== "full", passwordSet: store.accountOf(who.name)?.passwordSet === true, canTurnOff: who.authority === "full" && operator };
       })(),
       advanced: { on: requestContext.getStore()?.advanced !== false, canChange: who.via === "cookie" },
+      // The folder Toolroll adds projects from, read only: shown to whoever may see installation settings.
+      projectsFolder: restricted() || runtime.unscopedMode ? null
+        : { folders: runtime.ceiling.roots.map(path => ({ path, shown: shortPathOf(path) })) },
       backup: lastBackup === null ? null : lastBackup.ok === false
         ? { failed: true, words: `Failed ${when(lastBackup.startedAt)}${lastBackup.error === null ? "" : `: ${lastBackup.error}`}` }
         : { failed: false, words: lastBackup.finishedAt === null ? "Backing up now" : `Backed up ${when(lastBackup.finishedAt)}` },
