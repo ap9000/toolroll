@@ -158,6 +158,12 @@ export class LiveStream {
   keepAlive(): void {
     this.write(": keep-alive\n\n");
   }
+
+  /** The keep-alive as a named frame, for a reader that asked for frames (browser/live-supervisor.ts): script sees it,
+   * so a page can tell a silent, dead socket from a quiet one. Same cadence, same proofs first. */
+  tick(): void {
+    this.write("event: tick\ndata: {}\n\n");
+  }
 }
 
 /**
@@ -175,7 +181,10 @@ export class LiveConnection {
   private readonly timer: NodeJS.Timeout;
   private closed = false;
   private refusing = false;
-  constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number } = {}) {
+  /** The reader asked for frames (`hello`, named `tick`) instead of comment keep-alives. */
+  private readonly frames: boolean;
+  constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number; frames?: boolean } = {}) {
+    this.frames = options.frames === true;
     this.stream = new LiveStream(response, options.limitBytes, () => this.close());
     this.timer = setInterval(() => this.keepAlive(), options.keepAliveMs ?? KEEP_ALIVE_MS);
     this.timer.unref();
@@ -183,7 +192,13 @@ export class LiveConnection {
   }
   private keepAlive(): void {
     for (const prove of [...this.proofs]) { if (!this.open) return; prove(); }
-    if (this.open) this.stream.keepAlive();
+    if (!this.open) return;
+    if (this.frames) this.stream.tick(); else this.stream.keepAlive();
+  }
+  /** The stream's first frame for a reader that asked for frames: which server run it is (a new one after a restart) and
+   * how often it ticks. Never any room's data, and nothing about the viewer. */
+  hello(data: { incarnation: string; tick: number }): void {
+    if (this.frames && this.open) this.stream.send("hello", data);
   }
   /** Run before each keep-alive: a room proves its viewer again (and leaves if it no longer passes). Returns the undo. */
   onKeepAlive(prove: () => void): () => void { this.proofs.add(prove); return () => { this.proofs.delete(prove); }; }

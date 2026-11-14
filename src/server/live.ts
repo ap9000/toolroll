@@ -20,7 +20,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { agentRunFingerprint } from "../agents-board.js";
-import { createLiveRooms, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
+import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { reproveRemote } from "../operate-remote.js";
 import { rowVisible } from "../project.js";
 import type { LeadThreadScope } from "../store.js";
@@ -40,6 +40,11 @@ import type { Who } from "./session.js";
 import { createAgentsLiveRooms } from "./agents-live-room.js";
 import { leadTilesFor } from "./agents-live-lead.js";
 
+/** A reader that sends this header (browser/live-supervisor.ts LIVE_FRAMES_HEADER) as `1` gets a `hello` first and named
+ * `tick` frames instead of comment keep-alives. It chooses only the framing: every room's admission and proof is the same. */
+export const LIVE_FRAMES_HEADER = "x-toolroll-live";
+/** This server run, in each `hello`: a page that sees it change knows the server restarted. */
+const INCARNATION = randomBytes(9).toString("hex");
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 6;
 const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
@@ -350,7 +355,8 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     }
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
     response.flushHeaders();
-    const connection = new LiveConnection(response);
+    const connection = new LiveConnection(response, { frames: request.headers[LIVE_FRAMES_HEADER] === "1" });
+    connection.hello({ incarnation: INCARNATION, tick: KEEP_ALIVE_MS });
     // Each join below adds its room before the next speaks; a chat room alone keeps the stream open too.
     for (const join of joins) if (connection.open) join(connection);
     // A page whose only room was refused at its join ends now (`ended`), its keep-alive stopped, not left open.

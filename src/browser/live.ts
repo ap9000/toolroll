@@ -15,8 +15,16 @@
  *
  * Pages rendered by the server join through the same stream: each event is
  * also dispatched on `window` as `so:live` ({ room, event, data }).
+ *
+ * Where the server marks the page (`data-live-reader="stream"` on the workspace) and the browser can, the stream is read
+ * with fetch by one supervisor (live-supervisor.ts) that owns every retry, sees the server's tick, wakes on focus,
+ * network and sleep, and says where the connection stands (useLiveConnection). There a hidden tab leaves its watching
+ * rooms (a task's, a flow's, an agent's: presence and watches) at once and keeps the observational ones (the
+ * workspace, the summary, a conversation) for LIVE_HIDDEN_GRACE_MS, then closes its stream. Anywhere else, or if the
+ * fetch reader can't work here, the page keeps its EventSource exactly as before.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
+import { browserSupervisorDeps, fetchStreamsSupported, LIVE_HIDDEN_GRACE_MS, LiveSupervisor, type LiveConnectionState, type SupervisorDeps } from "./live-supervisor.js";
 
 /** `retrying`: the line dropped and the browser is reconnecting by itself (what is shown may be stale until the next
  * `change`); `lost`: it gave up. */
@@ -35,6 +43,19 @@ export const roomName = (kind: string, id?: string | number | null, params?: Rec
   return `${kind}${id === null || id === undefined ? "" : `:${encodeURIComponent(String(id))}`}${tail === "" ? "" : `?${tail}`}`;
 };
 
+/** Rooms that only observe (a count, the workspace's revision, a conversation): a hidden tab may keep them a while.
+ * Every other room is a watch or a presence (task, flow, agent, agents-live) and leaves the moment the tab hides. */
+const OBSERVATIONAL_ROOMS = new Set(["workspace", "summary", "chat", "team"]);
+const roomKind = (room: string): string => room.split(/[:?]/, 1)[0] ?? "";
+const roomsOf = (url: string): string[] => url === "" ? [] : new URLSearchParams(url.slice(url.indexOf("?") + 1)).getAll("room");
+/** How the page reads its stream: `stream` (fetch, supervised) where the server marks the page and the browser can. */
+export type LiveReader = "stream" | "eventsource";
+function pickReader(): LiveReader {
+  if (typeof document === "undefined") return "eventsource";
+  const marked = document.getElementById("standing-orders-workspace")?.dataset["liveReader"] === "stream";
+  return marked && fetchStreamsSupported() ? "stream" : "eventsource";
+}
+
 export class LiveHub {
   private readonly subscriptions = new Map<number, { room: string; listener: LiveListener; hidden: boolean }>();
   private next = 0;
@@ -51,6 +72,24 @@ export class LiveHub {
   private watching = false;
   /** A sensitive page (a password field, a one-time secret) opens no live connection at all, whoever asks for a room. */
   private quiet = false;
+  /** Chosen at the first reconcile; `stream` falls back to `eventsource` for good if its reader can't work here. */
+  private reader: LiveReader | null;
+  private supervisor: LiveSupervisor | null = null;
+  private readonly deps: Partial<SupervisorDeps>;
+  private connection: LiveConnectionState = "idle";
+  private readonly stateListeners = new Set<() => void>();
+  /** When this tab was hidden (stream reader only), and the timer that releases its stream after the grace. */
+  private hiddenSince: number | null = null;
+  private graceTimer: number | null = null;
+
+  constructor(options: { reader?: LiveReader; deps?: Partial<SupervisorDeps> } = {}) {
+    this.reader = options.reader ?? null;
+    this.deps = options.deps ?? {};
+  }
+
+  /** Where the page's stream stands (always `idle` on the EventSource reader, which has no supervisor). */
+  connectionState = (): LiveConnectionState => this.connection;
+  onConnectionState = (listener: () => void): (() => void) => { this.stateListeners.add(listener); return () => { this.stateListeners.delete(listener); }; };
 
   setQuiet(on: boolean): void {
     if (this.quiet === on) return;
@@ -59,7 +98,8 @@ export class LiveHub {
   }
 
   /** `hidden`: the room stays joined while the tab is hidden (the summary: a count, never a watch). Every other room
-   * leaves with the tab, so a hidden tab never counts as watching anything. */
+   * leaves with the tab, so a hidden tab never counts as watching anything. (The stream reader decides by the room's
+   * kind instead: observational rooms stay through the grace, watching rooms never.) */
   subscribe(room: string, listener: LiveListener, hidden = false): () => void {
     const id = this.next++;
     this.subscriptions.set(id, { room, listener, hidden });
@@ -76,7 +116,11 @@ export class LiveHub {
 
   private wanted(hidden: boolean): string {
     if (this.quiet) return "";
-    const rooms = [...new Set([...this.subscriptions.values()].filter(one => !hidden || one.hidden).map(one => one.room))].sort();
+    const stream = this.reader === "stream";
+    // Past the grace a hidden tab holds no stream at all; its title keeps the last count it heard.
+    if (stream && hidden && this.hiddenSince !== null && Date.now() - this.hiddenSince >= LIVE_HIDDEN_GRACE_MS) return "";
+    const keeps = (one: { room: string; hidden: boolean }): boolean => !hidden || (stream ? OBSERVATIONAL_ROOMS.has(roomKind(one.room)) : one.hidden);
+    const rooms = [...new Set([...this.subscriptions.values()].filter(keeps).map(one => one.room))].sort();
     return rooms.length === 0 ? "" : `/live?${rooms.map(room => `room=${encodeURIComponent(room)}`).join("&")}`;
   }
 
@@ -85,8 +129,28 @@ export class LiveHub {
     this.settling = null;
   }
 
+  /** One event to the rooms it names (or every room, when it names none) and to the page's server-rendered regions. */
+  private deliver(event: LiveEventName, raw: string): void {
+    let data: Record<string, unknown> = {};
+    try { const parsed: unknown = JSON.parse(raw); if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed as Record<string, unknown>; } catch { /* an empty hint */ }
+    const room = typeof data["room"] === "string" ? data["room"] : null;
+    for (const one of [...this.subscriptions.values()]) if (room === null || one.room === room) one.listener(event, data);
+    window.dispatchEvent(new CustomEvent(LIVE_EVENT, { detail: { room, event, data } }));
+  }
+
+  private setConnection(next: LiveConnectionState): void {
+    if (this.connection === next) return;
+    this.connection = next;
+    if (next === "idle") delete document.documentElement.dataset["liveState"];
+    else document.documentElement.dataset["liveState"] = next;
+    for (const listener of [...this.stateListeners]) listener();
+  }
+
   private reconcile(): void {
-    if (typeof EventSource === "undefined" || typeof document === "undefined") return;
+    if (typeof document === "undefined") return;
+    this.reader ??= pickReader();
+    if (this.reader === "stream") { this.reconcileStream(); return; }
+    if (typeof EventSource === "undefined") return;
     if (!this.watching) {
       this.watching = true;
       document.addEventListener("visibilitychange", () => this.reconcile());
@@ -98,7 +162,7 @@ export class LiveHub {
     // A room the server refused (`gone`) has already left the open stream, so a page that drops just those rooms keeps
     // it as it is: reopening at once would race the stream's own end (a sign-out answers every room `gone`, then
     // `ended`) into a request that can't sign in.
-    const rooms = url === "" ? [] : new URLSearchParams(url.slice(url.indexOf("?") + 1)).getAll("room");
+    const rooms = roomsOf(url);
     if (this.source !== null && rooms.length > 0 && rooms.length === this.held.size && rooms.every(room => this.held.has(room))) { this.url = url; return; }
     // Just refused: a sign-out answers every room `gone` and then `ended`, and the page drops rooms as it hears them. Wait
     // for the stream's verdict before reopening — `ended` closes it for the retry; a stream still open after this
@@ -119,22 +183,15 @@ export class LiveHub {
     document.documentElement.dataset["live"] = "1";
     const source = new EventSource(url);
     this.source = source;
-    this.held = new Set(new URLSearchParams(url.slice(url.indexOf("?") + 1)).getAll("room"));
+    this.held = new Set(roomsOf(url));
     this.refusedAt = 0;
-    const deliver = (event: LiveEventName, raw: string): void => {
-      let data: Record<string, unknown> = {};
-      try { const parsed: unknown = JSON.parse(raw); if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed as Record<string, unknown>; } catch { /* an empty hint */ }
-      const room = typeof data["room"] === "string" ? data["room"] : null;
-      for (const one of [...this.subscriptions.values()]) if (room === null || one.room === room) one.listener(event, data);
-      window.dispatchEvent(new CustomEvent(LIVE_EVENT, { detail: { room, event, data } }));
-    };
     for (const name of EVENTS) source.addEventListener(name, event => {
       const raw = (event as MessageEvent<string>).data;
-      if (name === "gone" && this.source === source) { this.refusedAt = Date.now(); try { const room: unknown = (JSON.parse(raw) as Record<string, unknown>)["room"]; if (typeof room === "string") this.held.delete(room); } catch { /* no room named */ } }
-      deliver(name, raw);
+      if (name === "gone" && this.source === source) this.heardGone(raw);
+      this.deliver(name, raw);
     });
     // The server's stream fell behind and ended: every part reads again; the browser reconnects.
-    source.addEventListener("reload", () => deliver("reload", "{}"));
+    source.addEventListener("reload", () => this.deliver("reload", "{}"));
     // Every room refused this page (it was signed out, or lost its access): stop, rather than let the browser reconnect at
     // once into a request that can't sign in; try once more in a while, as after an error answer.
     source.addEventListener("ended", () => {
@@ -143,20 +200,90 @@ export class LiveHub {
       source.close();
       this.source = null;
       this.url = "";
-      deliver("lost", "{}");
+      this.deliver("lost", "{}");
       this.quietUntil = Date.now() + RETRY_MS;
       window.setTimeout(() => this.reconcile(), RETRY_MS);
     });
     source.addEventListener("error", () => {
       if (this.source !== source) return;
-      if (source.readyState !== EventSource.CLOSED) { deliver("retrying", "{}"); return; }
+      if (source.readyState !== EventSource.CLOSED) { this.deliver("retrying", "{}"); return; }
       this.source = null;
       this.url = "";
-      deliver("lost", "{}");
+      this.deliver("lost", "{}");
       // The browser gave up (an error answer, not a dropped line): try once more in a while.
       this.quietUntil = Date.now() + RETRY_MS;
       window.setTimeout(() => this.reconcile(), RETRY_MS);
     });
+  }
+
+  private heardGone(raw: string): void {
+    this.refusedAt = Date.now();
+    try { const room: unknown = (JSON.parse(raw) as Record<string, unknown>)["room"]; if (typeof room === "string") this.held.delete(room); } catch { /* no room named */ }
+  }
+
+  /** The supervised reader: the same room rules, one owner for the stream and its retries. */
+  private reconcileStream(): void {
+    const supervisor = this.supervisor ?? this.startSupervisor();
+    const url = this.wanted(document.hidden);
+    if (url === supervisor.wanted) return;
+    // As above: rooms the server already let go leave the open stream as it is.
+    const rooms = roomsOf(url);
+    if (supervisor.live && rooms.length > 0 && rooms.length === this.held.size && rooms.every(room => this.held.has(room))) { supervisor.retarget(url); return; }
+    const waited = Date.now() - this.refusedAt;
+    if (supervisor.live && url !== "" && waited < REFUSAL_SETTLE_MS) {
+      if (this.settling === null) this.settling = window.setTimeout(() => { this.settling = null; this.reconcile(); }, REFUSAL_SETTLE_MS - waited);
+      return;
+    }
+    this.unsettle();
+    if (url === "") delete document.documentElement.dataset["live"];
+    else document.documentElement.dataset["live"] = "1";
+    supervisor.want(url);
+  }
+
+  private startSupervisor(): LiveSupervisor {
+    const supervisor = new LiveSupervisor({ ...browserSupervisorDeps(), ...this.deps }, {
+      opened: url => { this.held = new Set(roomsOf(url)); this.refusedAt = 0; },
+      frame: (event, raw) => {
+        if (event === "reload") { this.deliver("reload", "{}"); return; }
+        if (!(EVENTS as readonly string[]).includes(event)) return;
+        if (event === "gone") this.heardGone(raw);
+        this.deliver(event as LiveEventName, raw);
+      },
+      trouble: kind => { this.unsettle(); this.deliver(kind, "{}"); },
+      state: state => this.setConnection(state),
+      unusable: () => this.fallBack(),
+    });
+    this.supervisor = supervisor;
+    const wake = (): void => supervisor.wake();
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        this.hiddenSince ??= Date.now();
+        if (this.graceTimer === null) this.graceTimer = window.setTimeout(() => { this.graceTimer = null; this.reconcile(); }, LIVE_HIDDEN_GRACE_MS);
+      } else {
+        this.hiddenSince = null;
+        if (this.graceTimer !== null) window.clearTimeout(this.graceTimer);
+        this.graceTimer = null;
+      }
+      this.reconcile();
+      if (!document.hidden) wake();
+    });
+    window.addEventListener("online", wake);
+    window.addEventListener("offline", () => supervisor.offline());
+    window.addEventListener("focus", wake);
+    window.addEventListener("pageshow", event => { if ((event as PageTransitionEvent).persisted) supervisor.resume(); else wake(); });
+    window.addEventListener("pagehide", () => supervisor.suspend());
+    document.addEventListener("resume", wake);
+    (navigator as Navigator & { connection?: EventTarget }).connection?.addEventListener?.("change", wake);
+    return supervisor;
+  }
+
+  /** The fetch reader can't work in this browser: the page goes back to its EventSource, as before this reader. */
+  private fallBack(): void {
+    if (this.reader !== "stream") return;
+    this.supervisor?.dispose();
+    this.reader = "eventsource";
+    this.setConnection("idle");
+    this.reconcile();
   }
 }
 
@@ -191,3 +318,8 @@ export function useLiveRoom(room: string | null, listener: LiveListener, keepWhe
 /** Join a room outside a component (the app's page work, page-work.ts): the listener hears the room's events and the
  * ones no room names, until the function returned is called. */
 export function joinLiveRoom(room: string, listener: LiveListener): () => void { return hub.subscribe(room, listener); }
+
+/** Where the page's live connection stands, for the shell's indicator (`idle` on a page that reads no stream). */
+export function useLiveConnection(): LiveConnectionState {
+  return useSyncExternalStore(hub.onConnectionState, hub.connectionState, () => "idle");
+}
