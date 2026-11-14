@@ -70,7 +70,7 @@ describe("toolroll password set", () => {
       [["set", "--password", "hunter2hunter2"], { terminal: true }, "--password is not a password set option"],
       [["set"], { terminal: true, askHidden: typing("one password", "another one") }, "didn't match"],
       [["set"], { terminal: true, askHidden: typing("short", "short") }, "at least 8 characters"],
-      [["sideways"], { terminal: true }, "Use `toolroll password set`."],
+      [["sideways"], { terminal: true }, "Use `toolroll password set` (a first password) or `toolroll password reset` (a forgotten one)."],
     ];
     for (const [args, seams, words] of refusals) {
       const { code, out } = await run("password", args, seams);

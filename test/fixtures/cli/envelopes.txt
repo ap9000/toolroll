@@ -6488,6 +6488,14 @@ $ contract --commands --json → 0
       "remote": "no"
     },
     {
+      "invocation": "password reset",
+      "synopsis": "reset a forgotten password at the computer running Toolroll, typed twice at your own terminal (the one approver, or --as <name>); every session of that account ends and a saved first password that no longer works is removed. Anyone who can run commands as you on this computer can do this, as they could read the saved file",
+      "audience": "operator",
+      "agentMayInvoke": false,
+      "mutation": "unkeyed",
+      "remote": "no"
+    },
+    {
       "invocation": "doctor",
       "synopsis": "check that Toolroll's service holds no key, token or password a build could read; names what it finds and the steps to fix it, never a value, and changes nothing",
       "audience": "operator",
@@ -7594,4 +7602,13 @@ $ password set --json → 3
   "command": "password set",
   "reason": "not-a-terminal",
   "message": "Set your password yourself at a terminal: run `toolroll password set`."
+}
+
+$ password reset --json → 3
+{
+  "envelopeVersion": 1,
+  "ok": false,
+  "command": "password reset",
+  "reason": "not-a-terminal",
+  "message": "Reset the password yourself at a terminal on the computer running Toolroll: run `toolroll password reset`."
 }

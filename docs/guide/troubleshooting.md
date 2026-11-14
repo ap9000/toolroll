@@ -28,5 +28,20 @@ computer where your projects are; queued work resumes.
 passwords in a row lock a name. Wait, or restart Toolroll to clear
 it. **Audit log** (filter Sign-ins) shows the attempts.
 
+**Forgot your password.** On the computer running Toolroll, your first
+password is saved in `~/.config/toolroll/.toolroll-secrets/up-login.txt`
+until you change it (the sign-in page shows the exact path). Changed it and
+forgot? Run `toolroll password reset` in a terminal on that computer: type
+the new one twice. Every session of that account ends, and the saved file
+is removed once it no longer works. With several people, add `--as <name>`.
+Anyone who can run commands as you on that computer can do this, just as
+they could read the saved file. Accounts that sign in with an identity
+provider reset their password there instead.
+
+**The sign-in page asks for a password on a password-free install.**
+Signing in without a password works only on the computer running Toolroll:
+there, run `toolroll open --web`. From a phone or another computer, set a
+password first (`toolroll password set` on that computer).
+
 **"database is locked" from the command line.** The app was writing at that
 moment: run the command again.

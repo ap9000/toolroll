@@ -505,6 +505,7 @@ const GUIDE_ROWS: readonly GuideRow[] = [
   operator("open", "open this computer's Toolroll at a terminal, signed in: the terminal UI, or the browser with --web (starts it first when it isn't running); never prints a sign-in link"),
   { ...operatorRead("welcome", "the three steps to a first result (agent, project, first task) as the console's welcome shows them; at a terminal it walks them one at a time"), flags: [jsonFlag, dbFlag] },
   operator("password set", "set this computer's first password, typed twice at your own terminal (never a flag, file or environment variable); every session signs in again and local mode stays on"),
+  operator("password reset", "reset a forgotten password at the computer running Toolroll, typed twice at your own terminal (the one approver, or --as <name>); every session of that account ends and a saved first password that no longer works is removed. Anyone who can run commands as you on this computer can do this, as they could read the saved file"),
   { ...operatorRead("doctor", "check that Toolroll's service holds no key, token or password a build could read; names what it finds and the steps to fix it, never a value, and changes nothing"), flags: [jsonFlag] },
 ];
 
@@ -527,7 +528,7 @@ const REMOTE_NO: readonly string[] = [
   // Workers, the loop and the services that run here.
   "claim", "heartbeat", "worker release", "reap", "tick", "build", "reconcile",
   "runner register", "runner retire", "runner bind", "runner capacity", "coordinator mint", "coordinator revoke", "mcp", "outbox deliver", "peek",
-  "serve", "serve check-public", "watch", "up", "onboard", "daemon", "background on", "background off", "background show", "stop", "open", "welcome", "password set", "doctor", "bridge", "setup show", "setup clear",
+  "serve", "serve check-public", "watch", "up", "onboard", "daemon", "background on", "background off", "background show", "stop", "open", "welcome", "password set", "password reset", "doctor", "bridge", "setup show", "setup clear",
   // Provider keys and model tools on this machine.
   "providers", "keys status", "keys set", "keys clear", "keys verify", "keys auth", "models check", "models update", "models watch",
   // Result records read with this machine's sign-in: project access, never a token's narrower scope.

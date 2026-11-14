@@ -151,3 +151,27 @@ export function migrateLegacyLogin(stateDir: string): LoginMigration {
   removeOld();
   return { kind: "moved", from, to };
 }
+
+/**
+ * After `toolroll password reset`: remove each saved first password (the reserved folder's, and an older version's
+ * beside the database) that is this account's and no longer its password — it is stale, and a stale file only
+ * misleads. Another account's file, a file that holds the new password, a link, anything not this user's own regular
+ * file, or one replaced since it was read, stays. Returns the paths removed. Never throws.
+ */
+export function removeStaleSavedLogin(stateDir: string, account: string, current: string): string[] {
+  const removed: string[] = [];
+  for (const path of [loginFileOf(stateDir), legacyLoginFileOf(stateDir)]) {
+    const held = ownRegularBytes(path, LOGIN_LIMIT);
+    if (held === null) continue;
+    const raw = held.bytes.toString("utf8").trim();
+    const cut = raw.indexOf(" ");
+    if (cut <= 0 || raw.slice(0, cut) !== account || raw.slice(cut + 1) === current) continue;
+    try {
+      const now = lstatSync(path);
+      if (!now.isFile() || now.dev !== held.dev || now.ino !== held.ino) continue;
+      unlinkSync(path);
+      removed.push(path);
+    } catch { /* left for the person */ }
+  }
+  return removed;
+}
