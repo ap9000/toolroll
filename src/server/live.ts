@@ -20,7 +20,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { agentRunFingerprint } from "../agents-board.js";
-import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
+import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, liveOrderAfter, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { reproveRemote } from "../operate-remote.js";
 import { rowVisible } from "../project.js";
 import type { LeadThreadScope } from "../store.js";
@@ -45,6 +45,39 @@ import { leadTilesFor } from "./agents-live-lead.js";
 export const LIVE_FRAMES_HEADER = "x-toolroll-live";
 /** This server run, in each `hello`: a page that sees it change knows the server restarted. */
 const INCARNATION = randomBytes(9).toString("hex");
+/** A stream's name for its own page's probe: server-minted, 24 hex, bound to the browser session that opened it. */
+const CONN_NAME = /^[0-9a-f]{24}$/;
+/** A probe's number: the page counts its pings; the pong repeats it. */
+const PING_NUMBER = /^(0|[1-9][0-9]{0,8})$/;
+/** Probes a browser session may send per window, across its tabs, and probes all sessions together may send: checked
+ * before any room proves its viewer, so a flood of pings never becomes a flood of proofs. A page refused here waits for
+ * its stream's own tick instead (browser/live-supervisor.ts). */
+export const PING_BUDGET = { perSession: 6, global: 120, windowMs: 10_000 } as const;
+
+/** Fixed-window counts per session and overall, in memory (a restart forgets them; a ping writes nothing). */
+export class PingBudget {
+  private readonly sessions = new Map<string, { start: number; count: number }>();
+  private global = { start: 0, count: 0 };
+  constructor(private readonly limits: { perSession: number; global: number; windowMs: number } = PING_BUDGET) {}
+  /** Spend one ping for this session now, or hear how long to wait. */
+  take(session: string, now: number): { ok: true } | { ok: false; retryAfterMs: number } {
+    const { perSession, global, windowMs } = this.limits;
+    if (now - this.global.start >= windowMs) this.global = { start: now, count: 0 };
+    let mine = this.sessions.get(session);
+    if (mine === undefined || now - mine.start >= windowMs) {
+      // Forget sessions whose window has passed, so the map holds only recent pingers.
+      if (this.sessions.size >= 4_096) for (const [key, one] of this.sessions) if (now - one.start >= windowMs) this.sessions.delete(key);
+      mine = { start: now, count: 0 };
+      this.sessions.set(session, mine);
+    }
+    if (mine.count >= perSession) return { ok: false, retryAfterMs: mine.start + windowMs - now };
+    if (this.global.count >= global) return { ok: false, retryAfterMs: this.global.start + windowMs - now };
+    mine.count += 1;
+    this.global.count += 1;
+    return { ok: true };
+  }
+}
+
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 6;
 const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
@@ -107,7 +140,9 @@ export function parseLiveRoom(name: string): LiveRoom | null {
 
 type Viewer = LiveViewer;
 type FlowRoomViewer = LiveViewer & { card: number | null; editing: boolean };
-type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void };
+type ChatViewer = LiveViewer & { scope: LeadThreadScope; valid: (thread?: number) => boolean; detach: (() => void) | null; leave: () => void;
+  /** The last order this viewer's snapshots were stamped with (live-bus.ts liveOrderAfter): its own, never shared. */
+  order: number };
 
 /** The same session, still signed in, from the cookie and the account (never this request's context): a live room's and
  * a live terminal's re-proof. Null when it was signed out, ended elsewhere, revoked, rotated or re-roled. */
@@ -159,6 +194,13 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   const agentsLive = createAgentsLiveRooms<Viewer>({ store, bus: live.bus, evidenceRoot: runtime.evidenceRoot, localRunner: runtime.options.localRunner, clock, visible,
     leads: key => liveLeads.get(key)?.() ?? null, forget: key => liveLeads.delete(key) });
 
+  /** Each open frames stream a browser session opened, keyed by that session's hash AND the stream's server-minted name:
+   * a probe (GET /live/ping) looks up only under its own session, so another session's stream and a stream that never
+   * existed are the same miss. The entry goes when the connection ends, however it ends. */
+  const conns = new Map<string, { connection: LiveConnection; name: string; generation: number; lastPing: number }>();
+  const connKey = (sessionHash: string, conn: string): string => `${sessionHash}\u0000${conn}`;
+  const pingBudget = new PingBudget();
+
   const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => rereadBrowser(runtime, request, who);
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
 
@@ -176,17 +218,23 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     if (!admitted(viewer, thread)) return;
     const turn = liveTurns.get(thread);
     if (turn === undefined || turn.done || viewer.detach !== null) return;
-    const send = (payload: ChatSnapshot): void => { viewer.connection.send(viewer.room, "turn", payload); };
-    const sender = createLiveSender<ChatSnapshot>({ send, standing: () => admitted(viewer, thread), spacingMs: TURN_SETTLE_MS });
+    // The running reply's first snapshot is this room's first word: a new stream's `synced` waits for it.
+    const firstWritten = viewer.connection.holdSynced();
+    // Each snapshot carries the order of the moment it was taken (live-bus.ts liveOrderAfter), not of its sending.
+    type Taken = { snapshot: ChatSnapshot; order: number };
+    const take = (): Taken => ({ snapshot: chatSnapshot(turn), order: viewer.order = liveOrderAfter(viewer.order) });
+    const send = (taken: Taken): void => { viewer.connection.send(viewer.room, "turn", taken.snapshot, taken.order); firstWritten(); };
+    const sender = createLiveSender<Taken>({ send, standing: () => admitted(viewer, thread), spacingMs: TURN_SETTLE_MS });
     const listener = (): void => {
-      if (!turn.done) { sender.offer(chatSnapshot(turn)); return; }
+      if (!turn.done) { sender.offer(take()); return; }
       stop();
-      void sender.close().then(() => { if (admitted(viewer, thread)) send(chatSnapshot(turn)); });
+      const last = take();
+      void sender.close().then(() => { if (admitted(viewer, thread)) send(last); firstWritten(); });
     };
-    const stop = (): void => { turn.listeners.delete(listener); viewer.detach = null; void sender.close(); };
+    const stop = (): void => { turn.listeners.delete(listener); viewer.detach = null; void sender.close(); firstWritten(); };
     turn.listeners.add(listener);
     viewer.detach = stop;
-    sender.offer(chatSnapshot(turn));
+    sender.offer(take());
   }
 
   /** A reply starts on a thread: whoever has that conversation open follows it. */
@@ -324,7 +372,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           return scope.kind !== "project" || live.chatProjectOf([scope.key]) === scope.key;
         });
         joins.push(connection => {
-          const viewer: ChatViewer = { name: who.name, room: name, connection, scope, valid, detach: null, leave: () => {
+          const viewer: ChatViewer = { name: who.name, room: name, connection, scope, valid, detach: null, order: 0, leave: () => {
             viewer.detach?.(); chatViewers.delete(viewer); unregister(); unprove();
             if (connection.rooms === 0) connection.close();
           } };
@@ -332,7 +380,15 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           const unregister = connection.onClose(() => { viewer.detach?.(); chatViewers.delete(viewer); });
           const unprove = connection.onKeepAlive(() => { admitted(viewer); });
           const thread = store.liveLeadThreadFor(who.name, scope);
-          if (thread !== null) follow(viewer, thread.id);
+          const turn = thread === null ? undefined : liveTurns.get(thread.id);
+          if (thread !== null && turn !== undefined && !turn.done) { follow(viewer, thread.id); return; }
+          // A frames reader (one that may hand over) always hears where the conversation stands before `synced`: the
+          // reply that just finished (its last snapshot), or that none is running. A page replacing its stream then
+          // never keeps a partial reply the old stream would have finished.
+          if (!connection.frames || !admitted(viewer, thread?.id)) return;
+          const order = viewer.order = liveOrderAfter(viewer.order);
+          if (turn !== undefined) connection.send(name, "turn", chatSnapshot(turn), order);
+          else connection.send(name, "turn", { state: "idle" }, order);
         });
       } else {
         const proved = teamActorOf(request, who);
@@ -355,20 +411,68 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     }
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", "x-content-type-options": "nosniff", "x-accel-buffering": "no" });
     response.flushHeaders();
-    const connection = new LiveConnection(response, { frames: request.headers[LIVE_FRAMES_HEADER] === "1" });
+    const frames = request.headers[LIVE_FRAMES_HEADER] === "1";
+    // A browser session's frames stream gets a name its own page can probe (GET /live/ping), bound to this saved session.
+    const sessionHash = frames && who.via === "cookie" ? runtime.sessions.hashOf(who.session) : null;
+    const conn = sessionHash === null ? undefined : randomBytes(12).toString("hex");
+    const connection = new LiveConnection(response, { frames, ...(conn === undefined ? {} : { conn }) });
+    if (conn !== undefined && sessionHash !== null && who.via === "cookie") {
+      const key = connKey(sessionHash, conn);
+      conns.set(key, { connection, name: who.name, generation: who.session.generation, lastPing: -1 });
+      connection.onEnd(() => { if (conns.get(key)?.connection === connection) conns.delete(key); });
+    }
     connection.hello({ incarnation: INCARNATION, tick: KEEP_ALIVE_MS });
     // Each join below adds its room before the next speaks; a chat room alone keeps the stream open too.
     for (const join of joins) if (connection.open) join(connection);
     // A page whose only room was refused at its join ends now (`ended`), its keep-alive stopped, not left open.
     if (refusedJoin && connection.rooms === 0) connection.refuse(() => connection.close());
+    // Every room has said where it stands (a running reply's first snapshot included): a page handing over from an older
+    // stream may switch to this one.
+    connection.synced();
     request.once("close", () => connection.close());
+  }
+
+  /**
+   * GET /live/ping?conn=<name>&n=<k>: the page's probe of its own stream (eight/fluid plan v2 §9). The stream named
+   * `conn` is looked up under the pinging session's own hash, so only a stream this same saved browser session opened
+   * is found; unknown, ended and another session's streams take the same miss and hear the same 404. Before any lookup
+   * or proof, the ping spends from this session's and the server's ping budget (429 with Retry-After when spent). `n`
+   * must grow per stream (a replayed ping is refused). The pong is a delivery: every room on that stream proves its
+   * viewer first, as before a tick. A ping is quiet: the live domain never touches the session (serve.ts noTouch) and
+   * this writes nothing.
+   */
+  async function livePing(ctx: EdgeContext): Promise<void> {
+    const { url, who, request, response } = ctx;
+    request.resume();
+    if (who === null) return json(response, 401, { error: "session" });
+    if (who.via !== "cookie") return json(response, 403, { error: "session" });
+    const params = url.searchParams, conn = params.get("conn") ?? "", n = params.get("n") ?? "";
+    if ([...params.keys()].some(key => key !== "conn" && key !== "n") || params.getAll("conn").length !== 1 || params.getAll("n").length !== 1
+      || !CONN_NAME.test(conn) || !PING_NUMBER.test(n)) return json(response, 400, { error: "ping" });
+    // The pinging session still stands: its saved row, its account, its generation (not only the cookie in memory).
+    const again = readBrowser(request, who);
+    const hash = again === null ? null : runtime.sessions.hashOf(again.session);
+    if (again === null || hash === null) return json(response, 401, { error: "session" });
+    const spent = pingBudget.take(hash, clock().getTime());
+    if (!spent.ok) {
+      response.setHeader("Retry-After", String(Math.max(1, Math.ceil(spent.retryAfterMs / 1_000))));
+      return json(response, 429, { error: "busy" });
+    }
+    const held = conns.get(connKey(hash, conn));
+    if (held === undefined || !held.connection.open || held.name !== again.name || held.generation !== again.session.generation) return json(response, 404, { error: "conn" });
+    const number = Number(n);
+    if (number <= held.lastPing) return json(response, 409, { error: "ping" });
+    held.lastPing = number;
+    if (!held.connection.pong(number)) return json(response, 404, { error: "conn" });
+    response.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    response.end();
   }
 
   const detachChat = live.bus.subscribe(() => {
     for (const viewer of [...chatViewers]) admitted(viewer);
   });
   return {
-    registrations: handlersOf("live", {}, { live: liveStream }),
+    registrations: handlersOf("live", {}, { live: liveStream, "live.ping": livePing }),
     turnStarted,
     close(): void {
       detachChat();
