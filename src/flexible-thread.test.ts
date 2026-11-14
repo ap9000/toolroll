@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { flexibleKeepRef, flexibleThread, flexibleThreadEnv, flexibleThreadFence, flexibleThreadPaths, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, threadCredentialPaths } from "./flexible-thread.js";
-import { srtTermsOf } from "./agent-fence.js";
+import { flexibleKeepRef, flexibleThread, flexibleThreadCodexProfile, flexibleThreadEnv, flexibleThreadFence, flexibleThreadPaths, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, threadCredentialPaths } from "./flexible-thread.js";
+import { agentFence, PROTECTED_DIRS, PROTECTED_FILES, srtTermsOf } from "./agent-fence.js";
 import { run, type ExecResult } from "./exec.js";
 import { objectsInventory, tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
@@ -175,6 +175,50 @@ describe("the thread fence's terms", () => {
     expect(terms.readConfig.allowWithinDeny).toContain(world.objects);
     expect(terms.readConfig.allowWithinDeny).not.toContain(join(world.project, ".git"));
     expect(terms.readConfig.allowWithinDeny).toContain(paths.folder);
+    // The whole state folder unread (so an entry made there after launch is too), never write-denied around its own folder.
+    expect(terms.readConfig.denyOnly).toContain(world.state);
+    expect(terms.writeConfig.denyWithinAllow).not.toContain(world.state);
+    // Every protected name at the repository's top is present and held read-only, on every platform.
+    for (const name of [...PROTECTED_FILES, ...PROTECTED_DIRS].filter(one => !one.startsWith(".git/"))) {
+      expect(existsSync(join(paths.repo, name)), name).toBe(true);
+      expect(terms.writeConfig.denyWithinAllow, name).toContain(join(paths.repo, name));
+    }
+    expect(terms.writeConfig.denyWithinAllow).toContain(join(paths.repo, ".git", "info", "exclude"));
+  });
+
+  test("protected names the project doesn't have become placeholders that never show as work; one it has stays as it is", async () => {
+    writeFileSync(join(world.project, ".npmrc"), "registry=https://registry.example.invalid/\n");
+    tgit(world.project, "add", ".npmrc");
+    tgit(world.project, "commit", "-qm", "npmrc");
+    const { paths } = await made();
+    expect(readFileSync(join(paths.repo, ".npmrc"), "utf8")).toBe("registry=https://registry.example.invalid/\n");
+    expect(readFileSync(join(paths.repo, ".envrc"), "utf8")).toBe("");
+    expect(readFileSync(join(paths.repo, ".mcp.json"), "utf8")).toBe("{}\n");
+    expect(readFileSync(join(paths.repo, ".claude", "settings.json"), "utf8")).toBe("{}\n");
+    expect(tgit(paths.repo, "status", "--porcelain", "--untracked-files=all")).toBe("");
+    expect(readFileSync(join(paths.repo, ".git", "info", "exclude"), "utf8")).not.toContain("/.npmrc\n");
+  });
+
+  test("a project with a link at a protected name is refused, and nothing is left", async () => {
+    symlinkSync(join(world.dir, "elsewhere"), join(world.project, ".envrc"));
+    tgit(world.project, "add", ".envrc");
+    tgit(world.project, "commit", "-qm", "link");
+    expect(await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW })).toMatchObject({ ok: false, reason: "setup-failed" });
+    expect(readdirSync(join(world.state, "threads"))).toEqual([]);
+    expect(tgit(world.project, "for-each-ref", "refs/toolroll")).toBe("");
+  });
+
+  test("a Codex thread is refused: its own sandbox can't deny what is made after it starts", async () => {
+    const { thread } = await made();
+    expect(flexibleThreadCodexProfile(world.store, { id: thread.id, network: NETWORK, storage: STORAGE })).toMatchObject({ ok: false, reason: "codex-unsupported" });
+  });
+
+  test("every other launch denies the threads folder, made first when it isn't there", () => {
+    const fresh = join(world.dir, "fresh-state");
+    mkdirSync(fresh);
+    const fence = agentFence({ databaseFile: join(fresh, "orders.db"), worktree: null, home: homedir() });
+    expect(existsSync(join(fresh, "threads"))).toBe(true);
+    expect(fence).toContain(join(fresh, "threads"));
   });
 
   test("no provider's own sign-in is exempt: each is denied to read and never written", async () => {
@@ -206,6 +250,9 @@ describe("the thread fence's terms", () => {
     ["its alternates pointed elsewhere", (p: ReturnType<typeof flexibleThreadPaths>, w: ThreadWorld) => writeFileSync(join(p.repo, ".git", "objects", "info", "alternates"), `${join(w.other, ".git", "objects")}\n`)],
     ["its .git made a pointer", (p: ReturnType<typeof flexibleThreadPaths>, w: ThreadWorld) => { rmSync(join(p.repo, ".git"), { recursive: true }); writeFileSync(join(p.repo, ".git"), `gitdir: ${join(w.project, ".git")}\n`); }],
     ["its temp made a link", (p: ReturnType<typeof flexibleThreadPaths>, w: ThreadWorld) => { rmSync(p.tmp, { recursive: true }); symlinkSync(w.state, p.tmp); }],
+    ["a placeholder removed", (p: ReturnType<typeof flexibleThreadPaths>, w: ThreadWorld) => { rmSync(join(p.repo, ".envrc")); void w; }],
+    ["a placeholder replaced by a link", (p: ReturnType<typeof flexibleThreadPaths>, w: ThreadWorld) => { rmSync(join(p.repo, ".yarnrc.yml")); symlinkSync(join(w.dir, "x"), join(p.repo, ".yarnrc.yml")); }],
+    ["a protected folder replaced by a file", (p: ReturnType<typeof flexibleThreadPaths>, w: ThreadWorld) => { rmSync(join(p.repo, ".vscode"), { recursive: true }); writeFileSync(join(p.repo, ".vscode"), ""); void w; }],
   ])("refused when the thread's folder isn't the one Toolroll made: %s", async (_name, spoil) => {
     const { thread, paths } = await made();
     spoil(paths, world);
@@ -234,15 +281,20 @@ describe("the thread fence's terms", () => {
     const { thread } = await made();
     world.store.setUnfencedAgentsAllowed(true, "alex", NOW);
     fenceHere.off = true;
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"]);
+    let started = false;
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], () => { started = true; return 1; });
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
+    expect(started).toBe(false);
+    expect(flexibleThread(world.store, thread.id)!.livePid).toBeNull();
   });
 
   test("a launch whose sandbox can't be read as the platform's refuses", async () => {
     const { thread } = await made();
     const other = process.platform === "darwin" ? "linux" : "darwin";
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], other);
+    let started = false;
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], () => { started = true; return 1; }, other);
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
+    expect(started).toBe(false);
   });
 });
 

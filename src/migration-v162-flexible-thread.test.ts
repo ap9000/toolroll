@@ -61,6 +61,10 @@ describe("v162", () => {
       expect(() => db.prepare(`UPDATE flexible_thread SET ${column} = 'changed' WHERE id = ?`).run(ID), column).toThrow();
     }
     db.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ?").run(ID);
+    // A launch's registration: a positive pid and when, both or neither.
+    expect(() => db.prepare("UPDATE flexible_thread SET live_pid = 42 WHERE id = ?").run(ID)).toThrow();
+    expect(() => db.prepare("UPDATE flexible_thread SET live_pid = 0, live_since = ? WHERE id = ?").run(T0, ID)).toThrow();
+    db.prepare("UPDATE flexible_thread SET live_pid = 42, live_since = ? WHERE id = ?").run(T0, ID);
     expect(() => db.prepare("UPDATE flexible_thread SET state = 'preparing' WHERE id = ?").run(ID)).toThrow(/only moves forward/);
     db.prepare("UPDATE flexible_thread SET state = 'removing' WHERE id = ?").run(ID);
     expect(() => db.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ?").run(ID)).toThrow(/only moves forward/);

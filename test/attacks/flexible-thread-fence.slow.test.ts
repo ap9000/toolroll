@@ -1,8 +1,10 @@
 /**
  * Attack: a Flexible thread getting out of its fence (flexible-thread.ts; the Flexible plan v2 §1, §2 and §12, Codex
  * round 2 item 3), against the real sandbox: the launch is exactly what flexibleThreadSpawn hands back (its containment
- * probe included), on Seatbelt here and bubblewrap on Linux, and under `codex sandbox` with the thread's profile at
- * Full access.
+ * probe included), on Seatbelt on a Mac and bubblewrap on Linux. Every row needs the OS fence (needs(ctx, osFence()):
+ * on a lane that requires native attacks, an unavailable fence fails the row instead of skipping it); the keychain row is
+ * the Mac's. Codex's own sandbox isn't a backend for threads: it can't deny what is made after it starts, so a Codex
+ * thread is refused (flexible-thread.test.ts).
  *
  * Rows: ordinary work in the thread's own repository still works and leaves the project's objects as they were; every
  * write to the project's repository (objects, alternates, refs, packed-refs, config, hooks, worktrees, its files) and
@@ -10,7 +12,10 @@
  * and unwritable; credential files, the keychain (a synthetic item in a throwaway keychain, never the person's), a
  * stored Git credential and an SSH-agent socket are out of reach, from the agent and from a detached descendant; no
  * connection but the run's proxy; Toolroll's state, its install and the person's launch configuration are unwritable;
- * the shared /tmp/claude is unwritable; and the threads' folder is out of reach of every other launch too.
+ * the shared /tmp/claude is unwritable; the threads' folder is out of reach of every other launch too; protected names
+ * can't be made, replaced or removed, and still hold at the next launch; a thread or state file made after a launch
+ * started stays out of its reach; no direct TCP or UDP leaves; and a removal can't slip between a launch's checks and its
+ * spawn.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
@@ -19,10 +24,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { codexFenceArgv, fenceFor, runFolders, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
-import { flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, type FlexibleThreadPaths } from "../../src/flexible-thread.js";
+import { fenceFor, runFolders, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
+import { flexibleThread, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, type FlexibleThreadPaths } from "../../src/flexible-thread.js";
 import { objectsInventory, tgit, threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
-import { codexSandbox, marker, needs, osFence, q, seatbelt, underSandbox, write } from "./harness.js";
+import { marker, needs, osFence, q, seatbelt, underSandbox, underSandboxAsync, write } from "./harness.js";
 
 vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
 
@@ -51,17 +56,29 @@ async function thread(): Promise<{ id: string; paths: FlexibleThreadPaths }> {
   return { id: made.thread.id, paths: made.paths };
 }
 
-/** `script` in /bin/sh as a thread's agent: exactly the spawn flexibleThreadSpawn hands back, run to its end. */
-async function inThread(id: string, script: string, proxyPort = 1): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort, token: "run-token" }, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", script]);
-  if (!launch.ok) throw new Error(launch.message);
-  return new Promise(done => {
-    const child = spawn(launch.file, launch.args, { cwd: launch.cwd, env: launch.env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "", stderr = "";
-    child.stdout.on("data", chunk => { stdout += chunk; });
-    child.stderr.on("data", chunk => { stderr += chunk; });
-    child.on("close", status => done({ status, stdout, stderr }));
+type Ran = { status: number | null; stdout: string; stderr: string };
+/** `script` in /bin/sh as a thread's agent, started by flexibleThreadSpawn exactly as a caller starts one (its own
+ * process group), with `done` settling when it ends. */
+async function startInThread(id: string, script: string, proxyPort = 1): Promise<{ pid: number; done: Promise<Ran> }> {
+  let done: Promise<Ran> | null = null;
+  const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort, token: "run-token" }, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", script], spec => {
+    const child = spawn(spec.file, spec.args, { cwd: spec.cwd, env: spec.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    done = new Promise(settle => {
+      let stdout = "", stderr = "";
+      child.stdout!.on("data", chunk => { stdout += chunk; });
+      child.stderr!.on("data", chunk => { stderr += chunk; });
+      child.on("close", status => settle({ status, stdout, stderr }));
+    });
+    return child.pid ?? 0;
   });
+  if (!launch.ok) throw new Error(launch.message);
+  return { pid: launch.pid, done: done! };
+}
+const inThread = async (id: string, script: string, proxyPort = 1): Promise<Ran> => (await startInThread(id, script, proxyPort)).done;
+/** Until `test` holds, a tenth of a second at a time (at most ten seconds). */
+async function until(test: () => boolean): Promise<void> {
+  for (let waited = 0; waited < 100 && !test(); waited++) await new Promise(done => setTimeout(done, 100));
+  expect(test()).toBe(true);
 }
 
 /** Each attack as `name: command`; the probe prints `ALLOWED <name>` for any that worked. */
@@ -126,7 +143,9 @@ describe("attack: a Flexible thread leaving its fence", () => {
     expect(tgit(world.project, "for-each-ref", "--format=%(refname) %(objectname)")).toBe(refs);
     expect(readFileSync(join(git, "config"), "utf8")).toBe(config);
     expect(readFileSync(join(paths.repo, ".git", "objects", "info", "alternates"), "utf8")).toBe(`${world.objects}\n`);
-    expect(existsSync(join(paths.repo, ".mcp.json")) || existsSync(join(paths.repo, ".claude"))).toBe(false);
+    // The reserved placeholders as Toolroll made them.
+    expect(readFileSync(join(paths.repo, ".mcp.json"), "utf8")).toBe("{}\n");
+    expect(readFileSync(join(paths.repo, ".claude", "settings.json"), "utf8")).toBe("{}\n");
     // Still a working thread: its own objects and its project's base, read through the alternates.
     expect(tgit(paths.repo, "cat-file", "-t", world.first)).toBe("commit");
   }, 60_000);
@@ -264,29 +283,111 @@ describe("attack: a Flexible thread leaving its fence", () => {
     expect(allowed(out)).toEqual([]);
   }, 60_000);
 
-  test("native: under Codex's own sandbox at Full access the thread's profile holds the same", async ctx => {
-    needs(ctx, codexSandbox());
+  test("native: protected names can't be made, replaced or removed, from the agent or a descendant, and still hold at the next launch", async ctx => {
+    needs(ctx, osFence());
     const { id, paths } = await thread();
-    const secret = marker("codex");
-    const home = realpathSync(homedir());
-    write(join(home, ".ssh", "id_ed25519"), secret);
-    write(join(world.state, "up-login.txt"), secret);
-    const fenced = flexibleThreadFence(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE });
-    if (!fenced.ok) throw new Error(fenced.message);
-    const before = objectsInventory(world.objects);
-    const script = [`cat ${q(join(home, ".ssh", "id_ed25519"))} ${q(join(world.state, "up-login.txt"))} 2>/dev/null`, attempts([
-      ["write the project's objects", `echo x > ${q(join(world.objects, "info", "alternates"))}`],
-      ["write the project's files", `echo x >> ${q(join(world.project, "README.md"))}`],
-      ["write the thread's alternates", "echo /tmp > .git/objects/info/alternates"],
-      ["write the thread's config", "echo x >> .git/config"],
-      ["write home", `echo x > ${q(join(home, "planted.txt"))}`],
-    ]), "echo work > codex.txt && echo thread-write-ok"].join("\n");
-    mkdirSync(join(world.dir, "codex-home"), { recursive: true });
-    const ran = spawnSync("codex", ["sandbox", ...codexFenceArgv(fenced.launch.fence, true, fenced.launch.fenceGrants), "-P", "standing-orders", "--", "/bin/sh", "-c", script], {
-      cwd: paths.repo, encoding: "utf8", env: { ...process.env, NODE_OPTIONS: undefined, CODEX_HOME: join(world.dir, "codex-home") }, timeout: 60_000 });
-    expect(ran.stdout, ran.stderr).toContain("thread-write-ok");
-    expect(ran.stdout).not.toContain(secret);
-    expect(allowed(ran)).toEqual([]);
-    expect(objectsInventory(world.objects)).toEqual(before);
+    const names = [".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".mcp.json", ".gitmodules", ".ripgreprc", ".claude/settings.json", ".claude/settings.local.json"];
+    const before = Object.fromEntries(names.map(name => [name, readFileSync(join(paths.repo, name), "utf8")]));
+    const rows: [string, string][] = names.flatMap(name => [
+      [`write ${name}`, `echo planted >> ${q(name)}`],
+      [`replace ${name}`, `echo planted > planted.tmp && mv -f planted.tmp ${q(name)}`],
+      [`remove ${name}`, `rm -f ${q(name)} && ! test -e ${q(name)}`],
+      [`link ${name}`, `ln -sfn /tmp ${q(name)}`],
+    ]);
+    const dirs = [".vscode", ".idea", ".claude/commands", ".claude/agents"].flatMap(dir => [[`fill ${dir}`, `echo x > ${q(`${dir}/planted`)}`], [`remove ${dir}`, `rm -rf ${q(dir)} && ! test -e ${q(dir)}`]] as [string, string][]);
+    const moves: [string, string][] = [["move .claude aside", "mv .claude .claude-old && mkdir -p .claude && echo planted > .claude/settings.json"]];
+    const descendant = `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "/bin/sh", "-c", shift' ${q(`(${attempts([[".envrc from a descendant", "echo planted >> .envrc"]])}; echo done) > "$TMPDIR/descendant.out" 2>&1`)}`;
+    const out = await inThread(id, [attempts([...rows, ...dirs, ...moves]), descendant].join("\n"));
+    expect(allowed(out), out.stderr).toEqual([]);
+    await until(() => existsSync(join(paths.tmp, "descendant.out")) && readFileSync(join(paths.tmp, "descendant.out"), "utf8").includes("done"));
+    expect(readFileSync(join(paths.tmp, "descendant.out"), "utf8")).not.toContain("ALLOWED");
+    for (const name of names) expect(readFileSync(join(paths.repo, name), "utf8"), name).toBe(before[name]);
+    // The next launch: the same names, the same contents, still read-only.
+    const next = await inThread(id, [`cat .envrc .npmrc .yarnrc.yml; echo next-launch`, attempts([["write .envrc at the next launch", "echo planted >> .envrc"]])].join("\n"));
+    expect(next.stdout.trim(), next.stderr).toBe("next-launch");
+    expect(readFileSync(join(paths.repo, ".envrc"), "utf8")).toBe("");
+  }, 60_000);
+
+  test("native: a thread, and a file in Toolroll's state, made after a thread's launch started stay out of its reach", async ctx => {
+    needs(ctx, osFence());
+    const mine = await thread();
+    const secret = marker("late");
+    const go = join(mine.paths.tmp, "go");
+    const running = await startInThread(mine.id, `while [ ! -f ${q(go)} ]; do sleep 0.1; done; cat "$(cat ${q(go)})"/repo/secret.txt ${q(join(world.state, "late-secret.txt"))} 2>/dev/null; ls "$(cat ${q(go)})" 2>/dev/null; echo checked`);
+    // After the sandbox started: a new thread, and a new file beside the database.
+    const late = await thread();
+    write(join(late.paths.repo, "secret.txt"), secret);
+    write(join(world.state, "late-secret.txt"), secret);
+    writeFileSync(go, late.paths.folder);
+    const out = await running.done;
+    expect(out.stdout.trim(), out.stderr).toBe("checked");
+  }, 60_000);
+
+  test("native: a thread made after an ordinary build's launch started stays out of its reach (the database in a shared folder)", async ctx => {
+    needs(ctx, osFence());
+    world.store.close();
+    rmSync(world.dir, { recursive: true, force: true });
+    world = threadWorld({ stateName: "shared" });
+    const pool = join(world.state, "worktrees");
+    const worktree = join(pool, "shop", "task-1-0123abcd");
+    mkdirSync(dirname(worktree), { recursive: true });
+    tgit(world.project, "worktree", "add", "-q", "-b", "t1", worktree);
+    const binding = trustedWorktreeBinding(world.project, worktree, [pool]);
+    // The threads folder isn't there before this launch: the fence makes it, so a thread made later is inside a denied folder.
+    rmSync(join(world.state, "threads"), { recursive: true, force: true });
+    const build = fenceFor("build", { storage: STORAGE, databaseFile: world.databaseFile, worktree, home: homedir(), binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
+      boundary: taskBoundary({ worktree, provider: "claude", home: homedir(), binding, policy: 2, storage: STORAGE }) });
+    const go = join(worktree, "go");
+    const running = underSandboxAsync(`while [ ! -f ${q(go)} ]; do sleep 0.1; done; cat "$(cat ${q(go)})"/repo/secret.txt 2>/dev/null; echo checked`, build.fence, build.fenceGrants, { cwd: worktree });
+    await new Promise(done => setTimeout(done, 300));
+    const secret = marker("late-thread");
+    const late = await thread();
+    write(join(late.paths.repo, "secret.txt"), secret);
+    writeFileSync(go, late.paths.folder);
+    const out = await running;
+    expect(out.stdout.trim(), out.stderr).toBe("checked");
+  }, 60_000);
+
+  test("native: no direct TCP or UDP connection leaves the thread, to an outside address or an IPv6 one", async ctx => {
+    needs(ctx, osFence());
+    const { id } = await thread();
+    // A refused connect is the proof; nothing is sent when the fence holds.
+    const probe = `${q(process.execPath)} -e ${q(`
+      const net = require("net"), dgram = require("dgram");
+      const tcp = (host, port) => new Promise(done => { const s = net.connect({ host, port }); s.on("connect", () => { s.destroy(); done("connected"); }); s.on("error", e => done(e.code || "error")); setTimeout(() => { s.destroy(); done("timeout"); }, 4000).unref(); });
+      const udp = () => new Promise(done => { const s = dgram.createSocket("udp4"); s.on("error", e => { s.close(); done(e.code || "error"); }); s.send(Buffer.from([0]), 53, "8.8.8.8", e => { try { s.close(); } catch {} done(e ? (e.code || "error") : "sent"); }); });
+      (async () => { console.log("tcp " + await tcp("1.1.1.1", 443)); console.log("tcp6 " + await tcp("2606:4700:4700::1111", 443)); console.log("udp " + await udp()); })();
+    `.replace(/\s*\n\s*/g, " "))}`;
+    const out = await inThread(id, probe);
+    const results = Object.fromEntries(out.stdout.trim().split("\n").map(line => line.split(" ") as [string, string]));
+    expect(Object.keys(results), out.stderr).toEqual(["tcp", "tcp6", "udp"]);
+    for (const [kind, result] of Object.entries(results)) {
+      expect(["connected", "sent", "timeout"], `${kind}: ${result}`).not.toContain(result);
+      // Seatbelt refuses the socket operation itself.
+      if (process.platform === "darwin") expect(result, kind).toBe("EPERM");
+    }
+  }, 60_000);
+
+  test("native: a removal waits for a launch under way and then refuses while its agent runs; a launch after a removal never starts", async ctx => {
+    needs(ctx, osFence());
+    const { id, paths } = await thread();
+    // The launch takes the thread's lock as it is called (before its probe), so the removal called right after waits.
+    const launching = startInThread(id, "sleep 30");
+    const removing = removeFlexibleThread(world.store, { id, by: "alex", now: NOW });
+    const { pid, done } = await launching;
+    expect(await removing).toMatchObject({ ok: false, reason: "thread-running" });
+    expect(flexibleThread(world.store, id)).toMatchObject({ state: "ready", livePid: pid });
+    expect(existsSync(paths.repo)).toBe(true);
+    process.kill(-pid, "SIGKILL");
+    // Ended and reaped (a leader not yet reaped still answers as a process).
+    await done;
+    // Called first, the removal holds the lock: the launch after it finds the thread gone and starts nothing.
+    const removed = removeFlexibleThread(world.store, { id, by: "alex", now: NOW });
+    let started = false;
+    const late = flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], () => { started = true; return 1; });
+    expect(await removed).toEqual({ ok: true, keepRef: "removed" });
+    expect(await late).toMatchObject({ ok: false, reason: "thread-not-ready" });
+    expect(started).toBe(false);
+    expect(existsSync(paths.folder)).toBe(false);
   }, 60_000);
 });

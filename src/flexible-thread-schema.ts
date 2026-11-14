@@ -8,7 +8,8 @@
  *   `keep_ref` (refs/toolroll/threads/<id>/base); `folder` the real path of the thread's own folder under the state
  *   folder's `threads`. The row is the record every later use takes its paths from, never the thread's own folder.
  *   `state` only moves forward: preparing → ready → removing → removed, or to failed; the repository, base, ref and
- *   folder are written once.
+ *   folder are written once. `live_pid` is the process group leader of the thread's last launch (registered under the
+ *   thread's lock as it is spawned): removal refuses while that group may still be alive.
  */
 export const V162_SCHEMA = `
 CREATE TABLE IF NOT EXISTS flexible_thread (
@@ -22,6 +23,9 @@ CREATE TABLE IF NOT EXISTS flexible_thread (
   state       TEXT NOT NULL CHECK (state IN ('preparing', 'ready', 'removing', 'removed', 'failed')),
   ended_at    TEXT,
   end_detail  TEXT CHECK (end_detail IS NULL OR length(end_detail) <= 2000),
+  live_pid    INTEGER CHECK (live_pid IS NULL OR live_pid > 0),
+  live_since  TEXT,
+  CHECK ((live_pid IS NULL) = (live_since IS NULL)),
   CHECK ((ended_at IS NULL) = (state IN ('preparing', 'ready', 'removing')))
 );
 CREATE INDEX IF NOT EXISTS flexible_thread_repo ON flexible_thread (repo, state);

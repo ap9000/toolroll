@@ -16,7 +16,7 @@ import { addApprover } from "./scope.js";
 import { runOperate, EXIT } from "./operate.js";
 import { createDecisionServer } from "./serve.js";
 import { ROUTES } from "./server/route-table.js";
-import { flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread } from "./flexible-thread.js";
+import { flexibleThreadCodexProfile, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread } from "./flexible-thread.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
 const NOW = new Date();
@@ -79,7 +79,10 @@ describe("switched off", () => {
       .run(id, repo, sha, `refs/toolroll/threads/${id}/base`, join(dir, "threads", id), NOW.toISOString());
     const launch = { id, network: { proxyPort: 41_000, token: "t" }, storage: { names: [], denies: [] } };
     expect(flexibleThreadFence(store, launch)).toEqual(refused);
-    expect(await flexibleThreadSpawn(store, { ...launch, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"])).toEqual(refused);
+    let started = false;
+    expect(await flexibleThreadSpawn(store, { ...launch, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], () => { started = true; return 1; })).toEqual(refused);
+    expect(started).toBe(false);
+    expect(flexibleThreadCodexProfile(store, launch)).toEqual(refused);
     expect(await removeFlexibleThread(store, { id, by: "alex", now: NOW })).toEqual(refused);
     expect(store.handle.prepare("SELECT state FROM flexible_thread WHERE id = ?").get(id)!["state"]).toBe("ready");
   });
@@ -163,8 +166,8 @@ describe("the switch can't become a runtime override", () => {
     // The thread engine (F2a): every entry point that makes, removes, fences or starts a thread.
     const thread = readFileSync("src/flexible-thread.ts", "utf8");
     const entries = [...thread.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!);
-    expect(entries).toEqual(expect.arrayContaining(["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn"]));
-    for (const name of ["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn"]) {
+    expect(entries).toEqual(expect.arrayContaining(["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn", "flexibleThreadCodexProfile"]));
+    for (const name of ["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn", "flexibleThreadCodexProfile"]) {
       expect(thread, name).toMatch(new RegExp(`export (?:async )?function ${name}\\([^]*?\\{\\n  if \\(!FLEXIBLE_AVAILABLE\\) return refuse\\("not-available"\\);`));
     }
     // Nothing outside the thread engine (and its tests) calls into it yet: no route, CLI command, MCP tool or chat action.

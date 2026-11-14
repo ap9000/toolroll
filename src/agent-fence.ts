@@ -160,11 +160,16 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     fence.add(backups);
     fence.add(real(backups));
     // Flexible threads' own folders (flexible-thread.ts): denied whole to every launch but a thread's own, whose fence
-    // denies the other threads itself (as a checkout pool, its own folder given back). By name where the sandbox
-    // denies a missing path without making it (Seatbelt; Codex's profile gets the same list); on Linux once it exists.
+    // denies the other threads itself (as a checkout pool, its own folder given back). Made first (owner-only) when it
+    // isn't there, so every backend denies a folder that exists and a thread made after this launch is inside it; if it
+    // can't be made, its name is denied anyway.
     const threads = join(state, FLEXIBLE_THREADS_DIR);
     const ownThread = worktree !== null && (worktree === real(threads) || inside(worktree, real(threads)));
-    if (!ownThread && (process.platform === "darwin" || existsSync(threads))) { fence.add(threads); fence.add(real(threads)); }
+    if (!ownThread) {
+      try { mkdirSync(threads, { mode: 0o700 }); } catch { /* there already, or denied by name below either way */ }
+      fence.add(threads);
+      fence.add(real(threads));
+    }
     // Saved credentials (the remembered login, login-secrets.ts) live in a reserved owner-only folder, made here before
     // any launch and denied whole, so one first written after this launch is behind this fence too: a listing can't
     // name a file that isn't there yet, and bubblewrap can't deny one. If it can't be made or proven, its name is
@@ -423,7 +428,10 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   protectedStorage?: string[];
   /** A Flexible thread's launch (flexible-thread.ts): none of the sandbox runtime's shared write folders (/tmp/claude),
    * which every other launch on this computer may also write; its temp is its own. */
-  noSharedTemp?: true };
+  noSharedTemp?: true;
+  /** Denied to read, never to write (a Flexible thread's state folder: its own folder inside it is read back, and
+   * written only where its write allowlist says, which a write deny around it would take away). */
+  readDenyOnly?: string[] };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -910,6 +918,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   const denyWrite = new Set<string>([...fence, ...grants.readOnly].map(real));
   for (const path of grants.writeDenies ?? []) denyWrite.add(path);
   for (const name of grants.homeNames ?? []) { denyRead.add(name); denyWrite.add(name); }
+  for (const path of grants.readDenyOnly ?? []) denyRead.add(real(path));
   for (const file of grants.signIns?.read ?? []) allowRead.add(file);
   // Every other launch's private folder unread by pattern (one made after this launch too), this launch's own read
   // again. Writes are denied to those there at launch, under every root: the runtime can't write back inside a write

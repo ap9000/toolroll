@@ -5,7 +5,8 @@
  * is the home every fence denies credentials in.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "../src/store.js";
@@ -21,10 +22,11 @@ export function tgit(cwd: string, ...args: string[]): string {
   return ran.stdout.trim();
 }
 
-/** Every object file and pack in a repository's objects folder, with its size: equal before and after means unchanged. */
+/** Every file in a repository's objects folder (loose objects, packs, indexes, info) with the SHA-256 of its bytes: equal
+ * before and after means nothing there was added, removed, or rewritten in place. */
 export function objectsInventory(objects: string): string[] {
   return (readdirSync(objects, { recursive: true, withFileTypes: true }) as import("node:fs").Dirent[])
-    .filter(one => one.isFile()).map(one => join(one.parentPath, one.name).slice(objects.length)).sort();
+    .filter(one => one.isFile()).map(one => { const path = join(one.parentPath, one.name); return `${path.slice(objects.length)} ${createHash("sha256").update(readFileSync(path)).digest("hex")}`; }).sort();
 }
 
 export type ThreadWorld = { dir: string; state: string; databaseFile: string; store: Store; project: string; objects: string; first: string; second: string; other: string };

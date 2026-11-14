@@ -242,8 +242,8 @@ describe("the agent fence", () => {
     const fence = withoutStorage(agentFence({ databaseFile: join(state, "orders.db"), worktree, home }));
     // The plane's git views (git-views.ts) are made in ~/.toolroll and fenced by name in every fence.
     const views = [join(home, ".toolroll"), join(home, ".toolroll", "git-views")];
-    // Flexible threads' folder (flexible-thread.ts), by name on a Mac (Seatbelt denies a missing path); on Linux once it's there.
-    const threads = (folder: string) => process.platform === "darwin" ? [join(folder, "threads")] : [];
+    // Flexible threads' folder (flexible-thread.ts): made first, then denied whole, on every platform.
+    const threads = (folder: string) => [join(folder, "threads")];
     expect(fence).toEqual([...threads(state),
       join(home, ".standing-orders"), ...views,
       join(state, "backups"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),

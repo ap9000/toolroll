@@ -27,7 +27,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
@@ -38,6 +38,8 @@ import { confined, ContainmentRefusal, run } from "./exec.js";
 import type { ProtectedStorage } from "./protected-storage.js";
 import { SANDBOX_LAUNCH_SPEC, SEATBELT_NO_KEYCHAIN, type SandboxLaunchSpec } from "./sandbox-runtime.js";
 import { hardenedGit, lazyFetchSetting, recordedCommonDir } from "./teardown-git.js";
+import { withCheckoutLock } from "./git-views.js";
+import { processMayBeAlive } from "./process-liveness.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
 
@@ -45,7 +47,9 @@ import { poolRootOf, type Runner } from "./worktree.js";
 
 export const FLEXIBLE_THREAD_ID = /^[0-9a-f]{32}$/;
 export type FlexibleThreadState = "preparing" | "ready" | "removing" | "removed" | "failed";
-export type FlexibleThreadRow = { id: string; repo: string; baseSha: string; keepRef: string; folder: string; createdBy: string; createdAt: string; state: FlexibleThreadState; endedAt: string | null; endDetail: string | null };
+export type FlexibleThreadRow = { id: string; repo: string; baseSha: string; keepRef: string; folder: string; createdBy: string; createdAt: string; state: FlexibleThreadState; endedAt: string | null; endDetail: string | null;
+  /** The process group leader of the thread's last launch, registered as it was spawned; null when none was. */
+  livePid: number | null };
 
 /** The ref in the project's repository that keeps a thread's base alive. */
 export const flexibleKeepRef = (id: string): string => `refs/toolroll/threads/${id}/base`;
@@ -66,7 +70,7 @@ function readThread(row: Record<string, unknown> | undefined): FlexibleThreadRow
   if (row === undefined) return null;
   return { id: String(row["id"]), repo: String(row["repo"]), baseSha: String(row["base_sha"]), keepRef: String(row["keep_ref"]), folder: String(row["folder"]), createdBy: String(row["created_by"]),
     createdAt: String(row["created_at"]), state: String(row["state"]) as FlexibleThreadState, endedAt: row["ended_at"] === null ? null : String(row["ended_at"]),
-    endDetail: row["end_detail"] === null ? null : String(row["end_detail"]) };
+    endDetail: row["end_detail"] === null ? null : String(row["end_detail"]), livePid: row["live_pid"] === null || row["live_pid"] === undefined ? null : Number(row["live_pid"]) };
 }
 
 /** The thread's record, or null (an id that isn't one is never looked up). */
@@ -78,7 +82,7 @@ export function flexibleThread(store: Store, id: string): FlexibleThreadRow | nu
 // ---- refusals ---------------------------------------------------------------------------------------------------------
 
 export type FlexibleThreadRefusalReason = "not-available" | "no-state-folder" | "not-a-project" | "repository-unusable" | "base-unknown" | "setup-failed"
-  | "thread-unknown" | "thread-not-ready" | "thread-folder-changed" | "network-required" | "containment";
+  | "thread-unknown" | "thread-not-ready" | "thread-folder-changed" | "network-required" | "containment" | "thread-running" | "codex-unsupported";
 export type FlexibleThreadRefusal = { ok: false; reason: FlexibleThreadRefusalReason; message: string };
 
 const WORDS: Readonly<Record<FlexibleThreadRefusalReason, string>> = Object.freeze({
@@ -93,6 +97,8 @@ const WORDS: Readonly<Record<FlexibleThreadRefusalReason, string>> = Object.free
   "thread-folder-changed": "This thread's folder isn't the one Toolroll made, so it can't run.",
   "network-required": "A thread can only run through its own network proxy, and it wasn't given one.",
   "containment": "The sandbox couldn't hold this thread, so it didn't run.",
+  "thread-running": "This thread's agent may still be running, so its repository was left as it is.",
+  "codex-unsupported": "Codex's own sandbox can't keep a Flexible thread away from threads and files made after it starts, so a Codex thread can't run in it.",
 });
 const refuse = (reason: FlexibleThreadRefusalReason, detail?: string): FlexibleThreadRefusal =>
   ({ ok: false, reason, message: detail === undefined ? WORDS[reason] : `${WORDS[reason]} (${detail})` });
@@ -159,6 +165,52 @@ async function usableRepository(repo: string, read: Git): Promise<{ common: stri
 }
 const ownObjects = (path: string): boolean => { try { const held = lstatSync(path); return held.isDirectory() && !held.isSymbolicLink(); } catch { return false; } };
 
+// ---- protected names -------------------------------------------------------------------------------------------------------
+
+/** The names at a thread repository's top that a provider or the next tool run loads (agent-fence.ts PROTECTED_FILES
+ * and PROTECTED_DIRS, less `.git`'s own, which the fence holds by their own names). */
+const TOP_PROTECTED: readonly { name: string; dir: boolean }[] = [...PROTECTED_FILES.filter(name => !name.startsWith(".git/")).map(name => ({ name, dir: false })),
+  ...PROTECTED_DIRS.filter(name => !name.startsWith(".git/")).map(name => ({ name, dir: true }))];
+
+/** Whether every component of `name` under `top` is a real entry (no link anywhere on the way), and the last one is a
+ * plain file (or folder for `dir`); "absent" when it isn't there at all. */
+function protectedEntry(top: string, name: string, dir: boolean): "ok" | "absent" | "bad" {
+  let at = top;
+  const parts = name.split("/");
+  for (const [index, part] of parts.entries()) {
+    at = join(at, part);
+    let held: import("node:fs").Stats;
+    try { held = lstatSync(at); } catch { return "absent"; }
+    const last = index === parts.length - 1;
+    if (held.isSymbolicLink() || (!last && !held.isDirectory()) || (last && (dir ? !held.isDirectory() : !held.isFile()))) return "bad";
+  }
+  return "ok";
+}
+
+/**
+ * Every protected name at the repository's top made present, so the fence can hold it read-only on every backend: a
+ * sandbox holds an existing path read-only everywhere, but a missing one only on some (bubblewrap and Codex's own can't
+ * keep a name that isn't there from being made). Each the project doesn't have becomes a reserved placeholder (an empty
+ * file, `{}` for JSON, or an empty folder), listed in the thread's own .git/info/exclude so it never shows as work.
+ * A project with a link (or a file where a folder belongs) at one of them is refused: the fence would hold the link's
+ * target, not the name.
+ */
+function reserveProtectedNames(repo: string): void {
+  const reserved: string[] = [];
+  for (const { name, dir } of TOP_PROTECTED) {
+    const found = protectedEntry(repo, name, dir);
+    if (found === "bad") throw new Error(`the project has a link or an unexpected entry at ${name}`);
+    if (found === "ok") continue;
+    const path = join(repo, name);
+    mkdirSync(dir ? path : dirname(path), { recursive: true, mode: 0o755 });
+    if (protectedEntry(repo, name.includes("/") ? name.slice(0, name.lastIndexOf("/")) : ".", true) === "bad") throw new Error(`the project has a link on the way to ${name}`);
+    if (!dir) writeFileSync(path, name.endsWith(".json") ? "{}\n" : "", { mode: 0o644, flag: "wx" });
+    reserved.push(dir ? `/${name}/` : `/${name}`);
+  }
+  mkdirSync(join(repo, ".git", "info"), { recursive: true, mode: 0o755 });
+  writeFileSync(join(repo, ".git", "info", "exclude"), ["# Toolroll: placeholders that hold protected names (flexible-thread.ts)", ...reserved, ""].join("\n"), { mode: 0o644, flag: "wx" });
+}
+
 // ---- making and removing a thread's repository -------------------------------------------------------------------------
 
 /**
@@ -213,6 +265,7 @@ export async function prepareFlexibleThread(store: Store, input: { repo: string;
     if (branch.code !== 0) throw new Error("the thread's branch couldn't be written");
     const checkout = await build(paths.repo, ["reset", "-q", "--hard", baseSha]);
     if (checkout.code !== 0) throw new Error("the thread's files couldn't be checked out");
+    reserveProtectedNames(paths.repo);
     const ready = store.transact(() => {
       const moved = store.handle.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ? AND state = 'preparing'").run(id);
       if (Number(moved.changes) !== 1) return false;
@@ -241,11 +294,22 @@ export async function prepareFlexibleThread(store: Store, input: { repo: string;
  */
 export async function removeFlexibleThread(store: Store, input: { id: string; by: string; now: Date; runner?: Runner }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
+  // The thread's lock (withThreadLock), taken before anything else: a launch admitted, probed and spawned under it is
+  // wholly before this removal (whose check then sees its process) or wholly after it (and finds the thread gone).
+  return withThreadLock(input.id, () => removeLocked(store, input));
+}
+
+async function removeLocked(store: Store, input: { id: string; by: string; now: Date; runner?: Runner }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
   const state = stateFolderOf(store);
   if (state === null) return refuse("no-state-folder");
   const thread = flexibleThread(store, input.id);
   if (thread === null) return refuse("thread-unknown");
-  const claimed = store.transact(() => Number(store.handle.prepare("UPDATE flexible_thread SET state = 'removing' WHERE id = ? AND state IN ('ready', 'removing')").run(thread.id).changes) === 1);
+  // Its last launch's process group may still be running: its files stay. (Only the group: a descendant that left it, by
+  // setsid, is the custody check's to find, F2c.)
+  if (thread.livePid !== null && processMayBeAlive(thread.livePid, true)) return refuse("thread-running");
+  const claimed = store.transact(() => Number(store.handle.prepare("UPDATE flexible_thread SET state = 'removing', live_pid = NULL, live_since = NULL WHERE id = ? AND state IN ('ready', 'removing') AND live_pid IS ?")
+    .run(thread.id, thread.livePid).changes) === 1);
   if (!claimed) return refuse("thread-not-ready");
   const inner = input.runner ?? run;
   const build = gitIn(inner, "build"), read = gitIn(inner, "read");
@@ -311,24 +375,25 @@ function folderChanged(paths: FlexibleThreadPaths, recorded: string, objects: st
     const named = lstatSync(alternates);
     if (!named.isFile() || named.isSymbolicLink() || readFileSync(alternates, "utf8") !== `${objects}\n`) return "its alternates changed";
   } catch { return "its repository can't be read"; }
+  for (const { name, dir } of TOP_PROTECTED) if (protectedEntry(paths.repo, name, dir) !== "ok") return `its ${name} isn't the one Toolroll held`;
   return null;
 }
 
 /** Names in the thread's repository no launch writes (beside what the sandbox runtime denies at the working folder):
- * its config, hooks and object alternates (only the file: gc writes its commit graph beside it), and the protected names at its top (settings, MCP servers, hooks that a
- * provider or the next tool would load). On Linux only those there now: the runtime holds a missing one with a
- * stand-in file, which would show up in the thread's work. */
-function threadReadOnly(paths: FlexibleThreadPaths, platform: NodeJS.Platform): string[] {
+ * its config, hooks, object alternates (only the file: gc writes its commit graph beside it) and exclude list, and the
+ * protected names at its top (settings, MCP servers, hooks and tool settings a provider or the next tool run would
+ * load), each present on every platform (reserveProtectedNames; folderChanged proves it at every launch). */
+function threadReadOnly(paths: FlexibleThreadPaths): string[] {
   const gitdir = join(paths.repo, ".git");
-  const top = [...PROTECTED_FILES.filter(name => !name.startsWith(".git/")), ...PROTECTED_DIRS.filter(name => !name.startsWith(".git/"))].map(name => join(paths.repo, name));
-  return [join(gitdir, "config"), join(gitdir, "hooks"), join(gitdir, "objects", "info", "alternates"), paths.home, ...top.filter(path => platform !== "linux" || existsSync(path))].sort();
+  return [join(gitdir, "config"), join(gitdir, "hooks"), join(gitdir, "objects", "info", "alternates"), join(gitdir, "info", "exclude"), paths.home,
+    ...TOP_PROTECTED.map(one => join(paths.repo, one.name))].sort();
 }
 
 /**
  * The fence one thread launch runs in (plan §1 and §2, Codex round 2 item 3), from Toolroll's records only, or why it
  * can't be made. The same at every level: Full access removes the provider's prompts inside it, never any of it.
  */
-export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInput, platform: NodeJS.Platform = process.platform):
+export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInput):
   { ok: true; launch: LaunchFence; paths: FlexibleThreadPaths; thread: FlexibleThreadRow } | FlexibleThreadRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const network = input.network;
@@ -354,12 +419,10 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
 
   const home = real(homedir());
   const credentials = threadCredentialPaths(home);
-  // Everything in the state folder but the threads (whatever the folder is: Toolroll's own, or a shared one the database
-  // was put in), the database and the coding catalog by name too.
-  let entries: string[] = [];
-  try { entries = readdirSync(state); } catch { return refuse("no-state-folder"); }
-  const stateDenies = [...entries.filter(entry => entry !== FLEXIBLE_THREADS_DIR).map(entry => join(state, entry)),
-    ...["", "-wal", "-shm", "-journal", ".coding.sqlite", ".coding.sqlite-wal", ".coding.sqlite-shm"].map(suffix => `${real(databaseFile)}${suffix}`)];
+  // The database and the coding catalog by name, read and write; the whole state folder (whatever it is: Toolroll's own,
+  // or a shared one the database was put in) unread below, the thread's own folder read back inside it as its one
+  // exception, so an entry or a thread made there after the launch starts is denied too.
+  const stateDenies = ["", "-wal", "-shm", "-journal", ".coding.sqlite", ".coding.sqlite-wal", ".coding.sqlite-shm"].map(suffix => `${real(databaseFile)}${suffix}`);
   // Every other registered project, whole: a thread's starter may not have access to them.
   const others = store.listProjects().map(one => real(one.path)).filter(path => path !== project);
   const poolRoots = [paths.root, join(state, "worktrees"), join(state, "coding-worktrees"), join(state, "live-worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
@@ -367,14 +430,15 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
   const made = fenceFor("build", {
     storage: input.storage, databaseFile, worktree: paths.folder, boundary, binding: null, runFolders: runFolders(null), poolRoots, home, policy: 2,
     extra: [project, ...others, ...stateDenies],
-    writes: { writes: { subpaths: [paths.repo, paths.tmp, paths.cache], prefixes: [] }, readOnly: threadReadOnly(paths, platform) },
+    writes: { writes: { subpaths: [paths.repo, paths.tmp, paths.cache], prefixes: [] }, readOnly: threadReadOnly(paths) },
     network: { mode: "allowlist", proxyPort: network.proxyPort, brokerPorts: [], loopback: "proxy-only", socketRoots: [], token: network.token },
   });
   // No keychain (a build's agent alone keeps it, and a thread is never one); every pool unread, other threads among them;
   // the project's objects read back inside its denied repository, as one exact grant (never its .git around it).
   const { keychain: _never, pool, ...rest } = made.fenceGrants;
   const unread = pool === undefined ? undefined : (({ readable: _read, ...held }) => held)(pool);
-  const grants: FenceGrants = { ...rest, readable: [...rest.readable, objects], exactFiles: [...rest.exactFiles ?? [], objects], noSharedTemp: true, ...(unread === undefined ? {} : { pool: unread }) };
+  const grants: FenceGrants = { ...rest, readable: [...rest.readable, objects], exactFiles: [...rest.exactFiles ?? [], objects], noSharedTemp: true, readDenyOnly: [state],
+    ...(unread === undefined ? {} : { pool: unread }) };
   return { ok: true, launch: { ...made, fenceGrants: grants }, paths, thread };
 }
 
@@ -443,16 +507,35 @@ async function probeContainment(launch: LaunchFence, paths: FlexibleThreadPaths,
   }
 }
 
+/** One thread's lock (git-views.ts lockCheckout: a file made exclusively in the folder every fence denies, holding this
+ * process's id; across Toolroll's processes): launch admission, the spawn and its registration, and removal each run
+ * wholly under it, so none of them sees the thread half-changed by another. */
+function withThreadLock<T>(id: string, work: () => Promise<T>): Promise<T> {
+  return withCheckoutLock(real(homedir()), `flexible-thread:${id}`, work);
+}
+
+/** What the caller starts: exactly this, as a process group of its own (detached), returning its leader's pid. */
+export type FlexibleThreadStart = (spawn: { file: string; args: string[]; env: Record<string, string>; cwd: string }) => number;
+
 /**
- * How to start `file args` as a thread's agent: inside the thread fence, with exactly the thread's environment, or why
- * not. Fails closed at the moment of use: no sandbox here, terms that would reach the keychain or a network other than
- * the proxy, a profile without the keychain denial, or a probe in the same terms that reaches Toolroll's state each
- * refuse, and nothing starts. The caller spawns exactly what comes back (its env is the whole environment).
+ * Start `file args` as a thread's agent, inside the thread fence, with exactly the thread's environment, or say why not.
+ * All of it runs under the thread's lock (withThreadLock), so a removal can't slip between the checks and the spawn:
+ * the fence is made from the record, its terms checked (no keychain, proxy only), a probe runs in exactly those terms
+ * and must be refused Toolroll's canaries, the record and the fence are made again and must be unchanged, and only
+ * then does `start` run, with the spawn the sandbox runtime made (refused if it lacks the keychain denial). Its pid is
+ * registered on the record before the lock goes, so a removal after it sees the running group and refuses. No sandbox
+ * here, a refused probe or a changed record each refuse, and `start` is never called.
  */
-export async function flexibleThreadSpawn(store: Store, input: FlexibleThreadLaunchInput & { proxyEnv: Record<string, string> }, file: string, args: readonly string[], platform: NodeJS.Platform = process.platform):
-  Promise<{ ok: true; file: string; args: string[]; env: Record<string, string>; cwd: string; launch: LaunchFence } | FlexibleThreadRefusal> {
+export async function flexibleThreadSpawn(store: Store, input: FlexibleThreadLaunchInput & { proxyEnv: Record<string, string> }, file: string, args: readonly string[], start: FlexibleThreadStart,
+  platform: NodeJS.Platform = process.platform): Promise<{ ok: true; pid: number; launch: LaunchFence } | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
-  const fenced = flexibleThreadFence(store, input, platform);
+  if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
+  return withThreadLock(input.id, () => spawnLocked(store, input, file, args, start, platform));
+}
+
+async function spawnLocked(store: Store, input: FlexibleThreadLaunchInput & { proxyEnv: Record<string, string> }, file: string, args: readonly string[], start: FlexibleThreadStart,
+  platform: NodeJS.Platform): Promise<{ ok: true; pid: number; launch: LaunchFence } | FlexibleThreadRefusal> {
+  const fenced = flexibleThreadFence(store, input);
   if (!fenced.ok) return fenced;
   const { launch, paths } = fenced;
   const terms = termsProblem(launch);
@@ -460,10 +543,36 @@ export async function flexibleThreadSpawn(store: Store, input: FlexibleThreadLau
   const env = flexibleThreadEnv(paths, input.proxyEnv);
   const probed = await probeContainment(launch, paths, env, platform);
   if (probed !== null) return refuse("containment", probed);
+  // At the moment of use: the record still ready and unchanged, and its folder still the one Toolroll made (the fence is
+  // made again from them; the spawn uses the terms the probe ran in).
+  const again = flexibleThreadFence(store, input);
+  if (!again.ok) return again;
+  if (JSON.stringify(again.thread) !== JSON.stringify(fenced.thread)) return refuse("thread-not-ready", "it changed while the sandbox was checked");
+  if (again.thread.livePid !== null && processMayBeAlive(again.thread.livePid, true)) return refuse("thread-running");
   let spawned: { file: string; args: string[]; env: Record<string, string> };
   try { spawned = confined(file, args, { fence: launch.fence, fenceGrants: launch.fenceGrants, confinement: "required", cwd: paths.repo, temp: paths.tmp }); }
   catch (error) { return refuse("containment", error instanceof Error ? error.message : undefined); }
   const problem = spawnProblem(spawned, platform);
   if (problem !== null) return refuse("containment", problem);
-  return { ok: true, file: spawned.file, args: spawned.args, env: { ...env, ...spawned.env }, cwd: paths.repo, launch };
+  const pid = start({ file: spawned.file, args: spawned.args, env: { ...env, ...spawned.env }, cwd: paths.repo });
+  const registered = Number.isSafeInteger(pid) && pid > 0 && store.transact(() =>
+    Number(store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ? AND state = 'ready'").run(pid, new Date().toISOString(), input.id).changes) === 1);
+  if (!registered) {
+    // Not on the record, so not ours to leave running: its group ends now.
+    try { if (Number.isSafeInteger(pid) && pid > 0) process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+    return refuse("containment", "the agent's process couldn't be registered");
+  }
+  return { ok: true, pid, launch };
+}
+
+/**
+ * Codex's own command sandbox can't hold a thread's fence: it can't deny a folder and still reach inside it, so the
+ * threads root and the state folder become read-only ancestors with their entries denied one by one at launch, and a
+ * thread or state file made after that is readable (Codex round 1 on F2a, finding 2b). A Codex thread is refused until
+ * it runs inside an outer sandbox the runtime makes (F2c).
+ */
+export function flexibleThreadCodexProfile(store: Store, input: FlexibleThreadLaunchInput): FlexibleThreadRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  void store; void input;
+  return refuse("codex-unsupported");
 }
