@@ -22,6 +22,29 @@ const projectOf = (url: URL): string | null => url.searchParams.getAll("project"
 /** The Tasks list views an old link may name, as /tasks names them. */
 const LIST_VIEWS: Readonly<Record<string, string>> = { all: "all", "needs-you": "needs-you", running: "running", queued: "queued", completed: "completed", done: "completed", archived: "archived", ready: "ready" };
 
+/**
+ * A retired Settings page (the eight settings plan v2 §2.5): the area page it became part of, its section there, and
+ * the query keys it keeps — each kept only when the old link names it once (its views, pages and recovery words).
+ * The answer carries `section=<id>` and never a fragment: by RFC 9110 §10.2.2 the browser keeps the old link's own
+ * fragment, so a bookmark to an id inside the old page still lands on that id (kept on the area page).
+ */
+export type SettingsRetirement = { readonly to: string; readonly section: string; readonly keep: readonly string[]; readonly open?: true };
+export const SETTINGS_RETIRED: Readonly<Record<string, SettingsRetirement>> = {
+  // Settings → Advanced (the switch and every advanced page) is General's Advanced section, opened.
+  "settings.group-advanced": { to: "/settings/general", section: "advanced", keep: ["said", "problem"], open: true },
+};
+/** Where a retired Settings page's link lands now. */
+export function settingsRetiredHref(retirement: SettingsRetirement, url: URL): string {
+  const query = new URLSearchParams();
+  for (const key of retirement.keep) {
+    const values = url.searchParams.getAll(key);
+    if (values.length === 1) query.set(key, values[0]!);
+  }
+  query.set("section", retirement.section);
+  if (retirement.open === true) query.set("open", "1");
+  return `${retirement.to}?${query}`;
+}
+
 /** Each retired GET row (route-table.ts `retired`), and where it now lives. */
 export const RETIRED_ROUTES: Readonly<Record<string, (url: URL) => string>> = {
   // The old Tasks list: its view, project, stored-state filter and page; layout=board is the Board view; all=1 every project.
@@ -45,6 +68,7 @@ export const RETIRED_ROUTES: Readonly<Record<string, (url: URL) => string>> = {
   review: url => tasksHref({ view: "ready", project: projectOf(url) }),
   // Archive old tasks' preview moved beside Tasks; its POST keeps /work/put-away exactly.
   "work.put-away": url => { const days = url.searchParams.get("days"); return days !== null && /^[0-9]{1,3}$/.test(days) ? `/tasks/archive?days=${days}` : "/tasks/archive"; },
+  ...Object.fromEntries(Object.entries(SETTINGS_RETIRED).map(([id, retirement]) => [id, (url: URL) => settingsRetiredHref(retirement, url)])),
 };
 
 /** One task view (one-workspace plan S1): the old result addresses and the task's full-record page lead to the task page.

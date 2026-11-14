@@ -40,6 +40,7 @@ export const DESTINATIONS: readonly (readonly [title: string, href: string, wher
   ["Monitoring", "/settings/monitoring", "Settings → System", "traces otel audit stream"],
   ["Data export", "/settings/data", "Settings → System", "export zip"],
   ["Integrations", "/settings/integrations", "Settings → System", "webhooks"],
+  ["Show advanced features", "/settings/general?section=advanced", "Settings → General", "advanced features menus flows agents spend more pages"],
   ["Spend", "/spend", "Settings → Spend", "monthly limits budget cap cost usage"],
   ["Terminals", "/term", "Agents", "shell console"],
 ];
@@ -59,6 +60,7 @@ export const LEGACY: readonly (readonly [title: string, href: string, now: strin
   ["Activity", "/", "Home", "morning summary"],
   ["Workspace tools", "/menu", "Settings", "menu"],
   ["All settings", "/settings", "Settings"],
+  ["Advanced", "/settings/general?section=advanced&open=1", "Settings → General", "advanced pages"],
 ];
 
 const TONE: Record<string, ChipTone> = { attention: "needs", ready: "needs", live: "live", done: "done", problem: "failed", muted: "", neutral: "" };
