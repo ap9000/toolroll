@@ -1838,7 +1838,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** One account's summary snapshot, read as that account for this exact scope (the summary room's fingerprint): null
    * when the account is gone or its scope moved. */
   const projectSummaryFor = (account: string, scope: string): string | null =>
-    projectScopeFor(account) !== scope ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify(projectSummary()));
+    // One snapshot is one read: its own work reads (work-reads.ts), gone when it is made.
+    projectScopeFor(account) !== scope ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => withWorkReads(() => JSON.stringify(projectSummary())));
 
   /** The sidebar's facts for this request. */
   function chromeFor(
