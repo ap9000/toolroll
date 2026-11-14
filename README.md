@@ -31,7 +31,7 @@ Approve each plan once. Get results back Ready with the diff, the check status a
 
 macOS or Linux, Node.js 22.20+, git 2.41+, and Claude Code (`claude`) or
 Codex (`codex`) signed in on this computer. On Linux, also the sandbox tools:
-`sudo apt install bubblewrap socat ripgrep`.
+`sudo apt update && sudo apt install bubblewrap socat ripgrep`.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh

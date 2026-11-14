@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { newerGitHow } from "./git-floor.js";
 
 const INSTALL = fileURLToPath(new URL("../install.sh", import.meta.url));
 
@@ -24,6 +25,9 @@ beforeEach(() => {
   const stub = (name: string, body: string) => { writeFileSync(join(stubs, name), `#!/bin/sh\n${body}\n`); chmodSync(join(stubs, name), 0o755); };
   // node: its version (NODE_STUB_VERSION), the floor by default.
   stub("node", `echo "\${NODE_STUB_VERSION:-22.20.0}"`);
+  // The Linux sandbox tools, there by default (a test that wants one missing removes it), so a Linux host's own
+  // programs never decide what these tests see.
+  for (const name of ["bwrap", "socat", "rg"]) stub(name, "exit 0");
   stub("npm", `[ "$1" = ls ] && exit 1\n[ "$1" = install ] && : > "${base}/npm-installed"\nexit 0`);
   // git: its version (GIT_STUB_VERSION), and the repository a folder is in (a folder with a .git directory).
   stub("git", `[ "$1" = --version ] && { echo "git version \${GIT_STUB_VERSION:-2.43.0}"; exit 0; }\ncase " $* " in *" --absolute-git-dir "*) [ -d .git ] && { echo "$(pwd -P)/.git"; exit 0; }; exit 128 ;; *" rev-parse "*) [ -d .git ] && { pwd -P; exit 0; }; exit 128 ;; *" config "*) exit 1 ;; esac\nexit 0`);
@@ -122,7 +126,7 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
   test("git older than 2.41 stops before anything is installed, and says which it found; 2.41 and newer go on", async () => {
     const old = await run("sh", [INSTALL], { SO_NO_START: "1", GIT_STUB_VERSION: "2.39.5 (Apple Git-154)" });
     expect(old.code).toBe(1);
-    expect(old.out).toContain("it needs git 2.41 or newer; this computer has 2.39.");
+    expect(old.out).toContain("Toolroll needs this first:\n  - git 2.41 or newer (this computer has 2.39)\n");
     expect(existsSync(join(base, "npm-installed"))).toBe(false);
     for (const version of ["2.41.0", "2.47.1", "3.0.0"]) {
       const ok = await run("sh", [INSTALL], { SO_NO_START: "1", GIT_STUB_VERSION: version });
@@ -134,7 +138,8 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     for (const version of ["22.13.0", "22.15.1", "22.19.0", "20.18.0"]) {
       const old = await run("sh", [INSTALL], { SO_NO_START: "1", NODE_STUB_VERSION: version });
       expect(old.code, version).toBe(1);
-      expect(old.out).toContain(`it needs Node.js 22.20 or newer; this computer has ${version}. Install it from https://nodejs.org/en/download`);
+      expect(old.out).toContain(`  - Node.js 22.20 or newer (this computer has ${version})`);
+      expect(old.out).toContain("  Node.js: install it from https://nodejs.org/en/download");
       expect(existsSync(join(base, "npm-installed"))).toBe(false);
     }
     for (const version of ["22.20.0", "22.23.5", "24.22.3", "26.13.1"]) {
@@ -230,6 +235,13 @@ describe("install.sh's repository, with real git", () => {
     expect(startLine(result.out)).toBe(projectsLine());
   });
 
+  test("i1: every apt line it suggests refreshes the package lists first (a fresh image's are empty)", () => {
+    const script = readFileSync(INSTALL, "utf8");
+    const suggested = script.split("\n").filter(line => /apt install/.test(line) && !line.includes("apt install nodejs"));
+    expect(suggested.length).toBeGreaterThanOrEqual(3);
+    for (const line of suggested) expect(line).toMatch(/sudo apt update && sudo apt install/);
+  });
+
   test("the script stays plain POSIX sh (dash parses it)", () => {
     for (const shell of ["/bin/sh", "/bin/dash", "/usr/bin/dash"]) {
       if (!existsSync(shell)) continue;
@@ -257,34 +269,89 @@ describe("install.sh on Linux", () => {
     return stdin === "ignore" ? run("script", args, { PATH: `${stubs}:${sys}`, ...env }, "ignore", cwd) : run("sh", [INSTALL], { PATH: `${stubs}:${sys}`, ...env }, "pipe", cwd);
   };
 
-  test("missing sandbox programs: it names exactly those with the line that installs them, and doesn't start", async () => {
-    writeFileSync(join(stubs, "bwrap"), "#!/bin/sh\nexit 0\n");
-    chmodSync(join(stubs, "bwrap"), 0o755);
+  test("missing sandbox programs: it names exactly those with the line that installs them, before installing anything, and doesn't start", async () => {
+    for (const name of ["socat", "rg"]) rmSync(join(stubs, name));
     const repo = join(base, "shop");
     mkdirSync(join(repo, ".git"), { recursive: true });
+    // At a terminal (script's pseudo-terminal writes \r\n).
     const result = await linux({}, "ignore", repo);
+    expect(result.code, result.out).toBe(1);
+    expect(result.out.replace(/\r\n/g, "\n")).toContain("Toolroll needs this first:\n  - the sandbox tools agents run in: socat ripgrep\n\nInstall it:\n  sudo apt update && sudo apt install socat ripgrep\n  (Fedora: sudo dnf install socat ripgrep)\n\nThen run this again.");
+    expect(existsSync(join(base, "npm-installed"))).toBe(false);
+    expect(existsSync(record)).toBe(false);
+  });
+
+  test("installed only (SO_NO_START=1), missing sandbox programs don't stop the install: it names them, with apt update first", async () => {
+    rmSync(join(stubs, "rg"));
+    const repo = join(base, "shop");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const result = await linux({ SO_NO_START: "1" }, "pipe", repo);
     expect(result.code, result.out).toBe(0);
-    expect(result.out).toContain("which on this computer needs: socat ripgrep. Install them:");
-    expect(result.out).toContain("sudo apt install socat ripgrep (Fedora: sudo dnf install socat ripgrep)");
+    expect(existsSync(join(base, "npm-installed"))).toBe(true);
+    expect(result.out).toContain("Before you start it, install the sandbox tools agents run in:\nsudo apt update && sudo apt install ripgrep (Fedora: sudo dnf install ripgrep)");
     expect(result.out).toContain(`Start it in ${realpathSync(repo)} with: toolroll`);
     expect(existsSync(record)).toBe(false);
+  });
+
+  test("i1: everything missing at once (old Node, no git, no sandbox tools) is one list and one install block, said once, and nothing is installed", async () => {
+    writeFileSync(join(stubs, "node"), "#!/bin/sh\necho 18.19.1\n");
+    for (const name of ["git", "bwrap", "socat", "rg"]) rmSync(join(stubs, name));
+    const result = await linux({});
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toContain([
+      "Toolroll needs these first:",
+      "  - Node.js 22.20 or newer (this computer has 18.19.1)",
+      "  - git 2.41 or newer (none was found)",
+      "  - the sandbox tools agents run in: bubblewrap socat ripgrep",
+      "",
+      "Install them:",
+      "  Node.js: install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource (https://github.com/nodesource/distributions); `apt install nodejs` is usually too old",
+      "  sudo apt update && sudo apt install git bubblewrap socat ripgrep",
+      "  (Fedora: sudo dnf install git bubblewrap socat ripgrep)",
+      "",
+      "Then run this again.",
+    ].join("\n"));
+    expect(result.out.match(/Then run this again/g)).toHaveLength(1);
+    expect(result.out.match(/needs (this|these) first/g)).toHaveLength(1);
+    expect(existsSync(join(base, "npm-installed"))).toBe(false);
+    expect(existsSync(record)).toBe(false);
+  });
+
+  test("i1: git missing or too old says how to get it, for this computer, with the 2.41 floor", async () => {
+    rmSync(join(stubs, "git"));
+    const none = await linux({});
+    expect(none.code).toBe(1);
+    expect(none.out).toContain("  - git 2.41 or newer (none was found)\n\nInstall it:\n  sudo apt update && sudo apt install git\n  (Fedora: sudo dnf install git)\n");
+    writeFileSync(join(stubs, "git"), "#!/bin/sh\necho git version 2.34.1\n");
+    chmodSync(join(stubs, "git"), 0o755);
+    const old = await linux({});
+    expect(old.code).toBe(1);
+    expect(old.out).toContain(`  - git 2.41 or newer (this computer has 2.34)\n\nInstall it:\n  git: ${newerGitHow("linux")}\n`);
+    writeFileSync(join(stubs, "uname"), "#!/bin/sh\necho Darwin\n");
+    const macOld = await linux({});
+    expect(macOld.out).toContain(`  git: ${newerGitHow("darwin")}\n`);
+    rmSync(join(stubs, "git"));
+    const macNone = await linux({});
+    expect(macNone.out).toContain("  git: `xcode-select --install` (or `brew install git`)\n");
+    for (const out of [macOld.out, macNone.out]) expect(out).not.toContain("apt");
+    expect(existsSync(join(base, "npm-installed"))).toBe(false);
   });
 
   test("Node missing or too old: both say how to get one (nodejs.org's nvm, or NodeSource), never brew on Linux", async () => {
     rmSync(join(stubs, "node"));
     const none = await linux({});
     expect(none.code).toBe(1);
-    expect(none.out).toContain("it needs Node.js 22.20 or newer, and none was found. Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
+    expect(none.out).toContain("  - Node.js 22.20 or newer (none was found)\n\nInstall it:\n  Node.js: install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
     writeFileSync(join(stubs, "node"), "#!/bin/sh\necho 18.19.1\n");
     chmodSync(join(stubs, "node"), 0o755);
     const old = await linux({});
     expect(old.code).toBe(1);
-    expect(old.out).toContain("this computer has 18.19.1. Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
+    expect(old.out).toContain("  - Node.js 22.20 or newer (this computer has 18.19.1)\n\nInstall it:\n  Node.js: install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
     for (const out of [none.out, old.out]) expect(out).not.toContain("brew");
     // On a Mac, brew is one of the ways.
     writeFileSync(join(stubs, "uname"), "#!/bin/sh\necho Darwin\n");
     const mac = await linux({});
-    expect(mac.out).toContain("this computer has 18.19.1. Install it from https://nodejs.org/en/download, or with `brew install node`.");
+    expect(mac.out).toContain("  Node.js: install it from https://nodejs.org/en/download, or with `brew install node`\n");
     expect(existsSync(join(base, "npm-installed"))).toBe(false);
   });
 

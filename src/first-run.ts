@@ -256,6 +256,9 @@ export type WelcomeAgent = {
   inUse: boolean;
   /** "Use this one" can choose it: signed in with an account, not already in use, and this person may choose. */
   canUse: boolean;
+  /** Only one agent is needed, and another one is further along: signed in while this one isn't, or installed while this
+   * one isn't. A screen says it is optional (or leaves its sign-in out) so it doesn't read as a second step. */
+  optional: boolean;
 };
 export type WelcomeStarter = { label: string; draft: string; href: string };
 export type WelcomeModel = {
@@ -298,9 +301,11 @@ export function welcomeModel(facts: WelcomeFacts): WelcomeModel {
     const state: WelcomeAgentState = seen === null ? "checking" : SIGNED_IN.has(seen) ? "signed-in" : seen === "not-installed" ? "not-installed" : "signed-out";
     const command = state === "signed-in" || state === "checking" ? null : state === "not-installed" ? `${one.install}${join} ${one.signIn}` : one.signIn;
     const inUse = facts.inUse === one.id;
-    return { id: one.id, name: one.name, state, command, inUse, canUse: facts.canChoose && !inUse && seen === "connected" };
+    return { id: one.id, name: one.name, state, command, inUse, canUse: facts.canChoose && !inUse && seen === "connected", optional: false };
   });
   const signedIn = agents.some(one => one.state === "signed-in");
+  const installed = agents.some(one => one.state === "signed-in" || one.state === "signed-out");
+  for (const one of agents) one.optional = signedIn ? one.state !== "signed-in" : installed && one.state === "not-installed";
   const checking = !signedIn && agents.some(one => one.state === "checking");
   const builds = facts.buildsOn === null ? null : WELCOME_AGENTS.find(one => one.id === facts.buildsOn)?.name ?? facts.buildsOn;
   const buildsWith = facts.inUse !== null && facts.buildsOn !== null && facts.buildsOn !== facts.inUse ? builds : null;

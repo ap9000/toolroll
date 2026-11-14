@@ -46,17 +46,17 @@ describe("the Linux sandbox's programs: one list", () => {
     stub("rg");
     expect(missingLinuxSandboxTools(bin)).toEqual([]);
     process.env["PATH"] = join(bin, "nothing-here");
-    expect(sandboxRuntimeProblem("linux")).toBe("bubblewrap, socat and ripgrep are not installed (sudo apt install bubblewrap socat ripgrep (Fedora: sudo dnf install bubblewrap socat ripgrep))");
+    expect(sandboxRuntimeProblem("linux")).toBe("bubblewrap, socat and ripgrep are not installed (sudo apt update && sudo apt install bubblewrap socat ripgrep (Fedora: sudo dnf install bubblewrap socat ripgrep))");
   });
 
   test("install.sh, the Linux guide and the README name exactly these", () => {
     expect(root("install.sh")).toContain(`for tool in ${LINUX_SANDBOX_TOOLS.map(tool => `${tool.command}:${tool.package}`).join(" ")}; do`);
     const packages = LINUX_SANDBOX_TOOLS.map(tool => tool.package).join(" ");
-    expect(linuxSandboxInstallLine()).toBe(`sudo apt install ${packages} (Fedora: sudo dnf install ${packages})`);
+    expect(linuxSandboxInstallLine()).toBe(`sudo apt update && sudo apt install ${packages} (Fedora: sudo dnf install ${packages})`);
     const guide = root("docs/guide/linux.md");
-    expect(guide).toContain(`sudo apt install ${packages}`);
+    expect(guide).toContain(`sudo apt update && sudo apt install ${packages}`);
     expect(guide).toContain(`sudo dnf install ${packages}`);
-    expect(root("README.md")).toContain(`sudo apt install ${packages}`);
-    expect(root("docs/guide/getting-started.md")).toContain(`sudo apt install ${packages}`);
+    expect(root("README.md")).toContain(`sudo apt update && sudo apt install ${packages}`);
+    expect(root("docs/guide/getting-started.md")).toContain(`sudo apt update && sudo apt install ${packages}`);
   });
 });

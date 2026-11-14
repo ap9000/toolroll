@@ -189,6 +189,40 @@ describe("the welcome's one model (web, terminal and --json read the same facts)
     expect([model.agent.done, model.agent.checking, model.agent.agents.map(one => one.command)]).toEqual([false, true, [null, null]]);
   });
 
+  test("i1: only one agent is needed: once one is installed or signed in, the other is optional, and the terminal says so", async () => {
+    const { welcomeStepLines } = await import("./welcome-facts.js");
+    const optional = (facts: Partial<WelcomeFacts>) => welcomeModel({ ...base, inUse: null, ...facts }).agent.agents.map(one => [one.id, one.optional]);
+    expect(optional({ agents: { claude: "signed-out", codex: "not-installed" } })).toEqual([["claude", false], ["codex", true]]);
+    expect(optional({ agents: { claude: "connected", codex: "signed-out" } })).toEqual([["claude", false], ["codex", true]]);
+    expect(optional({ agents: { claude: "not-installed", codex: "connected" } })).toEqual([["claude", true], ["codex", false]]);
+    expect(optional({ agents: { claude: "signed-out", codex: "signed-out" } })).toEqual([["claude", false], ["codex", false]]);
+    expect(optional({ agents: { claude: "not-installed", codex: "not-installed" } })).toEqual([["claude", false], ["codex", false]]);
+    expect(optional({ agents: { claude: null, codex: null } })).toEqual([["claude", false], ["codex", false]]);
+    // The stranger's case (Linux, 0.9.106): Claude Code installed, not signed in; Codex not installed.
+    expect(welcomeStepLines(welcomeModel({ ...base, inUse: null, agents: { claude: "signed-out", codex: "not-installed" } }), "agent")).toEqual([
+      "1. Agent · To do",
+      "   Claude Code: not signed in",
+      "     To sign in, run: claude auth login",
+      "   Codex (optional): not installed",
+      "     To sign in, run: npm install -g @openai/codex && codex login",
+    ]);
+    // Signed in to one: the other is optional, with no command to run.
+    expect(welcomeStepLines(welcomeModel({ ...base, agents: { claude: "connected", codex: "not-installed" } }), "agent")).toEqual([
+      "1. Agent · Done",
+      "   Claude Code: signed in (in use)",
+      "   Codex (optional): not installed",
+    ]);
+    // Neither installed: it says one is enough, once.
+    expect(welcomeStepLines(welcomeModel({ ...base, inUse: null, agents: { claude: "not-installed", codex: "not-installed" } }), "agent")).toEqual([
+      "1. Agent · To do",
+      "   You need one of these:",
+      "   Claude Code: not installed",
+      "     To sign in, run: npm install -g @anthropic-ai/claude-code && claude auth login",
+      "   Codex: not installed",
+      "     To sign in, run: npm install -g @openai/codex && codex login",
+    ]);
+  });
+
   test("tasks built with another agent than the one in use say which", () => {
     expect(welcomeModel({ ...base, inUse: "codex", agents: { claude: "connected", codex: "connected" } }).agent.buildsWith).toBe("Claude Code");
     expect(welcomeModel(base).agent.buildsWith).toBeNull();

@@ -53,10 +53,14 @@ export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey): stri
   const lines: string[] = [];
   if (key === "agent") {
     lines.push(`1. Agent · ${mark(model.agent.done)}`);
+    // One agent is enough: with none further along than another, it says so once; otherwise the others read "(optional)",
+    // and once one is signed in their sign-in commands are left out.
+    const optionalOnes = model.agent.agents.some(agent => agent.optional);
+    if (!model.agent.done && !model.agent.checking && !optionalOnes && model.agent.agents.length > 1) lines.push("   You need one of these:");
     for (const agent of model.agent.agents) {
       const state = agent.state === "signed-in" ? "signed in" : agent.state === "checking" ? "checking" : agent.state === "not-installed" ? "not installed" : "not signed in";
-      lines.push(`   ${agent.name}: ${state}${agent.inUse ? " (in use)" : ""}`);
-      if (agent.command !== null) lines.push(`     To sign in, run: ${agent.command}`);
+      lines.push(`   ${agent.name}${agent.optional ? " (optional)" : ""}: ${state}${agent.inUse ? " (in use)" : ""}`);
+      if (agent.command !== null && !(agent.optional && model.agent.done)) lines.push(`     To sign in, run: ${agent.command}`);
     }
   } else if (key === "project") {
     lines.push(`2. Project · ${mark(model.project.done)}`);

@@ -8,7 +8,11 @@ The installer works the same as on macOS:
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 ```
 
-It needs Node.js 22.20 or newer and git. Your distribution's own `nodejs`
+It checks everything it needs first and, if anything is missing, lists all of
+it with the commands that install it. It needs Node.js 22.20 or newer, git 2.41
+or newer (`sudo apt update && sudo apt install git`; Ubuntu 22.04's and Debian
+12's are older, so get one from https://git-scm.com/downloads/linux there), and
+the sandbox tools below. Your distribution's own `nodejs`
 package is usually too old (Ubuntu 24.04's is 18): install Node from
 https://nodejs.org/en/download (choose nvm, then `nvm install 22`) or from
 [NodeSource](https://github.com/nodesource/distributions). If npm says permission denied, give it a folder
@@ -17,8 +21,8 @@ you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-install
 ## Install the sandbox tools
 
 ```sh
-sudo apt install bubblewrap socat ripgrep      # Debian, Ubuntu
-sudo dnf install bubblewrap socat ripgrep      # Fedora
+sudo apt update && sudo apt install bubblewrap socat ripgrep   # Debian, Ubuntu
+sudo dnf install bubblewrap socat ripgrep                      # Fedora
 ```
 
 Toolroll runs Claude and Gemini agents in a sandbox where its own secrets
