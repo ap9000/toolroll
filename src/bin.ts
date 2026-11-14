@@ -15,16 +15,19 @@
 const FLOOR = { major: 22, minor: 20 } as const;
 const versions = process.versions as { bun?: string; node: string; sqlite?: string };
 const [major = 0, minor = 0] = versions.node.split(".").map(Number);
-const INSTALL = `Install Node ${FLOOR.major}.${FLOOR.minor} or newer (https://nodejs.org, \`brew install node\` or \`nvm install ${FLOOR.major}\`), then run toolroll again.\n`;
+// How to get one, as install.sh says it: on Linux the distribution's own nodejs is usually too old (Ubuntu 24.04: 18).
+const HOW = (process.platform === "linux"
+  ? "Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource (https://github.com/nodesource/distributions); `apt install nodejs` is usually too old."
+  : "Install it from https://nodejs.org/en/download" + (process.platform === "darwin" ? ", or with `brew install node`." : ".")) + "\n";
 if (versions.bun !== undefined) {
   process.stderr.write(
     `Toolroll runs on Node ${FLOOR.major}.${FLOOR.minor} or newer — Bun's runtime has no node:sqlite.\n` +
-      "Run it with Node: `bunx toolroll up` (no --bun) or `npx toolroll up`.\n",
+      "Run it with Node: `bunx toolroll` (no --bun) or `npx toolroll`.\n",
   );
   process.exit(2);
 }
 if (major < FLOOR.major || (major === FLOOR.major && minor < FLOOR.minor)) {
-  process.stderr.write(`Toolroll needs Node ${FLOOR.major}.${FLOOR.minor} or newer (this is ${versions.node}) — it uses node:sqlite.\n${INSTALL}`);
+  process.stderr.write(`Toolroll needs Node ${FLOOR.major}.${FLOOR.minor} or newer (this is ${versions.node}): it uses node:sqlite.\n${HOW}`);
   process.exit(2);
 }
 /** Whether this Node's SQLite has full-text search (FTS5), which the store's schema needs: a Node built against a
@@ -56,7 +59,7 @@ if (quick !== null) {
 } else {
   // Only on the way into the CLI: --version and help answer above without loading SQLite.
   if (!(await sqliteHasFts5())) {
-    process.stderr.write(`Toolroll needs a Node whose SQLite has full-text search (FTS5); this Node (${versions.node}, SQLite ${versions.sqlite ?? "unknown"}) doesn't.\n${INSTALL}`);
+    process.stderr.write(`Toolroll needs a Node whose SQLite has full-text search (FTS5); this Node (${versions.node}, SQLite ${versions.sqlite ?? "unknown"}) doesn't.\n${HOW}`);
     process.exit(2);
   }
   const { runCliProcess } = await import("./cli.js");

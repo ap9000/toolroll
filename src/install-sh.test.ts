@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,7 +92,7 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     expect(result.out).not.toContain("Start it with:");
   });
 
-  // Eight W2: run inside a repository, it starts there; outside one, ~/Projects as before.
+  // Eight W2: run inside a repository, it starts there; outside one, it says how to start in one.
   test("run inside a git repository with a terminal, it starts Toolroll on that repository, in it", async () => {
     const repo = join(base, "shop");
     mkdirSync(join(repo, ".git"), { recursive: true });
@@ -134,12 +134,25 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     for (const version of ["22.13.0", "22.15.1", "22.19.0", "20.18.0"]) {
       const old = await run("sh", [INSTALL], { SO_NO_START: "1", NODE_STUB_VERSION: version });
       expect(old.code, version).toBe(1);
-      expect(old.out).toContain(`it needs Node.js 22.20 or newer; this computer has ${version}. Update Node (https://nodejs.org`);
+      expect(old.out).toContain(`it needs Node.js 22.20 or newer; this computer has ${version}. Install it from https://nodejs.org/en/download`);
       expect(existsSync(join(base, "npm-installed"))).toBe(false);
     }
     for (const version of ["22.20.0", "22.23.5", "24.22.3", "26.13.1"]) {
       const ok = await run("sh", [INSTALL], { SO_NO_START: "1", NODE_STUB_VERSION: version });
       expect(ok.code, `${version}: ${ok.out}`).toBe(0);
+    }
+  });
+
+  test("l1: outside a repository with no SO_PROJECTS, even at a terminal, it says how to start in a project and starts nothing", async () => {
+    const plain = join(base, "plain");
+    mkdirSync(plain);
+    const args = process.platform === "darwin" ? ["-q", "/dev/null", "sh", INSTALL] : ["-qec", `sh '${INSTALL}'`, "/dev/null"];
+    for (const [command, argv, stdin] of [["script", args, "ignore"], ["sh", [INSTALL], "pipe"]] as const) {
+      const result = await run(command, [...argv], {}, stdin, plain);
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toContain("Start it in a project: cd into a git repository and run toolroll");
+      expect(existsSync(record)).toBe(false);
+      expect(existsSync(join(base, "home", "Projects"))).toBe(false);
     }
   });
 
@@ -170,7 +183,7 @@ describe("install.sh's repository, with real git", () => {
     chmodSync(join(stubs, "git"), 0o755);
   });
   const startLine = (out: string) => out.split("\n").find(one => one.startsWith("Start it"));
-  const projectsLine = () => `Start it with: toolroll --project-root '${join(base, "home", "Projects")}'`;
+  const projectsLine = () => "Start it in a project: cd into a git repository and run toolroll";
 
   test("run from a folder inside a repository: that repository's top", async () => {
     const repo = makeRepo(join(base, "shop"));
@@ -180,7 +193,7 @@ describe("install.sh's repository, with real git", () => {
     expect(startLine(result.out)).toBe(`Start it in ${repo} with: toolroll`);
   });
 
-  test("GIT_DIR and GIT_WORK_TREE pointing at another repository, run outside any: ~/Projects, never that repository", async () => {
+  test("GIT_DIR and GIT_WORK_TREE pointing at another repository, run outside any: no repository, never that one", async () => {
     const other = makeRepo(join(base, "other"));
     const outside = join(base, "plain");
     mkdirSync(outside);
@@ -198,7 +211,7 @@ describe("install.sh's repository, with real git", () => {
     expect(startLine(result.out)).toBe(`Start it in ${repo} with: toolroll`);
   });
 
-  test("a repository whose own config sets core.worktree to a folder outside it: ~/Projects, never that folder", async () => {
+  test("a repository whose own config sets core.worktree to a folder outside it: no repository, never that folder", async () => {
     const repo = makeRepo(join(base, "shop"));
     const elsewhere = join(base, "elsewhere");
     mkdirSync(elsewhere);
@@ -208,7 +221,7 @@ describe("install.sh's repository, with real git", () => {
     expect(startLine(result.out)).toBe(projectsLine());
   });
 
-  test("round 2 (finding C): a nested repository whose core.worktree points at the repository around it: ~/Projects", async () => {
+  test("round 2 (finding C): a nested repository whose core.worktree points at the repository around it: no repository", async () => {
     const outer = makeRepo(join(base, "outer"));
     const inner = makeRepo(join(outer, "vendor", "inner"));
     execFileSync(realGit, ["-C", inner, "config", "core.worktree", outer], { env: gitEnv });
@@ -222,5 +235,66 @@ describe("install.sh's repository, with real git", () => {
       if (!existsSync(shell)) continue;
       expect(() => execFileSync(shell, ["-n", INSTALL]), shell).not.toThrow();
     }
+  });
+});
+
+/** l1 (stranger test, Linux): the sandbox's programs, and how Node is installed there. `uname` answers Linux; PATH is
+ * the stubs and a folder holding only the system programs the script and script(1) use, so what is missing is exact. */
+describe("install.sh on Linux", () => {
+  let sys: string;
+  beforeEach(() => {
+    writeFileSync(join(stubs, "uname"), "#!/bin/sh\necho Linux\n");
+    chmodSync(join(stubs, "uname"), 0o755);
+    sys = join(base, "sys");
+    mkdirSync(sys);
+    for (const name of ["sh", "sed", "mkdir", "cat", "script", "env"]) {
+      const found = execFileSync("/bin/sh", ["-c", `command -v ${name} || true`], { encoding: "utf8" }).trim();
+      if (found !== "") symlinkSync(found, join(sys, name));
+    }
+  });
+  const linux = (env: Record<string, string>, stdin: "pipe" | "ignore" = "pipe", cwd = base) => {
+    const args = process.platform === "darwin" ? ["-q", "/dev/null", "sh", INSTALL] : ["-qec", `sh '${INSTALL}'`, "/dev/null"];
+    return stdin === "ignore" ? run("script", args, { PATH: `${stubs}:${sys}`, ...env }, "ignore", cwd) : run("sh", [INSTALL], { PATH: `${stubs}:${sys}`, ...env }, "pipe", cwd);
+  };
+
+  test("missing sandbox programs: it names exactly those with the line that installs them, and doesn't start", async () => {
+    writeFileSync(join(stubs, "bwrap"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(stubs, "bwrap"), 0o755);
+    const repo = join(base, "shop");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const result = await linux({}, "ignore", repo);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("which on this computer needs: socat ripgrep. Install them:");
+    expect(result.out).toContain("sudo apt install socat ripgrep (Fedora: sudo dnf install socat ripgrep)");
+    expect(result.out).toContain(`Start it in ${realpathSync(repo)} with: toolroll`);
+    expect(existsSync(record)).toBe(false);
+  });
+
+  test("Node missing or too old: both say how to get one (nodejs.org's nvm, or NodeSource), never brew on Linux", async () => {
+    rmSync(join(stubs, "node"));
+    const none = await linux({});
+    expect(none.code).toBe(1);
+    expect(none.out).toContain("it needs Node.js 22.20 or newer, and none was found. Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
+    writeFileSync(join(stubs, "node"), "#!/bin/sh\necho 18.19.1\n");
+    chmodSync(join(stubs, "node"), 0o755);
+    const old = await linux({});
+    expect(old.code).toBe(1);
+    expect(old.out).toContain("this computer has 18.19.1. Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource");
+    for (const out of [none.out, old.out]) expect(out).not.toContain("brew");
+    // On a Mac, brew is one of the ways.
+    writeFileSync(join(stubs, "uname"), "#!/bin/sh\necho Darwin\n");
+    const mac = await linux({});
+    expect(mac.out).toContain("this computer has 18.19.1. Install it from https://nodejs.org/en/download, or with `brew install node`.");
+    expect(existsSync(join(base, "npm-installed"))).toBe(false);
+  });
+
+  test("with all of them there, no word about them, and it starts", async () => {
+    for (const name of ["bwrap", "socat", "rg"]) { writeFileSync(join(stubs, name), "#!/bin/sh\nexit 0\n"); chmodSync(join(stubs, name), 0o755); }
+    const repo = join(base, "shop");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const result = await linux({}, "ignore", repo);
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).not.toContain("sandbox");
+    expect(started()).toEqual(["TTY"]);
   });
 });

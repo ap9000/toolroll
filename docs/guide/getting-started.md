@@ -3,15 +3,18 @@
 ## Install
 
 On macOS or Linux, with Node.js 22.20 or newer, git 2.41 or newer, and
-Claude Code (`claude`) or Codex (`codex`) signed in on this computer:
+Claude Code (`claude`) or Codex (`codex`) signed in on this computer (on
+Linux, also `sudo apt install bubblewrap socat ripgrep`; see
+[Linux](linux.md)):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 ```
 
-It installs the `toolroll` command and opens Toolroll in this terminal with
-your projects in `~/Projects`. If it can't reach a terminal (a script, CI),
-it prints the command that starts it instead. `standing-orders`, the older
+Run it inside one of your projects (a git repository): it installs the
+`toolroll` command and opens Toolroll on that project, in this terminal.
+Anywhere else, or without a terminal (a script, CI), it prints how to start
+it instead. `standing-orders`, the older
 name, still works. With npm instead:
 
 ```sh

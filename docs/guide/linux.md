@@ -8,19 +8,50 @@ The installer works the same as on macOS:
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 ```
 
-It needs Node.js 22.20 or newer (from nodejs.org, your package manager, or
-`fnm install 22`) and git. If npm says permission denied, give it a folder
+It needs Node.js 22.20 or newer and git. Your distribution's own `nodejs`
+package is usually too old (Ubuntu 24.04's is 18): install Node from
+https://nodejs.org/en/download (choose nvm, then `nvm install 22`) or from
+[NodeSource](https://github.com/nodesource/distributions). If npm says permission denied, give it a folder
 you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally
 
-## Install bubblewrap
+## Install the sandbox tools
 
 ```sh
-sudo apt install bubblewrap      # Debian, Ubuntu
-sudo dnf install bubblewrap      # Fedora
+sudo apt install bubblewrap socat ripgrep      # Debian, Ubuntu
+sudo dnf install bubblewrap socat ripgrep      # Fedora
 ```
 
-With it, Claude and Gemini agents run in a sandbox where Toolroll's
-own secrets don't exist. See [Security](security.md).
+Toolroll runs Claude and Gemini agents in a sandbox where its own secrets
+don't exist, and the sandbox needs all three. Until they're installed,
+`toolroll` says which are missing and doesn't start. See
+[Security](security.md).
+
+## Start over without a password
+
+If Toolroll was started before the sandbox tools were installed, it may
+have set itself up with a password. When it says "This Toolroll was set up
+with a password", you can start over without one:
+
+1. Stop Toolroll everywhere: run `toolroll stop`, run
+   `toolroll background off` if you turned that on, and quit every terminal
+   window running `toolroll`. Check that nothing still listens:
+   `ss -ltnp | grep node` (on a Mac, `lsof -nP -iTCP -sTCP:LISTEN | grep node`)
+   shows no Toolroll.
+2. Know what you discard: moving the folder aside leaves behind everything
+   that installation holds: its tasks, results, settings and saved
+   password. Your projects' own folders aren't touched. Nothing is deleted:
+   move the folder back to undo.
+3. Move Toolroll's folder aside, then start again:
+
+   ```sh
+   mv ~/.config/toolroll ~/.config/toolroll.old
+   toolroll
+   ```
+
+   The folder is `~/.config/toolroll` on Linux and macOS
+   (`$XDG_CONFIG_HOME/toolroll` when `XDG_CONFIG_HOME` is set). Older
+   installs may use `standing-orders` or `nightorders` instead of
+   `toolroll`; if you set `TOOLROLL_DB`, it's the folder holding that file.
 
 ## Process containment
 

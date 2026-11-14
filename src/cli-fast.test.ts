@@ -46,7 +46,10 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 /** One run of the built bin: its output, and every module it loaded (ours relative to dist/). */
 type Run = { status: number | null; stdout: string; stderr: string; ours: string[]; all: string[] };
 
-const INSTALL_NODE = "Install Node 22.20 or newer (https://nodejs.org, `brew install node` or `nvm install 22`), then run toolroll again.\n";
+/** bin.ts's how-to for this platform (#383's words, as install.sh says them). */
+const INSTALL_NODE = (process.platform === "linux"
+  ? "Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource (https://github.com/nodesource/distributions); `apt install nodejs` is usually too old."
+  : "Install it from https://nodejs.org/en/download" + (process.platform === "darwin" ? ", or with `brew install node`." : ".")) + "\n";
 
 /** `noFts5`: node:sqlite stands in for a SQLite built without FTS5 (its CREATE VIRTUAL TABLE … USING fts5 fails). */
 function runBin(args: readonly string[], versions?: Record<string, string>, noFts5 = false): Run {
@@ -95,7 +98,8 @@ describe("the bin's fast path", () => {
       const old = runBin(["--version"], { node });
       expect(old.status).toBe(2);
       expect(old.stdout).toBe("");
-      expect(old.stderr).toBe(`Toolroll needs Node 22.20 or newer (this is ${node}) — it uses node:sqlite.\n${INSTALL_NODE}`);
+      expect(old.stderr).toBe(`Toolroll needs Node 22.20 or newer (this is ${node}): it uses node:sqlite.\n${INSTALL_NODE}`);
+      expect(old.stderr).toMatch(/\nInstall it from https:\/\/nodejs\.org\/en\/download.*\n$/);
       expect(old.ours).toEqual(["bin.js"]);
     }
 

@@ -139,7 +139,6 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       }
       setMessage(result.message);
       await refresh();
-      if (one.kind === "new" && session.shouldAskBackground()) setScreen({ kind: "background" });
       return true;
     } finally { setBusy(null); }
   };
@@ -170,7 +169,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
     setBusy("Working…");
     let answer;
     try { answer = await source.act({ kind: "complete", id: result.id, runId: result.runId, digest: result.digest, checked, reason }); } finally { setBusy(null); }
-    if (answer.ok) { setMessage(answer.message); setScreen({ kind: "main" }); await refresh(); return; }
+    // l1: the login-item question waits for the first accepted result (or quitting): it never interrupts a first task.
+    if (answer.ok) { setMessage(answer.message); setScreen(session.shouldAskBackground() ? { kind: "background" } : { kind: "main" }); await refresh(); return; }
     if (answer.changed === true) { setScreen({ kind: "main" }); setMessage("This result changed while you were reading it. Nothing was accepted."); await reviewResult(result.id, true); return; }
     if (answer.needsPassword) setScreen({ kind: "password", message: answer.message });
     else { setMessage(answer.message); setScreen({ kind: "main" }); }
