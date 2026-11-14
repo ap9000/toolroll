@@ -113,6 +113,8 @@ const LATEST = "node 26 · SQLite";
 const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journeys · flows (scripted)", "upgrade path · scope", "upgrade path"];
 /** install-smoke.yml: advisory too, but only on pull requests that change what gets packed or installed. */
 const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
+/** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
+const WIRE = ["wire budgets"];
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
@@ -241,7 +243,7 @@ describe("the CI workflows", () => {
     // The release verdict leaves out exactly this job, from exactly this workflow (release.ts ADVISORY_PR_CHECKS;
     // release.slow.test.ts proves a failed or pending run of it neither fails nor holds a release).
     expect(ADVISORY_PR_CHECKS[ui.name!]).toBe(".github/workflows/youiyoux.yml");
-    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY, ...INSTALL_SMOKE].sort());
+    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY, ...INSTALL_SMOKE, ...WIRE].sort());
   });
 
   test("W7: the install smoke runs on Linux and macOS for a pull request that changes what gets packed or installed, by hand, never on a tag, and never holds or fails a release", () => {
@@ -1097,5 +1099,28 @@ globalThis.fetch = async (url, options) => {
     expect(proofProblem(w)).toBeNull();
     w.runs[0]!.path = `${CI}${suffix}`;
     expect(proofProblem(w)).not.toBeNull();
+  });
+});
+
+describe("the wire budgets (.github/workflows/wire-budgets.yml)", () => {
+  const wire = workflow("wire-budgets.yml");
+  const job = wire.jobs["wire"]!;
+
+  test("they run on pull requests that touch what the browser receives, and on every push to main, and never hold a release", () => {
+    for (const paths of [["src/server/pages.ts"], ["src/browser/app.tsx"], ["src/work-index.ts"], ["src/store.ts"], ["test/perf/wire-ceilings.json"]]) {
+      expect(executed(pr(paths)).filter(name => WIRE.includes(name)), paths[0]).toEqual(WIRE);
+    }
+    for (const paths of [["src/release.ts"], ["docs/a.md"], ["README.md"], ["package.json"]]) expect(names(pr(paths)).filter(name => WIRE.includes(name)), paths[0]).toEqual([]);
+    // main keeps a report to compare against, under main's own name.
+    expect(executed({ kind: "push", branch: "main" })).toContain("main · wire budgets / wire budgets");
+    expect(job.if).toBeUndefined();
+    expect(runsOf(job)).toContain("npm run test:perf:wire");
+    // Advisory: never required, and left out of the release verdict only from its own workflow.
+    expect(WIRE.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
+    expect(ADVISORY_PR_CHECKS["wire budgets"]).toBe(".github/workflows/wire-budgets.yml");
+    // Reads only: no secret, and the token only reads main's report.
+    expect(wire.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(readFileSync(join(folder, "wire-budgets.yml"), "utf8")).not.toMatch(/secrets\./);
+    expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
   });
 });
