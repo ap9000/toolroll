@@ -195,6 +195,30 @@ passed every required check on its pull request before npm publication.
 `src/ci-workflow.test.ts` carry an `if:`, and that test holds the workflows
 to the check names `toolroll release` waits for.
 
+## Wire budgets
+
+`npm run test:perf:wire` (`test/perf/wire.wire.test.ts`, slice 0 of the fluid pages plan) measures what the browser
+receives today for Home, Tasks (the default list, a state filter and the board), a result page and Chat, on a seeded
+world (`test/wire-world.ts`): 10,000 tasks in eight projects with revision families, real diffs and check logs on disk
+for every finished attempt, an operator, an approver, a project-limited viewer, and a few conversations, all at a fixed
+clock and seed. For each page it records the document load (the HTML page and the workspace JSON inside it) and the
+in-place read (`?format=workspace`), with their bytes and row counts, the SQL statements and projection calls each
+request runs after a change and again at once, and what one live-room change costs: the frames every open page's
+stream receives and the whole-workspace re-read each page then makes. Bytes are before compression.
+
+Bytes, rows, statements and calls are deterministic, so they are gated: the test fails when one goes over its
+ceiling in `test/perf/wire-ceilings.json` (today's value plus a small margin), or when a new row has no ceiling.
+Server time and memory are printed, never gated. The run writes `evidence/wire-budgets.json` (or `WIRE_OUT`) and prints
+the table; `node scripts/wire-report.mjs <report> [<main's report>]` prints it again, with what changed against main.
+
+To raise a ceiling, do it on purpose: rerun with `WIRE_WRITE_CEILINGS=1 npm run test:perf:wire` to rewrite every
+ceiling from this run, or edit the one number by hand, then commit the file with a line in the pull request saying
+why. A change that makes a page smaller can lower its ceilings the same way. `wire-budgets.yml` runs the test on pull
+requests that touch the server, the browser app, the work index or the store, and on every push to main (called from
+`main-push.yml`). Its job summary lists every row, the rows that changed against main's latest report and each ceiling
+the pull request raises, and it uploads the report as the `wire-budgets` artifact. It is advisory: not one of
+`REQUIRED_PR_CHECKS`, and the release verdict leaves it out (`ADVISORY_PR_CHECKS`).
+
 ## Releasing
 
 To drain the built-in worker, use `toolroll runner list --json` to find its name
