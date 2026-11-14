@@ -92,8 +92,6 @@ export function addWaysHtml(data: { browsable: boolean; onboard: OnboardCardStat
         hint: local.outside ? "Add any git repository on this computer — outside your projects folder, Toolroll asks for your password." : "It must be a git repository.",
         error: null,
         control: input({ id: "add-path", name: "path", hint: true, error: local.pathProblem !== null, value: local.pathValue, attrs: { placeholder: "~/code/your-repo", autocomplete: "off", spellcheck: "false", autocapitalize: "none" } }) }),
-      local.outside ? field({ id: "add-password", label: "Your password",
-        control: html`<input class="k-input" id="add-password" type="password" name="password" data-so-typed autocomplete="current-password">` }) : "",
       acts(btn("Add and open", { sm: true, type: "submit", variant: "primary" })),
     ]), { attrs: { class: "k-sec" }, returnTo: data.returnTo, hidden: { via: "path" } }),
   ])}</section>`;
@@ -434,4 +432,20 @@ export function pickRepoChosen(data: { name: string; path: string; state: "open"
   const acts_ = data.refusal !== null || data.state === "blocked" ? ""
     : data.state === "open" ? form("Open") : data.state === "outside" ? form("Add and open", typedPasswordField("pick-password")) : form("Add and open");
   return slots({ status: html`<h2>${data.name}</h2>`, text: html`${mono(shortPathOf(data.path))} · ${text}`, acts: acts_, terms: "", attrs: { "aria-label": `Add ${data.name}` } });
+}
+
+/** Adding a repository from outside every projects folder, after the exact-path form named one (pages.ts projectsOpen):
+ * the repository, proved and checked, and a password typed now. Its own page, so the projects page itself never carries
+ * a password field (a page with one always loads as a whole document, never in place). */
+export function outsideAddPage(chrome: Chrome, data: { name: string; path: string }): Screen {
+  const title = "Add a project from outside your projects folder";
+  const back: readonly [string, string] = ["/projects", "Projects"];
+  const body = joinHtml([
+    phoneHeader(title, { back: back[0] }),
+    doc(
+      docHeader({ back, title, same: true }),
+      pickRepoChosen({ name: data.name, path: data.path, state: "outside", refusal: null }),
+    ),
+  ], "\n");
+  return screen(title, body, { chrome });
 }

@@ -79,7 +79,7 @@ import { codeMapPage, codeMapReportBlock } from "./render-code-map.js";
 import { FLAKY_WINDOW_DAYS, flakyList, flakyShow } from "../flaky.js";
 import { flakyPage, flakyRowPage } from "./render-flaky.js";
 import { configBase, NAMES } from "../names.js";
-import { browsePage,folderPickerPage,githubReposPage,pickRepoChosen,shortPathOf,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
+import { browsePage,folderPickerPage,githubReposPage,pickRepoChosen,outsideAddPage,shortPathOf,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
 import { notFound as kitNotFound } from "./kit.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { type ProjectOutcomes } from "../project-outcomes.js";
@@ -666,13 +666,18 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         return say(`${outsideWords}, and only an approver signed in with a password can add one from elsewhere`, 403);
       }
       const password = body.get("password") ?? "";
-      if (password === "") return say(`${outsideWords}. To add it anyway, enter your Toolroll password`, 403);
-      if (!typedPasswordNow(authenticateCredential(who, password))) return say("that password didn't match", 403);
       const root = await proveProjectRoot(canonical, undefined, identities.resolveNow);
       if (!root.ok) return say(root.reason === "not-git" ? "that path is not a git repository" : root.message, 400);
       // What the checkout really is, read by the bounded look (never on this thread): judged on identity, not spelling.
       const refused = await additionRefusal(root.repo);
       if (refused !== null) return say(refused.words, refused.status);
+      // No password yet: the repository, proved and checked, on its own page with the password field. The projects page
+      // never carries one (it would stop opening in place). Nothing is added by this answer.
+      if (password === "") {
+        const chrome = chromeFor(who.session.project, "projects");
+        return void sendScreen(response, 200, outsideAddPage(chrome, { name: projectName(root.repo), path: root.repo }));
+      }
+      if (!typedPasswordNow(authenticateCredential(who, password))) return say("that password didn't match", 403);
       target = root.repo;
       outside = true;
     } else {

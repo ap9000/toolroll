@@ -50,7 +50,7 @@ export type FolderLookRequest =
   | { op: "projectMcp"; path: string }
   /** What a folder really is, for a choice that widens what the server may open (the projects folder, a repository
    * added from outside it): its real path in the disk's own spelling (realpath.native: on a case-insensitive disk
-   * `/users/x` answers `/Users/x`), whether it is a folder, its owner, and the identity (device and inode) of it and of
+   * `/users/me` answers `/Users/me`), whether it is a folder, its owner, and the identity (device and inode) of it and of
    * every folder above it; the same for each folder it is compared with. */
   | { op: "folder"; path: string; compare: readonly string[] }
   /** `list` with real paths in the disk's own spelling (the folder pickers). */

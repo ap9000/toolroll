@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, onTestFinished, test } from "vitest";
 import { mintApiToken } from "../api-tokens.js";
 import { childLook, type FolderLookRunner } from "../folder-look.js";
 import { setPasswordless } from "../passwordless.js";
@@ -145,11 +145,16 @@ describe("adding a repository from outside the projects folder", () => {
     }
     const token = await fetch(`${base}/projects/open`, { method: "POST", headers: { authorization: `Bearer ${actToken}`, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ path: outside(), via: "path", password: passwords["alex"]! }), redirect: "manual" });
     expect(token.status).toBe(403);
-    // No password: the reason, in the panel, with what was typed kept.
+    // The projects page never carries a password field (a page with one always loads as a whole document, never in
+    // place): the exact-path form names the repository, and the password is typed on the next page.
+    expect((await get("/projects", alex.cookie)).body).not.toContain('type="password"');
+    // No password: the repository, proved and checked, on its own page with the password field. Nothing is added yet.
     const bare = await post("/projects/open", alex, { path: "~/code/outside-repo", via: "path" });
-    expect(bare.status).toBe(403);
-    expect(bare.body).toContain("To add it anyway, enter your Toolroll password");
-    expect(bare.body).toContain('value="~/code/outside-repo"');
+    expect(bare.status).toBe(200);
+    expect(bare.body).toContain("Add a project from outside your projects folder");
+    expect(bare.body).toMatch(/<input class="k-input" id="pick-password" type="password" name="password"/);
+    expect(bare.body).toContain(`name="path" value="${outside()}"`);
+    expect(store.listProjects()).toEqual([]);
     expect((await post("/projects/open", alex, { path: "~/code/outside-repo", via: "path", password: "wrong" })).body).toContain("That password didn");
     // A row's Open (no exact-path form) never adds from outside, whatever it carries.
     expect((await post("/projects/open", alex, { path: outside(), password: passwords["alex"]! })).status).toBe(403);
@@ -175,7 +180,7 @@ describe("adding a repository from outside the projects folder", () => {
     expect(removed).toMatchObject({ ok: true, removed: true });
     expect((await post("/projects/select", alex, { path: outside(), return: "/projects" })).status).toBe(403);
     expect((await get("/projects/outside-repo", alex.cookie)).status).toBe(404);
-    expect((await post("/projects/open", alex, { path: outside(), via: "path" })).body).toContain("To add it anyway, enter your Toolroll password");
+    expect((await post("/projects/open", alex, { path: outside(), via: "path" })).body).toContain("Add a project from outside your projects folder");
   });
 
   test("a Toolroll folder that isn't there yet still excludes by its path; one that can't be read refuses (fail closed)", async () => {
@@ -303,7 +308,12 @@ describe("identity, not spelling; absent and unreadable folders fail closed", ()
 describe("slow drives and proofs", () => {
   test("a folder that doesn't answer never holds the console: the picker and the add say so in time, and nothing is added", async () => {
     await close();
-    const stuck: FolderLookRunner = (request, deadline) => request.op === "folder" ? { answer: new Promise(() => {}), ended: new Promise(() => {}) } : childLook(request, deadline);
+    // A stuck look stays joined until its child ends (folder-look.ts inFlight); a real one ends when it is killed. This
+    // one ends with the test, so a later test's look at the same folder never joins it.
+    const ends: Array<() => void> = [];
+    onTestFinished(() => { for (const end of ends) end(); });
+    const stuck: FolderLookRunner = (request, deadline) => request.op === "folder"
+      ? { answer: new Promise(() => {}), ended: new Promise<void>(resolveEnded => { ends.push(resolveEnded); }) } : childLook(request, deadline);
     await boot(undefined, { folderLook: stuck, folderLookMs: 300 });
     const alex = await login("alex");
     const started = Date.now();
@@ -322,7 +332,7 @@ describe("slow drives and proofs", () => {
   test("only a password typed now: Passwordless, a remembered password and a provider re-check never add from outside", async () => {
     const alex = await login("alex");
     setPasswordless(store, true, "alex", new Date());
-    expect((await post("/projects/open", alex, { path: "~/code/outside-repo", via: "path", password: "" })).body).toContain("To add it anyway, enter your Toolroll password");
+    expect((await post("/projects/open", alex, { path: "~/code/outside-repo", via: "path", password: "" })).body).toContain("Add a project from outside your projects folder");
     expect(store.listProjects()).toEqual([]);
     const now = Date.now();
     const facts: FreshFacts = { actor: "alex", local: true, allowlisted: true, live: () => true, passwordAt: () => now - 1_000, ssoReauthAt: () => null,
