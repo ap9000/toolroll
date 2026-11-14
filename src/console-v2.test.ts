@@ -138,9 +138,10 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
       // The page's own fallback is the server's task body; the rebuilt view holds every one of its forms.
       expect(data.pageHtml).not.toBeNull();
       // The Result tab's no-script part is the result page's own HTML (the same builder as /review), carried in the view
-      // as that page's data: the task's own forms are compared here, the result's on the review page's tests.
+      // as that page's data (and on the document for a reader without script), never a second time in the page string:
+      // the task's own forms are compared here, the result's on the review page's tests.
       const [taskHtml, resultHtml = ""] = data.pageHtml!.split('<section class="task-result-tab"');
-      expect(resultHtml === "").toBe(view.result == null);
+      expect(resultHtml).toBe("");
       if (id === "finished") expect(view.result).toMatchObject({ current: true, selected: { taskId: "finished", build: doneRun } });
       const serverForms = formsOf(taskHtml!);
       expect(serverForms.length).toBeGreaterThan(0);
@@ -293,5 +294,38 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     const home = await (await fetch(url("/"), { headers: { cookie } })).text();
     expect(home).toContain("Show the balance");
     expect(home).toContain("Export orders");
+  });
+
+  test("a result page's workspace read carries its result panel once: in the view, never again in the page string", async () => {
+    const ref = filed("shipped", "Serve smaller images", T0);
+    const authority = store.routeAuthorityFor(ref, "builder");
+    if (!authority?.ok) throw new Error("route");
+    const run = store.startRun({ taskRef: ref, leaseId: "l-shipped", runner: "builder-1", branch: "b/shipped", worktree: "/w/shipped", route: authority.stamp, now: T0 });
+    store.stampRun(run, { scopeDigest: store.getScope("shipped")!.digest, baseRevision: "1".repeat(40) });
+    store.recordOutcomeFacts(run, { headRevision: "2".repeat(40), handoff: "Images now use responsive sizes." });
+    store.finishRun(run, { outcome: "built", committed: true, now: T0 });
+    store.setTaskState("shipped", "done", T0);
+    const cookie = await login();
+    const strings = (value: unknown): string[] => typeof value === "string" ? [value]
+      : Array.isArray(value) ? value.flatMap(strings) : value !== null && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
+    const timesIn = (all: string[], part: string): number => all.reduce((sum, one) => sum + one.split(part).length - 1, 0);
+    for (const path of ["/t/shipped?tab=result", `/t/shipped?tab=result&run=${run}`, "/t/shipped"]) {
+      const data = await workspace(cookie, path);
+      const view = data.view as BrowserTaskView;
+      const panel = view.result!.selected.panel!;
+      expect(panel.attributes["data-result-panel"]).toBe("");
+      // Each tab's content, the feedback section and the history: exactly once in everything the read carries.
+      const all = strings(data);
+      for (const part of [...panel.views.map(one => one.html), panel.request ?? "", panel.history].filter(one => one.length > 40)) expect(timesIn(all, part), path).toBe(1);
+      // The page string is the task's own fallback; the result's section is the document's alone.
+      expect(data.pageHtml).not.toBeNull();
+      expect(data.pageHtml!).not.toContain("data-result-panel");
+      expect(data.pageHtml!).not.toContain('class="task-result-tab"');
+    }
+    // A browser without script still reads the whole result on the document, under the task's own page.
+    const page = await (await fetch(url("/t/shipped?tab=result"), { headers: { cookie } })).text();
+    const fallback = page.replace(/<script type="application\/json" id="standing-orders-workspace-data"[^>]*>[\s\S]*?<\/script>/, "");
+    expect(fallback.split('<section class="task-result-tab" id="task-result" aria-label="Result">').length - 1).toBe(1);
+    expect(fallback.split("data-result-panel").length - 1).toBe(1);
   });
 });
