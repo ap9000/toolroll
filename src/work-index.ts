@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { readProjectAccess } from './project-access.js';
 import { pauseOnTaskProviders, signInReason } from './provider-auth.js';
 import type { ProviderId } from './provider.js';
-import { scopeTermsProblem, stopFactOf, type Store, type TaskState } from './store.js';
+import { BUILT_IN, scopeTermsProblem, stopFactOf, type Store, type TaskState } from './store.js';
 import { assignmentChecksForRun, type AssignmentSnapshot } from './assignment.js';
 import type { WorkAction, WorkSummaryAccess } from './work-summary.js';
 import type { WorkStatus, WorkView } from './workspace-ui.js';
@@ -18,14 +18,15 @@ import { approvedCheckOf, checkBackingOf, completionBlockersOf, leadOnIt, plainR
 import { releaseCoverageOf, type ReleaseMemo } from './release-coverage.js';
 import { buildReviewOf } from './review-switch.js';
 import { shownVerdictOf } from './proof.js';
-import { isCheckLevel, requiredCheckCommandFor } from './check-levels.js';
+import { isCheckLevel, repoClause, requiredCheckCommandFor, RUN_LEVEL_ACTION, TASK_LEVEL_ACTION } from './check-levels.js';
 import { MARKER } from './worktree.js';
-import { withFollowUps } from './result-follow-ups.js';
+import { CHECKS_FINISHED, CHECKS_REQUESTED, CHECKS_STARTED, withFollowUps } from './result-follow-ups.js';
 import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
 import { ASKS, CODE_READING, STORAGE_HOLD_PREFIX, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
 import { agentlessCommand, NO_AGENT_TITLE, noAgentWords, retryWhenWords, signInAgainWords } from './dispatch.js';
 import { releaseTaskOf } from './release-approval.js';
-import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
+import { LEAD_CLAIM_SQL, LEAD_CLAIMED, LEAD_IDLE_MS } from './lead-voice.js';
+import { workReadsOf, type WorkReads } from './work-reads.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
 export type WorkIndexItem = {
@@ -435,9 +436,9 @@ function releaseTaskIds(store: Store): string {
   return JSON.stringify(sealed.filter(taskId => releaseTaskOf(store, taskId) !== null));
 }
 
-function parameters(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, custody: ReturnType<typeof custodyReadings>) {
+function parameters(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, custody: ReturnType<typeof custodyReadings>, reads: WorkReads | null = null) {
   const ids = (keep: (ref: number, fact: StopFact | null) => boolean) => JSON.stringify([...custody.readings].filter(([ref, fact]) => keep(ref, fact)).map(([ref]) => ref));
-  return { $releaseTasks: releaseTaskIds(store), $settledCustody: ids((_, fact) => fact === null), $waitingCustody: ids((_, fact) => fact !== null && 'wait' in (processNeedOf(fact) ?? {})),
+  return { $releaseTasks: reads === null ? releaseTaskIds(store) : reads.value('release-tasks', () => releaseTaskIds(store)), $settledCustody: ids((_, fact) => fact === null), $waitingCustody: ids((_, fact) => fact !== null && 'wait' in (processNeedOf(fact) ?? {})),
     $workspaceCustody: ids((ref, fact) => fact !== null && custody.workspace.has(ref)),
     $now: now.toISOString(), $alive: new Date(now.getTime() - 180_000).toISOString(),
     $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []),
@@ -445,6 +446,44 @@ function parameters(store: Store, now: Date, access: WorkSummaryAccess, options:
     $projectSet: options.project != null ? 1 : 0, $project: options.project ?? null, $state: options.state ?? null, $leadId: options.leadId ?? null,
     $leadIdleSince: new Date(now.getTime() - LEAD_IDLE_MS).toISOString(),
     $leadOf: access.principal === 'operator' && access.viewer != null && access.viewer !== '' ? `lead for ${access.viewer}` : null };
+}
+/** The custody readings, once per request while nothing changes (work-reads.ts). */
+function custodyOf(store: Store, reads: WorkReads | null): ReturnType<typeof custodyReadings> {
+  return reads === null ? custodyReadings(store) : reads.value('custody', () => custodyReadings(store));
+}
+/** The inputs that decide the projection's rows, the clock aside (a kept copy is reused only near the instant it was read
+ * for: work-reads.ts WORK_READ_REUSE_MS). Every authorization input is one of them. */
+const TIME_INPUTS = new Set(['$now', '$alive', '$leadIdleSince']);
+/** Only the parameters a statement names: a read from the kept copy no longer names the projection's own. */
+function bound(sql: string, params: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(params).filter(([name]) => new RegExp(`\\${name}\\b`).test(sql)));
+}
+/** Rows of one read over the projection: `query` names the statement it runs after the projection's text (ending at
+ * `ranked`) and its own parameters. It runs over this request's kept copy of the projection for exactly these inputs
+ * when it holds one or can make one (work-reads.ts), else over the projection itself, as every read did before. A kept
+ * copy that can't be read is forgotten and the projection read instead. `kept`: the read is over the kept copy.
+ * `cached`: the statement is compiled once per connection (the page query is long). */
+function projectionRows(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, custody: ReturnType<typeof custodyReadings>,
+  reads: WorkReads | null, query: (projection: string, kept: boolean) => { sql: string; params: Record<string, unknown>; cached?: boolean }): Record<string, unknown>[] {
+  const projection = registerValidators(store), inputs = parameters(store, now, access, options, custody, reads);
+  const run = (text: string, kept: boolean) => {
+    const one = query(text, kept), sql = `${text}${one.sql}`;
+    return (one.cached === true ? prepared(store, sql) : store.handle.prepare(sql)).all(bound(sql, { ...inputs, ...one.params }));
+  };
+  if (reads !== null) {
+    // Two inputs often decide nothing: with no unplaced work at all, admitting it admits no row; with no claim by this
+    // reader's lead in the ledger, every lead_claim reads 0, as with no lead. Then the copy is the same either way, and
+    // the crew's, the catch-up's and the list's reads share it (each proved per request, like every kept read).
+    const same = { ...inputs };
+    if (same.$unplaced === 1 && !reads.value('unplaced-work', () => store.handle.prepare("SELECT 1 FROM task_ref WHERE backend = 'built-in' AND repo IS NULL LIMIT 1").get() !== undefined)) same.$unplaced = 0;
+    if (same.$leadOf !== null && !reads.value(`lead-claims\u0000${same.$leadOf}`, () => store.handle.prepare('SELECT 1 FROM action_ledger WHERE actor = ? AND action = ? LIMIT 1').get(same.$leadOf, LEAD_CLAIMED) !== undefined)) same.$leadOf = null;
+    const key = JSON.stringify(Object.entries(same).filter(([name]) => !TIME_INPUTS.has(name)).sort(([a], [b]) => a.localeCompare(b)));
+    const table = reads.ranked(key, now, name => { prepared(store, `CREATE TEMP TABLE "${name}" AS ${projection} SELECT * FROM ranked`).run(same); });
+    if (table !== null) {
+      try { return run(`WITH ranked AS (SELECT * FROM temp."${table}")`, true); } catch { reads.forget(key); }
+    }
+  }
+  return run(projection, false);
 }
 function counts(row: Row): WorkIndexCounts {
   return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), ready: n(row, 'ready_count'), running: n(row, 'running_count'), queued: n(row, 'queued_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
@@ -525,25 +564,33 @@ export function workIndexTask(store: Store, taskId: string, now: Date, access: W
 }
 
 function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, taskId: string | null = null): WorkIndexPage {
-  const projection = registerValidators(store);
-  const custody = custodyReadings(store);
+  const reads = workReadsOf(store);
+  const custody = custodyOf(store, reads);
   const view = VIEWS.includes(options.view ?? 'all') ? options.view ?? 'all' : 'all';
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(WORK_INDEX_MAX_LIMIT, Math.floor(options.limit!))) : WORK_INDEX_PAGE_LIMIT;
   const scope = cursorScope(access, options, view), cursor = readCursor(options.cursor, scope);
   const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'ready' ? READY : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0 AND ($completedSince IS NULL OR sort_at>=$completedSince)" : 'archived=0';
   // One read of ranked serves the page, its totals and each project's totals (window functions; see ONE_READ): the page's
   // rows (`is_row`, in list order), and each project's first row (`is_project`) to carry that project's totals.
-  const rows = prepared(store, `${projection}, page AS (
-    SELECT p.*,p.in_page AND p.page_order<=$limit is_row,p.repo_order=1 is_project,
-      CASE WHEN p.in_page AND p.page_order<=$limit THEN COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) END page_result_id
+  // Over this request's kept copy (work-reads.ts) the totals and the order are worked out on the few columns they read,
+  // and only the rows they pick are joined back to every column (a family's root_ref is its one row): sorting every
+  // column of every family four times was most of a page read. Over the projection itself, ranked is read once (ONE_READ).
+  const rows = projectionRows(store, now, access, options, custody, reads, (_, kept) => ({ cached: true, sql: `, page AS (
+    SELECT ${kept ? `r.*,p.in_page,p.page_order,p.repo_order,p.repo_rank,${[...PAGE_TOTAL_NAMES, ...PROJECT_TOTAL_NAMES].map(name => `p.${name}`).join(',')}` : 'p.*'},p.in_page AND p.page_order<=$limit is_row,p.repo_order=1 is_project,
+      CASE WHEN p.in_page AND p.page_order<=$limit THEN COALESCE(${kept ? 'r' : 'p'}.result_id,(SELECT id FROM run WHERE task_ref=${kept ? 'r' : 'p'}.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) END page_result_id
     FROM (SELECT s.*,ROW_NUMBER() OVER (PARTITION BY s.in_page ORDER BY ${ORDER},sort_at DESC,root_ref DESC) page_order,
         ROW_NUMBER() OVER (PARTITION BY repo ORDER BY root_ref) repo_order,DENSE_RANK() OVER (ORDER BY repo) repo_rank
-      FROM (SELECT r.*,($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR EXISTS(SELECT 1 FROM json_each(r.fam_ids) WHERE value=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
+      FROM (SELECT ${kept ? 'r.root_ref,r.repo,r.rank,r.ask_rank,r.sort_at' : 'r.*'},($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR EXISTS(SELECT 1 FROM json_each(r.fam_ids) WHERE value=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
           ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot)))) in_page,
           ${PAGE_TOTALS},${PROJECT_TOTALS}
-        FROM ranked r) s) p
+        FROM ranked r) s) p${kept ? ' JOIN ranked r ON r.root_ref=p.root_ref' : ''}
     WHERE (p.in_page AND p.page_order<=$limit) OR p.repo_order=1
-  )
+  )${kept ? `, led AS MATERIALIZED (
+    -- The page's results' own check-level and check-request lines, read in one pass: each row's lookups below then
+    -- read this short list instead of scanning its project's ledger (their filters and order are unchanged).
+    SELECT id,repo,run_id,action,outcome FROM action_ledger WHERE action IN ('checks used','checks requested')
+      AND run_id IN (SELECT page_result_id FROM page WHERE is_row AND page_result_id IS NOT NULL)
+  )` : ''}
   SELECT is_row,is_project,repo_rank,repo,${PAGE_TOTAL_NAMES.join(',')},${PROJECT_TOTAL_NAMES.join(',')},CASE WHEN is_row THEN json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
     'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
     'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
@@ -552,9 +599,9 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
     'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
-    'check_level',(SELECT outcome FROM action_ledger WHERE repo IS page.repo AND run_id=page_result_id AND action='checks used' ORDER BY id DESC LIMIT 1),
+    'check_level',(SELECT outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks used' ORDER BY id DESC LIMIT 1),
     'check_follows',(SELECT json_group_array(q.outcome||' '||COALESCE((SELECT substr(f.outcome,instr(f.outcome,':')+1) FROM action_ledger f WHERE f.repo IS page.repo AND f.run_id=page_result_id
-      AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM action_ledger WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
+      AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'ask_group',ask_group,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,
@@ -564,8 +611,7 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'agent_ask_run',(SELECT run FROM agent_question WHERE id=page.agent_ask),'agent_ask_text',(SELECT substr(question,1,300) FROM agent_question WHERE id=page.agent_ask),'replaced_by',(SELECT successor FROM task_replacement WHERE task_ref=page.ref_id),
     'completed_by_lead',(SELECT lead FROM task_act WHERE task_ref=page.root_ref AND act='completed' ORDER BY id DESC LIMIT 1),'machine_check',COALESCE(machine_check,0),
     'question_task',(SELECT r.external_id FROM decision d JOIN run ON run.id=d.run JOIN task_ref r ON r.id=run.task_ref WHERE d.id=page.question_id)) END row_json
-  FROM page ORDER BY is_row DESC,page_order`)
-    .all({ ...parameters(store, now, access, options, custody), $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $completedSince: options.completedSince ?? null, $recent: new Date(now.getTime()-86_400_000).toISOString() });
+  FROM page ORDER BY is_row DESC,page_order`, params: { $taskId: taskId, $roots: options.roots === undefined ? null : JSON.stringify(options.roots), $cursorRoot: cursor?.root ?? 0, $cursorRank: cursor?.rank ?? 0, $cursorAt: cursor?.at ?? '', $limit: limit + 1, $completedSince: options.completedSince ?? null, $recent: new Date(now.getTime()-86_400_000).toISOString() } }));
   const selected = rows.filter(row => n(row, 'is_row') === 1).map(row => JSON.parse(String(row['row_json'])) as Row);
   const page = selected.slice(0, limit), last = page.at(-1);
   const nextCursor = selected.length > limit && last !== undefined ? Buffer.from(JSON.stringify({ version: 2, scope,
@@ -573,8 +619,9 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const projects = rows.filter(row => n(row, 'is_project') === 1).sort((a, b) => n(a, 'repo_rank') - n(b, 'repo_rank')).map(row => ({ repo: s(row, 'repo'),
     totals: counts(Object.fromEntries(TOTAL_NAMES.map(name => [name, row[`project_${name}`]]))), queued: n(row, 'project_queued'), doneRecently: n(row, 'project_done_recently') }));
   // A row whose build Toolroll can't confirm stopped reads the store's own answer, as the task page does.
+  const facts = reads?.store ?? store;
   const probe = (taskId: string) => {
-    const ref = store.lookupRef(taskId);
+    const ref = facts.lookupRef(taskId);
     return ref === null ? null : custody.readings.get(ref.id) ?? null;
   };
   // A claimed row says the viewer's own name for their lead.
@@ -582,17 +629,18 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   // A finished result reads the same readiness the task page does (task-status.ts): its requirements, acceptance,
   // automatic review and, with checks Off, the release check that covers it.
   const memo: ReleaseMemo = new Map();
-  const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(store, now, options.root, row, checks, memo);
+  if (reads !== null) prefetchResults(reads, store, page);
+  const readiness = (row: Row, checks: ChecksFact | null) => resultReadinessFacts(facts, now, options.root, row, checks, memo);
   return { items: page.map(row => itemOf(row, access.principal, probe, leadName, readiness, options.root !== undefined, now)), projects, totals: rows[0] === undefined ? { ...EMPTY } : counts(rows[0]),
     groups: rows[0] === undefined ? { ...NO_GROUPS } : groupCounts(rows[0]), asks: rows[0] === undefined ? { ...NO_ASKS } : askCounts(rows[0]),
     completedSince: rows[0] === undefined ? 0 : n(rows[0], 'completed_since_count'), builderWaits: rows[0] === undefined ? 0 : n(rows[0], 'builder_wait_count'), nextCursor, limit, view };
 }
 
 export function workCountsByProject(store: Store, now: Date, access: WorkSummaryAccess): WorkProjectCounts[] {
-  const projection = registerValidators(store);
-  return store.handle.prepare(`${projection} SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
-    SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo ORDER BY repo`)
-    .all({ ...parameters(store, now, access, {}, custodyReadings(store)), $recent: new Date(now.getTime()-86_400_000).toISOString() })
+  const reads = workReadsOf(store);
+  return projectionRows(store, now, access, {}, custodyOf(store, reads), reads, () => ({ sql: ` SELECT repo,${TOTALS},SUM(state='queued' AND family_running=0 AND archived=0) queued,
+    SUM(state='done' AND family_running=0 AND archived=0 AND updated_at>=$recent) done_recently FROM ranked GROUP BY repo ORDER BY repo`,
+    params: { $recent: new Date(now.getTime()-86_400_000).toISOString() } }))
     .map(row => ({ repo: s(row, 'repo'), totals: counts(row), queued: n(row, 'queued'), doneRecently: n(row, 'done_recently') }));
 }
 
@@ -614,15 +662,14 @@ export type WorkStateRow = { repo: string | null; rootId: string; code: string; 
   /** Every task_ref of the family (its versions), for counting each of its live attempts. */
   members: number[] };
 export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess): WorkStateRow[] {
-  const projection = registerValidators(store);
-  return store.handle.prepare(`${projection} SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,rank,
+  const reads = workReadsOf(store);
+  return projectionRows(store, now, access, {}, custodyOf(store, reads), reads, () => ({ params: {}, sql: ` SELECT repo,root_id,code,needs,person_need,lead_claim,live_run,unfinished,result_id,rank,
       code||':'||COALESCE(question_id,'')||':'||COALESCE(agent_ask,'')||':'||COALESCE(hold_id,'')||':'||COALESCE(result_id,'')||':'||COALESCE(stop_run,'')||':'||COALESCE(digest,'')||':'||COALESCE(scope_digest,'') version,
       COALESCE(NULLIF(MAX(COALESCE(proposed_at,''),COALESCE(finished_at,''),
         COALESCE((SELECT created_at FROM decision WHERE id=question_id),''),COALESCE((SELECT asked_at FROM agent_question WHERE id=agent_ask),''),
         COALESCE((SELECT held_at FROM hold WHERE id=hold_id),''),COALESCE((SELECT requested_at FROM run_stop WHERE run=stop_run),'')),''),sort_at) ask_at,
       COALESCE(live_run,(SELECT run FROM decision WHERE id=question_id),(SELECT run FROM agent_question WHERE id=agent_ask)) ask_run,
-      fam_refs members FROM ranked WHERE archived=0`)
-    .all(parameters(store, now, access, {}, custodyReadings(store)))
+      fam_refs members FROM ranked WHERE archived=0` }))
     .map(row => ({ repo: s(row, 'repo'), rootId: String(row['root_id']), code: String(row['code']), needs: n(row, 'needs') === 1, personNeed: n(row, 'person_need') === 1,
       leadClaim: n(row, 'lead_claim') === 1, liveRun: row['live_run'] == null ? null : n(row, 'live_run'), unfinished: row['unfinished'] == null ? null : n(row, 'unfinished'),
       resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, version: String(row['version']), at: String(row['ask_at'] ?? ''), askRun: row['ask_run'] == null ? null : n(row, 'ask_run'), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
@@ -728,6 +775,72 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
     criteriaPassed: requirements === null || requirements.met === requirements.total });
   const blockers = completionBlockersOf({ report, checks, checkRequired, matrix: proof?.matrix, verdict: proof?.verdict ?? null, accepted, high });
   return { checks, requirements: unverifiedWhenRefuted(requirements, verdict), ...(accepted ? { accepted } : {}), ...(blockers.length === 0 ? {} : { blockers }) };
+}
+
+/** A row of the named columns, in order, as node:sqlite returns one (no prototype). */
+const picked = (row: Record<string, unknown>, names: readonly string[]) => Object.assign(Object.create(null) as Record<string, unknown>, Object.fromEntries(names.map(name => [name, row[name]])));
+/** The saved facts every shown result's readiness reads one at a time (resultReadinessFacts: its run and task, verdict,
+ * acceptance, review, files, check level and follow-up checks; each row's own check choice), read for the whole page in
+ * a few statements and saved as the one-row reads would have answered them (work-reads.ts seed). The SQL texts are the
+ * readers' own (store.ts, check-levels.ts, result-follow-ups.ts, review-switch.ts): one that drifts only reads again. */
+function prefetchResults(reads: WorkReads, store: Store, rows: readonly Row[]): void {
+  const runIds = [...new Set(rows.map(row => n(row, 'result_id')).filter(id => id > 0))];
+  if (runIds.length === 0) return;
+  prefetchResultRuns(store, runIds, reads);
+  const all = (sql: string, ...params: unknown[]) => store.handle.prepare(sql).all(...params);
+  const keyed = (list: Record<string, unknown>[], column: string) => new Map(list.map(row => [row[column], row] as const));
+  // Each shown task's own check choice (check-levels.ts taskCheckLevel's first step): its ref and its newest choice.
+  const taskIds = [...new Set(rows.filter(row => n(row, 'result_id') > 0).map(row => String(row['id'])))];
+  const tasks = keyed(all('SELECT * FROM task_ref WHERE backend = ? AND external_id IN (SELECT value FROM json_each(?))', BUILT_IN, JSON.stringify(taskIds)), 'external_id');
+  reads.seed('SELECT * FROM task_ref WHERE backend = ? AND external_id = ?', 'get', taskIds.map(id => [[BUILT_IN, id], tasks.get(id)] as const));
+  const chosen = all('SELECT task_id, repo, actor, at, outcome FROM action_ledger WHERE task_id IN (SELECT value FROM json_each(?)) AND action = ? ORDER BY id DESC', JSON.stringify(taskIds), TASK_LEVEL_ACTION);
+  for (const id of taskIds) {
+    const ref = tasks.get(id);
+    const [where, params] = repoClause(ref === undefined || ref['repo'] === null ? null : String(ref['repo']));
+    const newest = chosen.find(row => row['task_id'] === id && (params.length === 0 ? row['repo'] === null : row['repo'] === params[0]));
+    reads.seed(`SELECT actor, at, outcome FROM action_ledger WHERE ${where} AND task_id = ? AND action = ? ORDER BY id DESC LIMIT 1`, 'get',
+      [[[...params, id, TASK_LEVEL_ACTION], newest === undefined ? undefined : picked(newest, ['actor', 'at', 'outcome'])]]);
+  }
+}
+
+
+/** A page read's results' own saved facts (their runs, tasks, verdicts, acceptances, reviews, files, check levels and
+ * follow-up check lines), read for all of them at once and saved as the one-row reads would answer them; nothing
+ * outside a page read (work-reads.ts). The sidebar's states read the same results' checks. */
+export function prefetchResultRuns(store: Store, runIds: readonly number[], reads: WorkReads | null = workReadsOf(store)): void {
+  if (reads === null || runIds.length === 0) return;
+  const all = (sql: string, ...params: unknown[]) => store.handle.prepare(sql).all(...params);
+  const keyed = (list: Record<string, unknown>[], column: string) => new Map(list.map(row => [row[column], row] as const));
+  const ids = JSON.stringify(runIds);
+  const runs = keyed(all('SELECT * FROM run WHERE id IN (SELECT value FROM json_each(?))', ids), 'id');
+  reads.seed('SELECT * FROM run WHERE id = ?', 'get', runIds.map(id => [[id], runs.get(id)] as const));
+  const refIds = [...new Set([...runs.values()].map(run => Number(run['task_ref'])))];
+  const refs = keyed(all('SELECT id, external_id, repo FROM task_ref WHERE id IN (SELECT value FROM json_each(?)) AND backend = ?', JSON.stringify(refIds), BUILT_IN), 'id');
+  reads.seed('SELECT id, external_id, repo FROM task_ref WHERE id = ? AND backend = ?', 'get', refIds.map(id => [[id, BUILT_IN], refs.get(id)] as const));
+  for (const table of ['proof_verdict', 'proof_acceptance', 'build_review']) {
+    let found: Map<unknown, Record<string, unknown>>;
+    // An older file without the table: its one-row reader says so itself.
+    try { found = keyed(all(`SELECT * FROM ${table} WHERE run IN (SELECT value FROM json_each(?))`, ids), 'run'); } catch { continue; }
+    reads.seed(`SELECT * FROM ${table} WHERE run = ?`, 'get', runIds.map(id => [[id], found.get(id)] as const));
+  }
+  const files = new Map<number, Record<string, unknown>[]>(runIds.map(id => [id, []]));
+  for (const artifact of all('SELECT * FROM artifact WHERE run IN (SELECT value FROM json_each(?)) ORDER BY id', ids)) files.get(Number(artifact['run']))?.push(artifact);
+  reads.seed('SELECT * FROM artifact WHERE run = ? ORDER BY id', 'all', runIds.map(id => [[id], files.get(id)] as const));
+  // The result's own ledger lines, in its task's project (check-levels.ts runCheckLevel, result-follow-ups.ts ledgerFor).
+  const ledger = all(`SELECT run_id, repo, id, actor, at, outcome, detail, action FROM action_ledger WHERE run_id IN (SELECT value FROM json_each(?)) AND action IN (?, ?, ?, ?) ORDER BY id`,
+    ids, RUN_LEVEL_ACTION, CHECKS_REQUESTED, CHECKS_STARTED, CHECKS_FINISHED);
+  for (const id of runIds) {
+    const run = runs.get(id);
+    if (run === undefined) continue;
+    const repo = refs.get(Number(run['task_ref']))?.['repo'];
+    const [where, params] = repoClause(repo === undefined || repo === null ? null : String(repo));
+    const own = ledger.filter(row => row['run_id'] === id && (params.length === 0 ? row['repo'] === null : row['repo'] === params[0]));
+    const level = own.filter(row => row['action'] === RUN_LEVEL_ACTION).at(-1);
+    reads.seed(`SELECT actor, at, outcome FROM action_ledger WHERE ${where} AND run_id = ? AND action = ? ORDER BY id DESC LIMIT 1`, 'get',
+      [[[...params, id, RUN_LEVEL_ACTION], level === undefined ? undefined : picked(level, ['actor', 'at', 'outcome'])]]);
+    reads.seed(`SELECT id, actor, at, outcome, detail, action FROM action_ledger WHERE ${where} AND run_id = ? AND action IN (?, ?, ?) ORDER BY id`, 'all',
+      [[[...params, id, CHECKS_REQUESTED, CHECKS_STARTED, CHECKS_FINISHED], own.filter(row => row['action'] !== RUN_LEVEL_ACTION).map(row => picked(row, ['id', 'actor', 'at', 'outcome', 'detail', 'action']))]]);
+  }
 }
 
 function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (taskId: string) => StopFact | null, leadName?: string,

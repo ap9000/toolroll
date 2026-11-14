@@ -13,7 +13,7 @@ vi.mock('../scope.js', async importOriginal => {
 
 function fixture(projects: string[] | null = null) {
   const store = {
-    accountOf: () => ({ projects }), accountCanAccess: (_: string, repo: string | null) => projects === null || repo !== null && projects.includes(repo),
+    accountOf: () => ({ projects, revokedAt: null }), accountCanAccess: (_: string, repo: string | null) => projects === null || repo !== null && projects.includes(repo),
     lookupRef: vi.fn((id: string) => ({ repo: `/task/${id}` })),
     getRun: vi.fn((id: number) => ({ taskRef: id + 100 })), refForId: vi.fn((id: number) => ({ repo: `/run/${id}` })),
     getDecision: vi.fn((id: number) => ({ run: id + 10 })), openIncidents: () => [{ id: 7, run: 20 }],

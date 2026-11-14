@@ -20,6 +20,7 @@ import { V157_SCHEMA, V157_STEPS } from "./chat-live-schema.js";
 import { V159_ADDED_COLUMNS, V159_SCHEMA, V159_STEPS } from "./one-step-chat-schema.js";
 import { V160_BACKFILL, V160_SCHEMA, V160_STEPS } from "./advanced-schema.js";
 import { V161_SCHEMA, V161_STEPS } from "./flexible-schema.js";
+import { V162_SCHEMA, V162_STEPS } from "./flexible-thread-schema.js";
 import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
@@ -1222,7 +1223,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // advanced-schema.ts), made once with an ON row for every account present then, so nobody loses a menu item.
 // v161 adds, and changes no saved row (the Flexible plan v2, slice F1): Flexible projects' signed terms
 // (flexible_terms, a new table; flexible-schema.ts). A project with no row is Secure, as every saved project reads.
-export const SCHEMA_VERSION = 161;
+// v162 adds, and changes no saved row (the Flexible plan v2, slice F2a): Flexible threads' own repositories
+// (flexible_thread, a new table; flexible-thread-schema.ts). Nothing reads it while Flexible isn't available.
+export const SCHEMA_VERSION = 162;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1360,7 +1363,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1624,7 +1627,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2034,7 +2037,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6019,7 +6022,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6445,6 +6448,12 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const flexibleDamaged = flexibleTermsShapeProblem(db);
   if (flexibleDamaged !== null) throw new Error(`${file}: refusing to open — ${flexibleDamaged}`);
   step("flexible-terms");
+  // v162: Flexible threads' own repositories (a new table, its index and its written-once trigger). Idempotent; a table
+  // already here (a resumed epoch, a later upgrade) must be exactly this build's shape.
+  db.exec(V162_SCHEMA);
+  const threadDamaged = flexibleThreadShapeProblem(db);
+  if (threadDamaged !== null) throw new Error(`${file}: refusing to open — ${threadDamaged}`);
+  step("flexible-thread");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -15143,12 +15152,24 @@ export class Store {
     const hours = (iso: unknown): number => Math.max(0, Math.round((now.getTime() - Date.parse(String(iso))) / 3_600_000));
     return this.transact(() => {
       const families = this.taskFamiliesAdmitted(admittedRepos, false, { limit: 61 });
-      const taskRows = families.slice(0, 61).map(family => {
+      // Each shown family's ref, newest finished build or report, its verdict and whether it was accepted, read for all of
+      // them at once (fast reads: four reads per family before).
+      const shown = families.slice(0, 61);
+      const refs = new Map(this.db.prepare("SELECT * FROM task_ref WHERE backend = ? AND external_id IN (SELECT value FROM json_each(?))")
+        .all(BUILT_IN, JSON.stringify(shown.map(family => family.current.id))).map(row => [String(row["external_id"]), readTaskRef(row)] as const));
+      const results = new Map(this.db.prepare(`SELECT * FROM run WHERE id IN (SELECT MAX(id) FROM run WHERE task_ref IN (SELECT value FROM json_each(?))
+          AND finished_at IS NOT NULL AND role IN ('builder','scout') GROUP BY task_ref)`)
+        .all(JSON.stringify([...refs.values()].map(ref => ref.id))).map(row => readRun(row)).map(run => [run.taskRef, run] as const));
+      const resultIds = JSON.stringify([...results.values()].map(run => run.id));
+      const verdicts = new Map(this.db.prepare("SELECT * FROM proof_verdict WHERE run IN (SELECT value FROM json_each(?))").all(resultIds)
+        .map(row => readProofVerdict(row as Record<string, unknown>)).map(verdict => [verdict.run, verdict] as const));
+      const acceptances = new Set(this.db.prepare("SELECT run FROM proof_acceptance WHERE run IN (SELECT value FROM json_each(?))").all(resultIds).map(row => Number(row["run"])));
+      const taskRows = shown.map(family => {
         const current = family.current;
-        const ref = this.lookupRef(current.id)!;
-        const run = this.runsFor(ref.id).find(one => one.finishedAt !== null && (one.role === "builder" || one.role === "scout"));
-        const proof = current.state === "done" && run !== undefined ? this.proofVerdictFor(run.id) : null;
-        return { family, current, ref, proof, accepted: run !== undefined && this.proofAcceptance(run.id) !== null };
+        const ref = refs.get(current.id)!;
+        const run = results.get(ref.id);
+        const proof = current.state === "done" && run !== undefined ? verdicts.get(run.id) ?? null : null;
+        return { family, current, ref, proof, accepted: run !== undefined && acceptances.has(run.id) };
       });
       const decisionRows = this.db
         .prepare(
@@ -27402,4 +27423,24 @@ function flexibleTermsShapeProblem(db: Database): string | null {
 /** Whether a project is added now: its row (an admission; removing or deleting a project drops it). One indexed read. */
 export function projectRowKnown(store: Store, path: string): boolean {
   return store.handle.prepare("SELECT 1 FROM project WHERE path = ?").get(path) !== undefined;
+}
+
+/** v162's table, index and written-once trigger, as a current or resumed file must hold them (flexible-thread-schema.ts):
+ * each there, and exactly this build's DDL. Null when they are; else what is wrong, in words. */
+function flexibleThreadShapeProblem(db: Database): string | null {
+  const statements = V162_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
+  for (const [type, name] of [["table", "flexible_thread"], ["index", "flexible_thread_repo"], ["trigger", "flexible_thread_written_once"]] as const) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+    if (row === undefined) return `the flexible_thread ${type} ${name} is missing`;
+    const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
+    if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want).trim()) return `the flexible_thread ${type} ${name} has an unknown shape`;
+  }
+  return null;
+}
+
+/** Store.accountCanAccess for many projects at one reading of the account (fast reads): a list of decisions made at one
+ * instant reads the person once instead of once per project. The same rule, the same answer. */
+export function accountAccessOf(store: Store, name: string): (repo: string | null) => boolean {
+  const account = store.accountOf(name);
+  return repo => account !== null && account.revokedAt === null && projectAccessAllows(account.projects, repo);
 }

@@ -64,6 +64,7 @@ import { createPersonalQueueRuntime } from './lead-queue-runtime.js';
 import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
 import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
+import { withWorkReads } from "./work-reads.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
@@ -243,7 +244,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get liveRefreshSeconds() { return liveRefreshSeconds; },
   });
 
-  const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
+  const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, visibleNow, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
     get store() { return store; },
     get liveCeiling() { return liveCeiling; },
     identities,
@@ -507,10 +508,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const managedRepos = (): string[] => {
     const seen = new Set<string>();
     const repos: string[] = [];
-    const gone = goneRepos();
+    const gone = goneRepos(), shown = visibleNow();
     for (const path of [...exactRepos(), ...(options.currentRepos?.() ?? [])]) {
       const canonical = identities.hot(path);
-      if (seen.has(canonical) || !visible(canonical) || gone.has(canonical)) continue;
+      if (seen.has(canonical) || !shown(canonical) || gone.has(canonical)) continue;
       seen.add(canonical);
       repos.push(canonical);
     }
@@ -670,8 +671,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * one list: the live admitted set (taskless projects included) and every project with saved work, each through
    * the ceiling and this account's project grants. A project removed or deleted here is gone from it. */
   const consoleProjects = (): string[] => {
-    const gone = goneRepos();
-    return [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(one => visible(one) && !gone.has(one));
+    const gone = goneRepos(), shown = visibleNow();
+    return [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(one => shown(one) && !gone.has(one));
   };
 
   const server = createServer((request, response) => {
@@ -1038,7 +1039,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
             if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
           }
-          return handleGet(route, url, who, request, response);
+          // One read of the work projection and its rows' saved facts for the whole page (work-reads.ts): this request's
+          // own, gone when it ends.
+          return withWorkReads(() => handleGet(route, url, who, request, response));
         }
         return handlePost(route, url, who, request, response, body!);
       };
@@ -1803,11 +1806,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function sidebarProjects(): { path: string; name: string }[] {
     const seen = new Set<string>();
     const rows: { path: string; name: string }[] = [];
+    const shown = visibleNow();
     for (const one of [
       ...store.listProjects().map(one => ({ path: one.path, name: one.name })),
       ...managedRepos().map(path => ({ path, name: projectName(path) })),
     ]) {
-      if (seen.has(one.path) || !visible(one.path) || goneRepos().has(one.path)) continue;
+      if (seen.has(one.path) || !shown(one.path) || goneRepos().has(one.path)) continue;
       seen.add(one.path);
       rows.push(one);
     }
@@ -1833,7 +1837,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** One account's summary snapshot, read as that account for this exact scope (the summary room's fingerprint): null
    * when the account is gone or its scope moved. */
   const projectSummaryFor = (account: string, scope: string): string | null =>
-    projectScopeFor(account) !== scope ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => JSON.stringify(projectSummary()));
+    // One snapshot is one read: its own work reads (work-reads.ts), gone when it is made.
+    projectScopeFor(account) !== scope ? null : requestContext.run({ csrf: '', returnTo: '/', actor: account }, () => withWorkReads(() => JSON.stringify(projectSummary())));
 
   /** The sidebar's facts for this request. */
   function chromeFor(
