@@ -27317,3 +27317,52 @@ export const CONTAINMENT_NOTICE_FACT = "containment-notice-shown";
 export function noticeDueOnce(store: Store, key: string, now: Date): boolean {
   return Number(store.handle.prepare("INSERT OR IGNORE INTO installation_fact (key, value, created_at) VALUES (?, 'yes', ?)").run(key, now.toISOString()).changes) === 1;
 }
+
+/** Why `toolroll password reset` won't reset an account's password (null: it may). */
+export type PasswordResetRefusal = "no-account" | "revoked" | "sso-only" | "no-password" | "password-not-allowed";
+
+/**
+ * Whether this account's password may be reset at this computer, read now: an existing, unrevoked account that signs in
+ * with a password of its own. An identity-provider account (created by a provider sign-in, no password), a
+ * password-free owner who never set one (that is `toolroll password set`), and — when the provider allows passwords
+ * only for instance operators — anyone else, are refused: a reset never gives a password to an account that had none
+ * or may not use one.
+ */
+export function passwordResetRefusal(store: Store, name: string, passwordsOnlyForOperators: boolean): PasswordResetRefusal | null {
+  const row = store.handle.prepare("SELECT credential_hash, password_set, revoked_at FROM approver WHERE name = ?").get(name);
+  if (row === undefined) return "no-account";
+  if (row["revoked_at"] !== null && row["revoked_at"] !== undefined) return "revoked";
+  if (String(row["credential_hash"]).startsWith("sso-only$")) return "sso-only";
+  if (Number(row["password_set"]) !== 1) return "no-password";
+  if (passwordsOnlyForOperators && !store.isInstanceOperator(name)) return "password-not-allowed";
+  return null;
+}
+
+export type PasswordResetResult = { ok: true; generation: number; leadTokens: number } | { ok: false; reason: PasswordResetRefusal | "changed" };
+
+/**
+ * `toolroll password reset` (a forgotten password, at the computer running Toolroll): in ONE transaction, the account
+ * is proved resettable again (passwordResetRefusal) and unchanged since the person was told what would end (its
+ * generation then, `expectedGeneration`), the new hash is written, the generation moves, and everything derived from
+ * the old credential ends exactly as on any credential rotation (revokeDerivedAuthority "credential-rotation": every
+ * browser session, chat pairing, push enrollment and lead session of the account). A reset also ends the account's
+ * lead tokens (an ordinary password change keeps them): each was minted with a password, and a reset is the road taken
+ * when the old one may be known to someone else; minting a new one is one command. API and MCP tokens and coordinator
+ * credentials stay, as on any password change — the person is told so, and where to revoke them, before typing. The
+ * ledger says it was reset here.
+ * The caller proved a person at this computer's terminal; reaching this database at all is the trust boundary.
+ */
+export function resetAccountPassword(store: Store, name: string, credentialHash: string, expectedGeneration: number, passwordsOnlyForOperators: boolean, now: Date): PasswordResetResult {
+  return store.transact((): PasswordResetResult => {
+    const refusal = passwordResetRefusal(store, name, passwordsOnlyForOperators);
+    if (refusal !== null) return { ok: false, reason: refusal };
+    const written = store.handle.prepare(`UPDATE approver SET credential_hash = ?, generation = generation + 1
+      WHERE name = ? AND generation = ? AND password_set = 1 AND revoked_at IS NULL AND credential_hash NOT LIKE 'sso-only$%'`).run(credentialHash, name, expectedGeneration);
+    if (Number(written.changes) !== 1) return { ok: false, reason: "changed" };
+    store.revokeDerivedAuthority(name, "credential-rotation", now);
+    const leadTokens = store.revokeLeadCredentials(name, name, now);
+    store.recordAction({ at: now.toISOString(), actor: name, repo: null, taskId: null, runId: null, action: "password reset at this computer", outcome: "changed", source: "access",
+      detail: `every session of ${name} ended (generation ${expectedGeneration + 1})${leadTokens > 0 ? `; ${leadTokens} lead token${leadTokens === 1 ? "" : "s"} ended` : ""}` });
+    return { ok: true, generation: expectedGeneration + 1, leadTokens };
+  });
+}

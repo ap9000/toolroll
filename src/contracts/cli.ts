@@ -247,6 +247,8 @@ export const COMMAND_OUTPUTS = {
   }),
   // The first password set: whose, and the account generation every older session was bound to before it.
   "password set": answers("password set", { account: str, generation: int }),
+  // A forgotten password reset at this computer: whose, its new generation, and the stale saved logins removed.
+  "password reset": answers("password reset", { account: str, generation: int, removed: z.array(str) }),
 } as const satisfies Record<string, z.ZodType>;
 
 const declared = new Map<string, z.ZodType>(Object.entries(COMMAND_OUTPUTS));
