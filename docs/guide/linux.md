@@ -26,6 +26,33 @@ don't exist, and the sandbox needs all three. Until they're installed,
 `toolroll` says which are missing and doesn't start. See
 [Security](security.md).
 
+## Start over without a password
+
+If Toolroll was started before the sandbox tools were installed, it may
+have set itself up with a password. When it says "This Toolroll was set up
+with a password", you can start over without one:
+
+1. Stop Toolroll everywhere: run `toolroll stop`, run
+   `toolroll background off` if you turned that on, and quit every terminal
+   window running `toolroll`. Check that nothing still listens:
+   `ss -ltnp | grep node` (on a Mac, `lsof -nP -iTCP -sTCP:LISTEN | grep node`)
+   shows no Toolroll.
+2. Know what you discard: moving the folder aside leaves behind everything
+   that installation holds: its tasks, results, settings and saved
+   password. Your projects' own folders aren't touched. Nothing is deleted:
+   move the folder back to undo.
+3. Move Toolroll's folder aside, then start again:
+
+   ```sh
+   mv ~/.config/toolroll ~/.config/toolroll.old
+   toolroll
+   ```
+
+   The folder is `~/.config/toolroll` on Linux and macOS
+   (`$XDG_CONFIG_HOME/toolroll` when `XDG_CONFIG_HOME` is set). Older
+   installs may use `standing-orders` or `nightorders` instead of
+   `toolroll`; if you set `TOOLROLL_DB`, it's the folder holding that file.
+
 ## Process containment
 
 On a first start you may see:

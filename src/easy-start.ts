@@ -24,7 +24,7 @@ import { pathToFileURL } from "node:url";
 import { requestLocalLink, type AttachProof } from "./console-instance.js";
 import { backgroundInstalled, backgroundOn, startInstalledService } from "./laptop-background.js";
 import { proveConsoleReadOnly } from "./quick-start.js";
-import { backgroundAsked, localModeCandidate, localModeOf, openStore, openStoreReadOnly, recordBackgroundAsked } from "./store.js";
+import { backgroundAsked, installationCreatedBy, localModeCandidate, localModeOf, openStore, openStoreReadOnly, recordBackgroundAsked } from "./store.js";
 import { underAgent } from "./prompt.js";
 import { savedLoginFile } from "./login-secrets.js";
 import type { TuiExit, TuiSession } from "./tui-contract.js";
@@ -50,9 +50,9 @@ export type EasyStartSeams = {
   /** l1: this computer's sandbox, read now — the Linux programs it lacks (sandbox-runtime.ts LINUX_SANDBOX_TOOLS, by
    * package; none elsewhere), and why it can't sandbox here (null when it can). */
   sandbox: () => Promise<{ missing: string[]; problem: string | null }>;
-  /** l1: what to tell a person whose install got a password only because its first start couldn't go password-free,
-   * and how to start over (operate.ts startOverWords), or null for every other install. Read only. */
-  startOver: (sandbox: { missing: string[]; problem: string | null }) => Promise<string[] | null>;
+  /** l1: whether this database was made by a laptop start (created-by laptop) yet never had local mode (on or off):
+   * a start that couldn't go password-free made it. Read only, from the database alone; false when unreadable. */
+  passwordByLaptopStart: () => boolean;
   /** The saved login file `up` wrote for this database, when there is one (its path, never what it holds). */
   savedLogin: () => string | null;
   serviceInstalled: () => boolean;
@@ -80,6 +80,9 @@ export type EasyStartSeams = {
 };
 
 const EXIT = { ok: 0, failed: 1, usage: 2, refused: 3 } as const;
+
+/** l1: where a person whose first start made a password install reads how to start over without one. */
+export const START_OVER_POINTER = "This Toolroll was set up with a password. To start over without one: https://github.com/ap9000/toolroll/blob/main/docs/guide/linux.md#start-over-without-a-password";
 
 /**
  * Bare `toolroll` ("start") or `toolroll open` ("open") at a person's terminal. Resolves with the exit code once the
@@ -137,12 +140,10 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
 
   // An install with passwords: today's flow, in the browser, where the person signs in. Nothing here writes.
   if (local === "off") {
-    if (!first.ok) {
-      // l1: an install that got a password only because its first start couldn't go password-free, with nothing filed:
-      // say so and how to start over (nothing is changed here; the person moves the folder themselves).
-      if (!seams.serviceInstalled()) for (const line of await seams.startOver(await seams.sandbox()) ?? []) write(line);
-      return seams.runUpForeground(rootArgs);
-    }
+    // l1: an install a laptop start made with a password (it couldn't go password-free then): one line pointing at the
+    // guide's manual steps to start over. Nothing is read beyond the database's own two facts, and nothing changes.
+    if (seams.passwordByLaptopStart()) write(START_OVER_POINTER);
+    if (!first.ok) return seams.runUpForeground(rootArgs);
     const joined = await joinRepo();
     if (joined !== EXIT.ok) return joined;
     elsewhere(first);
@@ -315,7 +316,11 @@ export function defaultEasyStartSeams(options: {
       const missing = missingLinuxSandboxTools();
       return { missing, problem: missing.length > 0 ? null : sandboxRuntimeProblem() };
     },
-    startOver: async sandbox => (await import("./operate.js")).startOverWords(file, sandbox),
+    passwordByLaptopStart: () => {
+      const store = openStoreReadOnly(file);
+      if (store === null) return false;
+      try { return installationCreatedBy(store) === "laptop" && localModeOf(store) === null; } catch { return false; } finally { store.close(); }
+    },
     savedLogin: () => {
       const saved = resolve(savedLoginFile(dirname(file)));
       return existsSync(saved) ? saved : null;

@@ -6,12 +6,11 @@
  * provenance is never rewritten.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { easyStartInitLocalMode, initLocalModeForPerson, personMayInitLocalMode, startOverWords, type LocalInitCaller } from "./operate.js";
-import { hashToken } from "./scope.js";
+import { easyStartInitLocalMode, initLocalModeForPerson, personMayInitLocalMode, type LocalInitCaller } from "./operate.js";
 import { localModeRead } from "./easy-start.js";
 import { initLocalMode, installationCreatedBy, localModeCandidate, localModeOf, openStore, reportLifecycle, setLocalModeOff, type Store } from "./store.js";
 
@@ -192,85 +191,5 @@ describe("only a person at this computer's own terminal turns it on", () => {
     expect(await initLocalModeForPerson(store, PERSON, { owner: "sam", fence: () => false, now: NOW })).toEqual({ ok: false, reason: "no-fence" });
     expect(localRows(store)).toBe(0);
     expect(accounts(store)).toBe(0);
-  });
-});
-
-/**
- * l1 (stranger test, Linux): before the first start stopped on a computer missing the sandbox's programs, that start
- * made an account with a minted password, and every start after took the password road. startOverWords tells only
- * that install how to start over; every other install (a password the person set or changed, anything filed, a second
- * account, local mode ever, another creator, a folder that isn't Toolroll's own) gets nothing.
- */
-describe("l1: an install that got a password only because its first start couldn't go password-free", () => {
-  const SANDBOX_OK = { missing: [] as string[], problem: null };
-  /** As that start left it: made by a laptop start, one account whose minted password is in the saved login file. */
-  function passwordRoadInstall(folder = "toolroll"): { file: string; store: Store; state: string } {
-    dir ??= mkdtempSync(join(tmpdir(), "so-l1-"));
-    const state = join(dir, folder);
-    mkdirSync(state, { recursive: true });
-    const file = join(state, "orders.db");
-    const store = openStore(file, { createdBy: "laptop" });
-    open.push(store);
-    expect(store.bootstrapApproverIfNone("dev", hashToken("minted-secret"), NOW)).toEqual({ ok: true });
-    mkdirSync(join(state, ".toolroll-secrets"), { mode: 0o700 });
-    writeFileSync(join(state, ".toolroll-secrets", "up-login.txt"), "dev minted-secret\n", { mode: 0o600 });
-    chmodSync(join(state, ".toolroll-secrets"), 0o700);
-    return { file, store, state };
-  }
-
-  test("told how to start over (with the install line while programs are missing); nothing is changed by asking", () => {
-    const { file, store, state } = passwordRoadInstall();
-    expect(startOverWords(file, SANDBOX_OK)).toEqual([
-      "This Toolroll was set up with a password because it couldn't start without one then.",
-      "Nothing has been filed yet, so you can start over without a password: press Ctrl-C, then run",
-      `  mv -- '${state}' '${state}.old' && toolroll`,
-    ]);
-    expect(startOverWords(file, { missing: ["socat", "ripgrep"], problem: null })).toContain("  sudo apt install socat ripgrep (Fedora: sudo dnf install socat ripgrep)");
-    expect(accounts(store)).toBe(1);
-    expect(localRows(store)).toBe(0);
-    expect(existsSync(join(state, ".toolroll-secrets", "up-login.txt"))).toBe(true);
-    // Never auto-converted: the database is still not a candidate, and the terminal's initialisation refuses it.
-    expect(localModeCandidate(store)).toBe(false);
-  });
-
-  test("moved aside, the folder's place starts over: the next first start is password-free", async () => {
-    const { file, store, state } = passwordRoadInstall();
-    store.close();
-    open.splice(open.indexOf(store), 1);
-    const { renameSync } = await import("node:fs");
-    renameSync(state, `${state}.old`);
-    mkdirSync(state);
-    expect(await easyStartInitLocalMode(file, PERSON, { fence: () => true, owner: "dev", now: NOW, probe: async () => "refused" })).toBe(true);
-    expect(localModeRead(file)).toBe("on");
-  });
-
-  test.each([
-    ["the person set or changed the password (the saved login no longer opens it)", (one: ReturnType<typeof passwordRoadInstall>) => { one.store.handle.prepare("UPDATE approver SET credential_hash = ?, generation = 2").run(hashToken("their-own")); }],
-    ["no saved login", (one: ReturnType<typeof passwordRoadInstall>) => { rmSync(join(one.state, ".toolroll-secrets", "up-login.txt")); }],
-    ["something filed", (one: ReturnType<typeof passwordRoadInstall>) => { one.store.handle.prepare("INSERT INTO task_ref (backend, external_id) VALUES ('built-in', 't1')").run(); }],
-    ["a second account (a viewer)", (one: ReturnType<typeof passwordRoadInstall>) => { one.store.handle.prepare("INSERT INTO approver (name, credential_hash, added_at, role, generation) VALUES ('robin', 'x', ?, 'viewer', 1)").run(NOW.toISOString()); }],
-    ["its one account revoked", (one: ReturnType<typeof passwordRoadInstall>) => { one.store.handle.prepare("UPDATE approver SET revoked_at = ?, revoked_by = 'dev'").run(NOW.toISOString()); }],
-    ["local mode recorded (on or off)", (one: ReturnType<typeof passwordRoadInstall>) => { one.store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, 'dev', 2, 0, ?, ?)").run(NOW.toISOString(), NOW.toISOString()); }],
-  ])("never told for an install where %s", (_label, change) => {
-    const one = passwordRoadInstall();
-    change(one);
-    expect(startOverWords(one.file, SANDBOX_OK)).toBeNull();
-  });
-
-  test("never for a database another command made, a folder that isn't Toolroll's own, or a computer that still can't sandbox", () => {
-    dir ??= mkdtempSync(join(tmpdir(), "so-l1-"));
-    const state = join(dir, "toolroll");
-    mkdirSync(state, { recursive: true });
-    const plain = openStore(join(state, "orders.db"));
-    open.push(plain);
-    plain.bootstrapApproverIfNone("dev", hashToken("minted-secret"), NOW);
-    mkdirSync(join(state, ".toolroll-secrets"), { mode: 0o700 });
-    writeFileSync(join(state, ".toolroll-secrets", "up-login.txt"), "dev minted-secret\n", { mode: 0o600 });
-    expect(startOverWords(join(state, "orders.db"), SANDBOX_OK)).toBeNull();
-    const elsewhere = passwordRoadInstall("Documents");
-    expect(startOverWords(elsewhere.file, SANDBOX_OK)).toBeNull();
-    const stuck = passwordRoadInstall("standing-orders");
-    expect(startOverWords(stuck.file, SANDBOX_OK)).not.toBeNull();
-    expect(startOverWords(stuck.file, { missing: [], problem: "bubblewrap can't start a sandbox here" })).toBeNull();
   });
 });

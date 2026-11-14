@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli.js";
-import { easyStartApplies, easyStartArgs, runEasyStart, spawnOwnedUp, type EasyStartSeams, type OwnedUp } from "./easy-start.js";
+import { easyStartApplies, easyStartArgs, runEasyStart, spawnOwnedUp, START_OVER_POINTER, type EasyStartSeams, type OwnedUp } from "./easy-start.js";
 import type { AttachProof } from "./console-instance.js";
 import type { TuiExit, TuiSession } from "./tui-contract.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -45,7 +45,8 @@ type Script = {
   /** l1: the Linux sandbox programs this computer lacks, and why it can't sandbox (default: none, it can). */
   missing?: string[];
   problem?: string | null;
-  startOver?: string[] | null;
+  /** l1: the database was made by a laptop start and never had local mode. */
+  byLaptop?: boolean;
   savedLogin?: string | null;
 };
 function scripted(script: Script = {}) {
@@ -63,7 +64,7 @@ function scripted(script: Script = {}) {
     localMode: () => (local.length > 1 ? local.shift()! : local[0]!),
     initLocal: async () => { inits.push("init"); return script.init ?? true; },
     sandbox: async () => ({ missing: script.missing ?? [], problem: script.problem ?? null }),
-    startOver: async () => script.startOver ?? null,
+    passwordByLaptopStart: () => script.byLaptop ?? false,
     savedLogin: () => script.savedLogin ?? null,
     serviceInstalled: () => script.service ?? false,
     startService: async () => { calls.push("service"); return LIVE; },
@@ -353,18 +354,43 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
     expect(running.calls).toEqual(["browser http://127.0.0.1:4999"]);
   });
 
-  test("an install that got a password that way: says how to start over before today's road; never with a console running or a service", async () => {
-    const words = ["This Toolroll was set up with a password because it couldn't start without one then.", "  mv -- '/x/toolroll' '/x/toolroll.old' && toolroll"];
-    const cold = scripted({ proofs: [NONE], local: ["off"], startOver: words });
+  test("a password install a laptop start made: one line pointing at the guide's steps to start over, then today's road", async () => {
+    const cold = scripted({ proofs: [NONE], local: ["off"], byLaptop: true });
     expect(await runEasyStart("start", bare, cold.seams)).toBe(0);
-    expect(cold.lines).toEqual(words);
+    expect(cold.lines).toEqual([START_OVER_POINTER]);
     expect(cold.calls).toEqual(["foreground"]);
-    const running = scripted({ proofs: [LIVE], local: ["off"], startOver: words });
-    await runEasyStart("start", bare, running.seams);
-    expect(running.lines.join("\n")).not.toContain("start over");
-    const service = scripted({ proofs: [NONE], local: ["off"], startOver: words, service: true });
-    await runEasyStart("start", bare, service.seams);
-    expect(service.lines).toEqual([]);
+    const running = scripted({ proofs: [LIVE], local: ["off"], byLaptop: true });
+    expect(await runEasyStart("start", bare, running.seams)).toBe(0);
+    expect(running.lines[0]).toBe(START_OVER_POINTER);
+    // A password install made any other way (a plain `up`): nothing about starting over.
+    const plain = scripted({ proofs: [NONE], local: ["off"], byLaptop: false });
+    await runEasyStart("start", bare, plain.seams);
+    expect(plain.lines).toEqual([]);
+  });
+
+  test("the real check reads only the database's two facts: laptop-made with no local mode, never a saved login", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdirSync } = await import("node:fs");
+    const { openStore } = await import("./store.js");
+    const { hashToken } = await import("./scope.js");
+    const { defaultEasyStartSeams } = await import("./easy-start.js");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-easy-l1-pointer-")));
+    const make = (name: string, laptop: boolean, local = false): string => {
+      mkdirSync(join(dir, name, ".toolroll-secrets"), { recursive: true, mode: 0o700 });
+      const file = join(dir, name, "orders.db");
+      const store = openStore(file, laptop ? { createdBy: "laptop" } : {});
+      store.bootstrapApproverIfNone("dev", hashToken("minted"), new Date());
+      if (local) store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, 'dev', 2, 0, ?, ?)").run("2026-11-13T00:00:00.000Z", "2026-11-13T00:00:00.000Z");
+      store.close();
+      // The saved login is a FIFO: any read of it would block this test for good.
+      execFileSync("mkfifo", [join(dir, name, ".toolroll-secrets", "up-login.txt")]);
+      return file;
+    };
+    const check = (file: string) => defaultEasyStartSeams({ databaseFile: file, write: () => {}, build: "x", admit: async () => 0 }).passwordByLaptopStart();
+    expect(check(make("laptop", true))).toBe(true);
+    expect(check(make("plain-up", false))).toBe(false);
+    expect(check(make("was-local", true, true))).toBe(false);
+    expect(check(join(dir, "none", "orders.db"))).toBe(false);
   });
 
   test("a new install that still can't go password-free (no sandbox for another reason): why, and where its password is", async () => {
