@@ -574,20 +574,17 @@ describe("the operations console", () => {
     );
 
     const cookie = await login();
-    // The bare list retired to Tasks; the ranked review list stays beside a result (a result keeps /review?result=…).
+    // The bare list retired to Tasks; a result lives on its task page (one task view, task-link.ts).
     const bareReview = await fetch(url("/review"), { headers: { cookie }, redirect: "manual" });
     expect(bareReview.status).toBe(301);
     expect(bareReview.headers.get("location")).toBe("/tasks?view=ready");
-    const queue = await (await fetch(url("/review?result=t-pr2"), { headers: { cookie } })).text();
-    // Review priority puts the OBSERVED failure first — it needs a person —
-    // even though the quiet PR finished later; the quiet one is not hidden.
-    const list = /<ol class="cockpit-queue-list">(.*?)<\/ol>/s.exec(queue)?.[1] ?? "";
-    expect(list.indexOf("PR #102")).toBeLessThan(list.indexOf("PR #101"));
-    expect(list.indexOf("PR #102")).toBeGreaterThanOrEqual(0);
-    expect(list).toContain("CI is failing");
-    // The failing result, selected by its link: its publication card says
+    const moved = await fetch(url("/review?result=t-pr2"), { headers: { cookie }, redirect: "manual" });
+    expect(moved.status).toBe(303);
+    expect(moved.headers.get("location")).toBe("/t/t-pr2?tab=result");
+    const queue = await (await fetch(url("/t/t-pr2?tab=result"), { headers: { cookie } })).text();
+    // The failing result, opened by its link: its publication card says
     // exactly what the watcher saw, and offers the repair draft.
-    expect(queue).toContain('data-review-task="t-pr2"');
+    expect(queue).toContain(`data-result-run="${run2}"`);
     expect(queue).toContain("CI failing at the last check");
     expect(queue).toContain('data-ci-observed="failing"');
     expect(queue).toContain(`action="/r/${run2}/draft-repair"`);
@@ -598,8 +595,8 @@ describe("the operations console", () => {
     expect(queue).not.toMatch(/<(?:button|a)\b[^>]*>[^<]*merge/i);
     expect(queue).not.toMatch(/action="[^"]*merge/i);
     // The quiet PR, selected by its stable link, reads the observed green.
-    const quiet = await (await fetch(url("/review?result=t-pr1"), { headers: { cookie } })).text();
-    expect(quiet).toContain('data-review-task="t-pr1"');
+    const quiet = await (await fetch(url("/t/t-pr1?tab=result"), { headers: { cookie } })).text();
+    expect(quiet).toContain(`data-result-run="${run1}"`);
     expect(quiet).toContain("CI passing, observed");
     expect(quiet).not.toContain('data-next-action="publication"');
     expect(quiet).not.toContain("draft-repair");

@@ -68,6 +68,7 @@ import type { ServerRuntime } from './runtime.js';
 import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
 import { refuse, regionScript, relativeAge as relativeAgeOf, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
+import { taskLinkOf } from "../task-link.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
 import { githubIdentityOf,homePage,startBuilderHtml } from "./render-pages.js";
@@ -378,7 +379,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const versionOf = (id: string): string => family !== null && id !== family.current.id ? `version=${encodeURIComponent(id)}&` : "";
     const run = store.getRun(runId);
     const open = live || run === null ? null
-      : run.finishedAt !== null && (run.role === "builder" || run.role === "scout") ? { label: run.role === "scout" ? "Report" : "Result", href: `${taskHref(root)}?${versionOf(taskId)}tab=result&run=${runId}` }
+      : run.finishedAt !== null && (run.role === "builder" || run.role === "scout") ? { label: run.role === "scout" ? "Report" : "Result", href: taskLinkOf({ task: root, revision: family !== null && taskId !== family.current.id ? taskId : null, run: runId }) }
       : run.role === "planner" ? { label: "Plan", href: `${taskHref(root)}?${versionOf(taskId)}tab=plan` }
       : { label: "Record", href: `/r/${runId}?record=1` };
     let task: BrowserAgentDetail["task"] = null;
@@ -388,7 +389,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         const words = assignmentTaskStatusOf(assignment);
         const wants = words.primaryAction?.href ?? "";
         // A result to review is on the Result tab; everything else the task page heads with (the approval, a retry…).
-        const href = /^\/review\?result=|[?&]result=/.test(wants) ? `${taskHref(root)}?tab=result` : taskHref(root);
+        const href = /^\/review\?result=|[?&]result=|^\/t\/[^?#]+\?(?:[^#]*&)?tab=result\b/.test(wants) ? taskLinkOf({ task: root, result: true }) : taskHref(root);
         task = { headline: words.headline, sentence: words.sentence, tone: words.tone, action: { label: words.primaryAction?.label ?? "Open task", href } };
       }
     } catch { task = null; }

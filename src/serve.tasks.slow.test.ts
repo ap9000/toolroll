@@ -1523,12 +1523,12 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(now.work).toEqual(regions);
     expect(now.scripted).toBeUndefined();
 
-    // The same task showing an earlier attempt's result: reviewing it is the app's too, so the whole page is work,
-    // nothing of the script ships, and the page opens in place.
+    // The same task showing an earlier attempt's result: that result is the page (one-workspace S1 review: nothing of
+    // the live build rides on it), reviewing it is the app's work, nothing of the script ships, and it opens in place.
     const html = await (await fetch(url(`/t/t-mixed?run=${failed}`), { headers: { cookie } })).text();
     const loaded = workspaceOf(html);
     expect(html).toContain('class="task-result-tab"');
-    expect(loaded.work).toEqual([...regions, { kind: "result" }]);
+    expect(loaded.work).toEqual([{ kind: "result" }]);
     expect(loaded.inPlace).toBe(true);
     expect(loaded.scripted).toBeUndefined();
     expect(html).not.toContain(reviewMark);
@@ -1553,6 +1553,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
   test("a result on a page that asks for a password keeps its script string: no work, never in place", async () => {
     const ref = seed("t-sealed", "a result and an unsigned change");
     const failed = finished("t-sealed", ref, "failed", null);
+    // The task failed: this result is its current one (an earlier one would be its own page, with no ceremony).
+    store.setTaskState("t-sealed", "failed", T0);
     // The scope is rewritten after the build: the approval no longer binds it, so the page grows its password form.
     const signed = store.getScope("t-sealed");
     if (signed === null) throw new Error("no scope");
@@ -1572,6 +1574,55 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(read.sensitive).toBe(true);
     expect(read.work).toBeUndefined();
     expect(read.inPlace).toBe(false);
+    // One task view (approval criterion 6): the old result address leads to this same top-level document, never framed.
+    const moved = await fetch(url(`/review?result=t-sealed&run=${failed}`), { headers: { cookie }, redirect: "manual" });
+    expect(moved.headers.get("location")).toBe(`/t/t-sealed?tab=result&run=${failed}`);
+    const landed = await fetch(url(`/t/t-sealed?tab=result&run=${failed}`), { headers: { cookie } });
+    expect(landed.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(workspaceOf(await landed.text()).sensitive).toBe(true);
+  });
+
+  const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  test("an earlier result's page acts on nothing current: no Stop, note, approval, retry or completion of the live run, and a way to the current work", async () => {
+    const ref = seed("t-moved-on", "a failed build, then a live retry");
+    const failed = finished("t-moved-on", ref, "failed", null);
+    const running = live("t-moved-on", ref);
+    await boot({ localRunner: "night-shift-1" });
+    const cookie = await login();
+    // The live task page itself does carry the live run's controls (so the absence below means something).
+    const current = await (await fetch(url("/t/t-moved-on"), { headers: { cookie } })).text();
+    expect(current).toContain(`name="run" value="${running}"`);
+    for (const path of [`/t/t-moved-on?tab=result&run=${failed}`, `/r/${failed}`]) {
+      const response = await fetch(url(path), { headers: { cookie } });
+      expect(response.status, path).toBe(200);
+      const html = await response.text();
+      const body = renderedHtmlOf(html);
+      // Every form on the page posts for the result shown, never for the live run or the task's current work.
+      const forms = [...body.matchAll(/<form\b[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)];
+      for (const [, action, inner] of forms) {
+        expect(action, path).not.toMatch(/\/(?:stop|pause|resume|steer|approve|requeue|complete|accept-proof|cancel|hold|archive|recheck-stopped)$/);
+        for (const named of inner!.matchAll(/name="run" value="([0-9]+)"/g)) expect(Number(named[1]), `${path} ${action}`).toBe(failed);
+        expect(action, path).not.toContain(`/r/${running}/`);
+      }
+      expect(body).not.toContain(`name="run" value="${running}"`);
+      expect(body).toContain('data-open-current');
+      expect(body).toContain('href="/t/t-moved-on" data-open-current');
+      const view = workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView;
+      expect(view.historical).toMatchObject({ href: "/t/t-moved-on" });
+      expect(view.result?.selected.build).toBe(failed);
+      expect([view.stop, view.pause, view.steering, view.approve, view.retry, view.rebuild, view.recheckStopped, view.runChecks, view.status, view.cancel].every(one => one == null)).toBe(true);
+      expect(view.lead).toEqual([]);
+      expect(view.more?.every(one => one.kind === "copy")).toBe(true);
+      expect(workspaceOf(html).conversation ?? null).toBeNull();
+      // Without script it says the same as the app: Failed and what went wrong, never the saved receipt's heading.
+      const failure = view.result!.selected.failure!;
+      expect(failure.line.length).toBeGreaterThan(0);
+      const head = /<header class="result-head" data-result-failed>[\s\S]*?<\/header>/.exec(body)?.[0] ?? "";
+      expect(head).toContain(">Failed</h2>");
+      expect(head).toContain(escapeHtml(failure.line));
+      if (failure.evidence !== null) expect(head).toContain(escapeHtml(failure.evidence));
+      expect(body).not.toContain("Changes saved");
+    }
   });
 
   test("sensitive composition: a password ceremony beside a live attempt — no poller, a static panel, link-only decisions", async () => {
@@ -1761,7 +1812,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(view.retry).toEqual({ action: "/t/t-broke/requeue", note: suggestion, pins: { run: expect.any(Number), digest: expect.stringMatching(/^[a-f0-9]{32}$/) } });
     // That build's page works: its result page, not Not found, and /r/<id> opens it.
     expect((await fetch(url(`/review?result=t-broke&run=${failedRun}`), { headers: { cookie } })).status).toBe(200);
-    expect((await fetch(url(`/r/${failedRun}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/review?result=t-broke&run=${failedRun}`);
+    expect((await fetch(url(`/r/${failedRun}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/t/t-broke?tab=result&run=${failedRun}`);
     // The Tasks list says the same, in vermilion's problem line.
     const rows = (workspaceOf(await (await fetch(url("/tasks"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
     expect(rows.find(row => row.id === "t-broke")?.detail).toBe(said);

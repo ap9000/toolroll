@@ -2,6 +2,7 @@
 import type { TerminalHost } from "../live-terminal.js";
 import { html, htmlString, isHtml, type Html } from "../html.js";
 import { chatResultHref as sharedResultHref } from "../chat-controls.js";
+import { taskLinkOf } from "../task-link.js";
 import { type CliHttpOptions,type RunOperateAs } from "../cli-http.js";
 import { type CodingWorkspace } from "../coding-workspace.js";
 import { hasForbiddenControls } from "../decision.js";
@@ -434,15 +435,17 @@ export function chatReturnWithSaid(back: string, said: string): string {
 
 export const chatReturnWithLatest = (back: string): string => `${back}#latest`;
 
-/** The one result page's address: the task and its run, never a project path
- * (the page finds the result's project itself and keeps the person's own). */
-export const reviewHref = (taskId: string, runId: number | null = null): string =>
-  `/review?result=${encodeURIComponent(taskId)}${runId === null ? "" : `&run=${runId}`}`;
+/** A result's one address (task-link.ts): its task page's Result section, at the run when one is named, never a
+ * project path (the page finds the result's project itself and keeps the person's own). */
+export const reviewHref = (taskId: string, runId: number | null = null): string => taskLinkOf({ task: taskId, run: runId, result: true });
 
-/** The chat's result detail (package 3): the same panel the run page
- * and the cockpit render, opened beside the conversation when the screen
- * has room and as a dedicated view with Back to chat when it does not. */
+/** A result's address from a chat surface: the same one result view (task-link.ts). */
 export const chatResultHref = (taskId: string, runId: number, tab: ResultTab = "summary"): string => sharedResultHref(taskId, runId, tab);
+
+/** The chat's own result detail (package 3), kept for addresses already sent: the same panel, opened beside the
+ * conversation. Only that panel's own tabs and forms link here; every other surface links to the task page. */
+export const chatPanelResultHref = (taskId: string, runId: number, tab: ResultTab = "summary"): string =>
+  `/chat?task=${encodeURIComponent(taskId)}&result=${runId}${tab === "summary" ? "" : `&tab=${tab}`}`;
 
 // ---- request plumbing ------------------------------------------------------
 

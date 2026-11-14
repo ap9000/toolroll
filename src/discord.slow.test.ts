@@ -678,8 +678,9 @@ test("screenshots send verified original bytes, reject changes and retain result
   expect(sends().filter((c) => c.file)).toHaveLength(1);
   expect(sends().find((c) => c.file)?.file?.bytes).toEqual(bytes);
   expect(sentText()).toContain("Screenshot not sent");
+  // The result link is the one result view (task-link.ts): the task page at that exact run's checks.
   expect(JSON.stringify(sends()[0]?.body.components)).toContain(
-    `/chat?task=sample`,
+    `/t/sample?tab=result&run=${run}&section=checks`,
   );
 });
 test("progress edits one message; switching primary excludes pending notices but keeps replies", async () => {

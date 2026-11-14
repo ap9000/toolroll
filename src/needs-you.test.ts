@@ -214,7 +214,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
       expect(read.attention.some(hasInternalWords), id).toBe(false);
       expect(listed("needs-you").items.some(one => one.rootId === id), id).toBe(false);
     }
-    const result = workspaceOf(await page(`/review?result=spawn-gap&run=${runs["spawn-gap"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
+    const result = { selected: (workspaceOf(await page(`/t/spawn-gap?tab=result&run=${runs["spawn-gap"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected };
     const panel = result.selected!.panel!;
     expect(panel.status?.headline).toBe("Waiting");
     expect(panel.need?.confirm ?? null).toBeNull();
@@ -232,7 +232,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
       expect(status.sentence, id).not.toContain("Nothing from it is running");
       const task = workspaceOf(await page(`/t/${id}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
       expect(task.recheckStopped, id).toEqual({ action: `/t/${id}/recheck-stopped`, run: runs[id] });
-      const result = workspaceOf(await page(`/review?result=${id}&run=${runs[id]}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
+      const result = { selected: (workspaceOf(await page(`/t/${id}?tab=result&run=${runs[id]}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected };
       expect(result.selected!.panel!.need).toMatchObject({ label: "Check again", confirm: { action: `/t/${id}/recheck-stopped`, run: runs[id] } });
       expect(listed("needs-you").items.find(one => one.rootId === id)?.status.detail, id).toContain("can't prove");
     }
@@ -301,7 +301,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     const task = workspaceOf(await page(`/t/${id}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>;
     expect(task.status?.status.sentence).toBe(sentence);
     expect(task.recheckStopped).toBeNull();
-    const result = workspaceOf(await page(`/review?result=${id}&run=${run}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>;
+    const result = { selected: (workspaceOf(await page(`/t/${id}?tab=result&run=${run}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected };
     expect(result.selected!.panel!.status?.sentence).toBe(sentence);
     expect(result.selected!.panel!.need?.confirm).toBeFalsy();
     // Catch-up lists human actions; this wait must never become a request.
@@ -455,7 +455,7 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     expect(stale.primaryAction).toMatchObject({ code: "retry-task", label: "Retry" });
     // Build again is the task's status card itself, at the top of its page: no anchor into Task options.
     expect(assignmentActionHref(stale)).toBe("/t/unverified?version=unverified");
-    const result = (workspaceOf(await page(`/review?result=unverified&run=${runs["unverified"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "result" }>).selected!.panel!;
+    const result = ({ selected: (workspaceOf(await page(`/t/unverified?tab=result&run=${runs["unverified"]}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected }).selected!.panel!;
     expect(result.status?.headline).toBe("Needs you");
     expect(result.need).toMatchObject({ label: "Retry", href: null, rebuild: { action: "/t/unverified/requeue" } });
     expect(result.canRequest).toBe(true);

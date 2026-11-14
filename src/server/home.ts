@@ -15,6 +15,7 @@ import { workIndexPage, type WorkIndexItem, type WorkIndexPage } from "../work-i
 import type { WorkSummaryAccess } from "../work-summary.js";
 import { oneLineOf, relativeAge } from "./chrome.js";
 import { taskHref } from "./http.js";
+import { taskLinkOf } from "../task-link.js";
 import { NO_HOME_ASKS, releaseSheetHref, type HomeAskRow, type HomeAsks } from "./home-asks.js";
 
 /** How many waiting rows Home lists; each group says how many more open in Tasks. */
@@ -94,7 +95,7 @@ function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, can
   }
   const action = item.primaryAction;
   const href = action?.code === "open-result" && action.target.runId != null
-    ? `/review?result=${encodeURIComponent(action.target.taskId)}&run=${action.target.runId}` : browserWorkActionHref(item);
+    ? taskLinkOf({ task: action.target.taskId, run: action.target.runId }) : browserWorkActionHref(item);
   const decisionId = action?.target.decisionId ?? null;
   const decision = decisionId === null ? null : store.getDecision(decisionId);
   const open = decision !== null && decision.state === "open" && decision.supersededReason === null;
