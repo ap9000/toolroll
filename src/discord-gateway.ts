@@ -18,6 +18,12 @@ import { WebSocket } from "ws";
 export const DISCORD_INTENTS = (1 << 12) | (1 << 9) | (1 << 15);
 export const DISCORD_GATEWAY = "wss://gateway.discord.gg/";
 const QUERY = "?v=10&encoding=json";
+/** Where the bot's session-start budget is read before every IDENTIFY (the token goes only to discord.com). */
+export const DISCORD_GATEWAY_BOT = "https://discord.com/api/v10/gateway/bot";
+/** More unsent bytes than this means the peer stopped reading: close instead of queueing more. */
+const MAX_BUFFERED = 1024 * 1024;
+/** A connection that has stayed up this long resets the backoff and invalid-session counts. */
+const STABLE_MS = 60_000;
 
 /** Close codes after which reconnecting would only repeat the refusal. */
 const FATAL: Record<number, string> = {
@@ -28,8 +34,10 @@ const FATAL: Record<number, string> = {
   4013: "Discord refused the connection settings. Update Toolroll, then reconnect.",
   4014: "Discord refused the Message Content intent. Turn on Message Content Intent for the app in the Discord Developer Portal; Toolroll tries again every 10 minutes.",
 };
-/** Close codes after which the session is gone: reconnect with a fresh IDENTIFY, not a RESUME. */
-const FRESH = new Set([4003, 4007, 4009]);
+/** Close codes after which the session is gone: reconnect with a fresh IDENTIFY, not a RESUME (a normal closure,
+ * 1000/1001, ends the session too). */
+const FRESH = new Set([1000, 1001, 4003, 4007, 4009]);
+const DAILY_LIMIT = "Discord's daily connection limit for this bot is used up. Toolroll reconnects when it resets.";
 
 export class DiscordGatewayError extends Error {
   constructor(message: string, readonly code: number | null, readonly fatal: boolean) {
@@ -65,7 +73,15 @@ export type DiscordGatewayOptions = {
   helloTimeoutMs?: number;
   /** The wait before reconnecting after an INVALID_SESSION (Discord asks for a random 1–5 s). */
   invalidSessionDelay?: () => number;
+  /** The fraction of the heartbeat interval before the first heartbeat (Discord asks for a random one). */
+  jitter?: () => number;
+  /** How GET /gateway/bot is fetched (tests: a scripted response). */
+  fetcher?: typeof fetch;
 };
+
+type Budget = { kind: "ok" } | { kind: "wait"; ms: number; message: string } | { kind: "retry" } | { kind: "rejected" };
+const record = (v: unknown): Record<string, unknown> => (v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+const count = (v: unknown, max: number): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= max;
 
 const defaultBackoff = (attempt: number) => Math.min(30_000, 1000 * 2 ** Math.min(attempt, 5)) * (0.5 + Math.random() / 2);
 let lastIdentify = 0;
@@ -80,6 +96,9 @@ export class DiscordGateway extends EventEmitter {
   #resumeUrl: string | null = null;
   #acked = true;
   #attempt = 0;
+  #invalid = 0;
+  #hello = false;
+  #lastBeat = 0;
   #done = false;
   #timers = new Set<NodeJS.Timeout>();
   #beat: NodeJS.Timeout | null = null;
@@ -96,6 +115,8 @@ export class DiscordGateway extends EventEmitter {
       identifyGapMs: options.identifyGapMs ?? 5500,
       helloTimeoutMs: options.helloTimeoutMs ?? 20_000,
       invalidSessionDelay: options.invalidSessionDelay ?? (() => 1000 + Math.random() * 4000),
+      jitter: options.jitter ?? Math.random,
+      fetcher: options.fetcher ?? ((input, init) => fetch(input, init)),
     };
   }
 
@@ -161,6 +182,44 @@ export class DiscordGateway extends EventEmitter {
   #connect(): void {
     if (this.#done) return;
     const resume = this.#session !== null && this.#seq !== null && this.#resumeUrl !== null;
+    if (resume) return this.#open(true);
+    // A fresh session spends one of the bot's daily session starts: read the budget first, and never identify into
+    // an empty one (Discord resets the token of a bot that keeps going).
+    void this.#budget().then((budget) => {
+      if (this.#done || this.#socket) return;
+      if (budget.kind === "ok") return this.#open(false);
+      if (budget.kind === "rejected") return this.#fail(4004);
+      if (budget.kind === "retry") return this.#reconnect();
+      if (this.listenerCount("error") > 0) this.emit("error", new DiscordGatewayError(budget.message, null, false));
+      this.#later(() => this.#connect(), budget.ms);
+    });
+  }
+
+  async #budget(): Promise<Budget> {
+    let response: Response, body: unknown;
+    try {
+      response = await this.#options.fetcher(DISCORD_GATEWAY_BOT, {
+        headers: { Authorization: `Bot ${this.#token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+      });
+      body = await response.json().catch(() => null);
+    } catch {
+      return { kind: "retry" };
+    }
+    if (response.status === 401) return { kind: "rejected" };
+    if (response.status === 429) {
+      const seconds = record(body).retry_after;
+      return { kind: "wait", ms: count(seconds, 86_400) ? Math.ceil(seconds * 1000) + 1000 : 60_000, message: "Discord asked Toolroll to wait before connecting. It reconnects shortly." };
+    }
+    if (!response.ok) return { kind: "retry" };
+    const limit = record(record(body).session_start_limit);
+    const remaining = limit.remaining, resetAfter = limit.reset_after;
+    if (!count(remaining, 1e9) || !Number.isInteger(remaining) || !count(resetAfter, 7 * 86_400_000)) return { kind: "retry" };
+    return remaining > 0 ? { kind: "ok" } : { kind: "wait", ms: resetAfter + 1000, message: DAILY_LIMIT };
+  }
+
+  #open(resume: boolean): void {
     const socket = new WebSocket((resume ? this.#resumeUrl! : this.#options.url) + QUERY, {
       handshakeTimeout: 15_000,
       maxPayload: 32 * 1024 * 1024,
@@ -169,8 +228,9 @@ export class DiscordGateway extends EventEmitter {
     });
     this.#socket = socket;
     this.#acked = true;
+    this.#hello = false;
     this.#later(() => {
-      if (this.#socket === socket && this.#beat === null) this.#drop(4000);
+      if (this.#socket === socket && !this.#hello) this.#drop(4000);
     }, this.#options.helloTimeoutMs);
     socket.on("message", (data) => {
       if (this.#socket !== socket) return;
@@ -181,7 +241,12 @@ export class DiscordGateway extends EventEmitter {
         return this.#drop(4000);
       }
       if (packet === null || typeof packet !== "object" || typeof packet.op !== "number") return this.#drop(4000);
-      this.#packet(socket, packet, resume);
+      // Server data is untrusted: anything malformed (or a listener that throws) closes and reconnects, never throws.
+      try {
+        this.#packet(socket, packet, resume);
+      } catch {
+        if (this.#socket === socket) this.#drop(4000);
+      }
     });
     // A failed handshake or a dropped socket ends in "close"; the error itself carries nothing to keep.
     socket.on("error", () => {});
@@ -192,24 +257,34 @@ export class DiscordGateway extends EventEmitter {
   }
 
   #send(socket: WebSocket, payload: Record<string, unknown>): void {
-    if (this.#socket === socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+    if (this.#socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+    if (socket.bufferedAmount > MAX_BUFFERED) return this.#drop(4000);
+    socket.send(JSON.stringify(payload));
   }
 
   #packet(socket: WebSocket, packet: Packet, resume: boolean): void {
     switch (packet.op) {
       case 10: {
-        const interval = Number((packet.d as { heartbeat_interval?: unknown } | null)?.heartbeat_interval);
-        if (!Number.isFinite(interval) || interval < 250 || interval > 600_000) return this.#drop(4000);
-        if (this.#beat) clearInterval(this.#beat);
+        // One HELLO per connection; a second is a protocol violation.
+        if (this.#hello) return this.#drop(4000);
+        const interval = record(packet.d).heartbeat_interval;
+        if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 250 || interval > 600_000) return this.#drop(4000);
+        this.#hello = true;
         const beat = () => {
           if (this.#socket !== socket) return;
           // No ACK since the last beat: the connection is a zombie; close it and resume.
           if (!this.#acked) return this.#drop(4000);
           this.#acked = false;
+          this.#lastBeat = Date.now();
           this.#send(socket, { op: 1, d: this.#seq });
         };
-        this.#beat = setInterval(beat, interval);
-        this.#later(beat, interval * Math.random());
+        // The first beat after a random part of the interval, then every interval from there: each beat always gets a
+        // full interval for its ACK.
+        const jitter = this.#options.jitter();
+        this.#later(() => {
+          beat();
+          if (this.#socket === socket && this.#beat === null) this.#beat = setInterval(beat, interval);
+        }, interval * (jitter >= 0 && jitter < 1 ? jitter : 0.5));
         if (resume) this.#send(socket, { op: 6, d: { token: this.#token, session_id: this.#session, seq: this.#seq } });
         else this.#identify(socket);
         return;
@@ -218,13 +293,20 @@ export class DiscordGateway extends EventEmitter {
         this.#acked = true;
         return;
       case 1:
+        // Answer a heartbeat request at once, but at most once a second, however often it is asked.
+        if (Date.now() - this.#lastBeat < 1000) return;
+        this.#lastBeat = Date.now();
         this.#send(socket, { op: 1, d: this.#seq });
         return;
       case 7:
         return this.#drop(4000);
-      case 9:
+      case 9: {
         if (packet.d !== true) this.#forget();
-        return this.#drop(4000, this.#options.invalidSessionDelay());
+        // Repeated invalid sessions back off like any other reconnect (each fresh one spends a session start).
+        const delay = Math.max(this.#options.invalidSessionDelay(), this.#invalid > 0 ? this.#options.backoff(this.#invalid) : 0);
+        this.#invalid++;
+        return this.#drop(4000, delay);
+      }
       case 0:
         return this.#dispatch(packet);
       default:
@@ -251,11 +333,16 @@ export class DiscordGateway extends EventEmitter {
     if (typeof packet.s === "number" && Number.isSafeInteger(packet.s)) this.#seq = packet.s;
     if (typeof packet.t !== "string") return;
     if (packet.t === "READY") {
-      const d = (packet.d ?? {}) as { session_id?: unknown; resume_gateway_url?: unknown };
+      const d = record(packet.d);
       this.#session = typeof d.session_id === "string" && d.session_id.length <= 200 ? d.session_id : null;
       this.#resumeUrl = this.#options.trust(d.resume_gateway_url);
-      this.#attempt = 0;
-    } else if (packet.t === "RESUMED") this.#attempt = 0;
+    }
+    if (packet.t === "READY" || packet.t === "RESUMED")
+      // Only a connection that stays up resets the counts (the timer goes with the connection if it drops first).
+      this.#later(() => {
+        this.#attempt = 0;
+        this.#invalid = 0;
+      }, STABLE_MS);
     this.emit("raw", { op: 0, t: packet.t, s: packet.s, d: packet.d });
     if (this.#done) return;
     if (packet.t === "READY") {
@@ -292,18 +379,20 @@ export class DiscordGateway extends EventEmitter {
     this.#socket = null;
     this.#clear();
     if (this.#done) return;
-    const fatal = FATAL[code];
-    if (fatal) {
-      this.#done = true;
-      this.#token = "";
-      const error = new DiscordGatewayError(fatal, code, true);
-      if (this.#login) return this.#settle(error);
-      this.emit("shardDisconnect", code);
-      if (this.listenerCount("error") > 0) this.emit("error", error);
-      return;
-    }
+    if (FATAL[code]) return this.#fail(code);
     if (FRESH.has(code)) this.#forget();
     this.#reconnect();
+  }
+
+  /** Discord refused for good: no reconnect, the login (or the listener) told why. */
+  #fail(code: number): void {
+    this.#clear();
+    this.#done = true;
+    this.#token = "";
+    const error = new DiscordGatewayError(FATAL[code]!, code, true);
+    if (this.#login) return this.#settle(error);
+    this.emit("shardDisconnect", code);
+    if (this.listenerCount("error") > 0) this.emit("error", error);
   }
 
   #reconnect(delay?: number): void {

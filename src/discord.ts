@@ -110,7 +110,9 @@ export async function followDiscord(
       problem("Reconnecting to Discord…");
     });
     client.on("error", (error: unknown) => {
-      if (!fatal(error)) return problem("Discord connection failed. Check the bot token and reconnect.");
+      // A gateway notice (a daily limit, a wait Discord asked for) says what is happening; anything else is generic.
+      if (!fatal(error))
+        return problem(error instanceof Error && error.name === "DiscordGatewayError" ? error.message : "Discord connection failed. Check the bot token and reconnect.");
       refuse(error);
       stop();
     });
