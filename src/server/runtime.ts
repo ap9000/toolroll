@@ -89,6 +89,18 @@ export interface ServerRuntime {
   taskRooms: TaskRooms;
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; elsewhere?: boolean; }) => Who | null;
   liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
+  /** Settings → Projects → Projects folder: whether this console may change it, and setting its roots live (after the
+   * registry write). The folders themselves are `ceiling.roots`. */
+  projectRoots: {
+    settable: boolean;
+    set: (next: readonly string[]) => void;
+    /** The live roots as given (resolved or not). */
+    paths: () => readonly string[];
+    /** A repository added outside every projects folder, proved and admitted by its caller: in the live ceiling now. */
+    admit: (repo: string) => void;
+    /** Why this person can't change it, or null when they can (settings-groups-ui.ts ProjectsFolderFacts). */
+    blockedFor: (who: Who) => null | "ask" | "set-password" | "sign-in" | "elsewhere";
+  };
   /** Project identities without reading folders on the console's thread (project-identity.ts). */
   identities: ProjectIdentities;
   taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean, page?: TaskPageExtras) => void;

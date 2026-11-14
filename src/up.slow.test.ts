@@ -261,6 +261,19 @@ describe("toolroll up", () => {
     }
   });
 
+  test("a refused start with --project-root says the folder wasn't saved, and where to choose it (a service already runs)", async () => {
+    const squatter = createServer();
+    await new Promise<void>(ready => squatter.listen(PORT + 22, "127.0.0.1", ready));
+    try {
+      expect(await up(["--project-root", base], PORT + 22)).toBe(3);
+      expect(envelope()).toMatchObject({ ok: false, reason: "port-busy" });
+      expect(String(envelope()["message"] ?? JSON.stringify(envelope()))).toContain("The projects folder wasn't saved: choose it in Settings → Projects instead");
+      expect(existsSync(join(base, "repos.json"))).toBe(false);
+    } finally {
+      await new Promise<void>(done => squatter.close(() => done()));
+    }
+  });
+
   test("a directory outside git refuses with both roads", async () => {
     const code = await runOperate("up", ["--repo", base, "--port", String(PORT + 2), "--json"], line => lines.push(line), {
       databaseFile: db,

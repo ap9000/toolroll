@@ -468,7 +468,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   // Startup authority: the configured repos and roots as their identities say (startupCeiling). Missing or unresolved
   // paths remain restrictive. Native additions come only from the controller after its admission checks.
-  const { ceiling, unresolved: unresolvedRepos, defaultProject, configured, configuredPaths } = startupCeiling(
+  const { ceiling, unresolved: unresolvedRepos, defaultProject, configured, configuredPaths, setRoots, rootPaths } = startupCeiling(
     [...(options.repo === undefined ? [] : [options.repo]), ...(options.repos ?? [])],
     options.projectRoots ?? [],
     options.identities === undefined ? undefined : identities,
@@ -483,11 +483,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** Per-row visibility under the ceiling — the authorization question for reads. */
   /** The exact repositories this console serves now: `up`'s live admitted set when it supplies one, else startup's. */
   const exactRepos = (): readonly string[] => options.admittedRepos?.() ?? ceiling.repos;
+  /** Repositories this console added outside every projects folder (pages.ts projectsOpen, a password typed now):
+   * served at once, before the builder connects them; one deleted or removed here leaves with it. */
+  const consoleAdmitted = new Set<string>();
   const liveCeiling = () => {
-    const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? [])];
+    const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? []), ...stillAdmitted(consoleAdmitted, deletedRepos)];
     // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
     return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.strict };
   };
+  /** Settings → Projects → Projects folder (pages.ts): whether this console may change it, and changing it live. Only an
+   * `up` console with its machine registry: `up` reads the registry's folders at every start, so a saved folder
+   * persists across restarts; a bare `serve` takes its folders from its flags alone, and an unscoped one opens anything. */
+  const projectRoots = consoleProjectRoots({ options, store, unscopedMode, setRoots, rootPaths, admitted: consoleAdmitted });
   /** The explicit, currently proved project list. The callback is supplied
    * only by `up`, after it has independently checked git-ness and the root
    * ceiling; this server still filters every row through its own ceiling. */
@@ -2349,6 +2356,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get identities(): ServerRuntime['identities'] { return identities; },
     get keyEpoch(): ServerRuntime['keyEpoch'] { return keyEpoch; },
     get browserKeys(): ServerRuntime['browserKeys'] { return browserKeys; },
+    get projectRoots(): ServerRuntime['projectRoots'] { return projectRoots; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
@@ -2479,17 +2487,26 @@ function startupCeiling(repos: readonly string[], roots: readonly string[], iden
   configured: boolean;
   /** Every configured repo and root as given: what the background pass resolves, answered or not. */
   configuredPaths: readonly string[];
+  /** Settings → Projects → Projects folder: the console's roots from now on (each already proved by its caller, and
+   * saved to the machine registry first). The repos and whether this console is configured never change. */
+  setRoots: (next: readonly string[]) => void;
+  /** The roots as given (resolved or not). */
+  rootPaths: () => readonly string[];
 } {
   const configured = repos.length > 0 || roots.length > 0;
   const configuredPaths = [...repos, ...roots];
+  let rootPaths: readonly string[] = [...roots];
   if (identities === undefined) {
     const once = resolveCeiling(repos, roots);
+    let resolvedRoots = once.ceiling.roots;
     return {
-      ceiling: { ...once.ceiling, canon },
+      ceiling: { repos: once.ceiling.repos, get roots() { return resolvedRoots; }, canon },
       unresolved: () => once.unresolved,
-      defaultProject: () => once.ceiling.repos.length === 1 && once.ceiling.roots.length === 0 ? once.ceiling.repos[0] as string : null,
+      defaultProject: () => once.ceiling.repos.length === 1 && resolvedRoots.length === 0 ? once.ceiling.repos[0] as string : null,
       configured,
       configuredPaths,
+      setRoots: next => { resolvedRoots = resolveCeiling([], next).ceiling.roots; },
+      rootPaths: () => resolvedRoots,
     };
   }
   // Only resolved entries authorize: an unresolved configured path is in no list, so it matches nothing (not even its
@@ -2497,15 +2514,17 @@ function startupCeiling(repos: readonly string[], roots: readonly string[], iden
   const resolved = (paths: readonly string[]): string[] => [...new Set(paths.flatMap(path => { const real = identities.known(path); return typeof real === "string" ? [real] : []; }))];
   const ceiling = {
     get repos() { return resolved(repos); },
-    get roots() { return resolved(roots); },
+    get roots() { return resolved(rootPaths); },
     canon,
   };
   return {
     ceiling,
-    unresolved: () => [...repos, ...roots].filter(path => typeof identities.known(path) !== "string"),
-    defaultProject: () => repos.length === 1 && roots.length === 0 ? resolved(repos)[0] ?? null : null,
+    unresolved: () => [...repos, ...rootPaths].filter(path => typeof identities.known(path) !== "string"),
+    defaultProject: () => repos.length === 1 && rootPaths.length === 0 ? resolved(repos)[0] ?? null : null,
     configured,
     configuredPaths,
+    setRoots: next => { rootPaths = [...next]; },
+    rootPaths: () => rootPaths,
   };
 }
 
@@ -2526,4 +2545,32 @@ function consoleFolders<T>(options: ServeOptions, identities: ProjectIdentities,
     consoleGates.set(options, gate);
   }
   return inFolderScope(gate, work);
+}
+
+/** Settings → Projects → Projects folder, for one console (pages.ts): whether it may be changed here, and changing it
+ * live. Only an `up` console with its machine registry: `up` reads the registry's folders at every start, so a saved
+ * folder persists across restarts; a bare `serve` takes its folders from its flags alone, and an unscoped one opens
+ * anything. Choosing one widens what this server may open: an instance operator's act from a full browser session. A
+ * laptop's local owner has no such authority (local-owner.ts: nothing that widens a way in); with a password it signs in. */
+function consoleProjectRoots(deps: {
+  options: ServeOptions; store: Pick<import("./store.js").Store, "isDemo" | "isInstanceOperator" | "accountOf">; unscopedMode: boolean; setRoots: (next: readonly string[]) => void; rootPaths: () => readonly string[]; admitted: Set<string>;
+}): ServerRuntime["projectRoots"] {
+  const settable = deps.options.upConsole === true && deps.options.registryPath !== undefined && !deps.unscopedMode && !deps.store.isDemo();
+  return {
+    settable,
+    set: deps.setRoots,
+    paths: deps.rootPaths,
+    admit: repo => { deps.admitted.add(repo); },
+    blockedFor: who => {
+      if (!settable) return "elsewhere";
+      if (who.via !== "cookie" || !deps.store.isInstanceOperator(who.name)) return "ask";
+      if (who.authority !== "full") return deps.store.accountOf(who.name)?.passwordSet === true ? "sign-in" : "set-password";
+      return null;
+    },
+  };
+}
+
+/** The repositories a console added from outside every projects folder, less those deleted or removed here since. */
+function stillAdmitted(admitted: ReadonlySet<string>, gone: ReadonlySet<string>): string[] {
+  return [...admitted].filter(repo => !gone.has(repo));
 }

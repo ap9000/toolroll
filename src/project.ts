@@ -156,3 +156,63 @@ export function rowVisible(ceiling: ProjectCeiling, repo: string | null): boolea
 export function projectName(path: string): string {
   return basename(path);
 }
+
+/**
+ * A typed path with `~` spelled out as the home folder of the user Toolroll runs as: "~" and "~/…". A path naming
+ * another user's home ("~alex/…") is null: the server never guesses whose folder that is.
+ */
+export function expandHomePath(path: string, home: string): string | null {
+  if (path === "~") return home;
+  if (path.startsWith("~/")) return resolve(home, path.slice(2));
+  if (path.startsWith("~")) return null;
+  return path;
+}
+
+/** Folders the system owns: a projects folder is never one of these, nor inside one. */
+const SYSTEM_TREES = ["/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/dev", "/private", "/var", "/proc", "/sys", "/boot", "/run", "/lib", "/lib64", "/cores", "/Network"];
+/** Folders that hold everyone's folders: never a projects folder themselves (a folder inside one may be). */
+const SYSTEM_TOPS = ["/Applications", "/Volumes", "/Users", "/home", "/opt", "/mnt", "/media", "/srv", "/tmp", "/root", "/snap"];
+
+/**
+ * Why a folder can't be the projects folder (Settings → Projects), or null when it may be. `path` and `home` are real
+ * paths; `protectedDirs` are Toolroll's own settings and records folders (the database's folder, task checkouts,
+ * evidence, tool secrets). Choosing a projects folder widens what the server may open, so the folders a person would
+ * never mean are refused by name: the home folder itself and anything holding it, hidden folders and ~/Library, the
+ * system's folders, and anything holding or inside Toolroll's own state.
+ */
+export function projectsFolderRefusal(path: string, facts: { home: string; protectedDirs: readonly string[] }): string | null {
+  const inside = (one: string, root: string): boolean => one === root || one.startsWith(root === "/" ? "/" : `${root}/`);
+  const { home } = facts;
+  if (path === "/") return "the top of the disk can’t be the projects folder";
+  if (path === home) return "your home folder itself can’t be the projects folder. Choose a folder inside it, like ~/Developer";
+  if (inside(home, path)) return "that folder holds your home folder. Choose a folder inside your home folder";
+  for (const dir of facts.protectedDirs) {
+    if (inside(dir, path) || (dir !== home && inside(path, dir))) return "that folder holds Toolroll’s own settings and records";
+  }
+  if (inside(path, home)) {
+    const below = path.slice(home.length + 1).split("/");
+    if (below[0] === "Library") return "folders in ~/Library can’t be the projects folder";
+    if (below.some(one => one.startsWith("."))) return "hidden folders can’t be the projects folder";
+    return null;
+  }
+  if (SYSTEM_TOPS.includes(path) || SYSTEM_TREES.some(tree => inside(path, tree))) return "that’s a system folder";
+  return null;
+}
+
+/**
+ * Why a repository from outside every projects folder can't be added (the console's exact path, a password typed now),
+ * or null. `repo` is its real checkout root. The same folders as the projects folder are refused — the disk's top, the
+ * home folder and what holds it, ~/Library, the system's folders, Toolroll's own settings, records and task checkouts —
+ * except that a hidden folder in the home folder (a dotfiles repository) may be one.
+ */
+export function repositoryRefusal(repo: string, facts: { home: string; protectedDirs: readonly string[] }): string | null {
+  const inside = (one: string, root: string): boolean => one === root || one.startsWith(root === "/" ? "/" : `${root}/`);
+  const { home } = facts;
+  if (repo === "/" || inside(home, repo)) return "that repository holds your home folder, so it can't be added";
+  for (const dir of facts.protectedDirs) {
+    if (inside(dir, repo) || (dir !== home && inside(repo, dir))) return "that folder holds Toolroll’s own settings, records or task checkouts, so it can’t be added";
+  }
+  if (inside(repo, home)) return repo.slice(home.length + 1).split("/")[0] === "Library" ? "repositories in ~/Library can’t be added" : null;
+  if (SYSTEM_TOPS.includes(repo) || SYSTEM_TREES.some(tree => inside(repo, tree))) return "that’s a system folder, so it can’t be added";
+  return null;
+}

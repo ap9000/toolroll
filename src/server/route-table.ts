@@ -347,6 +347,9 @@ get("tasks", "term.state", "/term/state", TERM);
 get("tasks", "term.session", `^\\/term\\/${TERMINAL}$`, { ...TERM, sample: `/term/${"a".repeat(32)}` });
 get("tasks", "term.socket", `^\\/term\\/${TERMINAL}\\/socket$`, { ...TERM, sample: `/term/${"a".repeat(32)}/socket` });
 get("pages", "projects.browse", "/projects/browse", free);
+// The repository picker: folder names on the server's disk (the home folder, and any projects folder elsewhere), so an
+// approver's read from a browser; a GET that writes nothing.
+get("pages", "projects.pick", "/projects/pick", { ...free, callers: ["cookie"], project: "none", ...approver("Sign in as an approver to add projects.", "/projects") });
 get("pages", "projects.github", "/projects/github", { ...free, callers: ["cookie"], callerRefusal: { status: 403, type: "text/plain; charset=utf-8", body: "listing repositories feeds a browser session's act" },
   ...anyApprover("your login can watch — adding projects is an approver's act") });
 get("pages", "projects.page", "/projects", { limited: "unscoped", ...free });
@@ -642,7 +645,17 @@ post("pages", "projects.github-list", "/projects/github", { callers: ["cookie"],
 post("pages", "projects.select", "/projects/select", { project: "form-path", limited: "unscoped", viewer: true });
 post("pages", "projects.map-refresh", "^\\/projects\\/[^/]+\\/map\\/refresh$", { project: "form", sample: "/projects/payments-api/map/refresh", ...approver("An approver asks for a check of main.", "/projects") });
 post("pages", "projects.remove", "/projects/remove", { project: "form", ...operator("An instance operator removes projects.", "/settings/project") });
-post("pages", "projects.open", "/projects/open", { project: "form-path" });
+// The opener resolves and authorizes the path itself (off the console's thread: the ceiling, the account's projects, or
+// for a repository outside every projects folder the password typed now), so admission names no project: a folder the
+// picker already resolved must still reach that ceremony instead of being turned away as outside the ceiling.
+post("pages", "projects.open", "/projects/open", { project: "none" });
+// Settings → Projects → Projects folder: which folder this server may add projects from. Choosing one widens what the
+// server may open, so it is an instance operator's act from a full browser session, with their password typed now
+// (never the local owner, never a token); looking through the home folder to choose one is the same person's read.
+// Stopping using a folder only narrows: one click, projects already added stay.
+get("pages", "projects.folder", "/settings/projects-folder", { ...free, callers: ["cookie"], project: "none", ...operator("An instance operator chooses the projects folder.", "/settings/projects") });
+post("pages", "projects.folder-save", "/settings/projects-folder", { scope: "step-up", project: "none", ...operator("An instance operator chooses the projects folder.", "/settings/projects") });
+post("pages", "projects.folder-remove", "/settings/projects-folder/remove", { callers: ["cookie"], project: "none", ...operator("An instance operator chooses the projects folder.", "/settings/projects") });
 post("tasks", "tasks.add", "/tasks/add", { project: "form", limited: "collection", bodyCap: LARGE_FORM });
 // Build (fast-start.ts): a person's own browser session only. No token, chat, agent or webhook reaches it.
 post("tasks", "tasks.fast", "/tasks/fast", { callers: ["cookie"], project: "none", limited: "collection", ...approver("An approver starts builds.", "/tasks/new") });

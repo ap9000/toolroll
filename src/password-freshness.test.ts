@@ -974,6 +974,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/guards.ts#createSharedGuards@1": 2,
     "src/server/pages.ts#createPagesHandlers@1": 2,
     "src/server/pages.ts#createPagesHandlers@1>fleetRegister@24": 1,
+    "src/server/pages.ts#createPagesHandlers@1>projectsFolderSave@57": 1,
+    "src/server/pages.ts#createPagesHandlers@1>projectsOpen@23": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2": 2,
     "src/server/people-tokens.ts#createPeopleHandlers@2>sessionsSend@3": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>peopleProjects@4": 1,

@@ -913,7 +913,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
       body: new URLSearchParams({ csrf, repo: "ap9000/thing", root: "0" }),
       redirect: "manual",
     });
-    expect(await refused.text()).toContain("--project-root");
+    expect(await refused.text()).toContain("choose a projects folder");
   });
 
   test("the console picks up a newly connected project without restarting", async () => {
