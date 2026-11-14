@@ -75,7 +75,7 @@ describe("the bin's fast path", () => {
     const old = runBin(["--version"], { node: "22.12.0" });
     expect(old.status).toBe(2);
     expect(old.stdout).toBe("");
-    expect(old.stderr).toBe("Toolroll needs Node 22.13 or newer (this is 22.12.0) — it uses node:sqlite.\n");
+    expect(old.stderr).toMatch(/^Toolroll needs Node 22\.13 or newer \(this is 22\.12\.0\): it uses node:sqlite\.\nInstall it from https:\/\/nodejs\.org\/en\/download.*\n$/);
     expect(old.ours).toEqual(["bin.js"]);
 
     const bun = runBin(["--help"], { bun: "1.2.0" });

@@ -394,13 +394,13 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
   });
 
   test("a new install that still can't go password-free (no sandbox for another reason): why, and where its password is", async () => {
-    const { seams, lines } = scripted({ proofs: [NONE, LIVE], local: ["absent", "off"], init: false, problem: "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)", savedLogin: "/home/dev/.config/toolroll/.toolroll-secrets/up-login.txt" });
+    const { seams, lines } = scripted({ proofs: [NONE, LIVE], local: ["absent", "off"], init: false, problem: "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)", savedLogin: "/tmp/t-home/.config/toolroll/.toolroll-secrets/up-login.txt" });
     // The `up` it started runs until stopped (Ctrl-C): stopped here once the words are out.
     const spawn = seams.spawnUp;
     seams.spawnUp = args => { const child = spawn(args); setTimeout(() => child.stop(), 20); return child; };
     expect(await runEasyStart("start", bare, seams)).toBe(0);
     expect(lines).toContain("Toolroll can't start without a password here: bubblewrap can't start a sandbox here (unprivileged user namespaces may be off).");
-    expect(lines).toContain("Toolroll is on http://127.0.0.1:4999. Your password: run `cat -- '/home/dev/.config/toolroll/.toolroll-secrets/up-login.txt'`");
+    expect(lines).toContain("Toolroll is on http://127.0.0.1:4999. Your password: run `cat -- '/tmp/t-home/.config/toolroll/.toolroll-secrets/up-login.txt'`");
     expect(lines.join("\n")).not.toContain("Sign in with your password");
   });
 

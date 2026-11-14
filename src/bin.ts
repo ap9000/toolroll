@@ -11,7 +11,7 @@ const [major = 0, minor = 0] = versions.node.split(".").map(Number);
 if (versions.bun !== undefined) {
   process.stderr.write(
     "Toolroll runs on Node 22.13 or newer — Bun's runtime has no node:sqlite.\n" +
-      "Run it with Node: `bunx toolroll up` (no --bun) or `npx toolroll up`.\n",
+      "Run it with Node: `bunx toolroll` (no --bun) or `npx toolroll`.\n",
   );
   process.exit(2);
 }
