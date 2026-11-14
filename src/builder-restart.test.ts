@@ -37,6 +37,7 @@ const seams = (extra: Partial<LaptopSeams> = {}): LaptopSeams => ({
   probe: { exists: () => "absent", start: () => null }, buildAt: () => BUILD, ...extra,
 });
 
+// A fresh database runs every migration (openStore): a loaded CI runner has taken over the 10 s default here.
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "so-restart-")));
   file = join(dir, "orders.db");
@@ -53,7 +54,7 @@ beforeEach(() => {
   writeRunnerProcessRecord(runnerProcessFile(file, "laptop"), sealRunnerProcessRecord({ v: 1, runner: "laptop", host: "fixture-host", registeredAt: holder.runner.registeredAt, credential: credentialDigest(holder.credentialHash),
     processes: [{ pid: 4_200_001, role: "up", started: "2026-11-06T11:00:00.000Z" }] }, holder.credentialHash));
   recordBuilderWish(store, "running", "up", BUILD, NOW);
-});
+}, 30_000);
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const restart = (extra: Partial<LaptopSeams> = {}, at = NOW) => restartOwnBuilder(store, file, seams(extra), at);
