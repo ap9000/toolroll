@@ -1,0 +1,100 @@
+name: Wire budgets
+
+# What the browser receives today for Home, Tasks, a result page and Chat, on a seeded 10,000-task world
+# (test/perf/wire.wire.test.ts, docs/TESTING.md "Wire budgets"): bytes, rows, SQL statements and projection calls per
+# request, and what one live-room change costs. The job fails when a gated row goes over its committed ceiling
+# (test/perf/wire-ceilings.json); server time and memory are reported only. The job summary prints every row and, on a
+# pull request, the rows that changed against main's latest report and every ceiling the pull request raises.
+#
+# Which runs: pull requests that touch the server, the browser app, the work index or the store's reads, and every push
+# to main (main-push.yml calls this file, so main keeps a report to compare against). Advisory: it is not one of
+# REQUIRED_PR_CHECKS, and the release verdict leaves this job out by name and workflow (release.ts ADVISORY_PR_CHECKS).
+# No secrets: it reads only; the token reads main's report artifact.
+
+on:
+  pull_request:
+    paths:
+      - "src/server/**"
+      - "src/browser/**"
+      - "src/serve.ts"
+      - "src/browser-workspace.ts"
+      - "src/browser-shell.ts"
+      - "src/console-chrome.ts"
+      - "src/work-index.ts"
+      - "src/assignment.ts"
+      - "src/live-bus.ts"
+      - "src/workspace-revision.ts"
+      - "src/store.ts"
+      - "test/wire-world.ts"
+      - "test/perf/**"
+      - "scripts/wire-report.mjs"
+      - ".github/workflows/wire-budgets.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+
+# A newer push to a pull request cancels the run on its older head; never a release-* branch's run.
+concurrency:
+  group: wire-budgets-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  wire:
+    name: wire budgets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          # The newest patch release: a cached older one hid SQLite 3.54.1 (Node 22.23, 24.22) from the suite.
+          check-latest: true
+          cache: npm
+      - run: npm ci
+      - name: Wire budgets
+        timeout-minutes: 15
+        env:
+          WIRE_OUT: ${{ runner.temp }}/wire/wire-budgets.json
+        run: npm run test:perf:wire
+      # main's newest report (main-push.yml's run of this file), to name what changed and every raised ceiling.
+      - name: main's report
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          for id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow main-push.yml --branch main --event push --limit 10 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" --repo "$GITHUB_REPOSITORY" --name wire-budgets --dir "$RUNNER_TEMP/main-wire" 2>/dev/null; then
+              echo "main's report: run $id"; exit 0
+            fi
+          done
+          echo "::notice::no wire-budgets report from main yet; the summary shows this run alone"
+      - name: Summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/wire/wire-budgets.json" ]; then
+            node scripts/wire-report.mjs "$RUNNER_TEMP/wire/wire-budgets.json" "$RUNNER_TEMP/main-wire/wire-budgets.json" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The wire budgets wrote no report: see the step above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: wire-budgets
+          path: ${{ runner.temp }}/wire/wire-budgets.json
+          if-no-files-found: ignore
+          retention-days: 90
