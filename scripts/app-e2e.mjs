@@ -317,10 +317,10 @@ await journey("console", SCRIPTED, "A wrong password is refused, and a signed-ou
 });
 
 await journey("pages", SCRIPTED, "Every main page opens without an error, in the one workspace look, on desktop and on a phone", [], async () => {
-  const paths = ["/chat", "/", "/tasks", "/tasks?view=board", "/tasks?view=ready", "/tasks?view=order", "/tasks?scope=all", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
-    "/tasks?view=done", "/system", "/code", "/kits", "/settings/lead/subagents", "/fleet", "/people"];
-  // Retired pages (docs/plans/plain-toolroll.md P1.4) answer with a permanent redirect to their place on Home or Tasks.
-  const retired = { "/work": "/tasks", "/inbox": "/", "/next": "/", "/workbench": "/tasks?scope=all", "/board": "/tasks?view=board", "/queue": "/tasks?view=order", "/review": "/tasks?view=ready", "/done": "/tasks?view=done" };
+  const paths = ["/chat", "/", "/?view=needs-you", "/?view=board", "/?view=ready", "/?view=order", "/?scope=all", "/tasks/new", "/projects", "/flows", `/settings/knowledge?repo=${encodeURIComponent(repo)}`, "/settings", "/settings/models", "/settings/skills", `/settings/tools?repo=${encodeURIComponent(repo)}`, "/recipes",
+    "/?view=done", "/system", "/code", "/kits", "/settings/lead/subagents", "/fleet", "/people"];
+  // Retired pages (docs/plans/plain-toolroll.md P1.4, one-workspace S2a) answer with a permanent redirect to their place on Work.
+  const retired = { "/tasks": "/", "/work": "/", "/inbox": "/", "/next": "/", "/workbench": "/", "/board": "/?view=board", "/queue": "/?view=order", "/review": "/?view=ready", "/done": "/?view=done" };
   const broken = [];
   const phone = await signIn("sam", { width: 390, height: 844 }, "dark");
   for (const path of paths) {
@@ -346,7 +346,7 @@ await journey("pages", SCRIPTED, "Every main page opens without an error, in the
   }
   // An old link on the phone (a bookmark, an old push) lands on its place.
   await phone.goto(`${base}/next`);
-  // Home, or Chat while a first run has filed nothing yet (pages.ts homeRedirect).
+  // Work, or Chat while a first run has filed nothing yet (pages.ts homeRedirect).
   if (!["/", "/chat"].includes(new URL(phone.url()).pathname)) broken.push(`an old /next link landed on ${phone.url()}`);
   // Storage, on both: what the next sweep would free, and the folders kept and why.
   for (const on of [page, phone]) {
@@ -552,7 +552,9 @@ await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets t
 /**
  * Show advanced features (Settings → General): a new account's menus leave out advanced features (Spend, Flows, Agents and the rest). A journey
  * that uses one of their entry points turns "Show advanced features" on first, through the real switch, and checks that
- * the rail and the person's saved row followed. Already on (an earlier journey in this world): nothing to do.
+ * the page and the person's saved row followed: the rail is Work · Chat · Settings either way (one workspace S2a), so the
+ * page's own workspace says whether advanced entry points (Flows and Agents in Search) are shown. Already on (an earlier
+ * journey in this world): nothing to do.
  */
 async function showAdvanced(on, who = "alex") {
   const saved = () => rows(`SELECT advanced FROM view_preference WHERE account = '${who}'`)[0]?.advanced ?? null;
@@ -561,14 +563,16 @@ async function showAdvanced(on, who = "alex") {
   await on.goto(`${base}/settings/general?section=advanced`);
   const section = on.locator("#show-advanced");
   await section.waitFor({ timeout: 15_000 });
-  if (await on.locator('nav a[href="/flows"]:visible').count() !== 0) throw new Error("Flows is in the menu before Show advanced features is on");
+  const advancedShown = () => on.evaluate(() => { try { return JSON.parse(document.getElementById("standing-orders-workspace-data")?.textContent ?? "{}").advanced !== false; } catch { return null; } });
+  if (await advancedShown() !== false) throw new Error("advanced entry points are shown before Show advanced features is on");
+  if (await on.locator('.so-rail a[href="/flows"]').count() !== 0) throw new Error("Flows is on the rail");
   await Promise.all([on.waitForNavigation(), section.locator('button[type="submit"]', { hasText: "Turn on" }).click()]);
-  await until("the rail to show Flows", async () => await on.locator('nav a[href="/flows"]:visible').count() > 0, { timeoutMs: 15_000, everyMs: 250 });
+  await until("the page to show advanced entry points (Flows and Agents in Search)", async () => await advancedShown() === true, { timeoutMs: 15_000, everyMs: 250 });
   if (saved() !== 1) throw new Error(`Show advanced features wasn't saved for ${who}: ${JSON.stringify(rows("SELECT * FROM view_preference"))}`);
 }
 
 await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown cost show apart; a limit set on Settings → Spend is listed on the Spend page, and the month downloads as CSV", [], async () => {
-  // Spend and the Tasks usage line are advanced features: on for this person first, through Settings → Advanced.
+  // Spend and Work's usage line are advanced features: on for this person first, through Settings → Advanced.
   await showAdvanced(page);
   await page.goto(`${base}/spend`);
   await page.locator('.spend-sum [data-amount-kind="api"]').waitFor({ timeout: 15_000 });
@@ -594,9 +598,9 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   await page.setViewportSize({ width: 1440, height: 900 });
   const csv = await page.request.get(`${base}/spend?format=csv`);
   if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
-  // Tasks folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
+  // Work folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
   // where the limit has its meter and the plan's windows are tiles as Claude said them.
-  await page.goto(`${base}/tasks`);
+  await page.goto(`${base}/?view=all`);
   const usage = page.locator("[data-usage-summary]");
   await usage.waitFor({ timeout: 15_000 });
   if (!/\d+%/.test(await usage.innerText())) throw new Error(`the usage line: ${await usage.innerText()}`);
@@ -632,7 +636,7 @@ await journey("console", SCRIPTED, "Archive old tasks: Needs you → Archive old
   const archivedNow = () => rows("SELECT r.external_id id FROM task_archive a JOIN task_ref r ON r.id = a.task_ref ORDER BY id").map(one => one.id);
   // A task's row in the Tasks list (the whole row is its link).
   const taskRow = id => page.locator(`.k-row:has(a.k-row-t[href="/t/${id}"])`);
-  await page.goto(`${base}/tasks?view=needs-you`);
+  await page.goto(`${base}/?view=needs-you`);
   await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
   // Archive old tasks is in the list's task tools menu.
   await page.locator('button[aria-label="More task tools"]:visible').first().click();
@@ -646,15 +650,15 @@ await journey("console", SCRIPTED, "Archive old tasks: Needs you → Archive old
   const password = preview.locator('input[name="password"]');
   if (await password.count() > 0) await password.fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), preview.locator("button.kit-save").click()]);
-  if (!page.url().endsWith("/tasks?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
+  if (!page.url().endsWith("/?view=archived")) throw new Error(`after putting away: ${page.url()} — ${(await page.locator("body").innerText()).slice(0, 300)}`);
   if (JSON.stringify(archivedNow()) !== JSON.stringify(["tidy-old-copy"])) throw new Error(`put away: ${JSON.stringify(archivedNow())}`);
   await taskRow("tidy-old-copy").first().waitFor({ timeout: 15_000 });
   if (!/Archived by alex: Finished/.test(await page.locator("body").innerText())) throw new Error("Archived doesn't say who put it away and why");
   await shot("put-away-archived");
-  await page.goto(`${base}/tasks?view=needs-you`);
-  await page.locator("[data-task-list], .k-empty").first().waitFor({ timeout: 15_000 });
+  await page.goto(`${base}/?view=needs-you`);
+  await page.locator("[data-work-list], .so-work-list, .k-empty").first().waitFor({ timeout: 15_000 });
   if (await taskRow("tidy-old-copy").count() !== 0) throw new Error("a put-away task is still in Needs you");
-  await page.goto(`${base}/tasks?view=archived`);
+  await page.goto(`${base}/?view=archived`);
   await Promise.all([page.waitForNavigation(), taskRow("tidy-old-copy").locator('[data-tidy-act="restore"] button').first().click()]);
   if (archivedNow().length !== 0) throw new Error(`Restore left: ${JSON.stringify(archivedNow())}`);
   // The same preview on a phone.
@@ -689,17 +693,17 @@ async function plannerDrafted(id, what, ready = ref => ref?.plan === "drafted") 
 }
 /** Approve a task's scope on its page: the plan's approval box asks for the password only when the rules need it (a
  * popover), one click when a password is remembered on this computer; either way the server proves alex again. */
-/** Home never asks for a password: a plan that needs one shows one link, and the link loads the task page as a document
- * with no live connection. */
+/** Work never asks for a password: a plan that needs one shows one link in the panel, and the link loads the task page as
+ * a document with no live connection. */
 async function reviewFromHome(id) {
   await page.goto(`${base}/`);
-  const row = page.locator(`[data-home] [data-row="${id}"]`).first();
+  const row = page.locator(`[data-work] [data-row="${id}"] .k-row-t`).first();
   await row.waitFor({ timeout: 15_000 });
   await row.click();
-  const review = page.locator("[data-home-review][data-full-load]");
+  const review = page.locator("[data-work-panel] [data-home-review][data-full-load]");
   await review.waitFor({ timeout: 15_000 });
-  if (await page.locator("[data-home-approve]").count() > 0) throw new Error("Home offers Approve for a plan that needs a password");
-  if (await page.locator('[data-home] input[type="password"]').count() > 0) throw new Error("Home asks for a password");
+  if (await page.locator("[data-home-approve]").count() > 0) throw new Error("Work offers Approve for a plan that needs a password");
+  if (await page.locator('[data-work] input[type="password"]').count() > 0) throw new Error("Work asks for a password");
   await page.evaluate(() => { window.__sameDocument = true; });
   const streams = [];
   const heard = request => { if (request.resourceType() === "eventsource" || new URL(request.url()).pathname === "/live") streams.push(request.url()); };
@@ -1031,11 +1035,13 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   }, { timeoutMs: 180_000, everyMs: 250 });
   // A task with a running build opens in place from the Tasks list: the app runs that page's live progress itself
   // (docs/plans/task-page-in-app.md), so no page loads, and Stop is there as on a loaded page.
-  await page.goto(`${base}/tasks?scope=all`);
-  const row = page.locator(`a[href="/t/${id}"]:visible`).first();
+  await page.goto(`${base}/?view=all`);
+  // Work's row selects it; the panel's Open full page opens the task page in place.
+  const row = page.locator(`[data-row="${id}"] .k-row-t:visible`).first();
   await row.waitFor({ timeout: 15_000 });
   await page.evaluate(() => { window.__sameDocument = true; });
   await row.click();
+  await page.locator("[data-work-panel] [data-work-open]").first().click();
   const stop = page.locator("form.task-stop-form button");
   await stop.waitFor({ timeout: 15_000 });
   if (new URL(page.url()).pathname !== `/t/${id}` || !(await page.evaluate(() => window.__sameDocument === true).catch(() => false))) throw new Error(`a task with a running build loaded a page: ${page.url()}`);
@@ -1074,17 +1080,17 @@ async function turnLeadChatOn() {
   await kitSave(page, page.locator("#lead-config-form"), { password: w.passwords.alex });
   await page.goto(`${base}/chat`);
   await page.waitForSelector("[data-workspace-composer] textarea", { timeout: 15_000 });
-  // The thread is the page: Home is a page of its own, never inside the conversation, and a desk opens ready to type.
-  if (await page.locator("[data-workspace-chat] [data-home]").count() !== 0) throw new Error("Home is inside the conversation");
+  // The thread is the page: Work is a page of its own, never inside the conversation, and a desk opens ready to type.
+  if (await page.locator("[data-workspace-chat] [data-work]").count() !== 0) throw new Error("Work is inside the conversation");
   if (!(await until("the composer to be ready to type on a desk", async () => page.evaluate(() => document.activeElement?.id === "lead-message"), { timeoutMs: 5_000, everyMs: 250 }).catch(() => false))) throw new Error("the composer isn't ready to type on a desk");
-  // Every link Home has opens. Before the first task Home is Chat with its first-run checklist (pages.ts sends / there).
+  // Every link Work has opens. Before the first task Work is Chat with its first-run checklist (pages.ts sends / there).
   await page.goto(`${base}/`);
-  const home = new URL(page.url()).pathname === "/chat" ? "[data-first-run]" : "[data-home]";
+  const home = new URL(page.url()).pathname === "/chat" ? "[data-first-run]" : "[data-work]";
   await page.locator(home).waitFor({ timeout: 15_000 });
   const links = await page.locator(`${home} a[href]`).evaluateAll(all => [...new Set(all.map(one => one.getAttribute("href")))]);
   for (const href of links) {
     const answer = await page.request.get(new URL(href, base).href);
-    if (answer.status() >= 400) throw new Error(`Home's link ${href}: ${answer.status()}`);
+    if (answer.status() >= 400) throw new Error(`Work's link ${href}: ${answer.status()}`);
   }
   leadChatOn = true;
 }
@@ -1388,7 +1394,7 @@ await journey("pages", SCRIPTED, "Search finds the project and a task", [], asyn
   await page.locator(".so-cmdk").waitFor({ state: "detached", timeout: 5000 });
 });
 
-await journey("pages", SCRIPTED, "The menu changes pages in place: Tasks and Projects open with no page load, a link rested on is read ahead, and Back returns in place", [], async () => {
+await journey("pages", SCRIPTED, "The menu changes pages in place: Work and Projects open with no page load, a link rested on is read ahead, and Back returns in place", [], async () => {
   await page.goto(`${base}/agents`);
   await page.waitForSelector("#workspace-main");
   // A mark on this document: a page load would lose it.
@@ -1399,8 +1405,8 @@ await journey("pages", SCRIPTED, "The menu changes pages in place: Tasks and Pro
   const heard = request => { const purpose = request.headers()["x-toolroll-read"]; if (purpose === "prefetch" || purpose === "navigate") reads.push(`${purpose} ${new URL(request.url()).pathname}`); };
   page.on("request", heard);
   try {
-    await page.locator('a[href="/tasks"]:visible').first().click();
-    await until("Tasks to open in place", async () => at("/tasks") && await same() && reads.includes("navigate /tasks"), { timeoutMs: 10_000, everyMs: 200 });
+    await page.locator('.so-rail a.so-nav[href="/"]:visible').first().click();
+    await until("Work to open in place", async () => at("/") && await same() && reads.includes("navigate /"), { timeoutMs: 10_000, everyMs: 200 });
     // Resting on a link reads its page ahead; the click then shows it at once and the ordinary read confirms it.
     const projects = page.locator('a[href="/projects"]:visible').first();
     await projects.hover();
@@ -1409,7 +1415,7 @@ await journey("pages", SCRIPTED, "The menu changes pages in place: Tasks and Pro
     await until("Projects to open in place and be confirmed", async () => at("/projects") && await same() && reads.includes("navigate /projects")
       && await page.evaluate(() => document.querySelector("#workspace-main [inert]") === null && !document.getElementById("workspace-main")?.hasAttribute("data-so-provisional")), { timeoutMs: 10_000, everyMs: 200 });
     await page.goBack();
-    await until("Back to return to Tasks in place", async () => at("/tasks") && await same(), { timeoutMs: 10_000, everyMs: 200 });
+    await until("Back to return to Work in place", async () => at("/") && await same(), { timeoutMs: 10_000, everyMs: 200 });
     // Nothing of the move is left behind.
     await until("the page change to settle", async () => page.evaluate(() => !/so-nav/.test(document.documentElement.className) && document.querySelector("[data-so-loading], [data-so-pressed]") === null), { timeoutMs: 5_000, everyMs: 200 });
   } finally { page.off("request", heard); }
@@ -1430,19 +1436,21 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
   cli(["task", "scope", id, "--goal", "Add modulo(a, b) to src/math.js with a test in test/math.test.js.", "--acceptance", "modulo works|check", ...auth]);
   cli(["task", "approve", id, "--yes", "--digest", cli(["task", "show", id]).scope.digest, ...auth]);
   const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 180_000, everyMs: 500 });
-  const list = `${base}/tasks?view=needs-you`;
+  const list = `${base}/?view=needs-you`;
   const same = on => on.evaluate(() => window.__sameDocument === true).catch(() => false);
   const says = async on => (await on.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 500);
   const at = (on, path) => new URL(on.url()).pathname === path;
   const card = on => on.locator(`[data-decision-id="${asked.id}"]`);
-  /** From the Tasks list, the task's row opens its page: the same document, the question on it, nothing held. */
+  /** From Work, the task opens its page: the same document, the question on it, nothing held. On a phone the row is the
+   * link; at a desk the row opens beside the list and Open full page opens it. */
   const openFromList = async (on, who) => {
     await on.goto(list);
     const row = on.locator(`a.k-row-t[href="/t/${id}"]:visible`).first();
-    await waitFor(row, `${id} in the Tasks list (${who})`, { timeoutMs: 15_000, seen: () => says(on) });
+    await waitFor(row, `${id} in Work (${who})`, { timeoutMs: 15_000, seen: () => says(on) });
     // A mark on this document: a page load would lose it.
     await on.evaluate(() => { window.__sameDocument = true; });
     await row.click();
+    if (who !== "phone") await on.locator("[data-work-panel] [data-work-open]").first().click();
     await until(`${id} to open (${who})`, async () => at(on, `/t/${id}`), { timeoutMs: 15_000, everyMs: 200, seen: () => says(on) });
   };
   const phone = await alexPhone();
@@ -1452,7 +1460,7 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
       && await on.evaluate(() => !document.getElementById("workspace-main")?.hasAttribute("data-so-provisional")), { timeoutMs: 15_000, everyMs: 200, seen: () => says(on) });
     if (who === "phone") {
       await on.goBack();
-      await until("Back to return to Tasks in place (phone)", async () => at(on, "/tasks") && await same(on), { timeoutMs: 10_000, everyMs: 200 });
+      await until("Back to return to Work in place (phone)", async () => at(on, "/") && await same(on), { timeoutMs: 10_000, everyMs: 200 });
     }
   }
   await putPhoneDown();
@@ -1473,16 +1481,17 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
   const answered = rows(`SELECT answered_by, answered_via FROM decision WHERE id = ${asked.id}`)[0];
   if (answered?.answered_by !== "alex" || answered.answered_via !== "web") throw new Error(`the answer wasn't recorded as yours: ${JSON.stringify(answered)}`);
   await page.goBack();
-  await until("Back to return to Tasks in place", async () => at(page, "/tasks") && await same(page), { timeoutMs: 10_000, everyMs: 200 });
+  await until("Back to return to Work in place", async () => at(page, "/") && await same(page), { timeoutMs: 10_000, everyMs: 200 });
   // The build the answer admits finishes. A task showing a result opens in place too: the app runs the result's review
   // itself (docs/plans/task-page-in-app.md, C2).
   await until(`${id} to be built`, async () => { const one = latestBuild(id); return one && one.id > asked.run && one.finished_at ? one.outcome === "built" : false; }, { timeoutMs: 300_000, everyMs: 1000, seen: () => JSON.stringify(latestBuild(id)) });
   await until(`${id}'s result on its page`, async () => { await page.goto(`${base}/t/${id}`); return (await page.locator("[data-result-decision]").count()) > 0; }, { timeoutMs: 120_000, everyMs: 2000 });
-  await page.goto(`${base}/tasks?scope=all`);
-  const row = page.locator(`a[href="/t/${id}"]:visible`).first();
-  await waitFor(row, `${id} in the Tasks list`, { timeoutMs: 15_000, seen: () => says(page) });
+  await page.goto(`${base}/?view=all`);
+  const row = page.locator(`[data-row="${id}"] a.k-row-t:visible`).first();
+  await waitFor(row, `${id} in Work`, { timeoutMs: 15_000, seen: () => says(page) });
   await page.evaluate(() => { window.__sameDocument = true; });
   await row.click();
+  await page.locator("[data-work-panel] [data-work-open]").first().click();
   const settled = on => on.evaluate(() => !document.getElementById("workspace-main")?.hasAttribute("data-so-provisional"));
   await until(`${id}'s result to open in place`, async () => at(page, `/t/${id}`) && await same(page) && (await page.locator("[data-result-decision]").count()) > 0 && await settled(page),
     { timeoutMs: 15_000, everyMs: 200, seen: () => says(page) });
@@ -1505,7 +1514,7 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
     { timeoutMs: 15_000, everyMs: 200, seen: async () => `${page.url()} · ${await note.inputValue().catch(() => "no note box")}` });
   // Back and Forward: both in place, and the review is as it was left.
   await page.goBack();
-  await until("Back to return to Tasks in place (from the result)", async () => at(page, "/tasks") && await same(page), { timeoutMs: 10_000, everyMs: 200 });
+  await until("Back to return to Work in place (from the result)", async () => at(page, "/") && await same(page), { timeoutMs: 10_000, everyMs: 200 });
   await page.goForward();
   await kept("Forward");
   if (!(await same(page))) throw new Error("Forward to the result loaded a page");
@@ -2733,22 +2742,19 @@ await journey("pages", SCRIPTED, "One-tap release approval: the push's locator o
   ], "decide");
   await addCard("Buy a label printer", "For the shipping desk.");
   const printer = await until("the card to wait for a decision", async () => (await flowView(purchases)).cards.find(one => one.title === "Buy a label printer" && one.canDecide), { timeoutMs: 30_000 });
-  const homeGroup = async key => {
-    await page.goto(`${base}/`); await page.waitForSelector("[data-home]");
-    const group = page.locator(`[data-group="${key}"]`);
-    return { count: Number(await group.locator("[data-group-count]").innerText()), rows: await group.locator("[data-row]").evaluateAll(all => all.map(one => one.getAttribute("data-row"))) };
-  };
-  const releases = await homeGroup("release");
-  if (!releases.rows.includes(id) || releases.count !== releases.rows.length) throw new Error(`Home's Approve a release: ${JSON.stringify(releases)}`);
-  const decisions = await homeGroup("flow");
-  if (!decisions.rows.includes(`flow:${printer.id}`) || decisions.count !== decisions.rows.length) throw new Error(`Home's Flow decisions: ${JSON.stringify(decisions)}`);
-  if (await page.locator('[data-group="approve"] [data-row="' + id + '"]').count() > 0) throw new Error("Home lists the release as a plan too");
+  // Work (S2a) holds both under Decide, each row once, with the group's exact count.
+  await page.goto(`${base}/`); await page.waitForSelector("[data-work]");
+  const decide = page.locator('[data-group="decide"]');
+  const decideRows = await decide.locator("[data-row]").evaluateAll(all => all.map(one => one.getAttribute("data-row")));
+  const decideCount = Number(await decide.locator(".k-grp .k-count").first().innerText());
+  if (!decideRows.includes(id) || !decideRows.includes(`flow:${printer.id}`) || decideCount < decideRows.length) throw new Error(`Work's Decide: ${JSON.stringify({ decideRows, decideCount })}`);
+  if (await page.locator(`[data-row="${id}"]`).count() !== 1) throw new Error("Work lists the release twice");
   await shot("home-release-and-flow-decisions");
   for (const [row, label, lands] of [[id, "Review the release", url => url.pathname === `/t/${id}/release`], [`flow:${printer.id}`, "Open the card", url => url.pathname === `/flows/${purchases}` && url.searchParams.get("card") === String(printer.id)]]) {
-    await page.goto(`${base}/`); await page.waitForSelector("[data-home]");
-    await page.locator(`[data-home] [data-row="${row}"]`).click();
-    const pane = page.locator(".so-tri-open");
-    if (await pane.locator("[data-home-approval], [data-home-approve]").count() > 0) throw new Error(`Home offers an approval for ${row}`);
+    await page.goto(`${base}/`); await page.waitForSelector("[data-work]");
+    await page.locator(`[data-work] [data-row="${row}"] .k-row-t`).click();
+    const pane = page.locator("[data-work-panel]");
+    if (await pane.locator("[data-home-approval], [data-home-approve], [data-work-accept]").count() > 0) throw new Error(`Work offers an approval for ${row}`);
     await Promise.all([page.waitForURL(lands, { timeout: 15_000 }), pane.getByRole("link", { name: label }).click()]);
   }
   // Held, so the worker leaves it alone once it is approved: this journey checks the approval, not the release.
@@ -3404,20 +3410,20 @@ async function approveLocally(on, base, id) {
   await until(`${id} to be approved`, async () => laptopTask(id)?.approved_by != null, { timeoutMs: 15_000, everyMs: 300, seen: () => saysNow(on) });
   if (!(await on.evaluate(() => window.__sameDocument === true).catch(() => false))) throw new Error(`approving ${id} on its page loaded a page: ${on.url()}`);
 }
-/** Approve a laptop task's plan from Home as the local owner: the plan is read beside the list, one press sends the
- * approval in place, and no password is asked anywhere. */
+/** Approve a laptop task's plan from Work as the local owner: the plan is read in the panel beside the list, one press
+ * sends the approval in place, and no password is asked anywhere. */
 async function approveFromHome(on, base, id) {
   await until(`${id}'s plan`, async () => laptopRows(`SELECT 1 FROM task_scope WHERE task_id = '${id}'`).length > 0 && laptopRows(`SELECT plan FROM task_ref WHERE external_id = '${id}'`)[0]?.plan === "drafted",
     { timeoutMs: 120_000, everyMs: 500, seen: () => JSON.stringify(laptopRows(`SELECT plan FROM task_ref WHERE external_id = '${id}'`)) });
   await on.goto(`${base}/`);
-  const row = on.locator(`[data-home] [data-row="${id}"]`).first();
-  await waitFor(row, `${id} on Home`, { timeoutMs: 30_000, seen: () => saysNow(on) });
+  const row = on.locator(`[data-work] [data-row="${id}"] .k-row-t`).first();
+  await waitFor(row, `${id} on Work`, { timeoutMs: 30_000, seen: () => saysNow(on) });
   await row.click();
   // The button takes no press for a moment after the plan is drawn.
   const approve = on.locator("[data-home-approve]:not([aria-disabled])");
   await waitFor(approve, "Approve beside the plan on Home", { timeoutMs: 30_000, seen: () => saysNow(on) });
   if (await on.locator("[data-home-terms]").count() !== 1) throw new Error(`Home doesn't show the terms beside Approve: ${await saysNow(on)}`);
-  const noPassword = async () => (await on.locator('[data-home] input[type="password"]').count()) === 0;
+  const noPassword = async () => (await on.locator('[data-work] input[type="password"]').count()) === 0;
   if (!(await noPassword())) throw new Error("Home asks for a password");
   await on.evaluate(() => { window.__sameDocument = true; });
   const posts = [];
@@ -3425,7 +3431,7 @@ async function approveFromHome(on, base, id) {
   on.on("request", heard);
   try {
     await approve.click();
-    await until("Home to say Approved", async () => ((await on.locator("[data-home-approved]").textContent().catch(() => null)) ?? "").trim() === "Approved.", { timeoutMs: 15_000, everyMs: 200, seen: () => saysNow(on) });
+    await until("Work to say Approved", async () => ((await on.locator("[data-work-said]").textContent().catch(() => null)) ?? "").trim().endsWith("Approved."), { timeoutMs: 15_000, everyMs: 200, seen: () => saysNow(on) });
     await until(`${id} to be approved`, async () => laptopTask(id)?.approved_by != null, { timeoutMs: 15_000, everyMs: 300, seen: () => saysNow(on) });
     if (!(await on.evaluate(() => window.__sameDocument === true).catch(() => false))) throw new Error(`approving ${id} from Home loaded a page: ${on.url()}`);
     const sent = posts.filter(one => one.includes("/approve"));

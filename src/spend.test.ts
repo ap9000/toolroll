@@ -290,12 +290,12 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
     const samCookie = await signIn("sam", sam.token);
     expect((await fetch(`${base}/spend`, { headers: { cookie: samCookie }, redirect: "manual" })).status).toBe(403);
     expect((await fetch(`${base}/settings/spend`, { headers: { cookie: samCookie }, redirect: "manual" })).status).toBe(403);
-    // Tasks shows the plan's windows and the budgets to whoever runs the installation, and to no one else.
+    // Work shows the plan's windows and the budgets to whoever runs the installation, and to no one else.
     store.recordProviderLimits({ provider: "claude", plan: null, windows: [{ window: "five_hour", usedPercent: 48, windowMinutes: 300, resetsAt: new Date(Date.now() + 3_600_000).toISOString(), reached: false }] }, new Date());
-    const tasks = await (await fetch(`${base}/work`, { headers: { cookie } })).text();
+    const tasks = await (await fetch(`${base}/?view=all`, { headers: { cookie } })).text();
     expect(tasks).toContain('data-limit="claude:five_hour"');
     expect(tasks).toContain(`data-limit="budget:${store.budgets()[0]!.id}"`);
-    expect(await (await fetch(`${base}/work`, { headers: { cookie: samCookie } })).text()).not.toContain("data-limit=");
+    expect(await (await fetch(`${base}/?view=all`, { headers: { cookie: samCookie } })).text()).not.toContain("data-limit=");
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }

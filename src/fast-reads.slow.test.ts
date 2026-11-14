@@ -2,9 +2,9 @@
  * Fast reads (docs/TESTING.md "Wire budgets"): what each account sees on the everyday pages is exactly what the plain
  * reads give. On a seeded wire world (test/wire-world.ts, a smaller one than the budgets' 10,000 tasks, fixed clock and
  * randomness) this renders, for the operator, an approver on every project, an approver limited to two projects and a
- * viewer limited to one (each signed in with a browser session): Home, Tasks (its default list, its second page, a state
- * filter, the completed and archived views, one project's list, the board), a result page in another project, a result
- * page in the viewer's own project, a task page, Projects and Chat — the document load and the in-place read. Each read
+ * viewer limited to one (each signed in with a browser session): Work (its default list, Needs you, its second page, a
+ * state filter, the completed and archived views, one project's list, the board), a result page in another project, a
+ * result page in the viewer's own project, a task page, Projects and Chat — the document load and the in-place read. Each read
  * is served twice by the SAME code: once with the request's work reads (work-reads.ts: the kept projection, the saved
  * answers, the batched reads) and once without them (this file's mock makes withWorkReads run the read bare, the plain
  * path every read took before), and the two bodies must be byte for byte the same. Some answers are refusals (the
@@ -15,7 +15,7 @@
  * The plain side really is plain: before every read the workspace revision moves, and this file counts every work-reads
  * scope the server opens and every chrome read the per-revision cache answers — neither may happen on the plain side,
  * scopes must open on the fast side. A seeded divergence (one list row dropped on the fast side only) must be caught,
- * on a page that reads its list directly (Tasks) and on one that reads it through the chrome cache (Chat).
+ * on a page that reads its list directly (Work) and on one that reads it through the chrome cache (Chat).
  *
  * What this does NOT cover (fast-reads-boundaries.slow.test.ts and work-reads.test.ts do): API tokens, local-owner
  * sessions, accounts revoked, narrowed or deleted mid-session, overlapping requests, commits by another process, clock
@@ -96,15 +96,16 @@ function send(path: string, headers: Record<string, string>, method = "GET", bod
 const IN_PLACE = { accept: "application/json", "x-toolroll-read": "navigate", "x-toolroll-work": "1" };
 const withFormat = (path: string) => `${path}${path.includes("?") ? "&" : "?"}format=workspace`;
 
-/** The account's second Tasks page: the link its first page's in-place read names (its own first page if none). */
+/** The account's second Work page: the link its first page's in-place read names (its own first page if none). */
 async function nextPageOf(who: string): Promise<string> {
-  const first = await send(withFormat("/tasks"), { cookie: cookies[who]!, ...IN_PLACE });
-  return /"next":"(\/tasks\?cursor=[A-Za-z0-9_-]+)"/.exec(first.body)?.[1] ?? "/tasks";
+  const first = await send(withFormat("/?view=all"), { cookie: cookies[who]!, ...IN_PLACE });
+  return /"next":"(\/\?cursor=[A-Za-z0-9_-]+)"/.exec(first.body)?.[1] ?? "/?view=all";
 }
 
-/** Per-request tokens only: a page's script nonce and a form's one-time request id, raw and inside escaped HTML. */
+/** Per-request tokens only: a page's script nonce and a form's one-time request id (a hidden field, the chat composer's
+ * requestId, a result's request), raw and inside escaped HTML. */
 const normalized = (text: string) => text.replace(/(nonce=\\?"|"nonce":")[A-Za-z0-9_\-+/=]+/g, "$1<token>")
-  .replace(/(name=\\?"request\\?" value=\\?"|"requestId":")[0-9a-f]{32}/g, "$1<request>");
+  .replace(/(name=\\?"request\\?" value=\\?"|"requestId":"|"request":")[0-9a-f]{32}/g, "$1<request>");
 
 /** "After any change": the workspace revision moves (a cache-metadata row only), so no per-revision cache the server
  * holds answers the next read: each side computes its own. */
@@ -187,9 +188,9 @@ test("every account receives byte for byte what the plain reads give", async () 
     WHERE r.repo = ? AND t.state = 'done' AND r.revision_of IS NULL AND EXISTS(SELECT 1 FROM run WHERE task_ref = r.id AND finished_at IS NOT NULL AND role = 'builder' AND outcome = 'built')
     ORDER BY t.id LIMIT 1`).get(world.samProject)?.["id"]);
   pages = [
-    ["Home", "/"], ["Tasks", "/tasks"], ["Tasks (next page)", nextPageOf], ["Tasks (state filter: failed)", "/tasks?state=failed"],
-    ["Tasks (completed)", "/tasks?view=completed"], ["Tasks (archived)", "/tasks?view=archived"], ["Tasks (one project)", `/tasks?project=${encodeURIComponent(world.samProject)}`],
-    ["Tasks (board)", "/tasks?layout=board"], ["Result", `/t/${encodeURIComponent(world.resultTask)}?tab=result`], ["Result (viewer's project)", `/t/${encodeURIComponent(ownResult)}?tab=result`],
+    ["Work", "/"], ["Work (needs you)", "/?view=needs-you"], ["Work (next page)", nextPageOf], ["Work (state filter: failed)", "/?state=failed"],
+    ["Work (completed)", "/?view=completed"], ["Work (archived)", "/?view=archived"], ["Work (one project)", `/?project=${encodeURIComponent(world.samProject)}`],
+    ["Work (board)", "/?view=board"], ["Result", `/t/${encodeURIComponent(world.resultTask)}?tab=result`], ["Result (viewer's project)", `/t/${encodeURIComponent(ownResult)}?tab=result`],
     ["Task", `/t/${encodeURIComponent(world.probeTask)}`], ["Projects", "/projects"], ["Chat", "/chat"],
   ];
   reads.opened = { fast: 0, plain: 0 }; reads.cached = { fast: 0, plain: 0 };
@@ -203,13 +204,13 @@ test("every account receives byte for byte what the plain reads give", async () 
 test("a divergence on the fast side alone is caught", async () => {
   reads.canary = true;
   try {
-    // Tasks reads its list directly; Chat reads its views through the per-revision chrome cache, so a plain read that
+    // Work reads its list directly; Chat reads its views through the per-revision chrome cache, so a plain read that
     // could reuse a fast read's cached view would hide the divergence there.
     const all = pages;
-    pages = all.filter(([name]) => name === "Tasks" || name === "Chat");
+    pages = all.filter(([name]) => name === "Work" || name === "Chat");
     let caught: string[];
     try { caught = await differing(); } finally { pages = all; }
     // Every one of them lost a row on the fast side only (Chat's refusal pages too, through their sidebar).
-    expect(caught.sort()).toEqual(ACCOUNTS.flatMap(who => ["Tasks", "Chat"].flatMap(name => [`${who} · ${name} · document`, `${who} · ${name} · in-place read`])).sort());
+    expect(caught.sort()).toEqual(ACCOUNTS.flatMap(who => ["Work", "Chat"].flatMap(name => [`${who} · ${name} · document`, `${who} · ${name} · in-place read`])).sort());
   } finally { reads.canary = false; }
 }, 300_000);

@@ -62,12 +62,13 @@ afterEach(async () => {
 });
 
 describe("retired pages redirect for good", () => {
-  test("each old address answers 301 to its place on Home or Tasks, keeping only the keys the target knows", async () => {
+  test("each old address answers 301 to its place on Work, keeping only the keys the target knows", async () => {
     const cookie = await login("alex");
     const expected: Record<string, string> = {
-      "/work": "/tasks", "/work?view=needs-you": "/tasks?view=needs-you", "/work?layout=board": "/tasks?view=board",
-      "/inbox": "/", "/next": "/", "/workbench": "/tasks?scope=all", "/board": "/tasks?view=board", "/board?view=order": "/tasks?view=order",
-      "/queue": "/tasks?view=order", "/review": "/tasks?view=ready", "/done": "/tasks?view=done", "/work/put-away": "/tasks/archive",
+      "/work": "/", "/work?view=needs-you": "/?view=needs-you", "/work?layout=board": "/?view=board",
+      "/inbox": "/", "/next": "/", "/workbench": "/", "/board": "/?view=board", "/board?view=order": "/?view=order",
+      "/queue": "/?view=order", "/review": "/?view=ready", "/done": "/?view=done", "/work/put-away": "/tasks/archive",
+      "/tasks": "/", "/tasks?view=running": "/?view=running",
     };
     for (const [from, to] of Object.entries(expected)) {
       const answer = await get(from, cookie);
@@ -109,8 +110,8 @@ describe("retired pages redirect for good", () => {
   test("no rendered link points at a retired page", async () => {
     task("in-a", "Ship the receipts", repoA);
     const cookie = await login("alex");
-    const retired = ["/work", "/inbox", "/next", "/workbench", "/board", "/queue", "/done"];
-    for (const path of ["/", "/tasks", "/tasks?view=board", "/tasks?view=ready", "/tasks?view=order", "/t/in-a", "/settings", "/projects", "/agents", "/flows"]) {
+    const retired = ["/work", "/inbox", "/next", "/workbench", "/board", "/queue", "/done", "/tasks"];
+    for (const path of ["/", "/?view=board", "/?view=ready", "/?view=order", "/t/in-a", "/settings", "/projects", "/agents", "/flows"]) {
       const html = await (await fetch(url(path), { headers: { cookie } })).text();
       // Markup links (in the page and inside the workspace's own HTML strings) and the workspace's own "href" fields.
       const hrefs = [...html.matchAll(/(?:href|action)=\\?"([^"\\]*)\\?"/g), ...html.matchAll(/"(?:href|path|refreshUrl)":"([^"]*)"/g)].map(match => match[1]!.split("#")[0]!);

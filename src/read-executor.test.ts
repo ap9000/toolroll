@@ -201,7 +201,7 @@ test("chrome completed before another worker job is revalidated at render after 
     const resume = new Promise<void>(resolve => { release = resolve; });
     reads.workCounts = async (...args) => { const value = await count(...args); countEntered(); await resume; return value; };
     reads.projectSummary = async (...args) => { const value = await summary(...args); summaryReturned(); return value; };
-    const response = serverRequest(server, "/tasks?view=board&format=workspace", { cookie: `${SESSION_COOKIE}=${sessionId}` });
+    const response = serverRequest(server, `/?project=${encodeURIComponent(project)}&view=board&format=workspace`, { cookie: `${SESSION_COOKIE}=${sessionId}` });
     await Promise.race([Promise.all([waiting, summaryReady]), response.then(result => { throw new Error(`answered before prefetch: ${result.status}`); })]);
     // Let the resolved summary finish filling while counts remain outstanding; this is an event boundary, not a delay.
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -213,6 +213,6 @@ test("chrome completed before another worker job is revalidated at render after 
     const workspace = JSON.parse(result.body);
     const current = projectSummaryOf(store, now, { ...access, repos: [project], viewer: "alex" }, "alex", [{ path: project, name: "Read project" }], join(dir, "evidence"));
     expect(workspace.projectStates).toEqual(current);
-    expect(workspace.navigation.find((one: { label: string }) => one.label === "Home").count).toBe(workCountsByProject(store, now, { ...access, repos: [project], viewer: "alex" }).filter(one => one.repo === project).reduce((n, one) => n + one.totals["needs-you"], 0));
+    expect(workspace.navigation.find((one: { label: string }) => one.label === "Work").count).toBe(workCountsByProject(store, now, { ...access, repos: [project], viewer: "alex" }).filter(one => one.repo === project).reduce((n, one) => n + one.totals["needs-you"], 0));
   } finally { release?.(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });

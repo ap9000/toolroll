@@ -195,6 +195,9 @@ export type BrowserTaskRow = {
   action: BrowserLink | null; detail: string | null; problem: string | null; notes: string[];
   /** Put away, or Restore in Archived (task-tidy.md): a POST to the task's own route; null for a viewer or live work. */
   tidy?: { action: string; label: 'Archive' | 'Restore'; returnTo: string } | null;
+  /** Work (S2a): what this waiting row asks, as Home said it (its ask, line, one act, an agent's question), on the very
+   * row the list sends: Needs you is the page's own rows, never a second copy. */
+  need?: BrowserHomeRow;
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;
@@ -411,6 +414,10 @@ export type BrowserResultPanel = {
   request: string | null;
   /** A browser session may attach feedback to this result's sealed diff. */
   canRequest: boolean;
+  /** Send back, as data (the request form's own fields): the run's comment route, the saved notes it seals (`batch`),
+   * the diff it is about (`source`) and this read's request token. Work's panel posts it in place. Null when the form
+   * isn't offered. */
+  sendBack?: { action: string; batch: string; source: string; request: string } | null;
   /** Needs you: the one action that resolves it, first and filled; `confirm` posts behind the password. */
   need: BrowserNeedAction | null;
   /** The feedback section holds only the closed form (no notes, revisions or history). */
@@ -790,7 +797,7 @@ export type BrowserAgentsSystem = {
   external: { repo: string; state: string }[];
 };
 
-export type BrowserView = BrowserTasksView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView | BrowserHomeView | BrowserSearchView;
+export type BrowserView = BrowserTasksView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView | BrowserHomeView | BrowserSearchView | BrowserWorkView;
 
 export type BrowserWorkspace = {
   /** Settings → Advanced: false when this person's pages leave out advanced entry points (absent: shown). Display only. */
@@ -885,6 +892,31 @@ export type BrowserHomeView = {
   /** While the first run is open (no first result yet): the welcome's address, linked as Finish setup. */
   setup?: string | null;
 };
+/**
+ * Work ("/", the one-workspace plan S2a): the Tasks list and what needs you on one screen, the selected task beside it.
+ * `list` is the Tasks list's own view for this address (its rows, segments, project filter and pages); `needs` is every
+ * ask Home admitted (tasks, held publications, flow cards, setup steps), grouped Decide / Review / Unblock with exact
+ * counts, listed above Running, Queued and Done in the All and Needs you views. The selected task (`?task=`) is never
+ * part of this read: the page reads it through the task's own page (`/t/:id`), which admits it on its own.
+ */
+export type BrowserWorkView = {
+  kind: 'work';
+  list: BrowserTasksView;
+  /** Each group's exact count, and the rows of it that are no task of the list (a held release, a flow card, a setup
+   * step); the group's task rows are the list's own rows that carry `need`. */
+  needs: { key: WorkNeedsGroup; label: string; count: number; rows: BrowserHomeRow[] }[];
+  /** Everything that waits on this person in view: tasks and the asks that aren't tasks. */
+  needsCount: number;
+  /** The project in view (a path) or every project (null), and its name ("All projects"). */
+  project: string | null;
+  projectName: string;
+  /** While the first run is open (no first result yet): the welcome's address. */
+  setup: string | null;
+  /** No task at all yet: what to do first. */
+  empty: { title: string; text: string } | null;
+};
+/** Work's three Needs-you groups, in order. */
+export type WorkNeedsGroup = 'decide' | 'review' | 'unblock';
 /** What a waiting row asks (work-index.ts WorkAskGroup), plus a flow card waiting on you and a first-run step. */
 export type BrowserHomeAsk = 'release' | 'approve' | 'answer' | 'flow' | 'wrong' | 'review' | 'setup' | 'other';
 export type BrowserHomeRow = {
@@ -894,6 +926,8 @@ export type BrowserHomeRow = {
   state: 'needs' | 'running' | 'queued' | 'done';
   /** What it asks of you (its group), or null when it doesn't wait on you. */
   ask: BrowserHomeAsk | null;
+  /** Work's group for a waiting row (the Tasks list's own Decide / Review / Unblock for a task; absent elsewhere). */
+  group?: WorkNeedsGroup;
   /** Why, in one short line: only a row where something went wrong. */
   reason: string | null;
   /** One line: what it asks, or what the agent is doing now. */
@@ -978,32 +1012,23 @@ export function browserProjectsOf(projects: readonly { name: string; path: strin
   return projects.flatMap(project => {
     if (seen.has(project.path)) return [];
     seen.add(project.path);
-    return [{ name: project.name, path: project.path, href: `/tasks?project=${encodeURIComponent(project.path)}`,
+    return [{ name: project.name, path: project.path, href: `/?project=${encodeURIComponent(project.path)}`,
       knowledgeHref: `/settings/knowledge?repo=${encodeURIComponent(project.path)}` }];
   });
 }
 
-export function browserNavigationOf(path: string, project: string | null = null, needsYou = 0, tasksProject: string | null = project, needsYouLabel?: string, advanced = true): BrowserNavigationItem[] {
+export function browserNavigationOf(path: string, needsYou = 0, needsYouLabel?: string): BrowserNavigationItem[] {
   const pathname = path.split('?')[0]!.split('#')[0]!;
   const under = (...roots: string[]) => roots.some(root => pathname === root || pathname.startsWith(`${root}/`));
-  // The rail (UI revamp, wave B; Chat under Home, live-pages-and-home.md B1): Home carries the one Needs-you count and
-  // an agent's question lives under it; the lead chat is its own item; a task's pages under Tasks, every computer and
-  // terminal under Agents, every setting under Settings.
+  // The rail (the one-workspace plan S2a): Work · Chat · Settings. Work is the list and the selected task, carries the one
+  // Needs-you count, and holds every task's pages and an agent's question; Projects sit in the sidebar under them (with
+  // Manage projects); Flows and Agents are reached from Settings → Advanced and Search, their pages under Settings.
   return [
-    { label: 'Home', href: '/', active: pathname === '/' || under('/d', '/activity', '/morning'),
+    { label: 'Work', href: '/', active: pathname === '/' || under('/tasks', '/t', '/r', '/review', '/d', '/activity', '/morning'),
       ...(needsYou > 0 ? { count: needsYou, ...(needsYouLabel === undefined ? {} : { countLabel: needsYouLabel }) } : {}) },
     { label: 'Chat', href: '/chat', active: under('/chat') },
-    { label: 'Tasks', href: `/tasks${tasksProject === null ? '' : `?project=${encodeURIComponent(tasksProject)}`}`,
-      active: under('/tasks', '/t', '/r', '/review') },
-    // Settings → Advanced off: Flows and Agents leave the rail (Settings → Advanced lists both; their pages still open).
-    ...(advanced ? [
-      { label: 'Flows', href: '/flows', active: under('/flows', '/recipes', '/kits', '/routines') },
-      { label: 'Agents', href: '/agents', active: under('/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
-    ] : []),
-    { label: 'Projects', href: '/projects', active: under('/projects') },
-    // With Flows and Agents off the rail, their pages (opened from Settings → Advanced) sit under Settings.
     { label: 'Settings', href: '/settings', active: under('/settings', '/spend', '/mode', '/people', '/ledger', '/menu',
-      ...(advanced ? [] : ['/flows', '/recipes', '/kits', '/routines', '/agents', '/peek', '/term', '/fleet', '/system', '/runs'])) },
+      '/flows', '/recipes', '/kits', '/routines', '/agents', '/peek', '/term', '/fleet', '/system', '/runs') },
   ];
 }
 

@@ -23,7 +23,7 @@ export const PREFETCH_MAX_READS = 2;
 
 /** The addresses the server reads ahead (server/in-place.ts PREFETCH_ROUTES); the server still decides. Never an
  * opened agent (`/agents?run=`): opening one is an act (it is seen, or watched), so its page is never shown ahead. */
-const READ_AHEAD = [/^\/$/, /^\/tasks$/, /^\/t\/[^/]+$/, /^\/projects$/, /^\/agents$/, /^\/search$/];
+const READ_AHEAD = [/^\/$/, /^\/t\/[^/]+$/, /^\/projects$/, /^\/agents$/, /^\/search$/];
 export function mayPrefetch(url: URL): boolean {
   if (url.pathname === "/agents" && (url.searchParams.get("view") === "live" || url.searchParams.has("run"))) return false;
   return READ_AHEAD.some(pattern => pattern.test(url.pathname));

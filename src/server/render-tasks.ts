@@ -2286,7 +2286,7 @@ export function taskBodyParts(data: {
           releaseCiRunning: data.releaseCiRunning === true,
           rebuild: data.assignment?.need != null && "key" in data.assignment.need && data.assignment.need.key === "replan" ? data.assignment.need.build : null,
           editHref: data.csrf !== "" && data.planSha != null && data.planDocument !== null ? "#plan-edit" : "#scope",
-          notNowHref: "/tasks",
+          notNowHref: "/",
           sticky: approvalLeads,
           earlier: { active: data.assignment?.earlierActive ?? 0, running: data.assignment?.earlierRunning ?? 0 },
           edit: data.csrf === "" ? null
@@ -2458,7 +2458,7 @@ export function taskBodyParts(data: {
         : "";
   const queueRow =
     data.position !== null && data.position !== undefined && task.state === "queued"
-      ? prop("queue", html`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : html` in ${data.position.column}'s queue`} · <a href="/tasks?view=order">reorder</a>`)
+      ? prop("queue", html`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : html` in ${data.position.column}'s queue`} · <a href="/?view=order">reorder</a>`)
       : "";
   const scopeRow =
     scope === null
@@ -2479,7 +2479,7 @@ export function taskBodyParts(data: {
   else if (lastRun !== undefined) facts.push({ label: "Last attempt", parts: [{ label: `${runNoun(lastRun)} #${lastRun.id}`, href: `/r/${lastRun.id}` },
     ` · ${lastRun.role === "planner" && lastRun.reason === "plan-drafted" ? "planned" : wasInterrupted(lastRun) ? "interrupted" : lastRun.id === liveHistoryRunId ? "running" : lastRun.outcome ?? "never finished"} · ${lastRun.runner}`] });
   if (data.position !== null && data.position !== undefined && task.state === "queued") {
-    facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/tasks?view=order" }] });
+    facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/?view=order" }] });
   }
   facts.push(scope === null ? { label: "Plan", parts: ["none yet"] }
     : approval.approved && data.autoRelease != null ? { label: "Approved plan", parts: [autoReleaseWords(data.autoRelease)] }
@@ -3056,7 +3056,7 @@ export function taskBodyParts(data: {
     revision: data.revision == null || "problem" in data.revision ? null : data.revision,
     revisionSourceHref: data.revision == null || "problem" in data.revision ? "" : `/r/${data.revision.sourceRun}`,
     repairChain: data.repairChain ?? null, route: data.route, coordinator: data.coordinator ?? null, origin: data.origin ?? null,
-    deliverable: data.deliverable ?? "branch", releaseCiRunning: data.releaseCiRunning === true, editHref: "#scope", notNowHref: "/tasks", sticky: false,
+    deliverable: data.deliverable ?? "branch", releaseCiRunning: data.releaseCiRunning === true, editHref: "#scope", notNowHref: "/", sticky: false,
     earlier: { active: data.assignment?.earlierActive ?? 0, running: data.assignment?.earlierRunning ?? 0 }, edit: null,
   };
   const sheetParts = sheetShown === null ? null : approvalSheetParts(sheetShown);

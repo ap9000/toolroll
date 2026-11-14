@@ -35,7 +35,7 @@ export type InPlaceHost = {
 
 /** The addresses the server may answer in place (server/in-place.ts IN_PLACE_ROUTES): anything else is a document load
  * at once, without a read first (a download, an export, a page that always loads as one). The server still decides. */
-const MAY_BE_IN_PLACE = [/^\/$/, /^\/tasks$/, /^\/t\/[^/]+$/, /^\/projects$/, /^\/agents$/, /^\/search$/, /^\/settings(?:\/[a-z-]+)?$/];
+const MAY_BE_IN_PLACE = [/^\/$/, /^\/t\/[^/]+$/, /^\/projects$/, /^\/agents$/, /^\/search$/, /^\/settings(?:\/[a-z-]+)?$/];
 export function mayBeInPlace(url: URL): boolean {
   return MAY_BE_IN_PLACE.some(pattern => pattern.test(url.pathname)) && !(url.pathname === "/agents" && url.searchParams.get("view") === "live");
 }

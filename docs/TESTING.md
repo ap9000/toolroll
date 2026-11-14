@@ -220,7 +220,7 @@ the pull request raises, and it uploads the report as the `wire-budgets` artifac
 `REQUIRED_PR_CHECKS`, and the release verdict leaves it out (`ADVISORY_PR_CHECKS`).
 
 What each account sees is exactly what the plain reads give. `src/fast-reads.slow.test.ts` renders, on a smaller wire
-world, Home, Tasks (list, second page, failed filter, completed, archived, one project, board), two result pages, a task
+world, Work (list, Needs you, second page, failed filter, completed, archived, one project, board), two result pages, a task
 page, Projects and Chat for four browser sessions (the operator, an approver on every project, an approver on two, a
 viewer on one; some answers are refusals, compared too), sequentially at a fixed clock, and serves each read twice on
 the same code: with the request's work reads and without them (the plain path, with the workspace revision moved
