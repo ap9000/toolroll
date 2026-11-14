@@ -66,6 +66,8 @@ describe("CLI commands as the local owner", () => {
       "task requeue": "retry-build", "task archive": "archive-task", "task restore": "archive-task", "repos add": "add-project",
       "models suggestions": "read", "models turn-off": "routing-turn-off", "models dismiss": "dismiss-suggestion", "models stop": "trial-stop",
       "map on": "code-map-switch", "map off": "code-map-switch",
+      // Public-release 3a: the sample project is its own row (add-project); the read-only `welcome` stays a read.
+      "welcome sample": "add-project",
     });
     // Not the local owner's: Accept's other spelling, merging, and re-running a check.
     for (const invocation of ["task accept", "task merge", "task regate"]) expect(LOCAL_POLICY.get(invocation), invocation).toEqual({ local: "deny" });

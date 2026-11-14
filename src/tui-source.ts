@@ -27,7 +27,7 @@ import { memoryWaiting } from "./lesson-notes.js";
 import { homeGroupOf } from "./home-groups.js";
 import type { TuiAct, TuiActResult, TuiDecision, TuiFastTerms, TuiResult, TuiRow, TuiSetup, TuiSnapshot, TuiSource, TuiTask } from "./tui-contract.js";
 import { terminalText } from "./terminal-text.js";
-import { welcomeHere, welcomeLines } from "./welcome-facts.js";
+import { sampleOffered, welcomeHere, welcomeLines } from "./welcome-facts.js";
 import { planSourceOf, retryPinsOf } from "./local-owner-acts.js";
 
 export type TuiSourceOptions = {
@@ -157,6 +157,8 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
         case "revise": argv = ["task", "revise", act.id, "--feedback", act.text]; done = "Sent back with your note."; break;
         case "answer": argv = ["decide", String(act.decision), "--choose", act.option]; done = "Answered."; break;
+        // The sample project: the command takes nothing from the screen (no folder, no name).
+        case "sample": argv = ["welcome", "sample"]; done = "Added the sample project. Press n to write a first task."; break;
         // Retry: exactly the build and approved plan the screen read (local-owner slice 3), never the current ones.
         case "retry": argv = ["task", "requeue", act.id, "--run", String(act.runId), "--digest", act.digest]; done = "Retrying. It starts next."; break;
         // Accept: exactly the result the Accept screen read, never the one current when this is sent (the command
@@ -166,7 +168,10 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
           done = "Accepted. The task is done."; break;
       }
       const answer = await command(argv);
+      // Setup reads again at once after anything that may finish a step (the sample adds a project).
+      setupCache = null;
       if (answer.ok !== true) return refusalOf(answer);
+      if (act.kind === "sample") return { ok: true, message: answer["added"] === false ? "The sample project is already added. Press n to write a first task." : done };
       if (act.kind === "complete" && answer["replayed"] === true) return { ok: true, message: "Already accepted. The task is done." };
       if (act.kind === "plan" && answer["replayed"] === true) return { ok: true, message: "Already asked for a plan." };
       if (act.kind === "retry" && answer["replayed"] === true) return { ok: true, message: "Already retrying. It starts next." };
@@ -212,7 +217,8 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         throw problem;
       });
       if (here === null) return null;
-      const value = here.model.left === 0 ? null : { left: here.model.left, lines: welcomeLines(here.model).map(line => terminalText(line)) };
+      const offered = sampleOffered(here.model, localModeOf(store)?.enabled === true, store.isDemo());
+      const value = here.model.left === 0 ? null : { left: here.model.left, lines: welcomeLines(here.model, offered ? "key" : null).map(line => terminalText(line)), sample: offered };
       setupCache = { at: Date.now(), value };
       return value;
     },

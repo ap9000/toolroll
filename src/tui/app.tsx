@@ -4,7 +4,8 @@
  * Screens: Setup (the welcome's steps, until the first task), Main (tasks | live output | what needs you), New task,
  * Task, the plan before approving it, the result before accepting it, a revision's words, and Needs password. Keys:
  * j/k move, Enter opens, n new task, a approve (the full plan first) or accept (the result first), c accept, b send back,
- * r retry, p ask for a plan, s stop, 1–9 answer a question, w browser, ? help, q quit. Every write goes through the TuiSource, which runs
+ * r retry, p ask for a plan, s stop (on Setup with no project: the sample project), 1–9 answer a question, w browser,
+ * ? help, q quit. Every write goes through the TuiSource, which runs
  * it as the local owner; a refusal shows its own words.
  */
 import { keyWords, SHORTCUTS, type TuiShortcut } from "../keymap.js";
@@ -139,8 +140,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
 
   const pendingG = useRef(false);
   /** One write, as the local owner: its words, or the way to a password when the local owner may not. */
-  const act = async (one: TuiAct): Promise<boolean> => {
-    setBusy("Working…");
+  const act = async (one: TuiAct, working = "Working…"): Promise<boolean> => {
+    setBusy(working);
     try {
       const result = await source.act(one);
       if (!result.ok) {
@@ -240,6 +241,8 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
         if (input === "k" || key.upArrow) { setSelected(index => Math.max(index - 1, 0)); return; }
         if (key.return && current !== undefined) { void openTask(current.id, task => setScreen({ kind: "task", task })); return; }
         if (key.escape) { setMessage(null); return; }
+        // Setup with no project yet: s adds the sample project (the same act as the browser's Try a sample project).
+        if (input === "s" && rows.length === 0 && setup?.sample === true) { void act({ kind: "sample" }, "Adding the sample project…"); return; }
         shared(input, current?.id ?? null, current?.liveRunId ?? null);
         return;
       }
@@ -342,7 +345,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
 
   function hints(): string {
     switch (screen.kind) {
-      case "main": return rows.length === 0 ? "n new task · w browser · ? help · q quit" : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · p plan · s stop · w browser · ? help · q quit";
+      case "main": return rows.length === 0 ? `${setup?.sample === true ? "s sample project · " : ""}n new task · w browser · ? help · q quit` : "j/k move · Enter open · n new · a approve/accept · b send back · r retry · p plan · s stop · w browser · ? help · q quit";
       case "task": return `a approve/accept · b send back · r retry${screen.task.planAsk == null ? "" : " · p plan it"} · s stop · 1–9 answer · w browser · Esc back`;
       case "approve": return "y approve · Esc cancel";
       case "retry": return "y retry · Esc cancel";

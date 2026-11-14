@@ -150,7 +150,7 @@ import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
 import { LOCAL_POLICY } from "./surface.js";
-import { asLocalOwner, currentLocalOwner, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
+import { asLocalOwner, currentLocalOwner, localActNow, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { ledgerSpent, NO_SAFE_OPENER, openSignInLink, platformOpener } from "./sign-in-page.js";
@@ -253,7 +253,7 @@ import { confirmCoordinatorProposal, dismissCoordinatorProposal } from "./lead-d
 import { verifyApproverByPassword as approverByPassword } from "./principal.js";
 import { activeRemote, REMOTE_MESSAGES, REMOTE_REFUSED_FLAGS, REMOTE_SCOPES, RemoteRefusal, remoteAllows, remoteLensOf, remoteProjectOf, remoteRowOf, remoteSecret, reproveRemote, withRemote, type Principal, type RemoteRun, type RemoteSource } from "./operate-remote.js";
 import { projectAuthority } from "./project-access.js";
-import { authorizedProject, canonicalProject, projectName, resolveCeiling } from "./project.js";
+import { authorizedProject, canonicalProject, projectName, resolveCeiling, type ProjectCeiling } from "./project.js";
 import { tally, spendLine } from "./summary.js";
 import {
   describePublicationGrant, observeChecks, publishPass, type PublishExec, sweepMerges,
@@ -14042,18 +14042,22 @@ async function openCommand(positional: readonly string[], flags: Map<string, str
 async function welcomeCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const { write, json } = context;
   const command = "welcome";
-  if (positional.length > 0) return fail(write, json, command, "usage", "Use `toolroll welcome [--json]`.", EXIT.usage);
+  // `welcome sample`: its own command and its own act (add-project), never this read's.
+  if (positional[0] === "sample") return welcomeSampleCommand(positional.slice(1), flags, context);
+  if (positional.length > 0) return fail(write, json, command, "usage", "Use `toolroll welcome [--json]`, or `toolroll welcome sample`.", EXIT.usage);
   for (const name of flags.keys()) if (!["db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a welcome option.`, EXIT.usage);
-  const { welcomeHere, welcomeLines, welcomeStepLines, WELCOME_STEPS } = await import("./welcome-facts.js");
+  const { welcomeHere, welcomeLines, welcomeStepLines, WELCOME_STEPS, sampleOffered } = await import("./welcome-facts.js");
   const read = async () => (await welcomeHere(context.store, context.databaseFile, context.clock(), context.easySeams?.check === undefined ? {} : { check: context.easySeams.check })).model;
   let model = await read();
-  if (json || !personAtTerminal(context) || localOwnerRequested()) return succeed(write, json, command, { ...model }, () => welcomeLines(model));
+  // `toolroll welcome sample` is named only where it would work (a password-free install); the browser's otherwise.
+  const offer = () => sampleOffered(model, localModeOf(context.store)?.enabled === true, context.store.isDemo()) ? "command" as const : null;
+  if (json || !personAtTerminal(context) || localOwnerRequested()) return succeed(write, json, command, { ...model }, () => welcomeLines(model, offer()));
   const askNow = context.easySeams?.ask ?? ask;
   write(model.left === 0 ? "Setup is done." : `Welcome to Toolroll. ${model.left} ${model.left === 1 ? "step" : "steps"} to your first result.`);
   for (const key of WELCOME_STEPS) {
     for (;;) {
       write("");
-      for (const line of welcomeStepLines(model, key)) write(line);
+      for (const line of welcomeStepLines(model, key, offer())) write(line);
       if (model[key].done) break;
       const said = (await askNow("Press Enter once it's done, s to skip, q to stop: ")).trim().toLowerCase();
       if (said === "q") return EXIT.ok;
@@ -14879,4 +14883,66 @@ export async function consolesProvenDown(store: Store, now: Date, probe: Console
 /** A console `serve` started and must not keep: closed, and its port given back, before the refusal is reported. */
 async function closeServedConsole(server: import("node:http").Server): Promise<void> {
   await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections?.(); });
+}
+
+/**
+ * `toolroll welcome sample` (public-release 3a): the sample project the console's welcome offers ("Try a sample
+ * project"), from the terminal — the terminal UI's `s` runs it. The same operation (sample-project.ts addSampleProject)
+ * as the browser's, as this computer's local owner: from the terminal UI's own door (runAsLocalOwner, its act
+ * add-project), or typed by a person at this terminal (stdin and stdout a TTY, no --json, not under a coding agent) on
+ * an install that is password-free. Never for a remote caller, a lead token, an agent or a pipe; never in the demo.
+ * It takes no folder, command or name: the sample goes in the first projects folder this install already serves
+ * (repos.json beside the database), and nothing widens what that is.
+ */
+async function welcomeSampleCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json, store } = context;
+  const command = "welcome sample";
+  if (positional.length > 0) return fail(write, json, command, "usage", "Use `toolroll welcome sample`: it takes no folder or name.", EXIT.usage);
+  for (const name of flags.keys()) if (!["db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a welcome sample option.`, EXIT.usage);
+  if (context.principal !== undefined) return fail(write, json, command, "not-remote", "The sample project is added on Toolroll's own computer.", EXIT.refused);
+  const lead = envValue(process.env, "LEAD_TOKEN");
+  if (context.leadToken !== undefined || (lead !== undefined && lead !== "")) return fail(write, json, command, "refused", "A lead token can't add the sample project. Run `toolroll` yourself and press s.", EXIT.refused);
+  if (store.isDemo()) return fail(write, json, command, "refused", "The sandbox never makes projects.", EXIT.refused);
+  const viaScreen = localOwnerRequested();
+  if (!viaScreen && !personAtTerminal(context)) return fail(write, json, command, "not-a-terminal", "Add the sample project yourself at a terminal: run `toolroll` and press s, or `toolroll welcome sample`.", EXIT.refused);
+  // The local owner, as runOperate bound it for the screen; or, typed here, bound now from local mode as it reads.
+  const binding = localOwnerBinding(store);
+  if (binding === null) return fail(write, json, command, "not-local", "This Toolroll signs in with a password. Open it in the browser and choose Try a sample project on the welcome page.", EXIT.refused);
+  const principal: LocalPrincipal | null = viaScreen ? currentLocalOwner()
+    : { account: binding.account, localGeneration: binding.localGeneration, accountGeneration: binding.accountGeneration, transport: "terminal", act: "add-project", sessionHash: null, request: null };
+  if (principal === null || principal.act !== "add-project") return fail(write, json, command, "refused", "Set a password, or sign in with your password, to do this.", EXIT.refused);
+  const registryFile = registryPathOf(context);
+  /** What this install serves now: the projects folders and repositories in its registry, canonical. */
+  const ceiling = async (): Promise<ProjectCeiling | null> => {
+    const loaded = await loadProjectRegistry(registryFile);
+    return "error" in loaded ? null : resolveCeiling(loaded.repos, loaded.roots).ceiling;
+  };
+  const first = await ceiling();
+  if (first === null) return fail(write, json, command, "registry", "Toolroll's project list can't be read, so nothing was added.", EXIT.refused);
+  let served: ProjectCeiling = first;
+  const { addSampleProject } = await import("./sample-project.js");
+  const added = await asLocalOwner(principal, async () => {
+    const stands = (): boolean => localActNow(store, "add-project") !== null;
+    return addSampleProject({
+      store, registryFile, now: context.clock(),
+      ceiling: () => served,
+      authority: { actor: { label: principal.account, origin: "cli" }, stands },
+      // The registry is read again once the folder is made: a projects folder that changed meanwhile adds nothing.
+      refreshCeiling: async () => { served = (await ceiling()) ?? { repos: [], roots: [] }; },
+    });
+  });
+  if (!added.ok) {
+    const words: Record<typeof added.reason, string> = {
+      "no-root": "There's no projects folder to put the sample in. Run `toolroll` once to choose one, then try again.",
+      exists: "A folder named toolroll-sample is already in your projects folder and wasn't made by Toolroll, so nothing was changed.",
+      failed: "The sample project couldn't be made. Nothing was added. Try again.",
+      "not-added": "The sample project was made but couldn't be added. Try again.",
+      refused: "Your local sign-in changed while the sample was being added. Nothing was added. Run `toolroll` to sign in again.",
+    };
+    return fail(write, json, command, added.reason, words[added.reason], EXIT.refused);
+  }
+  return succeed(write, json, command, { repo: added.repo, created: added.created, added: added.added, checkSet: added.checkSet }, () => [
+    added.added ? `Added the sample project: ${added.repo}` : `The sample project is already added: ${added.repo}`,
+    "Next: write a first task. Run `toolroll` and press n.",
+  ]);
 }

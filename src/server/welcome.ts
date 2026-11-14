@@ -13,13 +13,12 @@ import { builderReadyFor, firstRunBuilderRepo } from "../dispatch.js";
 import { firstTaskSuggestions, SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, welcomeModel, withBuilderStep, type WelcomeAgent, type WelcomeAgentId, type WelcomeModel } from "../first-run.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { START_BUILDER_HREF } from "../needs-you.js";
-import { admitProject } from "../project-admission.js";
-import { authorizedProject } from "../project.js";
-import { createSampleProject, registerSampleCheck } from "../sample-project.js";
+import { addSampleProject } from "../sample-project.js";
 import { type Chrome, refuse, screen, type Screen } from "./chrome.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
 import { redirect } from "./http.js";
+import { rereadBrowser } from "./live.js";
 import { btn, chip, codeLine, dock, note, notice, pageHeader, settingsRecord } from "./kit.js";
 import type { ServerRuntime } from "./runtime.js";
 
@@ -147,27 +146,28 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
   }
 
   /** Try a sample project: made in the project folder (or found again when it is ours), then added the way Projects
-   * adds a folder, and opened. A refusal comes back to the welcome as a fixed key. */
+   * adds a folder, and opened (sample-project.ts addSampleProject, the one operation every surface uses). A refusal
+   * comes back to the welcome as a fixed key. */
   async function addSample(ctx: HandlerContext): Promise<void> {
-    const { who, response, now, posted } = ctx;
+    const { who, response, now, posted, request } = ctx;
     readForm(posted, CONSOLE_FORMS.welcomeSample);
     if (who.via !== "cookie") return refuse(response, who, 403, "adding a project is a browser session's act");
     if (store.isDemo()) return refuse(response, who, 403, "the sandbox never makes projects");
     const back = (problem: SampleProblem): void => redirect(response, `/welcome?sample=${problem}#welcome-project`);
-    const made = await createSampleProject(liveCeiling().roots[0] ?? null);
-    if (!made.ok) return back(made.reason);
-    // Added exactly as Projects adds a folder: inside what this console serves, visible to this person, a git repository.
-    const decidedOn = identities.generation();
-    const canonical = await identities.resolveNow(made.path);
-    if (canonical === null || canonical === "no-answer" || !(await authorizedProject(liveCeiling(), canonical)) || !visible(canonical)) return back("not-added");
-    const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
-    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed, resolveFolder: identities.resolveNow });
-    if (!admitted.ok || !stillAllowed(admitted.repo)) return back("not-added");
-    // Its own fixed check (sample-project.ts), so the first result reads checked rather than "Checks not run": only for a
-    // sample this request just made, never one found again.
-    registerSampleCheck(store, made, admitted.repo, who.name, now);
-    deletedRepos.delete(admitted.repo);
-    who.session.project = admitted.repo;
+    // This browser session, still saved, still an approver of the same generation: asked before anything is made, after
+    // each wait, and inside the admission's own writes (a local owner's chain is re-proved by every write as well).
+    const stands = (): boolean => { const again = rereadBrowser(runtime, request, who); return again !== null && again.role === "approver" && !store.isDemo(); };
+    const added = await addSampleProject({
+      store, registryFile: options.registryPath ?? null, ceiling: liveCeiling, now, visible,
+      authority: { actor: { label: who.name, origin: "console" }, stands },
+      resolveFolder: identities.resolveNow, generation: () => identities.generation(),
+    });
+    if (!added.ok) {
+      if (added.reason === "refused") return refuse(response, who, 403, "your access changed while the sample was being added");
+      return back(added.reason);
+    }
+    deletedRepos.delete(added.repo);
+    who.session.project = added.repo;
     who.session.projectRevision++;
     sessions.persist(who.session);
     return redirect(response, "/welcome");

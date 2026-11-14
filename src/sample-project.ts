@@ -7,11 +7,18 @@
  * directory, not a link, holding our marker inside its .git), and refused otherwise: nothing in someone else's folder
  * is touched. Git runs hardened (no system or global config, no hooks or hook templates, no fsmonitor, no signing, no
  * prompts, an allowlisted environment), and a folder this call made is removed again when making it fails.
+ *
+ * Adding it (addSampleProject, below) is one operation for every surface: the console's "Try a sample project", the
+ * terminal UI's `s` and `toolroll welcome sample`. Each passes its own proven authority and the projects it serves;
+ * the operation never widens either.
  */
 import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
 import { SAMPLE_PROJECT_NAME } from "./first-run.js";
+import { admitProject, type AdmissionActor, type FolderResolver } from "./project-admission.js";
+import { authorizedProject, canonicalProject, rowVisible, unscoped, type ProjectCeiling } from "./project.js";
+import { loadProjectRegistry, removeRepos, updateRepos } from "./repos.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { TEARDOWN_FLAGS } from "./teardown-git.js";
 import type { Store } from "./store.js";
@@ -139,4 +146,88 @@ export function registerSampleCheck(store: Pick<Store, "transact" | "handle" | "
       detail: `the sample project's own test (${SAMPLE_CHECK_COMMAND}), set by Toolroll when ${addedBy} added the sample` });
     return true;
   });
+}
+
+/** Why the sample project wasn't added, as a fixed key (each surface words it; never words from a folder or git). */
+export type SampleAddProblem = "no-root" | "exists" | "failed" | "not-added" | "refused";
+export type SampleAdded =
+  | { ok: true; repo: string; created: boolean; added: boolean; checkSet: boolean }
+  | { ok: false; reason: SampleAddProblem };
+
+/** The folder the sample goes in: the first projects folder of what the caller serves now, or null (none, or a ceiling
+ * with nothing configured, which would be the legacy serve-everything mode: never a place to make a project). */
+export function sampleRootOf(ceiling: ProjectCeiling): string | null {
+  if (unscoped(ceiling)) return null;
+  const root = ceiling.roots[0];
+  return root === undefined || root === "" || !isAbsolute(root) ? null : root.replace(/\/+$/, "") || null;
+}
+
+/**
+ * Add the sample project: made (or found again when it is ours) in the caller's first projects folder, then added the
+ * way any project is (project-admission.ts admitProject), with its own fixed check only when this call made it.
+ *
+ * - `authority`: who adds it (the ledger's actor) and whether that authority still stands. Asked before anything is
+ *   made, again after each wait, and inside the admission's own locked registry update and database transaction.
+ * - `ceiling`: the projects the caller serves, read again at each check. The sample goes only in its first projects
+ *   folder, at exactly `<root>/toolroll-sample` (canonical); a ceiling that moved meanwhile adds nothing. Nothing here
+ *   adds a projects folder or a repository outside it: the ceiling is never widened.
+ * - No root, command, remote or name is ever taken from the caller's input: the folder, the files, the check command
+ *   and the name are fixed here. No origin remote is discovered (none exists; none is read).
+ */
+export async function addSampleProject(input: {
+  store: Store;
+  registryFile: string | null;
+  ceiling: () => ProjectCeiling;
+  authority: { actor: AdmissionActor; stands: () => boolean };
+  now: Date;
+  /** What else the caller lets this person see (the console: their own projects). */
+  visible?: (repo: string) => boolean;
+  /** How folders resolve (the console: off its thread, under a deadline) and the generation of what it has resolved;
+   * absent, canonicalProject. */
+  resolveFolder?: FolderResolver;
+  generation?: () => number;
+  /** Read the ceiling again from its source (the command line: the registry file) once the folder is made. */
+  refreshCeiling?: () => Promise<void>;
+  git?: GitRun;
+}): Promise<SampleAdded> {
+  const { store, authority } = input;
+  const refused: SampleAdded = { ok: false, reason: "refused" };
+  if (!authority.stands()) return refused;
+  const root = sampleRootOf(input.ceiling());
+  if (root === null) return { ok: false, reason: "no-root" };
+  const made = await createSampleProject(root, input.git);
+  if (!made.ok) return { ok: false, reason: made.reason };
+  await input.refreshCeiling?.();
+  // After the wait: the person still stands, and the folder made is still exactly the sample, inside what is served.
+  if (!authority.stands()) return refused;
+  const decidedOn = input.generation?.() ?? null;
+  const resolveNow: FolderResolver = input.resolveFolder ?? (async path => canonicalProject(path));
+  const expected = join(root, SAMPLE_PROJECT_NAME);
+  const canonical = await resolveNow(made.path);
+  if (!authority.stands()) return refused;
+  const visible = (repo: string): boolean => input.visible === undefined || input.visible(repo);
+  const servedNow = (repo: string): boolean => { const ceiling = input.ceiling(); return sampleRootOf(ceiling) === root && rowVisible(ceiling, repo); };
+  if (canonical === null || canonical === "no-answer" || canonical !== expected || !servedNow(canonical)
+    || !(await authorizedProject(input.ceiling(), canonical)) || !visible(canonical)) return { ok: false, reason: "not-added" };
+  // Asked again inside the admission's locked registry update and its transaction: the same person, the same folder
+  // identities, the same served folder.
+  const stillAllowed = (repo: string): boolean => repo === canonical && authority.stands()
+    && (decidedOn === null || input.generation?.() === decidedOn) && servedNow(repo) && visible(repo);
+  const listed = input.registryFile === null ? null : await loadProjectRegistry(input.registryFile);
+  const listedBefore = listed !== null && !("error" in listed) && listed.repos.includes(canonical);
+  let admitted: Awaited<ReturnType<typeof admitProject>>;
+  try {
+    admitted = await admitProject(store, { registryFile: input.registryFile, path: canonical, actor: authority.actor, now: input.now, stillAllowed,
+      ...(input.resolveFolder === undefined ? {} : { resolveFolder: input.resolveFolder }) });
+  } catch {
+    // A write refused under it (a local sign-in that lapsed mid-way): its registry line, if this call added one, goes.
+    if (input.registryFile !== null && !listedBefore && !store.listProjects().some(one => one.path === canonical)) {
+      await updateRepos(input.registryFile, repos => removeRepos(repos, [canonical])).catch(() => undefined);
+    }
+    return authority.stands() ? { ok: false, reason: "not-added" } : refused;
+  }
+  if (!admitted.ok || !stillAllowed(admitted.repo)) return authority.stands() ? { ok: false, reason: "not-added" } : refused;
+  // Its own fixed check, only for a sample this call made, written while the person still stands.
+  const checkSet = store.transact(() => authority.stands() && registerSampleCheck(store, made, admitted.repo, authority.actor.label, input.now));
+  return { ok: true, repo: admitted.repo, created: made.created, added: admitted.added, checkSet };
 }

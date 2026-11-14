@@ -54,6 +54,7 @@ Starting and running
   toolroll up               app + builder for every saved project, for a server or a phone (--laptop: what bare \`toolroll\` runs)
   toolroll open [--web]     open this computer's Toolroll again, signed in (bare \`toolroll\` does the same)
   toolroll welcome          the three steps to a first result (--json: the model)
+  toolroll welcome sample   add the sample project to your projects folder (at your own terminal)
   toolroll onboard          make your agent Toolroll's lead: add this repo, install its skill (--yes), offer starter flows (--starter)
   toolroll background on|off|show
                                keep this computer's Toolroll running when you log in
