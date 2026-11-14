@@ -237,7 +237,7 @@ describe("protected storage: chat apps, browser profiles and password managers, 
         expect(/\bstorage\b/.test(args), `${file}: ${args.slice(0, 80)}`).toBe(true);
       }
     }
-    expect([...new Set(roads)].sort()).toEqual(["src/coding-provider.ts", "src/eval-oracle.ts", "src/flow-code.ts", "src/invoke.ts", "src/project-tools.ts", "src/release-carry.ts"]);
+    expect([...new Set(roads)].sort()).toEqual(["src/coding-provider.ts", "src/eval-oracle.ts", "src/flexible-thread.ts", "src/flow-code.ts", "src/invoke.ts", "src/project-tools.ts", "src/release-carry.ts"]);
     const check = readFileSync("src/protected-storage.ts", "utf8");
     expect(check).not.toMatch(/spawnSync|execFileSync|execSync/);
     // The walk run here is only ever the child's, a fallback no launch road takes, or a test's.
