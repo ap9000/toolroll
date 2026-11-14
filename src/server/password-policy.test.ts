@@ -40,6 +40,8 @@ const COOKIE_ONLY_POSTS = [
   'settings.local-mode-off',
   // Release approval: an approver's project switch, from a browser (automatic proves a typed password in the handler).
   'settings.release-approval-send',
+  // Flexible projects: an approver's project switch, from a browser (turning on proves a typed password in the handler).
+  'settings.project-flexible',
   // Quiet page visits (docs/plans/get-side-effects.md): asking this computer's agent CLIs again, listing GitHub
   // repositories, from the person's own page.
   'lead.check', 'projects.github-list',

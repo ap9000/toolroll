@@ -69,6 +69,8 @@ const SETTINGS: [table: string, column: string][] = [
   ["project_decision", "repo"], ["flow_script", "repo"], ["workflow_recipe", "repo"], ["team_lead_project", "project"],
   // Its fallback agents and, on the same row, its paid fallback grant (fallback.ts).
   ["fallback_setting", "repo"],
+  // Its Flexible terms (flexible.ts), live and ended: a project added again at the same path starts Secure.
+  ["flexible_terms", "repo"],
 ];
 
 /** The project's Models rows, counted with its settings and deleted by forgetProjectModels only. */

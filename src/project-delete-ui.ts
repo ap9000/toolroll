@@ -15,6 +15,8 @@ import { html, joinHtml, postForm, type Html } from "./html.js";
 import { holdingsWords, type ProjectHoldings } from "./project-delete.js";
 import { acts, btn, codeLine, disclose, formRow, infoLine, input, note, notice, radios, settingsSection, switchInput, textarea } from "./server/kit.js";
 import { kitSectionForm } from "./settings-kit.js";
+import { flexibleSettingsHtml } from "./flexible-ui.js";
+import type { FlexibleSettingsView } from "./flexible.js";
 
 
 /** Check access: a wider level's warning shows only under the option chosen. Everything else on the page is kit markup. */
@@ -49,6 +51,8 @@ export type ProjectSettingsView = {
     unconfinedHere?: boolean;
     /** Why sign-ins can't be chosen (off for now), or null: they can. */
     signInsUnavailable?: string | null };
+  /** How work starts (flexible.ts): present only while this build offers Flexible projects. */
+  flexible?: FlexibleSettingsView | undefined;
 };
 
 const mono = (text: string): Html => html`<span class="k-mono">${text}</span>`;
@@ -264,7 +268,7 @@ export function projectSettingsHtml(view: ProjectSettingsView, said: { said?: st
   // Settings → Advanced off: fallback agents, live view and the code map leave this page, except a fallback chain that is
   // set and live view commands that are on (an active setting keeps its state and its way to turn it off).
   const advanced = advancedShownNow();
-  const settings = joinHtml([buildsHtml(view), accessHtml(view), networkHtml(view), advanced || (view.fallback?.setting ?? null) !== null ? fallbackHtml(view) : "",
+  const settings = joinHtml([flexibleSettingsHtml(view.flexible), buildsHtml(view), accessHtml(view), networkHtml(view), advanced || (view.fallback?.setting ?? null) !== null ? fallbackHtml(view) : "",
     writesHtml(view), sandboxHtml(view), checkAccessHtml(view), advanced || view.liveView?.commands === true ? liveViewHtml(view) : "", advanced ? codeMapHtml(view) : ""]);
   if (!view.canDelete) return joinHtml([answer, project, settings, note("An instance operator can remove or delete a project.")]);
   const deleteBody = view.running.length > 0
