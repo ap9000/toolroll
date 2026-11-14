@@ -370,10 +370,11 @@ export function safeReturn(raw: string | null | undefined): string {
  * fetch (`?fragment=`), which is a piece of a page and not a place to
  * land. Only the app's own pages qualify: the task lens, the chat, the
  * work and board views, and the fixed control destinations a phone
- * button can name. Nothing here is a second redirect framework: one
+ * button can name, and a Settings change document (`/settings/change/<section>`, the page an
+ * identity-provider re-check returns to). Nothing here is a second redirect framework: one
  * same-site path, or "/".
  */
-export const LOGIN_RETURN_PAGES = /^\/(oauth\/authorize|t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|tasks|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+)?|mode)$/;
+export const LOGIN_RETURN_PAGES = /^\/(oauth\/authorize|t\/[^/]+|r\/[1-9]\d*|code(?:\/[a-f0-9]{32}(?:\/ship)?)?|review|chat|tasks|work|board|projects|routines|recipes|fleet|settings(\/[a-z-]+|\/change\/[a-z-]+)?|mode)$/;
 export function loginReturn(raw: string | null | undefined): string {
   const safe = safeReturn(raw);
   if (safe === "/") return "/";

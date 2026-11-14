@@ -714,10 +714,14 @@ function useWindowStaysPut(epoch: number) {
     const settle = () => { if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0); };
     const reveal = () => {
       const id = decodeURIComponent(window.location.hash.slice(1));
-      const target = id === "" || id === "workspace-main" ? null : document.getElementById(id);
+      // A Settings area's ?section=<id> (settings plan v2 §2.5) with no fragment: that section, scrolled to and focused.
+      const section = id === "" ? new URLSearchParams(window.location.search).get("section") : null;
+      const asked = section !== null && /^[a-z][a-z-]{0,39}$/.test(section) ? document.querySelector<HTMLElement>(`[data-section="${section}"]`) : null;
+      const target = asked ?? (id === "" || id === "workspace-main" ? null : document.getElementById(id));
       // A link to exact lines inside a folded file (a result's mismatch, a check log) opens its folds first.
       for (let node = target?.parentElement ?? null; node !== null; node = node.parentElement) if (node instanceof HTMLDetailsElement) node.open = true;
       target?.scrollIntoView({ block: "start" });
+      asked?.focus({ preventScroll: true });
       settle();
     };
     const frame = requestAnimationFrame(reveal);

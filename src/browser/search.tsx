@@ -40,6 +40,7 @@ export const DESTINATIONS: readonly (readonly [title: string, href: string, wher
   ["Monitoring", "/settings/monitoring", "Settings → System", "traces otel audit stream"],
   ["Data export", "/settings/data", "Settings → System", "export zip"],
   ["Integrations", "/settings/integrations", "Settings → System", "webhooks"],
+  ["Show advanced features", "/settings/general?section=advanced", "Settings → General", "advanced features menus flows agents spend more pages"],
   ["Spend", "/spend", "Settings → Spend", "monthly limits budget cap cost usage"],
   ["Terminals", "/term", "Agents", "shell console"],
 ];
@@ -61,6 +62,7 @@ export const LEGACY: readonly (readonly [title: string, href: string, now: strin
   ["Activity", "/", "Work", "morning summary"],
   ["Workspace tools", "/menu", "Settings", "menu"],
   ["All settings", "/settings", "Settings"],
+  ["Advanced", "/settings/general?section=advanced&open=1", "Settings → General", "advanced pages"],
 ];
 
 const TONE: Record<string, ChipTone> = { attention: "needs", ready: "needs", live: "live", done: "done", problem: "failed", muted: "", neutral: "" };
@@ -81,8 +83,8 @@ export function searchIndex(workspace: BrowserWorkspace): SearchEntry[] {
     { kind: "page", title: "Projects", sub: "Manage projects", href: "/projects", also: "add repository open project" },
     // Off the rail since Work (S2a); with Settings → Advanced on they stay one search away.
     ...(workspace.advanced === false ? [] : [
-      { kind: "page" as const, title: "Flows", sub: "Settings → Advanced", href: "/flows", also: "automation recipes" },
-      { kind: "page" as const, title: "Agents", sub: "Settings → Advanced", href: "/agents", also: "computers builders live" },
+      { kind: "page" as const, title: "Flows", sub: "Settings → General → Advanced", href: "/flows", also: "automation recipes" },
+      { kind: "page" as const, title: "Agents", sub: "Settings → General → Advanced", href: "/agents", also: "computers builders live" },
     ]),
     ...DESTINATIONS.map(([title, href, where, also]): SearchEntry => ({ kind: "setting", title, sub: where, href, ...(also ? { also } : {}) })),
     ...LEGACY.map(([title, href, now, also]): SearchEntry => ({ kind: "page", title, sub: `Now ${now}`, href, legacy: true, ...(also ? { also } : {}) })),
