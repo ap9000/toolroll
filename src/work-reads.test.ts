@@ -204,6 +204,78 @@ test("a grant written then rolled back in the same request never reads as grante
   });
 });
 
+test("a rollback run through a prepared statement's get() or all() counts as well (Codex round 2, finding 2)", () => {
+  const store = world();
+  const alex = addApprover(store, "alex", now);
+  const pat = alex.ok ? addApprover(store, "pat", now, { name: "alex", token: alex.token }) : alex;
+  expect(pat.ok).toBe(true);
+  expect(store.setAccountProjects("pat", ["/repo/one"], "alex", now).ok).toBe(true);
+  const grant = () => store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'pat'").run(JSON.stringify(["/repo/one", "/repo/two"]));
+  withWorkReads(() => {
+    const saving = workReadsOf(store)!.store;
+    for (const via of ["get", "all"] as const) {
+      expect(saving.accountCanAccess("pat", "/repo/two")).toBe(false);
+      store.handle.prepare("BEGIN")[via]();
+      grant();
+      expect(saving.accountCanAccess("pat", "/repo/two")).toBe(true);
+      store.handle.prepare("ROLLBACK")[via]();
+      expect(saving.accountCanAccess("pat", "/repo/two"), `ROLLBACK through ${via}()`).toBe(false);
+      store.handle.prepare("BEGIN")[via]();
+      store.handle.prepare("SAVEPOINT grant_try")[via]();
+      grant();
+      expect(saving.accountCanAccess("pat", "/repo/two")).toBe(true);
+      store.handle.prepare("ROLLBACK TO grant_try")[via]();
+      expect(saving.accountCanAccess("pat", "/repo/two"), `ROLLBACK TO through ${via}()`).toBe(false);
+      store.handle.prepare("RELEASE grant_try")[via]();
+      store.handle.prepare("COMMIT")[via]();
+    }
+  });
+});
+
+test("a projection built after another process committed drops everything kept from before it (Codex round 2, finding 1)", async () => {
+  const store = world();
+  await withWorkReads(async () => {
+    const reads = workReadsOf(store)!;
+    const saving = reads.store;
+    let computed = 0, oldFills = 0;
+    // Kept in this turn, before the other process commits: an answer, a value and a projection.
+    expect(saving.getTask("c")!.state).toBe("queued");
+    expect(reads.value("v", () => ++computed)).toBe(1);
+    const fillOld = (name: string) => { oldFills++; store.handle.exec(`CREATE TEMP TABLE "${name}" AS SELECT state FROM task WHERE id = 'c'`); };
+    const old = reads.ranked("old", now, fillOld)!;
+    expect(store.handle.prepare(`SELECT state FROM temp."${old}"`).get()?.["state"]).toBe("queued");
+    execFileSync(process.execPath, ["--no-warnings", "-e", `const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1]); db.exec("PRAGMA busy_timeout = 5000");
+      db.prepare("UPDATE task SET state = 'cancelled' WHERE id = 'c'").run(); db.close();`, join(dir!, "orders.db")]);
+    // Same turn: a new projection, built after the commit, reads it.
+    const fresh = reads.ranked("new", now, name => { store.handle.exec(`CREATE TEMP TABLE "${name}" AS SELECT state FROM task WHERE id = 'c'`); })!;
+    expect(store.handle.prepare(`SELECT state FROM temp."${fresh}"`).get()?.["state"]).toBe("cancelled");
+    await Promise.resolve();
+    // Later turns: nothing kept from before the commit answers.
+    expect(saving.getTask("c")!.state).toBe("cancelled");
+    expect(reads.value("v", () => ++computed)).toBe(2);
+    const again = reads.ranked("old", now, fillOld)!;
+    expect(oldFills).toBe(2);
+    expect(store.handle.prepare(`SELECT state FROM temp."${again}"`).get()?.["state"]).toBe("cancelled");
+  });
+});
+
+test("a lead's filtered list reads over the kept copy as over the projection, and another lead's is its own", () => {
+  const store = world();
+  const ref = (id: string) => store.refFor("built-in", id).id;
+  for (const lead of ["lead-1", "lead-2"]) store.handle.prepare("INSERT INTO team_lead(id,name,instructions,status,created_by,created_at) VALUES (?,?,?,?,?,?)").run(lead, lead, "", "active", "alex", now.toISOString());
+  const own = store.handle.prepare("INSERT INTO team_task_owner(task_ref,lead,changed_by,changed_at) VALUES (?,?,?,?)");
+  own.run(ref("a"), "lead-1", "alex", now.toISOString()); own.run(ref("c"), "lead-1", "alex", now.toISOString()); own.run(ref("b"), "lead-2", "alex", now.toISOString());
+  const lead = (leadId: string) => workIndexPage(store, now, operator, { view: "all", limit: 40, leadId });
+  withWorkReads(() => {
+    expect(lead("lead-1").items.map(item => item.rootId).sort()).toEqual(["a", "c"]);
+    expect(lead("lead-2").items.map(item => item.rootId)).toEqual(["b"]);
+    expect(lead("lead-1")).toEqual(withoutReads(() => lead("lead-1")));
+    expect(lead("lead-2")).toEqual(withoutReads(() => lead("lead-2")));
+    expect(temps(store)).toHaveLength(2);
+  });
+});
+
 test("a commit by another process is read from the next turn on", async () => {
   const store = world();
   await withWorkReads(async () => {

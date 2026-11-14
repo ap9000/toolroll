@@ -15,7 +15,7 @@ export const writesSoFar = (): number => writes;
 const ownTemp = (op: string) => /^(?:CREATE\s+TEMP\s+TABLE\s+"so_work_ranked_\d+"|DROP\s+TABLE\s+IF\s+EXISTS\s+temp\."so_work_ranked_\d+"$)/i.test(op);
 const opening = (op: string) => /^(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?|SAVEPOINT\s+\w+)\s*;?$/i.test(op);
 const settingOnly = (op: string) => /^PRAGMA\s+busy_timeout\s*=\s*\d+\s*;?$/i.test(op);
-const ending = (op: string) => /^(?:COMMIT|END|ROLLBACK|RELEASE)\b/i.test(op);
+const ending = (op: string) => /^(?:COMMIT|END|ROLLBACK|RELEASE)\b[^;]*;?\s*$/i.test(op);
 const states = new WeakMap<Database, State>();
 
 /** One observation for the entire bounded BEGIN retry, including a failed acquisition. */
@@ -60,24 +60,37 @@ export function instrumentDatabase(db: Database, telemetry: ServerTelemetry): Da
       db.exec(sql); finish();
     } else standalone(writing(op), () => db.exec(sql));
   };
+  /** Whether running `op` this way counts, by the statement's own text, on every path (exec, run, get, all, iterate):
+   * a transaction's opening marks where it began; its end counts unless nothing was counted since; anything else that
+   * may write counts (exec and run always). */
+  const counts = (op: string, path: 'exec' | 'run' | 'read', write: boolean): boolean => {
+    if (ownTemp(op) || settingOnly(op)) return false;
+    if (opening(op)) { if (openedAt === null && native.isTransaction !== true) openedAt = writes; return false; }
+    if (ending(op)) return openedAt === null || writes !== openedAt;
+    return path !== 'read' || write;
+  };
+  /** After a statement: a transaction no longer open forgets where it began. */
+  const settled = (op: string): void => {
+    if (native.isTransaction === false || (native.isTransaction === undefined && /^(?:COMMIT|END|ROLLBACK(?!\s+TO))\b/i.test(op))) openedAt = null;
+  };
+  const tracked = <T>(op: string, path: 'exec' | 'run' | 'read', write: boolean, body: () => T): T => {
+    try { return counted(counts(op, path, write), body); } finally { settled(op); }
+  };
   const methods: Database = {
     exec(sql) {
       const op = operation(sql);
-      if (opening(op) && openedAt === null && native.isTransaction !== true) openedAt = writes;
-      const counts = ending(op) ? openedAt === null || writes !== openedAt : !ownTemp(op) && !opening(op) && !settingOnly(op);
-      try { counted(counts, () => execNow(sql, op)); }
-      finally { if (native.isTransaction === false || (native.isTransaction === undefined && /^(?:COMMIT|END|ROLLBACK(?!\s+TO))\b/i.test(op))) openedAt = null; }
+      tracked(op, 'exec', true, () => execNow(sql, op));
     },
     prepare(sql): Statement {
-      const op = operation(sql), statement = db.prepare(sql), write = writing(op), counts = !ownTemp(op);
+      const op = operation(sql), statement = db.prepare(sql), write = writing(op);
       const methods: Statement = {
-        run: (...params) => counted(counts, () => standalone(write, () => statement.run(...params))),
-        get: (...params) => counted(write && counts, () => standalone(write, () => statement.get(...params))),
-        all: (...params) => counted(write && counts, () => standalone(write, () => statement.all(...params))),
+        run: (...params) => tracked(op, 'run', write, () => standalone(write, () => statement.run(...params))),
+        get: (...params) => tracked(op, 'read', write, () => standalone(write, () => statement.get(...params))),
+        all: (...params) => tracked(op, 'read', write, () => standalone(write, () => statement.all(...params))),
       };
-      // A write read row by row (INSERT … RETURNING through iterate) counts too.
+      // Row by row too (a write's RETURNING, a transaction control read through iterate): the same rule.
       const rows = statement as Statement & { iterate?: (...params: unknown[]) => unknown };
-      if (write && counts && typeof rows.iterate === 'function') Object.assign(methods, { iterate: (...params: unknown[]) => counted(true, () => rows.iterate!(...params)) });
+      if (typeof rows.iterate === 'function') Object.assign(methods, { iterate: (...params: unknown[]) => tracked(op, 'read', write, () => rows.iterate!(...params)) });
       return preservingNative(statement, methods);
     },
     close() { try { db.close(); } finally { finish(); } },

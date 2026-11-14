@@ -16,8 +16,9 @@
  * - a write by this process, on any Store connection, is seen at once: sqlite-telemetry.ts counts every statement that
  *   may write as it runs (writesSoFar), so this proof costs no statement;
  * - a commit by another process is seen through the file's data version, read once per turn of the event loop (one
- *   PRAGMA). Inside one synchronous turn no other code of this process runs, so a commit landing during it is ordered
- *   after the turn: the turn reads as if it ran just before that commit; the next turn (after any await) sees it.
+ *   PRAGMA): bounded staleness, not a snapshot. Within one synchronous turn a saved answer may still be one from before
+ *   that commit (reads that go to the database in the same turn see it); from the next turn on (after any await) every
+ *   reuse sees it, and a kept projection built after it drops everything kept from before.
  * A kept projection is checked again after it is built: a write that lands while it fills discards it (it is rebuilt,
  * at most twice, then the read goes to the projection itself). Time is the one input a reuse can't prove unchanged, so
  * the projection is reused only for WORK_READ_REUSE_MS after it was read: one request sees one instant.
@@ -157,6 +158,10 @@ export function workReadsOf(given: Store): WorkReads | null {
         // The database as it stands before the build (the data version read anew, not this turn's), and again after:
         // a copy is kept only when nothing was written in between, so it never stands for anything newer than it read.
         const before = stampOf(db, current, true);
+        // Read anew, the database may already have moved past this turn's proof (another process committed): then
+        // nothing kept from before stands — every saved answer, value and projection goes before this copy is built,
+        // so the stamp it is kept under never covers anything older than it.
+        if (before === null || before !== current.stamp) reset(db, current, before);
         try {
           db.exec(`DROP TABLE IF EXISTS temp."${table}"`);
           fill(table);
@@ -222,6 +227,11 @@ function stampOf(db: Database, connection: Connection, exact = false): string | 
 function prove(db: Database, connection: Connection): void {
   const stamp = stampOf(db, connection);
   if (stamp !== null && stamp === connection.stamp) return;
+  reset(db, connection, stamp);
+}
+
+/** Drop every saved answer, value and kept projection, and take `stamp` as the database they will be read at. */
+function reset(db: Database, connection: Connection, stamp: string | null): void {
   connection.answers.clear(); connection.values.clear();
   for (const key of [...connection.ranked.keys()]) forgetRanked(db, connection, key);
   connection.stamp = stamp;
