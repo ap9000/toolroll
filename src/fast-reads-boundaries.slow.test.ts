@@ -44,7 +44,7 @@ function send(at: Served, path: string, headers: Record<string, string>, method 
 }
 /** Per-request secrets only (a form's request id, a page's script nonce): everything else must match as sent. */
 const normalized = (text: string) => text.replace(/(nonce=\\?"|"nonce":")[A-Za-z0-9_\-+/=]+/g, "$1<token>")
-  .replace(/(name=\\?"request\\?" value=\\?"|"requestId":")[0-9a-f]{32}/g, "$1<request>");
+  .replace(/(name=\\?"request\\?" value=\\?"|"requestId":"|"request":")[0-9a-f]{32}/g, "$1<request>");
 const asRead = (headers: Record<string, string>, json: boolean) => json
   ? { ...headers, accept: "application/json", "x-toolroll-read": "navigate", "x-toolroll-work": "1" } : { ...headers, accept: "text/html" };
 const withFormat = (path: string) => `${path}${path.includes("?") ? "&" : "?"}format=workspace`;
@@ -142,12 +142,12 @@ afterAll(async () => {
 
 test("an API token reads what it read without the request's work reads", async () => {
   const auth = { authorization: `Bearer ${token}` };
-  for (const path of ["/tasks", "/tasks?layout=board", `/t/${encodeURIComponent(ownResult)}?tab=result`]) await same(wire, path, auth);
+  for (const path of ["/?view=all", "/?view=board", `/t/${encodeURIComponent(ownResult)}?tab=result`]) await same(wire, path, auth);
 }, 300_000);
 
 test("a local owner's session reads what it read without them", async () => {
   expect(cookies["owner"]).toMatch(/=/);
-  for (const path of ["/", "/tasks", "/tasks?layout=board", "/chat"]) await same(laptop, path, { cookie: cookies["owner"]! });
+  for (const path of ["/", "/?view=all", "/?view=board", "/chat"]) await same(laptop, path, { cookie: cookies["owner"]! });
 }, 300_000);
 
 test("a viewer reads a result in their own project, the same either way", async () => {
@@ -156,19 +156,19 @@ test("a viewer reads a result in their own project, the same either way", async 
 }, 300_000);
 
 test("an account narrowed, then revoked, between its reads reads exactly its new access", async () => {
-  const before = await same(wire, "/tasks", { cookie: cookies["pat"]! });
+  const before = await same(wire, "/?view=all", { cookie: cookies["pat"]! });
   expect(wire.store.setAccountProjects("pat", [world.samProject], "alex", WIRE_NOW).ok).toBe(true);
-  const narrowed = await same(wire, "/tasks", { cookie: cookies["pat"]! });
+  const narrowed = await same(wire, "/?view=all", { cookie: cookies["pat"]! });
   expect(narrowed.body).not.toBe(before.body);
   expect(narrowed.body).not.toContain("payments-api");
-  await same(wire, "/tasks?layout=board", { cookie: cookies["pat"]! });
+  await same(wire, "/?view=board", { cookie: cookies["pat"]! });
   expect(wire.store.revokeAccount("pat", "alex", WIRE_NOW).ok).toBe(true);
-  const revoked = await same(wire, "/tasks", { cookie: cookies["pat"]! });
+  const revoked = await same(wire, "/?view=all", { cookie: cookies["pat"]! });
   expect(revoked.status).not.toBe(200);
 }, 300_000);
 
 test("overlapping requests for different accounts each read their own answer", async () => {
-  const reads_ = [["alex", "/chat"], ["sam", "/tasks"], ["robin", "/"], ["sam", "/tasks?layout=board"], ["alex", "/tasks?state=failed"]] as const;
+  const reads_ = [["alex", "/chat"], ["sam", "/?view=all"], ["robin", "/"], ["sam", "/?view=board"], ["alex", "/?state=failed"]] as const;
   reads.off = true;
   const bare = await Promise.all(reads_.map(([who, path]) => send(wire, withFormat(path), asRead({ cookie: cookies[who]! }, true))));
   const alone = [];
@@ -182,12 +182,12 @@ test("overlapping requests for different accounts each read their own answer", a
 }, 300_000);
 
 test("a commit by another process between reads is read at once", async () => {
-  const before = await same(wire, "/tasks", { cookie: cookies["alex"]! });
+  const before = await same(wire, "/?view=all", { cookie: cookies["alex"]! });
   const file = join(wire.root, "config", "orders.db");
   execFileSync(process.execPath, ["--no-warnings", "-e", `const { DatabaseSync } = require("node:sqlite");
     const db = new DatabaseSync(process.argv[1]); db.exec("PRAGMA busy_timeout = 5000");
     db.prepare("UPDATE task SET title = 'Renamed by another process' WHERE id = ?").run(process.argv[2]); db.close();`, file, world.probeTask]);
-  const after = await same(wire, "/tasks", { cookie: cookies["alex"]! });
+  const after = await same(wire, "/?view=all", { cookie: cookies["alex"]! });
   expect(after.body).not.toBe(before.body);
   await same(wire, `/t/${encodeURIComponent(world.probeTask)}`, { cookie: cookies["sam"]! });
 }, 300_000);
@@ -198,7 +198,7 @@ test("results' check levels and follow-up checks read over the kept copy as over
   const results = wire.store.handle.prepare(`SELECT r.id, tr.repo, tr.external_id FROM run r JOIN task_ref tr ON tr.id = r.task_ref
     JOIN task t ON t.id = tr.external_id WHERE t.state = 'done' AND r.role = 'builder' AND r.outcome = 'built' ORDER BY r.id DESC LIMIT 40`).all();
   const bare = async (path: string) => { reads.off = true; try { return normalized((await send(wire, withFormat(path), asRead({ cookie: cookies["alex"]! }, true))).body); } finally { reads.off = false; } };
-  const before = await bare("/tasks?view=needs-you");
+  const before = await bare("/?view=needs-you");
   // The list's own reading of the lines (no evidence root: only the saved lines speak), kept copy and projection alike.
   const { workIndexPage } = await import("./work-index.js");
   const { withWorkReads, outsideWorkReads } = await import("./work-reads.js");
@@ -217,33 +217,33 @@ test("results' check levels and follow-up checks read over the kept copy as over
     line("checks used", "off", world.repos.find(one => one !== row["repo"])!);
     line("checks requested", "quick", world.repos.find(one => one !== row["repo"])!);
   }
-  expect(await bare("/tasks?view=needs-you")).not.toBe(before);
+  expect(await bare("/?view=needs-you")).not.toBe(before);
   expect(unread("needs-you")).not.toEqual(plainBefore);
   for (const view of ["needs-you", "all", "completed"] as const) {
     reads.off = false;
     expect(withWorkReads(() => workIndexPage(wire.store, WIRE_NOW, operator, list(view))), view).toEqual(unread(view));
   }
-  for (const path of ["/tasks?view=needs-you", "/tasks", "/", "/tasks?layout=board"]) await same(wire, path, { cookie: cookies["alex"]! });
+  for (const path of ["/?view=needs-you", "/?view=all", "/", "/?view=board"]) await same(wire, path, { cookie: cookies["alex"]! });
   await same(wire, "/chat", { cookie: cookies["alex"]! });
 }, 300_000);
 
 test("a token that expires between reads reads, then is refused, the same either way", async () => {
   const auth = { authorization: `Bearer ${expiring}` };
-  expect((await same(wire, "/tasks", auth)).status).toBe(200);
+  expect((await same(wire, "/?view=all", auth)).status).toBe(200);
   vi.setSystemTime(new Date(WIRE_NOW.getTime() + 120_000));
   try {
-    expect((await same(wire, "/tasks", auth)).status).not.toBe(200);
+    expect((await same(wire, "/?view=all", auth)).status).not.toBe(200);
   } finally { vi.setSystemTime(WIRE_NOW); }
 }, 300_000);
 
 test("an account deleted outright between its reads is refused the same either way", async () => {
-  expect((await same(wire, "/tasks", { cookie: cookies["gwen"]! })).status).toBe(200);
+  expect((await same(wire, "/?view=all", { cookie: cookies["gwen"]! })).status).toBe(200);
   // No store door deletes an account (they are revoked); a row gone all the same is the edge.
   wire.store.handle.exec("PRAGMA foreign_keys = OFF");
   try { wire.store.handle.prepare("DELETE FROM approver WHERE name = 'gwen'").run(); } finally { wire.store.handle.exec("PRAGMA foreign_keys = ON"); }
-  const gone = await same(wire, "/tasks", { cookie: cookies["gwen"]! });
+  const gone = await same(wire, "/?view=all", { cookie: cookies["gwen"]! });
   expect(gone.status).not.toBe(200);
-  await same(wire, "/tasks?layout=board", { cookie: cookies["gwen"]! });
+  await same(wire, "/?view=board", { cookie: cookies["gwen"]! });
 }, 300_000);
 
 /** The summary room's first snapshot for an account, from a fresh stream (the room is made anew once its last stream

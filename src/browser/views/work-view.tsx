@@ -21,7 +21,7 @@ import { keyed } from "../mutation-key.js";
 import { ACT_TIMEOUT_MS, REDRAW_HOLD_MS, selectionRead, sentence, taskViewOf } from "../act.js";
 import { HomeApproval, SELECTION_SETTLE_MS } from "./home-approval.js";
 import { ShellOverlay } from "../shell.js";
-import { RestoreAct, TaskBoard, ToolsMenu } from "./tasks-view.js";
+import { RestoreAct, TaskBoard, ToolsMenu, usageSummary } from "./tasks-view.js";
 import "./home.css";
 import "./work.css";
 
@@ -200,6 +200,8 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
   const panel = shown === null ? null
     : <WorkPanel key={shown.id} item={shown} onDone={done} onSettled={settled} onClose={drawer ? () => setOpen(false) : null} />;
   const board = view.list.layout === "board";
+  // The plan's windows and budgets in one line, for whoever runs the installation (the server sends them to no one else).
+  const usage = view.list.limits !== null && view.list.limits.tiles.length > 0 ? usageSummary(view.list.limits).map(one => one.text).join(" · ") : null;
   return <div className="so-home so-work" data-kit-page data-work data-work-view={current}>
     <header className="so-work-h">
       <div className="so-work-hl"><h1 className="so-work-t">Work</h1><span className="so-work-p">{view.projectName}</span></div>
@@ -233,6 +235,7 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
                 action={item.task?.tidy?.label === "Restore" ? <RestoreAct tidy={item.task.tidy} /> : <KLinkButton sm label={item.act} href={item.href} tabIndex={-1} />} />
             </div>)}
           </section>)}
+        {usage && <p className="k-foot so-work-pages" data-usage-summary>Usage: <a href="/spend">{usage}</a></p>}
         {!board && current === "completed" && view.list.archived && !view.list.archived.active && <p className="k-foot so-work-pages"><a href={view.list.archived.href}>Archived tasks · {view.list.archived.count}</a></p>}
         {!board && (view.list.pages.first || view.list.pages.next) && <p className="k-foot so-work-pages">
           {view.list.pages.first && <a href={view.list.pages.first}>First page</a>}{view.list.pages.first && view.list.pages.next && " · "}{view.list.pages.next && <a href={view.list.pages.next} rel="next">Next page</a>}

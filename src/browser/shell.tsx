@@ -111,9 +111,6 @@ function RailProjects({ workspace, states, current }: { workspace: BrowserWorksp
   </nav>;
 }
 
-/** Work, filtered to one project. */
-const workHrefOf = (path: string): string => `/?project=${encodeURIComponent(path)}`;
-
 /** Who is signed in, and what stands in for a password on this computer right now. */
 function Account({ workspace }: { workspace: BrowserWorkspace }) {
   const signOut = useRef<HTMLFormElement>(null);
@@ -302,3 +299,6 @@ export function LiveState({ quietOffline = false }: { quietOffline?: boolean }) 
   const words = state === "offline" ? (quietOffline ? null : "Offline") : state === "reconnecting" && late ? "Reconnecting…" : null;
   return <div className="so-live-state" role="status" data-live-indicator={words === null ? undefined : state}>{words !== null && <KChip word={words} />}</div>;
 }
+
+/** Work, filtered to one project. */
+function workHrefOf(path: string): string { return `/?project=${encodeURIComponent(path)}`; }

@@ -552,7 +552,9 @@ await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets t
 /**
  * Show advanced features (Settings → General): a new account's menus leave out advanced features (Spend, Flows, Agents and the rest). A journey
  * that uses one of their entry points turns "Show advanced features" on first, through the real switch, and checks that
- * the rail and the person's saved row followed. Already on (an earlier journey in this world): nothing to do.
+ * the page and the person's saved row followed: the rail is Work · Chat · Settings either way (one workspace S2a), so the
+ * page's own workspace says whether advanced entry points (Flows and Agents in Search) are shown. Already on (an earlier
+ * journey in this world): nothing to do.
  */
 async function showAdvanced(on, who = "alex") {
   const saved = () => rows(`SELECT advanced FROM view_preference WHERE account = '${who}'`)[0]?.advanced ?? null;
@@ -561,14 +563,16 @@ async function showAdvanced(on, who = "alex") {
   await on.goto(`${base}/settings/general?section=advanced`);
   const section = on.locator("#show-advanced");
   await section.waitFor({ timeout: 15_000 });
-  if (await on.locator('nav a[href="/flows"]:visible').count() !== 0) throw new Error("Flows is in the menu before Show advanced features is on");
+  const advancedShown = () => on.evaluate(() => { try { return JSON.parse(document.getElementById("standing-orders-workspace-data")?.textContent ?? "{}").advanced !== false; } catch { return null; } });
+  if (await advancedShown() !== false) throw new Error("advanced entry points are shown before Show advanced features is on");
+  if (await on.locator('.so-rail a[href="/flows"]').count() !== 0) throw new Error("Flows is on the rail");
   await Promise.all([on.waitForNavigation(), section.locator('button[type="submit"]', { hasText: "Turn on" }).click()]);
-  await until("the rail to show Flows", async () => await on.locator('nav a[href="/flows"]:visible').count() > 0, { timeoutMs: 15_000, everyMs: 250 });
+  await until("the page to show advanced entry points (Flows and Agents in Search)", async () => await advancedShown() === true, { timeoutMs: 15_000, everyMs: 250 });
   if (saved() !== 1) throw new Error(`Show advanced features wasn't saved for ${who}: ${JSON.stringify(rows("SELECT * FROM view_preference"))}`);
 }
 
 await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown cost show apart; a limit set on Settings → Spend is listed on the Spend page, and the month downloads as CSV", [], async () => {
-  // Spend and the Tasks usage line are advanced features: on for this person first, through Settings → Advanced.
+  // Spend and Work's usage line are advanced features: on for this person first, through Settings → Advanced.
   await showAdvanced(page);
   await page.goto(`${base}/spend`);
   await page.locator('.spend-sum [data-amount-kind="api"]').waitFor({ timeout: 15_000 });
@@ -594,9 +598,9 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   await page.setViewportSize({ width: 1440, height: 900 });
   const csv = await page.request.get(`${base}/spend?format=csv`);
   if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
-  // Tasks folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
+  // Work folds usage (the limit, and the plan's windows once Claude has run here) to one line; its link opens Spend,
   // where the limit has its meter and the plan's windows are tiles as Claude said them.
-  await page.goto(`${base}/tasks`);
+  await page.goto(`${base}/?view=all`);
   const usage = page.locator("[data-usage-summary]");
   await usage.waitFor({ timeout: 15_000 });
   if (!/\d+%/.test(await usage.innerText())) throw new Error(`the usage line: ${await usage.innerText()}`);

@@ -601,7 +601,8 @@ export function workPage(
     ? html`<p class="work-empty" data-work-empty="${data.view}">${filtered && !data.previous ? `No tasks are ${data.state} in this view.` : data.previous ? 'There are no more tasks on this page.' : current.empty}</p>`
     : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
   const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="work-pagination" aria-label="Task pages">${data.previous ? html`<a href="${href(data.view)}">First page</a>` : null} ${data.work.nextCursor === null ? null : html`<a rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
-  return screen('work', html`${legacyTabs}${list}${pages}`, { chrome, workspace: { view } });
+  // The plan's windows and the budgets, as links, for whoever runs the installation (data.limits is theirs alone).
+  return screen('work', html`${limitsHtml(data.limits ?? null)}${legacyTabs}${list}${pages}`, { chrome, workspace: { view } });
 }
 
 
