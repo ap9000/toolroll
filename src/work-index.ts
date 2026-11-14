@@ -461,23 +461,23 @@ function bound(sql: string, params: Record<string, unknown>): Record<string, unk
 /** Rows of one read over the projection: `query` names the statement it runs after the projection's text (ending at
  * `ranked`) and its own parameters. It runs over this request's kept copy of the projection for exactly these inputs
  * when it holds one or can make one (work-reads.ts), else over the projection itself, as every read did before. A kept
- * copy that can't be read is forgotten and the projection read instead. `cached`: the statement is compiled once per
- * connection (the page query is long). */
+ * copy that can't be read is forgotten and the projection read instead. `kept`: the read is over the kept copy.
+ * `cached`: the statement is compiled once per connection (the page query is long). */
 function projectionRows(store: Store, now: Date, access: WorkSummaryAccess, options: WorkIndexOptions, custody: ReturnType<typeof custodyReadings>,
-  reads: WorkReads | null, query: (projection: string) => { sql: string; params: Record<string, unknown>; cached?: boolean }): Record<string, unknown>[] {
+  reads: WorkReads | null, query: (projection: string, kept: boolean) => { sql: string; params: Record<string, unknown>; cached?: boolean }): Record<string, unknown>[] {
   const projection = registerValidators(store), inputs = parameters(store, now, access, options, custody, reads);
-  const run = (text: string) => {
-    const one = query(text), sql = `${text}${one.sql}`;
+  const run = (text: string, kept: boolean) => {
+    const one = query(text, kept), sql = `${text}${one.sql}`;
     return (one.cached === true ? prepared(store, sql) : store.handle.prepare(sql)).all(bound(sql, { ...inputs, ...one.params }));
   };
   if (reads !== null) {
     const key = JSON.stringify(Object.entries(inputs).filter(([name]) => !TIME_INPUTS.has(name)).sort(([a], [b]) => a.localeCompare(b)));
     const table = reads.ranked(key, now, name => { prepared(store, `CREATE TEMP TABLE "${name}" AS ${projection} SELECT * FROM ranked`).run(inputs); });
     if (table !== null) {
-      try { return run(`WITH ranked AS (SELECT * FROM temp."${table}")`); } catch { reads.forget(key); }
+      try { return run(`WITH ranked AS (SELECT * FROM temp."${table}")`, true); } catch { reads.forget(key); }
     }
   }
-  return run(projection);
+  return run(projection, false);
 }
 function counts(row: Row): WorkIndexCounts {
   return { all: n(row, 'all_count'), 'needs-you': n(row, 'needs_count'), ready: n(row, 'ready_count'), running: n(row, 'running_count'), queued: n(row, 'queued_count'), completed: n(row, 'completed_count'), archived: n(row, 'archived_count') };
@@ -566,15 +566,18 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
   const filter = view === 'archived' ? 'archived=1' : view === 'needs-you' ? 'needs=1' : view === 'ready' ? READY : view === 'running' ? 'family_running=1 AND archived=0' : view === 'queued' ? QUEUED : view === 'completed' ? "code='complete' AND archived=0 AND ($completedSince IS NULL OR sort_at>=$completedSince)" : 'archived=0';
   // One read of ranked serves the page, its totals and each project's totals (window functions; see ONE_READ): the page's
   // rows (`is_row`, in list order), and each project's first row (`is_project`) to carry that project's totals.
-  const rows = projectionRows(store, now, access, options, custody, reads, () => ({ cached: true, sql: `, page AS (
-    SELECT p.*,p.in_page AND p.page_order<=$limit is_row,p.repo_order=1 is_project,
-      CASE WHEN p.in_page AND p.page_order<=$limit THEN COALESCE(p.result_id,(SELECT id FROM run WHERE task_ref=p.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) END page_result_id
+  // Over this request's kept copy (work-reads.ts) the totals and the order are worked out on the few columns they read,
+  // and only the rows they pick are joined back to every column (a family's root_ref is its one row): sorting every
+  // column of every family four times was most of a page read. Over the projection itself, ranked is read once (ONE_READ).
+  const rows = projectionRows(store, now, access, options, custody, reads, (_, kept) => ({ cached: true, sql: `, page AS (
+    SELECT ${kept ? `r.*,p.in_page,p.page_order,p.repo_order,p.repo_rank,${[...PAGE_TOTAL_NAMES, ...PROJECT_TOTAL_NAMES].map(name => `p.${name}`).join(',')}` : 'p.*'},p.in_page AND p.page_order<=$limit is_row,p.repo_order=1 is_project,
+      CASE WHEN p.in_page AND p.page_order<=$limit THEN COALESCE(${kept ? 'r' : 'p'}.result_id,(SELECT id FROM run WHERE task_ref=${kept ? 'r' : 'p'}.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1)) END page_result_id
     FROM (SELECT s.*,ROW_NUMBER() OVER (PARTITION BY s.in_page ORDER BY ${ORDER},sort_at DESC,root_ref DESC) page_order,
         ROW_NUMBER() OVER (PARTITION BY repo ORDER BY root_ref) repo_order,DENSE_RANK() OVER (ORDER BY repo) repo_rank
-      FROM (SELECT r.*,($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR EXISTS(SELECT 1 FROM json_each(r.fam_ids) WHERE value=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
+      FROM (SELECT ${kept ? 'r.root_ref,r.repo,r.rank,r.ask_rank,r.sort_at' : 'r.*'},($taskId IS NOT NULL OR ${filter}) AND ($taskId IS NULL OR EXISTS(SELECT 1 FROM json_each(r.fam_ids) WHERE value=$taskId)) AND ($roots IS NULL OR root_id IN (SELECT value FROM json_each($roots))) AND ($cursorRoot=0 OR
           ${ORDER}>$cursorRank OR (${ORDER}=$cursorRank AND (sort_at<$cursorAt OR (sort_at=$cursorAt AND root_ref<$cursorRoot)))) in_page,
           ${PAGE_TOTALS},${PROJECT_TOTALS}
-        FROM ranked r) s) p
+        FROM ranked r) s) p${kept ? ' JOIN ranked r ON r.root_ref=p.root_ref' : ''}
     WHERE (p.in_page AND p.page_order<=$limit) OR p.repo_order=1
   )
   SELECT is_row,is_project,repo_rank,repo,${PAGE_TOTAL_NAMES.join(',')},${PROJECT_TOTAL_NAMES.join(',')},CASE WHEN is_row THEN json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
