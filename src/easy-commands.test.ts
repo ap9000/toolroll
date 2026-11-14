@@ -9,8 +9,11 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runOperate, type OperateOptions } from "./operate.js";
-import { runAsLocalOwner } from "./local-owner.js";
-import { verifyCredential } from "./scope.js";
+import { asLocalOwner, runAsLocalOwner } from "./local-owner.js";
+import { propose, verifyCredential } from "./scope.js";
+import { passwordFreeShell } from "./task-outcome-cli.js";
+import { withActor } from "./actor.js";
+import { withRemote } from "./remote-run.js";
 import { initLocalMode, localModeOf, openStore, setLocalModeOff } from "./store.js";
 import type { EasyStartSeams } from "./easy-start.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -134,19 +137,78 @@ describe("toolroll open", () => {
 });
 
 describe("task complete and send back from a shell", () => {
-  test("a password-free owner is pointed at the terminal UI's key (never a sign-in road that can't work); once a password exists, the sign-in words", async () => {
-    const accept = await run("task", ["complete", "t-1"]);
+  test("a password-free owner is pointed at the terminal UI's key, with why (never a sign-in road that can't work); once a password exists, the sign-in words", async () => {
+    // Piped, no coding agent: why, and the key.
+    const piped = { agent: false, terminal: false };
+    const accept = await run("task", ["complete", "t-1"], piped);
     expect(accept.code).toBe(3);
-    expect(accept.out).toContain("Open `toolroll` and press c on the task.");
-    const back = await run("task", ["revise", "t-1", "--feedback", "Use the other colour"]);
+    expect(accept.out).toContain("This can't ask you when it runs piped or in the background, and you haven't set a password. Open `toolroll` in your own terminal and press c on the task.");
+    const back = await run("task", ["revise", "t-1", "--feedback", "Use the other colour"], piped);
     expect(back.code).toBe(3);
-    expect(back.out).toContain("Open `toolroll` and press b on the task.");
-    expect(`${accept.out}${back.out}`).not.toMatch(/Sign in with up/);
+    expect(back.out).toContain("press b on the task.");
+    // `send-back`'s other spelling is the same command; `task accept --finish` is Accept, so c.
+    const finish = await run("task", ["accept", "t-1", "--finish"], piped);
+    expect(finish.code).toBe(3);
+    expect(finish.out).toContain("press c on the task.");
+    expect(`${accept.out}${back.out}${finish.out}`).not.toMatch(/Sign in with up|username|password:/);
+    // Under a coding agent, under --json, and a person at a terminal: each says its own why.
+    expect((await run("task", ["complete", "t-1"], { agent: true, terminal: true })).out).toContain("Your coding agent can't do this for you. Open `toolroll` in your own terminal and press c on the task.");
+    const json = await run("task", ["revise", "t-1", "--feedback", "x", "--json"], piped);
+    expect(json.code).toBe(3);
+    expect(JSON.parse(json.out)).toMatchObject({ ok: false, reason: "local-owner", message: "With --json nothing can ask you, and you haven't set a password. Open `toolroll` in your own terminal and press b on the task." });
+    expect((await run("task", ["complete", "t-1"], { agent: false, terminal: true })).out).toContain("You haven't set a password, so there's nothing to sign in with here. Open `toolroll` and press c on the task.");
+    // A name and a password on the command line can't sign in either (no password is set): refused the same way.
+    expect((await run("task", ["complete", "t-1", "--as", "alex", "--token", "guess"], piped)).out).toContain("press c on the task.");
     const set = await run("password", ["set"], { terminal: true, askHidden: typing("correct horse battery", "correct horse battery") });
     expect(set.code, set.out).toBe(0);
-    const withPassword = await run("task", ["complete", "t-1"]);
+    const withPassword = await run("task", ["complete", "t-1"], piped);
     expect(withPassword.code).toBe(3);
     expect(withPassword.out).toContain("Run this at a terminal to sign in when asked, or open `toolroll`.");
     expect(withPassword.out).not.toContain("<your password>");
+  });
+});
+
+describe("task approve from a shell", () => {
+  test("a password-free owner is refused before the plan prints or anything asks for a username or password, pointed at a in the terminal UI", async () => {
+    const store = openStore(file);
+    try {
+      store.createTask({ id: "t-1", title: "Fix the total" }, now);
+      propose(store, { taskId: "t-1", goal: "Fix the total", touches: ["src/total.ts"], acceptance: [{ id: "c1", statement: "Totals add up.", how: null, evidence: ["check"] }], now });
+    } finally { store.close(); }
+    // A person at a real terminal (both ends a TTY): today's road would print the plan, then ask "username:".
+    const stdin = Object.getOwnPropertyDescriptor(process.stdin, "isTTY"), stdout = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    let atTerminal: { code: number; out: string };
+    try { atTerminal = await run("task", ["approve", "t-1"], { agent: false }); } finally {
+      if (stdin === undefined) delete (process.stdin as { isTTY?: boolean }).isTTY; else Object.defineProperty(process.stdin, "isTTY", stdin);
+      if (stdout === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY; else Object.defineProperty(process.stdout, "isTTY", stdout);
+    }
+    expect(atTerminal.code).toBe(3);
+    expect(atTerminal.out.trim()).toBe("You haven't set a password, so there's nothing to sign in with here. Open `toolroll` and press a on the task.");
+    // Under --json, under a coding agent, piped: refused, each with its why; never approved.
+    const json = await run("task", ["approve", "t-1", "--yes", "--digest", "a".repeat(64), "--json"], { agent: false, terminal: false });
+    expect(JSON.parse(json.out)).toMatchObject({ ok: false, reason: "local-owner", message: expect.stringContaining("press a on the task.") });
+    expect((await run("task", ["approve", "t-1"], { agent: true, terminal: true })).out).toContain("Your coding agent can't do this for you.");
+    expect((await run("task", ["approve", "t-1", "--as", "alex", "--token", "guess"], { agent: false, terminal: false })).out).toContain("press a on the task.");
+    const after = openStore(file);
+    try { expect(after.getScope("t-1")!.approvedAt).toBeNull(); } finally { after.close(); }
+    // Once a password exists, today's road: the would-approve preview and the password command, not the terminal UI's key.
+    expect((await run("password", ["set"], { terminal: true, askHidden: typing("correct horse battery", "correct horse battery") })).code).toBe(0);
+    const withPassword = await run("task", ["approve", "t-1"], { agent: false, terminal: false });
+    expect(withPassword.code).toBe(3);
+    expect(withPassword.out).toContain("Nothing has been approved.");
+    expect(withPassword.out).not.toContain("press a");
+  });
+
+  test("the roads that carry their own authority are never refused early: the terminal UI's local owner, a remote API run, the lead", () => {
+    const store = openStore(file);
+    try {
+      expect(passwordFreeShell(store)).toBe(true);
+      const principal = { account: "alex", localGeneration: 1, accountGeneration: store.accountOf("alex")!.generation, transport: "terminal" as const, act: "approve-plan" as const, sessionHash: null, request: null };
+      expect(asLocalOwner(principal, () => passwordFreeShell(store))).toBe(false);
+      expect(withActor({ account: "alex", lead: true }, () => passwordFreeShell(store))).toBe(false);
+      expect(withRemote({ account: "alex", scope: "act", tokenName: "t", source: "api", secret: "s".repeat(32), allows: () => true, lens: null, noteTask: () => undefined, files: {} }, () => passwordFreeShell(store))).toBe(false);
+    } finally { store.close(); }
   });
 });
