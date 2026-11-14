@@ -8,6 +8,7 @@ import {
   discordId,
 } from "./discord-api.js";
 import { ChatState, chatHash } from "./chat-delivery-state.js";
+import type { DiscordGatewayError } from "./discord-gateway.js";
 import { runChatAcks } from "./chat-live.js";
 import {
   receiveDiscord,
@@ -38,8 +39,16 @@ export async function followDiscord(
   const owner = randomBytes(16).toString("hex"),
     state = new ChatState(options.store, "discord");
   const pause = abortablePause(options.signal);
+  // A close Discord says must not be retried (a rejected token, a refused intent): wait for new credentials, or for a
+  // while, instead of reconnecting into the same refusal every few seconds.
+  const refusal: { token: string; until: number } = { token: "", until: 0 }; // token: a hash, never the token
   while (!options.signal.aborted) {
     const credentials = loadDiscordCredentials(options.dir);
+    if (refusal.token !== "" && chatHash(credentials?.botToken ?? "") === refusal.token && Date.now() < refusal.until) {
+      await pause(2000);
+      continue;
+    }
+    refusal.token = "";
     if (
       !credentials ||
       !state.lease(credentials.installation, owner, new Date())
@@ -62,16 +71,19 @@ export async function followDiscord(
     };
     const problem = (message: string) => state.setProblem(credentials.installation, owner, message);
     const api = discordApi(credentials.botToken);
-    // The SDK loads once Discord is set up, not with every command that could host the follower.
-    const { Client, GatewayIntentBits, Partials } = await import("discord.js");
-    const client = new Client({
-      // Guild messages and their content are needed for rooms; the Message
-      // Content intent must be enabled for the app in Discord's developer portal.
-      intents: [GatewayIntentBits.DirectMessages, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-      partials: [Partials.Channel],
-      allowedMentions: { parse: [], repliedUser: false },
-      rest: { timeout: 15_000, retries: 2 },
-    });
+    // The gateway client (and ws) load once Discord is set up, not with every command that could host the follower.
+    // It asks for direct messages, guild messages and their content (rooms need them); the Message Content intent
+    // must be enabled for the app in Discord's developer portal.
+    const { DiscordGateway } = await import("./discord-gateway.js");
+    const client = new DiscordGateway();
+    const refuse = (error: DiscordGatewayError) => {
+      // A rejected token waits for a different one; any other refusal is tried again in ten minutes.
+      refusal.token = chatHash(credentials.botToken);
+      refusal.until = error.code === 4004 ? Infinity : Date.now() + 600_000;
+      problem(error.message);
+    };
+    const fatal = (error: unknown): error is DiscordGatewayError =>
+      error instanceof Error && error.name === "DiscordGatewayError" && (error as DiscordGatewayError).fatal;
     const stop = () => {
       alive = false;
       connected = false;
@@ -97,16 +109,15 @@ export async function followDiscord(
       connected = false;
       problem("Reconnecting to Discord…");
     });
-    client.on("error", () =>
-      problem("Discord connection failed. Check the bot token and reconnect."),
-    );
-    client.on("shardError", () =>
-      problem("Discord connection failed. Saved replies will retry."),
-    );
+    client.on("error", (error: unknown) => {
+      if (!fatal(error)) return problem("Discord connection failed. Check the bot token and reconnect.");
+      refuse(error);
+      stop();
+    });
     // The 👀 on each owner message as it arrives, beside the queue (a turn there can take a minute).
     const acks = runChatAcks({ state, installation: credentials.installation, owner, current: () => same() && connected,
       hooks: discordAckHooks({ api }), same, signal: options.signal });
-    // Never subscribe a logger to raw payloads, SDK debug output or interaction tokens.
+    // Never subscribe a logger to raw payloads or interaction tokens.
     client.on("raw", (packet: { t: string; d: unknown }) => {
       if (!same()) return;
       if (packet.t === "READY") {
@@ -190,8 +201,9 @@ export async function followDiscord(
         deliver: () => deliverDiscordPart(chat),
         notify: () => planDiscordNotifications(chat),
       });
-    } catch {
-      if (alive) problem("Discord is unavailable. Retrying shortly.");
+    } catch (error) {
+      if (alive && fatal(error)) refuse(error);
+      else if (alive) problem("Discord is unavailable. Retrying shortly.");
     } finally {
       clearInterval(heartbeat);
       alive = false;
