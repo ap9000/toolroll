@@ -83,6 +83,13 @@ async function until(test: () => boolean, why?: () => string): Promise<void> {
 }
 /** Prints whether the launch can write its own temp folder (no secret): what a missing descendant's file means. */
 const TMP_CHECK = `(echo t > "$TMPDIR/.writable" && echo "tmp-writable $TMPDIR") 2>/dev/null || echo "tmp-not-writable $TMPDIR"`;
+/** A detached descendant (setsid, double fork) running `inner`, its output to $TMPDIR/<file>. */
+const detached = (inner: string, file: string, delay = 0): string =>
+  `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; sleep ${delay}; exec "/bin/sh", "-c", shift' ${q(`(${inner}; echo done) > "$TMPDIR/${file}" 2>&1`)}`;
+/** The agent waits (at most five seconds) for a descendant's done-marker before it goes on: on Linux the sandbox kills
+ * every descendant the moment the agent exits (its own pid namespace), so the descendant's attacks run while it lives. */
+const awaitDone = (file: string): string => `i=0; while [ $i -lt 50 ] && ! grep -q '^done$' "$TMPDIR/${file}" 2>/dev/null; do sleep 0.1; i=$((i+1)); done`;
+const said = (out: { stdout: string; stderr: string }): string => `the launch said: ${out.stdout.split("\n").filter(line => line.startsWith("tmp-")).join(" ")} ${out.stderr.slice(0, 500)}`;
 
 /** Each attack as `name: command`; the probe prints `ALLOWED <name>` for any that worked. */
 const attempts = (rows: readonly [string, string][]): string => rows.map(([name, command]) => `if (${command}) >/dev/null 2>&1; then echo "ALLOWED ${name}"; fi`).join("\n");
@@ -194,13 +201,26 @@ describe("attack: a Flexible thread leaving its fence", () => {
     const fill = "printf 'protocol=https\\nhost=example.com\\n\\n' | git -c credential.helper=store credential fill 2>/dev/null";
     // The control: outside the fence, the same reads and the same fill print the secret.
     expect(spawnSync("/bin/sh", ["-c", `${reads}; ${fill}`], { encoding: "utf8", env: { ...process.env, HOME: home, GIT_TERMINAL_PROMPT: "0" } }).stdout).toContain(secret);
-    const descendant = `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; sleep 1; exec "/bin/sh", "-c", shift' ${q(`(${reads}; ${fill}; echo done) > "$TMPDIR/descendant.out" 2>&1`)}`;
-    const out = await inThread(id, `${TMP_CHECK}; ${reads}; ${fill}; sh -c ${q(reads)}; ${descendant}; echo started`);
+    // One descendant tries every read while the agent waits for it; a second one starts its reads only after the agent has
+    // gone, to see whether it outlives the agent at all.
+    const out = await inThread(id, [TMP_CHECK, reads, fill, `sh -c ${q(reads)}`, detached(`${reads}; ${fill}`, "descendant.out"), awaitDone("descendant.out"),
+      detached(`${reads}; echo survived`, "survivor.out", 2), "echo started"].join("\n"));
     expect(out.stdout, out.stderr).toContain("started");
     expect(out.stdout).not.toContain(secret);
     const result = join(paths.tmp, "descendant.out");
-    await until(() => existsSync(result) && readFileSync(result, "utf8").includes("done"), () => `the descendant's output never reached ${result}; the launch said: ${out.stdout.split("\n").filter(line => line.startsWith("tmp-")).join(" ")} ${out.stderr.slice(0, 500)}`);
+    expect(existsSync(result) && readFileSync(result, "utf8").includes("done"), `the descendant's output never reached ${result}; ${said(out)}`).toBe(true);
     expect(readFileSync(result, "utf8")).not.toContain(secret);
+    const survivor = join(paths.tmp, "survivor.out");
+    if (process.platform === "linux") {
+      // bubblewrap runs the launch in a pid namespace of its own: when the agent exits, every descendant goes with it.
+      await new Promise(done => setTimeout(done, 3_500));
+      expect(existsSync(survivor) && readFileSync(survivor, "utf8").includes("survived"), "a descendant outlived the agent").toBe(false);
+    } else {
+      // Seatbelt has no such namespace: the descendant lives on, still inside the fence.
+      await until(() => existsSync(survivor) && readFileSync(survivor, "utf8").includes("done"), () => `the surviving descendant's output never arrived; ${said(out)}`);
+      expect(readFileSync(survivor, "utf8")).toContain("survived");
+      expect(readFileSync(survivor, "utf8")).not.toContain(secret);
+    }
   }, 60_000);
 
   test("native: a synthetic keychain item is out of reach, from the agent and from a descendant (a throwaway keychain, never the person's)", async ctx => {
@@ -319,11 +339,11 @@ describe("attack: a Flexible thread leaving its fence", () => {
     ]);
     const dirs = [".vscode", ".idea", ".claude/commands", ".claude/agents"].flatMap(dir => [[`fill ${dir}`, `echo x > ${q(`${dir}/planted`)}`], [`remove ${dir}`, `rm -rf ${q(dir)} && ! test -e ${q(dir)}`]] as [string, string][]);
     const moves: [string, string][] = [["move .claude aside", "mv .claude .claude-old && mkdir -p .claude && echo planted > .claude/settings.json"]];
-    const descendant = `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exec "/bin/sh", "-c", shift' ${q(`(${attempts([[".envrc from a descendant", "echo planted >> .envrc"]])}; echo done) > "$TMPDIR/descendant.out" 2>&1`)}`;
-    const out = await inThread(id, [TMP_CHECK, attempts([...rows, ...dirs, ...moves]), descendant].join("\n"));
+    const descendant = detached(attempts([[".envrc from a descendant", "echo planted >> .envrc"]]), "descendant.out");
+    const out = await inThread(id, [TMP_CHECK, attempts([...rows, ...dirs, ...moves]), descendant, awaitDone("descendant.out")].join("\n"));
     expect(allowed(out), out.stderr).toEqual([]);
-    await until(() => existsSync(join(paths.tmp, "descendant.out")) && readFileSync(join(paths.tmp, "descendant.out"), "utf8").includes("done"),
-      () => `the descendant's output never reached the thread's temp; the launch said: ${out.stdout.split("\n").filter(line => line.startsWith("tmp-")).join(" ")} ${out.stderr.slice(0, 500)}`);
+    expect(existsSync(join(paths.tmp, "descendant.out")) && readFileSync(join(paths.tmp, "descendant.out"), "utf8").includes("done"),
+      `the descendant's output never reached the thread's temp; ${said(out)}`).toBe(true);
     expect(readFileSync(join(paths.tmp, "descendant.out"), "utf8")).not.toContain("ALLOWED");
     for (const name of names) expect(readFileSync(join(paths.repo, name), "utf8"), name).toBe(before[name]);
     // The next launch: the same names, the same contents, still read-only.
