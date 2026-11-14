@@ -52,7 +52,7 @@ import { createSharedGuards } from "./server/guards.js";
 import { createHandlerRegistry } from "./server/handler-registry.js";
 import { type RemoteHookContext } from "./server/remote-hooks.js";
 import { createRemoteHandlers,type RemoteRuntime } from "./server/remote.js";
-import { evaluateRoutePolicy,holdsRole,withEdgePolicy } from "./server/route-policy.js";
+import { evaluateRoutePolicy,holdsRole,routePrincipalOf,withEdgePolicy } from "./server/route-policy.js";
 import { matchRoute,ROUTES } from "./server/route-table.js";
 import { createTaskViews } from "./server/task-views.js";
 import { runActivityOf } from "./task-activity.js";
@@ -994,7 +994,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           request.resume();
           return refuseLocalOwner(response, who, method, url, request.headers.accept);
         }
-        const policy = evaluateRoutePolicy(route, { caller: who.via, capability: who.via === "bearer" && who.principal !== undefined ? who.principal.scope : who.role === "approver" ? "act" : "read", viewer: who.role === "viewer", token: who.via === "bearer" && who.principal !== undefined },
+        const policy = evaluateRoutePolicy(route, routePrincipalOf(who),
           source => projectRequestAllowed(route, source, url, who, request, response, body));
         if (!policy.ok) {
           if (policy.reason === "project") return;

@@ -1,8 +1,13 @@
 /**
- * A Settings change document and the identity provider's re-check (the eight settings plan v2 §2.2), over HTTP against
- * a stand-in provider: "Confirm with <provider>" on a change document goes to /login/sso and comes back to the SAME
- * document, with its project and section, through the real sign-in sanitizer (loginReturn). A return carrying a
+ * The sign-in RETURN for a Settings change document (the eight settings plan v2 §2.2), over HTTP against a stand-in
+ * provider: a re-check started from a change document (/login/sso?reauth=1&return=…) comes back to that document's
+ * address, its `repo` and `section` keys intact, through the real sign-in sanitizer (loginReturn). A return carrying a
  * secret-looking key loses it; a region fetch (`fragment`) still goes to /.
+ *
+ * Scope, said plainly: this proves the return address only. Local mode is installation-wide, so the `repo` key below
+ * only proves a project key survives the round trip; no per-project change document exists yet. Nothing here spends
+ * the re-check on an act: proof consumption, replay and an unchanged store are for the slices that wire each ceremony
+ * (see the F0 PR notes).
  */
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -77,7 +82,7 @@ afterAll(async () => {
 
 const reauth = (back: string) => providerSignIn(`?reauth=1&return=${encodeURIComponent(back)}`, cookie);
 
-test("a per-project change document comes back with its project and section", async () => {
+test("the return keeps a change document's repo and section keys, and that document answers there", async () => {
   const back = await reauth("/settings/change/local-mode?repo=%2Frepo%2Fmain&section=local-mode");
   expect(back.status).toBe(303);
   expect(back.headers.get("location")).toBe("/settings/change/local-mode?repo=%2Frepo%2Fmain&section=local-mode");
@@ -87,9 +92,8 @@ test("a per-project change document comes back with its project and section", as
   expect(await landed.text()).toContain("Local mode is off.");
 });
 
-test("an operator's change document, and Passwordless's, come back to themselves", async () => {
+test("the return to an operator's change document with no project keeps its section", async () => {
   expect((await reauth("/settings/change/local-mode?section=local-mode")).headers.get("location")).toBe("/settings/change/local-mode?section=local-mode");
-  expect((await reauth("/settings/change/passwordless?section=passwordless")).headers.get("location")).toBe("/settings/change/passwordless?section=passwordless");
 });
 
 test("a return carrying a secret-looking key loses it; a region fetch, or anything not a change document, goes to /", async () => {

@@ -17,7 +17,7 @@ import { accentNote, ACCENT_PRESETS } from "../accent-colors.js";
 import type { Authority } from "../local-owner.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { kitSectionForm } from "../settings-kit.js";
-import { holdsRole } from "./route-policy.js";
+import { evaluateRoutePolicy, holdsRole, type RoutePrincipal } from "./route-policy.js";
 import { btn, codeLine, disclose, doc, docHeader, formRow, infoLine, input, notice, phoneHeader, select, settingsLink, settingsSection } from "./kit.js";
 import { changeHref, sectionHref, SETTINGS_SECTIONS, sectionDeclaration, type SectionDeclaration, type SectionGate, type SettingsArea } from "./settings-section-table.js";
 
@@ -36,6 +36,11 @@ export type SectionPerson = {
   /** Installation-wide settings are theirs to see (settingsHome's `!minimal`). */
   readonly installation: boolean;
   readonly passwordSet: boolean;
+  /** The request's proven capability, exactly as the console hands it to evaluateRoutePolicy (serve.ts): an API
+   * token's own scope (a read token reads, whatever its person's role), else the person's role. */
+  readonly principal: RoutePrincipal;
+  /** The console shows every project with none open (no opener), so `needsProject` never applies. */
+  readonly unscopedConsole: boolean;
 };
 
 /** Whether one named check holds for this person. */
@@ -53,22 +58,28 @@ export function gateHolds(gate: SectionGate, person: SectionPerson): boolean {
 
 export type Admission =
   | { readonly ok: true; readonly scopes: ReadonlySet<string>; readonly can: Readonly<Record<string, boolean>> }
-  | { readonly ok: false; readonly why: "caller" | "scope" | "local" | "limited" | "role" | `read:${SectionGate}` };
+  | { readonly ok: false; readonly why: "caller" | "scope" | "project" | "local" | "limited" | "role" | `read:${SectionGate}` };
 
 /**
- * READ admission, then DATA SCOPE and ACTION CAPABILITY, for one section: the same pieces the console admits a route
- * with (callers, scope, the local owner's mark, the project-limited rule, then `holdsRole`), then the section's own
- * read checks. Runs before any of the section's loaders.
+ * READ admission, then DATA SCOPE and ACTION CAPABILITY, for one section, in the console's own order and with its own
+ * functions: the local owner's mark; evaluateRoutePolicy with the request's proven capability (callers, scope, then the
+ * project: the project-limited rule and a project the page needs); holdsRole; then the section's own read checks.
+ * Runs before any of the section's loaders.
  */
 export function admitSection(declaration: Pick<SectionDeclaration, "policy" | "read" | "scope" | "act">, person: SectionPerson, project: string | null = null): Admission {
   const policy = declaration.policy;
-  if (!policy.callers.includes(person.via)) return { ok: false, why: "caller" };
-  // Sections are reads; a row needing more than read (act, step-up) is an approver's, from a browser for step-up.
-  if (policy.scope === "step-up" && person.via !== "cookie") return { ok: false, why: "caller" };
-  if ((policy.scope === "act" || policy.scope === "step-up") && person.role !== "approver") return { ok: false, why: "scope" };
   if (person.via === "cookie" && person.authority !== "full" && policy.local !== "allow") return { ok: false, why: "local" };
-  if (person.restricted && (policy.limited === "deny" || policy.limited === "conversation")) return { ok: false, why: "limited" };
-  if (person.restricted && (policy.limited === "collection" || policy.limited === "resource") && project === null) return { ok: false, why: "limited" };
+  let why: "limited" | "project" | null = null;
+  const projectAdmits = (): boolean => {
+    // guards.ts projectRequestAllowed: what a project-limited account may do here, by the policy's `limited` column.
+    if (person.restricted && (policy.limited === "deny" || policy.limited === "conversation")) { why = "limited"; return false; }
+    if (person.restricted && policy.limited !== "unscoped" && policy.limited !== "self" && project === null) { why = "limited"; return false; }
+    // serve.ts handleGet: a browser session with nothing open is sent to the opener first where the page needs one.
+    if (policy.needsProject && person.via === "cookie" && project === null && !person.unscopedConsole) { why = "project"; return false; }
+    return true;
+  };
+  const checked = evaluateRoutePolicy(policy, person.principal, projectAdmits);
+  if (!checked.ok) return { ok: false, why: checked.reason === "project" ? why ?? "project" : checked.reason };
   if (!holdsRole(policy, person, name => name === person.name && person.operator)) return { ok: false, why: "role" };
   for (const gate of declaration.read) if (!gateHolds(gate, person)) return { ok: false, why: `read:${gate}` };
   const scopes = new Set(Object.entries(declaration.scope).filter(([, gates]) => gates.every(gate => gateHolds(gate, person))).map(([name]) => name));
@@ -276,7 +287,8 @@ function yourPasswordSection(deps: GeneralDeps): SectionImpl<{ passwordless: boo
 function versionSection(deps: GeneralDeps): SectionImpl<{ version: string; firstResult: string | null; updates: boolean }> {
   return {
     loadSummary: ctx => {
-      const version = deps.updatesVersion(ctx.person.name) ?? (ctx.scopes.has("package-version") ? deps.packageVersion : null);
+      // Settings → Updates' version is installation data; an operator's browser session always has the package's own.
+      const version = (ctx.scopes.has("updates-version") ? deps.updatesVersion(ctx.person.name) : null) ?? (ctx.scopes.has("package-version") ? deps.packageVersion : null);
       return version === null ? null : { version, firstResult: deps.firstResult(ctx.now), updates: ctx.can["updates"] === true };
     },
     render: ({ summary, attrs }) => settingsSection({

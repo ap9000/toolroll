@@ -14,6 +14,7 @@ import { setLimitOverride } from "../request-budget.js";
 import { addApprover } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
 import { openStore, type Store } from "../store.js";
+import { PACKAGE_VERSION } from "../version.js";
 import { PROJECT_NOT_AVAILABLE } from "./settings-sections.js";
 
 let store: Store, server: Server, base: string, dir: string, repo: string, other: string, token = "";
@@ -83,6 +84,31 @@ describe("General, per persona", () => {
     const plain = await (await get("/settings/general", { cookie: sessions.viewer.cookie })).text();
     expect(plain).not.toContain('href="/flows"');
     expect(plain).not.toContain("Jump to");
+  });
+});
+
+describe("General without installation data (no Telegram file)", () => {
+  test("an instance operator still reads the version Toolroll runs; a viewer has none to read", async () => {
+    const bare = realpathSync(mkdtempSync(join(tmpdir(), "so-sections-bare-")));
+    const plain = openStore(":memory:");
+    try {
+      const alex = addApprover(plain, "alex", new Date()); if (!alex.ok) throw new Error("bootstrap");
+      const vera = addApprover(plain, "vera", new Date(), { name: "alex", token: alex.token }); if (!vera.ok) throw new Error("viewer");
+      plain.raw().prepare("UPDATE approver SET role = 'viewer' WHERE name = 'vera'").run();
+      const console_ = createDecisionServer({ store: plain, evidenceRoot: join(bare, "evidence"), repo: join(bare, "main") });
+      await new Promise<void>(resolve => console_.listen(0, "127.0.0.1", resolve));
+      const at = `http://127.0.0.1:${(console_.address() as { port: number }).port}`;
+      try {
+        const page = async (name: string, password: string) => {
+          const login = await fetch(`${at}/login`, { method: "POST", body: new URLSearchParams({ name, token: password }), redirect: "manual" });
+          return (await fetch(`${at}/settings/general`, { headers: { cookie: (login.headers.get("set-cookie") ?? "").split(";")[0]! } })).text();
+        };
+        const operator = await page("alex", alex.token);
+        expect(sectionsOf(operator)).toContain("version");
+        expect(operator).toContain(PACKAGE_VERSION);
+        expect(sectionsOf(await page("vera", vera.token))).not.toContain("version");
+      } finally { await new Promise<void>(resolve => console_.close(() => resolve())); }
+    } finally { plain.close(); rmSync(bare, { recursive: true, force: true }); }
   });
 });
 

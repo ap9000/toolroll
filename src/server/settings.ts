@@ -49,6 +49,7 @@ import { requestContext } from "./request-context.js";
 import { btn,empty,infoLine,settingsSection,settingsShell } from "./kit.js";
 import { shortPathOf } from "./render-projects.js";
 import { approvalGroup,flagsOf,needsByGroup,projectPicker,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsNeeds,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
+import { routePrincipalOf } from "./route-policy.js";
 import { askedSection,changeDocument,generalBody,generalSections,resolveSettingsProject,type SectionBase,type SectionPerson } from "./settings-sections.js";
 import { CHANGE_DOCUMENTS } from "./settings-section-table.js";
 import { retiredRedirect } from "./retired-routes.js";
@@ -2890,7 +2891,10 @@ ${postForm("/settings/chat-approval/save", html`\
   /** The person a section is admitted for, as the console proved them: no request, no cookie. */
   function sectionPersonOf(who: Who): SectionPerson {
     return { name: who.name, via: who.via, role: who.role, authority: authorityOfWho(who), operator: store.isInstanceOperator(who.name),
-      restricted: restricted(), installation: options.telegramTokenFile !== undefined && !restricted(), passwordSet: store.accountOf(who.name)?.passwordSet === true };
+      restricted: restricted(), installation: options.telegramTokenFile !== undefined && !restricted(), passwordSet: store.accountOf(who.name)?.passwordSet === true,
+      // The same principal serve.ts hands evaluateRoutePolicy for this request.
+      principal: routePrincipalOf(who),
+      unscopedConsole: runtime.unscopedMode };
   }
   /** What General's sections read, none of it from the request. */
   const generalImpls = generalSections({

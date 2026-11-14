@@ -32,6 +32,8 @@ export type SectionPolicy = {
   readonly role: RouteRole;
   readonly roleBrowser: boolean;
   readonly roleRefusal?: RouteRefusal;
+  /** A viewer may POST here (never on a section: they are reads); kept so the policy is the row's, whole. */
+  readonly viewer: boolean;
   readonly local: "allow" | "deny";
 };
 
@@ -72,7 +74,7 @@ export type SectionDeclaration = {
 /** The policy every Settings group page had at 271c93e1 (route-table.ts `settings.group-*`): anyone signed in, any project. */
 const GROUP_PAGE: SectionPolicy = Object.freeze({
   callers: Object.freeze(["cookie", "bearer"] as const), scope: "read", project: "session", limited: "unscoped", needsProject: false,
-  role: "any", roleBrowser: false, local: "allow",
+  role: "any", roleBrowser: false, viewer: false, local: "allow",
 });
 
 /** Every section, by area, in page order. */
@@ -85,7 +87,7 @@ export const SETTINGS_SECTIONS: readonly SectionDeclaration[] = Object.freeze([
   { id: "your-password", area: "general", title: "Your password", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
     read: ["password-holder"], scope: { passwordless: ["installation"] }, act: {}, change: null, opens: false, scripts: [], oldIds: [] },
   { id: "version", area: "general", title: "Version", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
-    read: ["installation"], scope: { "package-version": ["operator"] }, act: { updates: ["operator"] }, change: null, opens: false, scripts: [], oldIds: [] },
+    read: [], scope: { "updates-version": ["installation"], "package-version": ["operator"] }, act: { updates: ["operator"] }, change: null, opens: false, scripts: [], oldIds: [] },
   // Settings → Advanced retired to here (F0): the person's own switch, and every advanced page on request.
   { id: "advanced", area: "general", title: "Show advanced features", pinnedFrom: "settings.group-advanced", policy: GROUP_PAGE,
     read: [], scope: { "operator-pages": ["operator"] }, act: { switch: ["cookie-session"] }, change: null, opens: true, scripts: [], oldIds: ["show-advanced"] },

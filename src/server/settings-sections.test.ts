@@ -30,12 +30,12 @@ const text = (parts: readonly Html[]): string => htmlString(joinHtml([...parts])
 
 /** The route rows the sections came from, as they were at 271c93e1 (independent of ROUTES: a change here is on purpose). */
 const PINNED: Record<string, SectionPolicy> = {
-  "settings.group-general": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, local: "allow" },
-  "settings.group-advanced": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, local: "allow" },
-  "settings.group-access": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, local: "allow" },
+  "settings.group-general": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
+  "settings.group-advanced": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
+  "settings.group-access": { callers: ["cookie", "bearer"], scope: "read", project: "session", limited: "unscoped", needsProject: false, role: "any", roleBrowser: false, viewer: false, local: "allow" },
 };
 const policyOf = (row: (typeof ROUTES)[number]): SectionPolicy => ({ callers: row.callers, scope: row.scope, project: row.project, limited: row.limited, needsProject: row.needsProject,
-  role: row.role, roleBrowser: row.roleBrowser, ...(row.roleRefusal === undefined ? {} : { roleRefusal: row.roleRefusal }), local: row.local });
+  role: row.role, roleBrowser: row.roleBrowser, ...(row.roleRefusal === undefined ? {} : { roleRefusal: row.roleRefusal }), viewer: row.viewer, local: row.local });
 
 describe("every section keeps the route policy of the page it came from", () => {
   test.each(SETTINGS_SECTIONS.map(one => [one.id, one] as const))("%s", (_id, section) => {
@@ -81,22 +81,26 @@ test("holdsRole is the console's role rule exactly (dispatchConsole calls it; so
 
 // ---- personas and the zero-loader matrix ---------------------------------------------------------------------------
 
-const OPERATOR: SectionPerson = { name: "alex", via: "cookie", role: "approver", authority: "full", operator: true, restricted: false, installation: true, passwordSet: true };
+const OPERATOR: SectionPerson = { name: "alex", via: "cookie", role: "approver", authority: "full", operator: true, restricted: false, installation: true, passwordSet: true,
+  principal: { caller: "cookie", capability: "act", viewer: false, token: false }, unscopedConsole: false };
 const PERSONAS: Record<string, SectionPerson> = {
   operator: OPERATOR,
   "installation approver": { ...OPERATOR, name: "ines", operator: false },
   "project-limited approver": { ...OPERATOR, name: "lim", operator: false, restricted: true, installation: false },
-  viewer: { ...OPERATOR, name: "vera", role: "viewer", operator: false },
-  "API token": { ...OPERATOR, via: "bearer" },
+  viewer: { ...OPERATOR, name: "vera", role: "viewer", operator: false, principal: { caller: "cookie", capability: "read", viewer: true, token: false } },
+  "API token": { ...OPERATOR, via: "bearer", principal: { caller: "bearer", capability: "act", viewer: false, token: true } },
+  // An operator's READ-ONLY API token: it reads, whatever its person's role (Codex F0 round 1, finding 1).
+  "read-only token": { ...OPERATOR, via: "bearer", principal: { caller: "bearer", capability: "read", viewer: false, token: true } },
   "local owner": { ...OPERATOR, authority: "local-owner", passwordSet: false },
 };
 /** Who may read each General section today (settings-groups-ui.ts generalGroup and the access group's local mode at
  * 271c93e1), written out by hand. */
 const READS: Record<string, readonly string[]> = {
   appearance: Object.keys(PERSONAS),
-  "this-browser": ["operator", "installation approver", "project-limited approver", "viewer", "API token"],
-  "your-password": ["operator", "installation approver", "project-limited approver", "viewer", "API token"],
-  version: ["operator", "installation approver", "viewer", "API token", "local owner"],
+  "this-browser": ["operator", "installation approver", "project-limited approver", "viewer", "API token", "read-only token"],
+  "your-password": ["operator", "installation approver", "project-limited approver", "viewer", "API token", "read-only token"],
+  // Its facts are scoped (installation data, or the package's own version for an operator), so everyone is admitted.
+  version: Object.keys(PERSONAS),
   advanced: Object.keys(PERSONAS),
   "local-mode": ["operator", "installation approver", "project-limited approver", "viewer", "local owner"],
 };
@@ -128,29 +132,53 @@ describe("admission runs before any loader: a denied section is never read", () 
         expect(calls[section.id]!.detail?.mock.calls.length ?? 0, `${name} × ${section.id} detail`).toBe(admitted && asked.open && asked.section === section.id ? 1 : 0);
       }
       // Data scope: Passwordless's state is installation data, read only for a person whose scope includes it.
-      expect(passwordless, name).toHaveBeenCalledTimes(["operator", "installation approver", "viewer", "API token"].includes(name) ? 1 : 0);
+      expect(passwordless, name).toHaveBeenCalledTimes(["operator", "installation approver", "viewer", "API token", "read-only token"].includes(name) ? 1 : 0);
     }
   });
 
   // A section whose policy refuses a persona (role, browser only, project-limited, local owner) is never loaded either.
   const synthetic = (policy: Partial<SectionPolicy>, read: SectionDeclaration["read"] = []): SectionDeclaration =>
     ({ ...SETTINGS_SECTIONS.find(one => one.id === "appearance")!, id: "probe", policy: { ...PINNED["settings.group-general"]!, ...policy }, read });
+  const ALL = Object.keys(PERSONAS);
   test.each([
     // The local owner of a laptop install is its operator; only rows not marked for it refuse it (below).
-    ["an operator's section", synthetic({ role: "operator", roleBrowser: true }), ["operator", "local owner"]],
-    ["an approver's section", synthetic({ role: "approver", roleBrowser: false }), ["operator", "installation approver", "project-limited approver", "API token", "local owner"]],
-    ["instance access only", synthetic({ limited: "deny" }), ["operator", "installation approver", "viewer", "API token", "local owner"]],
-    ["browser sign-ins only", synthetic({ callers: ["cookie"] }), ["operator", "installation approver", "project-limited approver", "viewer", "local owner"]],
-    ["never the local owner", synthetic({ local: "deny" }), ["operator", "installation approver", "project-limited approver", "viewer", "API token"]],
-    ["an act row (approver scope)", synthetic({ scope: "act" }), ["operator", "installation approver", "project-limited approver", "API token", "local owner"]],
-    ["installation settings", synthetic({}, ["installation"]), ["operator", "installation approver", "viewer", "API token", "local owner"]],
-  ] as const)("%s", (_name, declaration, admitted) => {
+    ["an operator's section", synthetic({ role: "operator", roleBrowser: true }), null, ["operator", "local owner"]],
+    ["an approver's section", synthetic({ role: "approver", roleBrowser: false }), null, ["operator", "installation approver", "project-limited approver", "API token", "read-only token", "local owner"]],
+    ["instance access only", synthetic({ limited: "deny" }), null, ["operator", "installation approver", "viewer", "API token", "read-only token", "local owner"]],
+    ["browser sign-ins only", synthetic({ callers: ["cookie"] }), null, ["operator", "installation approver", "project-limited approver", "viewer", "local owner"]],
+    ["never the local owner", synthetic({ local: "deny" }), null, ["operator", "installation approver", "project-limited approver", "viewer", "API token", "read-only token"]],
+    // The request's proven capability, not the account's role: a read-only token is refused where an act is needed.
+    ["an act row", synthetic({ scope: "act" }), null, ["operator", "installation approver", "project-limited approver", "API token", "local owner"]],
+    ["a step-up row", synthetic({ scope: "step-up", callers: ["cookie"] }), null, ["operator", "installation approver", "project-limited approver", "local owner"]],
+    // A page that needs an open project: a browser session with none is never loaded (the console sends it to the
+    // opener); a token reads by its own project header; with a project open, everyone.
+    ["a page that needs a project, none open", synthetic({ needsProject: true }), null, ["API token", "read-only token"]],
+    ["a page that needs a project, one open", synthetic({ needsProject: true }), "/w/a", ALL],
+    ["a project collection, none open", synthetic({ limited: "collection" }), null, ["operator", "installation approver", "viewer", "API token", "read-only token", "local owner"]],
+    ["installation settings", synthetic({}, ["installation"]), null, ["operator", "installation approver", "viewer", "API token", "read-only token", "local owner"]],
+  ] as const)("%s", (_name, declaration, project, admitted) => {
     for (const [name, person] of Object.entries(PERSONAS)) {
       const loadSummary = vi.fn(() => ({}));
-      render(() => renderArea("general", { probe: { loadSummary, render: () => joinHtml([]) } } as unknown as SectionImpls, base(person), { section: null, open: false }, [declaration]));
+      render(() => renderArea("general", { probe: { loadSummary, render: () => joinHtml([]) } } as unknown as SectionImpls, { ...base(person), project }, { section: null, open: false }, [declaration]));
       expect(loadSummary, name).toHaveBeenCalledTimes((admitted as readonly string[]).includes(name) ? 1 : 0);
-      expect(admitSection(declaration, person).ok, name).toBe((admitted as readonly string[]).includes(name));
+      expect(admitSection(declaration, person, project).ok, name).toBe((admitted as readonly string[]).includes(name));
     }
+  });
+  test("an unscoped console has no project opener, so a page needing a project is read with none open", () => {
+    expect(admitSection(synthetic({ needsProject: true }), { ...OPERATOR, unscopedConsole: true }).ok).toBe(true);
+    expect(admitSection(synthetic({ needsProject: true }), OPERATOR)).toEqual({ ok: false, why: "project" });
+    expect(admitSection(synthetic({ scope: "act" }), PERSONAS["read-only token"]!)).toEqual({ ok: false, why: "scope" });
+  });
+  test("Version: an operator's browser session reads the package's own version with no installation data (no Telegram file)", () => {
+    const updatesVersion = vi.fn(() => "9.9.9");
+    const read = (person: SectionPerson) => render(() => text(renderArea("general", generalSections({ ...DEPS, updatesVersion, packageVersion: "1.2.3" }), base(person), { section: null, open: false }).sections));
+    const operator = read({ ...OPERATOR, installation: false });
+    expect(operator).toContain('data-section="version"');
+    expect(operator).toContain("1.2.3");
+    expect(updatesVersion).not.toHaveBeenCalled();
+    // Anyone else without installation data has no version to see.
+    expect(read({ ...PERSONAS["installation approver"]!, installation: false })).not.toContain('data-section="version"');
+    expect(updatesVersion).not.toHaveBeenCalled();
   });
 });
 
@@ -203,7 +231,9 @@ describe("one canonical project", () => {
     expect(foreign).toEqual(unknown);
     expect(resolveSettingsProject(at("?repo="), "/w/a", deps)).toEqual(unknown);
   });
-  test("render A, open B in another tab, submit: refused, with a way back to A", () => {
+  // The HELPER only: no handler calls it yet. The slices that move a session-bound act (P5 control/setup, P7 mode
+  // sign/revoke) wire it into the POST and add the real two-tab submission over HTTP (see the F0 PR notes).
+  test("the session-project helper: drawn for A, B opened since, refused with a way back to A", () => {
     const name = (repo: string) => repo.split("/").pop()!;
     // The form was drawn while A was open, and carries A.
     const drawnFor = ["/w/a"];
@@ -247,9 +277,8 @@ describe("a change document", () => {
     expect(off.ok && htmlString(off.body)).toContain("Local mode is off.");
     expect(off.ok && htmlString(off.body)).not.toContain('action="/settings/local-mode/off"');
   });
-  test("a sign-in comes back to it with its project and section; secret keys and region fetches never", () => {
+  test("the sign-in sanitizer keeps a change document's address with its repo and section; secret keys and region fetches never", () => {
     expect(loginReturn("/settings/change/local-mode?repo=%2Fw%2Fa&section=local-mode")).toBe("/settings/change/local-mode?repo=%2Fw%2Fa&section=local-mode");
-    expect(loginReturn("/settings/change/passwordless?section=passwordless")).toBe("/settings/change/passwordless?section=passwordless");
     expect(loginReturn("/settings/change/local-mode?repo=r&token=t&password=p&csrf=c&api-key=k")).toBe("/settings/change/local-mode?repo=r");
     expect(loginReturn("/settings/change/local-mode?fragment=steps")).toBe("/");
     for (const path of ["/settings/change/", "/settings/change/a/b", "/settings/change/A", "/settings/change/%2e%2e", "/settings/x/y"]) expect(loginReturn(path), path).toBe("/");
