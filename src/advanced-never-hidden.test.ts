@@ -68,12 +68,12 @@ describe("with Advanced off, never hidden", () => {
     expect(unset).not.toContain("id=\"code-map\"");
     expect(render(true, () => view(false, false))).toContain("id=\"fallback\"");
   });
-  test("the rail keeps Home with its count, Chat, Tasks, Projects and Settings; pages of a hidden item sit under Settings", () => {
-    const off = browserNavigationOf("/flows", null, 3, null, undefined, false);
-    expect(off.map(one => one.label)).toEqual(["Home", "Chat", "Tasks", "Projects", "Settings"]);
+  test("the rail is Work with its count, Chat and Settings; Flows' and Agents' pages sit under Settings", () => {
+    const off = browserNavigationOf("/flows", 3);
+    expect(off.map(one => one.label)).toEqual(["Work", "Chat", "Settings"]);
     expect(off[0]).toMatchObject({ count: 3 });
     expect(off.find(one => one.label === "Settings")?.active).toBe(true);
-    expect(browserNavigationOf("/", null, 0, null).map(one => one.label)).toEqual(["Home", "Chat", "Tasks", "Flows", "Agents", "Projects", "Settings"]);
+    expect(browserNavigationOf("/agents", 0).find(one => one.label === "Settings")?.active).toBe(true);
     expect(settingsRows(false, true, false).map(one => one.key)).toEqual(["settings", "caps", "people", "system"]);
     expect(workToolRows(false, false, true, false).map(one => one.key)).not.toContain("spend");
   });
