@@ -10,7 +10,7 @@ or your tailnet. Over HTTPS through the proxy, Toolroll sends `Strict-Transport-
 
 ## 1. Install on the host
 
-Use an ordinary account (here `toolroll`) with Node.js 22.13+, git and npm.
+Use an ordinary account (here `toolroll`) with Node.js 22.20+, git and npm.
 
 ```sh
 sudo useradd --create-home --shell /bin/bash toolroll

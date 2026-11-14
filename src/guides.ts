@@ -301,7 +301,7 @@ ${AUTHORITY_LINE}
 ## Install and sign-in
 
 - One command, inside the repository: \`npx toolroll up\` (or
-  \`bunx toolroll up\`; Node 22.13+ must be installed — Bun's own
+  \`bunx toolroll up\`; Node 22.20+ must be installed — Bun's own
   runtime cannot host it). \`up\` mints the first login and saves it beside the
   database in \`.toolroll-secrets/up-login.txt\` (every start prints that path and the
   \`cat\` command that shows the password, never the password itself),

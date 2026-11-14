@@ -8,7 +8,7 @@ The installer works the same as on macOS:
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
 ```
 
-It needs Node.js 22.13 or newer (from nodejs.org, your package manager, or
+It needs Node.js 22.20 or newer (from nodejs.org, your package manager, or
 `fnm install 22`) and git. If npm says permission denied, give it a folder
 you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally
 

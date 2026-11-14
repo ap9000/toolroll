@@ -59,7 +59,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
-      # The engines floor's major (package.json: node >=22.13), the Node most newcomers have.
+      # The engines floor's major (package.json: node >=22.20), the Node most newcomers have.
       - uses: actions/setup-node@v5
         with:
           node-version: "22"

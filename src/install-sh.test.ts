@@ -22,7 +22,8 @@ beforeEach(() => {
   record = join(base, "started.txt");
   mkdirSync(stubs);
   const stub = (name: string, body: string) => { writeFileSync(join(stubs, name), `#!/bin/sh\n${body}\n`); chmodSync(join(stubs, name), 0o755); };
-  stub("node", `echo 22.13.0`);
+  // node: its version (NODE_STUB_VERSION), the floor by default.
+  stub("node", `echo "\${NODE_STUB_VERSION:-22.20.0}"`);
   stub("npm", `[ "$1" = ls ] && exit 1\n[ "$1" = install ] && : > "${base}/npm-installed"\nexit 0`);
   // git: its version (GIT_STUB_VERSION), and the repository a folder is in (a folder with a .git directory).
   stub("git", `[ "$1" = --version ] && { echo "git version \${GIT_STUB_VERSION:-2.43.0}"; exit 0; }\ncase " $* " in *" --absolute-git-dir "*) [ -d .git ] && { echo "$(pwd -P)/.git"; exit 0; }; exit 128 ;; *" rev-parse "*) [ -d .git ] && { pwd -P; exit 0; }; exit 128 ;; *" config "*) exit 1 ;; esac\nexit 0`);
@@ -125,6 +126,19 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     expect(existsSync(join(base, "npm-installed"))).toBe(false);
     for (const version of ["2.41.0", "2.47.1", "3.0.0"]) {
       const ok = await run("sh", [INSTALL], { SO_NO_START: "1", GIT_STUB_VERSION: version });
+      expect(ok.code, `${version}: ${ok.out}`).toBe(0);
+    }
+  });
+
+  test("Node older than 22.20 stops before anything is installed (the store doesn't work on 22.13–22.19), and says how to update; 22.20 and newer go on", async () => {
+    for (const version of ["22.13.0", "22.15.1", "22.19.0", "20.18.0"]) {
+      const old = await run("sh", [INSTALL], { SO_NO_START: "1", NODE_STUB_VERSION: version });
+      expect(old.code, version).toBe(1);
+      expect(old.out).toContain(`it needs Node.js 22.20 or newer; this computer has ${version}. Update Node (https://nodejs.org`);
+      expect(existsSync(join(base, "npm-installed"))).toBe(false);
+    }
+    for (const version of ["22.20.0", "22.23.5", "24.22.3", "26.13.1"]) {
+      const ok = await run("sh", [INSTALL], { SO_NO_START: "1", NODE_STUB_VERSION: version });
       expect(ok.code, `${version}: ${ok.out}`).toBe(0);
     }
   });
