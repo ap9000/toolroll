@@ -1,12 +1,18 @@
 /**
  * Fast reads (docs/TESTING.md "Wire budgets"): what each account sees on the everyday pages never changes when the
  * server reads them more cheaply. On a seeded wire world (test/wire-world.ts, a smaller one than the budgets' 10,000
- * tasks, fixed clock and randomness) this renders Home, Tasks (its default list, a state filter and the board), a
- * result page, a task page and Chat for the operator, an approver on every project, an approver limited to two projects
- * and a viewer limited to one — the document load and the
- * in-place read — and holds every answer to the digest of what the server sent before the reads were made cheap
- * (fast-reads.golden.json, written once from main with FAST_READS_WRITE_GOLDEN=1). A page that differs by one byte
- * fails here, and its body is left in the temp folder to compare.
+ * tasks, fixed clock and randomness) this renders, for the operator, an approver on every project, an approver limited
+ * to two projects and a viewer limited to one (each signed in with a browser session): Home, Tasks (its default list,
+ * its second page, a state filter, the completed and archived views, one project's list, the board), a result page in
+ * another project, a result page in the viewer's own project, a task page, Projects and Chat — the document load and the
+ * in-place read — and holds every answer to the digest of what main sent (fast-reads.golden.json, written from main's
+ * code with FAST_READS_WRITE_GOLDEN=1). Some answers are refusals (the viewer's other-project result is a 404; Chat
+ * refuses project-limited accounts): those are held too. A page that differs by one byte fails here, and its body is
+ * left in FAST_READS_OUT to compare.
+ *
+ * What this does NOT cover (fast-reads-boundaries.slow.test.ts and work-reads.test.ts do): API tokens, local-owner
+ * sessions, accounts revoked or narrowed mid-session, overlapping requests, commits by another process, clock
+ * boundaries. Requests here are sequential and the clock is fixed.
  *
  * Only what depends on where the run happened is normalized: the world's temp folder and the digests over it, the port,
  * and the per-session tokens a sign-in or a form mints (each the same length every run, never content).
@@ -43,6 +49,12 @@ function send(path: string, headers: Record<string, string>, method = "GET", bod
     request.on("error", reject);
     request.end(body);
   });
+}
+
+/** The account's second Tasks page: the link its first page's in-place read names (its own first page if none). */
+async function nextPageOf(who: string): Promise<string> {
+  const first = await send("/tasks?format=workspace", { cookie: cookies[who]!, accept: "application/json", "x-toolroll-read": "navigate", "x-toolroll-work": "1" });
+  return /"next":"(\/tasks\?cursor=[A-Za-z0-9_-]+)"/.exec(first.body)?.[1] ?? "/tasks";
 }
 
 /** Where and when the run happened, and the tokens a sign-in mints, as fixed stand-ins. */
@@ -106,9 +118,15 @@ afterAll(async () => {
 });
 
 test("every account sees byte for byte what it saw before the reads were made cheap", async () => {
-  const pages: [string, string][] = [
-    ["Home", "/"], ["Tasks", "/tasks"], ["Tasks (state filter: failed)", "/tasks?state=failed"], ["Tasks (board)", "/tasks?layout=board"],
-    ["Result", `/t/${encodeURIComponent(world.resultTask)}?tab=result`], ["Task", `/t/${encodeURIComponent(world.probeTask)}`], ["Chat", "/chat"],
+  // A finished result in the viewer's own project, for a viewer's successful result read.
+  const ownResult = String(store.handle.prepare(`SELECT t.id FROM task t JOIN task_ref r ON r.backend = 'built-in' AND r.external_id = t.id
+    WHERE r.repo = ? AND t.state = 'done' AND r.revision_of IS NULL AND EXISTS(SELECT 1 FROM run WHERE task_ref = r.id AND finished_at IS NOT NULL AND role = 'builder' AND outcome = 'built')
+    ORDER BY t.id LIMIT 1`).get(world.samProject)?.["id"]);
+  const pages: [string, string | ((who: string) => Promise<string>)][] = [
+    ["Home", "/"], ["Tasks", "/tasks"], ["Tasks (next page)", nextPageOf], ["Tasks (state filter: failed)", "/tasks?state=failed"],
+    ["Tasks (completed)", "/tasks?view=completed"], ["Tasks (archived)", "/tasks?view=archived"], ["Tasks (one project)", `/tasks?project=${encodeURIComponent(world.samProject)}`],
+    ["Tasks (board)", "/tasks?layout=board"], ["Result", `/t/${encodeURIComponent(world.resultTask)}?tab=result`], ["Result (viewer's project)", `/t/${encodeURIComponent(ownResult)}?tab=result`],
+    ["Task", `/t/${encodeURIComponent(world.probeTask)}`], ["Projects", "/projects"], ["Chat", "/chat"],
   ];
   const seen: Record<string, string> = {};
   const bodies: Record<string, string> = {};
@@ -116,7 +134,8 @@ test("every account sees byte for byte what it saw before the reads were made ch
   // FAST_READS_DUMP=1 keeps every body of the first pass in FAST_READS_OUT.
   for (const pass of [1, 2]) {
     for (const who of ["alex", "robin", "pat", "sam"] as const) {
-      for (const [name, path] of pages) {
+      for (const [name, at] of pages) {
+        const path = typeof at === "string" ? at : await at(who);
         const doc = await send(path, { cookie: cookies[who]!, accept: "text/html" });
         const inPlace = await send(`${path}${path.includes("?") ? "&" : "?"}format=workspace`, { cookie: cookies[who]!, accept: "application/json", "x-toolroll-read": "navigate", "x-toolroll-work": "1" });
         for (const [kind, answer] of [["document", doc], ["in-place read", inPlace]] as const) {
@@ -129,7 +148,7 @@ test("every account sees byte for byte what it saw before the reads were made ch
       }
     }
   }
-  expect(Object.keys(seen)).toHaveLength(56);
+  expect(Object.keys(seen)).toHaveLength(4 * pages.length * 2);
   if (process.env["FAST_READS_WRITE_GOLDEN"] === "1") {
     writeFileSync(GOLDEN, `${JSON.stringify({ note: "src/fast-reads.slow.test.ts: what each account received before the reads were made cheap.", tasks: TASKS, pages: seen }, null, 2)}\n`);
     return;
