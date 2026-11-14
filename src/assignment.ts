@@ -1,6 +1,7 @@
 /** One assignment follows the existing task family. It owns no execution,
  * approval or proof state. Lead ownership and exact receipt acknowledgments
  * are append-only actions; handoffs use the existing durable outbox. */
+import { readerOf } from "./work-reads.js";
 import { fastCompletionProblem } from "./fast-start.js";
 import { createHash } from "node:crypto";
 import { currentActor, withActor } from "./actor.js";
@@ -137,7 +138,9 @@ function ownerOf(store: Store, rootId: string, repo: string | null): AssignmentS
 
 // Report the recorded check outcome, never turn a model verdict into a check.
 // Follow-up checks on the same commit (Run checks) upgrade a pass and show a failure.
-export function assignmentChecksForRun(store: Store, root: string | undefined, runId: number, now: Date): AssignmentChecks {
+export function assignmentChecksForRun(given: Store, root: string | undefined, runId: number, now: Date): AssignmentChecks {
+  // A page read reads each result's saved checks once (work-reads.ts): these reads never write.
+  const store = readerOf(given);
   const own = recordedFailureStands(store, runId, buildChecks(store, root, runId));
   const run = store.getRun(runId);
   const followUps = followUpChecksOf(store, runId, now, root);
@@ -199,7 +202,9 @@ function buildChecks(store: Store, root: string | undefined, runId: number): Ass
   } catch { return unavailable("Saved checks could not be read."); }
 }
 
-export function assignmentOf(store: Store, taskId: string, now: Date, access: AssignmentAccess, root?: string, memo?: ReleaseMemo): AssignmentSnapshot | null {
+export function assignmentOf(given: Store, taskId: string, now: Date, access: AssignmentAccess, root?: string, memo?: ReleaseMemo): AssignmentSnapshot | null {
+  // A page read reads each task's saved facts once (work-reads.ts): this snapshot never writes.
+  const store = readerOf(given);
   const family = store.taskFamilyOf(taskId, access.repos, access.principal === "operator" && access.includeUnplaced === true);
   if (family === null) return null;
   const current = family.current;
