@@ -1,7 +1,7 @@
 import { syncProjectIdentities, type ProjectIdentities } from "../project-identity.js";
 import { OWNER_ACTIONS,sharedActionPayload } from '../chat-actions.js';
 import { CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "../contracts/console-api.js";
-import type { TaskFamily } from "../store.js";
+import { accountAccessOf, type TaskFamily } from "../store.js";
 
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -91,9 +91,9 @@ export function createSharedGuards(runtime: GuardsRuntime) {
    * enumerate themselves; root ceilings enumerate the STORED repos that
    * pass the ceiling (Codex roll-up review, finding 11); unscoped = null. */
   const admissionList = (): string[] | null =>
-    restricted() ? [...(runtime.store.accountOf(requestContext.getStore()!.actor!)?.projects ?? [])].filter(visible) : runtime.unscopedMode
+    restricted() ? [...(runtime.store.accountOf(requestContext.getStore()!.actor!)?.projects ?? [])].filter(visibleNow()) : runtime.unscopedMode
       ? null
-      : [...new Set([...runtime.managedRepos(), ...(runtime.ceiling.roots.length === 0 ? [] : runtime.store.knownRepos().filter(visible))])];
+      : [...new Set([...runtime.managedRepos(), ...(runtime.ceiling.roots.length === 0 ? [] : runtime.store.knownRepos().filter(visibleNow()))])];
   /** The task behind a resource, for the ceiling check; null = no ref (visible). */
   const taskRepoOf = (taskRef: number): string | null => runtime.store.refForId(taskRef)?.repo ?? null;
 
@@ -405,5 +405,12 @@ export function createSharedGuards(runtime: GuardsRuntime) {
   function identities(): ProjectIdentities { return runtime.identities ?? syncIdentities; }
   /** The projects `up` proved and admitted (each its own identity): what a request may name without a read. */
   function savedIdentities(): string[] { return runtime.managedRepos(); }
-  return { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
+  /** visible() for a list of projects decided at one instant: the ceiling and the person's account read once, each
+   * project then decided by the same rule (fast reads: a list read the account once per project). */
+  const visibleNow = (): ((repo: string | null) => boolean) => {
+    const actor = requestContext.getStore()?.actor;
+    const ceiling = runtime.liveCeiling(), reaches = actor === undefined ? null : accountAccessOf(runtime.store, actor);
+    return repo => rowVisible(ceiling, repo) && (reaches === null || reaches(repo));
+  };
+  return { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, visibleNow, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
 }

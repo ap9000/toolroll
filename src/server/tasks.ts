@@ -214,7 +214,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // the database alone: a row reads no check log. A live build's row says which step it is on, or the step it is
     // stuck on, from that live attempt's own progress only, never a stopped attempt's; the step's words come from its
     // current plan (one saved file, for live rows only), and without it the row names the step by number.
-    const enrich = (page: WorkIndexPage): WorkIndexPage => ({ ...page, items: page.items.map((item): WorkIndexItem & { progress?: string } => {
+    // The families of a page's failed rows are read at one reading of the person's admission (fast reads: familyOf
+    // read the account several times per row), the same admission familyOf reads.
+    const enrich = (page: WorkIndexPage): WorkIndexPage => { let admitted: { repos: string[] | null; unplaced: boolean } | undefined; return { ...page, items: page.items.map((item): WorkIndexItem & { progress?: string } => {
       if (item.liveRunId !== null) {
         const ref = store.lookupRef(item.activeTaskId);
         const recorded = ref === null ? null : store.latestCheckpointForRun(item.liveRunId);
@@ -226,11 +228,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         return steps === null ? item : { ...item, progress: steps.line };
       }
       if (item.state !== "failed") return item;
-      const family = familyOf(item.activeTaskId);
+      admitted ??= { repos: admissionList(), unplaced: visible(null) };
+      const family = store.taskFamilyOf(item.activeTaskId, admitted.repos, admitted.unplaced);
       if (family === null || family.problem !== null) return item;
       const failure = failureOf(family.versions.flatMap(version => store.runsFor(version.refId)), null, false);
       return failure.kind === "reason" ? item : { ...item, status: { ...item.status, detail: failure.line } };
-    }) });
+    }) }; };
     work = enrich(work);
     // The Board view: the same index as four columns (needs you, queued, running, finished), never a second classifier.
     const board = url.searchParams.get("layout") !== "board" ? null : (() => {

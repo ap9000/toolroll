@@ -11,6 +11,7 @@ import { boundProjectSummary, type BrowserAsk, type BrowserProjectState, type Br
 import type { Store } from "./store.js";
 import { WORK_INDEX_MAX_LIMIT, workIndexPage, type WorkIndexOptions } from "./work-index.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
+import { workReadsOf } from "./work-reads.js";
 import type { WorkspaceRevision } from "./workspace-revision.js";
 
 /** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
@@ -44,10 +45,17 @@ export function projectSummaryOf(store: Store, now: Date, access: WorkSummaryAcc
     ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ at: one.ask.at, ask: { key: keyOf("task", one.rootId, one.ask.version), task: one.rootId, run: one.ask.run, at: one.ask.at } }]),
     ...(state?.flowAsks ?? []).map(one => ({ at: one.at, ask: { key: keyOf("flow", one.card, one.stage, one.entry), task: null, run: null, at: one.at } })),
   ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, ASKS_PER_PROJECT).map(one => one.ask);
+  // The rail's tasks, read together for every project inside a page read (work-reads.ts seed: as getTask reads each).
+  const reads = workReadsOf(store), reader = reads?.store ?? store;
+  if (reads !== null) {
+    const ids = [...new Set([...states.values()].flatMap(one => one.families.slice(0, RAIL_TASKS).map(family => family.rootId)))];
+    const found = new Map(store.handle.prepare("SELECT * FROM task WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)).map(row => [String(row["id"]), row] as const));
+    reads.seed("SELECT * FROM task WHERE id = ?", "get", ids.map(id => [[id], found.get(id)] as const));
+  }
   const railOf = (state: ProjectState | undefined) => {
     const families = state?.families ?? [];
     const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
-      const task = store.getTask(one.rootId);
+      const task = reader.getTask(one.rootId);
       const line = one.state === "needs-you" || one.state === "failed" ? needWords.get(one.rootId) ?? null : one.line;
       return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: line ?? STATE_WORDS[one.state] }];
     });
