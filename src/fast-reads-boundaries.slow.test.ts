@@ -184,3 +184,38 @@ test("a commit by another process between reads is read at once", async () => {
   expect(after.body).not.toBe(before.body);
   await same(wire, `/t/${encodeURIComponent(world.probeTask)}`, { cookie: cookies["sam"]! });
 }, 300_000);
+
+test("results' check levels and follow-up checks read over the kept copy as over the projection itself", async () => {
+  // The wire world records no check lines; give recent results some, and another project's lines on the same runs
+  // (which must never count: each lookup reads its own project's lines).
+  const results = wire.store.handle.prepare(`SELECT r.id, tr.repo, tr.external_id FROM run r JOIN task_ref tr ON tr.id = r.task_ref
+    JOIN task t ON t.id = tr.external_id WHERE t.state = 'done' AND r.role = 'builder' AND r.outcome = 'built' ORDER BY r.id DESC LIMIT 40`).all();
+  const bare = async (path: string) => { reads.off = true; try { return normalized((await send(wire, withFormat(path), asRead({ cookie: cookies["alex"]! }, true))).body); } finally { reads.off = false; } };
+  const before = await bare("/tasks?view=needs-you");
+  // The list's own reading of the lines (no evidence root: only the saved lines speak), kept copy and projection alike.
+  const { workIndexPage } = await import("./work-index.js");
+  const { withWorkReads, outsideWorkReads } = await import("./work-reads.js");
+  const operator = { principal: "operator" as const, repos: null, includeUnplaced: true, viewer: "alex" };
+  const list = (view: "needs-you" | "all" | "completed") => ({ view, limit: 100 });
+  const unread = (view: "needs-you" | "all" | "completed") => outsideWorkReads(() => workIndexPage(wire.store, WIRE_NOW, operator, list(view)));
+  const plainBefore = unread("needs-you");
+  for (const [index, row] of results.entries()) {
+    const line = (action: string, outcome: string, repo = String(row["repo"])) => wire.store.recordAction({ at: WIRE_NOW.toISOString(), actor: "system", repo,
+      taskId: String(row["external_id"]), runId: Number(row["id"]), action, outcome, source: "work" });
+    line("checks used", index % 3 === 0 ? "off" : index % 3 === 1 ? "quick" : "full");
+    // Some results have only their level: checks Off with nothing after it reads as such on the list.
+    if (index % 5 === 0) { line("checks used", "off"); continue; }
+    const asked = line("checks requested", index % 2 === 0 ? "full" : "quick");
+    if (index % 4 !== 3) line("checks finished", `${asked}:${index % 2 === 0 ? "passed" : "failed"}`);
+    line("checks used", "off", world.repos.find(one => one !== row["repo"])!);
+    line("checks requested", "quick", world.repos.find(one => one !== row["repo"])!);
+  }
+  expect(await bare("/tasks?view=needs-you")).not.toBe(before);
+  expect(unread("needs-you")).not.toEqual(plainBefore);
+  for (const view of ["needs-you", "all", "completed"] as const) {
+    reads.off = false;
+    expect(withWorkReads(() => workIndexPage(wire.store, WIRE_NOW, operator, list(view))), view).toEqual(unread(view));
+  }
+  for (const path of ["/tasks?view=needs-you", "/tasks", "/", "/tasks?layout=board"]) await same(wire, path, { cookie: cookies["alex"]! });
+  await same(wire, "/chat", { cookie: cookies["alex"]! });
+}, 300_000);

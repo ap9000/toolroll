@@ -585,7 +585,12 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
           ${PAGE_TOTALS},${PROJECT_TOTALS}
         FROM ranked r) s) p${kept ? ' JOIN ranked r ON r.root_ref=p.root_ref' : ''}
     WHERE (p.in_page AND p.page_order<=$limit) OR p.repo_order=1
-  )
+  )${kept ? `, led AS MATERIALIZED (
+    -- The page's results' own check-level and check-request lines, read in one pass: each row's lookups below then
+    -- read this short list instead of scanning its project's ledger (their filters and order are unchanged).
+    SELECT id,repo,run_id,action,outcome FROM action_ledger WHERE action IN ('checks used','checks requested')
+      AND run_id IN (SELECT page_result_id FROM page WHERE is_row AND page_result_id IS NOT NULL)
+  )` : ''}
   SELECT is_row,is_project,repo_rank,repo,${PAGE_TOTAL_NAMES.join(',')},${PROJECT_TOTAL_NAMES.join(',')},CASE WHEN is_row THEN json_object('archived',archived,'archived_by',(SELECT by FROM task_archive WHERE task_ref=page.ref_id),
     'archived_kind',(SELECT by_kind FROM task_archive WHERE task_ref=page.ref_id),'archived_reason',(SELECT reason FROM task_archive WHERE task_ref=page.ref_id),
     'archived_at',(SELECT at FROM task_archive WHERE task_ref=page.ref_id),'root_ref',root_ref,'root_id',root_id,'id',id,'root_title',root_title,'repo',repo,
@@ -594,9 +599,9 @@ function readWorkIndexPage(store: Store, now: Date, access: WorkSummaryAccess, o
     'publication_url',(SELECT pr_url FROM publication WHERE run=page_result_id),
     'result_role',(SELECT role FROM run WHERE id=page_result_id),'result_head',(SELECT head_revision FROM run WHERE id=page_result_id),'live_role',(SELECT role FROM run WHERE id=page.live_run),
     'check_status',(SELECT status FROM run_check WHERE run=page_result_id),
-    'check_level',(SELECT outcome FROM action_ledger WHERE repo IS page.repo AND run_id=page_result_id AND action='checks used' ORDER BY id DESC LIMIT 1),
+    'check_level',(SELECT outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks used' ORDER BY id DESC LIMIT 1),
     'check_follows',(SELECT json_group_array(q.outcome||' '||COALESCE((SELECT substr(f.outcome,instr(f.outcome,':')+1) FROM action_ledger f WHERE f.repo IS page.repo AND f.run_id=page_result_id
-      AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM action_ledger WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
+      AND f.action='checks finished' AND f.outcome LIKE q.id||':%' LIMIT 1),'open')) FROM (SELECT id,outcome FROM ${kept ? 'led' : 'action_ledger'} WHERE repo IS page.repo AND run_id=page_result_id AND action='checks requested' ORDER BY id) q),
     'proof_verdict',(SELECT COALESCE(machine_verdict,verdict) FROM proof_verdict WHERE run=page_result_id),
     'proof_failed_check',(SELECT verdict='refuted' AND reasons_json LIKE '%approved verification command exited%' FROM proof_verdict WHERE run=page_result_id),'code',code,'ask_group',ask_group,'needs',needs,'person_need',person_need,'lead_claim',lead_claim,'family_running',family_running,'rank',rank,'ask_rank',ask_rank,'list_order',${ORDER},'sort_at',sort_at,
     'checked_actor',checked_actor,'checked_at',checked_at,'checked_digest',checked_digest,'checked_detail',checked_detail,'question_id',question_id,

@@ -4,11 +4,14 @@ import type { ServerTelemetry } from './server-telemetry.js';
 type State = { telemetry: ServerTelemetry; measuringWait: boolean };
 
 /** Statements that may have written, on every Store connection of this process, counted as they run (fast reads:
- * work-reads.ts proves nothing changed before it reuses a read, without a statement of its own). A write, a run(),
- * any exec: counted. Only work-reads.ts's own temp tables (its kept copies of the projection) are not. */
+ * work-reads.ts proves nothing changed before it reuses a read, without a statement of its own). A write, a run(), any
+ * exec: counted. Not counted: work-reads.ts's own temp tables (its kept copies of the projection), and an exec that is
+ * one transaction boundary or the busy timeout alone (the writes inside a transaction count themselves; one that rolls
+ * back has already counted). */
 let writes = 0;
 export const writesSoFar = (): number => writes;
 const ownTemp = (op: string) => /^(?:CREATE\s+TEMP\s+TABLE\s+"so_work_ranked_\d+"|DROP\s+TABLE\s+IF\s+EXISTS\s+temp\."so_work_ranked_\d+"$)/i.test(op);
+const boundaryOnly = (op: string) => /^(?:(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?|COMMIT|END(?:\s+TRANSACTION)?|ROLLBACK(?:\s+TRANSACTION)?|SAVEPOINT\s+\w+|RELEASE(?:\s+SAVEPOINT)?\s+\w+)|PRAGMA\s+busy_timeout\s*=\s*\d+)\s*;?$/i.test(op);
 const states = new WeakMap<Database, State>();
 
 /** One observation for the entire bounded BEGIN retry, including a failed acquisition. */
@@ -39,7 +42,7 @@ export function instrumentDatabase(db: Database, telemetry: ServerTelemetry): Da
   const methods: Database = {
     exec(sql) {
       const op = operation(sql);
-      if (!ownTemp(op)) writes++;
+      if (!ownTemp(op) && !boundaryOnly(op)) writes++;
       if (/^BEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b/i.test(op)) {
         const at = telemetry.clock();
         try { db.exec(sql); heldAt = telemetry.clock(); }
