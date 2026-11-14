@@ -304,12 +304,35 @@ describe("one sample add at a time, and cleanup only of the folder this call mad
     expect(listed().repos).toEqual([]);
   }, 30_000);
 
-  test("the registry line is taken back only while nobody's project names it", async () => {
-    // A failing add whose line a saved project names (another admission committed it): the line stays with that project.
+  test("a refused re-admission takes back the line it wrote, though a saved project row still names the repo", async () => {
+    // Admitted, then its line taken out of the registry while its project row stays (the row alone proves nothing).
     const repo = join(projects, "shop");
     mkdirSync(repo); execFileSync("git", ["init", "-q", repo]);
-    withStore(store => store.upsertProject(repo, "shop", now, { remoteUrl: null }));
-    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now, withinAdmission: () => { throw new Error("no"); } }));
+    expect(await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now }))).toMatchObject({ ok: true, added: true });
+    await updateProjectRegistry(registry, current => ({ ...current, repos: [] }));
+    expect(added().projects).toEqual([repo]);
+    // A re-admission that is refused inside its transaction: its line never stays, and the repo is not served again.
+    const refused = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now, withinAdmission: () => { throw new Error("check write failed"); } }));
+    expect(refused.ok).toBe(false);
+    expect(listed().repos).toEqual([]);
+    // Refused by authority inside the transaction too.
+    let asks = 0;
+    const lapsed = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now, stillAllowed: () => ++asks === 1 }));
+    expect(lapsed).toMatchObject({ ok: false, reason: "moved" });
+    expect(listed().repos).toEqual([]);
+  }, 30_000);
+
+  test("a newer admission by someone else, committed after this call's snapshot, keeps its line through this call's rollback", async () => {
+    const repo = join(projects, "shop");
+    mkdirSync(repo); execFileSync("git", ["init", "-q", repo]);
+    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now,
+      // Under the registry lock, after the snapshot: another admission of the same repo commits (its row and its record).
+      registryAllowed: () => {
+        store.upsertProject(repo, "shop", now, { remoteUrl: null });
+        store.recordAction({ at: now.toISOString(), actor: "sam", repo, taskId: null, runId: null, action: "project added", outcome: "added", source: "access", detail: "from cli" });
+        return true;
+      },
+      withinAdmission: () => { throw new Error("no"); } }));
     expect(result.ok).toBe(false);
     expect(listed().repos).toEqual([repo]);
   }, 30_000);

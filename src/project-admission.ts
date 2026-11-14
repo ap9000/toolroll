@@ -110,6 +110,9 @@ export async function admitProject(store: Store, input: {
   let remote = { url: store.projectRemote(repo), why: null as string | null };
   // Whether this call wrote the registry line (it wasn't there under the lock): only that line is ever taken back.
   let enrolledHere = false;
+  /** The newest committed admission of this repo (its "project added" ledger row id; 0: none). */
+  const latestAdmission = (): number => Number(store.handle.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM action_ledger WHERE repo = ? AND action = ?").get(repo, PROJECT_ADDED)?.["id"] ?? 0);
+  let admittedBefore = 0;
   const allowed = (): boolean => input.stillAllowed === undefined || input.stillAllowed(repo);
   const moved: AdmissionFailure = { ok: false, reason: "moved", message: `${projectName(repo)} wasn't added: a project folder changed while it was being checked. Try again.` };
   if (input.registryFile !== null) {
@@ -118,6 +121,9 @@ export async function admitProject(store: Store, input: {
     // The whole registry under its lock (repositories AND projects folders): `registryAllowed` decides on it as it is now.
     const enrolled = await updateProjectRegistry(input.registryFile, current => {
       had = current.repos.includes(repo);
+      // Under the lock, before the line is written: the newest admission of this repo so far. A rollback keeps the line
+      // only when a newer one (someone else's, committed after this) owns it.
+      admittedBefore = latestAdmission();
       if (!allowed() || (input.registryAllowed !== undefined && !input.registryAllowed(repo, current))) { refused = true; return current; }
       return { ...current, repos: addRepos(current.repos, [repo]) };
     });
@@ -131,10 +137,10 @@ export async function admitProject(store: Store, input: {
     if (input.registryFile === null || !enrolledHere) return failure;
     let problem: string | null;
     try {
-      // Under the registry's lock, and only while the line is still nobody's: once another admission committed the
-      // project (its row is saved), the line is that admission's and stays.
+      // Under the registry's lock: the line this call wrote goes, unless a NEWER admission (committed by someone else
+      // after this call's snapshot) owns it now. A saved project row alone proves nothing (`repos remove` can leave one).
       const removed = await updateProjectRegistry(input.registryFile, current =>
-        !current.repos.includes(repo) || store.listProjects().some(one => one.path === repo) ? current : { ...current, repos: removeRepos(current.repos, [repo]) });
+        !current.repos.includes(repo) || latestAdmission() > admittedBefore ? current : { ...current, repos: removeRepos(current.repos, [repo]) });
       problem = removed.ok ? null : removed.message;
     } catch (error) { problem = error instanceof Error ? error.message : String(error); }
     if (problem === null) return failure;
