@@ -25,7 +25,7 @@ import { LANDED_ACTOR, landedReasonOf } from './result-completion.js';
 import { ASKS, CODE_READING, STORAGE_HOLD_PREFIX, NEED_ASK, NEEDS, askChipOf, failedAttemptSentence, isWaitCode, processNeedOf, resultHoldUpSentence, type Ask, type AskChip, type NeedContext, type NeedKey, type WaitKey } from './needs-you.js';
 import { agentlessCommand, NO_AGENT_TITLE, noAgentWords, retryWhenWords, signInAgainWords } from './dispatch.js';
 import { releaseTaskOf } from './release-approval.js';
-import { LEAD_CLAIM_SQL, LEAD_IDLE_MS } from './lead-voice.js';
+import { LEAD_CLAIM_SQL, LEAD_CLAIMED, LEAD_IDLE_MS } from './lead-voice.js';
 import { workReadsOf, type WorkReads } from './work-reads.js';
 
 export type WorkIndexCounts = Record<WorkView, number>;
@@ -471,8 +471,14 @@ function projectionRows(store: Store, now: Date, access: WorkSummaryAccess, opti
     return (one.cached === true ? prepared(store, sql) : store.handle.prepare(sql)).all(bound(sql, { ...inputs, ...one.params }));
   };
   if (reads !== null) {
-    const key = JSON.stringify(Object.entries(inputs).filter(([name]) => !TIME_INPUTS.has(name)).sort(([a], [b]) => a.localeCompare(b)));
-    const table = reads.ranked(key, now, name => { prepared(store, `CREATE TEMP TABLE "${name}" AS ${projection} SELECT * FROM ranked`).run(inputs); });
+    // Two inputs often decide nothing: with no unplaced work at all, admitting it admits no row; with no claim by this
+    // reader's lead in the ledger, every lead_claim reads 0, as with no lead. Then the copy is the same either way, and
+    // the crew's, the catch-up's and the list's reads share it (each proved per request, like every kept read).
+    const same = { ...inputs };
+    if (same.$unplaced === 1 && !reads.value('unplaced-work', () => store.handle.prepare("SELECT 1 FROM task_ref WHERE backend = 'built-in' AND repo IS NULL LIMIT 1").get() !== undefined)) same.$unplaced = 0;
+    if (same.$leadOf !== null && !reads.value(`lead-claims\u0000${same.$leadOf}`, () => store.handle.prepare('SELECT 1 FROM action_ledger WHERE actor = ? AND action = ? LIMIT 1').get(same.$leadOf, LEAD_CLAIMED) !== undefined)) same.$leadOf = null;
+    const key = JSON.stringify(Object.entries(same).filter(([name]) => !TIME_INPUTS.has(name)).sort(([a], [b]) => a.localeCompare(b)));
+    const table = reads.ranked(key, now, name => { prepared(store, `CREATE TEMP TABLE "${name}" AS ${projection} SELECT * FROM ranked`).run(same); });
     if (table !== null) {
       try { return run(`WITH ranked AS (SELECT * FROM temp."${table}")`, true); } catch { reads.forget(key); }
     }

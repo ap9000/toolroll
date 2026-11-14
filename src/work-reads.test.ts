@@ -8,6 +8,7 @@ import { openStore, type Store } from "./store.js";
 import { workCountsByProject, workIndexPage, workStateRows } from "./work-index.js";
 import { WORK_READ_REUSE_MS, outsideWorkReads, withWorkReads, workReadsOf } from "./work-reads.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
+import { LEAD_CLAIMED } from "./lead-voice.js";
 
 const now = new Date("2026-11-13T12:00:00Z");
 const operator: WorkSummaryAccess = { principal: "operator", repos: null, includeUnplaced: true };
@@ -69,6 +70,32 @@ test("another reader's projects are another projection: a narrower reader never 
     expect(limited).toEqual(withoutReads(() => page(store, narrow)));
     expect(temps(store)).toHaveLength(2);
   });
+});
+
+test("inputs that decide no row share one copy; once they decide one, each reader reads its own", () => {
+  const store = world();
+  const placedOnly: WorkSummaryAccess = { principal: "operator", repos: null, includeUnplaced: false };
+  const asAlex: WorkSummaryAccess = { ...operator, viewer: "alex" };
+  const reads = () => withWorkReads(() => {
+    const out = [page(store), page(store, placedOnly), page(store, asAlex)];
+    return { out, copies: temps(store).length };
+  });
+  // Unplaced work (task d) and no lead claims: the unplaced copy is its own, the lead's reader shares the operator's.
+  let seen = reads();
+  expect(seen.copies).toBe(2);
+  expect(seen.out).toEqual([page(store), page(store, placedOnly), page(store, asAlex)]);
+  // Place d: nothing unplaced is left, so admitting unplaced work admits nothing.
+  store.placeTask(store.refFor("built-in", "d").id, "/repo/two", {}, now);
+  seen = reads();
+  expect(seen.copies).toBe(1);
+  expect(seen.out).toEqual([page(store), page(store, placedOnly), page(store, asAlex)]);
+  // Alex's lead takes a task on: alex's reader now reads it as claimed, the others don't.
+  store.recordAction({ at: now.toISOString(), actor: "lead for alex", repo: "/repo/one", taskId: "a", runId: null, action: LEAD_CLAIMED, outcome: "on it", source: "work" });
+  seen = reads();
+  expect(seen.copies).toBe(2);
+  expect(seen.out).toEqual([page(store), page(store, placedOnly), page(store, asAlex)]);
+  expect(seen.out[2]!.items.find(item => item.rootId === "a")?.lead).toBeDefined();
+  expect(seen.out[0]!.items.find(item => item.rootId === "a")?.lead).toBeUndefined();
 });
 
 test("the projection is kept only near the instant it was read for: a hold that ends later reads as ended", () => {
