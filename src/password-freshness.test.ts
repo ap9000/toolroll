@@ -387,7 +387,7 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 66, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 67, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
@@ -514,6 +514,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#projectConcurrencyCommand@145": 1,
     "src/operate.ts#projectDeleteCommand@149": 1,
     "src/operate.ts#projectDemoCommand@147": 1,
+    // Flexible projects (flexible.ts, F1): lowering and turning off are an approver's step, signed in as a person.
+    "src/operate.ts#projectFlexibleCommand@256": 1,
     "src/operate.ts#projectRulesCommand@141": 1,
     "src/operate.ts#publishCommand@70": 5,
     // Quick answers on or off (responsive-chat.md §8): an instance operator's password, checked where it is written.
@@ -999,6 +1001,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectFallback@117": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@120": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
@@ -1018,6 +1021,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Agent Baseline arc 1: a project's network and unconfined agents change with a password typed now.
     "src/operate.ts#projectNetworkCommand@142": 1,
     "src/operate.ts#projectFallbackCommand@233": 1,
+    // Flexible projects (flexible.ts, F1): turning it on is a credential act.
+    "src/operate.ts#projectFlexibleCommand@256": 1,
     "src/operate.ts#projectWritesCommand@143": 1,
     "src/operate.ts#unconfinedAgentsCommand@144": 1,
     // Sandbox parity C9: a project's sandbox changes with a password typed now (reviewed new site).

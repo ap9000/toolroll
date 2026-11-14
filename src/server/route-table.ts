@@ -561,6 +561,10 @@ post("settings", "settings.project-fallback", "/settings/project/fallback", { sc
 post("settings", "settings.project-writes", "/settings/project/writes", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-check-access", "/settings/project/check-access", { scope: "step-up", callers: ["cookie"] });
 post("settings", "settings.project-sandbox", "/settings/project/sandbox", { scope: "step-up", callers: ["cookie"] });
+// Flexible projects (flexible.ts, slice F1): an approver of the project, from a browser. Turning it on takes a typed
+// password over exactly the terms shown (the handler proves it as a credential act); lowering and turning off are one
+// click. While this build doesn't offer Flexible (FLEXIBLE_AVAILABLE) the handler refuses every post.
+post("settings", "settings.project-flexible", "/settings/project/flexible", { project: "form", callers: ["cookie"], ...approver("An approver for this project changes how its work starts.", "/settings/project") });
 post("settings", "settings.project-delete", "/settings/project/delete", { scope: "step-up", ...operator("An instance operator deletes projects.", "/settings/project") });
 // Lead sweeps (docs/plans/lead-fan-out.md): the table, and cancelling what isn't ready. The handler shows a sweep only in
 // a project the reader can see, and acts only for an approver.

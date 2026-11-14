@@ -19,6 +19,8 @@ import { V158_ADDED_COLUMNS, V158_SCHEMA, V158_STEPS, LEAD_FAILURE_DETAILS, LEAD
 import { V157_SCHEMA, V157_STEPS } from "./chat-live-schema.js";
 import { V159_ADDED_COLUMNS, V159_SCHEMA, V159_STEPS } from "./one-step-chat-schema.js";
 import { V160_BACKFILL, V160_SCHEMA, V160_STEPS } from "./advanced-schema.js";
+import { V161_SCHEMA, V161_STEPS } from "./flexible-schema.js";
+import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
 import { CHAT_PROVIDERS, CHAT_SCHEMA } from "./contracts/chat-tables.js";
@@ -1218,7 +1220,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // (one-step-chat-schema.ts): saved rows read NULL.
 // v160 adds, and changes no saved row: each person's "Show advanced features" (view_preference, a new table;
 // advanced-schema.ts), made once with an ON row for every account present then, so nobody loses a menu item.
-export const SCHEMA_VERSION = 160;
+// v161 adds, and changes no saved row (the Flexible plan v2, slice F1): Flexible projects' signed terms
+// (flexible_terms, a new table; flexible-schema.ts). A project with no row is Secure, as every saved project reads.
+export const SCHEMA_VERSION = 161;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1356,7 +1360,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1620,7 +1624,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2030,7 +2034,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS };
+export { V160_STEPS, V161_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6015,7 +6019,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6435,6 +6439,12 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
     }
   }
   step("advanced-preference");
+  // v161: Flexible projects' terms (a new table, its live-row index and its written-once trigger). Idempotent; a table
+  // already here (a resumed epoch, a later upgrade) must be exactly this build's shape.
+  db.exec(V161_SCHEMA);
+  const flexibleDamaged = flexibleTermsShapeProblem(db);
+  if (flexibleDamaged !== null) throw new Error(`${file}: refusing to open — ${flexibleDamaged}`);
+  step("flexible-terms");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -10168,6 +10178,9 @@ export class Store {
       .all(approver)
       .map(row => Number(row["id"]));
     for (const id of subscriptions) this.retirePushSubscription(id, "credential-rotation", now);
+    // Flexible terms this person signed lapse with any change to their account (every caller has just moved its
+    // generation): ended here durably; flexible.ts refuses them on every read regardless.
+    endLapsedFlexible(this, { signer: approver }, by, now);
   }
 
   listApprovers(): { name: string; addedAt: string }[] {
@@ -10239,6 +10252,8 @@ export class Store {
       // Protected work is always a person's: a flow here (or building here) stops running on its own, and its queued
       // approvals are withdrawn (flow-unattended.ts). The dispatch belts check the rules again for any race.
       if (isProtectedWork(next, [])) endUnattendedGrants(this, { repo }, by, "project protected", now);
+      // A project that now needs two people can't be Flexible: its terms end here (flexible.ts).
+      endLapsedFlexible(this, { repo }, by, now);
     });
   }
 
@@ -17150,6 +17165,8 @@ export class Store {
       const after = policyParts(policy);
       const words = { providers: "allowed providers", models: "allowed models", tools: "allowed tools", ceiling: "permission ceiling" } as const;
       for (const rule of ["providers", "models", "tools", "ceiling"] as const) this.recordPolicy(by, null, `organisation policy: ${words[rule]}`, before[rule], after[rule], now);
+      // A ceiling below a project's Flexible terms ends them (flexible.ts).
+      endLapsedFlexible(this, "all", by, now);
       return this.orgPolicy();
     });
   }
@@ -23048,6 +23065,8 @@ export class Store {
       const after = this.projectNetwork(repo);
       const words = (one: ProjectNetwork) => `${one.mode}${one.hosts.length === 0 ? "" : ` +${one.hosts.join(",")}`}${one.loopback === "proxy-only" ? " no-local" : ""}`;
       this.recordPolicy(by, repo, "network", words(before), words(after), now);
+      // A changed network posture ends the project's Flexible terms (flexible.ts).
+      endLapsedFlexible(this, { repo }, by, now);
       return { before, after };
     });
   }
@@ -27365,4 +27384,17 @@ export function resetAccountPassword(store: Store, name: string, credentialHash:
       detail: `every session of ${name} ended (generation ${expectedGeneration + 1})${leadTokens > 0 ? `; ${leadTokens} lead token${leadTokens === 1 ? "" : "s"} ended` : ""}` });
     return { ok: true, generation: expectedGeneration + 1, leadTokens };
   });
+}
+
+/** v161's table, live-row index and written-once trigger, as a current or resumed file must hold them
+ * (flexible-schema.ts): each there, and exactly this build's DDL. Null when they are; else what is wrong, in words. */
+function flexibleTermsShapeProblem(db: Database): string | null {
+  const statements = V161_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
+  for (const [type, name] of [["table", "flexible_terms"], ["index", "flexible_terms_live"], ["trigger", "flexible_terms_written_once"]] as const) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+    if (row === undefined) return `the flexible_terms ${type} ${name} is missing`;
+    const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
+    if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want).trim()) return `the flexible_terms ${type} ${name} has an unknown shape`;
+  }
+  return null;
 }

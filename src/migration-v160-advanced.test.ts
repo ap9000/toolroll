@@ -37,7 +37,7 @@ const people = (store: Store) => {
 
 describe("v160", () => {
   test("fresh: the table, no rows, update-safe; a new account reads off, the demo on", () => {
-    expect(SCHEMA_VERSION).toBe(160);
+    expect(SCHEMA_VERSION).toBe(161);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(160);
     expect(updateSafeSchema(159)).toBe(true);
     expect(V160_STEPS).toEqual(["advanced-preference"]);
@@ -59,7 +59,7 @@ describe("v160", () => {
     const steps: string[] = [];
     const upgraded = openStore(file, { migrationStep: one => steps.push(one) });
     expect(steps).toEqual(expect.arrayContaining([...V160_STEPS]));
-    expect(version(upgraded)).toBe(160);
+    expect(version(upgraded)).toBe(161);
     expect(rows(upgraded)).toEqual([
       { account: "alex", advanced: 1, source: "upgrade", updated_at: null },
       { account: "vic", advanced: 1, source: "upgrade", updated_at: null },
@@ -74,7 +74,7 @@ describe("v160", () => {
     expect(advancedShownFor(upgraded, "robin")).toBe(false);
     upgraded.close();
     const again = openStore(file);
-    expect(version(again)).toBe(160);
+    expect(version(again)).toBe(161);
     expect(rows(again).map(one => one["account"])).toEqual(["alex", "vic"]);
     again.close();
   });
@@ -98,7 +98,7 @@ describe("v160", () => {
     raw.exec("UPDATE schema_version SET version = 159");
     raw.close();
     const later = openStore(file);
-    expect(version(later)).toBe(160);
+    expect(version(later)).toBe(161);
     expect(advancedPreferenceOf(later, "robin")).toBeNull();
     expect(rows(later).map(one => one["account"])).toEqual(["alex", "vic"]);
     later.close();
@@ -110,7 +110,7 @@ describe("v160", () => {
     const peek = new DatabaseSync(file, { readOnly: true });
     try { expect(peek.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(-159); } finally { peek.close(); }
     const resumed = openStore(file);
-    expect(version(resumed)).toBe(160);
+    expect(version(resumed)).toBe(161);
     expect(rows(resumed)).toEqual([
       { account: "alex", advanced: 1, source: "upgrade", updated_at: null },
       { account: "vic", advanced: 1, source: "upgrade", updated_at: null },

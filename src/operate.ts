@@ -377,6 +377,8 @@ import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, 
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { machineActing } from "./scope.js";
+import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { enableFlexible, FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, flexibleTermsWords, isFlexibleLevel, lowerFlexible, proposedFlexibleTerms, turnFlexibleOff, type FlexibleChoice, type FlexibleLevel, type FlexibleStanding, type FlexibleTerms } from "./flexible.js";
 import { reevaluateResultRecords } from "./route-results.js";
 import { holdRuleOff, routeRulesPass, taskEvidenceWords } from "./route-rules.js";
 import { ruleHoldOf } from "./route-store.js";
@@ -971,6 +973,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "request",
   // project sandbox (sandbox parity C9): read denies and macOS services.
   "read-deny", "mach",
+  // project flexible enable: the level new threads start at (flexible.ts).
+  "default",
   // task scope --release <version>:<pr>:<branch>: a release scope's terms (release-once.md).
   "release",
   // task accept --despite "<reason>": acceptance with a reason, never a completion.
@@ -1609,6 +1613,7 @@ async function dispatch(
       if (positional[0] === "writes") return projectWritesCommand(positional, flags, context);
       if (positional[0] === "check-access") return projectCheckAccessCommand(positional, flags, context);
       if (positional[0] === "sandbox") return projectSandboxCommand(positional, flags, context);
+      if (positional[0] === "flexible") return projectFlexibleCommand(positional, flags, context);
       if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
@@ -15044,4 +15049,74 @@ function shellCallerFacts(context: Context): ShellCaller {
     agent: context.easySeams?.agent ?? underAgent(process.env),
     terminal: context.easySeams?.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true),
   };
+}
+
+/**
+ * `project flexible [show|enable|lower|off] --repo <p>` (flexible.ts, the Flexible plan v2 slice F1): a project's
+ * Flexible terms. Turning it on is a person's password ceremony over exactly the terms shown (on a terminal it asks
+ * before signing; otherwise pass the --digest that `enable` printed). Lowering (--max) and turning off are an approver's
+ * one step. While this build doesn't offer Flexible (FLEXIBLE_AVAILABLE), every form refuses with `not-available`.
+ */
+async function projectFlexibleCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const action = positional[1] ?? "show";
+  const command = `project flexible ${action}`;
+  const { write, json } = context;
+  if (!FLEXIBLE_AVAILABLE) return fail(write, json, command, "not-available", FLEXIBLE_UNAVAILABLE, EXIT.refused);
+  const options: Record<string, readonly string[]> = { show: [], enable: ["max", "default", "digest"], lower: ["max"], off: [] };
+  const own = options[action];
+  if (own === undefined || positional.length > 2) return fail(write, json, command, "usage", "Use project flexible [show | enable [--max <level>] [--default <level>] [--digest <d>] | lower --max <level> | off] --repo <project path>.", EXIT.usage);
+  const allowed = new Set(["repo", "db", "json", ...own, ...(action === "show" ? [] : ["as", "token", "token-file", "token-env"])]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(write, json, command, "usage", `--${name} is not a project flexible ${action} option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  if (repoFlag === undefined) return fail(write, json, command, "usage", "Name the project with --repo <path>.", EXIT.usage);
+  const level = (name: string): FlexibleLevel | undefined | null => { const value = text(flags, name); return value === undefined ? undefined : isFlexibleLevel(value) ? value : null; };
+  const max = level("max"), chosenDefault = level("default");
+  if (max === null || chosenDefault === null) return fail(write, json, command, "usage", "A level is supervised, auto or full.", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(write, json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const store = context.store;
+  const termsLines = (terms: FlexibleTerms, digest: string) => [...flexibleTermsWords(terms), `Terms ${digest}`];
+  const shown = (standing: FlexibleStanding): { data: Record<string, unknown>; lines: string[] } => {
+    if (standing.state === "secure") return { data: { state: "secure" }, lines: [`${repo}: Secure. Work is planned and approved before it starts.`] };
+    if (standing.state === "unreadable") return { data: { state: "unreadable" }, lines: [`${repo}: its Flexible terms can't be read, so they allow nothing. Turn Flexible off, then on again.`] };
+    const data = { state: standing.state, digest: standing.digest, terms: standing.terms, signedBy: standing.signedBy, signedAt: standing.signedAt, ...(standing.state === "lapsed" ? { lapse: standing.reason } : {}) };
+    if (standing.state === "lapsed") return { data, lines: [`${repo}: Flexible terms no longer count. ${FLEXIBLE_LAPSE_WORDS[standing.reason]} Turn it on again to sign new terms.`] };
+    return { data, lines: [`${repo}: Flexible, turned on by ${standing.signedBy}.`, ...termsLines(standing.terms, standing.digest)] };
+  };
+  if (action === "show") {
+    const now = shown(flexibleStanding(store, repo));
+    return succeed(write, json, command, { repo, flexible: now.data }, () => now.lines);
+  }
+  const refused = (message: string) => fail(write, json, command, "person-only", message, EXIT.refused);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person changes a project's Flexible terms, never the lead, a token or a chat app.");
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return refused(`${action === "enable" ? "Turning on Flexible needs your password" : "This needs your sign-in"}: pass --as and --token.`);
+  if (action === "enable") {
+    const proved = credentialApprover(store, acting.name, acting.token, repo);
+    if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on Flexible.");
+    const choice: FlexibleChoice = { ...(max === undefined ? {} : { max }), ...(chosenDefault === undefined ? {} : { default: chosenDefault }) };
+    const proposed = proposedFlexibleTerms(store, repo, acting.name, choice);
+    if (!proposed.ok) return fail(write, json, command, proposed.reason, proposed.message, EXIT.refused);
+    let digest = text(flags, "digest");
+    if (digest === undefined) {
+      if (!interactive() || json) return fail(write, json, command, "review-terms", [...termsLines(proposed.terms, proposed.digest), `Read these terms, then run again with --digest ${proposed.digest} to agree to them. Nothing changed.`].join("\n"), EXIT.refused, { digest: proposed.digest, terms: proposed.terms });
+      write(termsLines(proposed.terms, proposed.digest).join("\n"));
+      if (!(await confirm("Turn on Flexible with these terms? [y/N] "))) return fail(write, json, command, "declined", "Nothing changed.", EXIT.refused);
+      digest = proposed.digest;
+    }
+    const done = enableFlexible(store, { repo, by: acting.name, proof: proved.method, choice, shownDigest: digest, now: context.clock() });
+    if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+    return succeed(write, json, command, { repo, flexible: shown(flexibleStanding(store, repo)).data, replaced: done.replaced }, () => [`${repo} is Flexible.`, ...termsLines(done.terms, done.digest)]);
+  }
+  const proved = authenticateApprover(store, acting.name, acting.token, repo);
+  if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, signed in as a person, changes its Flexible terms.");
+  if (action === "lower") {
+    if (max === undefined) return fail(write, json, command, "usage", "Name the highest level with --max supervised, auto or full.", EXIT.usage);
+    const done = lowerFlexible(store, { repo, by: acting.name, max, now: context.clock() });
+    if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+    return succeed(write, json, command, { repo, changed: done.changed, flexible: shown(flexibleStanding(store, repo)).data }, () => [done.changed ? `Lowered: threads in ${repo} run at ${FLEXIBLE_LEVEL_WORDS[done.terms.max]} at most. New threads start under these terms only.` : "Nothing changed.", ...termsLines(done.terms, done.digest)]);
+  }
+  const done = turnFlexibleOff(store, { repo, by: acting.name, now: context.clock() });
+  if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
+  return succeed(write, json, command, { repo, changed: done.changed, flexible: { state: "secure" } }, () => [done.changed ? `${repo} is Secure again. No new Flexible threads start.` : `${repo} is already Secure.`]);
 }

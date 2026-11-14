@@ -452,6 +452,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // (NULL); the quick-answer switch is a new table.
   // v159: a saved fast-start preview reads no lead turn (NULL); a typed yes's record is a new table.
   // v160 adds a table only (view_preference, with ON rows for the accounts present then): no saved row changes.
+  // v161 adds a table only (flexible_terms): no saved row changes, so no rule is needed for it.
   ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS, V158_ADDED_COLUMNS, V159_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };

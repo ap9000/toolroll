@@ -57,6 +57,8 @@ import { resolvePhaseAgent } from "../agentconfig.js";
 import { parseProtectedPaths } from "../approval-policy.js";
 import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
 import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
+import { FLEXIBLE_AVAILABLE } from "../flexible-available.js";
+import { enableFlexible, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleSettingsView, isFlexibleLevel, lowerFlexible, turnFlexibleOff } from "../flexible.js";
 import { backupHtml } from "../backup-ui.js";
 import { BACKUP_EVERY_HOURS,backupFolderOf,backupNow,checkBackupFolder,defaultBackupFolder,MAX_KEEP } from "../backup.js";
 import { projectBatchChecks,setProjectBatchChecks } from '../batch-policy.js';
@@ -359,7 +361,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     const selector = projectPicker("/settings/project", projects.map(repo => ({ repo, name: projectName(repo) })), chosen);
     const notice = { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") };
-    const content = chosen === "" ? html`${notice.said ? infoLine(notice.said) : ""}${empty({ title: "No projects yet.", action: btn("Add a project", { sm: true, href: "/projects" }) })}` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen), codeMap: codeMapView(chosen, who, ctx.now) }, notice));
+    const content = chosen === "" ? html`${notice.said ? infoLine(notice.said) : ""}${empty({ title: "No projects yet.", action: btn("Add a project", { sm: true, href: "/projects" }) })}` : (projectSettingsHtml({ ...projectViewOf(chosen, who), remoteUrl: store.projectRemote(chosen), codeMap: codeMapView(chosen, who, ctx.now),
+      // Flexible (flexible.ts): nothing while this build doesn't offer it; otherwise its standing and the terms an approver would sign.
+      flexible: flexibleSettingsView(store, chosen, { name: who.name, canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, chosen) }) }, notice));
     return sendScreen(response, 200, screen("Project", settingsSubPage("projects", "Project", html`${selector}${content}`), { chrome: chromeFor(chosen || null, "settings") }));
   }
   /** The project's code map section: the switch, and the holdout while new builds are still being enrolled. */
@@ -2420,6 +2424,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.passwordless-send": passwordlessSave,
     "settings.local-mode-off": localModeOff,
     "settings.release-approval-send": releaseApprovalSave,
+    "settings.project-flexible": projectFlexible,
     "settings.lead": leadPage,
     "settings.teams": teamsPage,
     "settings.discord": discordPage,
@@ -2841,6 +2846,36 @@ ${postForm("/settings/chat-approval/save", html`\
     const done = setAdvancedPreference(store, door, on, now);
     if (!done.ok) return refuse(response, who, 403, done.problem, "/settings/advanced");
     return back("said", on ? "Advanced features show in your menus." : "Advanced features are out of your menus. They still open from here.");
+  }
+  // Settings → Project → How work starts (flexible.ts, the Flexible plan v2 slice F1). Refused before anything is read
+  // while this build doesn't offer Flexible (FLEXIBLE_AVAILABLE). Turning it on is an approver's credential act over
+  // exactly the terms the page showed (flexible.ts rebuilds them and compares the digest inside its write); lowering
+  // and turning off are one click for an approver of the project.
+  async function projectFlexible(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    if (!FLEXIBLE_AVAILABLE) return refuse(response, who, 403, FLEXIBLE_UNAVAILABLE, "/settings/project");
+    const body = readForm(posted, CONSOLE_FORMS.projectFlexible);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#flexible");
+    if (who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return back("problem", "An approver for this project changes how its work starts.");
+    const action = body.get("action");
+    if (action === "off") {
+      const done = turnFlexibleOff(store, { repo, by: who.name, now });
+      return back(done.ok ? "said" : "problem", done.ok ? "Secure again. No new Flexible threads start." : done.message);
+    }
+    if (action === "lower") {
+      const max = body.get("max");
+      if (!isFlexibleLevel(max)) return back("problem", "Choose Supervised, Auto or Full access. Nothing changed.");
+      const done = lowerFlexible(store, { repo, by: who.name, max, now });
+      return back(done.ok ? "said" : "problem", !done.ok ? done.message : done.changed ? `Lowered to ${FLEXIBLE_LEVEL_WORDS[done.terms.max]}. New threads start under these terms only.` : "Nothing changed.");
+    }
+    if (action !== "enable") return back("problem", "Choose to turn Flexible on, lower it or turn it off. Nothing changed.");
+    const proved = authenticateCredential(who, body.get("password") ?? "", repo);
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to turn on Flexible.");
+    const done = enableFlexible(store, { repo, by: who.name, proof: proved.method, shownDigest: body.get("digest") ?? "", now });
+    return back(done.ok ? "said" : "problem", done.ok ? "Flexible is on." : done.message);
   }
   return { registrations, modelsView };
 }

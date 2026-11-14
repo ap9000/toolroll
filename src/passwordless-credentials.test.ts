@@ -44,6 +44,8 @@ const CREDENTIAL_ACTS: ReadonlyArray<{ act: string; file: string; line: RegExp }
   { act: "CLI: people invite and access", file: "operate.ts", line: /const authenticated = \(action === "revoke" \? authenticateApprover\(store, acting\.name, acting\.token\) : credentialApprover\(store, acting\.name, acting\.token\)\);/ },
   { act: "CLI: bridge pair", file: "operate.ts", line: /const authenticated = \(action === "pair" \? credentialApprover\(store, asWho, token\) : authenticateApprover\(store, asWho, token\)\);/ },
   { act: "CLI: chat-approval on", file: "operate.ts", line: /const authed = \(action === "on" \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\)\);/ },
+  { act: "turning a project Flexible", file: "server/settings.ts", line: /const proved = authenticateCredential\(who, body\.get\("password"\) \?\? "", repo\);\n\s*if \(!proved\.ok\) return back\("problem", "Enter your Toolroll password to turn on Flexible\."\);/ },
+  { act: "CLI: project flexible enable", file: "operate.ts", line: /if \(action === "enable"\) \{\n\s*const proved = credentialApprover\(store, acting\.name, acting\.token, repo\);/ },
   { act: "CLI: mode sign with chat approval", file: "operate.ts", line: /const authed = \(flag\(flags, "chat-approve"\) \|\| flag\(flags, "repair-auto"\) \? credentialApprover\(store, acting\.name, acting\.token\) : authenticateApprover\(store, acting\.name, acting\.token\)\);/ },
 ];
 
