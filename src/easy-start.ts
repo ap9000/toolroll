@@ -81,6 +81,10 @@ export type EasyStartSeams = {
 
 const EXIT = { ok: 0, failed: 1, usage: 2, refused: 3 } as const;
 
+/** What the terminal UI says when the `up` it started stopped on its own (a crash): no reason from its output, which can
+ * carry anything; `toolroll --verbose` prints that output to this person's own terminal. */
+export const UP_STOPPED_LINE = "Toolroll's background worker stopped. Run `toolroll --verbose` to see why.";
+
 /** l1: where a person whose first start made a password install reads how to start over without one. */
 export const START_OVER_POINTER = "This Toolroll was set up with a password. To start over without one: https://github.com/ap9000/toolroll/blob/main/docs/guide/linux.md#start-over-without-a-password";
 
@@ -97,7 +101,8 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     write("--port is a whole number from 1 to 65535.");
     return EXIT.usage;
   }
-  const rootArgs = [...(args.projectRoot === null ? [] : ["--project-root", args.projectRoot]), ...(port === null ? [] : ["--port", String(port)])];
+  const rootArgs = [...(args.projectRoot === null ? [] : ["--project-root", args.projectRoot]), ...(port === null ? [] : ["--port", String(port)]),
+    ...(args.verbose === true ? ["--verbose"] : [])];
   /** A console of this database already running (or the background service) keeps its own port: say so, once. */
   const elsewhere = (proof: AttachProof): void => {
     if (port !== null && proof.ok && proof.port !== port) write(`Toolroll is already set up on port ${proof.port}, so it opens there.`);
@@ -156,11 +161,25 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   if (args.web && !first.ok && !seams.serviceInstalled()) return seams.runUpForeground(["--laptop", ...rootArgs]);
 
   let owned: OwnedUp | null = null;
+  // The `up`s this process stopped itself (Stop on quit, a start that didn't answer, a handover): never "on its own".
+  const stoppedHere = new Set<OwnedUp>();
+  /** Each ended `up`'s exit code; null when a signal ended it (a stop someone or something asked for). */
+  const exitCodes = new Map<OwnedUp, number | null>();
+  const stopOwned = (child: OwnedUp): void => { stoppedHere.add(child); child.stop(); };
+  /** The `up` this terminal started, ended by itself with a failure (a non-zero exit): the line to show, else null. A
+   * clean exit, a signal, or a stop made here is never one. */
+  const stoppedOnItsOwn = (): string | null => {
+    const child = owned as OwnedUp | null;
+    if (child === null || child.running() || stoppedHere.has(child)) return null;
+    const code = exitCodes.get(child);
+    return typeof code === "number" && code !== 0 ? UP_STOPPED_LINE : null;
+  };
   const upArgs = ["--laptop", "--no-open", ...rootArgs];
   /** Start our own `up` and wait until its console proves live (or it ends, or the wait runs out). */
   const startOwned = async (): Promise<AttachProof> => {
     const child = seams.spawnUp(upArgs);
     owned = child;
+    void child.exited.then(code => { exitCodes.set(child, code); });
     const deadline = Date.now() + (seams.startTimeoutMs ?? 90_000);
     for (;;) {
       const proof = await seams.prove();
@@ -170,7 +189,7 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
         return { ok: false, state: "refused", message: last === "" ? "it stopped while starting" : last };
       }
       if (Date.now() >= deadline) {
-        child.stop();
+        stopOwned(child);
         return { ok: false, state: "refused", message: "it didn't answer in time" };
       }
       await sleep(250);
@@ -216,7 +235,8 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     const link = await seams.requestLink();
     if (!link.ok) {
       write(`Toolroll is on ${url}, but it couldn't sign you in: ${link.message}.`);
-      ownedNow()?.stop();
+      const child = ownedNow();
+      if (child !== null) stopOwned(child);
       return EXIT.refused;
     }
     write(`Toolroll is on ${url}`);
@@ -227,6 +247,8 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   /** Move to the background service, handing over from our own `up` (background on stops it and proves it gone). */
   const handoff = async (): Promise<string> => {
     const child = ownedNow();
+    // Background on stops this `up` itself as it hands over: never a stop on its own.
+    if (child !== null) stoppedHere.add(child);
     const result = await seams.backgroundOn(child === null ? null : {
       controllerPid: child.pid,
       // The service didn't take over: our own `up` starts again, as before.
@@ -237,6 +259,7 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   };
   const session: TuiSession = {
     owned: () => ownedNow() !== null,
+    stopped: stoppedOnItsOwn,
     openBrowser: async () => {
       const link = await seams.requestLink();
       if (!link.ok) return `The browser couldn't be opened: ${link.message}.`;
@@ -250,6 +273,16 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     },
   };
   const exit = await seams.openTui(session);
+  // The `up` this terminal started stopped on its own while the screen was open: said again here, its last output first
+  // under --verbose (this person's own terminal, for a report), and the exit is a failure.
+  const ended = owned as OwnedUp | null;
+  if (ended !== null && !ended.running()) await ended.exited;
+  const died = stoppedOnItsOwn();
+  if (died !== null) {
+    if (args.verbose === true) for (const line of ended?.tail() ?? []) write(line);
+    write(died);
+    return EXIT.failed;
+  }
   const child = ownedNow();
   if (child !== null) {
     if (exit === "keep") {
@@ -258,7 +291,7 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
       if (ownedNow() === null) return EXIT.ok;
     }
     write("Stopping Toolroll… (running work is saved)");
-    child.stop();
+    stopOwned(child);
     await child.exited;
     write("Toolroll stopped.");
   }
