@@ -141,6 +141,30 @@ describe("rooms on the bus", () => {
     rooms.close();
   });
 
+  test("a reader that asked for frames hears `hello` first and a named `tick` in place of each keep-alive, after the same proofs", () => {
+    let valid = true;
+    const rooms = createTaskRooms(() => "a", { bus: createLiveBus() });
+    const framed = new Page(), plain = new Page();
+    const withFrames = new LiveConnection(response(framed), { frames: true }), without = new LiveConnection(response(plain));
+    withFrames.hello({ incarnation: "run-1", tick: 15_000 });
+    without.hello({ incarnation: "run-1", tick: 15_000 });
+    expect(framed.sent).toEqual([`event: hello\ndata: ${JSON.stringify({ incarnation: "run-1", tick: 15_000 })}\n\n`]);
+    expect(plain.sent).toEqual([]);
+    rooms.join("t-1", { name: "alex", room: "task:t-1", connection: withFrames, valid: () => valid });
+    rooms.join("t-1", { name: "alex", room: "task:t-1", connection: without, valid: () => true });
+    vi.advanceTimersByTime(150); // who is here settles first
+    framed.sent = []; plain.sent = [];
+    vi.advanceTimersByTime(15_000 - 150);
+    expect(framed.sent).toEqual(["event: tick\ndata: {}\n\n"]);
+    expect(plain.sent).toEqual([": keep-alive\n\n"]);
+    // A lapsed viewer's tick is a delivery like any other: its room goes, and no tick follows.
+    valid = false;
+    framed.sent = [];
+    vi.advanceTimersByTime(15_000);
+    expect(framed.sent).toEqual([`event: gone\ndata: ${JSON.stringify({ room: "task:t-1" })}\n\n`, "event: ended\ndata: {}\n\n"]);
+    rooms.close();
+  });
+
   test("a paused real socket ends below Node's drain threshold, leaves the room, and never blocks a fast peer", async () => {
     vi.useRealTimers();
     let print = "a";

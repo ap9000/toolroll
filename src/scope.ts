@@ -2311,3 +2311,9 @@ export function localWorkEligible(store: Store, by: string, taskId: string, purp
   if (stored === "unsandboxed" || scope?.profile?.checkAccess === "unsandboxed") return no("unsandboxed");
   return { ok: true };
 }
+
+/** Whether a step-up was a password typed now (the widening acts: choosing the projects folder, adding a repository from
+ * outside it). Passwordless, a remembered password, a one-use provider re-check and a local owner all fail it. */
+export function typedPasswordNow(proved: { ok: true; method: AuthMethod } | { ok: false }): boolean {
+  return proved.ok && proved.method === "password-now";
+}

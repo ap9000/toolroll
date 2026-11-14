@@ -27398,3 +27398,8 @@ function flexibleTermsShapeProblem(db: Database): string | null {
   }
   return null;
 }
+
+/** Whether a project is added now: its row (an admission; removing or deleting a project drops it). One indexed read. */
+export function projectRowKnown(store: Store, path: string): boolean {
+  return store.handle.prepare("SELECT 1 FROM project WHERE path = ?").get(path) !== undefined;
+}

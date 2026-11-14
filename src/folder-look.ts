@@ -17,6 +17,7 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import type { FolderSeen } from "./project.js";
 
 /** How long the console waits for a look before saying the folder didn't answer. */
 export const FOLDER_LOOK_MS = 4_000;
@@ -46,7 +47,14 @@ export type FolderLookRequest =
   /** Where each path really is (its real path, when that is a folder): a project's identity, resolved off the thread. */
   | { op: "identities"; paths: readonly string[] }
   /** A project's own `.mcp.json`, read as a plain bounded file and parsed (null when absent or not a JSON object). */
-  | { op: "projectMcp"; path: string };
+  | { op: "projectMcp"; path: string }
+  /** What a folder really is, for a choice that widens what the server may open (the projects folder, a repository
+   * added from outside it): its real path in the disk's own spelling (realpath.native: on a case-insensitive disk
+   * `/users/me` answers `/Users/me`), whether it is a folder, its owner, and the identity (device and inode) of it and of
+   * every folder above it; the same for each folder it is compared with. */
+  | { op: "folder"; path: string; compare: readonly string[] }
+  /** `list` with real paths in the disk's own spelling (the folder pickers). */
+  | { op: "list"; path: string; roots: readonly string[]; home: string; native: true };
 
 /** One look under way: its answer, and when its process has ended (a stuck child can outlive its answer). */
 export type FolderLookRun = { answer: Promise<unknown>; ended: Promise<void> };
@@ -106,7 +114,7 @@ function children(folder, roots, links) {
       const spelled = path.join(folder, entry.name);
       if (offLimits(spelled, roots)) continue;
       let real, stat;
-      try { real = fs.realpathSync(spelled); } catch { continue; }
+      try { real = (request.native === true ? fs.realpathSync.native : fs.realpathSync)(spelled); } catch { continue; }
       if (offLimits(real, roots) || !roots.some(root => within(real, root))) continue;
       try { stat = fs.statSync(real); } catch { continue; }
       if (!stat.isDirectory()) continue;
@@ -117,7 +125,45 @@ function children(folder, roots, links) {
   } finally { dir.closeSync(); }
   return out;
 }
+// A folder's identity and the identities of every folder above it, by device and inode (bigint stats: no precision
+// lost), what containment is judged on. A folder that isn't there is said as such, with its path in the disk's spelling
+// for the part that exists; any other failure is "unreadable", never "absent", so a check that can't read fails closed.
+const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
+function absentPath(p) {
+  const rest = [];
+  let at = p;
+  for (;;) {
+    const up = path.dirname(at);
+    if (up === at) return p;
+    rest.unshift(path.basename(at));
+    at = up;
+    try { return path.join(fs.realpathSync.native(at), ...rest); }
+    catch (error) { if (!(error && ABSENT.has(error.code))) return null; }
+  }
+}
+function facts(p) {
+  const asked = path.resolve(p);
+  let real;
+  try { real = fs.realpathSync.native(asked); }
+  catch (error) {
+    if (!(error && ABSENT.has(error.code))) return { kind: "unreadable" };
+    const missing = absentPath(asked);
+    return missing === null ? { kind: "unreadable" } : { kind: "missing", path: missing };
+  }
+  try {
+    const stat = fs.statSync(real, { bigint: true });
+    const names = real.split("/").filter(Boolean);
+    const chain = [];
+    // Every folder from this one up to the top, each stat'ed: the walk is exactly as long as the path, never cut short.
+    for (let depth = names.length; depth >= 0; depth--) {
+      const one = fs.statSync("/" + names.slice(0, depth).join("/"), { bigint: true });
+      chain.push(String(one.dev) + ":" + String(one.ino));
+    }
+    return { kind: "found", real, dir: stat.isDirectory(), uid: Number(stat.uid), chain };
+  } catch { return { kind: "unreadable" }; }
+}
 function look() {
+  if (request.op === "folder") return { target: facts(request.path), compare: request.compare.map(facts) };
   if (request.op === "projectMcp") {
     const text = readBounded(path.join(request.path, ".mcp.json"), 1024 * 1024, 1024 * 1024);
     if (text === null) return { config: null };
@@ -131,8 +177,9 @@ function look() {
     }) };
   }
   const roots = request.roots;
+  const realOf = request.native === true ? fs.realpathSync.native : fs.realpathSync;
   if (request.op === "list") {
-    const at = fs.realpathSync(request.path);
+    const at = realOf(request.path);
     const root = rootOf(at, roots);
     if (root === undefined || offLimits(at, roots) || !fs.statSync(at).isDirectory()) return { at: null, entries: [] };
     // A folder on another drive than the root that allows it is not entered (the root itself may be one).
@@ -209,7 +256,8 @@ let starts = 0;
 function lookKey(request: FolderLookRequest): string {
   const sorted = (paths: readonly string[]) => paths.map(one => resolve(one)).sort();
   switch (request.op) {
-    case "list": return JSON.stringify([request.op, resolve(request.path), sorted(request.roots), request.home]);
+    case "list": return JSON.stringify([request.op, resolve(request.path), sorted(request.roots), request.home, "native" in request]);
+    case "folder": return JSON.stringify([request.op, resolve(request.path), sorted(request.compare)]);
     case "origins": return JSON.stringify([request.op, sorted(request.registered), sorted(request.roots), request.home]);
     case "identities": return JSON.stringify([request.op, sorted(request.paths)]);
     case "projectMcp": return JSON.stringify([request.op, resolve(request.path)]);
@@ -259,9 +307,10 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 export type FolderEntry = { name: string; path: string; git: boolean };
 export type FolderLookOptions = { runner?: FolderLookRunner; deadlineMs?: number; home?: string };
 
-/** A folder's sub-folders for the browse page (null `at`: outside every root, or not a folder). */
-export async function listFolder(path: string, roots: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ at: string | null; entries: FolderEntry[] }>> {
-  const looked = await lookFolders({ op: "list", path, roots: [...roots], home: options.home ?? homedir() }, options);
+/** A folder's sub-folders for the browse page (null `at`: outside every root, or not a folder). `native`: real paths in
+ * the disk's own spelling (the folder pickers). */
+export async function listFolder(path: string, roots: readonly string[], options: FolderLookOptions & { native?: boolean } = {}): Promise<FolderLook<{ at: string | null; entries: FolderEntry[] }>> {
+  const looked = await lookFolders(options.native === true ? { op: "list", path, roots: [...roots], home: options.home ?? homedir(), native: true } : { op: "list", path, roots: [...roots], home: options.home ?? homedir() }, options);
   if (!looked.ok) return looked;
   const value = looked.value as { at?: unknown; entries?: unknown } | null;
   if (value === null || typeof value !== "object" || !(value.at === null || text(value.at)) || !Array.isArray(value.entries)) return { ok: false, why: "failed" };
@@ -307,4 +356,26 @@ export async function lookProjectMcp(repo: string, options: FolderLookOptions = 
   if (value === null || typeof value !== "object") return { ok: false, why: "failed" };
   const config = value.config;
   return { ok: true, value: config !== null && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : null };
+}
+
+/** One folder as the "folder" look found it: there (its identity), not there (its path), or unreadable. */
+export type FolderFacts = FolderSeen;
+const factsOf = (value: unknown): FolderSeen => {
+  const one = value as { kind?: unknown; real?: unknown; path?: unknown; dir?: unknown; uid?: unknown; chain?: unknown } | null;
+  if (one === null || typeof one !== "object") return { kind: "unreadable" };
+  if (one.kind === "missing" && text(one.path) && one.path.startsWith("/")) return { kind: "missing", path: one.path };
+  if (one.kind !== "found" || !text(one.real) || typeof one.dir !== "boolean" || typeof one.uid !== "number" || !Array.isArray(one.chain)) return { kind: "unreadable" };
+  const chain = one.chain.filter((id: unknown): id is string => typeof id === "string" && /^\d+:\d+$/.test(id));
+  // The chain runs from this folder to the top: one identity per name in its real path, and one for the top.
+  const complete = chain.length === one.chain.length && chain.length === one.real.split("/").filter(Boolean).length + 1;
+  return complete ? { kind: "found", real: one.real, dir: one.dir, uid: one.uid, chain } : { kind: "unreadable" };
+};
+/** What `path` really is, and each of `compare`, off the console's thread under the look's deadline (folder-look's
+ * "folder" request). */
+export async function folderFacts(path: string, compare: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ target: FolderSeen; compare: FolderSeen[] }>> {
+  const looked = await lookFolders({ op: "folder", path, compare: [...compare] }, options);
+  if (!looked.ok) return looked;
+  const value = looked.value as { target?: unknown; compare?: unknown } | null;
+  if (value === null || typeof value !== "object" || !Array.isArray(value.compare) || value.compare.length !== compare.length) return { ok: false, why: "failed" };
+  return { ok: true, value: { target: factsOf(value.target), compare: value.compare.map(factsOf) } };
 }

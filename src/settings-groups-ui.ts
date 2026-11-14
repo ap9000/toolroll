@@ -74,6 +74,13 @@ export type SettingsFacts = {
   /** Settings → Advanced: this person's own switch (`on`), whether they can change it here (a browser sign-in), and
    * whether a visible project runs under an operating mode now (its link then stays, whatever the switch). */
   advanced?: { on: boolean; canChange: boolean; modeActive?: boolean };
+  /** Settings → Projects → Projects folder: absent where it doesn't apply (an unscoped console opens anything). */
+  projectsFolder?: ProjectsFolderFacts | null;
+};
+
+/** The projects folder as Settings shows it, read only: each folder, its real path and how a person reads it. */
+export type ProjectsFolderFacts = {
+  folders: readonly { path: string; shown: string }[];
 };
 
 const CHAT_APPS = [["telegram", "Telegram"], ["slack", "Slack"], ["discord", "Discord"], ["teams", "Teams"]] as const;
@@ -509,11 +516,22 @@ export function projectsGroup(facts: SettingsFacts, flags: Record<string, boolea
   ]);
   return settingsShell({
     group: "projects", title: "Projects", lead: "Each project has its own network, writes, checks, pull requests and tools.", flags,
-    body: joinHtml([answered(facts),
+    body: joinHtml([answered(facts), projectsFolderSection(facts.projectsFolder ?? null),
       facts.projects.length === 0
         ? settingsSection({ id: "projects", title: "Projects", body: note(html`No projects yet. <a class="k-link" href="/projects">Add one on Projects</a>.`) })
         : settingsLinks("Projects", rows),
       per]),
+  });
+}
+
+/** Settings → Projects → Projects folder: where Toolroll adds projects from, read only (it is chosen where Toolroll is
+ * started); nothing when there is none. */
+function projectsFolderSection(view: ProjectsFolderFacts | null): Html {
+  if (view === null || view.folders.length === 0) return html``;
+  return settingsSection({
+    id: "projects-folder", title: view.folders.length === 1 ? "Projects folder" : "Projects folders",
+    lead: "Toolroll can add any git repository inside it.",
+    body: joinHtml(view.folders.map(one => formRow("Folder", null, html`<span class="k-mono">${one.shown}</span>`, "inline"))),
   });
 }
 

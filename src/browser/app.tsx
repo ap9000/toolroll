@@ -34,7 +34,7 @@ import { isSettingsFrame } from "../settings-kit-script.js";
 import { closeAll, installKitBehavior } from "./kit/behavior.js";
 import { Icon } from "./icons.js";
 import { LeadChat, returnSends } from "./lead-chat.js";
-import { NeedsDock, PhoneHeader, Rail, useNeeds, useNeedsRefresh } from "./shell.js";
+import { LiveState, NeedsDock, PhoneHeader, Rail, useNeeds, useNeedsRefresh } from "./shell.js";
 import { SearchMenu } from "./search.js";
 import "./workspace.css";
 import { keyed, markAgentSeen } from "./mutation-key.js";
@@ -928,6 +928,8 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
       </div> : null}
     </aside>}
     <NeedsDock workspace={workspace} />
+    {/* A conversation's composer already says when the browser is offline. */}
+    <LiveState quietOffline={workspace.conversation !== null} />
     <SearchMenu workspace={workspace} />
   </div></Passwordless.Provider></FormToken.Provider>;
 }

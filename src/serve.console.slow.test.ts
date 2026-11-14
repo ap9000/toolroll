@@ -2523,9 +2523,9 @@ describe("the filesystem browser — confined to what opening allows", () => {
     expect(html).toContain("payments-api");
     expect(html).toContain("notes");
     expect(html).not.toContain("hidden-things");
-    // The projects page offers the door.
+    // The projects page offers the door: an approver's Browse… (the picker, which starts at the projects folder).
     const projects = await (await fetch(url("/projects"), { headers: { cookie } })).text();
-    expect(projects).toContain("/projects/browse");
+    expect(projects).toContain("/projects/pick");
   });
 
   test("containment: outside paths and symlink escapes are refused, not resolved", async () => {

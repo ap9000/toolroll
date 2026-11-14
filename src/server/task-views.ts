@@ -929,6 +929,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // The step rows read the view as the page will show it (its result, its release, its checks words).
     if (oneTaskView?.kind === "task") oneTaskView.steps = stepRowsOf(oneTaskView);
     // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
+    const taskBody = page.body;
     if (extras.result != null) {
       page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
       // The result's own script, as its result page ships it (a password form there keeps it too: Request changes and
@@ -936,8 +937,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       // The app runs its own version (browser/work/result.ts), so a task with a result can open in place.
       page.functional = withScript(page.functional, { script: `${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, app: [{ kind: "result" }] });
     }
-    if (docked !== null) page.workspace = { ...page.workspace, ...(oneTaskView === undefined ? {} : { view: oneTaskView }), conversation: docked, pageHtml: page.body };
-    else if (oneTaskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: oneTaskView };
+    // The app draws the Result tab from the view (its result's panel in parts), so the workspace's page string leaves out
+    // the section the document carries for a reader without script: the panel is sent once. The document keeps it.
+    const pageHtml = oneTaskView?.kind === "task" && oneTaskView.result != null ? taskBody : page.body;
+    if (docked !== null) page.workspace = { ...page.workspace, ...(oneTaskView === undefined ? {} : { view: oneTaskView }), conversation: docked, pageHtml };
+    else if (oneTaskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: oneTaskView, ...(pageHtml === page.body ? {} : { pageHtml }) };
     page.refreshSeconds = runtime.liveRefreshSeconds();
     return runtime.sendScreen(response, status, page);
   }
