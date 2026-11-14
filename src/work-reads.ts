@@ -97,15 +97,27 @@ export type WorkReads = {
   seed(sql: string, method: "get" | "all", entries: Iterable<readonly [unknown[], Record<string, unknown> | Record<string, unknown>[] | undefined]>): void;
 };
 
+/** Each saving store handed out, to the store it saves for (a read through one needs no new proof: it is the request's). */
+const savingFor = new WeakMap<object, Store>();
+
+/** The store a pure read should read through: this request's saving store (proved current), or `store` itself outside
+ * a request's reads. A saving store passes through as it is. */
+export function readerOf(store: Store): Store {
+  if (savingFor.has(store)) return store;
+  return workReadsOf(store)?.store ?? store;
+}
+
 /** This request's work reads on `store`'s connection, proved current; null outside a request's reads. */
-export function workReadsOf(store: Store): WorkReads | null {
+export function workReadsOf(given: Store): WorkReads | null {
   const scope = scopes.getStore();
   if (scope === undefined) return null;
+  const store = savingFor.get(given) ?? given;
   const db = store.handle;
   let connection = scope.connections.get(db);
   if (connection === undefined) {
     const created: Connection = { stamp: null, answers: new Map(), values: new Map(), ranked: new Map(), slots: new Set(), store: store };
     created.store = Object.create(store, { db: { value: savingHandle(db, created) } }) as Store;
+    savingFor.set(created.store, store);
     scope.connections.set(db, created);
     connection = created;
   }
