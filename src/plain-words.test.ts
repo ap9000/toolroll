@@ -308,7 +308,8 @@ describe("the first hour", () => {
       ["connected", [project], false, false], ["connected", [project], true, false], ["connected", [project], true, true]] as const) {
       const model = welcomeModel({ agents: { claude: agent, codex: agent }, inUse: null, buildsOn: "claude", canChoose: false, projects, projectRoot: "/work", ready, hasTask,
         starters: GENERIC_FIRST_TASKS, platform: "darwin" });
-      surfaces.push([`welcome ${agent} ${projects.length} ${ready} ${hasTask}`, welcomeLines(model).join("\n")]);
+      // With the sample offered both ways (the terminal UI's key, the shell's command) as well as not at all.
+      for (const sample of [null, "key", "command"] as const) surfaces.push([`welcome ${agent} ${projects.length} ${ready} ${hasTask} ${sample}`, welcomeLines(model, sample).join("\n")]);
       const steps = withBuilderStep(firstRunSteps({ agentSignedIn: agent === "connected", projects: projects.length, hasTask, firstResultAt: null }), ready) ?? [];
       surfaces.push([`first-run steps ${agent} ${ready}`, steps.flatMap(step => [step.title, step.action?.kind === "link" ? step.action.label : ""]).join("\n")]);
     }

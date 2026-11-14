@@ -47,9 +47,10 @@ toolroll
 Toolroll opens in your terminal and runs while that window is open. No
 password and no login file: on your own computer you're already in. Started
 in a git repository, that repository is your project; press `n` for a first
-task, approve the plan, and the result comes back **Ready**. Elsewhere, add a
-project with `toolroll repos add <folder>`, or open the browser (press `w`, or
-run `toolroll --web`), which also offers a sample project. To look around
+task, approve the plan, and the result comes back **Ready**. Elsewhere, press
+`s` to try a small sample project, add your own with
+`toolroll repos add <folder>`, or open the browser (press `w`, or run
+`toolroll --web`). To look around
 first, `toolroll demo` opens a seeded sandbox with no model calls and no spend.
 More: [Getting started](docs/guide/getting-started.md).
 

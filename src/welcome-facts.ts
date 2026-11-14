@@ -47,8 +47,12 @@ export async function welcomeHere(store: Store, databaseFile: string, now: Date,
 export type WelcomeStepKey = "agent" | "project" | "task";
 export const WELCOME_STEPS: readonly WelcomeStepKey[] = ["agent", "project", "task"];
 
+/** How a terminal offers the sample project when no project is added yet: the terminal UI's own key, the command that
+ * adds it, or not at all (an install with passwords, whose sample is the browser's). */
+export type SampleOffer = "key" | "command" | null;
+
 /** One step as lines for a terminal: its number and name, Done or what to do next, in plain words. */
-export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey): string[] {
+export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey, sample: SampleOffer = null): string[] {
   const mark = (done: boolean) => (done ? "Done" : "To do");
   const lines: string[] = [];
   if (key === "agent") {
@@ -65,7 +69,10 @@ export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey): stri
   } else if (key === "project") {
     lines.push(`2. Project · ${mark(model.project.done)}`);
     for (const one of model.project.projects.slice(0, 3)) lines.push(`   ${one.name}  ${one.path}`);
-    if (model.project.projects.length === 0) lines.push("   Add a git repository: run `toolroll repos add <folder>`, or `toolroll --web` and choose one.");
+    const offer = model.project.projects.length === 0 && model.project.sample !== null ? sample : null;
+    const addOwn = "a git repository: run `toolroll repos add <folder>`, or `toolroll --web` and choose one.";
+    if (offer === "key") lines.push("   s  Try the sample project", `   Or add ${addOwn}`);
+    else if (model.project.projects.length === 0) lines.push(`   Add ${addOwn}`, ...offer === "command" ? ["   Or try the sample project: run `toolroll welcome sample`."] : []);
     else if (model.project.notTakingWork) lines.push("   Tasks can't start yet: nothing on this computer is taking work. Run `toolroll`.");
   } else {
     lines.push(`3. First task · ${mark(model.task.done)}`);
@@ -78,6 +85,12 @@ export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey): stri
 }
 
 /** The welcome as lines for a terminal: how many steps are left, then each step. */
-export function welcomeLines(model: WelcomeModel): string[] {
-  return [model.left === 0 ? "Setup is done." : `${model.left} ${model.left === 1 ? "step" : "steps"} left.`, "", ...WELCOME_STEPS.flatMap(key => welcomeStepLines(model, key))];
+export function welcomeLines(model: WelcomeModel, sample: SampleOffer = null): string[] {
+  return [model.left === 0 ? "Setup is done." : `${model.left} ${model.left === 1 ? "step" : "steps"} left.`, "", ...WELCOME_STEPS.flatMap(key => welcomeStepLines(model, key, sample))];
+}
+
+/** Whether a terminal may offer the sample project here: no project yet, a projects folder to make it in, and this
+ * computer's password-free owner to add it (local mode on, not the demo). What a screen offers only; the command decides. */
+export function sampleOffered(model: WelcomeModel, localOn: boolean, demo: boolean): boolean {
+  return localOn && !demo && model.project.projects.length === 0 && model.project.sample !== null;
 }
