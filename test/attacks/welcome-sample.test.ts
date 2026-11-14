@@ -7,6 +7,7 @@
  * install serves, adds one sample only, and re-checks the person's standing and the served folder after its waits.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +16,11 @@ import { createElement } from "react";
 import { runOperate, runOperateAs, type OperateOptions, type Principal } from "../../src/operate.js";
 import { runAsLocalOwner } from "../../src/local-owner.js";
 import { mintApiToken } from "../../src/api-tokens.js";
-import { updateProjectRegistry } from "../../src/repos.js";
+import { readProjectRegistryNow, updateProjectRegistry } from "../../src/repos.js";
 import { addSampleProject } from "../../src/sample-project.js";
+import { admitProject } from "../../src/project-admission.js";
+import { resolveCeiling } from "../../src/project.js";
+import { run as execRun, type ExecResult, type RunOptions } from "../../src/exec.js";
 import { COMMAND_GUIDE, LOCAL_POLICY } from "../../src/surface.js";
 import { initLocalMode, openStore, setLocalModeOff, type Store } from "../../src/store.js";
 import { App } from "../../src/tui/app.js";
@@ -130,6 +134,21 @@ describe("toolroll welcome sample", () => {
     nothingChanged();
   }, 30_000);
 
+  test("a password set (local mode stays on): typed in a shell it refuses, and the shell is no longer pointed at it; the terminal UI's door still adds it", async () => {
+    const typed = ["correct horse battery", "correct horse battery"];
+    let out = "";
+    expect(await runOperate("password", ["set", "--db", file], text => { out += text; }, { now, easySeams: { terminal: true, askHidden: async () => typed.shift() ?? "" } }), out).toBe(0);
+    withStore(store => expect(store.accountOf("alex")?.passwordSet).toBe(true));
+    const { code, out: said } = await run([]);
+    expect(code).toBe(3);
+    expect(said).toContain("This Toolroll has a password");
+    nothingChanged();
+    let welcome = "";
+    await runOperate("welcome", ["--db", file], text => { welcome += `${text}\n`; }, { now, easySeams: { check, terminal: false } });
+    expect(welcome).not.toContain("toolroll welcome sample");
+    expect(await viaScreen()).toMatchObject({ ok: true, repo: sample(), created: true });
+  }, 30_000);
+
   test("an install with passwords, and the demo, refuse; the browser's sample is theirs", async () => {
     withStore(store => expect(setLocalModeOff(store, { name: "alex", authority: "full" }, now)).toMatchObject({ ok: true }));
     expect((await run([])).out).toContain("This Toolroll signs in with a password");
@@ -169,41 +188,117 @@ describe("toolroll welcome sample", () => {
 
 describe("addSampleProject: the one operation, re-checked after its waits", () => {
   const actor = { label: "alex", origin: "cli" as const };
-  test("authority that lapses while the folder is made: nothing is added (the folder made stays ours, unlisted)", async () => {
-    let standing = true;
-    const result = await withStoreAsync(store => addSampleProject({
-      store, registryFile: registry, now, ceiling: () => ({ repos: [], roots: [projects] }),
-      authority: { actor, stands: () => standing },
-      refreshCeiling: async () => { standing = false; },
-    }));
-    expect(result).toEqual({ ok: false, reason: "refused" });
-    expect(listed().repos).toEqual([]);
-    expect(added()).toMatchObject({ projects: [], checks: 0 });
-  });
+  /** Git as the sample runs it, counting each step, with something done after the step `at` (1: init, 2: add, 3: commit). */
+  const gitThen = (at: number, then: () => void) => { let step = 0; const calls: string[] = []; return { calls, git: async (file: string, args: readonly string[], options: RunOptions): Promise<ExecResult> => {
+    const ran = await execRun(file, args, options); step++; calls.push(args.find(one => ["init", "add", "commit"].includes(one)) ?? "?"); if (step === at) then(); return ran; } }; };
+  /** The command line's ceiling: the registry itself, as its lock holds it when given, else read from disk now. */
+  const registryCeiling = (registry?: { repos: readonly string[]; roots: readonly string[] }) => {
+    const read = registry ?? readProjectRegistryNow(registryFile());
+    return "error" in read ? { repos: [], roots: [] } : resolveCeiling(read.repos, read.roots).ceiling;
+  };
+  const registryFile = () => registry;
+  const writeRoots = (roots: string[]) => writeFileSync(registry, `${JSON.stringify({ version: 2, repos: listed().repos, roots }, null, 2)}\n`);
 
-  test("a projects folder that moved while the folder was made: nothing is added", async () => {
-    let roots = [projects];
-    const result = await withStoreAsync(store => addSampleProject({
-      store, registryFile: registry, now, ceiling: () => ({ repos: [], roots }),
-      authority: { actor, stands: () => true },
-      refreshCeiling: async () => { roots = [join(root, "Elsewhere")]; },
-    }));
-    expect(result).toEqual({ ok: false, reason: "not-added" });
+  test("authority that lapses during git init: no further git step, the folder this call made is removed, nothing added; a later try makes it afresh and arms its check", async () => {
+    let standing = true;
+    const { calls, git } = gitThen(1, () => { standing = false; });
+    const result = await withStoreAsync(store => addSampleProject({ store, registryFile: registry, now, ceiling: registryCeiling, authority: { actor, stands: () => standing }, git }));
+    expect(result).toEqual({ ok: false, reason: "refused" });
+    expect(calls).toEqual(["init"]);
+    expect(existsSync(sample())).toBe(false);
     expect(listed().repos).toEqual([]);
     expect(added()).toMatchObject({ projects: [], checks: 0 });
-  });
+    standing = true;
+    const again = await withStoreAsync(store => addSampleProject({ store, registryFile: registry, now, ceiling: registryCeiling, authority: { actor, stands: () => standing } }));
+    expect(again).toMatchObject({ ok: true, created: true, checkSet: true });
+  }, 30_000);
+
+  test("a projects folder removed from the registry while the folder is made: nothing is added, and the folder made goes", async () => {
+    const { git } = gitThen(3, () => writeRoots([join(root, "Elsewhere")]));
+    const result = await withStoreAsync(store => addSampleProject({ store, registryFile: registry, now, ceiling: registryCeiling, authority: { actor, stands: () => true }, git }));
+    expect(result).toEqual({ ok: false, reason: "not-added" });
+    expect(existsSync(sample())).toBe(false);
+    expect(listed()).toMatchObject({ repos: [], roots: [join(root, "Elsewhere")] });
+    expect(added()).toMatchObject({ projects: [], checks: 0 });
+  }, 30_000);
+
+  test("decided on the registry under its own lock: a caller's stale copy still naming the folder never enrolls the sample", async () => {
+    // The caller's own view never changes (a stale copy); the registry loses the projects folder after the folder is made.
+    const stale = { repos: [], roots: [projects] };
+    const { git } = gitThen(3, () => writeRoots([]));
+    const seen: string[][] = [];
+    const result = await withStoreAsync(store => addSampleProject({
+      store, registryFile: registry, now, authority: { actor, stands: () => true }, git,
+      ceiling: registry => { if (registry !== undefined) { seen.push([...registry.roots]); return resolveCeiling(registry.repos, registry.roots).ceiling; } return stale; },
+    }));
+    expect(seen).toEqual([[]]);
+    expect(result).toEqual({ ok: false, reason: "not-added" });
+    expect(listed()).toMatchObject({ repos: [], roots: [] });
+    expect(added()).toMatchObject({ projects: [], checks: 0 });
+  }, 30_000);
 
   test("authority asked inside the admission's own writes: refused there, the registry line it took is given back", async () => {
     // Stands until the admission's locked registry update has written the sample's line, then not: the refusal comes
     // from inside admitProject's database transaction.
     const lineWritten = () => existsSync(registry) && readFileSync(registry, "utf8").includes("toolroll-sample");
     const result = await withStoreAsync(store => addSampleProject({
-      store, registryFile: registry, now, ceiling: () => ({ repos: [], roots: [projects] }),
+      store, registryFile: registry, now, ceiling: registryCeiling,
       authority: { actor, stands: () => !lineWritten() },
     }));
     expect(result.ok).toBe(false);
     expect(listed().repos).toEqual([]);
     expect(added()).toMatchObject({ projects: [], checks: 0 });
+  }, 30_000);
+
+  test("the project and its check are one write: a check that can't be written leaves neither, nor the registry line", async () => {
+    const result = await withStoreAsync(store => {
+      store.setVerifyCommand = () => { throw new Error("disk full"); };
+      return addSampleProject({ store, registryFile: registry, now, ceiling: registryCeiling, authority: { actor, stands: () => true } });
+    });
+    expect(result).toEqual({ ok: false, reason: "not-added" });
+    expect(listed().repos).toEqual([]);
+    expect(added()).toMatchObject({ projects: [], checks: 0 });
+    expect(existsSync(sample())).toBe(false);
+  }, 30_000);
+});
+
+describe("admitProject: rollback that only takes back its own line, and says when it can't", () => {
+  const actor = { label: "alex", origin: "cli" as const };
+  let repo: string;
+  beforeEach(() => { repo = join(projects, "shop"); mkdirSync(repo); execFileSync("git", ["init", "-q", repo]); });
+
+  test("a write that fails in the transaction: no project row, and the line this call wrote is taken back", async () => {
+    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now, withinAdmission: () => { throw new Error("no"); } }));
+    expect(result).toMatchObject({ ok: false, reason: "failed" });
+    expect(listed().repos).toEqual([]);
+    expect(added().projects).toEqual([]);
+  });
+
+  test("a line that was already there is never taken back", async () => {
+    await updateProjectRegistry(registry, current => ({ ...current, repos: [repo] }));
+    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now, withinAdmission: () => { throw new Error("no"); } }));
+    expect(result.ok).toBe(false);
+    expect(listed().repos).toEqual([repo]);
+  });
+
+  test("a give-back that fails is said to the person and recorded, never swallowed", async () => {
+    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now,
+      withinAdmission: () => { writeFileSync(registry, "{ not json"); throw new Error("no"); } }));
+    expect(result).toMatchObject({ ok: false, reason: "incomplete" });
+    expect(result.ok === false && result.message).toContain(`toolroll repos remove ${repo}`);
+    const ledger = withStore(store => store.actionLedger({ repos: [repo], instance: true, limit: 10 }).map(one => `${one.action} ${one.outcome}`));
+    expect(ledger).toContain("project add incomplete rollback-failed");
+  });
+
+  test("registryAllowed decides on the registry as its lock holds it (its projects folders too)", async () => {
+    await updateProjectRegistry(registry, current => ({ ...current, roots: [projects, join(root, "Other")] }));
+    const seen: string[][] = [];
+    const result = await withStoreAsync(store => admitProject(store, { registryFile: registry, path: repo, actor, now,
+      registryAllowed: (_, registry) => { seen.push([...registry.roots]); return false; } }));
+    expect(seen).toEqual([[projects, join(root, "Other")].sort()]);
+    expect(result).toMatchObject({ ok: false, reason: "moved" });
+    expect(listed().repos).toEqual([]);
+    expect(added().projects).toEqual([]);
   });
 });
 

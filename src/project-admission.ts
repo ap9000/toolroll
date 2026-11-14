@@ -17,7 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { run } from "./exec.js";
 import { canonicalProject, projectName, sameRepo, type ProjectExec } from "./project.js";
 import { remoteUrlProblem } from "./remote-main.js";
-import { addRepos, loadProjectRegistry, removeRepos, updateRepos } from "./repos.js";
+import { addRepos, loadProjectRegistry, removeRepos, updateProjectRegistry, updateRepos, type ProjectRegistry } from "./repos.js";
 import type { Store } from "./store.js";
 import { FolderUnavailable } from "./folder-gate.js";
 
@@ -28,11 +28,12 @@ export type AdmissionActor = { label: string; origin: AdmissionOrigin };
 
 export type AdmissionFailure = {
   ok: false;
-  reason: "unavailable" | "not-git" | "locked" | "registry" | "abandoned" | "failed" | "moved";
+  reason: "unavailable" | "not-git" | "locked" | "registry" | "abandoned" | "failed" | "moved" | "incomplete";
   message: string;
 };
 /** `remote`: the origin URL this add recorded as the project's trusted remote (null: none), and why one wasn't. */
-export type Admitted = { ok: true; repo: string; name: string; added: boolean; remote: { url: string | null; why: string | null } };
+/** `enrolled`: this call wrote the project's line in the registry (it wasn't there before). */
+export type Admitted = { ok: true; repo: string; name: string; added: boolean; remote: { url: string | null; why: string | null }; enrolled?: boolean };
 export type Released = { ok: true; repo: string; name: string; removed: boolean };
 
 const ADMISSION_GIT = {
@@ -41,6 +42,8 @@ const ADMISSION_GIT = {
 };
 
 export const PROJECT_ADDED = "project added";
+/** A failed admission whose registry line couldn't be taken back: recorded, and said to the person. */
+export const PROJECT_ADD_INCOMPLETE = "project add incomplete";
 
 /** A folder's real path (a folder), null (not one), or "no-answer" (it didn't answer in time). */
 export type FolderResolver = (path: string) => Promise<string | null | "no-answer">;
@@ -88,6 +91,11 @@ export async function admitProject(store: Store, input: {
   /** How the folder and its checkout root are resolved (the console: off its thread, under a deadline). Absent:
    * canonicalProject. */
   resolveFolder?: FolderResolver;
+  /** Asked under the registry's own lock with the registry as it is there (its repositories and projects folders): a
+   * caller whose authority is the registry itself (the sample from the command line) decides on it, not on a copy. */
+  registryAllowed?: (repo: string, registry: ProjectRegistry) => boolean;
+  /** The caller's own writes, inside the admission's transaction (the sample's check): if one throws, nothing stands. */
+  withinAdmission?: (repo: string) => void;
 }): Promise<Admitted | AdmissionFailure> {
   const proved = await proveProjectRoot(input.path, input.exec, input.resolveFolder);
   if (!proved.ok) return proved;
@@ -100,41 +108,65 @@ export async function admitProject(store: Store, input: {
   const discovered = !known && input.captureOrigin === true && input.actor.origin !== "console"
     ? await originOf(repo, input.exec ?? run) : null;
   let remote = { url: store.projectRemote(repo), why: null as string | null };
-  let registryHad = true;
+  // Whether this call wrote the registry line (it wasn't there under the lock): only that line is ever taken back.
+  let enrolledHere = false;
   const allowed = (): boolean => input.stillAllowed === undefined || input.stillAllowed(repo);
   const moved: AdmissionFailure = { ok: false, reason: "moved", message: `${projectName(repo)} wasn't added: a project folder changed while it was being checked. Try again.` };
   if (input.registryFile !== null) {
     let refused = false;
     let had = false;
-    const enrolled = await updateRepos(input.registryFile, repos => {
-      had = repos.includes(repo);
-      if (!allowed()) { refused = true; return repos; }
-      return addRepos(repos, [repo]);
+    // The whole registry under its lock (repositories AND projects folders): `registryAllowed` decides on it as it is now.
+    const enrolled = await updateProjectRegistry(input.registryFile, current => {
+      had = current.repos.includes(repo);
+      if (!allowed() || (input.registryAllowed !== undefined && !input.registryAllowed(repo, current))) { refused = true; return current; }
+      return { ...current, repos: addRepos(current.repos, [repo]) };
     });
     if (!enrolled.ok) return { ok: false, reason: enrolled.reason, message: `${projectName(repo)} wasn't added: ${enrolled.message}` };
     if (refused) return moved;
-    registryHad = had;
+    enrolledHere = !had;
   }
-  const added = store.transact(() => {
-    // Re-asked with the write; a refusal writes nothing here and takes back the registry line this call added below.
-    if (!allowed()) return null;
-    const rowHad = store.listProjects().some(one => one.path === repo);
-    const previous = store.projectRemote(repo);
-    const first = !known && !store.projectAdmissionKnown(repo);
-    remote = input.remoteUrl !== undefined ? { url: input.remoteUrl, why: null }
-      : first && discovered !== null ? discovered : { url: previous, why: previous === null ? "no remote recorded; use repos add --remote <url>" : null };
-    store.upsertProject(repo, projectName(repo), input.now, { remoteUrl: remote.url });
-    if (input.remoteUrl !== undefined) store.recordProjectRemote(input.actor.label, repo, previous, input.remoteUrl, input.now);
+  /** Take back the registry line this call wrote, if it wrote one; a give-back that fails is said, never swallowed: the
+   * person hears it (an `incomplete` failure naming the line) and the ledger records it. */
+  const giveBack = async (failure: AdmissionFailure): Promise<AdmissionFailure> => {
+    if (input.registryFile === null || !enrolledHere) return failure;
+    let problem: string | null;
+    try {
+      const removed = await updateRepos(input.registryFile, repos => removeRepos(repos, [repo]));
+      problem = removed.ok ? null : removed.message;
+    } catch (error) { problem = error instanceof Error ? error.message : String(error); }
+    if (problem === null) return failure;
+    try {
+      store.recordAction({ at: input.now.toISOString(), actor: input.actor.label, repo, taskId: null, runId: null, action: PROJECT_ADD_INCOMPLETE, outcome: "rollback-failed", source: "access",
+        detail: `its line in the project list couldn't be taken back: ${problem}` });
+    } catch { /* the person's message below still says it */ }
+    return { ok: false, reason: "incomplete", message: `${projectName(repo)} wasn't added, and its line in the project list couldn't be taken back (${problem}). Remove it with \`toolroll repos remove ${repo}\`.` };
+  };
+  let added: boolean | null;
+  try {
+    added = store.transact(() => {
+      // Re-asked with the write; a refusal writes nothing here and takes back the registry line this call added below.
+      if (!allowed()) return null;
+      const rowHad = store.listProjects().some(one => one.path === repo);
+      const previous = store.projectRemote(repo);
+      const first = !known && !store.projectAdmissionKnown(repo);
+      remote = input.remoteUrl !== undefined ? { url: input.remoteUrl, why: null }
+        : first && discovered !== null ? discovered : { url: previous, why: previous === null ? "no remote recorded; use repos add --remote <url>" : null };
+      store.upsertProject(repo, projectName(repo), input.now, { remoteUrl: remote.url });
+      if (input.remoteUrl !== undefined) store.recordProjectRemote(input.actor.label, repo, previous, input.remoteUrl, input.now);
+      // The caller's own writes for this admission, in this transaction: all of them or none.
+      input.withinAdmission?.(repo);
 
-    if (rowHad && registryHad) return false;
-    store.recordAction({ at: input.now.toISOString(), actor: input.actor.label, repo, taskId: null, runId: null, action: PROJECT_ADDED, outcome: "added", source: "access", detail: `from ${input.actor.origin}` });
-    return true;
-  });
-  if (added === null) {
-    if (input.registryFile !== null && !registryHad) await updateRepos(input.registryFile, repos => removeRepos(repos, [repo]));
-    return moved;
+      if (rowHad && !enrolledHere) return false;
+      store.recordAction({ at: input.now.toISOString(), actor: input.actor.label, repo, taskId: null, runId: null, action: PROJECT_ADDED, outcome: "added", source: "access", detail: `from ${input.actor.origin}` });
+      return true;
+    });
+  } catch (error) {
+    // A write refused under it (a local sign-in that lapsed) or the caller's own write failing: nothing of the
+    // transaction stands, and the registry line this call wrote goes too.
+    return giveBack({ ok: false, reason: "failed", message: `${projectName(repo)} wasn't added: ${error instanceof Error ? error.message : String(error)}` });
   }
-  return { ok: true, repo, name: projectName(repo), added, remote };
+  if (added === null) return giveBack(moved);
+  return { ok: true, repo, name: projectName(repo), added, remote, enrolled: enrolledHere };
 }
 
 /**

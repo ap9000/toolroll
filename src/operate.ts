@@ -14050,7 +14050,8 @@ async function welcomeCommand(positional: readonly string[], flags: Map<string, 
   const read = async () => (await welcomeHere(context.store, context.databaseFile, context.clock(), context.easySeams?.check === undefined ? {} : { check: context.easySeams.check })).model;
   let model = await read();
   // `toolroll welcome sample` is named only where it would work (a password-free install); the browser's otherwise.
-  const offer = () => sampleOffered(model, localModeOf(context.store)?.enabled === true, context.store.isDemo()) ? "command" as const : null;
+  const shellMayAdd = (): boolean => { const mode = localModeOf(context.store); return mode?.enabled === true && context.store.accountOf(mode.owner)?.passwordSet !== true; };
+  const offer = () => sampleOffered(model, shellMayAdd(), context.store.isDemo()) ? "command" as const : null;
   if (json || !personAtTerminal(context) || localOwnerRequested()) return succeed(write, json, command, { ...model }, () => welcomeLines(model, offer()));
   const askNow = context.easySeams?.ask ?? ask;
   write(model.left === 0 ? "Setup is done." : `Welcome to Toolroll. ${model.left} ${model.left === 1 ? "step" : "steps"} to your first result.`);
@@ -14908,28 +14909,28 @@ async function welcomeSampleCommand(positional: readonly string[], flags: Map<st
   // The local owner, as runOperate bound it for the screen; or, typed here, bound now from local mode as it reads.
   const binding = localOwnerBinding(store);
   if (binding === null) return fail(write, json, command, "not-local", "This Toolroll signs in with a password. Open it in the browser and choose Try a sample project on the welcome page.", EXIT.refused);
+  // Typed in a shell once a password exists: that password is the way in here (local mode stays on when one is set);
+  // the terminal UI's own door, or the browser, adds it.
+  if (!viaScreen && store.accountOf(binding.account)?.passwordSet === true) {
+    return fail(write, json, command, "password-set", "This Toolroll has a password. Run `toolroll` and press s, or sign in in the browser and choose Try a sample project.", EXIT.refused);
+  }
   const principal: LocalPrincipal | null = viaScreen ? currentLocalOwner()
     : { account: binding.account, localGeneration: binding.localGeneration, accountGeneration: binding.accountGeneration, transport: "terminal", act: "add-project", sessionHash: null, request: null };
   if (principal === null || principal.act !== "add-project") return fail(write, json, command, "refused", "Set a password, or sign in with your password, to do this.", EXIT.refused);
   const registryFile = registryPathOf(context);
-  /** What this install serves now: the projects folders and repositories in its registry, canonical. */
-  const ceiling = async (): Promise<ProjectCeiling | null> => {
-    const loaded = await loadProjectRegistry(registryFile);
-    return "error" in loaded ? null : resolveCeiling(loaded.repos, loaded.roots).ceiling;
+  const { readProjectRegistryNow } = await import("./repos.js");
+  /** What this install serves: the projects folders and repositories in its registry, canonical — the registry as the
+   * registry's lock holds it when given, else read from disk now (every check reads it again; nothing is cached). An
+   * unreadable registry serves nothing. */
+  const ceiling = (registry?: { repos: readonly string[]; roots: readonly string[] }): ProjectCeiling => {
+    const read = registry ?? readProjectRegistryNow(registryFile);
+    return "error" in read ? { repos: [], roots: [] } : resolveCeiling(read.repos, read.roots).ceiling;
   };
-  const first = await ceiling();
-  if (first === null) return fail(write, json, command, "registry", "Toolroll's project list can't be read, so nothing was added.", EXIT.refused);
-  let served: ProjectCeiling = first;
+  if ("error" in readProjectRegistryNow(registryFile)) return fail(write, json, command, "registry", "Toolroll's project list can't be read, so nothing was added.", EXIT.refused);
   const { addSampleProject } = await import("./sample-project.js");
   const added = await asLocalOwner(principal, async () => {
     const stands = (): boolean => localActNow(store, "add-project") !== null;
-    return addSampleProject({
-      store, registryFile, now: context.clock(),
-      ceiling: () => served,
-      authority: { actor: { label: principal.account, origin: "cli" }, stands },
-      // The registry is read again once the folder is made: a projects folder that changed meanwhile adds nothing.
-      refreshCeiling: async () => { served = (await ceiling()) ?? { repos: [], roots: [] }; },
-    });
+    return addSampleProject({ store, registryFile, now: context.clock(), ceiling, authority: { actor: { label: principal.account, origin: "cli" }, stands } });
   });
   if (!added.ok) {
     const words: Record<typeof added.reason, string> = {
@@ -14938,8 +14939,9 @@ async function welcomeSampleCommand(positional: readonly string[], flags: Map<st
       failed: "The sample project couldn't be made. Nothing was added. Try again.",
       "not-added": "The sample project was made but couldn't be added. Try again.",
       refused: "Your local sign-in changed while the sample was being added. Nothing was added. Run `toolroll` to sign in again.",
+      incomplete: "The sample project wasn't added, and its line in your project list couldn't be taken back.",
     };
-    return fail(write, json, command, added.reason, words[added.reason], EXIT.refused);
+    return fail(write, json, command, added.reason, added.message ?? words[added.reason], EXIT.refused);
   }
   return succeed(write, json, command, { repo: added.repo, created: added.created, added: added.added, checkSet: added.checkSet }, () => [
     added.added ? `Added the sample project: ${added.repo}` : `The sample project is already added: ${added.repo}`,

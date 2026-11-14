@@ -28,6 +28,7 @@ export const SAMPLE_PROBLEMS = {
   exists: `A folder named ${SAMPLE_PROJECT_NAME} is already there and wasn't made here, so nothing was changed.`,
   failed: "The sample project couldn't be made. Nothing was added. Try again, or add a folder instead.",
   "not-added": "The sample project was made but couldn't be added. Try again, or add it from Projects.",
+  incomplete: "The sample project wasn't added, and its line in the project list couldn't be taken back. Remove it in Projects, then try again.",
 } as const;
 export type SampleProblem = keyof typeof SAMPLE_PROBLEMS;
 const isSampleProblem = (value: string | null): value is SampleProblem => value !== null && Object.hasOwn(SAMPLE_PROBLEMS, value);
