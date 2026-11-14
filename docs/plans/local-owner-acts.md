@@ -63,6 +63,12 @@ task cards `retry` and `plan` map to no act (`src/local-owner.ts:234-235`).
    (`scope.ts:1238`). Even past it, the CLI completes with `checkAssignmentAsOperator` (`task-outcome-cli.ts:77`), which
    never records the person's own check. Only `acceptAndCompleteAsOperator` does (`src/assignment.ts:602`). The browser's
    Accept works: `task.act.complete` is allowed and its `accept=1` path uses that function (`src/server/tasks.ts:2374-2397`).
+4. **Send back** (found later, fixed in the eight plan's F-lite). `b` sent `task revise <id> --feedback` down the same
+   password road as item 3, so it failed the same way and counted a wrong password against the owner. It now takes its
+   own road, as Accept does: `runLocalRevision` / `reviseAsLocalOwner` (`src/task-outcome-cli.ts`), chosen in
+   `taskAction` only inside the local owner's chain, with the existing `request-revision` act (no new row). It pins the
+   build the screen read (`--run`, required), refuses a newer current version, reads completion's work rule (release,
+   protected, coordinator), never checks a password, and files the revision as the person's.
 
 ### The trap: rows alone grant too much
 

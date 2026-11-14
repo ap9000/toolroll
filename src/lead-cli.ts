@@ -1,5 +1,6 @@
 import { cardPlainOf, isCardProposal } from "./chat-card.js";
 import { currentLocalOwner } from "./local-owner.js";
+import { passwordFreeOwner } from "./task-outcome-cli.js";
 import { parseFeedbackImage } from "./result-review.js";
 import { configureLeadFollow, leadFollowStatus } from './lead-follow.js';
 import { closedQuestionWords } from "./decision.js";
@@ -378,7 +379,8 @@ export async function runLeadCli(input: LeadCliInput): Promise<LeadCliResult> {
         }, ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }) });
         emit({ ok: outcome.ok, act: "confirm", proposal: proposal.id, ...(outcome.ok ? { said: outcome.said, taskId: outcome.taskId } : { reason: outcome.reason, said: outcome.said }) });
         say(outcome.ok ? outcome.said : outcome.reason === "needs-confirm" ? `${outcome.said}: confirm ${act[2]} yes` : `refused: ${outcome.said}`);
-        if (outcome.ok && outcome.kind === "scope" && outcome.taskId !== null) say(`approve it with your password: toolroll task approve ${outcome.taskId}`);
+        // A password-free owner approves in the terminal UI (a shell has no password to approve with).
+        if (outcome.ok && outcome.kind === "scope" && outcome.taskId !== null) say(passwordFreeOwner(store) ? `approve it in \`toolroll\`: press a on ${outcome.taskId}` : `approve it with your password: toolroll task approve ${outcome.taskId}`);
       }
       continue;
     }
