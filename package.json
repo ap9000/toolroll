@@ -31,7 +31,8 @@
     "e2e:flows": "npm run build && node scripts/flows-e2e.mjs",
     "e2e:app": "npm run build && node scripts/app-e2e.mjs",
     "e2e:app:parallel": "npm run build && node scripts/e2e-parallel.mjs scripts/app-e2e.mjs",
-    "e2e": "npm run build && node scripts/flows-e2e.mjs && node scripts/app-e2e.mjs"
+    "e2e": "npm run build && node scripts/flows-e2e.mjs && node scripts/app-e2e.mjs",
+    "e2e:click-paths": "npm run build && node scripts/click-paths-journey.mjs"
   },
   "repository": {
     "type": "git",
