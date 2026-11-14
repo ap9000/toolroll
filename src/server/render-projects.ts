@@ -17,7 +17,6 @@ import {
   linkTabs, note, notice, pageHeader, phoneHeader, row, slots, status,
 } from "./kit.js";
 import { type OnboardCardState, type ProjectPeek } from "./render-pages.js";
-import { projectsFolderBlockedHtml, type ProjectsFolderFacts } from "../settings-groups-ui.js";
 
 /** A path as a person reads it: the home folder as ~. */
 export function shortPathOf(path: string): string {
@@ -50,10 +49,9 @@ const refused = (text: string): string => /nothing (changed|was)/i.test(text) ? 
  * (a finished clone). */
 export type ProblemAt = "link" | "clone" | "open" | "path" | "said" | null;
 
-/** The "From this computer" part's own facts: whether a projects folder can be chosen here (and why not), and whether
- * this person may add a repository outside it (an approver signed in with a password, who types it again). */
+/** The "From this computer" part's own facts: whether this person may add a repository outside the projects folder (an
+ * approver signed in with a password, who types it again). */
 export type AddLocalFacts = {
-  folderBlocked: ProjectsFolderFacts["blocked"];
   outside: boolean;
   /** Browse… : the repository picker over this computer's folders (an approver's read). */
   pick: boolean;
@@ -66,7 +64,7 @@ export type AddLocalFacts = {
 
 /** The add ways, as the drawer (and the no-script page) shows them: GitHub, then this computer. */
 export function addWaysHtml(data: { browsable: boolean; onboard: OnboardCardState | null; returnTo: string; linkProblem: string | null; local?: AddLocalFacts }): Html {
-  const local = data.local ?? { folderBlocked: "ask", outside: false, pick: false, pathProblem: null, pathValue: "" };
+  const local = data.local ?? { outside: false, pick: false, pathProblem: null, pathValue: "" };
   const onboard = data.onboard;
   const github = onboard === null
     ? null
@@ -87,12 +85,8 @@ export function addWaysHtml(data: { browsable: boolean; onboard: OnboardCardStat
   const thisComputer = html`<section class="k-sec" aria-labelledby="add-local"><h3 id="add-local">From this computer</h3>${joinHtml([
     // A refused path is said first, where the person is looking, not as a small line under the field.
     local.pathProblem === null ? "" : notice(refused(local.pathProblem)),
-    local.pick
-      ? acts(btn("Browse…", { sm: true, href: "/projects/pick" }),
-        !data.browsable && local.folderBlocked === null ? btn("Choose a projects folder", { sm: true, variant: "ghost", href: `/settings/projects-folder?return=${encodeURIComponent("/projects/pick")}` }) : "")
-      : data.browsable ? acts(btn("Choose a folder", { sm: true, href: "/projects/browse" }))
-      : local.folderBlocked === null ? acts(btn("Choose a projects folder", { sm: true, href: `/settings/projects-folder?return=${encodeURIComponent("/projects/browse")}` }))
-      : projectsFolderBlockedHtml(local.folderBlocked, "/projects"),
+    local.pick ? acts(btn("Browse…", { sm: true, href: "/projects/pick" }))
+      : data.browsable ? acts(btn("Choose a folder", { sm: true, href: "/projects/browse" })) : "",
     postForm("/projects/open", joinHtml([
       field({ id: "add-path", label: "Or enter an exact path",
         hint: local.outside ? "Add any git repository on this computer — outside your projects folder, Toolroll asks for your password." : "It must be a git repository.",
@@ -382,24 +376,21 @@ export function waitingWords(count: number): string {
 /** What the picker shows: where it is (breadcrumb, Up), shortcuts, the folders here, and what can be done with the
  * folder it is at (`chosen`: the add confirmation for a repository, or "use this folder" for the projects folder). */
 export type FolderPickerView = {
-  mode: "repo" | "folder";
   at: { shown: string; crumbs: readonly { label: string; href: string | null }[]; up: string | null } | null;
   entries: readonly { name: string; git: boolean; registered: boolean; href: string }[];
   shortcuts: readonly { label: string; href: string }[];
   /** The folder couldn't be read (or didn't answer): said in place of the list. */
   lookProblem: string | null;
   chosen: Html | null;
-  /** Folder mode: the typed-path form. */
-  typed: Html | null;
   problem: string | null;
   said: string | null;
   back: readonly [href: string, label: string];
 };
 
-/** The picker over the server's own disk (pages.ts projectsPick / projectsFolderPage): directory names only, read off
+/** The repository picker over the server's own disk (pages.ts projectsPick): directory names only, read off
  * the console's thread (folder-look.ts), git repositories marked. Every row is a link (keyboard and phone alike). */
 export function folderPickerPage(chrome: Chrome, view: FolderPickerView): Screen {
-  const title = view.mode === "repo" ? "Choose a repository" : "Choose a projects folder";
+  const title = "Choose a repository";
   // The breadcrumb wraps on a phone (plain inline text), each folder above this one a link.
   const crumbs = view.at === null ? "" : html`<nav class="k-mono" aria-label="Folder">${joinHtml(view.at.crumbs.map(one => one.href === null
     ? html`<span aria-current="location">${one.label}</span>`
@@ -407,10 +398,10 @@ export function folderPickerPage(chrome: Chrome, view: FolderPickerView): Screen
   const gits = view.entries.filter(one => one.git).length;
   const list = view.lookProblem !== null ? notice(view.lookProblem)
     : view.entries.length === 0 && view.chosen !== null ? ""
-    : view.entries.length === 0 ? empty({ title: view.mode === "repo" ? "No repositories here." : "No folders inside.", text: view.at?.up ? "Go up one folder, or try a shortcut." : "Try a shortcut, or enter a path." })
-    : html`${view.mode === "repo" && gits === 0 ? note("No repositories here. Open a folder to look inside it.") : ""}${group("Folders", count(view.entries.length))}${view.entries.map(one => row({
+    : view.entries.length === 0 ? empty({ title: "No repositories here.", text: view.at?.up ? "Go up one folder, or try a shortcut." : "Try a shortcut." })
+    : html`${gits === 0 ? note("No repositories here. Open a folder to look inside it.") : ""}${group("Folders", count(view.entries.length))}${view.entries.map(one => row({
       href: one.href, chip: one.git ? chip(one.registered ? "Project" : "Git repository", "") : html``, title: one.name,
-      desc: one.git ? (view.mode === "repo" ? (one.registered ? "Already added" : "Choose to add it") : "Git repository") : "Folder",
+      desc: one.git ? (one.registered ? "Already added" : "Choose to add it") : "Folder",
     }))}`;
   const body = joinHtml([
     phoneHeader(title, { back: view.back[0] }),
@@ -421,7 +412,6 @@ export function folderPickerPage(chrome: Chrome, view: FolderPickerView): Screen
       view.chosen ?? "",
       view.shortcuts.length === 0 && !view.at?.up ? "" : html`<nav class="k-acts" aria-label="Go to">${view.at?.up ? btn("Up one folder", { sm: true, lead: "back", href: view.at.up }) : ""}${view.shortcuts.map(one => btn(one.label, { sm: true, variant: "ghost", href: one.href }))}</nav>`,
       html`<div>${list}</div>`,
-      view.typed ?? "",
     ),
   ], "\n");
   // A page with a password field is drawn without scripts by the screen's own sensitivity check.
@@ -444,23 +434,4 @@ export function pickRepoChosen(data: { name: string; path: string; state: "open"
   const acts_ = data.refusal !== null || data.state === "blocked" ? ""
     : data.state === "open" ? form("Open") : data.state === "outside" ? form("Add and open", typedPasswordField("pick-password")) : form("Add and open");
   return slots({ status: html`<h2>${data.name}</h2>`, text: html`${mono(shortPathOf(data.path))} · ${text}`, acts: acts_, terms: "", attrs: { "aria-label": `Add ${data.name}` } });
-}
-
-/** The picker's confirmation for the projects folder: use this folder (a password typed now), or why it can't be. */
-export function pickFolderChosen(data: { path: string; returnTo: string; refusal: string | null }): Html {
-  const shown = shortPathOf(data.path);
-  return slots({ status: html`<h2>${shown}</h2>`,
-    text: data.refusal !== null ? sentence(data.refusal) : "Toolroll can add any git repository inside it. Projects already added stay.",
-    acts: data.refusal !== null ? "" : postForm("/settings/projects-folder", joinHtml([typedPasswordField("pf-password"), acts(btn("Use this folder", { type: "submit", variant: "primary" }))]),
-      { hidden: { path: data.path, return: data.returnTo } }),
-    terms: "", attrs: { "aria-label": `Use ${shown}` } });
-}
-
-/** Folder mode: the typed path (~ is the home folder), with the same password typed now. */
-export function pickFolderTyped(returnTo: string): Html {
-  return html`<section class="k-sec" aria-labelledby="pf-typed-h"><h3 id="pf-typed-h">Or enter a path</h3>${postForm("/settings/projects-folder", joinHtml([
-    field({ id: "pf-path", label: "Path", hint: "~ is your home folder.", control: input({ id: "pf-path", name: "path", hint: true, attrs: { placeholder: "~/Developer", autocomplete: "off", spellcheck: "false", autocapitalize: "none", required: true } }) }),
-    typedPasswordField("pf-typed-password"),
-    acts(btn("Use this folder", { sm: true, type: "submit" })),
-  ]), { hidden: { return: returnTo } })}</section>`;
 }

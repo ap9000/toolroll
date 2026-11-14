@@ -913,7 +913,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
       body: new URLSearchParams({ csrf, repo: "ap9000/thing", root: "0" }),
       redirect: "manual",
     });
-    expect(await refused.text()).toContain("choose a projects folder");
+    expect(await refused.text()).toContain("needs a projects folder");
   });
 
   test("the console picks up a newly connected project without restarting", async () => {
@@ -938,7 +938,9 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     mkdirSync(repo);
     const { execSync } = await import("node:child_process");
     execSync("git init -q", { cwd: repo });
-    const registry = join(root, "machine-repos.json");
+    // The registry beside the database, as `up` keeps it: Toolroll's own folder, never inside the projects folder (a
+    // repository inside Toolroll's own settings folder is refused).
+    const registry = join(evidenceRoot, "machine-repos.json");
     await boot({ projectRoots: [root], registryPath: registry, upConsole: true });
     const cookie = await login();
     const csrf = await csrfFrom(cookie);

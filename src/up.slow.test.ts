@@ -267,7 +267,7 @@ describe("toolroll up", () => {
     try {
       expect(await up(["--project-root", base], PORT + 22)).toBe(3);
       expect(envelope()).toMatchObject({ ok: false, reason: "port-busy" });
-      expect(String(envelope()["message"] ?? JSON.stringify(envelope()))).toContain("The projects folder wasn't saved: choose it in Settings → Projects instead");
+      expect(String(envelope()["message"] ?? JSON.stringify(envelope()))).toContain("The projects folder wasn't saved, because this Toolroll didn't start");
       expect(existsSync(join(base, "repos.json"))).toBe(false);
     } finally {
       await new Promise<void>(done => squatter.close(() => done()));

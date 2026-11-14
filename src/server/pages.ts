@@ -52,6 +52,7 @@ comparisonsOf,
 folderRefusal,
 type FolderComparisons,
 type FolderIdentity,
+type FolderSeen,
 projectName,
 sameRepo
 } from "../project.js";
@@ -78,9 +79,7 @@ import { codeMapPage, codeMapReportBlock } from "./render-code-map.js";
 import { FLAKY_WINDOW_DAYS, flakyList, flakyShow } from "../flaky.js";
 import { flakyPage, flakyRowPage } from "./render-flaky.js";
 import { configBase, NAMES } from "../names.js";
-import { updateProjectRegistry } from "../repos.js";
-import { projectsFolderBlockedHtml, settingsSubPage } from "../settings-groups-ui.js";
-import { browsePage,folderPickerPage,githubReposPage,pickFolderChosen,pickFolderTyped,pickRepoChosen,shortPathOf,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
+import { browsePage,folderPickerPage,githubReposPage,pickRepoChosen,shortPathOf,projectHref,projectPage,projectsPage,unknownProject,type ProblemAt,type ProjectPageTask } from "./render-projects.js";
 import { notFound as kitNotFound } from "./kit.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { type ProjectOutcomes } from "../project-outcomes.js";
@@ -93,7 +92,7 @@ import { homeView } from "./home.js";
 import { flowAsks, releaseAsks, setupAsks, type HomeAsks } from "./home-asks.js";
 import { workIndexPage } from "../work-index.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows, projectRoots } = runtime;
+  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows, outsideAdmissions } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -672,18 +671,21 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       const root = await proveProjectRoot(canonical, undefined, identities.resolveNow);
       if (!root.ok) return say(root.reason === "not-git" ? "that path is not a git repository" : root.message, 400);
       // What the checkout really is, read by the bounded look (never on this thread): judged on identity, not spelling.
-      const seen = await widenFacts(root.repo);
-      if (!seen.ok) return say(seen.words, 503);
-      if (seen.target === null || !seen.target.dir) return say("that path is not a git repository", 400);
-      const refusal = folderRefusal("repo", seen.target, seen.facts);
-      if (refusal !== null) return say(refusal, 400);
-      if (process.getuid !== undefined && seen.target.uid !== process.getuid()) return say(`${shortPathOf(root.repo)} must be a repository you own`, 403);
-      // Saved as the disk spells it: a case alias (or any other spelling) of the checkout is refused, never recorded.
-      if (seen.target.real !== root.repo) return say(`use the folder's own name: ${shortPathOf(seen.target.real)}`, 400);
+      const refused = await additionRefusal(root.repo);
+      if (refused !== null) return say(refused.words, refused.status);
       target = root.repo;
       outside = true;
-    } else if (!(await isGitRepo(canonical))) {
-      return say("that path is not a git repository", 400);
+    } else {
+      if (!(await isGitRepo(canonical))) return say("that path is not a git repository", 400);
+      // A repository new to this console, found inside a projects folder, passes the same folder rules as any other (a
+      // hidden one, Toolroll's own checkouts…). One already added or configured opens as before.
+      const known = liveCeiling().repos.includes(canonical) || store.listProjects().some(one => one.path === canonical);
+      if (!known) {
+        const root = await proveProjectRoot(canonical, undefined, identities.resolveNow);
+        if (!root.ok) return say(root.reason === "not-git" ? "that path is not a git repository" : root.message, 400);
+        const refused = await additionRefusal(root.repo, true);
+        if (refused !== null) return say(refused.words, refused.status);
+      }
     }
     // An account limited to listed projects never widens its own list.
     if (!outside && !visible(canonical)) {
@@ -707,7 +709,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (!stillAllowed(admitted.repo)) return say("a project folder changed while this was being checked — try again", 409);
     if (outside) {
       // Served at once (the builder connects it from the saved list too), and the ledger says it came from outside.
-      projectRoots.admit(admitted.repo);
+      outsideAdmissions.admit(admitted.repo);
       try {
         store.recordAction({ at: now.toISOString(), actor: who.name, repo: admitted.repo, taskId: null, runId: null, action: PROJECT_ADDED_OUTSIDE, outcome: "added", source: "access", detail: "outside the projects folder, with a password typed now" });
       } catch { /* the registry and the project row hold the admission */ }
@@ -786,7 +788,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (who.via !== "cookie") return refuse(response, who, 403, "adding repositories is a browser session's act");
     if (store.isDemo()) return refuse(response, who, 403, "the sandbox never clones");
     if (process.platform === "win32") return refuse(response, who, 403, "adding from GitHub is not supported on Windows yet");
-    if (ceiling.roots.length === 0) return projectsScreen(response, who, "choose a projects folder first, in Settings → Projects", 400, "/", "link");
+    if (ceiling.roots.length === 0) return projectsScreen(response, who, "cloning from GitHub needs a projects folder to clone into, and this Toolroll has none", 400, "/", "link");
     const shape = parseGithubRepo(body.get("repo") ?? "");
     if (!shape.ok) return projectsScreen(response, who, shape.problem, 400, "/", "link");
     // Roots by INDEX (finding 13) — a posted path is never accepted.
@@ -834,7 +836,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (who.via !== "cookie") return refuse(response, who, 403, "adding repositories is a browser session's act");
     if (store.isDemo()) return refuse(response, who, 403, "the sandbox never clones");
     if (process.platform === "win32") return refuse(response, who, 403, "adding from GitHub is not supported on Windows yet");
-    if (ceiling.roots.length === 0) return projectsScreen(response, who, "choose a projects folder first, in Settings → Projects", 400, "/", "clone");
+    if (ceiling.roots.length === 0) return projectsScreen(response, who, "cloning from GitHub needs a projects folder to clone into, and this Toolroll has none", 400, "/", "clone");
 
     // CONFIRM: password, then session liveness AGAIN via lookupSession
     // (finding 22/33) — the record is consumed from the RETURNED live
@@ -959,7 +961,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
             : ceiling.roots.length === 0
               ? {
                   enabled: false as const,
-                  why: projectRoots.blockedFor(who) === null ? "Choose a projects folder first: GitHub repositories are cloned into it." : "Ask whoever runs this Toolroll to choose a projects folder.",
+                  why: "Cloning from GitHub needs a projects folder to clone into, and this Toolroll has none.",
                 }
               : { enabled: true as const, roots: ceiling.roots, localOwner: who.authority !== "full", record: [...(who.session.onboard?.entries() ?? [])][0] ?? null };
     const peeks: Record<string, ProjectPeek | null> = {};
@@ -972,7 +974,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         recent, candidates, open, problem, problemAt, onboard: onboardState, peeks, returnTo,
         browsable: !restricted() && (ceiling.roots.length > 0 || unscopedMode),
         local: {
-          folderBlocked: ceiling.roots.length > 0 || unscopedMode ? null : projectRoots.blockedFor(who),
           // The picker and adding from outside the projects folder: an approver's, from a browser (the second also
           // needs a full session and a password typed now; the handler proves it).
           pick: who.via === "cookie" && who.role === "approver" && !restricted(),
@@ -1250,10 +1251,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "fleet.retire": fleetRetire,
     "projects.onboard-preview": onboardPreview,
     "projects.onboard-confirm": onboardConfirm,
-    "projects.folder": projectsFolderPage,
     "projects.pick": projectsPick,
-    "projects.folder-save": projectsFolderSave,
-    "projects.folder-remove": projectsFolderRemove,
   }, {
     "edge.healthz": healthzEdge,
     "edge.instance": instanceEdge,
@@ -1289,21 +1287,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       setup: setupAsks(steps, approver) };
   }
 
-  // ---- Settings → Projects → Projects folder ---------------------------------------------------------------------
-  // The folder Toolroll adds projects from (the ceiling's roots). Choosing one WIDENS what this server may open, so it
-  // is an instance operator's act from a full browser session with their password typed now (the route table admits
-  // only that caller; the handler proves the password and re-reads the standing inside the registry's lock, right before
-  // the write). It is saved to the machine registry `up` reads at every start (repos.json `roots`), then applied to this
-  // console's live ceiling, and the ledger keeps before → after. Stopping using one only narrows; added projects stay.
+  // ---- Adding a repository: the picker and the checks every addition passes ---------------------------------------
+  // A repository added through the exact path or the picker is judged by the same folder rules wherever it is (hidden
+  // folders, Toolroll's own settings and checkouts, ~/Library, the system's folders), on identity, read off the console's
+  // thread under the look's deadline. One outside every projects folder also takes a password typed now (projectsOpen).
 
-  /** Where a person reads a refusal about the projects folder: the folder page, keeping where they were looking. */
-  function projectsFolderBack(response: ServerResponse, key: "said" | "problem", words: string, returnTo: string, at: string | null = null): void {
-    const query = new URLSearchParams();
-    if (at !== null) query.set("at", at);
-    if (returnTo !== "/settings/projects") query.set("return", returnTo);
-    query.set(key, words);
-    return redirect(response, `/settings/projects-folder?${query.toString()}`);
-  }
   /** The folders Toolroll keeps its own settings and records in, as configured (the bounded look resolves them): a
    * projects folder or an added repository never holds one or sits inside one. */
   function toolrollStateFolders(home: string): string[] {
@@ -1317,49 +1305,53 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   const lookOptions = () => ({ home: homedir(), ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) });
   /** A folder a widening choice names, and everything it is judged against, in one bounded look: never on this thread,
    * so a disconnected drive (a pool or evidence folder elsewhere included) answers "didn't answer" instead of freezing. */
-  async function widenFacts(path: string): Promise<{ ok: true; target: FolderIdentity | null; home: FolderIdentity; facts: FolderComparisons; protectedReal: string[] } | { ok: false; words: string }> {
+  async function widenFacts(path: string): Promise<{ ok: true; target: FolderSeen; home: FolderIdentity; facts: FolderComparisons; protectedReal: string[] } | { ok: false; words: string }> {
     const home = homedir();
     const protect = toolrollStateFolders(home);
     const looked = await folderFacts(path, comparisonPaths(home, protect), lookOptions());
     if (!looked.ok) return { ok: false, words: looked.why === "no-answer" ? "That folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment." : "That folder couldn't be read." };
     const facts = comparisonsOf(looked.value.compare, protect.length);
-    if (facts.home === null) return { ok: false, words: "Your home folder couldn't be read. Try again in a moment." };
-    return { ok: true, target: looked.value.target, home: facts.home, facts, protectedReal: facts.protectedDirs.flatMap(one => one === null ? [] : [one.real]) };
+    if (facts.home.kind !== "found") return { ok: false, words: "Your home folder couldn't be read. Try again in a moment." };
+    // Toolroll's folders as the picker leaves them out: there (its real path) or not yet (its path); unreadable fails.
+    const protectedReal: string[] = [];
+    for (const one of facts.protectedDirs) {
+      if (one.kind === "unreadable") return { ok: false, words: "One of Toolroll's own folders couldn't be read, so nothing here can be checked. Try again in a moment." };
+      protectedReal.push(one.kind === "found" ? one.real : one.path);
+    }
+    return { ok: true, target: looked.value.target, home: facts.home, facts, protectedReal };
   }
-  /** Whether this session still stands as an instance operator with full authority: re-read right before a write. */
-  function folderStandingNow(who: Who): boolean {
-    if (who.via !== "cookie" || who.authority !== "full") return false;
-    const account = store.accountOf(who.name);
-    return account !== null && account.revokedAt === null && account.role === "approver" && account.generation === who.session.generation && store.isInstanceOperator(who.name);
+  /** Why a repository can't be added here, or null: the folder rules on its identity, its owner, and that it is saved as
+   * the disk spells it. Every addition passes it: from outside a projects folder, and a new one found inside one. */
+  async function additionRefusal(repo: string, insideRoot = false): Promise<{ words: string; status: number } | null> {
+    const seen = await widenFacts(repo);
+    if (!seen.ok) return { words: seen.words, status: 503 };
+    if (seen.target.kind !== "found" || !seen.target.dir) return { words: "that path is not a git repository", status: 400 };
+    // Inside a projects folder the operator configured, where that folder lives was their choice (a drive, /srv…): the
+    // system-folder rule is theirs; every other rule (hidden, Toolroll's own, home, ~/Library) still applies.
+    const refusal = folderRefusal("repo", seen.target, insideRoot ? { ...seen.facts, tops: [], trees: [] } : seen.facts);
+    if (refusal !== null) return { words: refusal, status: 400 };
+    if (process.getuid !== undefined && seen.target.uid !== process.getuid()) return { words: `${shortPathOf(repo)} must be a repository you own`, status: 403 };
+    if (seen.target.real !== repo) return { words: `use the folder's own name: ${shortPathOf(seen.target.real)}`, status: 400 };
+    return null;
   }
-  /** Projects-folder changes one at a time, each published and applied in its own turn: a save that started earlier
-   * can never land after a later Stop using, and the live folders always follow the latest publication. */
-  let folderTurn: Promise<unknown> = Promise.resolve();
-  function inFolderTurn<T>(work: () => Promise<T>): Promise<T> {
-    const turn = folderTurn.then(work, work);
-    folderTurn = turn.catch(() => undefined);
-    return turn;
-  }
-
   /** The picker's look (folder-look.ts, the browse page's own reads and limits: directory names only, off the console's
    * thread under a deadline, links resolved and kept inside a root, no other drive, no ~/Library, no hidden folders or
    * node_modules), over the home folder and any projects folder that lives elsewhere, never wider. Toolroll's own
    * settings and records folders are left out. */
-  async function pickerScreen(ctx: HandlerContext, mode: "repo" | "folder"): Promise<void> {
+  async function pickerScreen(ctx: HandlerContext): Promise<void> {
     const { url, who, response } = ctx;
-    const chrome = chromeFor(who.via === "cookie" ? who.session.project : null, mode === "repo" ? "projects" : "settings");
-    const returnTo = safeReturn(url.searchParams.get("return") ?? (mode === "repo" ? "/projects" : "/settings/projects"));
-    const back: readonly [string, string] = mode === "repo" ? ["/projects", "Projects"] : ["/settings/projects", "Settings → Projects"];
+    const chrome = chromeFor(who.via === "cookie" ? who.session.project : null, "projects");
+    const back: readonly [string, string] = ["/projects", "Projects"];
     const inside = (one: string, root: string): boolean => one === root || one.startsWith(`${root}/`);
-    const base = { mode, problem: url.searchParams.get("problem"), said: url.searchParams.get("said"), back, typed: mode === "folder" ? pickFolderTyped(returnTo) : null };
+    const base = { problem: url.searchParams.get("problem"), said: url.searchParams.get("said"), back };
     const seenHome = await widenFacts(homedir());
     if (!seenHome.ok) {
       return sendScreen(response, 200, folderPickerPage(chrome, { ...base, at: null, entries: [], shortcuts: [], chosen: null, lookProblem: seenHome.words }));
     }
     const home = seenHome.home.real;
     const roots = [home, ...ceiling.roots.filter(root => !inside(root, home) && !inside(home, root))];
-    const hrefOf = (path: string): string => `${mode === "repo" ? "/projects/pick" : "/settings/projects-folder"}?at=${encodeURIComponent(path)}${returnTo === back[0] || (mode === "repo" && returnTo === "/projects") ? "" : `&return=${encodeURIComponent(returnTo)}`}`;
-    const fallback = mode === "repo" ? ceiling.roots[0] ?? home : home;
+    const hrefOf = (path: string): string => `/projects/pick?at=${encodeURIComponent(path)}`;
+    const fallback = ceiling.roots[0] ?? home;
     const expanded = expandHomePath((url.searchParams.get("at") ?? "").trim(), home);
     const spelled = expanded === null || !expanded.startsWith("/") ? fallback : resolve(expanded);
     const start = roots.some(root => inside(spelled, root)) ? spelled : fallback;
@@ -1393,140 +1385,30 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       ...ceiling.roots.filter(one => one !== at && !["Developer", "Documents", "code", "Projects"].some(name => one === `${home}/${name}`)).map(one => ({ label: shortPathOf(one), href: hrefOf(one) })),
     ];
     let chosen: Html | null = null;
-    if (mode === "folder") {
-      // At the home folder there is nothing to choose yet: its folders are the choices.
-      if (at !== home) {
-        const seen = await widenFacts(at);
-        const refusal = !seen.ok ? seen.words : seen.target === null ? "that folder couldn't be read" : folderRefusal("folder", seen.target, seen.facts);
-        chosen = pickFolderChosen({ path: at, returnTo, refusal });
-      }
-    } else if (at !== home) {
-      // A repository here (proved, not taken from the address): what adding it takes.
+    if (at !== home) {
+      // A repository here (proved, not taken from the address): what adding it takes, or why it can't be added. Every
+      // repository is judged by the same folder rules (hidden, Toolroll's own, system), inside a projects folder too.
       const proved = await proveProjectRoot(at, undefined, identities.resolveNow);
       if (proved.ok && proved.repo === at) {
         const name = projectName(at);
-        if (registered.has(at) && (await authorizedProject(liveCeiling(), at))) chosen = pickRepoChosen({ name, path: at, state: "open", refusal: null });
-        else if (await authorizedProject(liveCeiling(), at)) chosen = pickRepoChosen({ name, path: at, state: "inside", refusal: null });
-        else {
-          const may = who.via === "cookie" && who.role === "approver" && who.authority === "full" && !store.isDemo() && !restricted();
-          const seen = await widenFacts(at);
-          const refusal = !seen.ok ? seen.words : seen.target === null ? "that folder couldn't be read" : folderRefusal("repo", seen.target, seen.facts);
-          chosen = pickRepoChosen({ name, path: at, state: may ? "outside" : "blocked", refusal });
-        }
+        const inCeiling = await authorizedProject(liveCeiling(), at);
+        const refused = registered.has(at) && inCeiling ? null : await additionRefusal(at, inCeiling);
+        const refusal = refused === null ? null : refused.words;
+        const may = who.via === "cookie" && who.role === "approver" && who.authority === "full" && !store.isDemo() && !restricted();
+        chosen = pickRepoChosen({ name, path: at, refusal, state: registered.has(at) && inCeiling ? "open" : inCeiling ? "inside" : may ? "outside" : "blocked" });
       }
     }
     return sendScreen(response, 200, folderPickerPage(chrome, { ...base, at: { shown: shortPathOf(at), crumbs, up }, entries, shortcuts, chosen, lookProblem: null }));
   }
 
-  /** GET /settings/projects-folder: the picker, choosing a folder (an instance operator who may change it). */
-  async function projectsFolderPage(ctx: HandlerContext): Promise<void> {
-    const { who, response } = ctx;
-    const blocked = projectRoots.blockedFor(who);
-    if (blocked !== null) {
-      return sendScreen(response, 200, screen("Projects folder", settingsSubPage("projects", "Projects folder", projectsFolderBlockedHtml(blocked, "/settings/projects-folder")), { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "settings") }));
-    }
-    return pickerScreen(ctx, "folder");
-  }
   /** GET /projects/pick: the picker, choosing a repository to add (an approver's read). */
   async function projectsPick(ctx: HandlerContext): Promise<void> {
     if (ctx.who.via !== "cookie") return refuse(ctx.response, ctx.who, 403, "Choosing a repository is a browser session's act.", "/projects");
-    return pickerScreen(ctx, "repo");
-  }
-
-  /** POST /settings/projects-folder: the step-up that chooses it. The folder is judged inside the registry's lock, right
-   * before publication (identity, exclusions, owner, standing), published as the disk spells it, and applied to the live
-   * ceiling in the same turn; any refusal leaves the registry and the live folders as they were. The ledger keeps
-   * before → after with the folder's identity. */
-  async function projectsFolderSave(ctx: HandlerContext): Promise<void> {
-    const { who, response, posted, now } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.projectsFolder);
-    const returnTo = safeReturn(body.get("return") ?? "/settings/projects");
-    if (who.via !== "cookie") return refuse(response, who, 403, "Choosing the projects folder is a browser session's act.", "/settings/projects");
-    const registryFile = options.registryPath;
-    if (projectRoots.blockedFor(who) !== null || registryFile === undefined) return refuse(response, who, 403, "This Toolroll's projects folder can't be changed from here.", "/settings/projects");
-    const raw = (body.get("path") ?? "").trim();
-    const back = (words: string) => projectsFolderBack(response, "problem", words, returnTo);
-    if (raw === "") return back("Enter a folder, or choose one above. Nothing changed.");
-    if (raw.length > 4096 || hasForbiddenControls(raw) || /[\r\n\t]/.test(raw)) return back("That isn't a folder path. Nothing changed.");
-    const expanded = expandHomePath(raw, homedir());
-    if (expanded === null) return back("Only ~ for your own home folder works here, like ~/Developer. Nothing changed.");
-    if (!expanded.startsWith("/")) return back("Enter a full path, like ~/Developer. Nothing changed.");
-    // A password typed now by an instance operator: never a session, a remembered password or a re-check (it widens).
-    if (!typedPasswordNow(authenticateCredential(who, body.get("password") ?? "")) || !store.isInstanceOperator(who.name)) {
-      return back("Enter your Toolroll password to choose the projects folder. Nothing changed.");
-    }
-    return inFolderTurn(async () => {
-      let refusal: string | null = null;
-      let stood = true;
-      let before: string[] = [];
-      let chosen: FolderIdentity | null = null;
-      const saved = await updateProjectRegistry(registryFile, async current => {
-        before = [...current.roots];
-        if (!folderStandingNow(who)) { stood = false; return current; }
-        const seen = await widenFacts(expanded);
-        if (!seen.ok) { refusal = `${seen.words} Nothing changed.`; return current; }
-        const target = seen.target;
-        if (target === null || !target.dir) { refusal = `${shortPathOf(resolve(expanded))} isn't a folder on this computer. Nothing changed.`; return current; }
-        const why = folderRefusal("folder", target, seen.facts);
-        if (why !== null) { refusal = `${sentence(why)}. Nothing changed.`; return current; }
-        if (process.getuid !== undefined && target.uid !== process.getuid()) { refusal = `${shortPathOf(target.real)} must be a folder you own. Nothing changed.`; return current; }
-        // The live ceiling resolves its folders through the console's identities: this exact path answers as itself.
-        if ((await identities.resolveNow(target.real)) !== target.real) { refusal = "That folder changed while it was being checked. Try again. Nothing changed."; return current; }
-        if (!folderStandingNow(who)) { stood = false; return current; }
-        chosen = target;
-        return { repos: current.repos, roots: [target.real] };
-      });
-      if (!saved.ok) return back(`The projects folder wasn't saved: ${saved.message}. Nothing changed.`);
-      if (!stood) return refuse(response, who, 403, "Your access changed. Sign in again. Nothing changed.", "/settings/projects");
-      const picked = chosen as FolderIdentity | null;
-      if (refusal !== null || picked === null) return back(refusal ?? "Nothing changed.");
-      // Applied in the same turn as its publication: nothing publishes or applies between the two.
-      projectRoots.set([picked.real]);
-      try {
-        store.recordAction({ at: now.toISOString(), actor: who.name, repo: null, taskId: null, runId: null, action: PROJECTS_FOLDER_CHANGED, outcome: "chosen", source: "access",
-          detail: `${before.length === 0 ? "none" : before.join(", ")} → ${picked.real} (folder ${picked.chain[0]})` });
-      } catch { /* the registry holds the change; the ledger write failing never undoes it */ }
-      const words = `${shortPathOf(picked.real)} is the projects folder. Projects already added stay.`;
-      if (returnTo === "/projects/browse" || returnTo === "/projects/pick") return redirect(response, `${returnTo}?at=${encodeURIComponent(picked.real)}`);
-      return redirect(response, `${returnTo === "/settings/projects-folder" ? "/settings/projects" : returnTo}${returnTo.includes("?") ? "&" : "?"}said=${encodeURIComponent(words)}`);
-    });
-  }
-
-  /** POST /settings/projects-folder/remove: stop using one folder. Narrowing only; projects already added stay. */
-  async function projectsFolderRemove(ctx: HandlerContext): Promise<void> {
-    const { who, response, posted, now } = ctx;
-    const body = readForm(posted, CONSOLE_FORMS.projectsFolderRemove);
-    if (who.via !== "cookie") return refuse(response, who, 403, "Choosing the projects folder is a browser session's act.", "/settings/projects");
-    const registryFile = options.registryPath;
-    if (projectRoots.blockedFor(who) !== null || registryFile === undefined) return refuse(response, who, 403, "This Toolroll's projects folder can't be changed from here.", "/settings/projects");
-    const path = body.get("path") ?? "";
-    const said = (key: "said" | "problem", words: string) => redirect(response, `/settings/projects?${key}=${encodeURIComponent(words)}`);
-    return inFolderTurn(async () => {
-      let before: string[] = [];
-      let stood = true;
-      const saved = await updateProjectRegistry(registryFile, current => {
-        before = [...current.roots];
-        if (!folderStandingNow(who)) { stood = false; return current; }
-        return { repos: current.repos, roots: current.roots.filter(one => one !== path) };
-      });
-      if (!saved.ok) return said("problem", `Nothing changed: ${saved.message}.`);
-      if (!stood) return refuse(response, who, 403, "Your access changed. Sign in again. Nothing changed.", "/settings/projects");
-      // Narrowing only, in the same turn: the live set loses this folder and gains nothing, whatever else the registry holds.
-      projectRoots.set(projectRoots.paths().filter(one => one !== path && identities.known(one) !== path));
-      if (!before.includes(path)) return said("said", "Nothing changed.");
-      try {
-        store.recordAction({ at: now.toISOString(), actor: who.name, repo: null, taskId: null, runId: null, action: PROJECTS_FOLDER_CHANGED, outcome: "removed", source: "access",
-          detail: `${before.join(", ")} → ${saved.registry.roots.length === 0 ? "none" : saved.registry.roots.join(", ")}` });
-      } catch { /* as above */ }
-      return said("said", `Stopped using ${shortPathOf(path)}. Projects already added stay.`);
-    });
+    return pickerScreen(ctx);
   }
 
   return { registrations, projectsScreen };
 }
 
-/** The ledger's action for choosing or removing the projects folder (instance-wide: no project). */
-export const PROJECTS_FOLDER_CHANGED = "projects folder changed";
 /** The ledger's action for a repository added from outside every projects folder (a password typed now). */
 export const PROJECT_ADDED_OUTSIDE = "project added from outside the projects folder";
-const sentence = (text: string): string => text === "" ? text : `${text.charAt(0).toUpperCase()}${text.slice(1)}`;

@@ -97,8 +97,7 @@ export async function updateRepos(
 /** Atomically update repositories and roots without either writer erasing the other. */
 export async function updateProjectRegistry(
   file: string,
-  /** May be async (it runs inside the lock: a check made at publication, as the projects folder's is). */
-  transform: (registry: ProjectRegistry) => ProjectRegistry | Promise<ProjectRegistry>,
+  transform: (registry: ProjectRegistry) => ProjectRegistry,
 ): Promise<{ ok: true; registry: ProjectRegistry } | RegistryUpdateFailure> {
   const { openSync, closeSync, writeSync, readFileSync, unlinkSync, existsSync: exists, mkdirSync, renameSync } = await import("node:fs");
   const { randomBytes } = await import("node:crypto");
@@ -206,7 +205,7 @@ export async function updateProjectRegistry(
       }
       current = registry;
     }
-    const transformed = await transform({ repos: [...current.repos], roots: [...current.roots] });
+    const transformed = transform({ repos: [...current.repos], roots: [...current.roots] });
     const next = { repos: sortUnique(transformed.repos), roots: sortUnique(transformed.roots) };
     // Deadline BEFORE publication (finding 30): a rename past the hold
     // window would commit while the lock may already be reaped.

@@ -7917,8 +7917,8 @@ async function upCommand(
   }
   const projectRoots = [...resolveCeiling([], addRepos(loadedRegistry.roots, explicitRoots)).ceiling.roots];
   // A refusal before enrollment (step 6) saves nothing, --project-root included: on an install whose service is already
-  // running, that is every terminal start, so the refusal says where the folder is chosen instead.
-  const rootNotSaved = explicitRoots.length > 0 ? ". The projects folder wasn't saved: choose it in Settings → Projects instead" : "";
+  // running, that is every terminal start, so the refusal says the folder wasn't saved and why.
+  const rootNotSaved = explicitRoots.length > 0 ? ". The projects folder wasn't saved, because this Toolroll didn't start: stop the one already running, then start it again with --project-root" : "";
 
   // Every saved repository reconnects automatically. Explicit --repo paths
   // still work for first use; with none, a Git working directory joins the

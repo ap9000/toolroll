@@ -17,6 +17,7 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import type { FolderSeen } from "./project.js";
 
 /** How long the console waits for a look before saying the folder didn't answer. */
 export const FOLDER_LOOK_MS = 4_000;
@@ -124,25 +125,45 @@ function children(folder, roots, links) {
   } finally { dir.closeSync(); }
   return out;
 }
-// A folder's identity and the identities of the folders above it, by device and inode: what containment is judged on.
+// A folder's identity and the identities of every folder above it, by device and inode (bigint stats: no precision
+// lost), what containment is judged on. A folder that isn't there is said as such, with its path in the disk's spelling
+// for the part that exists; any other failure is "unreadable", never "absent", so a check that can't read fails closed.
+const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
+function absentPath(p) {
+  const rest = [];
+  let at = p;
+  for (;;) {
+    const up = path.dirname(at);
+    if (up === at) return p;
+    rest.unshift(path.basename(at));
+    at = up;
+    try { return path.join(fs.realpathSync.native(at), ...rest); }
+    catch (error) { if (!(error && ABSENT.has(error.code))) return null; }
+  }
+}
 function facts(p) {
+  const asked = path.resolve(p);
+  let real;
+  try { real = fs.realpathSync.native(asked); }
+  catch (error) {
+    if (!(error && ABSENT.has(error.code))) return { kind: "unreadable" };
+    const missing = absentPath(asked);
+    return missing === null ? { kind: "unreadable" } : { kind: "missing", path: missing };
+  }
   try {
-    const real = fs.realpathSync.native(path.resolve(p));
-    const stat = fs.statSync(real);
+    const stat = fs.statSync(real, { bigint: true });
+    const names = real.split("/").filter(Boolean);
     const chain = [];
-    let at = real;
-    for (let depth = 0; depth < 256; depth++) {
-      const one = fs.statSync(at);
-      chain.push(one.dev + ":" + one.ino);
-      const up = path.dirname(at);
-      if (up === at) break;
-      at = up;
+    // Every folder from this one up to the top, each stat'ed: the walk is exactly as long as the path, never cut short.
+    for (let depth = names.length; depth >= 0; depth--) {
+      const one = fs.statSync("/" + names.slice(0, depth).join("/"), { bigint: true });
+      chain.push(String(one.dev) + ":" + String(one.ino));
     }
-    return { real, dir: stat.isDirectory(), uid: stat.uid, chain };
-  } catch { return null; }
+    return { kind: "found", real, dir: stat.isDirectory(), uid: Number(stat.uid), chain };
+  } catch { return { kind: "unreadable" }; }
 }
 function look() {
-  if (request.op === "folder") return { target: facts(request.path), compare: request.compare.slice(0, 64).map(facts) };
+  if (request.op === "folder") return { target: facts(request.path), compare: request.compare.map(facts) };
   if (request.op === "projectMcp") {
     const text = readBounded(path.join(request.path, ".mcp.json"), 1024 * 1024, 1024 * 1024);
     if (text === null) return { config: null };
@@ -337,20 +358,24 @@ export async function lookProjectMcp(repo: string, options: FolderLookOptions = 
   return { ok: true, value: config !== null && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : null };
 }
 
-/** One folder as the "folder" look found it (null: missing or unreadable). */
-export type FolderFacts = { real: string; dir: boolean; uid: number; chain: readonly string[] };
-const factsOf = (value: unknown): FolderFacts | null => {
-  const one = value as { real?: unknown; dir?: unknown; uid?: unknown; chain?: unknown } | null;
-  if (one === null || typeof one !== "object" || !text(one.real) || typeof one.dir !== "boolean" || typeof one.uid !== "number" || !Array.isArray(one.chain)) return null;
+/** One folder as the "folder" look found it: there (its identity), not there (its path), or unreadable. */
+export type FolderFacts = FolderSeen;
+const factsOf = (value: unknown): FolderSeen => {
+  const one = value as { kind?: unknown; real?: unknown; path?: unknown; dir?: unknown; uid?: unknown; chain?: unknown } | null;
+  if (one === null || typeof one !== "object") return { kind: "unreadable" };
+  if (one.kind === "missing" && text(one.path) && one.path.startsWith("/")) return { kind: "missing", path: one.path };
+  if (one.kind !== "found" || !text(one.real) || typeof one.dir !== "boolean" || typeof one.uid !== "number" || !Array.isArray(one.chain)) return { kind: "unreadable" };
   const chain = one.chain.filter((id: unknown): id is string => typeof id === "string" && /^\d+:\d+$/.test(id));
-  return chain.length === one.chain.length && chain.length > 0 ? { real: one.real, dir: one.dir, uid: one.uid, chain } : null;
+  // The chain runs from this folder to the top: one identity per name in its real path, and one for the top.
+  const complete = chain.length === one.chain.length && chain.length === one.real.split("/").filter(Boolean).length + 1;
+  return complete ? { kind: "found", real: one.real, dir: one.dir, uid: one.uid, chain } : { kind: "unreadable" };
 };
 /** What `path` really is, and each of `compare`, off the console's thread under the look's deadline (folder-look's
  * "folder" request). */
-export async function folderFacts(path: string, compare: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ target: FolderFacts | null; compare: (FolderFacts | null)[] }>> {
+export async function folderFacts(path: string, compare: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ target: FolderSeen; compare: FolderSeen[] }>> {
   const looked = await lookFolders({ op: "folder", path, compare: [...compare] }, options);
   if (!looked.ok) return looked;
   const value = looked.value as { target?: unknown; compare?: unknown } | null;
-  if (value === null || typeof value !== "object" || !Array.isArray(value.compare)) return { ok: false, why: "failed" };
+  if (value === null || typeof value !== "object" || !Array.isArray(value.compare) || value.compare.length !== compare.length) return { ok: false, why: "failed" };
   return { ok: true, value: { target: factsOf(value.target), compare: value.compare.map(factsOf) } };
 }

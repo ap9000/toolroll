@@ -20,7 +20,7 @@ import { type ResultScreenshots } from "./store.js";
 import { kitSectionForm, SECRET_OPT_OUTS } from "./settings-kit.js";
 import { ADVANCED_PAGES } from "./advanced-view.js";
 import {
-  btn, chip, codeLine, disclose, row, formRow, infoLine, input, needsPanel, note, notice, radios, select, settingsLink, settingsLinks, settingsRecord,
+  btn, chip, codeLine, disclose, formRow, infoLine, input, needsPanel, note, notice, radios, select, settingsLink, settingsLinks, settingsRecord,
   settingsSection, settingsShell, switchInput,
 } from "./server/kit.js";
 
@@ -78,11 +78,9 @@ export type SettingsFacts = {
   projectsFolder?: ProjectsFolderFacts | null;
 };
 
-/** The projects folder as Settings shows it: each folder (its real path and how a person reads it), and what this
- * person can do about it. `blocked`: why they can't change it (null when they can). */
+/** The projects folder as Settings shows it, read only: each folder, its real path and how a person reads it. */
 export type ProjectsFolderFacts = {
   folders: readonly { path: string; shown: string }[];
-  blocked: null | "ask" | "set-password" | "sign-in" | "elsewhere";
 };
 
 const CHAT_APPS = [["telegram", "Telegram"], ["slack", "Slack"], ["discord", "Discord"], ["teams", "Teams"]] as const;
@@ -526,32 +524,14 @@ export function projectsGroup(facts: SettingsFacts, flags: Record<string, boolea
   });
 }
 
-/** What a person who can't choose the projects folder reads instead, by why. */
-export function projectsFolderBlockedHtml(blocked: Exclude<ProjectsFolderFacts["blocked"], null>, next = "/settings/projects"): Html {
-  if (blocked === "set-password") return joinHtml([note("Choosing a projects folder needs a password. Set one first."),
-    html`<div class="k-acts">${btn("Set a password", { sm: true, href: `/password/set?next=${encodeURIComponent(next)}` })}</div>`]);
-  if (blocked === "sign-in") return note("Sign in with your password to choose a projects folder.");
-  if (blocked === "elsewhere") return note("This Toolroll’s projects folder is set where it’s started.");
-  return note("Ask whoever runs this Toolroll to choose a projects folder.");
-}
-
-/** Settings → Projects → Projects folder: the folder Toolroll adds projects from, with Change (the picker) and Stop
- * using. Stopping only narrows, so it is one click; choosing is the picker's step-up. */
+/** Settings → Projects → Projects folder: where Toolroll adds projects from, read only (it is chosen where Toolroll is
+ * started); nothing when there is none. */
 function projectsFolderSection(view: ProjectsFolderFacts | null): Html {
-  if (view === null) return html``;
-  const can = view.blocked === null;
-  const rows = view.folders.map(one => formRow("Folder", null, html`<span class="k-mono">${one.shown}</span>${can
-    ? kitSectionForm({ proof: "projects-folder-remove", action: "/settings/projects-folder/remove", id: `pf-remove-${view.folders.indexOf(one)}`, hidden: { path: one.path, return: "/settings/projects" },
-      save: { label: "Stop using", variant: "outline" }, body: html`` })
-    : ""}`, "inline"));
+  if (view === null || view.folders.length === 0) return html``;
   return settingsSection({
-    id: "projects-folder", title: "Projects folder", state: view.folders.length === 0 ? " · not chosen" : "",
+    id: "projects-folder", title: view.folders.length === 1 ? "Projects folder" : "Projects folders",
     lead: "Toolroll can add any git repository inside it.",
-    body: joinHtml([
-      ...rows,
-      can ? html`<div class="k-acts">${btn(view.folders.length === 0 ? "Choose a folder" : "Change folder", { sm: true, variant: view.folders.length === 0 ? "primary" : "outline", href: "/settings/projects-folder" })}</div>`
-        : projectsFolderBlockedHtml(view.blocked ?? "ask"),
-    ]),
+    body: joinHtml(view.folders.map(one => formRow("Folder", null, html`<span class="k-mono">${one.shown}</span>`, "inline"))),
   });
 }
 

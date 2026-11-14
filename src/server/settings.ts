@@ -788,9 +788,9 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
         return { owner: who.authority !== "full", passwordSet: store.accountOf(who.name)?.passwordSet === true, canTurnOff: who.authority === "full" && operator };
       })(),
       advanced: { on: requestContext.getStore()?.advanced !== false, canChange: who.via === "cookie" },
-      // The folder Toolroll adds projects from (pages.ts projectsFolder*): shown to whoever may see installation settings.
+      // The folder Toolroll adds projects from, read only: shown to whoever may see installation settings.
       projectsFolder: restricted() || runtime.unscopedMode ? null
-        : { folders: runtime.ceiling.roots.map(path => ({ path, shown: shortPathOf(path) })), blocked: runtime.projectRoots.blockedFor(who) },
+        : { folders: runtime.ceiling.roots.map(path => ({ path, shown: shortPathOf(path) })) },
       backup: lastBackup === null ? null : lastBackup.ok === false
         ? { failed: true, words: `Failed ${when(lastBackup.startedAt)}${lastBackup.error === null ? "" : `: ${lastBackup.error}`}` }
         : { failed: false, words: lastBackup.finishedAt === null ? "Backing up now" : `Backed up ${when(lastBackup.finishedAt)}` },

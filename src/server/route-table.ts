@@ -649,13 +649,6 @@ post("pages", "projects.remove", "/projects/remove", { project: "form", ...opera
 // for a repository outside every projects folder the password typed now), so admission names no project: a folder the
 // picker already resolved must still reach that ceremony instead of being turned away as outside the ceiling.
 post("pages", "projects.open", "/projects/open", { project: "none" });
-// Settings → Projects → Projects folder: which folder this server may add projects from. Choosing one widens what the
-// server may open, so it is an instance operator's act from a full browser session, with their password typed now
-// (never the local owner, never a token); looking through the home folder to choose one is the same person's read.
-// Stopping using a folder only narrows: one click, projects already added stay.
-get("pages", "projects.folder", "/settings/projects-folder", { ...free, callers: ["cookie"], project: "none", ...operator("An instance operator chooses the projects folder.", "/settings/projects") });
-post("pages", "projects.folder-save", "/settings/projects-folder", { scope: "step-up", project: "none", ...operator("An instance operator chooses the projects folder.", "/settings/projects") });
-post("pages", "projects.folder-remove", "/settings/projects-folder/remove", { callers: ["cookie"], project: "none", ...operator("An instance operator chooses the projects folder.", "/settings/projects") });
 post("tasks", "tasks.add", "/tasks/add", { project: "form", limited: "collection", bodyCap: LARGE_FORM });
 // Build (fast-start.ts): a person's own browser session only. No token, chat, agent or webhook reaches it.
 post("tasks", "tasks.fast", "/tasks/fast", { callers: ["cookie"], project: "none", limited: "collection", ...approver("An approver starts builds.", "/tasks/new") });
