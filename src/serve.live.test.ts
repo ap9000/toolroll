@@ -16,6 +16,7 @@ import { presented, T0 } from "../test/serve-kit.js";
 import { mintApiToken } from "./api-tokens.js";
 import { flowFromSteps } from "./flows.js";
 import { LIVE_FRAMES_HEADER } from "./browser/live-supervisor.js";
+import { PING_BUDGET, PingBudget } from "./server/live.js";
 
 let store: Store;
 let server: Server;
@@ -377,10 +378,9 @@ describe("the probe", () => {
     // Its own session still reaches it, until it ends.
     expect((await ping(`conn=${page.conn}&n=2`, { cookie: alex })).status).toBe(204);
     page.close();
-    const deadline = Date.now() + 3_000;
-    let ended = await refusal(alex, page.conn);
-    while (ended[0] !== 404 && Date.now() < deadline) { await new Promise(done => setTimeout(done, 25)); ended = await refusal(alex, page.conn); }
-    expect(ended).toEqual(notFound);
+    // Once the server has seen it end (a moment), the same miss. (One ping: pings spend a per-session budget.)
+    await new Promise(done => setTimeout(done, 300));
+    expect(await refusal(alex, page.conn)).toEqual(notFound);
     // A stream read without frames has no name to probe at all.
     const plain = await stream(live("workspace"), alex);
     await plain.until(all => all.length > 0);
@@ -407,6 +407,15 @@ describe("the probe", () => {
     page.close();
   });
 
+  test("a conversation with no reply running has nothing on its way: its stream says `synced` right after its rooms join", async () => {
+    const cookie = await login("alex", alexToken);
+    const page = await stream(live("chat", "workspace"), cookie, { [LIVE_FRAMES_HEADER]: "1" });
+    expect(page.response.status).toBe(200);
+    await page.until(all => all.some(one => one.event === "synced"), 2_000);
+    expect(page.events.map(one => one.event)).toEqual(["hello", "change", "synced"]);
+    page.close();
+  });
+
   test("a pong is a delivery: a viewer who no longer passes hears its rooms go and the stream end, never the pong", async () => {
     running("t-b", repoB);
     const robin = await login("robin", robinToken);
@@ -416,9 +425,35 @@ describe("the probe", () => {
     const answer = await ping(`conn=${page.conn}&n=1`, { cookie: robin });
     expect(answer.status).toBe(404);
     await page.until(all => all.some(one => one.event === "ended"), 2_000);
-    expect(page.events.filter(one => one.event === "gone").map(one => one.data)).toEqual([{ room: "task:t-b" }]);
+    expect(page.events.filter(one => one.event === "gone").map(one => (one.data as { room: string }).room)).toEqual(["task:t-b"]);
     expect(page.events.some(one => one.event === "pong")).toBe(false);
     page.close();
+  });
+
+  test("pings spend a budget per session before any room proves its viewer: past it, 429 with Retry-After and no pong; a replayed number is refused", async () => {
+    const cookie = await login("alex", alexToken);
+    const page = await framedPage(cookie);
+    for (let n = 1; n <= PING_BUDGET.perSession; n += 1) expect((await ping(`conn=${page.conn}&n=${n}`, { cookie })).status, String(n)).toBe(204);
+    const refused = await ping(`conn=${page.conn}&n=${PING_BUDGET.perSession + 1}`, { cookie });
+    expect([refused.status, await refused.text()]).toEqual([429, JSON.stringify({ error: "busy" })]);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    await page.until(all => all.filter(one => one.event === "pong").length >= PING_BUDGET.perSession);
+    await page.until(() => false, 200);
+    expect(page.events.filter(one => one.event === "pong")).toHaveLength(PING_BUDGET.perSession);
+    // Another session has its own budget; a number that doesn't grow is a replay.
+    const other = await login("alex", alexToken);
+    const otherPage = await framedPage(other);
+    expect((await ping(`conn=${otherPage.conn}&n=5`, { cookie: other })).status).toBe(204);
+    expect((await ping(`conn=${otherPage.conn}&n=5`, { cookie: other })).status).toBe(409);
+    expect((await ping(`conn=${otherPage.conn}&n=4`, { cookie: other })).status).toBe(409);
+    page.close(); otherPage.close();
+  });
+
+  test("the budget's windows: per session, overall, and both open again after the window", () => {
+    const budget = new PingBudget({ perSession: 2, global: 3, windowMs: 1_000 });
+    expect([budget.take("a", 0), budget.take("a", 10), budget.take("a", 20)]).toEqual([{ ok: true }, { ok: true }, { ok: false, retryAfterMs: 980 }]);
+    expect([budget.take("b", 30), budget.take("c", 40)]).toEqual([{ ok: true }, { ok: false, retryAfterMs: 960 }]);
+    expect([budget.take("a", 1_000), budget.take("c", 1_001)]).toEqual([{ ok: true }, { ok: true }]);
   });
 
   test("a ping never extends the session: a tab that only pings idles out on time", async () => {

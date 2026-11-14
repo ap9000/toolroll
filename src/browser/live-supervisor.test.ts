@@ -404,6 +404,121 @@ describe("handover", () => {
   });
 });
 
+/** Codex fl1b review: order across the two streams, and a replacement the page no longer wants. */
+describe("handover order and identity", () => {
+  const at = (frames: [string, string][], room: string) => frames.map(([, data]) => JSON.parse(data) as Record<string, unknown>).filter(one => one["room"] === room).map(one => one["at"]);
+
+  test("reversed arrival: the old stream already applied s1 then s2; the replacement's s1 never brings the page back", async () => {
+    const { supervisor, server, seen } = supervised();
+    supervisor.want("/live?room=summary");
+    await settle();
+    const old = server.calls[0]!;
+    old.write(hello() + frame("change", { room: "summary", at: "s1", seq: 10 }));
+    await settle();
+    supervisor.want("/live?room=summary&room=workspace");
+    await settle();
+    const next = server.calls[1]!;
+    // The replacement read s1 when it joined; the old stream then hears s2 (a later read) before the replacement does.
+    next.write(hello("fedcba9876543210fedcba98") + frame("change", { room: "summary", at: "s1", seq: 10 }) + frame("change", { room: "workspace", at: "w", seq: 11 }));
+    old.write(frame("change", { room: "summary", at: "s2", seq: 20 }));
+    await settle();
+    next.write(frame("synced"));
+    await settle();
+    // Not caught up (its summary is older than what the page shows): it waits, and the page stays at s2.
+    expect(old.aborted).toBe(false);
+    expect(at(seen.frames, "summary")).toEqual(["s1", "s2"]);
+    // Its room catches up: now it takes over, and nothing older is replayed.
+    next.write(frame("change", { room: "summary", at: "s2", seq: 20 }));
+    await settle();
+    expect(old.aborted).toBe(true);
+    expect(at(seen.frames, "summary")).toEqual(["s1", "s2"]);
+    expect(at(seen.frames, "workspace")).toEqual(["w"]);
+    // An older state arriving late on the stream itself is dropped too; a newer one is applied.
+    next.write(frame("change", { room: "summary", at: "s1", seq: 10 }) + frame("change", { room: "summary", at: "s3", seq: 30 }));
+    await settle();
+    expect(at(seen.frames, "summary")).toEqual(["s1", "s2", "s3"]);
+  });
+
+  test("a replacement that never catches up still takes over at the absolute deadline, dropping its older words", async () => {
+    const { supervisor, server, seen } = supervised();
+    supervisor.want("/live?room=summary");
+    await settle();
+    server.calls[0]!.write(hello() + frame("change", { room: "summary", at: "s2", seq: 20 }));
+    await settle();
+    supervisor.want("/live?room=summary&room=workspace");
+    await settle();
+    server.calls[1]!.write(hello("fedcba9876543210fedcba98") + frame("change", { room: "summary", at: "s1", seq: 10 }) + frame("synced"));
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(server.calls[0]!.aborted).toBe(true);
+    expect(at(seen.frames, "summary")).toEqual(["s2"]);
+  });
+
+  test("a new server run's words are not compared with the old run's orders", async () => {
+    const { supervisor, server, seen } = supervised();
+    supervisor.want("/live?room=summary");
+    await settle();
+    server.calls[0]!.write(hello() + frame("change", { room: "summary", at: "s9", seq: 900 }));
+    await settle();
+    server.calls[0]!.fail();
+    await vi.advanceTimersByTimeAsync(1_000);
+    server.calls[1]!.write(frame("hello", { incarnation: "b", tick: 15_000, conn: CONN }) + frame("change", { room: "summary", at: "s1", seq: 1 }));
+    await settle();
+    expect(at(seen.frames, "summary")).toEqual(["s9", "s1"]);
+  });
+
+  test("A → B → A: going back to the open stream's rooms drops the replacement and its timers; a late `synced` from it promotes nothing", async () => {
+    const { supervisor, server, seen } = supervised();
+    supervisor.want("/live?room=task%3A1");
+    await settle();
+    server.calls[0]!.write(hello());
+    await settle();
+    supervisor.want("/live?room=task%3A2");
+    await settle();
+    supervisor.want("/live?room=task%3A1");
+    await settle();
+    expect(server.calls).toHaveLength(2);
+    expect(server.calls[1]!.aborted).toBe(true);
+    server.calls[1]!.write(hello("fedcba9876543210fedcba98") + frame("synced"));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(server.calls[0]!.aborted).toBe(false);
+    expect(supervisor.wanted).toBe("/live?room=task%3A1");
+    expect(seen.opened).toEqual(["/live?room=task%3A1"]);
+  });
+
+  test("A → B → A through retarget (the hub's road): the replacement for B is dropped, never promoted", async () => {
+    const { supervisor, server, seen } = supervised();
+    supervisor.want("/live?room=task%3A1");
+    await settle();
+    server.calls[0]!.write(hello());
+    await settle();
+    supervisor.want("/live?room=task%3A2");
+    await settle();
+    supervisor.retarget("/live?room=task%3A1");
+    expect(server.calls[1]!.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(server.calls[0]!.aborted).toBe(false);
+    expect(seen.opened).toEqual(["/live?room=task%3A1"]);
+  });
+
+  test("a stream replaced because it seemed dead is not kept when the page goes back to its rooms", async () => {
+    const { supervisor, server } = supervised();
+    supervisor.want("/live?room=task%3A1");
+    await settle();
+    server.calls[0]!.write(hello());
+    await settle();
+    supervisor.wake();
+    server.pings[0]!.answer(204);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(server.calls).toHaveLength(2);
+    supervisor.want("/live?room=task%3A2");
+    supervisor.want("/live?room=task%3A1");
+    await settle();
+    // Still being replaced, now for task 1 again.
+    expect(server.calls.at(-1)!.aborted).toBe(false);
+    expect(server.calls.at(-1)!.url).toBe("/live?room=task%3A1");
+  });
+});
+
 /** The corrected probe (plan v2 §9): a pong on the stream proves it alive; a 204 alone proves nothing. */
 describe("the probe", () => {
   const upWithConn = async (options: { near?: boolean } = {}) => {
@@ -504,6 +619,34 @@ describe("the probe", () => {
     slept.supervisor.wake(true);
     await vi.advanceTimersByTimeAsync(3_000);
     expect(slept.server.calls).toHaveLength(2);
+  });
+
+  test("a 429 (the ping budget is spent) is no verdict: the stream's own tick proves it, and no ping goes before Retry-After", async () => {
+    const { supervisor, server, seen } = await upWithConn();
+    supervisor.wake();
+    server.pings[0]!.answer(429);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(server.calls).toHaveLength(1);
+    server.calls[0]!.write(frame("tick"));
+    await settle();
+    // A 429 without Retry-After asks for 10 s without pings: a wakeup now sends none (the stream just ticked, so it stays).
+    supervisor.wake();
+    expect(server.pings).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(server.calls).toHaveLength(1);
+    expect(seen.trouble).toEqual([]);
+    supervisor.wake();
+    expect(server.pings).toHaveLength(2);
+  });
+
+  test("a 429 and then silence past a tick and its margin: the stream is dead after all", async () => {
+    const { supervisor, server } = await upWithConn();
+    supervisor.wake();
+    server.pings[0]!.answer(429);
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(server.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.calls).toHaveLength(2);
   });
 
   test("any other answer (the server doesn't know the stream, or a sign-in page) is dead at once", async () => {
@@ -787,6 +930,25 @@ describe("the page's hub", () => {
     expect(hub.connectionState()).toBe("idle");
     await setHidden(false);
     expect(server.calls.map(one => one.url).at(-1)).toBe("/live?room=summary&room=task%3A7&room=workspace");
+    expect(hub.connectionState()).toBe("live");
+  });
+
+  test("A → B → A on a shown page: the page ends on A's stream, and B's replacement is dropped (Codex fl1b finding 2)", async () => {
+    const { hub, server } = hubWith();
+    let leave = hub.subscribe("task:1", () => {});
+    await flush();
+    server.calls[0]!.write(frame("hello", { incarnation: "a", tick: 15_000, conn: "0123456789abcdef01234567" }));
+    await flush();
+    leave(); leave = hub.subscribe("task:2", () => {});
+    await flush();
+    expect(server.calls.map(one => one.url)).toEqual(["/live?room=task%3A1", "/live?room=task%3A2"]);
+    leave(); hub.subscribe("task:1", () => {});
+    await flush();
+    expect(server.calls[1]!.aborted).toBe(true);
+    server.calls[1]!.write(frame("synced"));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(server.calls[0]!.aborted).toBe(false);
+    expect(server.calls).toHaveLength(2);
     expect(hub.connectionState()).toBe("live");
   });
 

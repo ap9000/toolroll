@@ -17,10 +17,10 @@
  * EventSource reconnects (live-bus.ts).
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { agentRunFingerprint } from "../agents-board.js";
-import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, type LiveBus, type LiveViewer } from "../live-bus.js";
+import { createLiveRooms, KEEP_ALIVE_MS, LiveConnection, nextLiveOrder, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { reproveRemote } from "../operate-remote.js";
 import { rowVisible } from "../project.js";
 import type { LeadThreadScope } from "../store.js";
@@ -49,6 +49,35 @@ const INCARNATION = randomBytes(9).toString("hex");
 const CONN_NAME = /^[0-9a-f]{24}$/;
 /** A probe's number: the page counts its pings; the pong repeats it. */
 const PING_NUMBER = /^(0|[1-9][0-9]{0,8})$/;
+/** Probes a browser session may send per window, across its tabs, and probes all sessions together may send: checked
+ * before any room proves its viewer, so a flood of pings never becomes a flood of proofs. A page refused here waits for
+ * its stream's own tick instead (browser/live-supervisor.ts). */
+export const PING_BUDGET = { perSession: 6, global: 120, windowMs: 10_000 } as const;
+
+/** Fixed-window counts per session and overall, in memory (a restart forgets them; a ping writes nothing). */
+export class PingBudget {
+  private readonly sessions = new Map<string, { start: number; count: number }>();
+  private global = { start: 0, count: 0 };
+  constructor(private readonly limits: { perSession: number; global: number; windowMs: number } = PING_BUDGET) {}
+  /** Spend one ping for this session now, or hear how long to wait. */
+  take(session: string, now: number): { ok: true } | { ok: false; retryAfterMs: number } {
+    const { perSession, global, windowMs } = this.limits;
+    if (now - this.global.start >= windowMs) this.global = { start: now, count: 0 };
+    let mine = this.sessions.get(session);
+    if (mine === undefined || now - mine.start >= windowMs) {
+      // Forget sessions whose window has passed, so the map holds only recent pingers.
+      if (this.sessions.size >= 4_096) for (const [key, one] of this.sessions) if (now - one.start >= windowMs) this.sessions.delete(key);
+      mine = { start: now, count: 0 };
+      this.sessions.set(session, mine);
+    }
+    if (mine.count >= perSession) return { ok: false, retryAfterMs: mine.start + windowMs - now };
+    if (this.global.count >= global) return { ok: false, retryAfterMs: this.global.start + windowMs - now };
+    mine.count += 1;
+    this.global.count += 1;
+    return { ok: true };
+  }
+}
+
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 6;
 const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
@@ -163,9 +192,12 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   const agentsLive = createAgentsLiveRooms<Viewer>({ store, bus: live.bus, evidenceRoot: runtime.evidenceRoot, localRunner: runtime.options.localRunner, clock, visible,
     leads: key => liveLeads.get(key)?.() ?? null, forget: key => liveLeads.delete(key) });
 
-  /** Each open frames stream a browser session opened, by its server-minted name: what a probe (GET /live/ping) may reach.
-   * The entry goes when the connection ends, however it ends. */
-  const conns = new Map<string, { connection: LiveConnection; sessionHash: string; name: string; generation: number }>();
+  /** Each open frames stream a browser session opened, keyed by that session's hash AND the stream's server-minted name:
+   * a probe (GET /live/ping) looks up only under its own session, so another session's stream and a stream that never
+   * existed are the same miss. The entry goes when the connection ends, however it ends. */
+  const conns = new Map<string, { connection: LiveConnection; name: string; generation: number; lastPing: number }>();
+  const connKey = (sessionHash: string, conn: string): string => `${sessionHash}\u0000${conn}`;
+  const pingBudget = new PingBudget();
 
   const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => rereadBrowser(runtime, request, who);
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
@@ -184,17 +216,23 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     if (!admitted(viewer, thread)) return;
     const turn = liveTurns.get(thread);
     if (turn === undefined || turn.done || viewer.detach !== null) return;
-    const send = (payload: ChatSnapshot): void => { viewer.connection.send(viewer.room, "turn", payload); };
-    const sender = createLiveSender<ChatSnapshot>({ send, standing: () => admitted(viewer, thread), spacingMs: TURN_SETTLE_MS });
+    // The running reply's first snapshot is this room's first word: a new stream's `synced` waits for it.
+    const firstWritten = viewer.connection.holdSynced();
+    // Each snapshot carries the order of the moment it was taken (live-bus.ts nextLiveOrder), not of its sending.
+    type Taken = { snapshot: ChatSnapshot; order: number };
+    const take = (): Taken => ({ snapshot: chatSnapshot(turn), order: nextLiveOrder() });
+    const send = (taken: Taken): void => { viewer.connection.send(viewer.room, "turn", taken.snapshot, taken.order); firstWritten(); };
+    const sender = createLiveSender<Taken>({ send, standing: () => admitted(viewer, thread), spacingMs: TURN_SETTLE_MS });
     const listener = (): void => {
-      if (!turn.done) { sender.offer(chatSnapshot(turn)); return; }
+      if (!turn.done) { sender.offer(take()); return; }
       stop();
-      void sender.close().then(() => { if (admitted(viewer, thread)) send(chatSnapshot(turn)); });
+      const last = take();
+      void sender.close().then(() => { if (admitted(viewer, thread)) send(last); firstWritten(); });
     };
-    const stop = (): void => { turn.listeners.delete(listener); viewer.detach = null; void sender.close(); };
+    const stop = (): void => { turn.listeners.delete(listener); viewer.detach = null; void sender.close(); firstWritten(); };
     turn.listeners.add(listener);
     viewer.detach = stop;
-    sender.offer(chatSnapshot(turn));
+    sender.offer(take());
   }
 
   /** A reply starts on a thread: whoever has that conversation open follows it. */
@@ -369,25 +407,29 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     const conn = sessionHash === null ? undefined : randomBytes(12).toString("hex");
     const connection = new LiveConnection(response, { frames, ...(conn === undefined ? {} : { conn }) });
     if (conn !== undefined && sessionHash !== null && who.via === "cookie") {
-      conns.set(conn, { connection, sessionHash, name: who.name, generation: who.session.generation });
-      connection.onEnd(() => { if (conns.get(conn)?.connection === connection) conns.delete(conn); });
+      const key = connKey(sessionHash, conn);
+      conns.set(key, { connection, name: who.name, generation: who.session.generation, lastPing: -1 });
+      connection.onEnd(() => { if (conns.get(key)?.connection === connection) conns.delete(key); });
     }
     connection.hello({ incarnation: INCARNATION, tick: KEEP_ALIVE_MS });
     // Each join below adds its room before the next speaks; a chat room alone keeps the stream open too.
     for (const join of joins) if (connection.open) join(connection);
     // A page whose only room was refused at its join ends now (`ended`), its keep-alive stopped, not left open.
     if (refusedJoin && connection.rooms === 0) connection.refuse(() => connection.close());
-    // Every room has said where it stands: a page handing over from an older stream may switch to this one.
+    // Every room has said where it stands (a running reply's first snapshot included): a page handing over from an older
+    // stream may switch to this one.
     connection.synced();
     request.once("close", () => connection.close());
   }
 
   /**
    * GET /live/ping?conn=<name>&n=<k>: the page's probe of its own stream (eight/fluid plan v2 §9). The stream named
-   * `conn` must be open and must have been opened by this same saved browser session (same session row, account and
-   * generation); unknown, ended and another session's streams all hear the same 404, so a probe never tells them apart.
-   * The pong is a delivery: every room on that stream proves its viewer first, as before a tick. A ping is quiet: the
-   * live domain never touches the session (serve.ts noTouch) and this writes nothing.
+   * `conn` is looked up under the pinging session's own hash, so only a stream this same saved browser session opened
+   * is found; unknown, ended and another session's streams take the same miss and hear the same 404. Before any lookup
+   * or proof, the ping spends from this session's and the server's ping budget (429 with Retry-After when spent). `n`
+   * must grow per stream (a replayed ping is refused). The pong is a delivery: every room on that stream proves its
+   * viewer first, as before a tick. A ping is quiet: the live domain never touches the session (serve.ts noTouch) and
+   * this writes nothing.
    */
   async function livePing(ctx: EdgeContext): Promise<void> {
     const { url, who, request, response } = ctx;
@@ -401,10 +443,17 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     const again = readBrowser(request, who);
     const hash = again === null ? null : runtime.sessions.hashOf(again.session);
     if (again === null || hash === null) return json(response, 401, { error: "session" });
-    const held = conns.get(conn);
-    const same = held !== undefined && held.connection.open && held.name === again.name && held.generation === again.session.generation
-      && held.sessionHash.length === hash.length && timingSafeEqual(Buffer.from(held.sessionHash), Buffer.from(hash));
-    if (!same || !held.connection.pong(Number(n))) return json(response, 404, { error: "conn" });
+    const spent = pingBudget.take(hash, clock().getTime());
+    if (!spent.ok) {
+      response.setHeader("Retry-After", String(Math.max(1, Math.ceil(spent.retryAfterMs / 1_000))));
+      return json(response, 429, { error: "busy" });
+    }
+    const held = conns.get(connKey(hash, conn));
+    if (held === undefined || !held.connection.open || held.name !== again.name || held.generation !== again.session.generation) return json(response, 404, { error: "conn" });
+    const number = Number(n);
+    if (number <= held.lastPing) return json(response, 409, { error: "ping" });
+    held.lastPing = number;
+    if (!held.connection.pong(number)) return json(response, 404, { error: "conn" });
     response.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
     response.end();
   }

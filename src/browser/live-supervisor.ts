@@ -5,8 +5,14 @@
  *
  * - Handover (1b). Replacing a stream that is up (new rooms, a probe that found it dead) opens the replacement beside it.
  *   The old stream keeps speaking; the replacement's frames are held apart (they are its own, never dropped) until the
- *   server says `synced` (every room it asked for has said where it stands). Then, in one step, the old stream is
- *   aborted, the replacement becomes the stream, and its held frames are applied, less what the page already heard.
+ *   server says `synced` (every room it asked for has said where it stands, a running reply's first snapshot included)
+ *   and has caught up: for every room both streams spoke of, its words are at least as new as what the page applied.
+ *   Then, in one step, the old stream is aborted, the replacement becomes the stream, and its held frames are applied.
+ * - Order across streams: every room frame carries the server's `seq`, the order of the read its content came from
+ *   (live-bus.ts nextLiveOrder). Per room and kind of frame, within one server run (`hello.incarnation`), a frame no
+ *   newer than what the page already applied is dropped, from either stream: a duplicate, or an older state that
+ *   arrived late. What the page shows never goes backwards. A replacement that is no longer wanted (the page went back
+ *   to the rooms the open stream holds) is dropped, never promoted.
  *   Bounded break-before-make: a replacement that hasn't said `hello` within LIVE_HANDOVER_HELLO_MS (the browser's six
  *   connections to a host may hold it in the queue) breaks the old stream first; and two streams never overlap longer
  *   than LIVE_HANDOVER_MAX_MS from the first replacement, whatever the replacement says. A stream that isn't up yet, a
@@ -15,7 +21,9 @@
  * - The probe (1b). A wakeup with a stream up asks the server for a `pong` on that very stream (GET /live/ping, bound to
  *   the stream's `conn` and this session). Any frame on the stream after the ping proves it alive. The ping's 204 alone
  *   proves nothing (the pong may be on its way): only a further silence after it, LIVE_PROBE_SILENCE_*_MS, means dead.
- *   No answer at all by LIVE_PROBE_DEADLINE_*_MS means dead too. Near (this computer, the LAN) waits less than far.
+ *   No answer at all by LIVE_PROBE_DEADLINE_*_MS means dead too. Near (this computer, the LAN) waits less than far. A
+ *   429 (the server's ping budget is spent) is no verdict: the page pings no more until its Retry-After, and judges
+ *   the stream only by its own tick meanwhile.
  * - Backoff with jitter: the n-th retry waits `c/2 + random·c/2`, `c = min(LIVE_BACKOFF_CAP_MS, 1 s·2^(n+1))`. A stream
  *   that stays up LIVE_STABLE_MS starts the count again.
  * - Refused (401/403, a redirect, or the server's `ended`): the page is signed out or lost its access. It waits about
@@ -172,18 +180,29 @@ type Stream = {
   helloAt: number | null;
   /** A replacement's room frames, held apart until it takes over (then applied, in order). */
   held: SseFrame[];
+  /** The server run it speaks for (`hello`): `seq` compares only within one. */
+  incarnation: string | null;
+  /** A replacement that said `synced`: it takes over once it has caught up. */
+  synced: boolean;
+  /** Being replaced because it seemed dead (a probe, a missed tick, offline), not for new rooms: never kept in place of
+   * its replacement. */
+  suspect: boolean;
 };
 
 type Probe = { stream: Stream; controller: AbortController; silence: unknown; deadline: unknown };
 
-/** A frame's room and event (its slot), and what makes a repeat of it the same (a change's `at`, else all its data). */
-function frameKey(frame: SseFrame): { slot: string; same: string } | null {
+/** A frame's room and event (its slot), what makes a repeat of it the same (a change's `at`, else all its data), and
+ * the order of the read it came from (`seq`; null from a server that gives none). */
+function frameKey(frame: SseFrame): { slot: string; same: string; seq: number | null } | null {
   try {
     const data: unknown = JSON.parse(frame.data);
     if (data === null || typeof data !== "object" || Array.isArray(data)) return null;
-    const { room, at } = data as Record<string, unknown>;
+    const { room, at, seq } = data as Record<string, unknown>;
     if (typeof room !== "string") return null;
-    return { slot: `${room}\u0000${frame.event}`, same: frame.event === "change" && at !== undefined ? JSON.stringify(at) : frame.data };
+    const rest: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+    delete rest["seq"];
+    return { slot: `${room}\u0000${frame.event}`, same: frame.event === "change" && at !== undefined ? JSON.stringify(at) : JSON.stringify(rest),
+      seq: typeof seq === "number" && Number.isSafeInteger(seq) && seq > 0 ? seq : null };
   } catch { return null; }
 }
 
@@ -198,8 +217,11 @@ export class LiveSupervisor {
   private helloDue: unknown = null;
   private probing: Probe | null = null;
   private pings = 0;
-  /** What the page last heard per room and event: a replacement's repeat of it is not said twice. */
-  private readonly heard = new Map<string, string>();
+  /** What the page last applied per room and event: its content, and the server run and order it came from. A frame
+   * no newer (from either stream) is dropped. */
+  private readonly heard = new Map<string, { same: string; incarnation: string | null; seq: number | null }>();
+  /** The server asked for no pings before this (a 429's Retry-After). */
+  private pingQuietUntil = 0;
   private status: LiveConnectionState = "idle";
   /** Failed attempts since the last stable stream: the backoff's n. */
   private attempt = 0;
@@ -228,13 +250,30 @@ export class LiveSupervisor {
     if (this.disposed || url === this.target) return;
     this.target = url;
     if (url === "") { this.stop(); return; }
+    // Back to the rooms the open (and healthy) stream holds: the replacement on its way is no longer wanted.
+    if (!immediate && this.candidate !== null && this.current?.reading === true && !this.current.suspect && this.current.url === url) { this.dropCandidate(); return; }
     // Refused: the page drops and adds rooms as it hears the refusal; whatever it wants then waits for the retry.
     if (this.waiting === "refused" || this.suspendedAt !== null) return;
     this.open(immediate);
   }
 
   /** The rooms the open stream holds changed without a new stream (the server already let some go). */
-  retarget(url: string): void { if (!this.disposed && url !== "") this.target = url; }
+  retarget(url: string): void {
+    if (this.disposed || url === "") return;
+    this.target = url;
+    if (this.candidate === null || this.candidate.url === url) return;
+    // The replacement on its way is for rooms the page no longer wants: drop it with its timers. A stream that seemed
+    // dead still needs replacing, now for these rooms.
+    this.dropCandidate();
+    if (this.current?.suspect === true) this.open(false, true);
+  }
+
+  private dropCandidate(): void {
+    const candidate = this.candidate;
+    this.candidate = null;
+    this.endHandover();
+    this.abort(candidate);
+  }
 
   /** Something suggests the connection may have changed (focus, the tab shown, back online, a timer gap). `slept`: the
    * device was suspended a while (a timer gap), so a probe waits only the short deadline. */
@@ -252,15 +291,16 @@ export class LiveSupervisor {
     if (current === null) { this.open(); return; }
     // Not up yet, or already being replaced: that attempt answers the question.
     if (!current.reading || this.candidate !== null) return;
-    if (current.conn !== null) { this.probe(current, slept); return; }
-    // A server that names no stream can't be probed: one that missed its tick is probably dead under us. Replace it.
-    if (this.deps.now() - current.lastByteAt > current.tickMs + 5_000) this.open();
+    if (current.conn !== null && this.deps.now() >= this.pingQuietUntil) { this.probe(current, slept); return; }
+    // A server that names no stream (or asked for no pings now) can't be probed: one that missed its tick is probably
+    // dead under us. Replace it.
+    if (this.deps.now() - current.lastByteAt > current.tickMs + 5_000) this.open(false, true);
   }
 
   /** The browser says the network went away: an open stream is tried again at once, so a dead one shows as offline. */
   offline(): void {
     if (this.disposed || this.target === "" || this.suspendedAt !== null) return;
-    if (this.current !== null) this.open();
+    if (this.current !== null) this.open(false, true);
   }
 
   /** The page is leaving or entering the back/forward cache: close the stream (an open fetch can keep it out). */
@@ -352,18 +392,21 @@ export class LiveSupervisor {
     if (this.suspendedAt !== null) { if (now - this.suspendedAt > 2_000) this.resume(); return; }
     if (gap > LIVE_GAP_MS) { this.wake(true); return; }
     const current = this.current;
-    if (current?.reading === true && this.candidate === null && now - current.lastByteAt > current.tickMs * 2 + 5_000) this.open();
+    if (current?.reading === true && this.candidate === null && now - current.lastByteAt > current.tickMs * 2 + 5_000) this.open(false, true);
   }
 
-  private open(immediate = false): void {
+  /** `suspect`: the stream is being replaced because it seemed dead. */
+  private open(immediate = false, suspect = false): void {
     if (this.disposed || this.target === "") return;
+    if (suspect && this.current !== null) this.current.suspect = true;
     this.cancelRetry();
     this.waiting = null;
     this.suspendedAt = null;
     this.endProbe();
     this.lastAttemptAt = this.deps.now();
     this.ensureBeat();
-    const stream: Stream = { url: this.target, controller: new AbortController(), reading: false, openedAt: 0, lastByteAt: 0, tickMs: DEFAULT_TICK_MS, conn: null, helloAt: null, held: [] };
+    const stream: Stream = { url: this.target, controller: new AbortController(), reading: false, openedAt: 0, lastByteAt: 0, tickMs: DEFAULT_TICK_MS, conn: null, helloAt: null, held: [],
+      incarnation: null, synced: false, suspect: false };
     if (immediate || this.current === null || !this.current.reading) {
       // One stream at a time: the old one (and any replacement on its way) goes first.
       this.retireAll();
@@ -385,10 +428,12 @@ export class LiveSupervisor {
   }
 
   /** The replacement becomes the stream, in one step: the old stream is aborted (never heard again) and, if the
-   * replacement is up, the page hears it is open and gets its held frames. */
-  private takeOver(): void {
+   * replacement is up, the page hears it is open and gets its held frames. A replacement for rooms the page no longer
+   * wants is dropped instead (false). */
+  private takeOver(): boolean {
     const next = this.candidate;
-    if (next === null) return;
+    if (next === null) return false;
+    if (next.url !== this.target) { this.dropCandidate(); return false; }
     this.endHandover();
     this.endProbe();
     const old = this.current;
@@ -397,9 +442,26 @@ export class LiveSupervisor {
     this.abort(old);
     if (next.reading) this.up(next);
     else this.setState(this.said === null && this.attempt === 0 ? "connecting" : "reconnecting");
+    return true;
   }
 
-  /** The current stream is up: the page hears it opened, then anything it held, less what the page already has. */
+  /** A replacement that said `synced` takes over once, for every room both streams spoke of, its newest word is at least
+   * as new as what the page applied (else it waits for its rooms to catch up, within the handover's bounds). */
+  private promoteIfCaughtUp(stream: Stream): void {
+    if (stream !== this.candidate || !stream.synced) return;
+    const newest = new Map<string, number>();
+    for (const frame of stream.held) {
+      const key = frameKey(frame);
+      if (key?.seq != null) newest.set(key.slot, Math.max(newest.get(key.slot) ?? 0, key.seq));
+    }
+    for (const [slot, seq] of newest) {
+      const applied = this.heard.get(slot);
+      if (applied !== undefined && applied.seq !== null && applied.incarnation === stream.incarnation && seq < applied.seq) return;
+    }
+    this.takeOver();
+  }
+
+  /** The current stream is up: the page hears it opened, then anything it held that is newer than what it has. */
   private up(stream: Stream): void {
     this.said = null;
     this.setState("live");
@@ -413,14 +475,23 @@ export class LiveSupervisor {
     for (const [at, frame] of frames.entries()) {
       if (this.current !== stream) return;
       const key = keys[at] ?? null;
-      if (key !== null && (last.get(key.slot) !== at || this.heard.get(key.slot) === key.same)) continue;
-      this.deliver(frame);
+      if (key !== null && last.get(key.slot) !== at) continue;
+      this.apply(stream, frame);
     }
   }
 
-  private deliver(frame: SseFrame): void {
+  /** A room frame from the current stream (or a promoted replacement's held one): applied unless the page already has
+   * it or something newer for that room and kind. */
+  private apply(stream: Stream, frame: SseFrame): void {
     const key = frameKey(frame);
-    if (key !== null) this.heard.set(key.slot, key.same);
+    if (key !== null) {
+      const applied = this.heard.get(key.slot);
+      if (applied !== undefined) {
+        const comparable = key.seq !== null && applied.seq !== null && applied.incarnation === stream.incarnation;
+        if (comparable ? key.seq! <= applied.seq! : applied.same === key.same) return;
+      }
+      this.heard.set(key.slot, { same: key.same, incarnation: stream.incarnation, seq: key.seq });
+    }
     try { this.events.frame(frame.event, frame.data); }
     catch (error) { queueMicrotask(() => { throw error; }); }
   }
@@ -473,13 +544,14 @@ export class LiveSupervisor {
       case "hello": this.hello(stream, frame.data); return true;
       case "tick": case "pong": return true;
       // Its rooms have all said where they stand: the replacement takes over.
-      case "synced": if (stream === this.candidate) this.takeOver(); return true;
+      case "synced": if (stream === this.candidate) { stream.synced = true; this.promoteIfCaughtUp(stream); } return true;
       // Every room refused this page: signed out, or its access went. Stop and wait, as for a 401.
       case "ended": this.failed(stream, "refused"); return false;
     }
-    if (stream === this.current) { this.deliver(frame); return true; }
+    if (stream === this.current) { this.apply(stream, frame); return true; }
     stream.held.push(frame);
     if (stream.held.length > HANDOVER_HELD_MAX) this.takeOver();
+    else this.promoteIfCaughtUp(stream);
     return true;
   }
 
@@ -487,7 +559,8 @@ export class LiveSupervisor {
     stream.helloAt = this.deps.now();
     try {
       const said = JSON.parse(raw) as Record<string, unknown>;
-      const tick: unknown = said["tick"], conn: unknown = said["conn"];
+      const tick: unknown = said["tick"], conn: unknown = said["conn"], incarnation: unknown = said["incarnation"];
+      if (typeof incarnation === "string" && incarnation.length <= 64) stream.incarnation = incarnation;
       if (typeof tick === "number" && Number.isFinite(tick) && tick >= 1_000 && tick <= 120_000) stream.tickMs = tick;
       if (typeof conn === "string" && CONN_NAME.test(conn)) stream.conn = conn;
     } catch { /* a hello without a tick keeps the default */ }
@@ -496,7 +569,7 @@ export class LiveSupervisor {
   /** A stream failed. The old stream dying while its replacement is on the way hands over now; anything else (the
    * replacement failing, a refusal, the only stream dropping) is the page's stream failing: one attempt, then backoff. */
   private failed(stream: Stream, kind: Failure): void {
-    if (stream === this.current && this.candidate !== null && kind !== "refused") { this.takeOver(); return; }
+    if (stream === this.current && this.candidate !== null && kind !== "refused" && this.takeOver()) return;
     this.fail(kind);
   }
 
@@ -513,7 +586,7 @@ export class LiveSupervisor {
     const dead = (): void => {
       if (this.probing !== probe) return;
       this.endProbe();
-      if (this.current === stream && this.candidate === null) this.open();
+      if (this.current === stream && this.candidate === null) this.open(false, true);
     };
     probe.deadline = this.deps.setTimeout(dead, near || slept ? LIVE_PROBE_DEADLINE_NEAR_MS : LIVE_PROBE_DEADLINE_FAR_MS);
     this.pings += 1;
@@ -527,6 +600,15 @@ export class LiveSupervisor {
       // The pong may still be on its way: only silence after the 204 means dead. Any other answer: the server doesn't
       // know this stream (it restarted, or the stream ended there), or this page is signed out.
       if (response.status === 204) probe.silence = this.deps.setTimeout(dead, near ? LIVE_PROBE_SILENCE_NEAR_MS : LIVE_PROBE_SILENCE_FAR_MS);
+      else if (response.status === 429) {
+        // The server's ping budget is spent: no verdict. No pings until its Retry-After; meanwhile only the stream's own
+        // tick can prove it (no pong is coming), so silence past a tick and its margin is what means dead.
+        const said = response.headers.get("retry-after"), after = said !== null && /^[0-9]{1,6}$/.test(said.trim()) ? Number(said.trim()) : 10;
+        this.pingQuietUntil = this.deps.now() + Math.min(60, Math.max(1, after)) * 1_000;
+        if (probe.deadline !== null) this.deps.clearTimeout(probe.deadline);
+        probe.deadline = null;
+        probe.silence = this.deps.setTimeout(dead, Math.max(0, stream.lastByteAt + stream.tickMs + 5_000 - this.deps.now()));
+      }
       else dead();
     }, dead);
   }
