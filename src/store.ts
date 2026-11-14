@@ -27406,3 +27406,10 @@ function flexibleTermsShapeProblem(db: Database): string | null {
 export function projectRowKnown(store: Store, path: string): boolean {
   return store.handle.prepare("SELECT 1 FROM project WHERE path = ?").get(path) !== undefined;
 }
+
+/** Store.accountCanAccess for many projects at one reading of the account (fast reads): a list of decisions made at one
+ * instant reads the person once instead of once per project. The same rule, the same answer. */
+export function accountAccessOf(store: Store, name: string): (repo: string | null) => boolean {
+  const account = store.accountOf(name);
+  return repo => account !== null && account.revokedAt === null && projectAccessAllows(account.projects, repo);
+}

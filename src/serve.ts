@@ -244,7 +244,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get liveRefreshSeconds() { return liveRefreshSeconds; },
   });
 
-  const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
+  const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, visibleNow, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
     get store() { return store; },
     get liveCeiling() { return liveCeiling; },
     identities,
@@ -508,10 +508,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const managedRepos = (): string[] => {
     const seen = new Set<string>();
     const repos: string[] = [];
-    const gone = goneRepos();
+    const gone = goneRepos(), shown = visibleNow();
     for (const path of [...exactRepos(), ...(options.currentRepos?.() ?? [])]) {
       const canonical = identities.hot(path);
-      if (seen.has(canonical) || !visible(canonical) || gone.has(canonical)) continue;
+      if (seen.has(canonical) || !shown(canonical) || gone.has(canonical)) continue;
       seen.add(canonical);
       repos.push(canonical);
     }
@@ -671,8 +671,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * one list: the live admitted set (taskless projects included) and every project with saved work, each through
    * the ceiling and this account's project grants. A project removed or deleted here is gone from it. */
   const consoleProjects = (): string[] => {
-    const gone = goneRepos();
-    return [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(one => visible(one) && !gone.has(one));
+    const gone = goneRepos(), shown = visibleNow();
+    return [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])].filter(one => shown(one) && !gone.has(one));
   };
 
   const server = createServer((request, response) => {
@@ -1807,11 +1807,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function sidebarProjects(): { path: string; name: string }[] {
     const seen = new Set<string>();
     const rows: { path: string; name: string }[] = [];
+    const shown = visibleNow();
     for (const one of [
       ...store.listProjects().map(one => ({ path: one.path, name: one.name })),
       ...managedRepos().map(path => ({ path, name: projectName(path) })),
     ]) {
-      if (seen.has(one.path) || !visible(one.path) || goneRepos().has(one.path)) continue;
+      if (seen.has(one.path) || !shown(one.path) || goneRepos().has(one.path)) continue;
       seen.add(one.path);
       rows.push(one);
     }
