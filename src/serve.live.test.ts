@@ -15,6 +15,7 @@ import type { BrowserTaskView, BrowserWorkspace } from "./browser-workspace.js";
 import { presented, T0 } from "../test/serve-kit.js";
 import { mintApiToken } from "./api-tokens.js";
 import { flowFromSteps } from "./flows.js";
+import { LIVE_FRAMES_HEADER } from "./browser/live-supervisor.js";
 
 let store: Store;
 let server: Server;
@@ -117,6 +118,23 @@ describe("the task room", () => {
     expect(Object.keys(changes[1]!.data as object)).toEqual(["room", "at", "revision"]);
     expect((changes[1]!.data as { room: string }).room).toBe("task:t-live");
     page.close();
+  });
+
+  test("a reader that asks for frames hears `hello` first (this server run, its tick), then the same room events; one that doesn't hears no hello", async () => {
+    running("t-hello", repoA);
+    const cookie = await login("alex", alexToken);
+    const framed = await stream(live(taskRoom("t-hello")), cookie, { [LIVE_FRAMES_HEADER]: "1" });
+    const again = await stream(live("workspace"), cookie, { [LIVE_FRAMES_HEADER]: "1" });
+    const plain = await stream(live(taskRoom("t-hello")), cookie);
+    const [hello, first] = await framed.until(all => all.some(one => one.event === "here"));
+    expect(hello).toEqual({ event: "hello", data: { incarnation: expect.stringMatching(/^[0-9a-f]{18}$/), tick: 15_000 } });
+    expect(first).toMatchObject({ event: "change", data: { room: "task:t-hello" } });
+    const [helloAgain] = await again.until(all => all.length > 0);
+    expect(helloAgain).toEqual(hello);
+    const [plainFirst] = await plain.until(all => all.some(one => one.event === "here"));
+    expect(plainFirst).toMatchObject({ event: "change", data: { room: "task:t-hello" } });
+    expect(plain.events.some(one => one.event === "hello")).toBe(false);
+    for (const one of [framed, again, plain]) one.close();
   });
 
   test("a revision's address follows its family: the stream is the family root's", async () => {
