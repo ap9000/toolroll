@@ -514,7 +514,8 @@ function withThreadLock<T>(id: string, work: () => Promise<T>): Promise<T> {
   return withCheckoutLock(real(homedir()), `flexible-thread:${id}`, work);
 }
 
-/** What the caller starts: exactly this, as a process group of its own (detached), returning its leader's pid. */
+/** What the caller starts: exactly this, as a process group of its own (detached), returning its leader's pid. It must
+ * not throw once it has spawned (a pid it never returned can't be stopped here; F2c's custody closes that gap). */
 export type FlexibleThreadStart = (spawn: { file: string; args: string[]; env: Record<string, string>; cwd: string }) => number;
 
 /**
@@ -555,12 +556,16 @@ async function spawnLocked(store: Store, input: FlexibleThreadLaunchInput & { pr
   const problem = spawnProblem(spawned, platform);
   if (problem !== null) return refuse("containment", problem);
   const pid = start({ file: spawned.file, args: spawned.args, env: { ...env, ...spawned.env }, cwd: paths.repo });
-  const registered = Number.isSafeInteger(pid) && pid > 0 && store.transact(() =>
-    Number(store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ? AND state = 'ready'").run(pid, new Date().toISOString(), input.id).changes) === 1);
+  // Anything that goes wrong from here (a bad pid, a record that moved, the write itself throwing) ends the group it
+  // started and leaves the record as it was: nothing runs that isn't on the record, and nothing is on it that doesn't run.
+  let registered = false;
+  try {
+    registered = Number.isSafeInteger(pid) && pid > 0 && store.transact(() =>
+      Number(store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ? AND state = 'ready'").run(pid, new Date().toISOString(), input.id).changes) === 1);
+  } catch { registered = false; }
   if (!registered) {
-    // Not on the record, so not ours to leave running: its group ends now.
     try { if (Number.isSafeInteger(pid) && pid > 0) process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
-    return refuse("containment", "the agent's process couldn't be registered");
+    return refuse("containment", "the agent's process couldn't be registered, so it was stopped");
   }
   return { ok: true, pid, launch };
 }

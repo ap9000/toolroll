@@ -19,6 +19,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:net";
+import { createSocket } from "node:dgram";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -43,7 +44,7 @@ afterEach(async () => {
 });
 
 async function listen(at: number | string): Promise<{ server: Server; port: number }> {
-  const server = createServer(socket => socket.end("hello\n"));
+  const server = createServer(socket => { socket.on("error", () => { /* a probe that hung up first */ }); socket.end("hello\n"); });
   servers.push(server);
   await new Promise<void>((done, failed) => { server.once("error", failed); server.listen(typeof at === "number" ? { port: at, host: "127.0.0.1" } : at, () => done()); });
   const address = server.address();
@@ -348,24 +349,70 @@ describe("attack: a Flexible thread leaving its fence", () => {
     expect(out.stdout.trim(), out.stderr).toBe("checked");
   }, 60_000);
 
-  test("native: no direct TCP or UDP connection leaves the thread, to an outside address or an IPv6 one", async ctx => {
+  test("native: no direct TCP or UDP connection leaves the thread; the same attempts outside the fence get through", async ctx => {
     needs(ctx, osFence());
     const { id } = await thread();
-    // A refused connect is the proof; nothing is sent when the fence holds.
-    const probe = `${q(process.execPath)} -e ${q(`
-      const net = require("net"), dgram = require("dgram");
-      const tcp = (host, port) => new Promise(done => { const s = net.connect({ host, port }); s.on("connect", () => { s.destroy(); done("connected"); }); s.on("error", e => done(e.code || "error")); setTimeout(() => { s.destroy(); done("timeout"); }, 4000).unref(); });
-      const udp = () => new Promise(done => { const s = dgram.createSocket("udp4"); s.on("error", e => { s.close(); done(e.code || "error"); }); s.send(Buffer.from([0]), 53, "8.8.8.8", e => { try { s.close(); } catch {} done(e ? (e.code || "error") : "sent"); }); });
-      (async () => { console.log("tcp " + await tcp("1.1.1.1", 443)); console.log("tcp6 " + await tcp("2606:4700:4700::1111", 443)); console.log("udp " + await udp()); })();
-    `.replace(/\s*\n\s*/g, " "))}`;
-    const out = await inThread(id, probe);
-    const results = Object.fromEntries(out.stdout.trim().split("\n").map(line => line.split(" ") as [string, string]));
-    expect(Object.keys(results), out.stderr).toEqual(["tcp", "tcp6", "udp"]);
-    for (const [kind, result] of Object.entries(results)) {
-      expect(["connected", "sent", "timeout"], `${kind}: ${result}`).not.toContain(result);
-      // Seatbelt refuses the socket operation itself.
-      if (process.platform === "darwin") expect(result, kind).toBe("EPERM");
-    }
+    const tcpListener = await listen(0);
+    const udp = createSocket("udp4");
+    let datagrams = 0;
+    udp.on("message", () => { datagrams += 1; });
+    await new Promise<void>(done => udp.bind(0, "127.0.0.1", () => done()));
+    const udpPort = (udp.address() as { port: number }).port;
+    try {
+      // One probe, run inside the fence and outside it: each target as [label, protocol, host, port]; it prints what
+      // happened to each (connected, sent, or the error code). Outside, only the local targets are tried (nothing leaves
+      // this computer); inside, a refused attempt sends nothing.
+      const code = `
+        const net = require("net"), dgram = require("dgram");
+        const tcp = (host, port) => new Promise(done => { const s = net.connect({ host, port }); s.on("connect", () => { s.destroy(); done("connected"); }); s.on("error", e => done(e.code || "error")); setTimeout(() => { s.destroy(); done("timeout"); }, 4000).unref(); });
+        const udp = (host, port) => new Promise(done => { const s = dgram.createSocket(host.includes(":") ? "udp6" : "udp4"); s.on("error", e => { try { s.close(); } catch {} done(e.code || "error"); }); s.send(Buffer.from([0]), port, host, e => { try { s.close(); } catch {} done(e ? (e.code || "error") : "sent"); }); });
+        (async () => { for (const [label, kind, host, port] of JSON.parse(process.argv[1])) console.log(label + " " + await (kind === "tcp" ? tcp(host, port) : udp(host, port))); })();
+      `.replace(/\s*\n\s*/g, " ");
+      const local: [string, string, string, number][] = [["tcp-local", "tcp", "127.0.0.1", tcpListener.port], ["udp-local", "udp", "127.0.0.1", udpPort]];
+      const outside: [string, string, string, number][] = [["tcp", "tcp", "1.1.1.1", 443], ["tcp6", "tcp", "2606:4700:4700::1111", 443], ["udp", "udp", "8.8.8.8", 53]];
+      const read = (stdout: string) => Object.fromEntries(stdout.trim().split("\n").map(line => line.split(" ") as [string, string]));
+      // The control: outside the fence the same probe connects and sends.
+      const control = await new Promise<string>(done => {
+        const child = spawn(process.execPath, ["-e", code, JSON.stringify(local)], { stdio: ["ignore", "pipe", "ignore"] });
+        let stdout = "";
+        child.stdout.on("data", chunk => { stdout += chunk; });
+        child.on("close", () => done(stdout));
+      });
+      expect(read(control)).toEqual({ "tcp-local": "connected", "udp-local": "sent" });
+      await until(() => datagrams === 1);
+      const out = await inThread(id, `${q(process.execPath)} -e ${q(code)} ${q(JSON.stringify([...local, ...outside]))}`);
+      const results = read(out.stdout);
+      // Each backend's own refusal: Seatbelt refuses the socket operation (EPERM); bubblewrap gives the launch a network
+      // of its own with no route out (ENETUNREACH), where the host's loopback isn't there (ECONNREFUSED, and a datagram
+      // "sent" there never reaches this computer's listener).
+      const expected: Record<string, readonly string[]> = process.platform === "darwin"
+        ? { "tcp-local": ["EPERM"], "udp-local": ["EPERM"], tcp: ["EPERM"], tcp6: ["EPERM"], udp: ["EPERM"] }
+        : { "tcp-local": ["ECONNREFUSED"], "udp-local": ["sent", "ECONNREFUSED"], tcp: ["ENETUNREACH"], tcp6: ["ENETUNREACH", "EADDRNOTAVAIL"], udp: ["ENETUNREACH"] };
+      expect(Object.keys(results), out.stderr).toEqual(Object.keys(expected));
+      for (const [label, result] of Object.entries(results)) expect(expected[label], `${label}: ${result}`).toContain(result);
+      await new Promise(done => setTimeout(done, 200));
+      expect(datagrams).toBe(1);
+    } finally { udp.close(); }
+  }, 60_000);
+
+  test("native: a launch whose registration fails stops the agent it started and leaves nothing on the record", async ctx => {
+    needs(ctx, osFence());
+    const { id } = await thread();
+    let started: { pid: number; closed: Promise<unknown> } | null = null;
+    const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "sleep 30"], spec => {
+      const child = spawn(spec.file, spec.args, { cwd: spec.cwd, env: spec.env, stdio: "ignore", detached: true });
+      started = { pid: child.pid!, closed: new Promise(done => child.once("close", done)) };
+      // The registration's write throws (as a full disk or a damaged database would).
+      world.store.handle.exec("CREATE TRIGGER flexible_thread_block BEFORE UPDATE OF live_pid ON flexible_thread BEGIN SELECT RAISE(ABORT, 'blocked'); END");
+      return child.pid!;
+    });
+    expect(refused).toMatchObject({ ok: false, reason: "containment" });
+    const ran = started as { pid: number; closed: Promise<unknown> } | null;
+    expect(ran).not.toBeNull();
+    await ran!.closed; // stopped, not left running
+    expect(() => process.kill(-ran!.pid, 0)).toThrow();
+    world.store.handle.exec("DROP TRIGGER flexible_thread_block");
+    expect(flexibleThread(world.store, id)).toMatchObject({ state: "ready", livePid: null });
   }, 60_000);
 
   test("native: a removal waits for a launch under way and then refuses while its agent runs; a launch after a removal never starts", async ctx => {

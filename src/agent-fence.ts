@@ -132,6 +132,8 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   const fence = new Set<string>();
   /** The console's run folder: kept by its own pathname through canonicalization (and its target's too). */
   let runFolder: string | null = null;
+  /** Kept by their own pathname alone, never by where a link there leads (the threads folder). */
+  const literal = new Set<string>();
   const home = real(options.home ?? homedir());
   const worktree = options.worktree === null ? null : real(options.worktree);
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
@@ -163,13 +165,18 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     // denies the other threads itself (as a checkout pool, its own folder given back). Made first (owner-only) when it
     // isn't there, so every backend denies a folder that exists and a thread made after this launch is inside it; if it
     // can't be made, its name is denied anyway.
+    // Only a real folder is the threads folder: a link (or anything else) at that name is denied by its name alone, never
+    // followed (its target is neither denied in its place nor taken as holding this launch's own thread), and said; a
+    // thread launch refuses it outright (flexible-thread.ts ownFolder).
     const threads = join(state, FLEXIBLE_THREADS_DIR);
-    const ownThread = worktree !== null && (worktree === real(threads) || inside(worktree, real(threads)));
-    if (!ownThread) {
-      try { mkdirSync(threads, { mode: 0o700 }); } catch { /* there already, or denied by name below either way */ }
-      fence.add(threads);
-      fence.add(real(threads));
+    try { mkdirSync(threads, { mode: 0o700 }); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") process.stderr.write(`toolroll: fence: couldn't make ${threads} (${(error as Error).message}); it is denied by name, and no Flexible thread starts\n`);
     }
+    let threadsFolder = false, threadsThere = false;
+    try { const held = lstatSync(threads); threadsThere = true; threadsFolder = held.isDirectory() && !held.isSymbolicLink(); } catch { threadsThere = false; }
+    if (threadsThere && !threadsFolder) process.stderr.write(`toolroll: fence: ${threads} isn't a folder (a link?); it is denied by name and never followed\n`);
+    const ownThread = threadsFolder && worktree !== null && (worktree === threads || inside(worktree, threads));
+    if (!ownThread) { fence.add(threads); literal.add(threads); }
     // Saved credentials (the remembered login, login-secrets.ts) live in a reserved owner-only folder, made here before
     // any launch and denied whole, so one first written after this launch is behind this fence too: a listing can't
     // name a file that isn't there yet, and bubblewrap can't deny one. If it can't be made or proven, its name is
@@ -215,7 +222,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.extra ?? []) fence.add(real(path));
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => literal.has(path) ? [path] : path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]));
   // Protected storage (chat apps, browser profiles, password managers): every launch, every policy, never exemptible,
   // kept by the name it was resolved under as well as where it leads.
   const storage = options.protectedStorage ?? protectedStorageDenies(home);
@@ -223,7 +230,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...[...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
+  return [...new Set([...[...fence].flatMap(path => literal.has(path) ? [path] : path === runFolder || [RUNNER_PROCESS_DIR, "backups", SECRETS_DIR].includes(basename(path)) ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;

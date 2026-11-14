@@ -5,7 +5,7 @@
  * native attacks (the real sandbox) are test/attacks/flexible-thread-fence.test.ts.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { flexibleKeepRef, flexibleThread, flexibleThreadCodexProfile, flexibleThreadEnv, flexibleThreadFence, flexibleThreadPaths, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, threadCredentialPaths } from "./flexible-thread.js";
@@ -211,6 +211,40 @@ describe("the thread fence's terms", () => {
   test("a Codex thread is refused: its own sandbox can't deny what is made after it starts", async () => {
     const { thread } = await made();
     expect(flexibleThreadCodexProfile(world.store, { id: thread.id, network: NETWORK, storage: STORAGE })).toMatchObject({ ok: false, reason: "codex-unsupported" });
+  });
+
+  test("a link at the threads folder's name is denied by its name only, never followed, and said; no thread is made through it", async () => {
+    const elsewhere = join(world.dir, "elsewhere");
+    mkdirSync(elsewhere);
+    rmSync(join(world.state, "threads"), { recursive: true, force: true });
+    symlinkSync(elsewhere, join(world.state, "threads"));
+    const said = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const fence = agentFence({ databaseFile: world.databaseFile, worktree: null, home: homedir() });
+      expect(fence).toContain(join(world.state, "threads"));
+      expect(fence).not.toContain(elsewhere);
+      expect(said.mock.calls.map(call => String(call[0])).join("")).toMatch(/threads isn't a folder \(a link\?\); it is denied by name and never followed/);
+    } finally { said.mockRestore(); }
+    expect(await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW })).toMatchObject({ ok: false, reason: "setup-failed" });
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  test("a thread whose threads folder was replaced by a link doesn't launch", async () => {
+    const { thread } = await made();
+    renameSync(join(world.state, "threads"), join(world.state, "threads-moved"));
+    symlinkSync(join(world.state, "threads-moved"), join(world.state, "threads"));
+    expect(flexibleThreadFence(world.store, { id: thread.id, network: NETWORK, storage: STORAGE })).toMatchObject({ ok: false, reason: "thread-folder-changed" });
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a threads folder that can't be made is said and denied by name, and no thread starts", async () => {
+    const fresh = join(world.dir, "locked-state");
+    mkdirSync(fresh, { mode: 0o500 });
+    const said = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const fence = agentFence({ databaseFile: join(fresh, "orders.db"), worktree: null, home: homedir() });
+      expect(fence).toContain(join(fresh, "threads"));
+      expect(said.mock.calls.map(call => String(call[0])).join("")).toMatch(/couldn't make .*threads .*no Flexible thread starts/);
+    } finally { said.mockRestore(); chmodSync(fresh, 0o700); }
   });
 
   test("every other launch denies the threads folder, made first when it isn't there", () => {
