@@ -25,6 +25,7 @@ import { packageVersion } from "./monitoring.js";
 import { underAgent } from "./prompt.js";
 import { shortTempDir } from "../test/short-temp.js";
 import { SOCKETS_TOO_DEEP } from "../test/inside-fence.js";
+import type { SignInOpener } from "./sign-in-page.js";
 
 const PORT = 41000 + (process.pid % 2000);
 
@@ -56,6 +57,25 @@ const up = (extra: string[] = [], port = PORT, onOutput?: (line: string) => void
   runOperate("up", ["--repo", repo, "--port", String(port), "--for", "1200", "--json", ...extra], line => { lines.push(line); onOutput?.(line); }, {
     databaseFile: db,
   });
+
+/**
+ * The opener `up` hands its sign-in page to (eight k1), standing in for the platform's own: what it was started with is
+ * kept, checked to carry nothing but the page's path, and the link that page carries is read from it, as a browser would.
+ */
+function signInOpener(opened: string[], onLink: (link: string) => void = () => {}): SignInOpener {
+  return (command, args) => {
+    expect(command).toBe(process.platform === "darwin" ? "open" : "xdg-open");
+    expect(args).toHaveLength(1);
+    expect(args[0]).toMatch(/\/\.toolroll-run\/sign-in-[A-Za-z0-9]{6}\/open\.html$/);
+    expect(args.join(" ")).not.toMatch(/login|once|[A-Za-z0-9_-]{43}/);
+    expect(statSync(args[0]!).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(args[0]!)).mode & 0o777).toBe(0o700);
+    const link = /location\.replace\("([^"]+)"\)/.exec(readFileSync(args[0]!, "utf8"))![1]!;
+    opened.push(link);
+    onLink(link);
+    return { unref: () => {} };
+  };
+}
 
 const envelope = (): Record<string, unknown> => JSON.parse(lines.join("\n")) as Record<string, unknown>;
 
@@ -262,11 +282,14 @@ describe("toolroll up", () => {
     expect(envelope()).toMatchObject({ ok: false, reason: "runner-alive" });
   });
 
-  test("without a terminal it prints the handoff, points at onboard, and opens no browser", async () => {
+  test("without a terminal it prints the handoff, points at onboard, and opens no browser", async ({ onTestFinished }) => {
+    // A credential never goes to TOOLROLL_BROWSER_COMMAND: only the platform's own opener, handed a page (eight k1).
+    vi.stubEnv("TOOLROLL_BROWSER_COMMAND", join(base, "logs-every-argument"));
+    onTestFinished(() => { vi.unstubAllEnvs(); });
     const opened: string[] = [];
     const code = await runOperate("up", ["--repo", repo, "--port", String(PORT + 14), "--for", "1200"], line => lines.push(line), {
       databaseFile: db,
-      upSeams: { terminal: false, openBrowser: url => opened.push(url) },
+      upSeams: { terminal: false, signInOpener: signInOpener(opened) },
     });
     expect(code).toBe(0);
     const text = lines.join("\n");
@@ -279,7 +302,7 @@ describe("toolroll up", () => {
     lines = [];
     expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 15), "--for", "1200"], line => lines.push(line), {
       databaseFile: db,
-      upSeams: { terminal: true, env: {}, openBrowser: url => opened.push(url) },
+      upSeams: { terminal: true, env: {}, signInOpener: signInOpener(opened) },
     })).toBe(0);
     // Three lines (onboarding): where it is, that it opens signed in, and what to do if it doesn't. The browser gets a
     // one-time sign-in link that is never printed; neither is the password.
@@ -303,7 +326,7 @@ describe("toolroll up", () => {
     lines = [];
     expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 18), "--for", "1200", "--no-open"], line => lines.push(line), {
       databaseFile: db,
-      upSeams: { terminal: true, env: {}, openBrowser: url => opened.push(url) },
+      upSeams: { terminal: true, env: {}, signInOpener: signInOpener(opened) },
     })).toBe(0);
     expect(opened).toHaveLength(1);
     showsPassword(lines.join("\n"));
@@ -331,7 +354,7 @@ describe("toolroll up", () => {
     lines = [];
     expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 17), "--for", "1200", "--verbose"], line => lines.push(line), {
       databaseFile: db,
-      upSeams: { terminal: true, env: {}, openBrowser: () => undefined },
+      upSeams: { terminal: true, env: {}, signInOpener: signInOpener([]) },
     })).toBe(0);
     expect(lines.join("\n")).toContain("watch: containment: ");
   });
@@ -358,7 +381,7 @@ describe("toolroll up", () => {
       const opened: string[] = [];
       expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 16), "--for", "1200"], line => lines.push(line), {
         databaseFile: db,
-        upSeams: { terminal: true, env, openBrowser: url => opened.push(url) },
+        upSeams: { terminal: true, env, signInOpener: signInOpener(opened) },
       })).toBe(0);
       const text = lines.join("\n");
       const [account = "", password = ""] = readFileSync(join(base, ".toolroll-secrets", "up-login.txt"), "utf8").trim().split(" ");
@@ -764,7 +787,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     lines = [];
     const code = await runOperate("up", ["--port", String(port), "--for", "3000", ...extra], line => lines.push(line), {
       databaseFile: db, inferProjectFromCwd: false,
-      upSeams: { terminal: true, env: {}, home: seams.home ?? join(base, "home"), fenceAvailable: () => true, openBrowser: url => { opened.push(url); spent.push(fetch(url, { redirect: "manual" })); } },
+      upSeams: { terminal: true, env: {}, home: seams.home ?? join(base, "home"), fenceAvailable: () => true, signInOpener: signInOpener(opened, url => { spent.push(fetch(url, { redirect: "manual" })); }) },
     });
     const answers = await Promise.all(spent) as Response[];
     // Signed in either way: a redirect to Chat, or, on a protected loopback install (no tailnet names: CI), the

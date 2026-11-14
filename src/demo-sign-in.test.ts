@@ -10,7 +10,8 @@ import { dirname } from "node:path";
 import type { AddressInfo } from "node:net";
 import { main } from "./cli.js";
 import { createDemoSandbox } from "./demo.js";
-import { demoLoopbackOrigin, demoSignInLink, openSignInPage, removeSignInPageWhenSpent, writeSignInPage, type DemoCaller } from "./demo-sign-in.js";
+import { demoLoopbackOrigin, demoSignInLink, type DemoCaller } from "./demo-sign-in.js";
+import { ledgerSpent, openSignInPage, removeSignInPageWhenSpent, writeSignInPage } from "./sign-in-page.js";
 import { createDecisionServer } from "./serve.js";
 
 const PERSON: DemoCaller = { stdin: true, stdout: true, agent: false, json: false };
@@ -130,7 +131,8 @@ describe("toolroll demo", () => {
     let stop: () => void = () => {};
     const stopped = new Promise<void>(resolve => { stop = resolve; });
     const code = await main(["demo", "--port", "0", ...argv], line => { out.push(line); if (/Ctrl-C|"command":\s*"demo"/.test(line)) void whileUp(opened).finally(stop); }, {
-      demo: { ...caller, openPage: file => { opened.push(file); }, stop: stopped },
+      // The platform opener's channel itself (sign-in-page.ts): what it would be started with, never a real browser.
+      demo: { ...caller, opener: (command, args) => { expect(command).toBe(process.platform === "darwin" ? "open" : "xdg-open"); opened.push(...args); return { unref: () => {} }; }, stop: stopped },
     });
     expect(code).toBe(0);
     return { out, opened };
@@ -206,7 +208,7 @@ describe("how the link reaches the browser", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
     expect(readFileSync(file, "utf8")).toContain(`location.replace(${JSON.stringify(link)})`);
-    removeSignInPageWhenSpent(one.store, file, one.seed.login.name, { everyMs: 20, expiresMs: 150 });
+    removeSignInPageWhenSpent(file, ledgerSpent(one.store, "one-time link", one.seed.login.name), { everyMs: 20, expiresMs: 150 });
     expect(existsSync(file)).toBe(true);
     for (const deadline = Date.now() + 3_000; existsSync(file) && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 20));
     expect(existsSync(file)).toBe(false);

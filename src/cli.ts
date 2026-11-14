@@ -255,7 +255,7 @@ export type MainOptions = {
   /** Tests: bare `toolroll` at a person's terminal (easy-start.ts) — the terminal and agent checks, and its seams. */
   easyStart?: { terminal?: boolean; underAgent?: boolean; seams?: Partial<import("./easy-start.js").EasyStartSeams> };
   /** Tests: `toolroll demo` — the terminal and agent checks, the browser it opens, and when it stops (instead of Ctrl-C). */
-  demo?: { terminal?: boolean; underAgent?: boolean; openPage?: (file: string) => void; stop?: Promise<void> };
+  demo?: { terminal?: boolean; underAgent?: boolean; opener?: import("./sign-in-page.js").SignInOpener; stop?: Promise<void> };
 };
 
 /**
@@ -1507,7 +1507,9 @@ async function runDemoCommand(argv: readonly string[], write: Write, seams: Main
   // --json or on a wildcard/LAN bind, and never printed.
   const terminal = seams.terminal ?? (process.stdin.isTTY === true && process.stdout.isTTY === true);
   const demoSignIn = await import("./demo-sign-in.js");
-  const signIn = demoSignIn.demoSignInLink(server, seed.login.name, { stdin: terminal, stdout: terminal, agent: seams.underAgent ?? underAgent(process.env), json });
+  // Where this computer has no opener a page can be handed to (sign-in-page.ts), nothing is minted at all.
+  const canOpen = (await import("./sign-in-page.js")).platformOpener() !== null;
+  const signIn = canOpen ? demoSignIn.demoSignInLink(server, seed.login.name, { stdin: terminal, stdout: terminal, agent: seams.underAgent ?? underAgent(process.env), json }) : null;
 
   if (json) {
     // The password is deliberately NOT here (adoption review, finding 9):
@@ -1535,13 +1537,11 @@ async function runDemoCommand(argv: readonly string[], write: Write, seams: Main
   }
 
   // Never in an opener's arguments: a 0600 page in the sandbox moves the browser on to the link, and only the platform's
-  // own opener gets that page's path (demo-sign-in.ts). The page goes once the link is spent, or expires, or on stop.
+  // own opener gets that page's path (sign-in-page.ts). The page goes once the link is spent, or expires, or on stop.
   let removePage = (): void => {};
   if (signIn !== null) {
-    const page = demoSignIn.writeSignInPage(sandbox, signIn);
-    removePage = demoSignIn.removeSignInPageWhenSpent(store, page, seed.login.name);
-    if (seams.openPage !== undefined) seams.openPage(page);
-    else demoSignIn.openSignInPage(page);
+    const { ledgerSpent, openSignInLink } = await import("./sign-in-page.js");
+    removePage = openSignInLink(signIn, { parent: sandbox, spent: ledgerSpent(store, "one-time link", seed.login.name), ...(seams.opener === undefined ? {} : { opener: seams.opener }) }).stop;
   }
 
   await new Promise<void>(done => {

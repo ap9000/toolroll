@@ -122,12 +122,13 @@ describe("toolroll open", () => {
     const seams: Partial<EasyStartSeams> = {
       prove: async () => ({ ok: true, url: "http://127.0.0.1:4999", port: 4999, pid: fakePid(1), build: "x" }),
       localMode: () => "on", serviceInstalled: () => false,
-      requestLink: async () => ({ ok: true, url: "http://127.0.0.1:4999/login/once/abc" }),
+      openSignedIn: async () => { opened.push("signed in"); return { ok: true }; },
       openBrowser: url => { opened.push(url); },
     };
     const { code, out } = await run("open", ["--web"], { terminal: true, seams });
     expect(code, out).toBe(0);
-    expect(opened).toEqual(["http://127.0.0.1:4999/login/once/abc"]);
+    // The signed-in road only: never openBrowser (which honours TOOLROLL_BROWSER_COMMAND) with a link.
+    expect(opened).toEqual(["signed in"]);
     expect(out).not.toContain("/login/once/");
   });
 });

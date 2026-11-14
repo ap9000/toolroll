@@ -133,7 +133,7 @@ import {
   requeueEligibility, type ClosedState, checkoutIdle, setCheckoutIdle, leadQuickAnswersOn, setLeadQuickAnswers, openStore, openStoreNoMigrate, initLocalMode, localModeCandidate, consoleServingNow, consoleComponent, consoleRowForPort, openConsoleRows, enrollOwnerPassword, installationCreatedBy, laptopPortOf, recordLaptopPort, localModeOf, localOwnerBinding, type InitLocalModeResult, archiveTaskFamily, restoreTaskFamily, shipChecksForTask, elapsedSeconds, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState, type Publication,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
-import { claimInstance, clearInstance, openInstanceSocket, proveLiveConsole } from "./console-instance.js";
+import { claimInstance, clearInstance, instanceRunDir, openInstanceSocket, prepareRunDir, proveLiveConsole } from "./console-instance.js";
 import { backgroundOff, backgroundOn, backgroundShow, laptopStatus, laptopStop, restartOwnBuilder, type LaptopSeams } from "./laptop-background.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
@@ -153,6 +153,7 @@ import { LOCAL_POLICY } from "./surface.js";
 import { asLocalOwner, currentLocalOwner, LOCAL_MODE_CONFINES, localModeOn, localOwnerRefusal, localOwnerRequested, type LocalOwnerAct, type LocalPrincipal } from "./local-owner.js";
 import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
+import { ledgerSpent, openSignInLink, platformOpener } from "./sign-in-page.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createConnection as createNetConnection, createServer as createNetServer } from "node:net";
@@ -449,7 +450,7 @@ export type OperateOptions = {
   /** Injected by tests: `onboard`'s home folder, terminal and probes. */
   onboardSeams?: OnboardSeams;
   /** Injected by tests: whether `up` has a person at a terminal, and how it opens a browser. */
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; /** The one-time sign-in link's opener (sign-in-page.ts): tests see exactly what it is started with. */ signInOpener?: import("./sign-in-page.js").SignInOpener; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
   /** Injected by tests: `open`, `welcome` and `password set` — the terminal, the easy start's seams, the prompts. */
@@ -1446,7 +1447,7 @@ type Context = {
   releaseIo?: ReleaseIo;
   installBin?: string;
   onboardSeams?: OnboardSeams;
-  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
+  upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; /** The one-time sign-in link's opener (sign-in-page.ts): tests see exactly what it is started with. */ signInOpener?: import("./sign-in-page.js").SignInOpener; home?: string; fenceAvailable?: () => boolean; laptopPorts?: readonly number[] };
   /** Injected by tests: the background service handoff's supervisor, HOME, processes and console proof (laptop-background.ts). */
   laptopSeams?: LaptopSeams;
   easySeams?: EasyCommandSeams;
@@ -8294,6 +8295,8 @@ async function upCommand(
   runnerHeartbeat.unref?.();
 
   // 9. Readiness, then the ONE startup envelope / greeting (finding 11/20).
+  /** The greeting's sign-in page, while it is still there (eight k1). */
+  let removeSignInPageNow = (): void => {};
   const approverPlan2 = approver as UpApprover;
   const terminal = !agentRunning && (context.upSeams?.terminal ?? process.stdout.isTTY === true);
   const upHandoff = buildHandoff({
@@ -8333,7 +8336,13 @@ async function upCommand(
       // is this start's authority: a local start asks for a local owner's link (it names no account), a full one for the
       // account's; the console mints only the kind it was started with.
       const request = upLinkRequest(approverPlan2.startAuthority, account);
-      const link = request === null || flags.has("no-open") ? null : await new Promise<string | null>(resolveLink => {
+      // Eight k1: the link reaches the browser only through a 0600 page in the database's private run folder, opened by
+      // the platform's own opener with the page's path as its one argument — never in any program's arguments, never
+      // through TOOLROLL_BROWSER_COMMAND (sign-in-page.ts). No opener here, or a run folder that isn't this user's
+      // alone: nothing is minted, and the greeting says how to sign in instead.
+      const pageParent = instanceRunDir(context.databaseFile);
+      const canOpen = platformOpener() !== null && prepareRunDir(pageParent) === null;
+      const link = request === null || flags.has("no-open") || !canOpen ? null : await new Promise<string | null>(resolveLink => {
         const id = ++linkRequests;
         const timer = setTimeout(() => { pendingLinks.delete(id); resolveLink(null); }, 10_000);
         pendingLinks.set(id, value => { clearTimeout(timer); resolveLink(value); });
@@ -8347,24 +8356,33 @@ async function upCommand(
       const signInWords = account === null
         ? `sign in as one of ${approverPlan2.approvers.join(", ")}`
         : showCommand === null ? `sign in as ${account} with your password` : `sign in as ${account}`;
+      // The page goes once the console's ledger records this sign-in, when the link expires, or when `up` stops.
+      const opened = link === null ? false : (() => {
+        const outcome = localStart ? "local link" as const : "one-time link" as const;
+        const page = openSignInLink(new URL(link, url).toString(), {
+          parent: pageParent, spent: ledgerSpent(store, outcome, localStart ? null : account),
+          ...(context.upSeams?.signInOpener === undefined ? {} : { opener: context.upSeams.signInOpener }),
+        });
+        removeSignInPageNow = page.stop;
+        return page.opened;
+      })();
       write("");
       write(`Toolroll is on ${url}`);
       if (localStart) {
         // Local mode (easy-start C4): there is no password to point at; a new start opens a new one-time link.
-        if (link !== null) {
+        if (opened) {
           write("Opening it in your browser now, already signed in.");
           write("If it doesn't open, stop it with Ctrl-C and run the same command again.");
-          (context.upSeams?.openBrowser ?? openBrowser)(new URL(link, url).toString());
-        } else write("To sign in from this computer's browser, run the same command again without --no-open.");
-      } else if (link !== null) {
+        } else if (flags.has("no-open")) write("To sign in from this computer's browser, run the same command again without --no-open.");
+        else write("Toolroll couldn't open this computer's browser from here.");
+      } else if (opened) {
         write("Opening it in your browser now, already signed in.");
         write(`If it doesn't open, go to that address and ${signInWords}.`);
-        (context.upSeams?.openBrowser ?? openBrowser)(new URL(link, url).toString());
       } else {
         write(`${signInWords.charAt(0).toUpperCase()}${signInWords.slice(1)}.`);
       }
       if (showCommand !== null) write(`Your password: run \`${showCommand}\``);
-      if (link === null) write("Ctrl-C stops it.");
+      if (!opened) write("Ctrl-C stops it.");
     }
   }
   // A bounded run (--for) counts from readiness, so a slow start never eats the window it asked for.
@@ -8376,6 +8394,8 @@ async function upCommand(
   // 10. Supervise to the end: the worker drains first (its builds finish or are saved), the builder retires, and
   // only then does the console stop serving.
   await stopped;
+  // An unspent sign-in page goes as `up` stops (eight k1).
+  removeSignInPageNow();
   if (workerRole !== null) await Promise.race([workerRole.done, forced]);
   clearInterval(runnerHeartbeat);
   if (runTimer !== undefined) clearTimeout(runTimer);
