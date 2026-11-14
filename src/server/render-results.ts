@@ -31,6 +31,7 @@ import { ACCEPT_NEEDS_REASON,acceptWordsOf,cantAcceptYetOf,type DisplayStatus,ev
 import { createHash,randomBytes } from "node:crypto";
 import { buildsViews,type Chrome,oneLineOf,projectChip,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,when,whenTime } from "./chrome.js";
 import { chatResultHref,reviewHref,taskChatHref,taskHref } from "./http.js";
+import { taskLinkOf } from "../task-link.js";
 import { attributes, type Html, html, htmlString, joinHtml, postForm, reauth } from "../html.js";
 import { chip, facts } from "./kit.js";
 import { publicationFactsOf,statusActionHref,statusLineHtml } from "./render-tasks.js";
@@ -805,11 +806,10 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   // changes beside it. The cockpit adds its own acts under Checks: the
   // v50 review-retry panel and the accept-with-exception form.
   const extraChecks = reviewRetryPanel(view.taskId, run.id, view.reviewRetry, { csrf, canAct: false, returnTo: null });
-  const here = reviewHref(view.taskId);
   /** This result's own address on its host, at one of its views (summary when none). */
   const at = (section: ResultTab = "summary"): string => host.kind === "task"
     ? `${host.base}&run=${run.id}${section === "summary" ? "" : `&section=${section}`}`
-    : `${here}&run=${run.id}${section === "summary" ? "" : `&tab=${section}`}`;
+    : taskLinkOf({ task: view.taskId, run: run.id, section });
   const assignment = view.assignment === null ? null : assignmentWithEvidence(view.assignment, receiptStatusOf(view.detail.receipt), run.id);
   const saved = assignment?.receipt?.checks;
   // The approved check as the task page reads it (task-status.ts approvedCheckOf): one answer for this whole page.
@@ -878,9 +878,12 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const need = panel.panel.need;
   const nextKind = selected.next?.kind;
   // A failed build: what went wrong is the card, Retry the act; a link to this same page goes nowhere, so it isn't one.
+  // This result's own address (task-link.ts): a link to it, or to one of its sections, is this same result.
+  const own = taskLinkOf({ task: view.taskId, run: run.id });
+  const ownOr = (href: string): string | null => href === own || /^[&#]/.test(href.slice(own.length)) && href.startsWith(own) ? href.slice(own.length) : null;
   const failure = view.failure == null ? null : { line: view.failure.line, evidence: view.failure.evidence, suggestion: view.failure.suggestion, retry: view.failure.retry,
-    link: view.failure.link === null || (view.failure.link.href.startsWith(`${here}&run=${run.id}`) && !view.failure.link.href.includes("#")) ? null
-      : host.kind === "task" && view.failure.link.href.startsWith(`${here}&run=${run.id}&tab=`) ? { ...view.failure.link, href: view.failure.link.href.replace(`${here}&run=${run.id}&tab=`, `${host.base}&run=${run.id}&section=`) } : view.failure.link,
+    link: view.failure.link === null || (ownOr(view.failure.link.href) !== null && !view.failure.link.href.includes("#")) ? null
+      : host.kind === "task" && ownOr(view.failure.link.href)?.startsWith("&section=") === true ? { ...view.failure.link, href: `${host.base}&run=${run.id}${ownOr(view.failure.link.href)!}` } : view.failure.link,
     ...(view.failure.acceptAnyway == null ? {} : { acceptAnyway: { ...view.failure.acceptAnyway, returnTo: at() } }) };
   const actFacts: ResultActFacts = failure !== null
     ? { accept: null, runChecks: runChecks !== null, checksRunning, blocked: null, canRequest: false, need: null, next: null, failed: { retry: failure.retry !== null, acceptAnyway: failure.acceptAnyway !== undefined } }

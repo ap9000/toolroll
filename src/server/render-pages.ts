@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
 import { reviewHref,taskHref } from "./http.js";
+import { taskLinkOf } from "../task-link.js";
 import { criterionMatrixSummary,incidentWords,PHASE_WORDS,phaseWords } from "./render-results.js";
 import { decisionAnswerCard,decisionAnswerScript,dispatchHeadline,statusLineHtml,workDiagnosticsHtml } from "./render-tasks.js";
 
@@ -483,7 +484,7 @@ export function workRowChip(row: Pick<WorkIndexItem, 'ask' | 'chip' | 'status' |
 /** Where a row's one action goes: a result opens on its task's Result tab (the review page is the task page now). */
 function workActionHref(row: WorkIndexItem): string | null {
   const target = row.primaryAction?.target;
-  if (row.primaryAction?.code === 'open-result' && target?.runId != null) return `${taskHref(target.taskId)}?tab=result&run=${target.runId}`;
+  if (row.primaryAction?.code === 'open-result' && target?.runId != null) return taskLinkOf({ task: target.taskId, run: target.runId });
   return browserWorkActionHref(row);
 }
 
@@ -601,7 +602,7 @@ export function workPage(
     }
     const target = row.primaryAction?.target;
     const actionHref = row.primaryAction?.code === 'open-result' && target?.runId != null
-      ? `/review?result=${encodeURIComponent(target.taskId)}&run=${target.runId}`
+      ? taskLinkOf({ task: target.taskId, run: target.runId })
       : browserWorkActionHref(row);
     const action = actionHref === null || row.primaryAction === null ? null : html`<a class="work-action" data-primary-action href="${actionHref}">${row.primaryAction.label} →</a>`;
     const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;

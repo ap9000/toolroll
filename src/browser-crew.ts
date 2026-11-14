@@ -3,6 +3,7 @@ import type { BrowserCrewItem } from './browser-workspace.js';
 import type { WorkIndexItem, WorkIndexPage } from './work-index.js';
 import { chatControlHref, chatResultHref } from './chat-controls.js';
 import { startBuilderHref } from './needs-you.js';
+import { taskLinkOf } from './task-link.js';
 
 /** The index is navigation only. Controls retain their exact owning task, run,
  * decision and approval ceremony; opening a result keeps its saved execution. */
@@ -10,7 +11,7 @@ export function browserWorkActionHref(item: WorkIndexItem): string | null {
   const action = item.primaryAction;
   if (action === null) return null;
   const { taskId, runId, decisionId } = action.target;
-  if (action.code === 'inspect-findings') return `/t/${encodeURIComponent(taskId)}#findings`;
+  if (action.code === 'inspect-findings') return taskLinkOf({ task: taskId, anchor: 'findings' });
   if (decisionId !== null) return `/d/${decisionId}`;
   if (action.code === 'inspect-decisions') return '/';
   if (action.code === 'sign-in') return '/settings/agents#providers';
@@ -18,9 +19,7 @@ export function browserWorkActionHref(item: WorkIndexItem): string | null {
   if (action.code === 'recheck-stopped') return `/t/${encodeURIComponent(item.rootId)}#recheck-stopped`;
   if (action.code === 'open-result' && runId !== null) return chatResultHref(taskId, runId);
   if (action.code === 'open-pr' && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/.test(item.publicationUrl ?? '')) return item.publicationUrl!;
-  if (runId !== null && (action.code === 'open-pr' || action.code === 'retry-review')) {
-    return `/review?result=${encodeURIComponent(taskId)}&run=${runId}`;
-  }
+  if (runId !== null && (action.code === 'open-pr' || action.code === 'retry-review')) return taskLinkOf({ task: taskId, run: runId });
   if (runId !== null && (action.code === 'inspect-run' || action.code === 'reconcile-run')) return `/r/${runId}`;
   // The task page only repeats that no builder is connected: lead to the command that connects one.
   if (action.code === 'start-worker') return startBuilderHref(taskId);

@@ -5,6 +5,7 @@ import type { DisplayStatus, StatusTone, WorkStatus } from './workspace-ui.js';
 import { assignmentPresentationOf, shortenedMaterialReason, type AssignmentStatusOptions, type AssignmentWorkStatus } from './assignment-presentation.js';
 import { plainReasonWords } from './proof.js';
 import { chatResultHref } from './chat-controls.js';
+import { taskLinkOf } from './task-link.js';
 import { startBuilderHref } from './needs-you.js';
 import { statusDetailsHtml, statusWhyHtml, type PullRequestFact, type TaskStatus } from './task-status.js';
 import { html, type Html } from './html.js';
@@ -31,16 +32,14 @@ export function assignmentActionHref(assignment: AssignmentSnapshot): string | n
   const action = assignment.primaryAction;
   if (action === null) return null;
   const { taskId, runId, decisionId } = action.target;
-  if (action.code === 'inspect-findings') return `/t/${encodeURIComponent(taskId)}#findings`;
+  if (action.code === 'inspect-findings') return taskLinkOf({ task: taskId, anchor: 'findings' });
   if (decisionId !== null) return `/d/${decisionId}`;
   if (action.code === 'inspect-decisions') return '/';
   if (action.code === 'sign-in') return '/settings/agents#providers';
   // The confirmation sits on the task page, behind the password.
   if (action.code === 'recheck-stopped') return `/t/${encodeURIComponent(assignment.rootId)}#recheck-stopped`;
   if (action.code === 'open-pr' && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+$/.test(assignment.publication?.prUrl ?? '')) return assignment.publication!.prUrl;
-  if (runId !== null && (action.code === 'open-result' || action.code === 'open-pr' || action.code === 'retry-review')) {
-    return `/review?result=${encodeURIComponent(taskId)}&run=${runId}`;
-  }
+  if (runId !== null && (action.code === 'open-result' || action.code === 'open-pr' || action.code === 'retry-review')) return taskLinkOf({ task: taskId, run: runId });
   if (runId !== null && (action.code === 'inspect-run' || action.code === 'reconcile-run')) return `/r/${runId}`;
   // The task page only repeats that no builder is connected: lead to the command that connects one.
   if (action.code === 'start-worker') return startBuilderHref(taskId);
@@ -103,7 +102,7 @@ export function assignmentCardOf(assignment: AssignmentSnapshot, options: Assign
   const receipt = assignment.receipt;
   // The checks live on the one result page (a failed build has one too), where Run checks runs in place; never Chat,
   // which would only lead back to this card.
-  const checksPage = receipt === null ? null : `/review?result=${encodeURIComponent(receipt.taskId)}&run=${receipt.runId}&tab=checks`;
+  const checksPage = receipt === null ? null : taskLinkOf({ task: receipt.taskId, run: receipt.runId, section: 'checks' });
   const links = receipt === null ? {} : { result: options.resultHref ?? chatResultHref(receipt.taskId, receipt.runId), checks: checksPage,
     pullRequest: `/t/${encodeURIComponent(assignment.rootId)}#merge`,
     ...(receipt.completionKind === 'research-report' ? {} : { runChecks: `${checksPage}#follow-ups` }) };

@@ -55,6 +55,7 @@ import { TEXT_LIMITS } from "../text-limits.js";
 import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,screen,type Screen,SENSITIVE_INPUT,sentenceCase,shortDigest,whenTime } from "./chrome.js";
 import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
+import { taskLinkFromLegacy,taskLinkOf } from "../task-link.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
 import { completionReceiptCard, type CompletionReceiptView, criterionMatrixHtml, type EvidenceLinkMap, evidenceWords, homePhaseWords, incidentWords, pullRequestCardHtml, reasonWords, receiptStatusOf, repairChainHtml, reportItemsHtml, reviewRetryPanel, runNoun, runOutcomeBadge, semanticCoverageHtml, type TaskPullRequest, verificationExplanation, verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
@@ -2494,7 +2495,7 @@ export function taskBodyParts(data: {
       : data.approvalRules.words] });
   }
   // v103: everything an auditor asks about this task, printable or as JSON.
-  facts.push({ label: "Audit", parts: [{ label: "Audit record", href: `${taskHref(task.id)}/evidence` }] });
+  facts.push({ label: "Audit", parts: [{ label: "Audit record", href: taskLinkOf({ task: task.id, record: true }) }] });
   if (data.budgetHold != null) facts.push({ label: "Budget", parts: [`${data.budgetHold} · `, { label: "Spend", href: "/spend" }] });
   if (data.policyHold != null) facts.push({ label: "Policy", parts: [`${data.policyHold} · `, { label: "Policy", href: "/settings/policy" }] });
   // The pull-request card already says this once, with its action.
@@ -3003,11 +3004,8 @@ export function taskBodyParts(data: {
     ? { action: `${taskHref(task.id)}/requeue`, pins: data.retryPins ?? null, ...(data.failure == null ? {} : { note: retryNoteOf(data.failure.suggestion) }) } : null;
   // Run checks happens in place: a status row's Run checks posts here and comes back; with nothing to run, the row offers nothing.
   const runChecks = data.runChecks ?? null;
-  // A row's link to a result in Chat opens that result's own page instead: Chat would only lead back here.
-  const resultPageOf = (href: string | null): string | null => {
-    const chat = href === null ? null : /^\/chat\?task=([A-Za-z0-9._~%-]{1,200})&result=([0-9]{1,15})(?:&tab=(changes|checks))?(#[A-Za-z0-9_-]{1,80})?$/.exec(href);
-    return chat === null ? href : `/review?result=${chat[1]}&run=${chat[2]}${chat[3] === undefined ? "" : `&tab=${chat[3]}`}${chat[4] ?? ""}`;
-  };
+  // A row's link to a result opens the one result view, this task's Result section (task-link.ts): Chat would only lead back here.
+  const resultPageOf = (href: string | null): string | null => href === null ? null : taskLinkFromLegacy(href) ?? href;
   const inPlaceChecks = (card: AssignmentCard): AssignmentCard => {
     const status = data.demo === true ? demoChecksOf(card.status) : card.status;
     return { ...card, status: { ...status, details: status.details.map(one =>
@@ -3118,7 +3116,7 @@ export function taskBodyParts(data: {
     approve: data.archived != null || sheetInput === null || dependencyChoiceNeeded || data.csrf === "" ? null : approveKitOf(sheetInput, data.approvalFresh ?? null),
     approved: scope !== null && approval.approved ? approvedKitOf(scope, approval, data.approvalProof ?? null) : null,
     more,
-    audit: facts.some(one => one.label === "Audit") ? { label: "Full record", href: `${taskHref(rootOf)}/evidence` } : null,
+    audit: facts.some(one => one.label === "Audit") ? { label: "Full record", href: taskLinkOf({ task: rootOf, record: true }) } : null,
     recheckStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "recheck-stopped" && data.assignment.primaryAction.target.runId !== null
       ? { action: `${taskHref(data.assignment.rootId)}/recheck-stopped`, run: data.assignment.primaryAction.target.runId } : null,
     rebuild,
@@ -3175,16 +3173,22 @@ export function taskBodyParts(data: {
   const rowFacts = data.archived != null ? null : stepRowsOf(view);
   const rowsHtml = rowFacts === null ? null : (() => {
     const here = rowFacts.find(row => row.state === "current" || row.state === "stuck") ?? rowFacts.find(row => row.open) ?? rowFacts.at(-1)!;
+    // Outcome first (one-workspace plan S1), as the app does: a result waiting on review, or a finished task, says its
+    // status before the steps that got it there.
+    const ready = rowFacts.find(row => row.key === "ready");
+    const outcomeFirst = view.approve == null && view.status !== null && ready !== undefined
+      && (ready.state === "current" || ready.state === "stuck" || rowFacts.every(row => row.state === "done" || row.state === "skipped"));
     const bodyOf = (key: StepRow["key"]): Html => joinHtml([
-      key === here.key ? statusHtml : "",
+      key === here.key && !outcomeFirst ? statusHtml : "",
       key === "plan" ? planCard : "",
       // The shared approval sheet, its Plan details open here: nothing the yes agrees to is folded on this page.
       key === "approve" ? (approvalHtml !== "" ? approvalHtml : view.approved == null ? "" : html`<p class="meta">${view.approved.automatic ? `Approved automatically by ${view.approved.rule ?? "a rule"}` : `Approved by ${view.approved.by}`} · ${whenTime(view.approved.at)}</p>`) : "",
       key === "build" ? joinHtml([controlHtml, progressCard, revisionLedgerCard]) : "",
       key === "ready" && previousResult !== null ? html`<section class="task-previous-result" aria-label="${previousResult.title}">${previousResult.html}</section>` : "",
     ]);
-    return stepRows(rowFacts.map(row => ({ key: row.key, label: row.label, mark: row.mark, sentence: row.sentence, needsYou: row.needsYou, current: row.state === "current" || row.state === "stuck",
+    const rows = stepRows(rowFacts.map(row => ({ key: row.key, label: row.label, mark: row.mark, sentence: row.sentence, needsYou: row.needsYou, current: row.state === "current" || row.state === "stuck",
       at: row.at, when: row.at === null ? "" : whenText(row.at), body: bodyOf(row.key), open: true })));
+    return outcomeFirst ? joinHtml([html`<div class="task-outcome" data-task-outcome>${statusHtml}</div>`, rows]) : rows;
   })();
   return { html: nativeBody(rowsHtml), view };
 }

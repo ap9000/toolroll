@@ -198,7 +198,7 @@ describe("decisions finish in the chat app", () => {
     const card = script.cardWith(BOB, /^Accept$/);
     expect(card.text).toBe("Keep the guard readable is ready. Your tests passed. Accept it?");
     expect(card.labels).toEqual(["Accept", "Send back", "Open result ↗"]);
-    expect(card.rows.find(one => one.text === "Open result")!.url).toBe(`${ORIGIN}/chat?task=guard-1&result=${run}&tab=changes`);
+    expect(card.rows.find(one => one.text === "Open result")!.url).toBe(`${ORIGIN}/t/guard-1?tab=result&run=${run}&section=changes`);
     // Opaque tokens only: no task, run or digest rides the button.
     expect(card.token(/^Accept$/)).toMatch(/^d:[0-9a-f]{24}$/);
 

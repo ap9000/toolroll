@@ -33,7 +33,6 @@ const runs: Record<string, number> = {};
 
 type TasksView = Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
 type TaskView = Extract<BrowserWorkspace["view"], { kind: "task" }>;
-type ResultView = Extract<BrowserWorkspace["view"], { kind: "result" }>;
 function workspaceOf(html: string): BrowserWorkspace {
   const json = /<script type="application\/json" id="standing-orders-workspace-data"[^>]*>([\s\S]*?)<\/script>/.exec(html)?.[1];
   expect(json).toBeDefined();
@@ -119,7 +118,8 @@ const taskHeadline = async (id: string) => {
   const view = workspaceOf(await page(`/t/${id}`)).view as TaskView;
   return view.status!.status.headline;
 };
-const resultOf = async (id: string) => (workspaceOf(await page(`/review?result=${id}&run=${runs[id]}`)).view as ResultView).selected!;
+// The one result view (task-link.ts): the task page's Result section at this run.
+const resultOf = async (id: string) => (workspaceOf(await page(`/t/${id}?tab=result&run=${runs[id]}`)).view as Extract<BrowserWorkspace["view"], { kind: "task" }>).result!.selected;
 
 describe("one state per task, the same words on every surface (c1)", () => {
   test("each fixture task reads the same state in the list, on its task page, on its result page and in Crew", async () => {
@@ -154,7 +154,7 @@ describe("one state per task, the same words on every surface (c1)", () => {
     expect(refuted.mismatch?.headline).toBe(MISMATCH_HEADLINE);
     const changed = await resultOf("coupon-plan-changed");
     expect(changed.mismatch?.headline ?? null).toBeNull();
-    expect(await page(`/review?result=coupon-plan-changed&run=${runs["coupon-plan-changed"]}`)).not.toContain(MISMATCH_HEADLINE);
+    expect(await page(`/t/coupon-plan-changed?tab=result&run=${runs["coupon-plan-changed"]}`)).not.toContain(MISMATCH_HEADLINE);
   });
 
 });

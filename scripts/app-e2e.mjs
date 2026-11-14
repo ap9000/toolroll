@@ -841,10 +841,10 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   return { run: run.id, checks, completedFrom: { place: completion.place, label: completion.label, yourChecks: mine.length } };
 });
 
-/** On a result page, send the work back with a note; returns the new revision's id once the planner has updated its plan. */
+/** On a result (its task page's Result section), send the work back with a note; returns the new revision's id once the planner has updated its plan. */
 async function sendBack(id, note) {
   const run = latestBuild(id);
-  await page.goto(`${base}/review?result=${encodeURIComponent(id)}&run=${run.id}`);
+  await page.goto(`${base}/t/${encodeURIComponent(id)}?tab=result&run=${run.id}`);
   // Three verbs (docs/plans/plain-toolroll.md P1.3): the result's acts read Accept, Send back or Retry, nothing else.
   const verbs = await page.locator("[data-result-acts] [data-act]").allInnerTexts();
   if (verbs.some(one => !/^(Accept( anyway| without checks| without your check)?|Send back|Retry|Check again)$/.test(one.trim()))) throw new Error(`the result's acts say: ${verbs.join(" · ")}`);
@@ -3593,7 +3593,7 @@ await journey("easy-start", SCRIPTED, "A revision with long words, then a build 
   const first = await laptopReady(id);
   const note = "Please make the error message name the discount that was refused, so a person reading a log knows what went wrong, " +
     "and say in the README that every price is rounded to whole cents after the discount is taken off. " + "Keep the existing tests exactly as they are. ".repeat(6);
-  await on.goto(`${install.base}/review?result=${encodeURIComponent(id)}&run=${first.id}`);
+  await on.goto(`${install.base}/t/${encodeURIComponent(id)}?tab=result&run=${first.id}`);
   await on.locator('a[href="#request-changes"]').first().click();
   const box = on.locator('#comment-form textarea[name="note"]');
   await waitFor(box, "the revision note", { timeoutMs: 15_000, seen: () => saysNow(on) });

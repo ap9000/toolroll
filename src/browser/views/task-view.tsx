@@ -11,7 +11,7 @@ import { FormToken, Passwordless, PostForm } from "../ui/post-form.js";
 import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskMore, BrowserTaskSection, BrowserTaskTab, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { approvalAsk, termsOf, type StepItem } from "../../design/kit.js";
-import { postInPlace, sentence } from "../act.js";
+import { mintedNonce, mintRead, postInPlace, sentence, snapshotOf } from "../act.js";
 import type { JourneyStep } from "../../first-run.js";
 import type { StepRow } from "../../workspace-ui.js";
 import { GuardedHtml } from "../guarded-html.js";
@@ -268,13 +268,34 @@ function ApprovalBox({ approve, latest, onEdit, reject = false, inRow = false }:
   const facts = { ...approve.facts, rememberedUntil: until };
   const terms = approve.termsWords ?? termsOf(approve.kind, facts);
   const taskPage = approve.action.replace(/\/approve$/, "");
-  /** One click, in place (B2.2 step 2 only): this box's own pinned snapshot already holds the nonce minted for the plan
-   * on screen, its digest and its rebuild. Never a password: the password case keeps the native form. */
+  // Whether this box is still the page: an in-place change to another page unmounts it (app.tsx keys the page by its
+  // epoch), and an answer that arrives after that is never drawn, read or followed there.
+  const here = useRef(true);
+  useEffect(() => { here.current = true; return () => { here.current = false; }; }, []);
+  /** One click, in place (one-workspace plan S1, approval criteria 1-4, as Home's own approval does): the terms on
+   * screen are pinned; the press reads the task again, minting a nonce for exactly what it shows now, and posts that
+   * fresh nonce only when the task, the act, the plan's digest and the rebuild it names are still the ones shown, and
+   * the rules still ask no password. Anything else posts nothing and says so. Never a password: that case keeps the
+   * native form, on its own page. */
   const approveInPlace = async (): Promise<string | null> => {
-    const nonce = approve.fields["nonce"] ?? "";
     const digest = approve.fields["digest"] ?? "";
-    if (!/^[0-9a-f]{32}$/.test(nonce) || digest === "") return "This form can’t approve: reload the page to read the plan again. Nothing changed.";
-    const answer = await postInPlace({ action: approve.action, digest, rebuild: approve.fields["rebuild"] ?? null }, csrf, nonce);
+    const rebuild = approve.fields["rebuild"] ?? null;
+    if (digest === "") return "This form can’t approve: reload the page to read the plan again. Nothing changed.";
+    // 1. Read again, as this page (its own address: a revision's page names its version), and mint for what it shows.
+    const at = window.location.pathname.startsWith("/t/") ? `${window.location.pathname}${window.location.search}` : taskPage;
+    const minted = await mintRead(at);
+    if (!here.current) return new Promise(() => {});
+    const latest = snapshotOf(minted);
+    const nonce = mintedNonce(minted);
+    if (latest === null || nonce === null) return "Couldn’t read the plan just now. Nothing changed.";
+    if (latest.action !== approve.action || latest.digest !== digest || latest.rebuild !== rebuild || approvalAsk(latest.kind, latest.facts) !== "click") {
+      setAnswered({ words: "The plan changed since this page loaded. Nothing was approved: reload to read the version you would approve.", done: false });
+      return null;
+    }
+    // 2. Post the nonce just minted, for exactly the terms shown.
+    const answer = await postInPlace({ action: approve.action, digest, rebuild }, csrf, nonce);
+    // The person moved to another page while the answer was on its way: the answer belongs to this task, not that page.
+    if (!here.current) return new Promise(() => {});
     if (answer.kind === "elsewhere") { window.location.assign(taskPage); return new Promise(() => {}); }
     if (answer.kind === "lost") {
       // No answer proves nothing (the approval is written before the answer is sent): the page reads itself again.
@@ -404,7 +425,9 @@ function approvedWords(approved: NonNullable<BrowserTaskView["approved"]>): stri
  * slots). A live build says the step it is on, or the step it is stuck on with the act that helps; Pause, Resume and
  * Stop sit beside it. A failed task says what it missed and offers Retry with its note. The recorded reasons sit
  * under More. */
-function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false, unsent = true, resultAct = null }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
+function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere = false, resultHere = false, unsent = true, resultAct = null, lead = false }: { view: BrowserTaskView; card: AssignmentCard; csrf: string; approved: BrowserTaskView["approved"];
+  /** Leading the page (outcome first): no step row above says Needs you, so the box does, once, beside its heading. */
+  lead?: boolean;
   /** An unsent note shows here (the work panel, when open, shows it instead: one place at a time). */
   unsent?: boolean;
   /** "Watch the work": opens the Activity panel beside the live build's acts. */
@@ -444,7 +467,7 @@ function StatusBox({ view, card, csrf, approved, watch = null, checksElsewhere =
     : approved != null ? approvedWords(approved) : "";
   const why = statusWhyLines(card.status, [...card.reasons, ...card.diagnostics.map(one => `${one.label} · ${one.detail}`), ...(card.notices?.lines ?? [])]);
   return <div className="k-sec" data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status">
-    <KSlots wait={waits} status={<>{headingOf(card) !== card.status.headline && <KHeadlineChip headline={card.status.headline} />}<h2>{headingOf(card)}</h2></>}
+    <KSlots wait={waits} status={<>{lead && waits ? <KChip word="Needs you" tone="needs" /> : headingOf(card) !== card.status.headline && <KHeadlineChip headline={card.status.headline} />}<h2>{headingOf(card)}</h2></>}
       text={<>
         <span {...(failed ? { "data-failure-reason": "" } : {})} {...(view.progress != null ? { "data-build-progress": "" } : {})} {...(stuck !== null ? { "data-build-stuck": stuck.step } : {})}>
           {pausedLine !== null ? <span role="status" data-live-pause={pause!.state}>{pausedLine}</span> : <WithCode text={card.status.sentence} />}
@@ -794,6 +817,13 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (approve !== null) keys.add("approve");
     return keys;
   });
+  // Outcome first (one-workspace plan S1): a result waiting on this person's review, or a finished task, leads with its
+  // status, its one sentence, its caveats and its one act, then the result itself; the steps that got it there fold
+  // under "Plan and steps" (opened by a link to anything in them). Never while an approval waits here.
+  const readyRow = rows?.find(row => row.key === "ready") ?? null;
+  const outcomeFirst = rows !== null && approve === null && view.status !== null && readyRow !== null
+    && (readyRow.state === "current" || readyRow.state === "stuck" || rows.every(row => row.state === "done" || row.state === "skipped"));
+  const [stepsOpen, setStepsOpen] = useState(() => { const asked = rowOfTab(view.tab); return asked !== null && asked !== "ready"; });
   // The work panel: ?tab=activity opens it; otherwise as this viewer last left it.
   const [activity, setActivityState] = useState(() => view.tab === "activity" || savedWorkOpen());
   const setActivity = (open: boolean) => { setActivityState(open); keepWorkOpen(open); };
@@ -822,6 +852,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       try { if (new URL(window.location.href).searchParams.get("tab") === "activity") setTab(null); } catch { /* the address is a convenience */ }
       return;
     }
+    // A row folded under "Plan and steps" opens the fold with it.
+    if (place.row !== "ready") setStepsOpen(true);
     setOpened(previous => previous.has(place.row) ? previous : new Set([...previous, place.row]));
   };
   const toggle = (key: string) => setOpened(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
@@ -877,7 +909,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     const run = to.searchParams.get("run");
     if (wanted === "result" && run !== null && String(view.result?.selected.build ?? "") !== run) return;
     if (to.searchParams.get("section") !== null && to.searchParams.get("section") !== here.searchParams.get("section")) return;
-    const row = wanted === "plan" ? currentKey : rowOfTab(wanted);
+    // Leading with the outcome, the Plan tab is the Plan row in the fold, and the Result tab the outcome itself.
+    const row = wanted === "plan" ? (outcomeFirst ? "plan" : currentKey) : rowOfTab(wanted);
     if (wanted !== "activity" && rows !== null && (row === null || !rows.some(one => one.key === row && one.opens))) return;
     event.preventDefault();
     if (wanted === "activity") openActivity();
@@ -885,8 +918,9 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
       // From inside a panel lying over the page: it closes first, and the row takes the focus.
       const covered = inside && panelCovers();
       if (inside) show({ page: true });
-      show({ row }); setTab(wanted === "plan" ? null : wanted); scrollTo(`[data-step-row="${row}"]`);
-      const place = covered ? document.querySelector<HTMLElement>(`[data-step-row="${row}"]`) : null;
+      const at = outcomeFirst && row === "ready" ? "[data-task-outcome]" : `[data-step-row="${row}"]`;
+      show({ row }); setTab(wanted === "plan" ? null : wanted); scrollTo(at);
+      const place = covered ? document.querySelector<HTMLElement>(at) : null;
       if (place !== null) requestAnimationFrame(() => focusPlace(place));
     }
     if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), show);
@@ -923,13 +957,16 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     {withResult && view.mergeReady != null && !view.scout && <MergeReadyBox ready={view.mergeReady} retry={view.retry ?? null} />}
     {view.ship != null && <ShipBox ship={view.ship} />}
   </>;
-  const statusBox = (key: string | null) => approve !== null ? null : view.status !== null
-    // In a row, the Approval row says who approved: the status box doesn't repeat it.
+  const statusBox = (key: string | null, top = false) => approve !== null ? null : view.status !== null
+    // In a row, the Approval row says who approved: the status box doesn't repeat it. Leading the page, it says every
+    // fact itself (a failed check included): nothing it would warn about waits in a fold below its act.
     ? <StatusBox view={view} card={view.status} csrf={csrf} approved={key === null ? view.approved ?? null : null} watch={key === "build" && view.stop != null ? openActivity : null} unsent={!activity}
-      checksElsewhere={checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} resultAct={setStatusAct} />
+      checksElsewhere={!top && checksOpens && key !== "checks"} resultHere={key === "ready" && resultBody !== null} resultAct={setStatusAct} lead={top} />
     : <Html html={view.statusHtml} />;
   const bodyOf = (row: StepRow): ReactNode => {
-    const here = row.key === statusKey;
+    // Leading the page, the status and the result are above the steps: the Ready row holds nothing more.
+    if (outcomeFirst && row.key === "ready") return null;
+    const here = row.key === statusKey && !outcomeFirst;
     const status = here ? statusBox(row.key) : null;
     switch (row.key) {
       case "plan":
@@ -986,7 +1023,15 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           <KButton type="submit" variant="primary" label="Restore" data-restore="" />
         </PostForm> : null}
         terms={view.archived.restore !== null ? "Restoring puts it back in Tasks. Its history and results were kept." : "An approver can restore it."} />}
-      {rows !== null ? <KStepRows label="Steps" rows={items} onToggle={toggle} /> : <>
+      {outcomeFirst && <div className="k-sec so-task-outcome" data-task-outcome="">
+        {statusBox("ready", true)}
+        {resultBody}
+        {readyExtras(resultBody !== null)}
+        {leadCards(leadOf("ready"))}
+      </div>}
+      {rows !== null ? outcomeFirst
+        ? <div className="so-task-steps" data-task-steps="folded"><KDisclose summary="Plan and steps" open={stepsOpen} onToggle={setStepsOpen}><KStepRows label="Steps" rows={items} onToggle={toggle} /></KDisclose></div>
+        : <KStepRows label="Steps" rows={items} onToggle={toggle} /> : <>
         {/* No road (cancelled, or no status): the status block as it was, then what the task holds. */}
         {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} />}
         {approve !== null && <Html html={approve.planHtml} className="so-task-plan" />}
@@ -996,8 +1041,8 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         {resultBody}
         {view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan" />}
       </>}
-      {rows !== null && statusKey === null && statusBox(null)}
-      {rows !== null && !readyOpens && readyExtras(false)}
+      {rows !== null && statusKey === null && !outcomeFirst && statusBox(null)}
+      {rows !== null && !readyOpens && !outcomeFirst && readyExtras(false)}
       {leadCards(unattached)}
       {view.questions !== "" && <Html html={view.questions} className="so-task-questions" />}
       {rows === null && (view.status?.attempts.length ?? 0) + (view.earlier?.attempts.length ?? 0) > 1 && <AttemptsPanel view={view} />}

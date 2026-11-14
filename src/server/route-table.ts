@@ -378,7 +378,7 @@ get("tasks", "next", "/next", RETIRED);
 get("pages", "morning", "/morning", { limited: "collection", ...free }); // a redirect to / now
 get("pages", "workbench", "/workbench", RETIRED);
 get("tasks", "board", "/board", RETIRED);
-// A result keeps its own page here (/review?result=…); the bare list is retired to Tasks' Ready view.
+// A result named here leads to its task page (TASK_VIEW_REDIRECTS, retired-routes.ts); a stale or unseen one is refused here; the bare list is retired to Tasks' Ready view.
 get("tasks", "review", "/review", { limited: "collection", ...free });
 // A push's task link (P1.4): /n/<the task's stored number>, resolved to its page under the viewer's own access.
 get("tasks", "n.task", "^\\/n\\/[1-9][0-9]{0,14}$", { limited: "unscoped", ...free, project: "none", sample: "/n/1" });

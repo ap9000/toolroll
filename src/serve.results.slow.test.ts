@@ -68,6 +68,11 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
   };
   const mainOf = (html: string): string => html.slice(html.indexOf("<main>"), html.indexOf("</main>"));
   const queueOf = (html: string): string => /<ol class="cockpit-queue-list">(.*?)<\/ol>/s.exec(html)?.[1] ?? "";
+  /** The task page's Result section: the one result view (task-link.ts), where a result's own forms are. */
+  const resultOf = (html: string): string => { const at = html.indexOf('<section class="task-result-tab"'); return at < 0 ? "" : html.slice(at, html.indexOf("</main>", at)); };
+  /** A result read as data: the task page's Result section at this run. */
+  const resultView = async (cookie: string, task: string, run: number): Promise<import("./browser-workspace.js").BrowserResultView> =>
+    ({ selected: ((await (await fetch(url(`/t/${task}?tab=result&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace & { view: import("./browser-workspace.js").BrowserTaskView }).view.result?.selected ?? null } as import("./browser-workspace.js").BrowserResultView);
   const post = (cookie: string, path: string, fields: Record<string, string>) =>
     fetch(url(path), {
       method: "POST",
@@ -298,46 +303,51 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     seed("t-theirs", "theirs — never shown", "/repo/other");
     build("t-theirs", store.refFor("built-in", "t-theirs").id, { verdict: { verdict: "refuted" } });
 
-    const html = await (await fetch(url("/review?result=t-ours"), { headers: { cookie } })).text();
-    const queue = queueOf(html);
+    // A result lives on its task page now (one task view, task-link.ts); the ranked list still stands beside a link
+    // that names no result in view.
+    const moved = await fetch(url("/review?result=t-ours"), { headers: { cookie }, redirect: "manual" });
+    expect(moved.status).toBe(303);
+    expect(moved.headers.get("location")).toBe("/t/t-ours?tab=result");
+    const listed = await (await fetch(url("/review?result=nope"), { headers: { cookie } })).text();
+    const queue = queueOf(listed);
     // Only done tasks inside the ceiling. Both need a decision, so newest
     // comes first; a retired proof verdict does not create another priority.
     expect(queue).toContain("t-older");
     expect(queue).toContain("t-ours");
     expect(queue).not.toContain("t-live");
     expect(queue).not.toContain("t-theirs");
-    expect(html).not.toContain("never shown");
+    expect(listed).not.toContain("never shown");
     expect(queue.indexOf("t-ours")).toBeLessThan(queue.indexOf("t-older"));
-    expect(html).toContain("2 need your attention");
+    expect(listed).toContain("2 need your attention");
     expect(queue).toContain("Needs you");
     expect(queue).not.toContain("not all requirements shown");
     // Escaped everywhere the title lands.
+    const html = await (await fetch(url("/review?result=t-ours"), { headers: { cookie } })).text();
+    expect(listed).toContain("ours — the &lt;b&gt;title&lt;/b&gt;");
     expect(html).toContain("ours — the &lt;b&gt;title&lt;/b&gt;");
     expect(html).not.toContain("<b>title</b>");
-    // The row a result's link names is the one selected.
-    expect(html).toContain('data-review-task="t-ours"');
+    // The result a link names is the one shown.
+    expect(html).toContain('data-result-task="t-ours"');
     // Tasks' Ready view reads the same ceiling: nothing from outside it.
     const ready = await (await fetch(url("/tasks?view=ready"), { headers: { cookie } })).text();
     expect(ready).not.toContain("never shown");
     expect(ready).not.toContain("t-theirs");
     const olderRun = store.runsFor(store.lookupRef("t-older")!.id)[0]!.id;
 
-    // A stable deep link selects, and the row it names is current.
+    // A stable deep link opens exactly that result.
     const picked = await (await fetch(url("/review?result=t-older"), { headers: { cookie } })).text();
-    expect(picked).toContain('data-review-task="t-older"');
+    expect(picked).toContain('data-result-task="t-older"');
     expect(picked).not.toContain("is in view here");
-    // The rebuilt page reads the same result: the list with its current row,
-    // the panel's script hooks, and every tab body as the fallback's markup.
-    const read = await (await fetch(url("/review?result=t-older&format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
-    const review = read.view as import("./browser-workspace.js").BrowserResultView;
-    expect(review.kind).toBe("result");
-    expect(review.results.map(one => one.title)).toEqual(["ours — the <b>title</b>", "older, needs eyes"]);
-    expect(review.results.find(one => one.current)?.href).toBe(`/review?result=t-older&run=${olderRun}`);
-    expect(review.attention).toBe(2);
-    expect(review.selected).toMatchObject({ taskId: "t-older", build: olderRun, taskHref: "/t/t-older", status: { label: "Needs you" } });
+    // The rebuilt page reads the same result.
+    const read = await (await fetch(url("/t/t-older?tab=result&format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
+    const review = read.view as import("./browser-workspace.js").BrowserTaskView;
+    expect(review.kind).toBe("task");
+    expect(review.result?.selected).toMatchObject({ taskId: "t-older", build: olderRun, taskHref: "/t/t-older", status: { label: "Needs you" } });
     const missedView = (await (await fetch(url("/review?result=nope&format=workspace"), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
     expect(missedView).toMatchObject({ selected: null, missing: expect.stringContaining("No completed task nope is in view here") });
-    expect(missedView.results).toHaveLength(2);
+    expect(missedView.results.map(one => one.title)).toEqual(["ours — the <b>title</b>", "older, needs eyes"]);
+    expect(missedView.results.map(one => one.href)).toEqual([`/t/t-ours?tab=result&run=${store.runsFor(store.lookupRef("t-ours")!.id)[0]!.id}`, `/t/t-older?tab=result&run=${olderRun}`]);
+    expect(missedView.attention).toBe(2);
 
     // A hidden result and a nonexistent one read identically: a note, and
     // the top of the queue — never a 404 that confirms existence.
@@ -347,7 +357,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       const body = await missed.text();
       expect(body).toContain(`No completed task <span class="mono">${miss}</span> is in view here`);
       expect(body).not.toContain("Showing the top of the queue instead.");
-      expect(body).not.toContain('data-review-task="t-older"');
+      expect(body).not.toContain('data-result-task="t-older"');
       expect(body).not.toContain("never shown");
     }
     // A hostile id never echoes raw.
@@ -425,14 +435,14 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
 
     const manual = await (await fetch(url("/review?result=t-manual"), { headers: { cookie } })).text();
-    expect(manual).toContain('data-review-task="t-manual"');
+    expect(manual).toContain('data-result-task="t-manual"');
     expect(manual).toContain('data-work-status="assignment-needs-decision"');
     expect(manual).toContain("This task was accepted without a build record.");
     expect(manual).toContain("No plan was filed for this task");
     expect(manual).toContain("no finished build record");
     expect(manual).toContain('data-next-action="inspect-task"');
     expect(manual).toContain('href="/t/t-manual"');
-    expect(mainOf(manual)).not.toContain("<form");
+    expect(resultOf(manual)).not.toContain("<form");
 
     const legacy = await (await fetch(url("/review?result=t-legacy"), { headers: { cookie } })).text();
     expect(legacy).toContain("Needs you");
@@ -532,7 +542,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // Technical citations are available on demand; exact terms and
     // failures stay visible without opening anything.
     const matrixWindow = new Window();
-    matrixWindow.document.body.innerHTML = html;
+    matrixWindow.document.body.innerHTML = resultOf(html);
     const requirements = matrixWindow.document.querySelectorAll(".criterion-matrix .requirement");
     expect(requirements).toHaveLength(3);
     const passed = requirements[0]!;
@@ -611,8 +621,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(html).toContain("Needs you");
     expect(html).not.toContain("More evidence needed");
     expect(html).toContain(`data-result-run="${run}"`);
-    expect(renderedHtmlOf(html).split(note)).toHaveLength(2);
-    expect(workspaceOf(html).pageHtml!.split(note)).toHaveLength(2);
+    // The result says it once (the one result view: the task page's Result section).
+    expect(resultOf(renderedHtmlOf(html)).split(note)).toHaveLength(2);
     expect(html).not.toContain("At completion:");
   });
 
@@ -680,7 +690,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // The reviewer's concern stays in the open, with the requirement, and
     // names its author under View evidence (clear acceptance 2026-09-16).
     const reviewWindow = new Window();
-    reviewWindow.document.body.innerHTML = html;
+    reviewWindow.document.body.innerHTML = resultOf(html);
     const concern = reviewWindow.document.querySelector('.requirement[data-criterion-id="c1"] .requirement-warning[data-review-judgement="contradicts"]');
     expect(concern?.textContent).toContain("Reviewer found a problem");
     expect(concern?.textContent).toContain("the guard is a TODO");
@@ -735,7 +745,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(before).not.toContain("draft-repair");
     // Every form carries the token, and the annotate script rides along.
     // The two forms: the note, and Add tests under Checks (this project has no check to run).
-    const forms = [...mainOf(before).matchAll(/<form[^>]*>(.*?)<\/form>/gs)];
+    const forms = [...resultOf(before).matchAll(/<form[^>]*>(.*?)<\/form>/gs)];
     expect(forms.length).toBe(2);
     expect(before).not.toContain(`action="/r/${run}/checks"`);
     for (const form of forms) expect(form[1]).toContain('name="csrf"');
@@ -778,16 +788,16 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(done).toContain("Accepted with an exception");
     expect(done).not.toContain("Checks passed");
     expect(done).toContain("read it myself");
-    expect(queueOf(done)).toContain("Needs you");
-    expect(queueOf(done)).not.toContain("not all requirements shown — accepted with a reason");
+    expect(resultOf(done)).toContain("Needs you");
+    expect(done).not.toContain("not all requirements shown — accepted with a reason");
     expect(done).toContain('data-next-action="revise"');
     // The stored verdict never moved.
     expect(store.proofVerdictFor(run)?.verdict).toBe("short");
 
     // A bearer credential reads the same facts but is offered no form.
     const bearer = await (await fetch(url("/review?result=t-act"), { headers: { authorization: `Bearer alex:${approverToken}` } })).text();
-    expect(bearer).toContain('data-review-task="t-act"');
-    expect(mainOf(bearer)).not.toContain("<form");
+    expect(bearer).toContain('data-result-task="t-act"');
+    expect(resultOf(bearer)).not.toContain("<form");
     expect(bearer).not.toContain('id="comment-form"');
   });
 
@@ -818,18 +828,16 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
 
     // The queue is bounded to the newest 100 and says so.
-    const html = await (await fetch(url("/review?result=t-0"), { headers: { cookie } })).text();
+    // (A link naming no result in view still shows the list: a result itself opens on its task page.)
+    const html = await (await fetch(url("/review?result=nope"), { headers: { cookie } })).text();
     expect(queueOf(html).match(/<li data-review-priority=/g)?.length).toBe(100);
     expect(queueOf(html)).not.toContain("t-old");
     expect(html).toContain("Showing the newest 100; older results still open from their task");
     expect(html).not.toContain('data-cockpit-beyond="1"');
 
-    // The old completion's link still opens it — its own build, verdict,
-    // diff, and annotation road — with an honest note and no queue row.
+    // The old completion's link still opens it, on its task page — its own build, verdict, diff, and annotation road.
     const old = await (await fetch(url("/review?result=t-old"), { headers: { cookie } })).text();
-    expect(old).toContain('data-review-task="t-old"');
-    expect(old).toContain('data-cockpit-beyond="1"');
-    expect(old).toContain('This result is not in the current review list.');
+    expect(old).toContain('data-result-task="t-old"');
     expect(old).not.toContain("is in view here");
     expect(old).toContain("Needs you");
     expect(old).toContain(`data-result-run="${oldRun}"`);
@@ -1049,7 +1057,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     await boot();
     store.stampRun(run, { scopeDigest: store.getScope("t-look")!.digest });
     const cookie = await login();
-    const read = async () => ((await (await fetch(url(`/review?result=t-look&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const read = () => resultView(cookie, "t-look", run);
     const first = (await read()).selected!;
     const item = first.panel!.youCheck!.items[0]!;
     expect(item).toMatchObject({ id: "c1", statement, note: "Open Results with nothing in it at 390px." });
@@ -1084,7 +1092,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // Accept: one request records the acceptance and completes the receipt that acceptance produces.
     const done = await post(cookie, "/t/t-look/complete", { csrf, run: String(run), receipt: first.complete!.receipt, accept: "1" });
     expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe(`/review?result=t-look&run=${run}`);
+    expect(done.headers.get("location")).toBe(`/t/t-look?tab=result&run=${run}`);
     expect(store.proofAcceptance(run)).toMatchObject({ approver: "alex", note: null });
     const assignment = assignmentOf(store, "t-look", new Date(), { principal: "operator", repos: null }, evidenceRoot)!;
     expect(assignment.state).toBe("complete");
@@ -1183,7 +1191,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     store.setVerifyCommand({ repo: "/repo/main", command: "npm test", timeoutMs: 300_000, approvedBy: "alex" }, new Date());
     const cookie = await login();
     const suggestion = "Before handing off, make sure no reference to LEGACY remains in the codebase.";
-    const page = `/review?result=t-fail&run=${run}`;
+    const page = `/t/t-fail?tab=result&run=${run}`;
     // The task card names the miss, its evidence line and the build's result — on the task's own Result tab (one page
     // per task); Retry's note starts with the suggestion.
     const task = workspaceOf(await (await fetch(url("/t/t-fail"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
@@ -1200,7 +1208,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const redirected = await fetch(url(`/r/${run}`), { headers: { cookie }, redirect: "manual" });
     expect(redirected.headers.get("location")).toBe(page);
     expect((await fetch(url(`/r/${run}?record=1`), { headers: { cookie } })).status).toBe(200);
-    const read = async () => ((await (await fetch(url(`${page}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const read = () => resultView(cookie, page.slice(3, page.indexOf("?")), run);
     const selected = (await read()).selected!;
     expect(selected.status).toMatchObject({ label: "Failed" });
     expect(selected.panel!.status).toMatchObject({ headline: "Failed", sentence: `Missed a requirement: ${statement}` });
@@ -1223,9 +1231,9 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(fromTask.status).toBe(303);
     expect(fromTask.headers.get("location")).toBe("/t/t-fail");
     expect((await read()).selected!.acts).toEqual({ primary: "retry", secondary: null, line: null });
-    expect(selected.runChecks).toEqual({ action: `/r/${run}/checks`, level: "full", returnTo: `${page}&tab=checks` });
+    expect(selected.runChecks).toEqual({ action: `/r/${run}/checks`, level: "full", returnTo: `${page}&section=checks` });
     const again = await post(cookie, selected.runChecks!.action, { csrf, level: "full", return: selected.runChecks!.returnTo });
-    expect(again.headers.get("location")).toBe(`${page}&tab=checks#follow-ups`);
+    expect(again.headers.get("location")).toBe(`${page}&section=checks#follow-ups`);
     // Only this run's own task page is a way back; another task's page is not.
     expect(resultReturnTarget("/t/t-fail", run, ["t-fail"])).toBe("/t/t-fail");
     expect(resultReturnTarget("/t/t-other", run, ["t-fail"])).toBe(`/r/${run}`);
@@ -1251,9 +1259,9 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     store.setTaskState("t-builtfail", "failed", T0);
     await boot();
     const cookie = await login();
-    const page = `/review?result=t-builtfail&run=${run}`;
+    const page = `/t/t-builtfail?tab=result&run=${run}`;
     expect((await fetch(url(`/r/${run}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(page);
-    const read = async () => ((await (await fetch(url(`${page}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const read = () => resultView(cookie, page.slice(3, page.indexOf("?")), run);
     const selected = (await read()).selected!;
     // The Failed reading, with what went wrong as its sentence and Retry's note holding what to change.
     expect(selected.status.label).toBe("Failed");
@@ -1272,12 +1280,12 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(refused.headers.get("location")).toBe(`${page}&refused=reason`);
     expect(store.proofAcceptance(run)).toBeNull();
     const told = await (await fetch(url(`${page}&refused=reason&format=workspace`), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
-    expect((told.view as import("./browser-workspace.js").BrowserResultView).selected!.problem).toBe("Accepting anyway needs a reason.");
+    expect((told.view as import("./browser-workspace.js").BrowserTaskView).result!.selected.problem).toBe("Accepting anyway needs a reason.");
     expect(await (await fetch(url(`${page}&refused=reason`), { headers: { cookie } })).text()).toContain("Accepting anyway needs a reason.");
     // Only the fixed refusal words: an address can't put its own text on the page.
     expect((await read()).selected!.problem).toBeNull();
     const forged = await (await fetch(url(`${page}&refused=${encodeURIComponent("Your account is locked")}&format=workspace`), { headers: { cookie } })).json() as import("./browser-workspace.js").BrowserWorkspace;
-    expect((forged.view as import("./browser-workspace.js").BrowserResultView).selected!.problem).toBeNull();
+    expect((forged.view as import("./browser-workspace.js").BrowserTaskView).result!.selected.problem).toBeNull();
     // Posted from anywhere else, the task screen says it.
     expect((await post(cookie, "/t/t-builtfail/accept-proof", { csrf, run: String(run) })).status).toBe(400);
     const accepted = await post(cookie, "/t/t-builtfail/accept-proof", { csrf, run: String(run), return: page, note: "The flag stays for one release on purpose." });
@@ -1296,7 +1304,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     store.stampRun(missing, { scopeDigest: store.getScope("t-noproof")!.digest });
     store.stampRun(damaged, { scopeDigest: store.getScope("t-badproof")!.digest });
     const cookie = await login();
-    const read = async (task: string, run: number) => ((await (await fetch(url(`/review?result=${task}&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const read = (task: string, run: number) => resultView(cookie, task, run);
     for (const [task, run] of [["t-noproof", missing], ["t-badproof", damaged]] as const) {
       const selected = (await read(task, run)).selected!;
       expect(selected.decision).toMatchObject({ label: "Accept without checks", ready: false });
@@ -1323,7 +1331,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       sealVerificationReceipt(store, evidenceRoot, run, "b".repeat(40), store.liveVerifyCommand("/repo/main")!, { configured: true, ran: true, exitCode: 0 }, T0);
     }
     const cookie = await login();
-    const read = async (task: string, run: number) => ((await (await fetch(url(`/review?result=${task}&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const read = (task: string, run: number) => resultView(cookie, task, run);
     const done = (await read("t-machine", ready)).selected!;
     expect(done.decision).toMatchObject({ label: "Accept", ready: true, why: null });
     expect(done.acts.primary).toBe("accept");
@@ -1353,7 +1361,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       sealVerificationReceipt(store, evidenceRoot, run, "b".repeat(40), store.liveVerifyCommand("/repo/main")!, { configured: true, ran: true, exitCode: 0 }, T0);
     }
     const cookie = await login();
-    const read = async (task: string, run: number) => ((await (await fetch(url(`/review?result=${task}&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const read = (task: string, run: number) => resultView(cookie, task, run);
     for (const [task, run, why] of [
       ["t-guarded", guarded, "This result changed protected files (z), and alex approved its scope alone. Someone else has to mark it complete."],
       ["t-grew", grew, "This grew beyond a small change. Approve it to keep it."],
@@ -1381,12 +1389,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
     const html = await (await fetch(url(`/review?result=t-complete&run=${run}`), { headers: { cookie } })).text();
     // Checks failed on the saved result: the one red headline (task-status.ts). Complete is refused, so nothing offers it.
-    expect(html).toContain('>Failed</span>');
-    expect(queueOf(html)).toContain('data-work-status="assignment-ready-to-check"');
-    expect(queueOf(html)).not.toContain("the report doesn't match the changes");
-    expect(html).toContain('1 needs your attention');
+    expect((await resultView(cookie, "t-complete", run)).selected!.status.label).toBe("Failed");
+    expect(html).not.toContain("the report doesn't match the changes");
     expect(html).not.toContain('Accept</button>');
-    const decision = ((await (await fetch(url(`/review?result=t-complete&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const decision = (await resultView(cookie, "t-complete", run));
     expect(decision.selected!.complete).toBeNull();
     // The one ink act is Request changes, after one line saying why and what to do.
     expect(decision.selected!.acts).toMatchObject({ primary: "request-changes", line: "Checks failed (exit 1). Fix them and run checks again, or send it back." });
@@ -1416,7 +1422,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(store.openReviewRequests()).toEqual([]);
     expect(assignmentOf(store, "t-complete", new Date(), { principal: "operator", repos: null }, evidenceRoot)!.state).toBe("ready-to-check");
     const after = await (await fetch(url(`/review?result=t-complete&run=${run}`), { headers: { cookie } })).text();
-    expect(after).toContain('>Failed</span>');
+    expect((await resultView(cookie, "t-complete", run)).selected!.status.label).toBe("Failed");
     expect(after).toContain('data-actual-checks="failed"');
     expect(after).not.toContain('Marked complete by alex');
   });
@@ -1444,11 +1450,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // One result page: the build's own link opens the task's result page, keeping the tab; the run record stays one tap away under Details.
     const redirected = await fetch(url(`/r/${run}?tab=checks`), { headers: { cookie }, redirect: "manual" });
     expect(redirected.status).toBe(303);
-    expect(redirected.headers.get("location")).toBe(`/review?result=t-shared&run=${run}&tab=checks`);
-    const one = ((await (await fetch(url(`/review?result=t-shared&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    expect(redirected.headers.get("location")).toBe(`/t/t-shared?tab=result&run=${run}&section=checks`);
+    const one = (await resultView(cookie, "t-shared", run));
     expect(one.selected!.title).toBe("one result, five surfaces");
     expect(one.selected!.record).toMatchObject({ build: run, href: `/r/${run}?record=1` });
-    expect(one.results.every(row => !row.href.includes("project="))).toBe(true);
     const expected = { run: String(run), head: "b".repeat(12), base: "a".repeat(12), "head-source": "saved diff", checks: "1/1", caveats: "1", evidence: "ok", publication: "none" };
     for (const [name, html] of Object.entries(pages)) {
       const stamped = factsOf(html);
@@ -1541,7 +1546,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       } finally { await win.happyDOM.close(); }
     }
     // It can't be accepted as it stands: the headline says the report doesn't match, Request changes is the one ink act, and Accept needs a reason, in outline.
-    const view = ((await (await fetch(url(`/review?result=t-caveat&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const view = (await resultView(cookie, "t-caveat", run));
     expect(view.selected!.acts).toEqual({ primary: "request-changes", secondary: "accept", line: "Accepting needs a reason" });
     expect(view.selected!.mismatch).toMatchObject({ headline: "The report doesn't match the changes", rows: [{ text: reason, path: null, href: null, absent: false }] });
     expect(view.selected!.mismatch!.said).toContain(reason);
@@ -1562,13 +1567,13 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     });
     await boot();
     const cookie = await login();
-    const view = ((await (await fetch(url(`/review?result=t-mismatch&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const view = (await resultView(cookie, "t-mismatch", run));
     const mismatch = view.selected!.mismatch!;
     expect(mismatch.headline).toBe("The report doesn't match the changes");
     expect(mismatch.rows).toEqual([
       { text: "The report says it changed", path: "src/ledger.ts", lines: null, href: null, absent: true, noteLabel: null },
       { text: "The report marks “It works” met, but its own note says: Only the USD path was exercised.", path: "src/a.ts", lines: "line 2", absent: false, noteLabel: null,
-        href: `/review?result=t-mismatch&run=${run}&tab=changes#${diffFileAnchor("src/a.ts")}-L1` },
+        href: `/t/t-mismatch?tab=result&run=${run}&section=changes#${diffFileAnchor("src/a.ts")}-L1` },
     ]);
     expect(view.selected!.panel!.status!.details.find(one => one.key === "requirements")).toMatchObject({ text: "Unverified", mark: "none" });
     expect(view.selected!.acts.line).toBe("Accepting needs a reason");
@@ -1587,7 +1592,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     });
     await boot();
     const cookie = await login();
-    const view = ((await (await fetch(url(`/review?result=t-refuted-check&run=${run}&format=workspace`), { headers: { cookie } })).json()) as import("./browser-workspace.js").BrowserWorkspace).view as import("./browser-workspace.js").BrowserResultView;
+    const view = (await resultView(cookie, "t-refuted-check", run));
     const mismatch = view.selected!.mismatch!;
     expect(mismatch.headline).toBeNull();
     expect(mismatch.rows).toEqual([{ text: "“The dashboard renders”: screenshot evidence \"evidence/dash.png\" could not be verified: not a PNG", path: null, lines: null, href: null, absent: false, noteLabel: null }]);
@@ -1698,8 +1703,8 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const cookie = await login();
     for (const id of ["broken-result", "cross-result", "no-build-history"]) {
       const html = await (await fetch(url(`/review?result=${id}`), { headers: { cookie } })).text();
-      expect(html).toContain(`data-review-task="${id}"`);
-      expect(html).toContain("History unavailable");
+      expect(html).toContain(`data-result-task="${id}"`);
+      expect(html).toContain("data-history-problem");
       expect(html).toContain("This task is shown separately.");
       expect(html).not.toContain("secret-source");
       expect(html).not.toContain("Hidden source");
@@ -1710,7 +1715,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       }
     }
     const hidden = await (await fetch(url("/review?result=secret-source"), { headers: { cookie } })).text();
-    expect(hidden).not.toContain('data-review-task="secret-source"');
+    expect(hidden).not.toContain('data-result-task="secret-source"');
   });
 
   test("same task: two revisions keep root navigation, exact history, safe feedback batches and stale actions", async () => {
@@ -1785,7 +1790,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const earlier = await read(`/chat?task=${root}&result=${first}`);
     expect(earlier).toContain("data-past-feedback");
     expect(earlier).toContain("Please change version 1.");
-    expect(earlier).toContain(`href="/review?result=${root}"`);
+    expect(earlier).toContain(`href="/t/${root}?tab=result"`);
     const history = await read(`/chat?task=${root}`);
     for (const id of [root, ...made]) expect(history).toContain(`data-history-version="${id}"`);
     const oldReceipt = await fetch(url(`/chat?task=${root}&revision=${made[0]}`), { headers: { cookie }, redirect: "manual" });
@@ -2028,10 +2033,11 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(store.revisionLineageOf(revisionId, T0)).toMatchObject({ sourceTask: "t-loop", sourceRun: run });
     expect(store.liveDiffComments(run)).toHaveLength(0);
     expect(store.allDiffComments(run).every(one => one.consumedBy === revisionId)).toBe(true);
-    // A pending revision removes its old result from the current queue even
-    // when that result is recent. Do not invent an age-based explanation.
+    // A pending revision makes its old result an earlier version's: it opens on the task page as that version, with
+    // no act on the current one. Do not invent an age-based explanation.
     const earlierResult = await read(`/review?result=t-loop&run=${run}`);
-    expect(earlierResult).toContain('This result is not in the current review list.');
+    expect(earlierResult).toContain('data-result-task="t-loop"');
+    expect(earlierResult).toContain("Viewing Original");
     // Replays of the seal: the SAME revision, never a twin.
     const again = await post(cookie, `/r/${run}/revise`, { csrf, return: `/chat?task=t-loop&result=${run}`, ...seal });
     expect(again.status).toBe(303);

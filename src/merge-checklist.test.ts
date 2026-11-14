@@ -204,7 +204,7 @@ describe("one checklist on every surface", () => {
     const fix = view.mergeReady!.rows.find(one => one.key === "requirements")!.act!;
     expect(fix).toMatchObject({ kind: "fix", action: `/r/${runs["refuted"]}/comment` });
     // The result's own Send back form binds the same note batch and source terms.
-    const result = await http(`/review?result=refuted&run=${runs["refuted"]}`);
+    const result = await http(`/t/refuted?tab=result&run=${runs["refuted"]}`);
     expect({ batch: fix.batch, source: fix.source }).toEqual(revisionFormOf(result.body));
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(result.body)![1]!;
     const sent = await http(fix.action!, { method: "POST", body: new URLSearchParams({ csrf, intent: "revise", batch: fix.batch!, source: fix.source!, request: fix.request!, return: "/t/refuted", note: fix.note! }).toString() });

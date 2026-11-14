@@ -1572,6 +1572,12 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(read.sensitive).toBe(true);
     expect(read.work).toBeUndefined();
     expect(read.inPlace).toBe(false);
+    // One task view (approval criterion 6): the old result address leads to this same top-level document, never framed.
+    const moved = await fetch(url(`/review?result=t-sealed&run=${failed}`), { headers: { cookie }, redirect: "manual" });
+    expect(moved.headers.get("location")).toBe(`/t/t-sealed?tab=result&run=${failed}`);
+    const landed = await fetch(url(`/t/t-sealed?tab=result&run=${failed}`), { headers: { cookie } });
+    expect(landed.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(workspaceOf(await landed.text()).sensitive).toBe(true);
   });
 
   test("sensitive composition: a password ceremony beside a live attempt — no poller, a static panel, link-only decisions", async () => {
@@ -1761,7 +1767,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(view.retry).toEqual({ action: "/t/t-broke/requeue", note: suggestion, pins: { run: expect.any(Number), digest: expect.stringMatching(/^[a-f0-9]{32}$/) } });
     // That build's page works: its result page, not Not found, and /r/<id> opens it.
     expect((await fetch(url(`/review?result=t-broke&run=${failedRun}`), { headers: { cookie } })).status).toBe(200);
-    expect((await fetch(url(`/r/${failedRun}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/review?result=t-broke&run=${failedRun}`);
+    expect((await fetch(url(`/r/${failedRun}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/t/t-broke?tab=result&run=${failedRun}`);
     // The Tasks list says the same, in vermilion's problem line.
     const rows = (workspaceOf(await (await fetch(url("/tasks"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
     expect(rows.find(row => row.id === "t-broke")?.detail).toBe(said);

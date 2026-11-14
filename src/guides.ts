@@ -333,7 +333,7 @@ ${AUTHORITY_LINE}
   attempts, decisions, and — for a scout task — the report with one-tap
   follow-ups.
 - **builds** (\`/runs\`): every attempt, newest first; a result's own page
-  is \`/review?result=<task>\`, and activity (\`/activity\`) is the ledger. **build
+  is its task page's Result section (\`/t/<task>?tab=result&run=<run>\`), and activity (\`/activity\`) is the ledger. **build
   page** (\`/r/<run>\`): one attempt: stage, live transcript, evidence,
   the diff, comments. **peek** (\`/peek\`): every live run at once,
   transcripts following.

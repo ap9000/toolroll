@@ -201,7 +201,10 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     store.finishRun(again, { outcome: "built", committed: true, now: T0 });
     const twice = (await workspace(cookie, "/t/finished")).view as BrowserTaskView;
     expect(twice.result?.attempts.map(one => one.href)).toEqual([`/t/finished?tab=result&run=${again}`]);
-    expect((await fetch(url(`/t/finished?tab=result&run=${doneRun}`), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
+    // The older result of this very task: the stale-result refusal the old result page said, now on the one view.
+    const stale = await fetch(url(`/t/finished?tab=result&run=${doneRun}`), { headers: { cookie }, redirect: "manual" });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).toContain("Result changed");
   });
 
   test("a build whose repair turn is the live run is still running: the work panel names the build and reads it live", async () => {
@@ -325,7 +328,7 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     // A browser without script still reads the whole result on the document, under the task's own page.
     const page = await (await fetch(url("/t/shipped?tab=result"), { headers: { cookie } })).text();
     const fallback = page.replace(/<script type="application\/json" id="standing-orders-workspace-data"[^>]*>[\s\S]*?<\/script>/, "");
-    expect(fallback.split('<section class="task-result-tab" id="task-result" aria-label="Result">').length - 1).toBe(1);
+    expect(fallback.split('<section class="task-result-tab" id="task-result" aria-label="Result" data-result-task="shipped">').length - 1).toBe(1);
     expect(fallback.split("data-result-panel").length - 1).toBe(1);
   });
 });

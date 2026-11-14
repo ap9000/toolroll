@@ -123,10 +123,22 @@ test("the pack says who asked, who approved under which rules, what ran and chan
   expect(packDigest(body)).toBe(digest);
 });
 
-test("the printable page shows the same facts, with no script, and the task page links to it", async () => {
+test("the task page's Record section and the printable page show the same facts, with no script; the old address opens the section", async () => {
   const { id } = await approvedBuild();
   const alex = await signIn("alex");
-  const html = await page(alex, `/t/${id}/evidence`);
+  // One task view (one-workspace plan S1): /t/:id/evidence opens the task page's Record section; print and JSON stay here.
+  const moved = await get(alex, `/t/${id}/evidence`);
+  expect(moved.status).toBe(302);
+  expect(moved.headers.get("location")).toBe(`/t/${id}?tab=record#record`);
+  const section = await page(alex, `/t/${id}?tab=record`);
+  expect(section).toContain('id="record"');
+  expect(section).toContain(`data-evidence-pack="${id}"`);
+  expect(section).toContain('data-evidence-chain="ok"');
+  expect(section).toContain(`href="/t/${id}/evidence?print=1"`);
+  expect(section).toContain(`href="/t/${id}/evidence?format=json" download`);
+  // Read only when asked for: the task page without it carries no record.
+  expect(await page(alex, `/t/${id}`)).not.toContain(`data-evidence-pack="${id}"`);
+  const html = await page(alex, `/t/${id}/evidence?print=1`);
   expect(html).toContain(`data-evidence-pack="${id}"`);
   expect(html).toContain('data-evidence-chain="ok"');
   expect(html).toContain("<dt>Approval rules</dt><dd>Requester can&#39;t approve<details");
@@ -136,14 +148,15 @@ test("the printable page shows the same facts, with no script, and the task page
   expect(html).toContain("$0.4200");
   expect(html).toContain(`href="/t/${id}/evidence?format=json" download`);
   expect(/data-evidence-pack="[^"]*"[\s\S]*?Record digest/.exec(html)![0]).not.toMatch(/<script/i);
-  expect(await page(alex, `/t/${id}`)).toContain(`/t/${id}/evidence`);
+  expect(await page(alex, `/t/${id}`)).toContain(`/t/${id}?tab=record#record`);
   // A broken chain says so, on the page and in the JSON.
   store.handle.exec("DROP TRIGGER action_ledger_no_update");
   const first = store.handle.prepare("SELECT MIN(id) AS id FROM action_ledger WHERE task_id = ?").get(id)!["id"];
   store.handle.prepare("UPDATE action_ledger SET actor = 'mallory' WHERE id = ?").run(first);
   // Page views check what's new; the next whole walk (here, asked for) finds the old entry changed, and the pages say so from then on.
   expect(store.ledgerChain({ full: true }).ok).toBe(false);
-  expect(await page(alex, `/t/${id}/evidence`)).toContain('data-evidence-chain="broken"');
+  expect(await page(alex, `/t/${id}/evidence?print=1`)).toContain('data-evidence-chain="broken"');
+  expect(await page(alex, `/t/${id}?tab=record`)).toContain('data-evidence-chain="broken"');
   expect(((await (await get(alex, `/t/${id}/evidence?format=json`)).json()) as EvidencePack).ledger.chain.ok).toBe(false);
 });
 
@@ -166,13 +179,15 @@ test("requests made about a task before it existed, or a flood of them since, ne
   // Nothing from before it existed, and nothing named only by its run's number from a request.
   expect(pack.ledger.entries.some(one => one.repo === null && one.source === "request")).toBe(false);
   expect(pack.ledger.entries.filter(one => one.runId === run).every(one => one.source !== "request" || one.taskId === id)).toBe(true);
-  expect(await page(alex, `/t/${id}/evidence`)).toContain("the newest 500 requests");
+  expect(await page(alex, `/t/${id}?tab=record`)).toContain("the newest 500 requests");
 });
 
 test("only people who can see the task get its pack", async () => {
   const { id } = await approvedBuild();
   const kim = await signIn("kim");
   expect((await get(kim, `/t/${id}/evidence`)).status).toBe(404);
+  expect((await get(kim, `/t/${id}/evidence?print=1`)).status).toBe(404);
+  expect((await get(kim, `/t/${id}?tab=record`)).status).toBe(404);
   expect((await get(kim, `/t/${id}/evidence?format=json`)).status).toBe(404);
   const sam = await signIn("sam");
   expect((await get(sam, `/t/${id}/evidence?format=json`)).status).toBe(200);
