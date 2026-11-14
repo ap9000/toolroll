@@ -90,10 +90,11 @@ import { consentDoorOf,decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
 import { workNeeds } from "./home.js";
+import type { WorkList } from "./tasks.js";
 import { flowAsks, NO_HOME_ASKS, releaseAsks, setupAsks, type HomeAsks } from "./home-asks.js";
 import { workIndexPage } from "../work-index.js";
 /** What Work borrows from the tasks handlers (tasks.ts): its list for an address, and the queue's order page. */
-export type WorkListDeps = { listFor: (ctx: HandlerContext) => Promise<Screen | null>; showOrder: (ctx: HandlerContext) => Promise<void> };
+export type WorkListDeps = { listFor: (ctx: HandlerContext) => Promise<WorkList | null>; showOrder: (ctx: HandlerContext) => Promise<void> };
 
 export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) {
   const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession, firstRunStepsNow, chatEnablement, leadPrincipal, leadConversationRows, outsideAdmissions } = runtime;
@@ -227,8 +228,9 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     if (url.searchParams.get("view") === "order") return work.showOrder(ctx);
     // Only Work itself: an address that names a view, a project or a task is that list, even before the first task.
     if (who.via === "cookie" && url.search === "" && firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
-    const listed = await work.listFor(ctx);
-    if (listed === null) return;
+    const found = await work.listFor(ctx);
+    if (found === null) return;
+    const listed = found.screen;
     const list = listed.workspace?.view;
     if (list?.kind !== "tasks") throw new Error("Work's list is not the Tasks list");
     const chrome = listed.chrome ?? chromeFor(project, "work");
@@ -238,8 +240,10 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       const door = consentDoorOf(scope, runtime.routeViewOf(taskId, store.lookupRef(taskId), scope, now, who));
       return door.open ? null : door;
     };
+    // What waits on this person, from the very list page shown (its view, filters and cursor); the asks that aren't tasks
+    // ride the first unfiltered page.
     const needs = workNeeds({ store, now, access, evidenceRoot, project, projects: chrome.projects ?? [], chat: false, canAnswer: approver, approver, closedDoor,
-      asks: who.via === "cookie" ? homeAsksFor(who, access, now, project) : NO_HOME_ASKS });
+      asks: who.via === "cookie" && !found.filtered ? homeAsksFor(who, access, now, project) : NO_HOME_ASKS }, found.work, found.filtered);
     const view: BrowserWorkView = {
       kind: "work", list, needs: needs.groups, needsCount: needs.total, project,
       projectName: project === null ? "All projects" : (chrome.projects ?? []).find(one => one.path === project)?.name ?? projectName(project),

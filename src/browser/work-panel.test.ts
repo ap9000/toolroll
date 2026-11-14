@@ -407,16 +407,18 @@ const RECEIPT = "cd".repeat(32);
 const REQUEST = (n: number) => n.toString(16).padStart(32, "0");
 type Selected = NonNullable<BrowserTaskView["result"]>["selected"];
 /** A task whose current result waits: accepting it is its one act and it is ready; Send back is beside it. */
-const resultOf = (id: string, over: { revision?: string; receipt?: string; youCheck?: boolean; sensitive?: boolean; request?: number; accept?: boolean } = {}): BrowserWorkspace => {
+const resultOf = (id: string, over: { revision?: string; receipt?: string; youCheck?: boolean; sensitive?: boolean; request?: number; accept?: boolean; batch?: string;
+  attention?: string[]; limits?: string[]; mismatch?: Selected["mismatch"]; problem?: string | null; complete?: boolean; build?: number } = {}): BrowserWorkspace => {
   const selected = {
-    taskId: id, title: `Task ${id}`, project: "shop", build: 7, taskHref: `/t/${id}`, chatHref: `/chat?task=${id}`, status: { label: "Ready for review", tone: "ready", token: "ready" },
-    problem: null, next: null, decision: { label: "Accept", ready: true, why: null, effect: "", sentence: "" }, checks: { detail: "Checks passed.", problem: false, logHref: null },
-    mismatch: null, acts: { primary: over.accept === false ? "request-changes" : "accept", secondary: "request-changes", line: null }, runChecks: null, record: null, intent: null, noRun: null, notes: [],
-    complete: over.accept === false ? null : { action: `/t/${id}/complete`, receipt: over.receipt ?? RECEIPT, run: 7, accept: null },
-    panel: { outcome: "Rounds every line at cent precision.", attention: ["Older payouts are not recomputed."], youCheck: over.youCheck ? { lines: [], items: [{ id: "c1" }], accept: null } : null,
-      sendBack: { action: "/r/7/comment", batch: "b1", source: "s1", request: REQUEST(over.request ?? 1) } },
+    taskId: id, title: `Task ${id}`, project: "shop", build: over.build ?? 7, taskHref: `/t/${id}`, chatHref: `/chat?task=${id}`, status: { label: "Ready for review", tone: "ready", token: "ready" },
+    problem: over.problem ?? null, next: null, decision: { label: "Accept", ready: true, why: null, effect: "", sentence: "" }, checks: { detail: "Checks passed.", problem: false, logHref: null },
+    mismatch: over.mismatch ?? null, acts: { primary: over.complete ? null : over.accept === false ? "request-changes" : "accept", secondary: "request-changes", line: null }, runChecks: null, record: null, intent: null, noRun: null, notes: [],
+    complete: over.accept === false || over.complete ? null : { action: `/t/${id}/complete`, receipt: over.receipt ?? RECEIPT, run: 7, accept: null },
+    panel: { outcome: "Rounds every line at cent precision.", attention: over.attention ?? ["Older payouts are not recomputed."], limits: over.limits ?? [], youCheck: over.youCheck ? { lines: [], items: [{ id: "c1" }], accept: null } : null,
+      sendBack: { action: "/r/7/comment", batch: over.batch ?? "", source: "s1", request: REQUEST(over.request ?? 1) } },
   } as unknown as Selected;
-  return workspaceOf(id, null, over.sensitive ? { sensitive: true } : {}, { title: `Task ${id}`, status: null, result: { selected, current: true, attempts: [], revision: over.revision ?? "r1" } } as Partial<BrowserTaskView>);
+  const status = over.complete ? { token: "assignment-complete", tone: "done", label: "Complete", status: { headline: "Complete", sentence: "Accepted." } } : null;
+  return workspaceOf(id, null, over.sensitive ? { sensitive: true } : {}, { title: `Task ${id}`, status, result: { selected, current: true, attempts: [], revision: over.revision ?? "r1" } } as Partial<BrowserTaskView>);
 };
 const acceptButton = () => pane().querySelector<HTMLButtonElement>("[data-work-accept]");
 const pressAccept = async () => { await act(async () => { acceptButton()!.click(); }); await wait(0); await wait(0); };
@@ -491,7 +493,7 @@ test("no in-place Accept on a password page, with a check of the person's own st
   expect(posts()).toHaveLength(0);
 });
 
-test("Send back posts the note with the saved notes and diff it was shown and the fresh read's request token; a changed result posts nothing", async () => {
+test("Send back posts the note with the diff it was shown and the fresh read's request token, and no saved notes; a changed result posts nothing", async () => {
   let reads_ = 0;
   answer = call => call.method === "POST" ? json({ outcome: "done", words: "Sent back. The revision is filed." }) : json(resultOf("a", { request: ++reads_ }));
   await mount(homeOf([], ["a"]));
@@ -502,7 +504,7 @@ test("Send back posts the note with the saved notes and diff it was shown and th
   expect(posts()).toHaveLength(1);
   expect(posts()[0]!.url).toBe("/r/7/comment");
   expect(posts()[0]!.headers["x-toolroll-act"]).toBe("in-place");
-  expect([...new URLSearchParams(posts()[0]!.body)]).toEqual([["csrf", "csrf-1"], ["intent", "revise"], ["batch", "b1"], ["source", "s1"], ["request", REQUEST(2)], ["note", "Round half-cents up."]]);
+  expect([...new URLSearchParams(posts()[0]!.body)]).toEqual([["csrf", "csrf-1"], ["intent", "revise"], ["batch", ""], ["source", "s1"], ["request", REQUEST(2)], ["note", "Round half-cents up."]]);
   expect(said()).toBe("Task a Sent back. The revision is filed.");
 
   await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
@@ -544,4 +546,86 @@ test("a selected task the panel may not read (another project's, refused by its 
   expect(acceptButton()).toBeNull();
   expect(pane().querySelector("[data-work-send-back]")).toBeNull();
   expect(reads()[0]!.url).toBe("/t/a?format=workspace");
+});
+
+test("saved notes the panel doesn't show are never sent from it: Send back is the result's own review, and a note saved meanwhile posts nothing", async () => {
+  answer = call => call.method === "POST" ? json({ outcome: "done", words: "x" }) : json(resultOf("a", { batch: "4,9" }));
+  await mount(homeOf([], ["a"]));
+  await settle();
+  // What is displayed: the notes waiting, and the way to read them; no message box that would seal them unseen.
+  expect(pane().querySelector("[data-work-send-back]")).toBeNull();
+  expect(pane().querySelector("[data-work-notes-waiting]")?.textContent).toContain("2 saved notes wait to go with a send back. Read them on the result first.");
+  expect(pane().querySelector("[data-work-review-send]")?.getAttribute("href")).toBe("/t/a?tab=result#request-changes");
+  // Accept is still offered: it carries no notes.
+  expect(acceptButton()).not.toBeNull();
+
+  await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
+  let saved = false;
+  answer = call => call.method === "POST" ? json({ outcome: "done", words: "x" }) : json(resultOf("a", saved ? { batch: "12" } : {}));
+  await mount(homeOf([], ["a"]));
+  await settle();
+  await typeNote("Round half-cents up.");
+  saved = true;
+  await act(async () => { pane().querySelector<HTMLFormElement>("[data-work-send-back]")!.requestSubmit(); });
+  await wait(0); await wait(0);
+  expect(posts()).toHaveLength(0);
+  expect(pane().querySelector("[data-work-changed]")).not.toBeNull();
+  expect(pane().querySelector("[data-work-notes-waiting]")?.textContent).toContain("1 saved note waits");
+});
+
+test("every warning is on screen before Accept: the problem, each disagreement with its lines, every attention line and every limit", async () => {
+  const mismatch = { headline: "The report doesn't match the changes.", said: [], rows: [
+    { text: "Says it changed the rounding helper", path: "src/round.ts", lines: "4-9", href: null, absent: false, noteLabel: null },
+    { text: "Names a file the changes don't have", path: "src/other.ts", lines: null, href: null, absent: true, noteLabel: null }] } as Selected["mismatch"];
+  answer = () => json(resultOf("a", { problem: "1 requirement couldn't be verified.", mismatch, attention: ["Older payouts are not recomputed.", "Ledger fixtures cover USD only.", "Screenshots are from the desk only."],
+    limits: ["The check log was shortened to its last 2,000 lines.", "The diff was shortened: 3 files are not shown."] }));
+  await mount(homeOf([], ["a"]));
+  await settle();
+  const shown = [...pane().querySelectorAll("[data-work-caveat]")].map(one => one.textContent);
+  expect(shown).toEqual(["1 requirement couldn't be verified.", "The report doesn't match the changes.", "Says it changed the rounding helper · src/round.ts:4-9", "Names a file the changes don't have · src/other.ts",
+    "Older payouts are not recomputed.", "Ledger fixtures cover USD only.", "Screenshots are from the desk only.", "The check log was shortened to its last 2,000 lines.", "The diff was shortened: 3 files are not shown."]);
+  // Many of them sit in one disclosure, open, above the act.
+  const fold = pane().querySelector<HTMLDetailsElement>("details.k-disclose")!;
+  expect(fold.open).toBe(true);
+  expect(fold.querySelectorAll("[data-work-caveat]")).toHaveLength(9);
+  expect(fold.compareDocumentPosition(acceptButton()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("a lost Accept is done only when the task shows this very result complete; anything else is unconfirmed, the row stays and nothing more is pressed", async () => {
+  const cases: [string, () => Response, boolean][] = [
+    ["access changed (the task page refuses)", () => new Response("<p class=problem>No such resource in your projects.</p>", { status: 404, headers: { "content-type": "text/html" } }), false],
+    ["a newer result", () => json(resultOf("a", { revision: "r2", build: 8 })), false],
+    ["the acts went away", () => json(resultOf("a", { accept: false, batch: "3" })), false],
+    ["complete, but a different run", () => json(resultOf("a", { complete: true, build: 8 })), false],
+    ["this run, complete", () => json(resultOf("a", { complete: true })), true],
+  ];
+  for (const [name, after, done] of cases) {
+    let lost = false;
+    answer = call => {
+      if (call.method === "POST") { lost = true; return Promise.reject(new TypeError("network")); }
+      return lost ? after() : json(resultOf("a"));
+    };
+    await mount(homeOf([], ["a", "b"]));
+    await settle();
+    await pressAccept();
+    await wait(0); await wait(0);
+    expect(posts(), name).toHaveLength(1);
+    if (done) {
+      expect(said(), name).toBe("Task a Accepted. The task is complete.");
+      expect(selectedRow(), name).toBe("b");
+    } else {
+      expect(said(), name).toBeNull();
+      expect(document.body.textContent, name).not.toContain("Done");
+      expect(selectedRow(), name).toBe("a");
+      // A task this person may no longer read says so (and only links to it); any other says it couldn't confirm.
+      if (name.startsWith("access")) expect(pane().querySelector("[data-work-unread]"), name).not.toBeNull();
+      else {
+        expect(pane().querySelector("[data-work-said-act=unconfirmed]")?.textContent, name).toBe("We couldn’t confirm this. Check the task before doing anything else.");
+        expect(pane().querySelector("[data-work-check]")?.getAttribute("href"), name).toBe("/t/a");
+      }
+      expect(acceptButton(), name).toBeNull();
+      expect(pane().querySelector("[data-work-send-back]"), name).toBeNull();
+    }
+    await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
+  }
 });

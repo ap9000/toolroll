@@ -61,9 +61,9 @@ test("All leads with what needs you, Decide / Review / Unblock with exact counts
   expect([...document.querySelectorAll("[data-group]")].map(one => [one.getAttribute("data-group"), one.querySelector(".k-grp")?.textContent]))
     .toEqual([["decide", "Decide2"], ["review", "Review16"], ["unblock", "Unblock2"], ["running", "Running1"], ["queued", "Queued1"], ["done", "Done1"]]);
   expect([...document.querySelectorAll("[data-row]")].map(one => one.getAttribute("data-row"))).toEqual(["a", "q", "r", "f", "setup:builder", "w", "k", "d"]);
-  // A group with more than it lists says how many more, and opens them in the Needs you view.
-  expect(document.querySelector('[data-group="review"] .so-tri-more')?.textContent).toBe("15 more");
-  expect(document.querySelector('[data-group="review"] .so-tri-more')?.getAttribute("href")).toBe("/?view=needs-you");
+  // A group says its exact count past the rows this page lists; the list's own pages hold the rest.
+  expect(document.querySelector('[data-group="review"] .k-grp')?.textContent).toBe("Review16");
+  expect(document.querySelector(".so-tri-more")).toBeNull();
   // Each row: its chip, its title linking its own page, and its one act.
   expect(document.querySelector('[data-row="a"] .k-chip')?.textContent).toBe("Plan");
   expect(document.querySelector('[data-row="r"] .k-chip')?.textContent).toBe("Result");
@@ -71,9 +71,9 @@ test("All leads with what needs you, Decide / Review / Unblock with exact counts
   expect(document.querySelector('[data-row="a"] .k-row-t')?.getAttribute("href")).toBe("/t/a");
   expect(document.querySelector('[data-row="setup:builder"] .k-row-t')?.getAttribute("href")).toBe("/start-builder");
   expect([...document.querySelectorAll("[data-row] .k-row-a .k-btn")].map(one => one.textContent)).toEqual(["Approve", "Answer", "Review", "Open", "Open", "Watch", "Open", "Open"]);
-  // The segments are addresses, Needs you first with every ask it lists (tasks and the rest).
+  // The segments are addresses, Needs you first with the tasks' count: the same number as the rail's Work.
   expect([...document.querySelectorAll(".so-work-h .k-seg a")].map(one => [one.textContent, one.getAttribute("href"), one.getAttribute("aria-current")]))
-    .toEqual([["Needs you20", "/?view=needs-you", null], ["All23", "/", "page"], ["Running1", "/?view=running", null], ["Queued1", "/?view=queued", null], ["Done2", "/?view=completed", null]]);
+    .toEqual([["Needs you19", "/?view=needs-you", null], ["All23", "/", "page"], ["Running1", "/?view=running", null], ["Queued1", "/?view=queued", null], ["Done2", "/?view=completed", null]]);
   // A wide desk opens the first row beside the list.
   expect(selectedRow()).toBe("a");
   expect(pane().querySelector("[data-home-approval]")?.getAttribute("data-home-approval")).toBe("reading");

@@ -179,7 +179,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
 
   /** The Tasks list for Work ("/", the one-workspace plan S2a), built for the address's own keys and admitted by Work's
    * collection admission; a refused key is answered here and the list is null. */
-  async function workListOf(ctx: HandlerContext): Promise<Screen | null> {
+  async function workListOf(ctx: HandlerContext): Promise<WorkList | null> {
     const { url, who, response, now, project } = ctx;
     // The Work destination (workspace package 1): every task in view as
     // one row wearing the shared status projection, with All, Needs you,
@@ -256,7 +256,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, subagent: id => subagentNamesOf(store.handle).get(id) ?? `Subagent ${id}` }, now)
         : null,
     });
-    return page;
+    return { screen: page, work, filtered: state !== null || url.searchParams.has('cursor') };
   }
 
 
@@ -399,7 +399,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
 
   /** Work's list keys (the one-workspace plan S2a; Tasks' before it, plain-toolroll.md P1.4): `view=board` is the Board,
    * `view=done` Finished, `scope=all` every project. The queue's order (`view=order`) is its own page (showOrder). */
-  async function workListFor(ctx: HandlerContext): Promise<Screen | null> {
+  async function workListFor(ctx: HandlerContext): Promise<WorkList | null> {
     const { url } = ctx;
     const view = url.searchParams.get("view");
     // The list reads its own keys: Board is its layout, every project its roll-up, Finished its completed view.
@@ -3343,3 +3343,8 @@ export function localOwnerRetry(store: Store, taskId: string, run: string | null
 export function answerActInPlace(response: ServerResponse, outcome: "done" | "refused", words: string, status: number): void {
   respond(response, status, "application/json; charset=utf-8", JSON.stringify({ outcome, words }));
 }
+
+/** Work's list for one address (the one-workspace plan S2a): the Tasks list's screen, the work index page it shows (its
+ * view, project, state filter and cursor), and whether that page is filtered or past the first (the asks that aren't
+ * tasks ride only the first, unfiltered page). */
+export type WorkList = { screen: Screen; work: WorkIndexPage; filtered: boolean };

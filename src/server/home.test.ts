@@ -83,7 +83,8 @@ describe("the groups", () => {
     const asks: HomeAsks = { release: () => null, held: [ask("release:held-1", REPO, "Held: checks failed.", "/t/held-1/release")], flows: [ask("flow:4", REPO, "Ship: Waits for your decision.", "/flows/2?card=4")],
       setup: [{ ...ask("setup:builder", null, "Start a builder.", "/start-builder"), key: "builder" }, { ...ask("setup:agent", null, "Sign in.", "/welcome"), key: "agent" }] };
     const both = { ...facts(store, [REPO]), asks, approver: true };
-    const home = homeView(both), work = workNeeds(both);
+    const needsPage = (limit = HOME_NEEDS_SHOWN) => workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { view: "needs-you", limit });
+    const home = homeView(both), work = workNeeds(both, needsPage(), false);
     const homeRows = home.groups.flatMap(group => group.rows), workRows = work.groups.flatMap(group => group.rows);
     // The same rows, the same words and links, each in the Work group its ask (or its task's own group) says.
     expect(new Set(workRows.map(row => row.id))).toEqual(new Set(homeRows.map(row => row.id)));
@@ -99,8 +100,25 @@ describe("the groups", () => {
     expect(work.total).toBe(APPROVALS + 2 + 4);
     // Held publications, flow cards and setup steps are an approver's alone, in Work as on Home.
     const viewer = { ...both, approver: false, canAnswer: false };
-    expect(workNeeds(viewer).groups.flatMap(group => group.rows).map(row => row.id).sort()).toEqual(homeView(viewer).groups.flatMap(group => group.rows).map(row => row.id).sort());
-    expect(workNeeds(viewer).groups.flatMap(group => group.rows).some(row => row.id.includes(":"))).toBe(false);
+    expect(workNeeds(viewer, needsPage(), false).groups.flatMap(group => group.rows).map(row => row.id).sort()).toEqual(homeView(viewer).groups.flatMap(group => group.rows).map(row => row.id).sort());
+    expect(workNeeds(viewer, needsPage(), false).groups.flatMap(group => group.rows).some(row => row.id.includes(":"))).toBe(false);
+    // Work's pages (Codex round 1, finding 3): its Needs you comes from the very page shown, so a later page lists the
+    // later tasks, nothing repeats, every waiting task is reachable, and the other asks ride the first page only.
+    const access = { principal: "operator" as const, repos: [REPO] };
+    const listPages = [workIndexPage(store, NOW, access, { view: "all", limit: 20 })];
+    while (listPages.at(-1)!.nextCursor !== null) listPages.push(workIndexPage(store, NOW, access, { view: "all", limit: 20, cursor: listPages.at(-1)!.nextCursor }));
+    expect(listPages.length).toBeGreaterThan(1);
+    const [first, second] = listPages as [typeof listPages[number], typeof listPages[number]];
+    const idsOf = (page: typeof first, filtered: boolean) => workNeeds(both, page, filtered).groups.flatMap(group => group.rows.map(row => row.id));
+    const pages = listPages.map((page, at) => idsOf(page, at > 0));
+    expect(pages[0]).toEqual([...first.items.filter(one => one.status.views.includes("needs-you")).map(one => one.rootId), "release:held-1", "flow:4", "setup:builder", "setup:agent"]
+      .sort((a, b) => pages[0]!.indexOf(a) - pages[0]!.indexOf(b)));
+    const tasksSeen = pages.flat().filter(id => !id.includes(":"));
+    expect(new Set(tasksSeen).size).toBe(tasksSeen.length);
+    expect(tasksSeen.length).toBe(APPROVALS + 2);
+    expect(pages.slice(1).flat().some(id => id.includes(":"))).toBe(false);
+    // Each page's group counts stay the exact totals, past the rows it lists.
+    expect(workNeeds(both, second, true).groups.reduce((sum, group) => sum + group.count, 0)).toBe(APPROVALS + 2);
   });
 
   test("the lead's last message is read only when chat is allowed here, as one plain line", () => {

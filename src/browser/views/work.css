@@ -42,6 +42,8 @@
 [data-view] .so-work .so-work-panel { max-width: none; padding: var(--so-space-xl) 24px 40px; }
 [data-view] .so-work .so-work-task { display: grid; gap: var(--so-space-md); min-width: 0; }
 [data-view] .so-work .so-work-caveat { margin: 0; padding: 8px 10px; border-radius: var(--so-radius-md); background: var(--so-soft); font-size: 13.5px; line-height: 1.5; color: var(--so-ink); overflow-wrap: anywhere; }
+[data-view] .so-work .so-work-caveats { display: grid; gap: var(--so-space-xs); padding-top: var(--so-space-xs); }
+[data-view] .so-work .so-work-notes { display: grid; gap: var(--so-space-sm); }
 [data-view] .so-work .so-work-checks { margin: 0; font-size: 13px; color: var(--so-muted); }
 [data-view] .so-work .so-work-checks.is-problem { color: var(--so-danger); }
 [data-view] .so-work .so-work-sec { display: grid; gap: var(--so-space-xs); padding-top: var(--so-space-md); border-top: 1px solid var(--so-line); }

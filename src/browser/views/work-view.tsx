@@ -14,7 +14,7 @@
  */
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BrowserHomeAsk, BrowserHomeRow, BrowserTaskRow, BrowserTaskView, BrowserWorkspace, BrowserWorkView, WorkNeedsGroup } from "../../browser-workspace.js";
-import { KButton, KChip, KComposer, KCount, KDock, KEmpty, KGroup, KLinkButton, KLinkSeg, KNotice, KRadios, KRow, pressedByPerson } from "../kit/index.js";
+import { KButton, KChip, KComposer, KCount, KDisclose, KDock, KEmpty, KGroup, KLinkButton, KLinkSeg, KNotice, KRadios, KRow, pressedByPerson } from "../kit/index.js";
 import { FormToken } from "../ui/index.js";
 import { WORKSPACE_NUDGE } from "../live-task.js";
 import { keyed } from "../mutation-key.js";
@@ -190,7 +190,8 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
   // Needs you · All · Running · Queued · Done (Ready stays an address: Needs you's Review group holds it).
   const segments = SEGMENTS.flatMap(([key, label]) => {
     const tab = view.list.tabs.find(one => one.key === key);
-    return tab === undefined ? [] : [{ key, label, href: tab.href, count: <KCount n={key === "needs-you" ? view.needsCount : tab.count} ink={key === "needs-you"} /> }];
+    // Needs you counts tasks, the same number the rail's Work wears; a group's own count also counts the other asks.
+    return tab === undefined ? [] : [{ key, label, href: tab.href, count: <KCount n={tab.count} ink={key === "needs-you"} /> }];
   });
   const panel = shown === null ? null
     : <WorkPanel key={shown.id} item={shown} onDone={done} onSettled={settled} onClose={drawer ? () => setOpen(false) : null} />;
@@ -227,8 +228,6 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
                 desc={item.reason ?? item.home?.line ?? item.task?.detail ?? ""} meta={item.meta}
                 action={item.task?.tidy?.label === "Restore" ? <RestoreAct tidy={item.task.tidy} /> : <KLinkButton sm label={item.act} href={item.href} tabIndex={-1} />} />
             </div>)}
-            {section.count > section.items.length && current !== "all" && view.list.pages.next === null && <p className="so-work-more">{section.count - section.items.length} more</p>}
-            {isNeeds(section.key) && section.count > section.items.length && current === "all" && <a className="so-tri-more k-link" href={view.list.tabs.find(tab => tab.key === "needs-you")?.href ?? "/?view=needs-you"}>{section.count - section.items.length} more</a>}
           </section>)}
         {!board && current === "completed" && view.list.archived && !view.list.archived.active && <p className="k-foot so-work-pages"><a href={view.list.archived.href}>Archived tasks · {view.list.archived.count}</a></p>}
         {!board && (view.list.pages.first || view.list.pages.next) && <p className="k-foot so-work-pages">
@@ -320,8 +319,8 @@ function TaskPanel({ item, kicker, onDone, onSettled }: { item: Item; kicker: Re
   const result = view.result?.current === true && view.historical == null ? view.result.selected : null;
   const outcome = result?.panel?.outcome ?? null;
   // Every machine-reported failure and caveat is on screen before the act (plan criterion 5).
-  const caveats = [result?.problem ?? null, result?.mismatch?.headline ?? null, ...(result?.panel?.attention ?? []).slice(0, 2), view.failure?.line ?? null]
-    .filter((one, at, all): one is string => one !== null && one !== "" && all.indexOf(one) === at);
+  // Every machine-reported failure, disagreement and limitation, before the act (plan criterion 5): nothing is cut.
+  const caveats = caveatsOf(view);
   const checks = result?.checks ?? null;
   const live = view.work?.live === true;
   const act = result !== null
@@ -335,13 +334,28 @@ function TaskPanel({ item, kicker, onDone, onSettled }: { item: Item; kicker: Re
     {state && <p className="so-open-chip" data-work-state><KChip word={state.headline} tone={toneOf(view)} /><span>{state.sentence}</span></p>}
     {outcome && <p className="so-open-x" data-work-outcome>{outcome}</p>}
     {view.progress?.line && view.progress.line !== state?.sentence && <p className="so-open-x" data-work-progress>{view.progress.line}</p>}
-    {caveats.map(one => <p key={one} className="so-work-caveat" data-work-caveat>{one}</p>)}
+    {caveats.length > CAVEATS_SHOWN
+      ? <KDisclose summary={`${caveats.length} things to know before you decide`} open><div className="so-work-caveats">{caveats.map(one => <p key={one} className="so-work-caveat" data-work-caveat>{one}</p>)}</div></KDisclose>
+      : caveats.map(one => <p key={one} className="so-work-caveat" data-work-caveat>{one}</p>)}
     {checks && <p className={`so-work-checks${checks.problem ? " is-problem" : ""}`} data-work-checks>{checks.detail}</p>}
     {act}
     {view.plan?.lead && <section className="so-work-sec" aria-label="Plan"><h3 className="so-work-sec-h">Plan</h3><p className="so-open-x">{view.plan.lead}</p></section>}
     {view.progress?.steps && view.progress.steps.length > 0 && <ol className="so-work-steps" aria-label="Steps">{view.progress.steps.map((step, at) =>
       <li key={at} data-step-state={step.state}>{step.title}</li>)}</ol>}
   </div>;
+}
+
+/** More than this many caveats sit in one disclosure, open, so the act stays near. */
+export const CAVEATS_SHOWN = 4;
+/** What the result and the task say before anyone decides: the problem, the report's disagreements (each, with the
+ * changed lines it concerns), every attention line, every limit on what was saved, and a failure's line. */
+export function caveatsOf(view: BrowserTaskView): string[] {
+  const result = view.result?.current === true && view.historical == null ? view.result.selected : null;
+  const mismatch = result?.mismatch ?? null;
+  return [result?.problem ?? null, mismatch?.headline ?? null,
+    ...(mismatch?.rows ?? []).map(row => [row.text, row.path === null ? null : `${row.path}${row.lines === null ? "" : `:${row.lines}`}`].filter(Boolean).join(" · ")),
+    ...(result?.panel?.attention ?? []), ...(result?.panel?.limits ?? []), view.failure?.line ?? null]
+    .filter((one, at, all): one is string => one !== null && one !== "" && all.indexOf(one) === at);
 }
 
 /** The chip's tone for a task's state: blue only running, green only finished, red only failed, ink for a wait. */
@@ -355,8 +369,11 @@ export type ResultSnapshot = {
   taskId: string; run: number; revision: string;
   /** Accept (and finish): the task's complete route, the exact receipt read, and whether it also records the acceptance. */
   accept: { action: string; receipt: string; withAcceptance: boolean; label: string } | null;
-  /** Send back: the run's comment route with the saved notes it seals, the diff it is about and this read's request token. */
+  /** Send back: the run's comment route with the diff it is about and this read's request token. Only with no saved notes
+   * waiting: notes the panel doesn't show are never sealed into a revision from here. */
   sendBack: { action: string; batch: string; source: string; request: string } | null;
+  /** Saved notes on this result that a Send back would carry: read and sent on the result's own page. */
+  notesWaiting: number;
 };
 
 const RECEIPT = /^[0-9a-f]{16,128}$/;
@@ -379,12 +396,14 @@ export function resultSnapshotOf(workspace: BrowserWorkspace | null): ResultSnap
   const acceptOk = complete !== null && complete.action === `/t/${encodeURIComponent(view.id)}/complete` && complete.run === run && RECEIPT.test(complete.receipt)
     && selected.acts.primary === "accept" && selected.decision?.ready === true && (complete.accept?.note ?? null) === null && !openChecks;
   const back = selected.panel?.sendBack ?? null;
-  const sendOk = back != null && back.action === `/r/${run}/comment` && REQUEST.test(back.request) && (selected.acts.primary === "request-changes" || selected.acts.secondary === "request-changes");
+  const notesWaiting = back === null || back.batch === "" ? 0 : back.batch.split(",").length;
+  const sendOk = back != null && notesWaiting === 0 && back.action === `/r/${run}/comment` && REQUEST.test(back.request) && (selected.acts.primary === "request-changes" || selected.acts.secondary === "request-changes");
   if (!acceptOk && !sendOk) return null;
   return {
     taskId: view.id, run, revision: loaded.revision,
     accept: acceptOk ? { action: complete!.action, receipt: complete!.receipt, withAcceptance: complete!.accept != null, label: selected.decision?.label ?? "Accept" } : null,
     sendBack: sendOk ? { action: back!.action, batch: back!.batch, source: back!.source, request: back!.request } : null,
+    notesWaiting,
   };
 }
 
@@ -392,7 +411,8 @@ export function resultSnapshotOf(workspace: BrowserWorkspace | null): ResultSnap
 export function sameTerms(a: ResultSnapshot, b: ResultSnapshot | null): boolean {
   return b !== null && a.taskId === b.taskId && a.run === b.run && a.revision === b.revision
     && a.accept?.action === b.accept?.action && a.accept?.receipt === b.accept?.receipt && a.accept?.withAcceptance === b.accept?.withAcceptance
-    && a.sendBack?.action === b.sendBack?.action && a.sendBack?.batch === b.sendBack?.batch && a.sendBack?.source === b.sendBack?.source;
+    && a.sendBack?.action === b.sendBack?.action && a.sendBack?.batch === b.sendBack?.batch && a.sendBack?.source === b.sendBack?.source
+    && a.notesWaiting === b.notesWaiting;
 }
 
 type ActAnswer = { kind: "answer"; outcome: "done" | "refused"; words: string } | { kind: "elsewhere" } | { kind: "lost" };
@@ -431,6 +451,8 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
   const [said, setSaid] = useState<{ tone: "refused" | "words"; text: string } | null>(null);
   const [changed, setChanged] = useState(false);
   const [note, setNote] = useState("");
+  // A press whose answer was lost and whose outcome the task doesn't show: nothing more is pressed here.
+  const [unconfirmed, setUnconfirmed] = useState(false);
   const pressing = useRef(false);
   const alive = useRef(true);
   const holdTimer = useRef<number | undefined>(undefined);
@@ -486,15 +508,23 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
       if (await again() !== undefined) finish();
       return;
     }
-    // No answer: it may have been kept before the answer was lost. Read the task and say what it says.
+    // No answer: it may have been kept before the answer was lost. Read the task again: only a durable, specific sign of
+    // this very act counts as done (this run's result, complete). Anything else is said as unconfirmed, and the panel
+    // takes no further press until the person has looked at the task.
     setBusy("checking");
     const after = await again();
     if (after === undefined || !alive.current) { pressing.current = false; return; }
-    const still = resultSnapshotOf(after);
-    if (still !== null && sameTerms(shown, still)) { setSaid({ tone: "words", text: "No answer came back, and the result still waits. Try again." }); finish(); return; }
-    onDone(item.id, "Done. The task moved on.");
+    if (kind === "accept" && acceptedHere(after, shown)) { onDone(item.id, "Accepted. The task is complete."); return; }
+    setUnconfirmed(true);
+    setSaid({ tone: "words", text: "We couldn’t confirm this. Check the task before doing anything else." });
+    pressing.current = true;
+    setBusy(null);
   };
 
+  if (unconfirmed) return <div className="so-work-decide" ref={pane} data-work-decide="unconfirmed">
+    <p className="so-home-said" role="status" data-work-said-act="unconfirmed">{said?.text}</p>
+    <div className="k-acts"><KLinkButton variant="primary" label="Check the task" href={item.href} data-full-load="" data-work-check="" /></div>
+  </div>;
   if (snapshot === null) return <div className="k-acts" ref={pane}><KLinkButton variant="primary" label="Review the result" href={item.href} data-full-load="" data-work-review="" /></div>;
   return <div className="so-work-decide" ref={pane} data-work-decide={snapshot.accept !== null ? "accept" : "send-back"}>
     {changed && <p className="so-home-changed" role="status" data-work-changed>The result changed. Read it again.</p>}
@@ -502,10 +532,22 @@ function ResultDecision({ item, workspace, again, onDone, onSettled }: { item: I
       <KButton variant="primary" label={snapshot.accept.label} busy={busy === "accepting" ? "Accepting…" : busy === "checking" ? "Checking…" : false}
         aria-disabled={!armed || busy !== null ? true : undefined} data-work-accept="" onClick={event => { if (pressedByPerson(event)) void press("accept"); }} />
     </div>}
+    {snapshot.notesWaiting > 0 && <div className="so-work-notes" data-work-notes-waiting={snapshot.notesWaiting}>
+      <p className="so-open-x">{snapshot.notesWaiting === 1 ? "1 saved note waits" : `${snapshot.notesWaiting} saved notes wait`} to go with a send back. Read them on the result first.</p>
+      <div className="k-acts"><KLinkButton label="Review and send back" href={`${item.href}?tab=result#request-changes`} data-work-review-send="" /></div>
+    </div>}
     {snapshot.sendBack !== null && <form className="so-work-send" onSubmit={event => { event.preventDefault(); void press("send"); }} data-work-send-back="">
       <KComposer id={`send-back-${snapshot.taskId}`} label="What should change?" placeholder="What should change?" value={note} onChange={setNote}
         onSend={() => { void press("send"); }} line rows={1} sendLabel="Send back" disabled={busy !== null} sendDisabled={!armed} />
     </form>}
     {said && <p className={`so-home-said${said.tone === "refused" ? " is-refused" : ""}`} role="status" data-work-said-act={said.tone}>{said.text}</p>}
   </div>;
+}
+
+/** Whether a read shows this very accept kept: the pinned run's result is the task's current one, and the task is
+ * complete. A permission change (no read), a newer result or acts that merely went away are not that. */
+export function acceptedHere(workspace: BrowserWorkspace | null, shown: ResultSnapshot): boolean {
+  const view = taskViewOf(workspace);
+  if (view === null || view.id !== shown.taskId || view.result?.current !== true || view.historical != null) return false;
+  return view.result.selected.build === shown.run && view.status?.status.headline === "Complete";
 }

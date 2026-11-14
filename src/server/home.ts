@@ -221,21 +221,21 @@ export const WORK_GROUP_LABEL: Readonly<Record<WorkNeedsGroup, string>> = { deci
 const WORK_GROUP_ORDER: readonly WorkNeedsGroup[] = ["decide", "review", "unblock"];
 
 /**
- * Work's Needs you (the one-workspace plan S2a): exactly the rows Home lists — every task that needs this person, every
- * held publication, flow card and setup step Home admits, through the same reads and rules (homeView's own) — grouped
- * Decide / Review / Unblock. Each group's count is exact past the rows listed: the work index's own group totals for the
- * tasks, plus every ask that isn't a task. Reads only the Needs-you list (Work's list reads Running, Queued and Done).
+ * Work's Needs you (the one-workspace plan S2a): the rows Home lists, through the same rules (homeView's own) — for the
+ * tasks, from the very list page Work shows (its view, project, state filter and cursor, so a later page lists later
+ * tasks and nothing repeats), and on the first unfiltered page every held publication, flow card and setup step Home
+ * admits — grouped Decide / Review / Unblock. Each group's count is exact past the rows listed: the page's own group
+ * totals for the tasks, plus the asks that aren't tasks.
  */
-export function workNeeds(facts: HomeFacts): { groups: { key: WorkNeedsGroup; label: string; count: number; rows: BrowserHomeRow[] }[]; total: number; any: boolean } {
-  const { store, now, access, project } = facts;
-  const needs = workIndexPage(store, now, access, { view: "needs-you", limit: HOME_NEEDS_SHOWN, project, ...(facts.evidenceRoot === undefined ? {} : { root: facts.evidenceRoot }) });
-  const yours = needs.items.filter(one => one.status.views.includes("needs-you"));
+export function workNeeds(facts: HomeFacts, page: WorkIndexPage, filtered: boolean): { groups: { key: WorkNeedsGroup; label: string; count: number; rows: BrowserHomeRow[] }[]; total: number; tasks: number; any: boolean } {
+  const { store, now, project } = facts;
+  const yours = page.items.filter(one => one.status.views.includes("needs-you") && one.archived === undefined);
   const approver = facts.approver ?? facts.canAnswer;
   const asks = facts.asks ?? NO_HOME_ASKS;
   // The same rules as homeView: held publications, flow cards and setup steps are an approver's; the builder step waits
-  // behind a task row that already asks for a builder.
-  const held = approver ? asks.held : [], flows = approver ? asks.flows : [];
-  const setup = approver ? asks.setup.filter(one => one.key !== "builder" || needs.builderWaits === 0) : [];
+  // behind a task row that already asks for a builder. They are no task's row: listed once, on the first page.
+  const held = approver && !filtered ? asks.held : [], flows = approver && !filtered ? asks.flows : [];
+  const setup = approver && !filtered ? asks.setup.filter(one => one.key !== "builder" || page.builderWaits === 0) : [];
   const multi = project === null && new Set(yours.map(one => one.repo ?? "").concat([...held, ...flows, ...setup].flatMap(one => one.repo === null ? [] : [one.repo]))).size > 1;
   const rows = [
     ...yours.map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor, "needs", approver ? asks.release : null)),
@@ -245,10 +245,10 @@ export function workNeeds(facts: HomeFacts): { groups: { key: WorkNeedsGroup; la
   const extra: Record<WorkNeedsGroup, number> = { decide: held.length + flows.length, review: 0, unblock: setup.length };
   const groups = WORK_GROUP_ORDER.flatMap(key => {
     const listed = rows.filter(row => groupOf(row) === key);
-    const count = Math.max(needs.groups[key] + extra[key], listed.length);
+    const count = Math.max(page.groups[key] + extra[key], listed.length);
     return count === 0 ? [] : [{ key, label: WORK_GROUP_LABEL[key], count, rows: listed }];
   });
-  const total = needs.totals["needs-you"] + held.length + flows.length + setup.length;
-  const any = needs.totals.all > 0 || needs.totals.completed > 0 || (needs.totals.archived ?? 0) > 0;
-  return { groups, total, any };
+  const tasks = page.totals["needs-you"];
+  const any = page.totals.all > 0 || page.totals.completed > 0 || (page.totals.archived ?? 0) > 0;
+  return { groups, total: tasks + held.length + flows.length + setup.length, tasks, any };
 }
