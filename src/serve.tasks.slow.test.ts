@@ -1582,6 +1582,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(workspaceOf(await landed.text()).sensitive).toBe(true);
   });
 
+  const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   test("an earlier result's page acts on nothing current: no Stop, note, approval, retry or completion of the live run, and a way to the current work", async () => {
     const ref = seed("t-moved-on", "a failed build, then a live retry");
     const failed = finished("t-moved-on", ref, "failed", null);
@@ -1613,6 +1614,14 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
       expect(view.lead).toEqual([]);
       expect(view.more?.every(one => one.kind === "copy")).toBe(true);
       expect(workspaceOf(html).conversation ?? null).toBeNull();
+      // Without script it says the same as the app: Failed and what went wrong, never the saved receipt's heading.
+      const failure = view.result!.selected.failure!;
+      expect(failure.line.length).toBeGreaterThan(0);
+      const head = /<header class="result-head" data-result-failed>[\s\S]*?<\/header>/.exec(body)?.[0] ?? "";
+      expect(head).toContain(">Failed</h2>");
+      expect(head).toContain(escapeHtml(failure.line));
+      if (failure.evidence !== null) expect(head).toContain(escapeHtml(failure.evidence));
+      expect(body).not.toContain("Changes saved");
     }
   });
 

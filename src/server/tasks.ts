@@ -501,18 +501,20 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const base = `${taskHref(family.root.id)}?${shown !== family.current.id ? `version=${encodeURIComponent(shown)}&` : ""}tab=result`;
     const csrf = who.via === "cookie" ? who.session.csrf : "";
     const result = picked.selected === null ? null : (() => {
-      const parts = reviewCockpitDetailParts(picked.selected, csrf, url.searchParams.get("noted") !== null, who.via === "cookie" && who.role === "approver",
-        parseResultTab(url.searchParams.get("section")), who.name, { kind: "task", base });
       // Current: the result the task itself would show (its latest), however the address named it — the header then
       // owns its status and ceremonies, so no form is ever on the page twice.
       const latest = named === null ? picked.chosen?.runId ?? null : selectResultFor(shown, null, readProject, who, ctx.now).chosen?.runId ?? null;
+      // (A result with no run, a task done by hand, is current when it is the version's own.)
+      const current = shown === family.current.id && (picked.chosen?.runId ?? null) === latest;
+      // An earlier result is its own page, with no task header: its document says its own status (a failed one, Failed).
+      const parts = reviewCockpitDetailParts(picked.selected, csrf, url.searchParams.get("noted") !== null, who.via === "cookie" && who.role === "approver",
+        parseResultTab(url.searchParams.get("section")), who.name, { kind: "task", base, alone: !current });
       // What this person's last post from the result was refused for, said on it (the old result page's `refused=`).
       const refusedCode = url.searchParams.get("refused") ?? "";
       const refusal = Object.hasOwn(RESULT_REFUSALS, refusedCode) ? RESULT_REFUSALS[refusedCode]! : null;
       return { html: refusal === null ? parts.html : html`<p class="problem" data-result-refusal>${refusal}</p>${parts.html}`,
         selected: refusal === null ? parts.selected : { ...parts.selected, problem: refusal },
-        // (A result with no run, a task done by hand, is current when it is the version's own.)
-        current: shown === family.current.id && (picked.chosen?.runId ?? null) === latest };
+        current };
     })();
     // The task's Record section (`?tab=record`, which /t/:id/evidence now opens): read only when asked for.
     const record = url.searchParams.get("tab") === "record" ? (() => {
