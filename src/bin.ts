@@ -11,12 +11,16 @@ const [major = 0, minor = 0] = versions.node.split(".").map(Number);
 if (versions.bun !== undefined) {
   process.stderr.write(
     "Toolroll runs on Node 22.13 or newer — Bun's runtime has no node:sqlite.\n" +
-      "Run it with Node: `bunx toolroll up` (no --bun) or `npx toolroll up`.\n",
+      "Run it with Node: `bunx toolroll` (no --bun) or `npx toolroll`.\n",
   );
   process.exit(2);
 }
 if (major < 22 || (major === 22 && minor < 13)) {
-  process.stderr.write(`Toolroll needs Node 22.13 or newer (this is ${versions.node}) — it uses node:sqlite.\n`);
+  // How to get one, as install.sh says it: on Linux the distribution's own nodejs is usually too old (Ubuntu 24.04: 18).
+  const how = process.platform === "linux"
+    ? "Install it from https://nodejs.org/en/download (choose nvm: `nvm install 22`), or from NodeSource (https://github.com/nodesource/distributions); `apt install nodejs` is usually too old."
+    : "Install it from https://nodejs.org/en/download" + (process.platform === "darwin" ? ", or with `brew install node`." : ".");
+  process.stderr.write(`Toolroll needs Node 22.13 or newer (this is ${versions.node}): it uses node:sqlite.\n${how}\n`);
   process.exit(2);
 }
 // --version and the top-level usage answer here, before the CLI and its command families load.

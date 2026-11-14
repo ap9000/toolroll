@@ -14,9 +14,9 @@
  * (sandbox-launch.ts) that changes into the launch's folder, asks the runtime for the command, runs it and cleans up.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
@@ -68,6 +68,9 @@ export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platfo
     return probe.status === 0 ? null : "sandbox-exec can't start a sandbox here (is this already inside one?)";
   }
   if (platform === "linux") {
+    // The programs it needs, named with the line that installs them (LINUX_SANDBOX_TOOLS), before anything else.
+    const missing = missingLinuxSandboxTools();
+    if (missing.length > 0) return `${toolWords(missing)} ${missing.length === 1 ? "is" : "are"} not installed (${linuxSandboxInstallLine(missing)})`;
     const checked = checkLinuxDependencies();
     if (checked.errors.length > 0) return checked.errors.join("; ");
     if (!getLinuxDependencyStatus().hasSeccompApply) return "the sandbox runtime's seccomp helper isn't available for this processor";
@@ -77,6 +80,48 @@ export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platfo
     return probe.status === 0 ? null : "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
   }
   return `the sandbox runtime has no sandbox for ${platform}`;
+}
+
+/**
+ * The programs the Linux sandbox needs on PATH, each with the package that installs it (the same name in apt, dnf and
+ * pacman). bubblewrap and socat are what the runtime's own check (checkLinuxDependencies) requires; ripgrep is how it
+ * finds nested protected names. The one list: every message, install.sh's tip and docs/guide/linux.md name exactly
+ * these (sandbox-runtime.test.ts holds them to it).
+ */
+export const LINUX_SANDBOX_TOOLS: readonly { command: string; package: string }[] = [
+  { command: "bwrap", package: "bubblewrap" },
+  { command: "socat", package: "socat" },
+  { command: "rg", package: "ripgrep" },
+];
+
+/** "bubblewrap, socat and ripgrep": packages, in words. */
+function toolWords(packages: readonly string[]): string {
+  return packages.length <= 1 ? packages.join("") : `${packages.slice(0, -1).join(", ")} and ${packages.at(-1)}`;
+}
+
+/** The packages of LINUX_SANDBOX_TOOLS whose program isn't on this PATH (an executable file in one of its folders). */
+export function missingLinuxSandboxTools(path: string = process.env["PATH"] ?? ""): string[] {
+  const folders = path.split(delimiter).filter(folder => folder !== "");
+  const found = (command: string) => folders.some(folder => {
+    try { accessSync(join(folder, command), fsConstants.X_OK); return statSync(join(folder, command)).isFile(); } catch { return false; }
+  });
+  return LINUX_SANDBOX_TOOLS.filter(tool => !found(tool.command)).map(tool => tool.package);
+}
+
+/** The line that installs these packages: apt, then dnf. */
+export function linuxSandboxInstallLine(packages: readonly string[] = LINUX_SANDBOX_TOOLS.map(tool => tool.package)): string {
+  return `sudo apt install ${packages.join(" ")} (Fedora: sudo dnf install ${packages.join(" ")})`;
+}
+
+/** "bubblewrap, socat and ripgrep": what every "Install …" sentence names. */
+export const linuxSandboxToolsWords = (): string => toolWords(LINUX_SANDBOX_TOOLS.map(tool => tool.package));
+
+/** What a person reads when this Linux computer is missing some of them: which, and the line that installs them. */
+export function missingSandboxToolsWords(missing: readonly string[]): string[] {
+  return [
+    `Toolroll needs ${toolWords(missing)} to run agents in a sandbox on this computer.`,
+    `Install ${missing.length === 1 ? "it" : "them"}, then run toolroll again: ${linuxSandboxInstallLine(missing)}`,
+  ];
 }
 
 /** POSIX shell words. */

@@ -308,6 +308,8 @@ describe("toolroll up", () => {
     expect(opened).toHaveLength(1);
     showsPassword(lines.join("\n"));
     expect(lines.join("\n")).not.toContain(secret);
+    // l1: the containment sentence is said once per installation, not on every start (where it applies: Linux).
+    expect(lines.filter(line => line.startsWith("Agents run without Linux process containment"))).toEqual([]);
     // A relative --db that starts with a dash or a tilde still prints one absolute, quoted path, never an option or
     // another user's home.
     const cwd = process.cwd();

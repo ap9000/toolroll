@@ -172,6 +172,15 @@ describe("the start-up notice", () => {
     expect(containmentNotice(effectiveContainment("observed", unavailable))).toBeNull();
     expect(containmentNotice(effectiveContainment("required", undelegated))).toBeNull();
   });
+
+  test("l1: due once per installation — the first start at a terminal says it, later ones don't", async () => {
+    const { openStore, noticeDueOnce, CONTAINMENT_NOTICE_FACT } = await import("./store.js");
+    const store = openStore(":memory:");
+    try {
+      expect(noticeDueOnce(store, CONTAINMENT_NOTICE_FACT, new Date())).toBe(true);
+      expect(noticeDueOnce(store, CONTAINMENT_NOTICE_FACT, new Date())).toBe(false);
+    } finally { store.close(); }
+  });
 });
 
 describe("the pinned policy", () => {

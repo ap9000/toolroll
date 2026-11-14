@@ -78,11 +78,10 @@ describe("terminal UI", () => {
     await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "approve", id: "t3", digest: "sample" }]));
   });
 
-  it("n files a new task from the composer; the first one asks once about the background", async () => {
+  it("n files a new task from the composer and asks nothing more: the login-item question never interrupts a filing", async () => {
     const source = scripted();
-    let asked = 0;
-    const answers: boolean[] = [];
-    const session: TuiSession = { ...sampleSession(), owned: () => true, shouldAskBackground: () => asked++ === 0, answerBackground: async yes => { answers.push(yes); return "Okay."; } };
+    let asks = 0;
+    const session: TuiSession = { ...sampleSession(), owned: () => true, shouldAskBackground: () => { asks += 1; return true; }, answerBackground: async () => "Okay." };
     const app = render(createElement(App, { source, session, pollMs: 20 }));
     const shows = show(app);
     await shows("> Sample");
@@ -93,32 +92,32 @@ describe("terminal UI", () => {
     await shows("Add a dark mode");
     app.stdin.write("\r");
     await vi.waitFor(() => expect(source.acts).toEqual([{ kind: "new", text: "Add a dark mode", repo: null }]));
-    await shows("Start Toolroll when you log in, so tasks keep going? (y/N)");
-    app.stdin.write("n");
-    await vi.waitFor(() => expect(answers).toEqual([false]));
+    await shows("Done.");
+    expect(app.lastFrame()).not.toContain("Start Toolroll when you log in");
+    expect(asks).toBe(0);
   });
 
-  it("the login-item question defaults to no: Enter adds nothing; only y does", async () => {
-    const source = scripted();
-    let asked = 0;
-    const answers: boolean[] = [];
-    const session: TuiSession = { ...sampleSession(), owned: () => true, shouldAskBackground: () => asked++ < 2, answerBackground: async yes => { answers.push(yes); return "Okay."; } };
-    const app = render(createElement(App, { source, session, pollMs: 20 }));
-    const shows = show(app);
-    await shows("> Sample");
-    await mounted();
-    for (const [text, answer] of [["First task", "\r"], ["Second task", "y"]] as const) {
-      app.stdin.write("n");
-      await shows("New task");
-      app.stdin.write(text);
-      await shows(text);
-      app.stdin.write("\r");
+  it("l1: after the first accepted result it asks once about the login item; no is the default (Enter), only y adds it", async () => {
+    for (const [answer, expected] of [["\r", false], ["n", false], ["y", true]] as const) {
+      const source = scripted();
+      let asked = false;
+      const answers: boolean[] = [];
+      const session: TuiSession = { ...sampleSession(), owned: () => true, shouldAskBackground: () => !asked, answerBackground: async yes => { asked = true; answers.push(yes); return "Okay."; } };
+      const app = render(createElement(App, { source, session, pollMs: 20 }));
+      const shows = show(app);
+      await shows("> Sample");
+      await mounted();
+      app.stdin.write("j"); app.stdin.write("j");
+      await shows("> Sample: add CSV export");
+      app.stdin.write("c");
+      await shows("Did you check it yourself? (y/n)");
+      app.stdin.write("y");
       await shows("Start Toolroll when you log in, so tasks keep going? (y/N)");
       app.stdin.write(answer);
-      await vi.waitFor(() => expect(answers).toHaveLength(text === "First task" ? 1 : 2));
+      await vi.waitFor(() => expect(answers).toEqual([expected]));
       await shows("Okay.");
+      cleanup();
     }
-    expect(answers).toEqual([false, true]);
   });
 
   it("p asks for a plan bound to the planning source the task read; with none to ask, it sends nothing and says so", async () => {
