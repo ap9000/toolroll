@@ -226,11 +226,14 @@ approver on two, a viewer on one; some answers are refusals, held too), sequenti
 answer to the digest main sent (`src/fast-reads.golden.json`, written from main's code with `FAST_READS_WRITE_GOLDEN=1`;
 rewrite it only for a change meant to alter what people see; `FAST_READS_OUT=<folder>` keeps any body that changed).
 `src/fast-reads-boundaries.slow.test.ts` serves each read with and without the request's work reads and requires the
-same answer for an API token, a local owner, an account narrowed then revoked, overlapping requests and another
-process's commit; `src/work-reads.test.ts` covers writes, revocations and other processes' commits in the middle of a
-request, a write while the projection is built and a hold ending across the reuse window. A page read's work projection
-and its rows' saved facts are read once per request (`src/work-reads.ts`): every reuse is proved against the database
-first, and nothing outlives the request.
+same answer for an API token, a token that expires between reads, a local owner, an account narrowed then revoked, an
+account deleted outright, overlapping requests, another process's commit, results' check lines and the live summary
+room's snapshot; `src/work-reads.test.ts` covers writes, revocations, rollbacks (including through prepared
+statements) and other processes' commits in the middle of a request, a write while the projection is built, a
+projection built after another process committed, a lead-filtered list and a hold ending across the reuse window. A
+page read's work projection and its rows' saved facts are read once per request (`src/work-reads.ts`): every reuse is
+proved against the database first (this process's writes at once; another process's commit from the next turn of the
+event loop, a bounded staleness of one synchronous turn), and nothing outlives the request.
 
 ## Destinations and click paths
 

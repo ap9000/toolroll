@@ -1,13 +1,14 @@
 /**
- * Fast reads at the edges fast-reads.slow.test.ts doesn't reach: an API token, a local owner's session, an account
- * narrowed or revoked between its reads, overlapping requests for different accounts, and a commit by another process.
+ * Fast reads at the edges fast-reads.slow.test.ts doesn't reach: an API token, a token that expires between reads, a
+ * local owner's session, an account narrowed or revoked between its reads, an account deleted outright, overlapping
+ * requests for different accounts, a commit by another process, and the live summary room's snapshot.
  * Each read is served twice — with the request's work reads (work-reads.ts) and with them switched off (this file's
  * mock makes withWorkReads run the read bare, exactly as main read every page) — and the two answers must match byte
  * for byte after the same normalization the golden uses. A mid-request write, revocation, external commit, a write
  * while the projection fills and a hold ending across the reuse window are work-reads.test.ts's.
  */
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { tmpdir } from "node:os";
@@ -28,7 +29,7 @@ type Served = { root: string; port: number; store: Store; server: DecisionServer
 const realRandom = Math.random;
 let world: WireWorld, wire: Served, laptop: Served;
 const cookies: Record<string, string> = {};
-let token = "", ownResult = "";
+let token = "", expiring = "", ownResult = "";
 
 function send(at: Served, path: string, headers: Record<string, string>, method = "GET", body?: string): Promise<Answer> {
   return new Promise((resolve, reject) => {
@@ -96,11 +97,17 @@ beforeAll(async () => {
   const minted = mintApiToken();
   store.createApiToken({ id: minted.id, account: "pat", name: "ci", secretHash: minted.hash, access: "read", expiresAt: "2099-01-01T00:00:00.000Z", by: "pat" }, yesterday);
   token = minted.token;
+  // Alex's read token that runs out a minute after the world's clock; and gwen, a viewer whose account row goes.
+  const soon = mintApiToken();
+  store.createApiToken({ id: soon.id, account: "alex", name: "soon", secretHash: soon.hash, access: "read", expiresAt: new Date(WIRE_NOW.getTime() + 60_000).toISOString(), by: "alex" }, yesterday);
+  expiring = soon.token;
+  const gwen = addApprover(store, "gwen", yesterday, { name: "alex", token: world.people.alex });
+  if (!gwen.ok || !store.setAccountProjects("gwen", [world.samProject], "alex", yesterday).ok) throw Error("gwen");
   ownResult = String(store.handle.prepare(`SELECT t.id FROM task t JOIN task_ref r ON r.backend = 'built-in' AND r.external_id = t.id
     WHERE r.repo = ? AND t.state = 'done' AND r.revision_of IS NULL AND EXISTS(SELECT 1 FROM run WHERE task_ref = r.id AND finished_at IS NOT NULL AND role = 'builder' AND outcome = 'built')
     ORDER BY t.id LIMIT 1`).get(world.samProject)?.["id"]);
   wire = await serve(store, root, { evidenceRoot: world.evidenceRoot, repos: world.repos });
-  for (const [who, password] of Object.entries({ ...world.people, pat: pat.token })) {
+  for (const [who, password] of Object.entries({ ...world.people, pat: pat.token, gwen: gwen.token })) {
     const login = await send(wire, "/login", { "content-type": "application/x-www-form-urlencoded", origin: `http://127.0.0.1:${wire.port}` }, "POST", new URLSearchParams({ name: who, token: password }).toString());
     if (login.status !== 303) throw Error(`sign-in for ${who}: ${login.status}`);
     cookies[who] = String(login.headers["set-cookie"]?.[0] ?? "").split(";")[0]!;
@@ -218,4 +225,58 @@ test("results' check levels and follow-up checks read over the kept copy as over
   }
   for (const path of ["/tasks?view=needs-you", "/tasks", "/", "/tasks?layout=board"]) await same(wire, path, { cookie: cookies["alex"]! });
   await same(wire, "/chat", { cookie: cookies["alex"]! });
+}, 300_000);
+
+test("a token that expires between reads reads, then is refused, the same either way", async () => {
+  const auth = { authorization: `Bearer ${expiring}` };
+  expect((await same(wire, "/tasks", auth)).status).toBe(200);
+  vi.setSystemTime(new Date(WIRE_NOW.getTime() + 120_000));
+  try {
+    expect((await same(wire, "/tasks", auth)).status).not.toBe(200);
+  } finally { vi.setSystemTime(WIRE_NOW); }
+}, 300_000);
+
+test("an account deleted outright between its reads is refused the same either way", async () => {
+  expect((await same(wire, "/tasks", { cookie: cookies["gwen"]! })).status).toBe(200);
+  // No store door deletes an account (they are revoked); a row gone all the same is the edge.
+  wire.store.handle.exec("PRAGMA foreign_keys = OFF");
+  try { wire.store.handle.prepare("DELETE FROM approver WHERE name = 'gwen'").run(); } finally { wire.store.handle.exec("PRAGMA foreign_keys = ON"); }
+  const gone = await same(wire, "/tasks", { cookie: cookies["gwen"]! });
+  expect(gone.status).not.toBe(200);
+  await same(wire, "/tasks?layout=board", { cookie: cookies["gwen"]! });
+}, 300_000);
+
+/** The summary room's first snapshot for an account, from a fresh stream (the room is made anew once its last stream
+ * leaves): its frames until one carries the account's projects, or five seconds. */
+function summaryFrames(who: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let text = "";
+    const request = httpRequest({ host: "127.0.0.1", port: wire.port, path: "/live?room=summary", headers: { host: `127.0.0.1:${wire.port}`, cookie: cookies[who]!, accept: "text/event-stream" } }, response => {
+      response.setEncoding("utf8");
+      const done = () => { clearTimeout(timer); request.destroy(); resolve(text); };
+      const timer = setTimeout(done, 5_000);
+      response.on("data", (chunk: string) => { text += chunk; if (/\\"path\\":/.test(text) && /\n\n$/.test(text)) done(); });
+    });
+    request.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") reject(error); });
+    request.end();
+  });
+}
+const settle = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+test("the live summary room's snapshot is the same either way", async () => {
+  for (const who of ["alex", "sam"]) {
+    reads.off = false;
+    const fast = await summaryFrames(who);
+    await settle(1_500);
+    reads.off = true;
+    const bare = await summaryFrames(who);
+    reads.off = false;
+    await settle(1_500);
+    expect(fast, `${who}'s summary`).toMatch(/\\"path\\":/);
+    if (process.env["FAST_READS_OUT"] && normalized(fast) !== normalized(bare)) for (const [at, text] of [["fast", fast], ["bare", bare]]) writeFileSync(join(process.env["FAST_READS_OUT"], `summary-${who}.${at}.txt`), text);
+    // The frame's workspace revision moves with any write between the two streams (a session's bookkeeping); the
+    // snapshot is the content.
+    const content = (text: string) => normalized(text).replace(/^:.*$/gm, "").replace(/"revision":"v1:\d+"/g, '"revision":"<n>"');
+    expect(content(fast), `${who}'s summary`).toBe(content(bare));
+  }
 }, 300_000);
