@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Caller,ProjectResolver,RouteDeclaration,RouteScope } from './route-table.js';
+import type { Who } from './session.js';
 
 export interface RoutePrincipal {
   caller: Caller;
@@ -20,6 +21,17 @@ export function evaluateRoutePolicy(route: RouteDeclaration, principal: RoutePri
   if ((needsAct && principal.capability !== 'act' && !viewerPreference) || (required === 'read' && principal.capability === 'none')) return { ok: false, status: 403, reason: 'scope' };
   if (!resolve(route.project)) return { ok: false, status: 403, reason: 'project' };
   return { ok: true };
+}
+
+/**
+ * Whether the caller holds the row's role (route-table.ts `role`, `roleBrowser`): anyone; an approver; or an instance
+ * operator, through a browser sign-in only when the row says so. The console checks it after admission and before the
+ * row's one handler (serve.ts dispatchConsole), and each Settings section is admitted by the same function
+ * (settings-sections.ts admitSection), so the two can never disagree.
+ */
+export function holdsRole(route: Pick<RouteDeclaration, 'role' | 'roleBrowser'>, who: Pick<Who, 'name' | 'via' | 'role'>, isOperator: (name: string) => boolean): boolean {
+  return route.role === 'any' || ((!route.roleBrowser || who.via === 'cookie') &&
+    (route.role === 'approver' ? who.role === 'approver' : isOperator(who.name)));
 }
 
 /** The dispatcher matches once; protocol authentication then checks the same row before operation dispatch. */

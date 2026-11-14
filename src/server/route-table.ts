@@ -18,6 +18,7 @@
  */
 
 import type { LocalOwnerAct } from "../local-owner.js";
+import { CHANGE_DOCUMENTS } from "./settings-section-table.js";
 
 /** Who presents the request. `service` is a verified external sender (a signed webhook, an OAuth return carrying its one-time state). */
 export type Caller = "anonymous" | "service" | "cookie" | "bearer" | "oauth" | "coordinator" | "lead";
@@ -478,7 +479,16 @@ get("settings", "settings.page", "/settings", { limited: "unscoped", ...free });
 // The Settings groups (docs/plans/settings-revamp.md §3): one read-only page each, drawn by the overview's handler.
 // Anyone signed in may open one; the page shows only the sections this person can use, and every form's own route
 // keeps its own role and proof.
-for (const one of ["general", "agents", "alerts", "projects", "access", "system", "advanced"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
+for (const one of ["general", "agents", "alerts", "projects", "access", "system"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
+// Settings → Advanced is General's Advanced section now (settings plan F0): a permanent redirect, admitted as General is.
+get("settings", "settings.group-advanced", "/settings/advanced", { limited: "unscoped", ...free, retired: true });
+// Change documents (settings plan v2 §2.2): one per section whose act needs a proof or a page script, generated from the
+// section table and carrying that section's own route policy. The handler admits the section again and shows the form
+// only to a person who may make the change; the POST it sends to keeps its own row, role and proof.
+for (const one of CHANGE_DOCUMENTS) {
+  const { local: _local, ...policy } = one.policy;
+  get("settings", `settings.change.${one.id}`, `/settings/change/${one.id}`, { ...policy });
+}
 get("pages", "health", "/health", { ...free, ...anyOperator("An instance operator reads server health.", "/") });
 get("pages", "metrics", "/metrics", { ...free, ...anyOperator("An instance operator reads metrics.", "/") });
 get("chat", "push.key", "/push/key");
@@ -578,7 +588,7 @@ post("tasks", "sweep.cancel-rest", "^\\/sweeps\\/[1-9][0-9]{0,9}\\/cancel-rest$"
 get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ...operator("An instance operator sets Passwordless.", "/settings") });
 post("settings", "settings.passwordless-send", "/settings/passwordless", { callers: ["cookie"], ...operator("An instance operator sets Passwordless.", "/settings") });
 // Easy-start C5: turning local mode off: an instance operator's step-up from a full session (a local owner is refused).
-post("settings", "settings.local-mode-off", "/settings/local-mode/off", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator turns off local mode.", "/settings/access") });
+post("settings", "settings.local-mode-off", "/settings/local-mode/off", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator turns off local mode.", "/settings/general?section=local-mode") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.
 post("settings", "settings.release-approval-send", "/settings/release-approval", { callers: ["cookie"], ...approver("An approver sets how releases are approved.", "/settings/approval") });

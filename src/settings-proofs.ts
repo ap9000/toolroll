@@ -55,6 +55,9 @@ export type ProofRow = {
   readonly terms: readonly string[];
   /** Anything else the handler requires, in words. */
   readonly note?: string;
+  /** `once`: the answer shows a new secret one time (a worker's token, an invite link), on its own sensitive document
+   * with no script of any kind; it is never shown again (settings plan v2 §3, the 1x column). */
+  readonly reveal?: "once";
 };
 
 const ACCEPT = { passwordless: "accepted", sso: "accepted" } as const;
@@ -115,6 +118,7 @@ export const PROOF_INVENTORY: readonly ProofRow[] = [
   { id: "people-close", action: "Cancel an invite or remove a person", routes: ["/people/invite-revoke", "/people/revoke"], form: "peopleRevoke", field: "token", proof: "step-up", ...ACCEPT, role: "any", handlerRole: "an approver", secrets: [], terms: [] },
   { id: "project-setup", action: "Approve project setup", routes: ["/control/setup-approve"], form: "projectSetup", field: "token", proof: "step-up", ...ACCEPT, role: "any", handlerRole: "an approver of the project; models for a new installation need an instance operator", secrets: [], terms: ["repo", "nonce", "fingerprint", "provider", "model", "command", "seconds"], note: "the nonce is spent before the password is checked: after a refusal, review again; the reviewed inputs are previewed again and must match the fingerprint" },
   { id: "project-instructions", action: "Add the agent instructions", routes: ["/control/instructions-approve"], form: "projectSetup", field: "token", proof: "step-up", ...ACCEPT, role: "any", handlerRole: "an approver of the project", secrets: [], terms: ["repo", "nonce", "fingerprint"], note: "the nonce is spent before the password is checked" },
+  { id: "runner-retire", action: "Retire a computer that builds", routes: ["/fleet/runner/retire"], form: "runnerRetire", field: "token", proof: "step-up", ...ACCEPT, role: "any", handlerRole: "an approver, from a browser", secrets: [], terms: ["name"] },
   { id: "local-mode-off", action: "Turn off local mode", routes: ["/settings/local-mode/off"], form: "localModeOff", field: "password", proof: "step-up", ...ACCEPT, role: "operator", handlerRole: "a full session (never the local owner)", secrets: [], terms: [] },
   { id: "mode-sign", action: "Sign an operating mode", routes: ["/mode/sign"], form: "mode", field: "token", proof: "step-up", ...ACCEPT, role: "any", handlerRole: "an approver of the project", secrets: [], terms: MODE_TERMS },
   { id: "mode-sign-chat-approve", action: "Sign an operating mode that lets your chat app approve", routes: ["/mode/sign"], select: { field: "chat-approve", value: "1" }, form: "mode", field: "token", proof: "credential", ...CREDENTIAL, role: "any", handlerRole: "an approver of the project", secrets: [], terms: MODE_TERMS },
@@ -132,8 +136,10 @@ export const PROOF_INVENTORY: readonly ProofRow[] = [
   { id: "project-check-access", action: "Narrow how far checks reach", routes: ["/settings/project/check-access"], form: "projectCheckAccess", field: "password", proof: "credential", ...CREDENTIAL, role: "any", handlerRole: "an approver of the project", secrets: [], terms: ["repo"], note: "for a form that can only narrow; one that offers a wider level uses project-check-access-widen" },
   { id: "project-check-access-widen", action: "Widen how far checks reach", routes: ["/settings/project/check-access"], explicit: true, form: "projectCheckAccess", field: "password", proof: "typed-now-operator", ...TYPED, role: "any", handlerRole: "an instance operator", secrets: [], terms: ["repo"], note: "the server decides whether a choice widens; a form offering any wider level asks for this proof" },
   ...CHAT_APPS.map(([app, name, form, secrets]): ProofRow => ({ id: `${app}-open`, action: `Connect or pair ${name}`, routes: [`/settings/${app}/connect`, `/settings/${app}/pair`], form, field: "password", proof: "credential", ...CREDENTIAL, role: "approver", secrets, terms: [] })),
-  { id: "sessions-token", action: "Make an API token", routes: ["/settings/sessions"], form: "sessions", field: "password", proof: "credential", when: "only to make a token (ending sessions and revoking tokens need nothing)", ...CREDENTIAL, role: "any", secrets: [], notProof: ["token"], terms: [], note: "`token` here names an API token to revoke" },
-  { id: "people-invite", action: "Invite someone", routes: ["/people/invite"], form: "peopleInvite", field: "token", proof: "credential", ...CREDENTIAL, role: "any", handlerRole: "an approver", secrets: [], terms: [] },
+  { id: "sessions-token", action: "Make an API token", routes: ["/settings/sessions"], form: "sessions", field: "password", proof: "credential", when: "only to make a token (ending sessions and revoking tokens need nothing)", ...CREDENTIAL, role: "any", secrets: [], notProof: ["token"], terms: [], reveal: "once", note: "`token` here names an API token to revoke" },
+  { id: "people-invite", action: "Invite someone", routes: ["/people/invite"], form: "peopleInvite", field: "token", proof: "credential", ...CREDENTIAL, role: "any", handlerRole: "an approver", secrets: [], terms: [], reveal: "once" },
+  // Builders (settings plan v2 §3, Computers): registering a computer mints its worker credential, shown once.
+  { id: "runner-register", action: "Register a computer that builds", routes: ["/fleet/runner/register"], form: "runnerRegister", field: "token", proof: "credential", ...CREDENTIAL, role: "any", handlerRole: "an approver, from a browser", secrets: [], terms: [], reveal: "once", note: "`token` is the person's own password; the worker's new token is shown once on the answer and only its hash is kept" },
   { id: "people-projects", action: "Change a person's projects", routes: ["/people/projects"], form: "peopleProjects", field: "token", proof: "credential", ...CREDENTIAL, role: "operator", secrets: [], terms: ["name"] },
 
   // A typed password, checked by the handler itself.

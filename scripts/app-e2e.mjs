@@ -547,14 +547,15 @@ await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets t
 });
 
 /**
- * Settings → Advanced: a new account's menus leave out advanced features (Spend, Flows, Agents and the rest). A journey
+ * Show advanced features (Settings → General): a new account's menus leave out advanced features (Spend, Flows, Agents and the rest). A journey
  * that uses one of their entry points turns "Show advanced features" on first, through the real switch, and checks that
  * the rail and the person's saved row followed. Already on (an earlier journey in this world): nothing to do.
  */
 async function showAdvanced(on, who = "alex") {
   const saved = () => rows(`SELECT advanced FROM view_preference WHERE account = '${who}'`)[0]?.advanced ?? null;
   if (saved() === 1) return;
-  await on.goto(`${base}/settings/advanced`);
+  // Settings → General's Advanced section (the old /settings/advanced redirects there).
+  await on.goto(`${base}/settings/general?section=advanced`);
   const section = on.locator("#show-advanced");
   await section.waitFor({ timeout: 15_000 });
   if (await on.locator('nav a[href="/flows"]:visible').count() !== 0) throw new Error("Flows is in the menu before Show advanced features is on");

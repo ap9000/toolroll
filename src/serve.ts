@@ -52,7 +52,7 @@ import { createSharedGuards } from "./server/guards.js";
 import { createHandlerRegistry } from "./server/handler-registry.js";
 import { type RemoteHookContext } from "./server/remote-hooks.js";
 import { createRemoteHandlers,type RemoteRuntime } from "./server/remote.js";
-import { evaluateRoutePolicy,withEdgePolicy } from "./server/route-policy.js";
+import { evaluateRoutePolicy,holdsRole,withEdgePolicy } from "./server/route-policy.js";
 import { matchRoute,ROUTES } from "./server/route-table.js";
 import { createTaskViews } from "./server/task-views.js";
 import { runActivityOf } from "./task-activity.js";
@@ -2404,9 +2404,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {
     const { who, response } = ctx;
-    const held = route.role === "any" || ((!route.roleBrowser || who.via === "cookie") &&
-      (route.role === "approver" ? who.role === "approver" : store.isInstanceOperator(who.name)));
-    if (!held) {
+    if (!holdsRole(route, who, name => store.isInstanceOperator(name))) {
       ctx.request.resume();
       const refusal = route.roleRefusal!;
       return Promise.resolve("message" in refusal ? refuse(response, who, 403, refusal.message, refusal.back) : respond(response, refusal.status, refusal.type, refusal.body));

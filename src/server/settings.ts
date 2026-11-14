@@ -46,12 +46,15 @@ import { handlersOf } from './handler-registry.js';
 import type { ServerRuntime } from './runtime.js';
 import { refuse,screen,when } from "./chrome.js";
 import { requestContext } from "./request-context.js";
-import { btn,empty,infoLine,settingsSection } from "./kit.js";
+import { btn,empty,infoLine,settingsSection,settingsShell } from "./kit.js";
 import { shortPathOf } from "./render-projects.js";
-import { approvalGroup,projectPicker,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
+import { approvalGroup,flagsOf,needsByGroup,projectPicker,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsNeeds,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
+import { askedSection,changeDocument,generalBody,generalSections,resolveSettingsProject,type SectionBase,type SectionPerson } from "./settings-sections.js";
+import { CHANGE_DOCUMENTS } from "./settings-section-table.js";
+import { retiredRedirect } from "./retired-routes.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
 import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
-import { browserCaller,sessionWithinLifetime } from "./session.js";
+import { authorityOfWho,browserCaller,sessionWithinLifetime,type Who } from "./session.js";
 /** settings handlers, moved without changing their route bodies. */
 import { DEFAULT_ACCENT,normalHex } from "../accent-colors.js";
 import { resolvePhaseAgent } from "../agentconfig.js";
@@ -795,9 +798,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
       // The folder Toolroll adds projects from, read only: shown to whoever may see installation settings.
       projectsFolder: restricted() || runtime.unscopedMode ? null
         : { folders: runtime.ceiling.roots.map(path => ({ path, shown: shortPathOf(path) })) },
-      backup: lastBackup === null ? null : lastBackup.ok === false
-        ? { failed: true, words: `Failed ${when(lastBackup.startedAt)}${lastBackup.error === null ? "" : `: ${lastBackup.error}`}` }
-        : { failed: false, words: lastBackup.finishedAt === null ? "Backing up now" : `Backed up ${when(lastBackup.finishedAt)}` },
+      backup: backupFacts(lastBackup),
     };
     const pushScript = pushScriptOf(facts);
     const script = group === "hub" ? HUB_ANCHOR_SCRIPT : group === "alerts" && pushScript !== null ? pushScript : null;
@@ -2440,13 +2441,14 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.learning": learningPage,
     "settings.telegram": telegramPage,
     "settings.page": settingsHome,
-    "settings.group-general": settingsHome.bind(null),
+    "settings.group-general": generalPage,
     "settings.group-agents": settingsHome.bind(null),
     "settings.group-alerts": settingsHome.bind(null),
     "settings.group-projects": settingsHome.bind(null),
     "settings.group-access": settingsHome.bind(null),
     "settings.group-system": settingsHome.bind(null),
-    "settings.group-advanced": settingsHome.bind(null),
+    "settings.group-advanced": advancedRetired,
+    ...changeDocumentHandlers(),
     "provider.resume": providerResume,
     "settings.updates-dismiss": updatesDismiss,
     "session.forget-password": forgetPassword,
@@ -2727,7 +2729,9 @@ ${postForm("/settings/chat-approval/save", html`\
     const { response, now, posted } = ctx;
     const who = browserCaller(ctx.who);
     const body = readForm(posted, CONSOLE_FORMS.localModeOff);
-    const back = sayTo(response, "/settings/access", "#local-mode");
+    // Settings plan v2 §2.6: done goes to General's Local mode section; a refusal back to its change document.
+    const done = sayTo(response, "/settings/general?section=local-mode");
+    const back = sayTo(response, "/settings/change/local-mode");
     if (body.sent.getAll("password").length > 1) return back("problem", "That form was sent twice over. Nothing changed.");
     if (who.authority !== "full") return back("problem", "Sign in with your password to turn off local mode.");
     const turned = store.transact(() => {
@@ -2736,7 +2740,7 @@ ${postForm("/settings/chat-approval/save", html`\
     });
     if (turned === null) return back("problem", "Enter your Toolroll password to turn off local mode.");
     if (!turned.ok) return back("problem", turned.reason === "not-on" ? "Local mode is already off." : "Only an instance operator can turn off local mode.");
-    return back("said", "Local mode is off. This computer's browser signs in with your password now.");
+    return done("said", "Local mode is off. This computer's browser signs in with your password now.");
   }
   /** Settings → Models → Suggested: one project's offers, rules and switch; on the installation scope, every
    * project's offers and rules, each reviewed on its own project's page. */
@@ -2838,17 +2842,17 @@ ${postForm("/settings/chat-approval/save", html`\
   async function advancedAct(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.advancedView);
-    const back = sayTo(response, "/settings/advanced");
+    const back = sayTo(response, "/settings/general?section=advanced");
     if (who.via !== "cookie") return refuse(response, who, 403, "This address needs a browser sign-in.", "/settings");
     const values = body.getAll("advanced");
-    if (values.length !== 1 || (values[0] !== "on" && values[0] !== "off")) return refuse(response, who, 400, "Choose on or off.", "/settings/advanced");
+    if (values.length !== 1 || (values[0] !== "on" && values[0] !== "off")) return refuse(response, who, 400, "Choose on or off.", "/settings/general?section=advanced");
     const on = values[0] === "on";
     const session = who.session;
     const door: AdvancedDoor = who.authority === "full"
       ? { kind: "person", actor: who.name, generation: session.generation, live: () => sessions.holds(session) && sessions.savedNow(session) && sessionWithinLifetime(session, Date.now()) }
       : { kind: "local-owner", actor: who.name };
     const done = setAdvancedPreference(store, door, on, now);
-    if (!done.ok) return refuse(response, who, 403, done.problem, "/settings/advanced");
+    if (!done.ok) return refuse(response, who, 403, done.problem, "/settings/general?section=advanced");
     return back("said", on ? "Advanced features show in your menus." : "Advanced features are out of your menus. They still open from here.");
   }
   // Settings → Project → How work starts (flexible.ts, the Flexible plan v2 slice F1). Refused before anything is read
@@ -2880,6 +2884,75 @@ ${postForm("/settings/chat-approval/save", html`\
     if (!proved.ok) return back("problem", "Enter your Toolroll password to turn on Flexible.");
     const done = enableFlexible(store, { repo, by: who.name, proof: proved.method, shownDigest: body.get("digest") ?? "", now });
     return back(done.ok ? "said" : "problem", done.ok ? "Flexible is on." : done.message);
+  }
+  // ---- the section table's pages (settings plan v2 §2; F0: General and its change documents) ----------------------
+
+  /** The person a section is admitted for, as the console proved them: no request, no cookie. */
+  function sectionPersonOf(who: Who): SectionPerson {
+    return { name: who.name, via: who.via, role: who.role, authority: authorityOfWho(who), operator: store.isInstanceOperator(who.name),
+      restricted: restricted(), installation: options.telegramTokenFile !== undefined && !restricted(), passwordSet: store.accountOf(who.name)?.passwordSet === true };
+  }
+  /** What General's sections read, none of it from the request. */
+  const generalImpls = generalSections({
+    updatesVersion: name => settingsUpdates(name, "")?.current ?? null,
+    packageVersion: PACKAGE_VERSION,
+    firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
+    passwordless: () => passwordlessSetting(store).on,
+    localModeOn: () => localModeOf(store)?.enabled === true,
+  });
+  const sectionImpls = { ...generalImpls };
+  /** The last backup in the words the overview and the section nav use. */
+  function backupFacts(last: ReturnType<typeof store.backupRuns>[number] | null): SettingsFacts["backup"] {
+    return last === null ? null : last.ok === false
+      ? { failed: true, words: `Failed ${when(last.startedAt)}${last.error === null ? "" : `: ${last.error}`}` }
+      : { failed: false, words: last.finishedAt === null ? "Backing up now" : `Backed up ${when(last.finishedAt)}` };
+  }
+  /** The section nav's "needs you" dots, read under the same rules the overview reads them (installation facts only for
+   * a person they belong to; the bot token only then). */
+  function navFlagsFor(who: Who, now: Date): Record<string, boolean> {
+    const minimal = options.telegramTokenFile === undefined || restricted();
+    const operator = who.via === "cookie" && store.isInstanceOperator(who.name);
+    const bot = minimal ? null : loadBotToken(process.env, options.telegramTokenFile!);
+    return flagsOf(needsByGroup(settingsNeeds({
+      approver: who.role === "approver", workers: minimal ? null : settingsWorkers(store, now), backup: operator ? backupFacts(store.backupRuns(1)[0] ?? null) : null,
+      telegram: { failing: !minimal && telegramTrouble(store, bot), delivery: minimal ? null : telegramDeliveryWords(store, bot) },
+    })));
+  }
+  function sectionBase(who: Who, project: string | null, now: Date): SectionBase {
+    const facts = requestContext.getStore();
+    const theme = facts?.theme === "light" || facts?.theme === "dark" ? facts.theme : "system";
+    return { person: sectionPersonOf(who), project, now, prefs: { theme, accent: facts?.accent ?? DEFAULT_ACCENT, advanced: facts?.advanced !== false } };
+  }
+  // Settings → General: the project is resolved once (a foreign one is the same 404 as an unknown one), each section is
+  // admitted before any of its readers runs, and only an asked section's detail is read (?section=<id>&open=1).
+  async function generalPage(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    const resolved = resolveSettingsProject(url, project, { projects: consoleProjects, canOpen: repo => visible(repo) });
+    if (!resolved.ok) return refuse(response, who, resolved.status, resolved.message, "/settings");
+    const drawn = generalBody(sectionImpls, sectionBase(who, resolved.project, now), askedSection(url), { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
+    return sendScreen(response, 200, screen("General", settingsShell({ group: "general", title: "General", lead: "How Toolroll looks and behaves in this browser.", flags: navFlagsFor(who, now), body: drawn.body }),
+      { chrome: chromeFor(project, "settings") }));
+  }
+  // Settings → Advanced is General's Advanced section now: a permanent redirect (retired-routes.ts SETTINGS_RETIRED).
+  async function advancedRetired(ctx: HandlerContext): Promise<void> {
+    return retiredRedirect("settings.group-advanced", ctx.url, ctx.response);
+  }
+  /** One handler per change document row (route-table.ts makes the rows from the same table). */
+  function changeDocumentHandlers(): Record<string, (ctx: HandlerContext) => Promise<void>> {
+    return Object.fromEntries(CHANGE_DOCUMENTS.map(one => [`settings.change.${one.id}`, changePage(one.id)]));
+  }
+  // A section's change document (settings plan v2 §2.2): always its own sensitive document (never in place, no script),
+  // admitted as its section is, its form shown only to a person who may make the change. The form posts to its own
+  // route, which proves everything again.
+  function changePage(id: string) {
+    return async (ctx: HandlerContext): Promise<void> => {
+      const { url, who, response, now, project } = ctx;
+      const resolved = resolveSettingsProject(url, project, { projects: consoleProjects, canOpen: repo => visible(repo) });
+      if (!resolved.ok) return refuse(response, who, resolved.status, resolved.message, "/settings");
+      const answer = changeDocument(id, sectionImpls, sectionBase(who, resolved.project, now), url.searchParams.get("problem"));
+      if (!answer.ok) return refuse(response, who, answer.status, answer.message, "/settings/general");
+      return sendScreen(response, 200, screen(answer.title, answer.body, { chrome: chromeFor(project, "settings"), forceSensitive: true }));
+    };
   }
   return { registrations, modelsView };
 }

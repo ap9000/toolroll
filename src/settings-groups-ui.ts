@@ -8,7 +8,6 @@
  * Groups (design/kit.ts SETTINGS_GROUPS): General, Agents and models, Chat apps and alerts, Approvals and safety,
  * Projects, People and sign-in, Spend (its own page, /spend), System.
  */
-import { ACCENT_PRESETS, accentNote } from "./accent-colors.js";
 import { type BrowserPhoneCard, type BrowserUpdates } from "./browser-workspace.js";
 import { SETTINGS_GROUP_ICONS, SETTINGS_GROUPS, plural } from "./design/kit.js";
 import { digestTimes } from "./digest-times.js";
@@ -18,17 +17,17 @@ import { type UnattendedPermissionMode } from "./scope.js";
 import { type QualityMode, qualityModeTitle } from "./quality.js";
 import { type ResultScreenshots } from "./store.js";
 import { kitSectionForm, SECRET_OPT_OUTS } from "./settings-kit.js";
-import { ADVANCED_PAGES } from "./advanced-view.js";
 import {
   btn, chip, codeLine, disclose, formRow, infoLine, input, needsPanel, note, notice, radios, select, settingsLink, settingsLinks, settingsRecord,
   settingsSection, settingsShell, switchInput,
 } from "./server/kit.js";
 
-export type SettingsGroup = "hub" | "general" | "agents" | "alerts" | "approval" | "projects" | "access" | "system" | "advanced";
-/** The group pages this module draws (Spend is /spend; Approvals and safety is /settings/approval, its own handler). */
+export type SettingsGroup = "hub" | "agents" | "alerts" | "approval" | "projects" | "access" | "system";
+/** The group pages this module draws (Spend is /spend; Approvals and safety is /settings/approval, its own handler;
+ * General is drawn from the section table, server/settings-sections.ts). */
 export const GROUP_PATHS: Readonly<Record<string, SettingsGroup>> = {
-  "/settings": "hub", "/settings/general": "general", "/settings/agents": "agents", "/settings/alerts": "alerts",
-  "/settings/projects": "projects", "/settings/access": "access", "/settings/system": "system", "/settings/advanced": "advanced",
+  "/settings": "hub", "/settings/agents": "agents", "/settings/alerts": "alerts",
+  "/settings/projects": "projects", "/settings/access": "access", "/settings/system": "system",
 };
 
 type Tone = "ok" | "warn" | "off" | "neutral";
@@ -95,7 +94,8 @@ const answered = (facts: SettingsFacts): Html => facts.problem ? notice(sentence
 
 export type NeedsItem = { group: string; title: string; text: string; action: readonly [label: string, href: string] };
 /** What waits on this person in Settings (never a task): no builder, a chat app failing, a failed backup. Read-only. */
-export function settingsNeeds(facts: SettingsFacts): NeedsItem[] {
+export type NeedsFacts = Pick<SettingsFacts, "workers" | "approver" | "backup"> & { telegram: Pick<SettingsFacts["telegram"], "failing" | "delivery"> };
+export function settingsNeeds(facts: NeedsFacts): NeedsItem[] {
   const out: NeedsItem[] = [];
   if (facts.workers !== null && facts.approver && !facts.workers.some(one => one.tone === "ok")) {
     out.push({ group: "agents", title: facts.workers.length === 0 ? "Nothing is taking work" : "Nothing is taking work right now",
@@ -111,7 +111,7 @@ export function needsByGroup(items: readonly NeedsItem[]): Record<string, number
   for (const item of items) out[item.group] = (out[item.group] ?? 0) + 1;
   return out;
 }
-const flagsOf = (counts: Record<string, number>): Record<string, boolean> => Object.fromEntries(Object.keys(counts).map(key => [key, true]));
+export const flagsOf = (counts: Record<string, number>): Record<string, boolean> => Object.fromEntries(Object.keys(counts).map(key => [key, true]));
 
 // ---- the overview -----------------------------------------------------------------------------------------------
 
@@ -146,30 +146,21 @@ function systemWords(facts: SettingsFacts): string {
 }
 
 /** The overview: what waits on this person, then one row per group with its state. Viewers see the groups they can open. */
-/**
- * Easy-start C5: local mode, said once. The local owner without a password is offered the one way to more ("Let agents
- * work on their own" → /password/set); a full session of an operator sees it on, and can turn it off (a step-up, confirmed).
- */
+/** Easy-start C5: the local owner without a password is offered the one way to more ("Let agents work on their own"
+ * → /password/set). Local mode itself, and an operator's off switch, are General's (server/settings-sections.ts). */
 function localModeSection(facts: SettingsFacts): Html {
   const local = facts.local;
-  if (local === undefined || local === null) return html``;
-  if (local.owner) {
-    return local.passwordSet ? html`` : settingsSection({ id: "set-password", title: "Let agents work on their own",
-      lead: "Agents can work on their own, merge and release only after you set a password.",
-      body: html`<div class="k-acts">${btn("Set a password", { sm: true, href: "/password/set?next=%2Fsettings" })}</div>` });
-  }
-  if (!local.canTurnOff) return html``;
-  return settingsSection({ id: "local-mode", title: "Local mode", state: " · on",
-    lead: "A browser on this computer can file tasks, approve plans and add projects without your password.",
-    body: kitSectionForm({ proof: "local-mode-off", action: "/settings/local-mode/off", id: "local-mode-form", save: { label: "Turn off", variant: "outline" },
-      confirm: "Turn off local mode", body: html`` }) });
+  if (local === undefined || local === null || !local.owner || local.passwordSet) return html``;
+  return settingsSection({ id: "set-password", title: "Let agents work on their own",
+    lead: "Agents can work on their own, merge and release only after you set a password.",
+    body: html`<div class="k-acts">${btn("Set a password", { sm: true, href: "/password/set?next=%2Fsettings" })}</div>` });
 }
 
 export function settingsHub(facts: SettingsFacts): Html {
   const items = settingsNeeds(facts);
   const counts = needsByGroup(items);
   const words: Record<string, string> = {
-    general: [`Theme: ${themeWords(facts.theme).toLowerCase()}`, facts.version === null ? null : `Toolroll ${facts.version}`].filter(Boolean).join(" · "),
+    general: [`Theme: ${themeWords(facts.theme).toLowerCase()}`, facts.version === null ? null : `Toolroll ${facts.version}`, `advanced features ${advancedOn(facts) ? "on" : "off"}`].filter(Boolean).join(" · "),
     agents: agentsWords(facts),
     alerts: alertsWords(facts),
     approval: approvalWords(facts),
@@ -180,7 +171,6 @@ export function settingsHub(facts: SettingsFacts): Html {
   };
   const shown = SETTINGS_GROUPS.filter(([, slug]) => slug !== "spend" || facts.operator).filter(([, slug]) => slug !== "system" || facts.operator || facts.approver)
     .filter(([, slug]) => slug !== "spend" || advancedOn(facts));
-  words["advanced"] = advancedWords(facts);
   const panel = needsPanel(items.map((item, index) => ({ title: item.title, text: item.text, action: btn(item.action[0], { variant: index === 0 ? "primary" : "outline", href: item.action[1] }) })));
   return settingsShell({
     group: "hub", title: "Settings", flags: flagsOf(counts),
@@ -201,54 +191,7 @@ export const HUB_ANCHORS: Readonly<Record<string, string>> = {
 };
 export const HUB_ANCHOR_SCRIPT = `(function(){var m=${JSON.stringify(HUB_ANCHORS)};var h=decodeURIComponent(location.hash.slice(1));if(Object.prototype.hasOwnProperty.call(m,h))location.replace(m[h]);})();`;
 
-// ---- General ----------------------------------------------------------------------------------------------------
-
-const ACCENT_CHOICES = ACCENT_PRESETS.slice(0, 6);
-export function generalGroup(facts: SettingsFacts, flags: Record<string, boolean>): Html {
-  const themeButton = (value: string, label: string) =>
-    html`<button type="submit" name="theme" value="${value}" aria-pressed="${String(facts.theme === value)}">${label}</button>`;
-  const custom = ACCENT_CHOICES.some(one => one.hex === facts.accent) ? null : facts.accent;
-  const accentNoteWords = accentNote(facts.accent);
-  const appearance = settingsSection({
-    id: "appearance", title: "Appearance", state: " · saved for this browser",
-    body: joinHtml([
-      formRow("Theme", "Light, dark, or whatever this device uses.", postForm("/settings/appearance", html`<div class="k-seg" role="group" aria-label="Theme">${themeButton("system", "Match device")}${themeButton("light", "Light")}${themeButton("dark", "Dark")}</div>`, { returnTo: "/settings/general" })),
-      kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent", gate: true, hidden: { return: "/settings/general" },
-        body: joinHtml([
-          formRow("Accent", "Buttons, focus and what needs you.",
-            select({ name: "accent", label: "Accent", current: facts.accent, items: [...ACCENT_CHOICES.map(one => [one.hex, one.id === "ink" ? "Ink (default)" : one.name] as const), ...(custom === null ? [] : [[custom, `Your own colour (${custom})`] as const])] })),
-          accentNoteWords === null ? "" : note(accentNoteWords),
-        ]) }),
-      disclose("Use your own colour", kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent-own", gate: true, hidden: { return: "/settings/general" },
-        body: formRow("Your own colour", "Six hex digits, like #6e56cf.", input({ id: "accent-hex", name: "accent", value: custom ?? "", attrs: { placeholder: "#6e56cf", spellcheck: "false", autocomplete: "off", "aria-label": "Your own colour", pattern: "#?[0-9a-fA-F]{6}", required: true } })) }), custom !== null),
-    ]),
-  });
-  const browser = settingsSection({
-    id: "this-browser", title: "This browser",
-    body: joinHtml([
-      formRow("Remembered password", "After you type your password, standard approvals skip it on this computer for 15 minutes. Forget ends that now.",
-        facts.browser ? postForm("/session/forget-password", btn("Forget now", { sm: true, type: "submit" }), { returnTo: "/settings/general" }) : html``, "inline"),
-    ]),
-  });
-  const password = settingsSection({
-    id: "your-password", title: "Your password",
-    body: joinHtml([
-      formRow("Where it is", "If you started Toolroll with toolroll up, your password is saved on the computer running Toolroll. Toolroll never shows it in a browser. To read it, run this there:", html``, "wide"),
-      codeLine("cat ~/.config/toolroll/.toolroll-secrets/up-login.txt"),
-      facts.passwordless === null ? "" : formRow("Passwordless", "Sign in once; most approvals then need no password.", btn(`${facts.passwordless ? "On" : "Off"} · Change`, { sm: true, href: "/settings/passwordless" }), "inline"),
-    ]),
-  });
-  const version = facts.version === null ? "" : settingsSection({
-    id: "version", title: "Version",
-    body: joinHtml([
-      formRow("Toolroll", facts.firstResult ?? "Installed on this computer.", html`<span class="k-mono">${facts.version}</span>`, "inline"),
-      facts.operator ? formRow("Updates", null, btn("Open updates", { sm: true, variant: "ghost", href: "/settings/updates" }), "inline") : "",
-    ]),
-  });
-  // The password sections only where a password exists: a password-free owner has none to remember or look up.
-  const withPassword = passwordFree(facts) ? [] : [browser, password];
-  return settingsShell({ group: "general", title: "General", lead: "How Toolroll looks and behaves in this browser.", flags, body: joinHtml([answered(facts), appearance, ...withPassword, version]) });
-}
+// ---- General: server/settings-sections.ts draws it from the section table (settings plan F0). ----------------------
 
 // ---- Agents and models ------------------------------------------------------------------------------------------
 
@@ -545,9 +488,11 @@ export function accessGroup(facts: SettingsFacts, flags: Record<string, boolean>
       settingsLink({ href: "/settings/sign-in", title: "Sign-in with a provider", status: facts.sso === null ? "Not set up: everyone uses a password" : `People sign in with ${facts.sso}` })] : []),
     ...(facts.operator && (advancedOn(facts) || facts.passwordless === true) ? [
       settingsLink({ href: "/settings/passwordless", title: "Passwordless", status: facts.passwordless ? "On: signing in is the only password" : "Off: approvals ask for your password" })] : []),
+    // Local mode moved to General (settings plan F0); this row keeps the old #local-mode for links and bookmarks.
+    ...(facts.local?.canTurnOff === true ? [html`<div id="local-mode">${settingsLink({ href: "/settings/general?section=local-mode", title: "Local mode", status: "On · in General" })}</div>`] : []),
   ];
   return settingsShell({ group: "access", title: "People and sign-in", lead: "Who can get in, how they sign in, and the ways in they hold.", flags,
-    body: joinHtml([answered(facts), localModeSection(facts), settingsLinks(null, links, { label: "People and sign-in" })]) });
+    body: joinHtml([answered(facts), settingsLinks(null, links, { label: "People and sign-in" })]) });
 }
 
 function updatesSection(updates: BrowserUpdates): Html {
@@ -590,13 +535,11 @@ export function settingsGroupPage(group: SettingsGroup, facts: SettingsFacts): H
   const flags = flagsOf(needsByGroup(settingsNeeds(facts)));
   switch (group) {
     case "hub": return settingsHub(facts);
-    case "general": return generalGroup(facts, flags);
     case "agents": return agentsGroup(facts, flags);
     case "alerts": return alertsGroup(facts, flags);
     case "projects": return projectsGroup(facts, flags);
     case "access": return accessGroup(facts, flags);
     case "system": return systemGroup(facts, flags);
-    case "advanced": return advancedGroup(facts, flags);
     case "approval": return settingsHub(facts);
   }
 }
@@ -779,25 +722,7 @@ function passwordFree(facts: SettingsFacts): boolean {
   return facts.local?.owner === true && !facts.local.passwordSet;
 }
 
-// ---- Advanced (/settings/advanced; the eight plan, W4) -----------------------------------------------------------
+// ---- Advanced (the eight plan, W4): its switch is General's Advanced section now (server/settings-sections.ts) ------
 
 /** This person's switch as the facts carry it: absent (an older caller) reads on, so nothing hides by accident. */
 function advancedOn(facts: SettingsFacts): boolean { return facts.advanced === undefined || facts.advanced.on; }
-function advancedWords(facts: SettingsFacts): string {
-  return advancedOn(facts) ? "On: every page shows in the menus" : "Off: menus show only the main steps";
-}
-
-/** Settings → Advanced: the person's own switch, then every advanced page, always (whatever the switch says). */
-export function advancedGroup(facts: SettingsFacts, flags: Record<string, boolean>): Html {
-  const on = advancedOn(facts);
-  const change = facts.advanced?.canChange === true
-    ? postForm("/settings/advanced", btn(on ? "Turn off" : "Turn on", { sm: true, type: "submit" }), { hidden: { advanced: on ? "off" : "on" } })
-    : html``;
-  const toggle = settingsSection({ id: "show-advanced", title: "Show advanced features", state: on ? " · on" : " · off", right: change,
-    lead: "Flows, other computers, spend limits, operating modes and the rest, in your menus. They keep working either way, and each opens from below.",
-    body: html`` });
-  const pages = ADVANCED_PAGES.filter(one => one.operator !== true || facts.operator)
-    .map(one => settingsLink({ href: one.href, title: one.title, status: one.words }));
-  return settingsShell({ group: "advanced", title: "Advanced", lead: "Everything beyond filing, approving and accepting work.", flags,
-    body: joinHtml([answered(facts), toggle, settingsLinks("Advanced pages", pages)]) });
-}

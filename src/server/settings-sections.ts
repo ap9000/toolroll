@@ -1,0 +1,371 @@
+/**
+ * Settings sections (the eight settings plan v2 §2): admission, data scope and action capability decided BEFORE any
+ * of a section's readers run, the one canonical project a Settings page shows, the check a session-bound act makes
+ * against the project its form was rendered for, and the General area's sections.
+ *
+ * - `admitSection` runs the section's pinned route policy (the console's own `holdsRole`, callers, the project-limited
+ *   and local-owner rules) and its named read checks. A section it refuses is never loaded, drawn or sent.
+ * - Loaders get only a `SectionContext`: the admitted person, the canonical project, the clock, the person's own view
+ *   preferences, and the data scopes and act capabilities admission decided. Never the request.
+ * - `renderArea` draws an area's admitted sections: each section's summary, and its detail only when asked
+ *   (`?section=<id>&open=1`); `changeDocument` draws one section's change document.
+ *
+ * Nothing here proves an act: every form posts to its existing route, which proves it again.
+ */
+import { ADVANCED_PAGES } from "../advanced-view.js";
+import { accentNote, ACCENT_PRESETS } from "../accent-colors.js";
+import type { Authority } from "../local-owner.js";
+import { html, joinHtml, postForm, type Html } from "../html.js";
+import { kitSectionForm } from "../settings-kit.js";
+import { holdsRole } from "./route-policy.js";
+import { btn, codeLine, disclose, doc, docHeader, formRow, infoLine, input, notice, phoneHeader, select, settingsLink, settingsSection } from "./kit.js";
+import { changeHref, sectionHref, SETTINGS_SECTIONS, sectionDeclaration, type SectionDeclaration, type SectionGate, type SettingsArea } from "./settings-section-table.js";
+
+// ---- who is asking -------------------------------------------------------------------------------------------------
+
+/** The person a Settings page is drawn for, as the console proved them (no request, no cookie). */
+export type SectionPerson = {
+  readonly name: string;
+  readonly via: "cookie" | "bearer";
+  readonly role: "approver" | "viewer";
+  /** A browser session's own authority (an API token is full). */
+  readonly authority: Authority;
+  readonly operator: boolean;
+  /** A project-limited account. */
+  readonly restricted: boolean;
+  /** Installation-wide settings are theirs to see (settingsHome's `!minimal`). */
+  readonly installation: boolean;
+  readonly passwordSet: boolean;
+};
+
+/** Whether one named check holds for this person. */
+export function gateHolds(gate: SectionGate, person: SectionPerson): boolean {
+  switch (gate) {
+    case "installation": return person.installation && !person.restricted;
+    case "cookie-session": return person.via === "cookie";
+    case "full-session": return person.via === "cookie" && person.authority === "full";
+    // An instance operator's browser session, as the old handlers' inline `operator` read it.
+    case "operator": return person.via === "cookie" && person.operator;
+    case "approver": return person.role === "approver";
+    case "password-holder": return !(person.via === "cookie" && person.authority !== "full" && !person.passwordSet);
+  }
+}
+
+export type Admission =
+  | { readonly ok: true; readonly scopes: ReadonlySet<string>; readonly can: Readonly<Record<string, boolean>> }
+  | { readonly ok: false; readonly why: "caller" | "scope" | "local" | "limited" | "role" | `read:${SectionGate}` };
+
+/**
+ * READ admission, then DATA SCOPE and ACTION CAPABILITY, for one section: the same pieces the console admits a route
+ * with (callers, scope, the local owner's mark, the project-limited rule, then `holdsRole`), then the section's own
+ * read checks. Runs before any of the section's loaders.
+ */
+export function admitSection(declaration: Pick<SectionDeclaration, "policy" | "read" | "scope" | "act">, person: SectionPerson, project: string | null = null): Admission {
+  const policy = declaration.policy;
+  if (!policy.callers.includes(person.via)) return { ok: false, why: "caller" };
+  // Sections are reads; a row needing more than read (act, step-up) is an approver's, from a browser for step-up.
+  if (policy.scope === "step-up" && person.via !== "cookie") return { ok: false, why: "caller" };
+  if ((policy.scope === "act" || policy.scope === "step-up") && person.role !== "approver") return { ok: false, why: "scope" };
+  if (person.via === "cookie" && person.authority !== "full" && policy.local !== "allow") return { ok: false, why: "local" };
+  if (person.restricted && (policy.limited === "deny" || policy.limited === "conversation")) return { ok: false, why: "limited" };
+  if (person.restricted && (policy.limited === "collection" || policy.limited === "resource") && project === null) return { ok: false, why: "limited" };
+  if (!holdsRole(policy, person, name => name === person.name && person.operator)) return { ok: false, why: "role" };
+  for (const gate of declaration.read) if (!gateHolds(gate, person)) return { ok: false, why: `read:${gate}` };
+  const scopes = new Set(Object.entries(declaration.scope).filter(([, gates]) => gates.every(gate => gateHolds(gate, person))).map(([name]) => name));
+  const can = Object.fromEntries(Object.entries(declaration.act).map(([act, gates]) => [act, gates.every(gate => gateHolds(gate, person))]));
+  return { ok: true, scopes, can };
+}
+
+// ---- the one project a Settings page shows (plan v2 §2.3) ---------------------------------------------------------
+
+export type ProjectResolution = { readonly ok: true; readonly project: string | null; readonly requested: boolean } | { readonly ok: false; readonly status: 400 | 404; readonly message: string };
+/** One message for an unknown project and a foreign one, so nothing says whether it exists. */
+export const PROJECT_NOT_AVAILABLE = "That project is not available in this workspace.";
+
+/**
+ * The canonical project of a Settings request, decided once before admission: the one `repo` it names (two is a 400),
+ * else the session's open project, else none. A named project must be one this console shows AND one this person may
+ * open; anything else is one 404 with the same words.
+ */
+export function resolveSettingsProject(url: URL, session: string | null, deps: { readonly projects: () => readonly string[]; readonly canOpen: (repo: string) => boolean }): ProjectResolution {
+  const named = url.searchParams.getAll("repo");
+  if (named.length > 1) return { ok: false, status: 400, message: "Name one project." };
+  if (named.length === 1) {
+    const repo = named[0]!;
+    if (repo === "" || !deps.projects().includes(repo) || !deps.canOpen(repo)) return { ok: false, status: 404, message: PROJECT_NOT_AVAILABLE };
+    return { ok: true, project: repo, requested: true };
+  }
+  return { ok: true, project: session, requested: false };
+}
+
+export type SessionProjectCheck = { readonly ok: true; readonly project: string } | { readonly ok: false; readonly rendered: string | null; readonly session: string | null; readonly message: string };
+/**
+ * Round 2, change 2: immediately before a session-bound act (operating mode, setup, control), the project the form was
+ * drawn for (its hidden `repo`) must still be the session's open project. Another tab may have opened a different one
+ * since; then nothing changes and the person is offered to open the drawn project again.
+ */
+export function sessionProjectCheck(posted: readonly string[], session: string | null, projectName: (repo: string) => string): SessionProjectCheck {
+  if (posted.length !== 1 || posted[0] === "") return { ok: false, rendered: null, session, message: "This form names no project. Open the project and try again." };
+  const rendered = posted[0]!;
+  if (session === null || rendered !== session) {
+    return { ok: false, rendered, session, message: `${projectName(rendered)} is no longer the open project${session === null ? "" : ` (${projectName(session)} is)`}. Nothing changed.` };
+  }
+  return { ok: true, project: rendered };
+}
+
+/** The recovery a refused session-bound act offers: open the project the form was drawn for, then come back. */
+export function openProjectAgain(rendered: string, name: string, back: string): Html {
+  return postForm("/projects/select", btn(`Open ${name}`, { sm: true, type: "submit", variant: "primary" }), { hidden: { path: rendered, return: back } });
+}
+
+// ---- what a section is given ----------------------------------------------------------------------------------------
+
+/** A person's own view preferences, as their request carries them (presentation only). */
+export type SectionPrefs = { readonly theme: "system" | "light" | "dark"; readonly accent: string; readonly advanced: boolean };
+
+export type SectionContext = {
+  readonly person: SectionPerson;
+  readonly project: string | null;
+  readonly now: Date;
+  readonly prefs: SectionPrefs;
+  /** The data scopes and act capabilities admission decided for this section. */
+  readonly scopes: ReadonlySet<string>;
+  readonly can: Readonly<Record<string, boolean>>;
+};
+
+export type SectionView<S, D> = {
+  readonly declaration: SectionDeclaration;
+  readonly ctx: SectionContext;
+  readonly summary: S;
+  readonly detail: D | null;
+  /** This section is the one `?section=` names. */
+  readonly asked: boolean;
+  /** The attributes its root element carries (`data-section`, and focus for the asked one). */
+  readonly attrs: Readonly<Record<string, string | null>>;
+};
+
+export type SectionImpl<S = unknown, D = unknown> = {
+  /** The section's summary facts, or null when it has nothing to show this person. */
+  readonly loadSummary: (ctx: SectionContext) => S | null;
+  /** Its detail, read only on `?section=<id>&open=1`. */
+  readonly loadDetail?: (ctx: SectionContext) => D;
+  readonly render: (view: SectionView<S, D>) => Html;
+  /** Its change document's body (the form), for a section with one; `summary` null: nothing to change now. */
+  readonly renderChange?: (view: Omit<SectionView<S | null, D>, "summary"> & { summary: S | null; problem: string | null }) => { title: string; body: Html };
+  /** What a person without the act capability hears on the change document. */
+  readonly refusal?: string;
+};
+export type SectionImpls = Readonly<Record<string, SectionImpl<never, never>>>;
+
+/** What `?section=` and `open=1` ask for (one value each, else nothing). */
+export function askedSection(url: URL): { section: string | null; open: boolean } {
+  const sections = url.searchParams.getAll("section");
+  const section = sections.length === 1 && /^[a-z][a-z-]{0,39}$/.test(sections[0]!) ? sections[0]! : null;
+  return { section, open: section !== null && url.searchParams.getAll("open").length === 1 && url.searchParams.get("open") === "1" };
+}
+
+/** What a page hands its sections: the admitted person, the canonical project, the clock and their own preferences. */
+export type SectionBase = { person: SectionPerson; project: string | null; now: Date; prefs: SectionPrefs };
+type Base = SectionBase;
+
+/** An area's admitted sections, in table order: each one's summary, and the asked one's detail when it opens. */
+export function renderArea(area: SettingsArea, impls: SectionImpls, base: Base, asked: { section: string | null; open: boolean }, declarations: readonly SectionDeclaration[] = SETTINGS_SECTIONS): { sections: Html[]; jump: Html; shown: string[] } {
+  const sections: Html[] = [];
+  const shown: string[] = [];
+  let jump: Html = html``;
+  for (const declaration of declarations.filter(one => one.area === area)) {
+    const impl = impls[declaration.id] as SectionImpl<unknown, unknown> | undefined;
+    if (impl === undefined) throw new Error(`settings section ${declaration.id} has no implementation`);
+    const admitted = admitSection(declaration, base.person, base.project);
+    if (!admitted.ok) continue;
+    const ctx: SectionContext = { ...base, scopes: admitted.scopes, can: admitted.can };
+    const summary = impl.loadSummary(ctx);
+    if (summary === null) continue;
+    const isAsked = asked.section === declaration.id;
+    const detail = isAsked && asked.open && declaration.opens && impl.loadDetail !== undefined ? impl.loadDetail(ctx) : null;
+    sections.push(impl.render({ declaration, ctx, summary, detail, asked: isAsked, attrs: { "data-section": declaration.id, tabindex: isAsked ? "-1" : null } }));
+    shown.push(declaration.id);
+    // Without scripts the page still says where the asked section is, once, at the top.
+    if (isAsked) jump = html`<p class="k-note k-jump"><a href="#${declaration.id}">Jump to ${declaration.title}</a></p>`;
+  }
+  return { sections, jump, shown };
+}
+
+export type ChangeAnswer = { ok: true; title: string; body: Html } | { ok: false; status: 403 | 404; message: string };
+/** One section's change document: admitted as the section is, and only for a person with its act capability. */
+export function changeDocument(id: string, impls: SectionImpls, base: Base, problem: string | null): ChangeAnswer {
+  const declaration = sectionDeclaration(id);
+  const impl = impls[id] as SectionImpl<unknown, unknown> | undefined;
+  if (declaration === undefined || declaration.change === null || impl?.renderChange === undefined) return { ok: false, status: 404, message: "There's no page at this address." };
+  const admitted = admitSection(declaration, base.person, base.project);
+  if (!admitted.ok || admitted.can[declaration.change.act] !== true) return { ok: false, status: 403, message: impl.refusal ?? "You can't change this here." };
+  const ctx: SectionContext = { ...base, scopes: admitted.scopes, can: admitted.can };
+  const drawn = impl.renderChange({ declaration, ctx, summary: impl.loadSummary(ctx), detail: null, asked: true, attrs: {}, problem });
+  return { ok: true, ...drawn };
+}
+
+// ---- General (/settings/general) ------------------------------------------------------------------------------------
+
+/** What General's sections read, none of it from the request. */
+export type GeneralDeps = {
+  /** The version Settings → Updates reports to this person (null where updates aren't set up here). */
+  readonly updatesVersion: (name: string) => string | null;
+  readonly packageVersion: string;
+  /** When the first Ready result arrived, in words. */
+  readonly firstResult: (now: Date) => string | null;
+  readonly passwordless: () => boolean;
+  /** Local mode as saved: on, or not. */
+  readonly localModeOn: () => boolean;
+};
+
+const ACCENT_CHOICES = ACCENT_PRESETS.slice(0, 6);
+const back = "/settings/general";
+
+function appearanceSection(): SectionImpl<SectionPrefs> {
+  return {
+    loadSummary: ctx => ctx.prefs,
+    render: ({ summary: prefs, attrs }) => {
+      const themeButton = (value: string, label: string) =>
+        html`<button type="submit" name="theme" value="${value}" aria-pressed="${String(prefs.theme === value)}">${label}</button>`;
+      const custom = ACCENT_CHOICES.some(one => one.hex === prefs.accent) ? null : prefs.accent;
+      const accentNoteWords = accentNote(prefs.accent);
+      return settingsSection({
+        id: "appearance", title: "Appearance", state: " · saved for this browser", attrs,
+        body: joinHtml([
+          formRow("Theme", "Light, dark, or whatever this device uses.", postForm("/settings/appearance", html`<div class="k-seg" role="group" aria-label="Theme">${themeButton("system", "Match device")}${themeButton("light", "Light")}${themeButton("dark", "Dark")}</div>`, { returnTo: back })),
+          kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent", gate: true, hidden: { return: back },
+            body: joinHtml([
+              formRow("Accent", "Buttons, focus and what needs you.",
+                select({ name: "accent", label: "Accent", current: prefs.accent, items: [...ACCENT_CHOICES.map(one => [one.hex, one.id === "ink" ? "Ink (default)" : one.name] as const), ...(custom === null ? [] : [[custom, `Your own colour (${custom})`] as const])] })),
+              accentNoteWords === null ? "" : html`<p class="k-note">${accentNoteWords}</p>`,
+            ]) }),
+          disclose("Use your own colour", kitSectionForm({ proof: "appearance", action: "/settings/appearance", id: "accent-own", gate: true, hidden: { return: back },
+            body: formRow("Your own colour", "Six hex digits, like #6e56cf.", input({ id: "accent-hex", name: "accent", value: custom ?? "", attrs: { placeholder: "#6e56cf", spellcheck: "false", autocomplete: "off", "aria-label": "Your own colour", pattern: "#?[0-9a-fA-F]{6}", required: true } })) }), custom !== null),
+        ]),
+      });
+    },
+  };
+}
+
+function thisBrowserSection(): SectionImpl<{ forget: boolean }> {
+  return {
+    loadSummary: ctx => ({ forget: ctx.can["forget"] === true }),
+    render: ({ summary, attrs }) => settingsSection({
+      id: "this-browser", title: "This browser", attrs,
+      body: formRow("Remembered password", "After you type your password, standard approvals skip it on this computer for 15 minutes. Forget ends that now.",
+        summary.forget ? postForm("/session/forget-password", btn("Forget now", { sm: true, type: "submit" }), { returnTo: back }) : html``, "inline"),
+    }),
+  };
+}
+
+function yourPasswordSection(deps: GeneralDeps): SectionImpl<{ passwordless: boolean | null }> {
+  return {
+    // Passwordless's state is installation data: read only for a person whose scope includes it.
+    loadSummary: ctx => ({ passwordless: ctx.scopes.has("passwordless") ? deps.passwordless() : null }),
+    render: ({ summary, attrs }) => settingsSection({
+      id: "your-password", title: "Your password", attrs,
+      body: joinHtml([
+        formRow("Where it is", "If you started Toolroll with toolroll up, your password is saved on the computer running Toolroll. Toolroll never shows it in a browser. To read it, run this there:", html``, "wide"),
+        codeLine("cat ~/.config/toolroll/.toolroll-secrets/up-login.txt"),
+        summary.passwordless === null ? "" : formRow("Passwordless", "Sign in once; most approvals then need no password.", btn(`${summary.passwordless ? "On" : "Off"} · Change`, { sm: true, href: "/settings/passwordless" }), "inline"),
+      ]),
+    }),
+  };
+}
+
+function versionSection(deps: GeneralDeps): SectionImpl<{ version: string; firstResult: string | null; updates: boolean }> {
+  return {
+    loadSummary: ctx => {
+      const version = deps.updatesVersion(ctx.person.name) ?? (ctx.scopes.has("package-version") ? deps.packageVersion : null);
+      return version === null ? null : { version, firstResult: deps.firstResult(ctx.now), updates: ctx.can["updates"] === true };
+    },
+    render: ({ summary, attrs }) => settingsSection({
+      id: "version", title: "Version", attrs,
+      body: joinHtml([
+        formRow("Toolroll", summary.firstResult ?? "Installed on this computer.", html`<span class="k-mono">${summary.version}</span>`, "inline"),
+        summary.updates ? formRow("Updates", null, btn("Open updates", { sm: true, variant: "ghost", href: "/settings/updates" }), "inline") : "",
+      ]),
+    }),
+  };
+}
+
+type AdvancedSummary = { on: boolean; canSwitch: boolean };
+/** Settings → Advanced, retired to General (F0): the switch always; every advanced page on request. */
+function advancedSection(): SectionImpl<AdvancedSummary, readonly { title: string; href: string; words: string }[]> {
+  return {
+    loadSummary: ctx => ({ on: ctx.prefs.advanced, canSwitch: ctx.can["switch"] === true }),
+    // Operator-only pages are listed only to an operator (their data scope).
+    loadDetail: ctx => ADVANCED_PAGES.filter(one => one.operator !== true || ctx.scopes.has("operator-pages")),
+    render: ({ declaration, summary, detail, attrs }) => {
+      const change = summary.canSwitch
+        ? postForm("/settings/advanced", btn(summary.on ? "Turn off" : "Turn on", { sm: true, type: "submit" }), { hidden: { advanced: summary.on ? "off" : "on" } })
+        : html``;
+      // Every advanced page opens from here whatever the switch says: listed on request (?section=advanced&open=1).
+      const pages = detail === null
+        ? html`<div class="k-acts">${btn("See advanced pages", { sm: true, variant: "ghost", href: `${sectionHref(declaration, { open: true })}#advanced` })}</div>`
+        : html`<div class="k-slinks" aria-label="Advanced pages">${detail.map(one => settingsLink({ href: one.href, title: one.title, status: one.words }))}</div>`;
+      // `show-advanced`: the old page's switch keeps its id, for links and bookmarks.
+      return settingsSection({
+        id: "advanced", title: "Show advanced features", state: summary.on ? " · on" : " · off", attrs,
+        right: html`<span id="show-advanced">${change}</span>`,
+        lead: "Flows, other computers, spend limits, operating modes and the rest, in your menus. They keep working either way.",
+        body: pages,
+      });
+    },
+  };
+}
+
+type LocalSummary = { owner: boolean; turnOff: boolean };
+/** Local mode, said once: the local owner without a password is offered one; an operator's full session turns it off on
+ * its change document (a step-up). */
+function localModeSection(deps: GeneralDeps): SectionImpl<LocalSummary> {
+  return {
+    loadSummary: ctx => {
+      if (!deps.localModeOn()) return null;
+      const owner = ctx.person.authority !== "full";
+      if (owner) return ctx.person.passwordSet ? null : { owner, turnOff: false };
+      return ctx.can["turn-off"] === true ? { owner, turnOff: true } : null;
+    },
+    render: ({ declaration, summary, attrs }) => summary.owner
+      ? settingsSection({ id: "local-mode", title: "Let agents work on their own", attrs,
+        lead: "Agents can work on their own, merge and release only after you set a password.",
+        body: html`<div class="k-acts">${btn("Set a password", { sm: true, href: "/password/set?next=%2Fsettings%2Fgeneral" })}</div>` })
+      : settingsSection({ id: "local-mode", title: "Local mode", state: " · on", attrs,
+        lead: "A browser on this computer can file tasks, approve plans and add projects without your password.",
+        right: btn("Turn off local mode", { sm: true, href: changeHref(declaration) }), body: html`` }),
+    refusal: "An instance operator signed in with a password turns off local mode.",
+    renderChange: ({ declaration, summary, problem }) => {
+      const home = sectionHref(declaration);
+      const title = "Turn off local mode";
+      const words = summary === null || !summary.turnOff
+        ? html`${infoLine("Local mode is off. This computer's browser signs in with a password.")}<div class="k-acts">${btn("Back to General", { href: home })}</div>`
+        : joinHtml([
+          html`<p>Local mode lets a browser on this computer file tasks, approve plans and add projects without a password. Turned off, every browser signs in with a password, and the local owner's sessions and links stop working. You can't turn it back on here.</p>`,
+          problem === null ? "" : notice(problem),
+          kitSectionForm({ proof: "local-mode-off", action: "/settings/local-mode/off", id: "local-mode-form", native: true, save: { label: "Turn off" }, confirm: title, body: html`` }),
+          html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
+        ]);
+      return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), words)}</div>` };
+    },
+  };
+}
+
+/** General's sections, by id (settings-section-table.ts says who sees each). */
+export function generalSections(deps: GeneralDeps): SectionImpls {
+  return {
+    appearance: appearanceSection(),
+    "this-browser": thisBrowserSection(),
+    "your-password": yourPasswordSection(deps),
+    version: versionSection(deps),
+    advanced: advancedSection(),
+    "local-mode": localModeSection(deps),
+  } as unknown as SectionImpls;
+}
+
+/** The General area page's body (the frame is the caller's). */
+export function generalBody(impls: SectionImpls, base: Base, asked: { section: string | null; open: boolean }, said: { said: string | null; problem: string | null }): { body: Html; shown: string[] } {
+  const area = renderArea("general", impls, base, asked);
+  const sentence = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+  const answered = said.problem ? notice(sentence(said.problem)) : said.said ? infoLine(sentence(said.said)) : html``;
+  return { body: joinHtml([answered, area.jump, ...area.sections]), shown: area.shown };
+}

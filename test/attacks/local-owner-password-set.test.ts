@@ -246,23 +246,29 @@ test("local mode off from Settings: a full session's step-up, the generation mov
   expect(sealed).toMatchObject({ ok: true });
   const ref = world.store.lookupRef("one")!.id;
   expect(world.store.modeApprovalLive(ref, LOCAL_T0)).toBe(true);
-  // The local owner sees no switch, and its post is refused.
-  expect((await world.send("/settings/access", "GET", { cookie: local.cookie })).body).not.toContain("/settings/local-mode/off");
+  // The local owner sees no switch (General offers it a password instead; the change document refuses it), and its post
+  // is refused.
+  expect((await world.send("/settings/general", "GET", { cookie: local.cookie })).body).not.toContain("/settings/change/local-mode");
+  const ownDocument = await world.send("/settings/change/local-mode", "GET", { cookie: local.cookie });
+  expect(ownDocument.status).toBe(403);
+  expect(ownDocument.body).not.toContain("/settings/local-mode/off");
   expect((await world.post("/settings/local-mode/off", local.cookie, { csrf: local.csrf, password: "" })).headers["x-toolroll-refused"]).toBe("local-owner");
   expect(localModeOf(world.store)).toMatchObject({ enabled: true, generation: 1 });
 
   const set = await setPassword(local.cookie, { csrf: local.csrf, password: PASSWORD, again: PASSWORD });
   const full = cookieOf({ status: set.status, headers: set.headers, body: set.body });
-  const access = await world.send("/settings/access", "GET", { cookie: full });
-  expect(access.body).toContain('action="/settings/local-mode/off"');
+  // Its switch is on General, and its form on its own change document (settings plan F0).
+  expect((await world.send("/settings/general", "GET", { cookie: full })).body).toContain('href="/settings/change/local-mode"');
+  const change = await world.send("/settings/change/local-mode", "GET", { cookie: full });
+  expect(change.body).toContain('action="/settings/local-mode/off"');
   const csrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: full })).body) as { csrf: string }).csrf;
   // Without the password: refused, nothing changes.
   const bare = await world.post("/settings/local-mode/off", full, { csrf, password: "" });
-  expect(bare.headers["location"]).toMatch(/^\/settings\/access\?problem=/);
+  expect(bare.headers["location"]).toMatch(/^\/settings\/change\/local-mode\?problem=/);
   expect(localModeOf(world.store)).toMatchObject({ enabled: true, generation: 1 });
   const off = await world.post("/settings/local-mode/off", full, { csrf, password: PASSWORD });
   expect(off.status).toBe(303);
-  expect(off.headers["location"]).toMatch(/^\/settings\/access\?said=Local%20mode%20is%20off/);
+  expect(off.headers["location"]).toMatch(/^\/settings\/general\?section=local-mode&said=Local%20mode%20is%20off/);
   expect(localModeOf(world.store)).toMatchObject({ enabled: false, generation: 2 });
   // Every local seal stops dispatching, and no local link can be minted any more.
   expect(world.store.modeApprovalLive(ref, LOCAL_T0)).toBe(false);

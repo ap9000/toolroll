@@ -6,7 +6,7 @@
     "destinations = page rows + mixed rows. It must stay at or under ceiling.destinations: a slice that removes a page lowers the ceiling in the same change. Ceremonies are counted apart and are never in-place pages.",
     "src/server/destinations.test.ts fails when a route row has no entry here (declare new pages), when an entry names no row, and when a demo or an operator console answers a row differently from its kind."
   ],
-  "ceiling": {"destinations":80,"ceremonies":3},
+  "ceiling": {"destinations":79,"ceremonies":4},
   "routes": {
     "code.page": {"kind":"page","path":"/code"},
     "code.session": {"kind":"page","path":"/code/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -130,7 +130,8 @@
     "settings.group-projects": {"kind":"page","path":"/settings/projects"},
     "settings.group-access": {"kind":"page","path":"/settings/access"},
     "settings.group-system": {"kind":"page","path":"/settings/system"},
-    "settings.group-advanced": {"kind":"page","path":"/settings/advanced"},
+    "settings.group-advanced": {"kind":"alias","path":"/settings/advanced","to":"/settings/general?section=advanced"},
+    "settings.change.local-mode": {"kind":"ceremony","path":"/settings/change/local-mode","why":"turning local mode off: an instance operator's password step-up on its own document (a settings change document: never in place, no script)"},
     "health": {"kind":"data","path":"/health","what":"server health (text)"},
     "metrics": {"kind":"data","path":"/metrics","what":"metrics (text)"},
     "push.key": {"kind":"data","path":"/push/key","what":"the push public key (JSON)"},

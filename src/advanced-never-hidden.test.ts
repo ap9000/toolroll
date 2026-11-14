@@ -7,11 +7,12 @@
 import { describe, expect, test } from "vitest";
 import { ADVANCED_PAGES } from "./advanced-view.js";
 import { browserNavigationOf } from "./browser-workspace.js";
-import { html, htmlString, type Html } from "./html.js";
+import { html, htmlString, joinHtml, type Html } from "./html.js";
 import { projectSettingsHtml } from "./project-delete-ui.js";
 import { requestContext } from "./server/request-context.js";
 import { settingsRows, workToolRows } from "./server/chrome.js";
-import { accessGroup, advancedGroup, approvalGroup, settingsGroupPage, settingsHub, type SettingsFacts } from "./settings-groups-ui.js";
+import { accessGroup, approvalGroup, settingsGroupPage, settingsHub, type SettingsFacts } from "./settings-groups-ui.js";
+import { generalSections, renderArea, type SectionPerson } from "./server/settings-sections.js";
 
 const render = (advanced: boolean, draw: () => Html): string => requestContext.run({ csrf: "c", returnTo: "/", advanced }, () => htmlString(draw()));
 const facts = (over: Partial<SettingsFacts> = {}, on = false): SettingsFacts => ({
@@ -28,7 +29,8 @@ describe("with Advanced off, never hidden", () => {
     ["enabled Passwordless", facts({ passwordless: true }), "/settings/passwordless"],
     ["provider sign-in that is set up", facts({ sso: "Okta" }), "/settings/sign-in"],
     ["live browser sessions and active API tokens", facts(), "/settings/sessions"],
-    ["enabled local mode and its off switch", facts({ local: { owner: false, passwordSet: true, canTurnOff: true } }), "/settings/local-mode/off"],
+    // Local mode lives on General now (settings plan F0); People and sign-in keeps its old #local-mode, leading there.
+    ["enabled local mode, leading to its home", facts({ local: { owner: false, passwordSet: true, canTurnOff: true } }), "href=\"/settings/general?section=local-mode\""],
     ["who can get in", facts(), "href=\"/people\""],
   ])("%s", (_name, view, needle) => {
     expect(render(false, () => accessGroup(view, {}))).toContain(needle);
@@ -77,23 +79,37 @@ describe("with Advanced off, never hidden", () => {
   });
 });
 
-describe("Settings → Advanced", () => {
-  test("lists every advanced page whatever the switch; operator-only pages only to an operator", () => {
+/** General as an operator (or another person) sees it, with the switch as given; `open` asks for the Advanced detail. */
+const OPERATOR: SectionPerson = { name: "alex", via: "cookie", role: "approver", authority: "full", operator: true, restricted: false, installation: true, passwordSet: true };
+const general = (advanced: boolean, options: { person?: SectionPerson; open?: boolean; localMode?: boolean } = {}) => render(advanced, () => joinHtml(renderArea("general",
+  generalSections({ updatesVersion: () => null, packageVersion: "0.0.0", firstResult: () => null, passwordless: () => false, localModeOn: () => options.localMode === true }),
+  { person: options.person ?? OPERATOR, project: null, now: new Date(), prefs: { theme: "system", accent: "#000000", advanced } },
+  { section: options.open === true ? "advanced" : null, open: options.open === true }).sections));
+
+describe("Settings → General → Show advanced features (Settings → Advanced, retired)", () => {
+  test("the switch always; every advanced page whatever the switch, on request; operator-only pages only to an operator", () => {
     for (const on of [false, true]) {
-      const page = render(on, () => advancedGroup(facts({}, on), {}));
+      const page = general(on, { open: true });
       for (const one of ADVANCED_PAGES) expect(page).toContain(`href="${one.href}"`);
       expect(page).toContain("action=\"/settings/advanced\"");
       expect(page).toContain(`name="advanced" value="${on ? "off" : "on"}"`);
+      // Not asked: the summary offers the list instead of carrying it.
+      expect(general(on)).toContain("href=\"/settings/general?section=advanced&amp;open=1#advanced\"");
+      expect(general(on)).not.toContain("href=\"/flows\"");
     }
-    const viewer = render(false, () => advancedGroup(facts({ operator: false, approver: false }), {}));
+    const viewer = /<section class="k-ssec" id="advanced"[\s\S]*?<\/section>/.exec(general(false, { open: true, person: { ...OPERATOR, name: "vic", role: "viewer", operator: false } }))![0];
     for (const one of ADVANCED_PAGES) expect(viewer.includes(`href="${one.href}"`)).toBe(one.operator !== true);
   });
-  test("is in the Settings menu for everyone; Spend leaves it while off", () => {
-    const off = render(false, () => settingsGroupPage("advanced", facts()));
-    expect(off).toContain("href=\"/settings/advanced\"");
+  test("enabled local mode keeps its off switch with Advanced off: General leads to its change document", () => {
+    expect(general(false, { localMode: true })).toContain("href=\"/settings/change/local-mode\"");
+    expect(general(false, { localMode: false })).not.toContain("/settings/change/local-mode");
+  });
+  test("the overview says where the switch is; Spend leaves the menu while off", () => {
+    const off = render(false, () => settingsGroupPage("agents", facts()));
     expect(off).not.toContain("href=\"/spend\"><span class=\"k-nav-l\">Spend");
+    expect(off).not.toContain("href=\"/settings/advanced\"");
     const hub = render(false, () => settingsHub(facts()));
-    expect(hub).toContain("/settings/advanced");
+    expect(hub).toContain("advanced features off");
     expect(hub).not.toContain("href=\"/spend\"");
     expect(render(true, () => settingsHub(facts({}, true)))).toContain("href=\"/spend\"");
   });

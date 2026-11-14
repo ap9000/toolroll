@@ -26,8 +26,11 @@ export const PREFETCH_ROUTES: ReadonlySet<string> = new Set(["home", "tasks", "p
 /** The Agents view's Live grid shares the `agents` row (`/agents?view=live`); it only watches, and is never in place. */
 const liveGrid = (id: string, url: URL): boolean => id === "agents" && url.searchParams.get("view") === "live";
 
+/** A Settings change document (settings plan v2 §2.2) is a password or secret step: never in place, whatever a list says. */
+const changeDocument = (id: string): boolean => id.startsWith("settings.change.");
+
 export function inPlaceRoute(id: string | undefined, url: URL): boolean {
-  return id !== undefined && IN_PLACE_ROUTES.has(id) && !liveGrid(id, url);
+  return id !== undefined && IN_PLACE_ROUTES.has(id) && !changeDocument(id) && !liveGrid(id, url);
 }
 
 /** An opened agent shares the `agents` row too (`/agents?run=`): opening one marks it seen or watched, which is an
