@@ -79,12 +79,13 @@ describe("project access and the action ledger", () => {
 
   test("all accessible collections and direct links exclude other projects, including cached chrome", async () => {
     await get("/projects", "owner");
+    // Work (S2a) is a project-limited account's page too: no redirect (so /tasks → / never loops), its own projects only.
     const home = await get("/");
-    expect(home.status).toBe(303);
-    expect(home.headers.get("location")).toBe("/tasks");
-    for (const path of ["/tasks", "/", "/projects", "/people", "/tasks/new", "/tasks?view=board", "/tasks?view=board&scope=all", "/tasks?view=order", "/tasks?view=ready", "/tasks?scope=all", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
-      const response = await get(path);
-      const landed = path === "/" && response.status === 303 ? await get(response.headers.get("location")!) : response;
+    expect(home.status).toBe(200);
+    const moved = await get("/tasks?view=ready");
+    expect([moved.status, moved.headers.get("location")]).toEqual([301, "/?view=ready"]);
+    for (const path of ["/", "/projects", "/people", "/tasks/new", "/?view=board", "/?view=board&scope=all", "/?view=order", "/?view=ready", "/?scope=all", "/?task=beta-task", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
+      const landed = await get(path);
       expect(landed.status, path).toBe(200);
       const text = await landed.text();
       expect(text, path).not.toContain("BETA PRIVATE WORK");
@@ -92,12 +93,15 @@ describe("project access and the action ledger", () => {
       expect(text, path).not.toContain("beta-task");
     }
     // The retired pages answer as redirects (P1.4): Finished tasks and Agents carry what they listed.
-    for (const [path, to] of [["/runs", "/agents"], ["/done", "/tasks?view=done"], ["/inbox", "/"], ["/board", "/tasks?view=board"], ["/workbench", "/tasks?scope=all"], ["/review", "/tasks?view=ready"]] as const) {
+    for (const [path, to] of [["/runs", "/agents"], ["/done", "/?view=done"], ["/inbox", "/"], ["/board", "/?view=board"], ["/workbench", "/"], ["/review", "/?view=ready"], ["/tasks", "/"]] as const) {
       const response = await get(path);
       expect([301, 302, 303], path).toContain(response.status);
       expect(response.headers.get("location"), path).toBe(to);
     }
     expect((await get("/t/beta-task")).status).toBe(404);
+    // Work's panel reads a selected task (`?task=`) only through the task's own page, which admits it on its own: another
+    // project's task is not found there, whatever Work's address named.
+    expect((await get("/t/beta-task?format=workspace")).status).toBe(404);
     expect((await get("/ledger?project=" + encodeURIComponent(beta))).status).toBe(403);
     expect((await get("/settings/learning?repo=" + encodeURIComponent(beta))).status).toBe(403);
     expect((await get("/settings/knowledge?repo=" + encodeURIComponent(beta))).status).toBe(403);
@@ -108,11 +112,11 @@ describe("project access and the action ledger", () => {
     expect(await (await get("/settings/approval")).text()).not.toContain('action="/settings/quality-default"');
     expect(settings).not.toContain('action="/settings/quality-default"');
     expect(settings).not.toContain('action="/settings/telegram"');
-    const header = await fetch(base + "/tasks", { headers: { authorization: `Bearer member:${password}`, "x-standing-orders-project": beta } });
+    const header = await fetch(base + "/", { headers: { authorization: `Bearer member:${password}`, "x-standing-orders-project": beta } });
     expect(header.status).toBe(403);
-    // The retired task list's address is a redirect for a bearer caller too, never a screen; /tasks then applies the same refusal.
-    const moved = await fetch(base + "/work", { headers: { authorization: `Bearer member:${password}` }, redirect: "manual" });
-    expect([moved.status, moved.headers.get("location")]).toEqual([301, "/tasks"]);
+    // The retired task list's address is a redirect for a bearer caller too, never a screen; / then applies the same refusal.
+    const retired = await fetch(base + "/work", { headers: { authorization: `Bearer member:${password}` }, redirect: "manual" });
+    expect([retired.status, retired.headers.get("location")]).toEqual([301, "/"]);
     for (const path of ["/settings/quality-default", "/settings/telegram", "/system", "/fleet", "/projects/browse", "/projects/github", "/chat", "/control", "/unknown-new-route"]) expect((await get(path)).status, path).toBe(403);
   });
 
@@ -135,15 +139,15 @@ describe("project access and the action ledger", () => {
 
   test("access changes invalidate cookies and restrict existing bearer credentials", async () => {
     const cookie = await login("member");
-    expect((await fetch(base + "/tasks", { headers: { cookie } })).status).toBe(200);
+    expect((await fetch(base + "/", { headers: { cookie } })).status).toBe(200);
     expect(store.setAccountProjects("member", [beta], "owner", now).ok).toBe(true);
-    const stale = await fetch(base + "/tasks", { headers: { cookie }, redirect: "manual" });
+    const stale = await fetch(base + "/", { headers: { cookie }, redirect: "manual" });
     expect(stale.status).toBe(303);
-    expect(stale.headers.get("location")).toBe("/login?return=%2Ftasks");
+    expect(stale.headers.get("location")).toBe("/login");
     expect((await get("/t/alpha-task")).status).toBe(404);
     expect((await get("/t/beta-task")).status).toBe(200);
     expect(store.setAccountProjects("member", [], "owner", now).ok).toBe(true);
-    expect((await get("/tasks")).status).toBe(403);
+    expect((await get("/")).status).toBe(403);
     const ledger = await (await get("/ledger?format=json")).json();
     expect(ledger.entries).toEqual([]);
   });
@@ -181,7 +185,7 @@ describe("project access and the action ledger", () => {
       expect(text).not.toContain("beta-task");
       expect(text).not.toContain("alpha-task");
     }
-    expect((await get("/tasks")).status).toBe(403);
+    expect((await get("/")).status).toBe(403);
     expect((await post("/tasks/add", { id: "no-grant", title: "No grant", repo: alpha })).status).toBe(403);
   });
 

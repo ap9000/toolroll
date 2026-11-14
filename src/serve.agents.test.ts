@@ -100,7 +100,8 @@ describe("the Agents board", () => {
     expect(peek.headers.get("location")).toBe("/agents");
 
     const empty = await page("/agents", cookie);
-    expect(empty.navigation.find(item => item.label === "Agents")).toMatchObject({ href: "/agents", active: true });
+    // Agents is off the rail (Work · Chat · Settings, S2a): its pages sit under Settings.
+    expect(empty.navigation.find(item => item.label === "Settings")).toMatchObject({ href: "/settings", active: true });
 
     const quiet = running("t-quiet", repoA);
     const asking = running("t-ask", repoA);
@@ -123,7 +124,7 @@ describe("the Agents board", () => {
     ask(run, "keep-oauth", "Keep the old OAuth button?");
     ask(run, "label", "Which label for the new button?");
 
-    const tasks = (await page("/tasks?view=needs-you", cookie)).view as BrowserTasksView;
+    const tasks = ((await page("/?view=needs-you", cookie)).view as Extract<NonNullable<BrowserWorkspace["view"]>, { kind: "work" }>).list as BrowserTasksView;
     expect(tasks.rows.find(row => row.id === "t-ask")).toMatchObject({ action: { label: "Reply", href: `/agents?run=${run}` } });
 
     const opened = await fetch(url(`/agents?run=${run}`), { headers: { cookie } });

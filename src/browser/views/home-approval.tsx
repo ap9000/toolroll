@@ -31,12 +31,15 @@ export const taskChatHref = (taskId: string): string => `/chat?task=${encodeURIC
 type Shown = { phase: "reading" } | { phase: "shown"; snapshot: ApprovalSnapshot | null; sensitive: boolean } | { phase: "unread" };
 type Said = { tone: "refused" | "words" | "checking"; text: string } | null;
 
-export function HomeApproval({ row, onApproved, onChanged }: {
+export function HomeApproval({ row, onApproved, onChanged, onSettled }: {
   row: BrowserHomeRow;
   /** The approval was kept: Home takes the row out and selects the next one. */
   onApproved: (id: string) => void;
   /** Something changed that Home's own list should show (a vote, a refusal's re-read): Home reads itself again. */
   onChanged: () => void;
+  /** The selection moved while this approval's answer was on its way: what became of it, for this row (never drawn in
+   * the pane, which is another task's now). Work says it above its list. */
+  onSettled?: (row: BrowserHomeRow, words: string) => void;
 }) {
   const csrf = useContext(FormToken);
   const [shown, setShown] = useState<Shown>({ phase: "reading" });
@@ -128,7 +131,11 @@ export function HomeApproval({ row, onApproved, onChanged }: {
     const answer = await postInPlace(snapshot, csrf, nonce);
     // The selection moved while the answer was on its way: this pane is another task's now. Nothing of the old task is
     // drawn, read or loaded here, whatever the answer; Home reads its list again, which says where that task stands.
-    if (mine !== generation.current) { onChanged(); return; }
+    if (mine !== generation.current) {
+      onSettled?.(row, answer.kind === "answer" ? (answer.outcome === "refused" ? `${sentence(answer.words)} Nothing changed.` : sentence(answer.words))
+        : answer.kind === "lost" ? "No answer came back. Open the task to see where it stands." : "Open the task to see where it stands.");
+      onChanged(); return;
+    }
     if (answer.kind === "elsewhere") { window.location.assign(href); return; }
     if (answer.kind === "answer" && answer.outcome === "approved") { onApproved(row.id); return; }
     if (answer.kind === "answer" && answer.outcome === "refused") {

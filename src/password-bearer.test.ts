@@ -67,7 +67,7 @@ const post = (path: string, authorization: string) => fetch(`${base}${path}`, { 
 
 test('an accepted password bearer still signs in, and every answer says it is deprecated and what replaces it', async () => {
   await serve();
-  const response = await get('/tasks', `Bearer alex:${password}`);
+  const response = await get('/', `Bearer alex:${password}`);
   expect(response.status).toBe(200);
   expect(response.headers.get('deprecation')).toBe('true');
   expect(response.headers.get('warning')).toContain('toolroll tokens create');

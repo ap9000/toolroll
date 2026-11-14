@@ -1,0 +1,73 @@
+/* Work ("/", the one-workspace plan S2a): the list and the selected task. It wears Home's two-pane rules (home.css,
+ * `.so-home`) and changes the split: the list is the wide sheet, the selected task the panel beside it (a drawer from
+ * 901 to 1149px, none on a phone). Tokens only: ink marks what waits on you, blue only running, green only finished,
+ * red only what went wrong; hairlines, not boxes. Scoped under [data-view] like home.css. */
+[data-view]:has(> .so-work) { min-height: 0; }
+
+/* The title, the project in view, and the segments of the one list. */
+[data-view] .so-work .so-work-h { flex: none; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--so-space-sm) var(--so-space-2xl); padding: 16px 24px 12px; }
+[data-view] .so-work .so-work-hl { display: flex; align-items: baseline; gap: var(--so-space-md); min-width: 0; }
+[data-view] .so-work .so-work-t { margin: 0; font: 600 18px/1.3 var(--so-font-sans); letter-spacing: -0.015em; color: var(--so-ink); }
+[data-view] .so-work .so-work-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--so-muted); }
+[data-view] .so-work .so-work-tools { display: flex; align-items: center; gap: var(--so-space-xs); min-width: 0; max-width: 100%; }
+[data-view] .so-work .so-work-h .k-seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+[data-view] .so-work .so-work-setup { margin: 0; padding: 0 24px var(--so-space-sm); font-size: 13px; }
+
+/* The list, wide; the panel beside it. */
+[data-view] .so-work .so-work-split { grid-template-columns: minmax(0, 1fr); }
+[data-view] .so-work .so-work-split.has-panel { grid-template-columns: minmax(0, 1fr) minmax(360px, 440px); }
+[data-view] .so-work .so-work-list { padding: 0 0 var(--so-space-2xl); }
+[data-view] .so-work .so-work-split:not(.has-panel) .so-work-list { border-right: 0; }
+[data-view] .so-work .so-work-grp .k-grp { margin-top: var(--so-space-md); padding: 0 20px; color: var(--so-muted); font-weight: 500; }
+[data-view] .so-work .so-work-row { cursor: pointer; }
+[data-view] .so-work .so-work-row[data-selected] .k-row { background: var(--so-soft); }
+[data-view] .so-work .so-work-more, [data-view] .so-work .so-tri-more { display: block; margin: 0; padding: 8px 20px; font-size: 12.5px; color: var(--so-muted); }
+[data-view] .so-work .so-work-pages { padding: var(--so-space-md) 20px 0; }
+[data-view] .so-work .so-work-none { color: var(--so-muted); }
+[data-view] .so-work .so-work-said-t { font-weight: 600; }
+[data-view] .so-work [data-work-said] { padding: 10px 20px var(--so-space-xs); }
+@media (min-width: 761px) {
+  /* A row: its chip, its title over one quiet line, its project and age, and its one act. */
+  [data-view] .so-work .so-work-list .k-row { grid-template-columns: 84px minmax(0, 1fr) auto auto; grid-template-areas: "c t m a" "c d d a"; row-gap: 0; column-gap: 14px; padding: 8px 20px; }
+  [data-view] .so-work .so-work-list .k-row-c { grid-area: c; }
+  [data-view] .so-work .so-work-list .k-row-t { grid-area: t; font-size: 13.5px; }
+  [data-view] .so-work .so-work-list .k-row-d { grid-area: d; }
+  [data-view] .so-work .so-work-list .k-row-d:empty { display: none; }
+  [data-view] .so-work .so-work-list .k-row-m { grid-area: m; }
+  [data-view] .so-work .so-work-list .k-row-a { grid-area: a; }
+  [data-view] .so-work .so-work-list .k-row-a .k-btn { min-width: 84px; }
+}
+
+/* The selected task: the state, the outcome, the caveat and the one act, then the plan. */
+[data-view] .so-work .so-work-panel { max-width: none; padding: var(--so-space-xl) 24px 40px; }
+[data-view] .so-work .so-work-task { display: grid; gap: var(--so-space-md); min-width: 0; }
+[data-view] .so-work .so-work-caveat { margin: 0; padding: 8px 10px; border-radius: var(--so-radius-md); background: var(--so-soft); font-size: 13.5px; line-height: 1.5; color: var(--so-ink); overflow-wrap: anywhere; }
+[data-view] .so-work .so-work-checks { margin: 0; font-size: 13px; color: var(--so-muted); }
+[data-view] .so-work .so-work-checks.is-problem { color: var(--so-danger); }
+[data-view] .so-work .so-work-sec { display: grid; gap: var(--so-space-xs); padding-top: var(--so-space-md); border-top: 1px solid var(--so-line); }
+[data-view] .so-work .so-work-sec-h { margin: 0; font: 500 12px/1.5 var(--so-font-sans); color: var(--so-muted); }
+[data-view] .so-work .so-work-steps { display: grid; gap: 6px; margin: 0; padding-left: 20px; font-size: 13.5px; line-height: 1.45; color: var(--so-muted); }
+[data-view] .so-work .so-work-steps [data-step-state="completed"], [data-view] .so-work .so-work-steps [data-step-state="current"] { color: var(--so-ink); }
+[data-view] .so-work .so-work-steps [data-step-state="current"] { font-weight: 500; }
+[data-view] .so-work .so-work-steps [data-step-state="blocked"] { color: var(--so-danger); }
+[data-view] .so-work .so-work-decide { display: grid; gap: var(--so-space-md); min-width: 0; }
+[data-view] .so-work .so-work-send { margin: 0; }
+
+/* 901-1149px: the panel as a drawer over the list. */
+.so-work-drawer { position: fixed; inset: 0 0 0 auto; z-index: 60; width: min(480px, 92vw); overflow: auto; background: var(--so-paper); box-shadow: var(--so-shadow-overlay); outline: none; }
+.so-work-drawer-v { min-height: 100%; }
+[data-view] .so-work.so-work-drawer-b { display: grid; gap: var(--so-space-lg); align-content: start; padding: var(--so-space-xl) 24px 40px; }
+
+@media (max-width: 900px) {
+  [data-view] .so-work .so-work-h { padding: var(--so-space-sm) var(--so-phone-gutter) var(--so-space-xs); }
+  [data-view] .so-work .so-work-setup { padding: 0 var(--so-phone-gutter) var(--so-space-sm); }
+  [data-view] .so-work .so-work-list { border-right: 0; overflow: visible; padding: 0 0 var(--so-space-lg); }
+  [data-view] .so-work .so-work-grp .k-grp { padding: 0 var(--so-phone-gutter); }
+  [data-view] .so-work .so-work-row { cursor: auto; }
+}
+@media (max-width: 760px) {
+  [data-view]:has(> .so-work) { min-height: auto; }
+  /* The phone header already says Work. */
+  [data-view] .so-work .so-work-hl { display: none; }
+  [data-view] .so-work .so-work-split { display: block; flex: none; border-top: 0; }
+}

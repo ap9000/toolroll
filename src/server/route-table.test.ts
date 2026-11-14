@@ -154,8 +154,8 @@ describe("the route table", () => {
 
 describe("retired pages (docs/plans/plain-toolroll.md P1.4)", () => {
   const retired = ROUTES.filter(route => route.retired === true);
-  test("every retired GET is a redirect row with a target and no page of its own; Home, Tasks and results keep theirs", () => {
-    expect(ids(retired).sort()).toEqual(["board", "done", "inbox", "next", "queue", "work", "work.put-away", "workbench"]);
+  test("every retired GET is a redirect row with a target and no page of its own; Work and results keep theirs", () => {
+    expect(ids(retired).sort()).toEqual(["board", "done", "inbox", "next", "queue", "tasks", "work", "work.put-away", "workbench"]);
     for (const route of retired) {
       expect(route.method, route.id).toBe("GET");
       expect(RETIRED_ROUTES[route.id], route.id).toBeDefined();
@@ -163,7 +163,7 @@ describe("retired pages (docs/plans/plain-toolroll.md P1.4)", () => {
       expect(route.needsProject, route.id).toBe(false);
       expect(route.limited, route.id).toBe("collection");
     }
-    for (const id of ["home", "tasks", "review", "tasks.archive", "task.page"]) expect(ROUTES.find(route => route.id === id)?.retired, id).toBeUndefined();
+    for (const id of ["home", "review", "tasks.archive", "task.page"]) expect(ROUTES.find(route => route.id === id)?.retired, id).toBeUndefined();
   });
 
   test("the archive POST row is unchanged: its path, step-up and approver rule", () => {
@@ -175,21 +175,25 @@ describe("retired pages (docs/plans/plain-toolroll.md P1.4)", () => {
 
   test("each redirect keeps only the keys its target knows", () => {
     const at = (id: string, path: string) => RETIRED_ROUTES[id]!(new URL(path, "http://x"));
-    expect(at("work", "/work")).toBe("/tasks");
-    expect(at("work", "/work?view=needs-you&project=%2Fr%2Fshop&evil=1")).toBe("/tasks?project=%2Fr%2Fshop&view=needs-you");
-    expect(at("work", "/work?layout=board&state=failed")).toBe("/tasks?view=board");
-    expect(at("work", "/work?all=1&view=running")).toBe("/tasks?scope=all&view=running");
-    expect(at("work", "/work?project=a&project=b")).toBe("/tasks");
+    expect(at("work", "/work")).toBe("/");
+    expect(at("work", "/work?view=needs-you&project=%2Fr%2Fshop&evil=1")).toBe("/?project=%2Fr%2Fshop&view=needs-you");
+    expect(at("work", "/work?layout=board&state=failed")).toBe("/?view=board");
+    expect(at("work", "/work?all=1&view=running")).toBe("/?view=running");
+    expect(at("work", "/work?project=a&project=b")).toBe("/");
     expect(at("inbox", "/inbox?tab=ready")).toBe("/");
     expect(at("next", "/next?skip=d:1")).toBe("/");
-    expect(at("workbench", "/workbench?t=one")).toBe("/tasks?scope=all");
-    expect(at("board", "/board")).toBe("/tasks?view=board");
-    expect(at("board", "/board?view=order")).toBe("/tasks?view=order");
-    expect(at("board", "/board?scope=all")).toBe("/tasks?scope=all&view=board");
-    expect(at("queue", "/queue")).toBe("/tasks?view=order");
-    expect(at("done", "/done")).toBe("/tasks?view=done");
-    expect(at("review", "/review")).toBe("/tasks?view=ready");
+    expect(at("workbench", "/workbench?t=one")).toBe("/");
+    expect(at("board", "/board")).toBe("/?view=board");
+    expect(at("board", "/board?view=order")).toBe("/?view=order");
+    expect(at("board", "/board?scope=all")).toBe("/?view=board");
+    expect(at("queue", "/queue")).toBe("/?view=order");
+    expect(at("done", "/done")).toBe("/?view=done");
+    expect(at("review", "/review")).toBe("/?view=ready");
     expect(at("work.put-away", "/work/put-away?days=30")).toBe("/tasks/archive?days=30");
+    // Tasks (S2a): Work with the same query; a template link still opens the new-task page with it.
+    expect(at("tasks", "/tasks")).toBe("/");
+    expect(at("tasks", "/tasks?view=needs-you&project=%2Fr%2Fshop")).toBe("/?view=needs-you&project=%2Fr%2Fshop");
+    expect(at("tasks", "/tasks?template=bugfix")).toBe("/tasks/new?template=bugfix");
     expect(at("work.put-away", "/work/put-away?days=../x")).toBe("/tasks/archive");
   });
 

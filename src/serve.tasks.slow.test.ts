@@ -19,8 +19,8 @@ import { createDecisionServer, SENSITIVE_INPUT } from "./serve.js";
 import { routeOfTask } from "./agentconfig.js";
 import { projectRoute } from "./phase-routing.js";
 import { Window } from "happy-dom";
-import { presented, renderedHtmlOf, sealScopeFixture, T0, workspaceOf } from "../test/serve-kit.js";
-import type { BrowserHomeView, BrowserTaskView, BrowserTasksView } from "./browser-workspace.js";
+import { presented, renderedHtmlOf, sealScopeFixture, T0, workListOf, workspaceOf } from "../test/serve-kit.js";
+import type { BrowserTaskView, BrowserWorkView } from "./browser-workspace.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { decisionAnswerScript } from "./server/render-tasks.js";
 import { PAGE_WORK_HEADER, PAGE_WORK_VERSION } from "./page-work-contract.js";
@@ -505,18 +505,18 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     // workspace snapshot is held to the same rule as the page.
     const retired = await fetch(url("/workbench"), { headers: { cookie }, redirect: "manual" });
     expect(retired.status).toBe(301);
-    expect(retired.headers.get("location")).toBe("/tasks?scope=all");
+    expect(retired.headers.get("location")).toBe("/");
     const home = await (await fetch(url("/"), { headers: { cookie } })).text();
-    const tasks = await (await fetch(url("/tasks?scope=all"), { headers: { cookie } })).text();
-    const board = await (await fetch(url("/tasks?scope=all&view=board"), { headers: { cookie } })).text();
+    const tasks = await (await fetch(url("/?view=all"), { headers: { cookie } })).text();
+    const board = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
 
     // Admitted rows render; the hidden project's rows and dollars do not.
-    const homeView = workspaceOf(home).view as BrowserHomeView;
-    const homeRows = homeView.groups.flatMap(group => group.rows);
+    const homeView = workspaceOf(home).view as BrowserWorkView;
+    const homeRows = homeView.needs.flatMap(group => group.rows);
     expect(homeRows.find(row => row.id === "d-main")?.line).toBe("Answer the admitted question?");
-    const tasksView = workspaceOf(tasks).view as BrowserTasksView;
+    const tasksView = workListOf(workspaceOf(tasks));
     expect(tasksView.rows.map(row => row.id).sort()).toEqual(["d-main", "r-main", "r-side"]);
-    expect((workspaceOf(board).view as BrowserTasksView).rows.map(row => row.id).sort()).toEqual(["d-main", "r-main", "r-side"]);
+    expect(workListOf(workspaceOf(board)).rows.map(row => row.id).sort()).toEqual(["d-main", "r-main", "r-side"]);
     for (const page of [home, tasks, board]) {
       expect(page).not.toContain("SECRET-DECIDE");
       expect(page).not.toContain("SECRET-RUN");
@@ -531,8 +531,7 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     }
 
     // Every count reads the admitted projects alone: one asks, nothing of the hidden project runs or waits.
-    expect(homeView.say).toBe("1 task needs you");
-    expect(Object.fromEntries(homeView.counts.map(one => [one.key, one.value]))).toEqual({ needs: 1, running: 0, queued: 2, finished: 0 });
+    expect(homeView.needsCount).toBe(1);
     expect(Object.fromEntries(tasksView.tabs.map(tab => [tab.key, tab.count]))).toMatchObject({ all: 3, "needs-you": 1, running: 0 });
     expect(workspaceOf(home).needsYou?.count).toBe(1);
 
@@ -563,7 +562,7 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     const landed = await fetch(url("/inbox"), { headers: { cookie } });
     expect(new URL(landed.url).pathname).toBe("/");
     for (const rollup of [await landed.text(), await (await fetch(url(`/?project=${encodeURIComponent("/repo/main")}`), { headers: { cookie } })).text()]) {
-      const row = (workspaceOf(rollup).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "d-one");
+      const row = (workspaceOf(rollup).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "d-one");
       expect(row).toMatchObject({ line: "Which way?", question: null });
       expect(row?.action?.href).toMatch(/^\/(?:t|d)\//);
       expect(rollup).not.toContain("decide-inline");
@@ -595,7 +594,7 @@ describe("the portfolio and the scope bar (portfolio arc, slice 1a)", () => {
     const cookie = await login();
     const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
     // Unplaced work asks for its project first: Home's row is a link to the task, whose own page keeps the question.
-    const row = (workspaceOf(inbox).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "d-free");
+    const row = (workspaceOf(inbox).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "d-free");
     expect(row).toMatchObject({ project: "Unplaced", question: null, action: { label: "Choose a project", href: "/t/d-free?version=d-free" } });
     expect(inbox).not.toContain("decide-inline");
     expect(inbox).not.toMatch(/<form[^>]*\/answer/);
@@ -785,7 +784,7 @@ describe("the queue (portfolio arc, slice 1b): move-to-front resolved server-sid
 
     const moved = await frontForm(cookie, csrf(page), "t-c", "anyone", before);
     expect(moved.status).toBe(303);
-    expect(moved.headers.get("location")).toBe("/tasks?view=order");
+    expect(moved.headers.get("location")).toBe("/?view=order");
     // The asserted ORDER: t-c now leads its own partition; the repo-less
     // card's partition is untouched; the revision moved exactly once.
     expect(partition("/repo/main", null)).toEqual(["t-c", "t-b"]);
@@ -1361,15 +1360,17 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     const cookie = await login();
 
     // The page itself (the workspace's Crew panel lists every recent task, finished ones too).
-    const inbox = renderedHtmlOf(await (await fetch(url("/inbox"), { headers: { cookie } })).text());
+    // The old inbox is Work: the finished task is listed under Done (a link to its page), never as something that waits.
+    const landed = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
+    const inbox = renderedHtmlOf(landed);
     expect(inbox).not.toContain("conflicting evidence");
-    expect(inbox).not.toContain("show me the proof");
+
     expect(store.proofVerdictFor(run)?.reasons).toContain("claimed changed path not in the sealed diff: src/other.ts");
     expect(await (await fetch(url("/t/t-proof"), { headers: { cookie } })).text()).toContain("src/other.ts");
 
     store.acceptProof(run, "alex", null, T0);
     const cleared = renderedHtmlOf(await (await fetch(url("/inbox"), { headers: { cookie } })).text());
-    expect(cleared).not.toContain("show me the proof");
+    expect(cleared).not.toContain("conflicting evidence");
   });
 
   test("the attempt panel names the run; its pollers hit the RUN's fragments, never the task URL", async () => {
@@ -1442,7 +1443,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // The workbench's selected-task pane is gone: its old address lands on Tasks, which carries no run pollers and no
     // empty region promising a look that cannot land. (Static panel: the sensitive composition test below.)
     const pane = await (await fetch(url("/workbench?t=t-live"), { headers: { cookie } })).text();
-    expect((workspaceOf(pane).view as BrowserTasksView).rows.map(row => row.id)).toContain("t-live");
+    expect(workListOf(workspaceOf(pane)).rows.map(row => row.id)).toContain("t-live");
     expect(pane).not.toContain('id="run-peek"');
     expect(pane).not.toContain(`/r/${run}?fragment=peek`);
   });
@@ -1814,7 +1815,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect((await fetch(url(`/review?result=t-broke&run=${failedRun}`), { headers: { cookie } })).status).toBe(200);
     expect((await fetch(url(`/r/${failedRun}`), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe(`/t/t-broke?tab=result&run=${failedRun}`);
     // The Tasks list says the same, in vermilion's problem line.
-    const rows = (workspaceOf(await (await fetch(url("/tasks"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
+    const rows = workListOf(workspaceOf(await (await fetch(url("/"), { headers: { cookie } })).text())).rows;
     expect(rows.find(row => row.id === "t-broke")?.detail).toBe(said);
     // No "review its incident", said once: Task options names the reason without its own Review and retry link, and offers no second ink retry.
     const options = view.manage.find(one => one.id === "task-diagnostics")!.html;
@@ -1880,7 +1881,7 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(record).toContain(`id="run-reason-detail"`);
     expect(record).toContain("TypeError: Cannot read properties of undefined (reading &#39;id&#39;)");
 
-    const rows = (workspaceOf(await (await fetch(url("/tasks"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
+    const rows = workListOf(workspaceOf(await (await fetch(url("/"), { headers: { cookie } })).text())).rows;
     expect(rows.find(row => row.id === "t-later")?.detail).toBe("No reason was recorded for this attempt.");
     const family = rows.filter(row => row.id === "t-fam" || row.id === "t-fam-r");
     expect(family.length).toBe(1);
@@ -2188,7 +2189,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     const home = await page(cookie, "/");
     expect(home).not.toContain('name="token"');
     expect(ceremonyOf(home, "\\/t\\/payouts\\/approve")).toBe("");
-    const row = (workspaceOf(home).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "payouts");
+    const row = (workspaceOf(home).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "payouts");
     expect(row?.action?.href).toMatch(/^\/t\/payouts(?:[?#]|$)/);
     sheet(ceremonyOf(await page(cookie, row!.action!.href), "\\/t\\/payouts\\/approve"), "task");
     // Changing an agent invalidates the approval every surface signed under.
@@ -2212,7 +2213,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     })).status).toBe(303);
     store.setPlanState(store.refFor("built-in", "payouts").id, "drafted");
     const home = await page(cookie, "/");
-    const row = (workspaceOf(home).view as BrowserHomeView).groups.flatMap(group => group.rows).find(one => one.id === "payouts");
+    const row = (workspaceOf(home).view as BrowserWorkView).needs.flatMap(group => group.rows).find(one => one.id === "payouts");
     expect(home).not.toContain('name="token"');
     for (const path of ["/t/payouts", "/chat?task=payouts", row!.action!.href]) {
       const shown = await page(cookie, path);
@@ -2359,8 +2360,10 @@ describe("Home says when nothing will build (install review)", () => {
     const cookie = await login();
     const rowOf = async () => {
       const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-      const view = workspaceOf(home).view as BrowserHomeView;
-      return [...view.groups.flatMap(group => group.rows.map(row => ({ ...row, group: group.key as string }))), ...view.working.map(row => ({ ...row, group: "working" }))].find(row => row.id === "t-idle");
+      const view = workspaceOf(home).view as BrowserWorkView;
+      // What it asks (Home's own kind), or "working" for a row Work lists below Needs you.
+      const waiting = view.needs.flatMap(group => group.rows.map(row => ({ ...row, group: row.ask as string })));
+      return [...waiting, ...view.list.rows.filter(row => row.ask === null).map(row => ({ ...row, line: row.detail, group: "working" }))].find(row => row.id === "t-idle");
     };
     let row = await rowOf();
     expect(row).toMatchObject({ group: "other", line: "No builder works on this project yet. Connect one so the task can start.", action: { label: "Connect a builder" } });
@@ -2441,7 +2444,7 @@ describe("failures say what failed and builds say how far along: the demo's own 
   });
 
   test("the Tasks list says the same: a failed row from the database alone, a live row from its own attempt's progress", async () => {
-    const rowsOf = async () => (workspaceOf(await (await fetch(`${base}/work`, { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTasksView).rows;
+    const rowsOf = async () => workListOf(workspaceOf(await (await fetch(`${base}/`, { headers: { cookie } })).text())).rows;
     const ref = made.store.lookupRef("harden-webhook-retries")!;
     const live = runsOf("harden-webhook-retries").find(one => one.outcome === null && one.role === "builder")!;
     const stopped = runsOf("harden-webhook-retries").find(one => one.role === "builder" && one.outcome === "refused")!;

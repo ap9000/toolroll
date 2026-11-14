@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { BrowserProjectState, BrowserTasksView, BrowserWorkspace } from "../browser-workspace.js";
+import type { BrowserProjectState, BrowserTasksView, BrowserWorkspace, BrowserWorkView } from "../browser-workspace.js";
 import { KButton, KChip, KCount, KDockNeeds, KIcon, KNote } from "./kit/index.js";
 import { openMenu, openOverlay } from "./kit/behavior.js";
 import type { KitIcon } from "../design/kit.js";
@@ -21,10 +21,10 @@ import "./shell.css";
 export type Needs = { count: number; saturated: boolean; label: string; href: string; scope: string | null };
 export function needsOf(workspace: BrowserWorkspace): Needs {
   if (workspace.needsYou) return { ...workspace.needsYou };
-  // A server without the field: the count the Home row carries (the same Tasks count).
-  const home = workspace.navigation.find(item => item.label === "Home" || item.label === "Tasks");
-  const count = home?.count ?? 0;
-  return { count, saturated: false, scope: null, label: home?.countLabel ?? `${count} ${count === 1 ? "needs" : "need"} you`, href: "/tasks?view=needs-you" };
+  // A server without the field: the count the Work row carries (the same Tasks count).
+  const work = workspace.navigation.find(item => item.label === "Work" || item.label === "Home" || item.label === "Tasks");
+  const count = work?.count ?? 0;
+  return { count, saturated: false, scope: null, label: work?.countLabel ?? `${count} ${count === 1 ? "needs" : "need"} you`, href: "/?view=needs-you" };
 }
 
 /**
@@ -56,8 +56,9 @@ export async function refreshNeeds(href: string): Promise<void> {
     url.searchParams.set("format", "workspace");
     const response = await fetch(url.pathname + url.search, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(12_000) });
     if (!response.ok || response.redirected) return;
-    const data = await response.json() as { view?: BrowserTasksView | null };
-    if (data.view?.kind === "tasks" && typeof data.view.needsYou === "number") publish(href, data.view.needsYou);
+    const data = await response.json() as { view?: BrowserTasksView | BrowserWorkView | null };
+    const list = data.view?.kind === "work" ? data.view.list : data.view?.kind === "tasks" ? data.view : null;
+    if (list !== null && typeof list.needsYou === "number") publish(href, list.needsYou);
   } catch { /* the count stays as the page read it; the next change asks again */ }
 }
 /** Work moved (the summary room said so after the page's own read): read the one count again, once things settle. */
@@ -72,7 +73,7 @@ export function useNeedsRefresh(workspace: BrowserWorkspace, states: unknown): v
   }, [states]);
 }
 
-const NAV_ICONS: Record<string, KitIcon> = { Home: "home", Tasks: "tasks", Flows: "flows", Agents: "agents", Projects: "projects", Settings: "settings" };
+const NAV_ICONS: Record<string, KitIcon> = { Work: "tasks", Home: "home", Tasks: "tasks", Flows: "flows", Agents: "agents", Projects: "projects", Settings: "settings" };
 export const OPEN_SEARCH_EVENT = "so:open-search";
 export const openSearch = (trigger?: HTMLElement | null): void => { window.dispatchEvent(new CustomEvent(OPEN_SEARCH_EVENT, { detail: trigger ?? null })); };
 
@@ -80,10 +81,10 @@ function Brand() {
   return <a className="so-rail-brand" href="/"><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</a>;
 }
 
-/** The destinations, each with its icon; Home wears the ink Needs-you count. */
+/** The destinations, each with its icon; Work wears the ink Needs-you count. */
 function Destinations({ workspace, needs }: { workspace: BrowserWorkspace; needs: Needs }) {
   return <>{workspace.navigation.map(item => {
-    const counted = item.label === "Home" && needs.count > 0;
+    const counted = (item.label === "Work" || item.label === "Home") && needs.count > 0;
     return <a key={item.href} className="so-nav" href={item.href} aria-current={item.active ? "page" : undefined}>
       {item.label === "Chat" ? <ChatIcon /> : <KIcon name={NAV_ICONS[item.label] ?? "more"} />}<span className="so-nav-l">{item.label}</span>
       {counted && <><span className="k-count ink" title={needs.label} data-needs-count>{needs.count}{needs.saturated ? "+" : ""}</span><span className="k-sr">{`, ${needs.label}`}</span></>}
@@ -91,12 +92,13 @@ function Destinations({ workspace, needs }: { workspace: BrowserWorkspace; needs
   })}</>;
 }
 
-/** The projects in view, each with what needs this person there (the live project summary, when the page has it). */
+/** The projects in view, each with what needs this person there (the live project summary, when the page has it), each
+ * filtering Work to that project; and Manage projects, always (adding and opening projects live there). */
 function RailProjects({ workspace, states, current }: { workspace: BrowserWorkspace; states: BrowserProjectState[] | null; current: string | null }) {
   const rows = states !== null && states.length > 0
-    ? states.filter(one => one.path !== null && !one.others).map(one => ({ key: one.path!, name: one.name, href: one.href, needs: 0 }))
-    : workspace.projects.map(one => ({ key: one.path, name: one.name, href: one.href, needs: 0 }));
-  if (rows.length === 0) return null;
+    ? states.filter(one => one.path !== null && !one.others).map(one => ({ key: one.path!, name: one.name, href: workHrefOf(one.path!), needs: 0 }))
+    : workspace.projects.map(one => ({ key: one.path, name: one.name, href: workHrefOf(one.path), needs: 0 }));
+  const managing = new URL(workspace.path, "http://local").pathname.startsWith("/projects");
   // Each project's figure is only ever the one Needs-you count for that project (never the summary's own sum).
   for (const row of rows) row.needs = workspace.needsYouByProject?.find(one => one.path === row.key)?.count ?? 0;
   return <nav aria-label="Projects" className="so-rail-projects" data-live data-sidebar-slot="projects">
@@ -105,8 +107,12 @@ function RailProjects({ workspace, states, current }: { workspace: BrowserWorksp
       <span className="so-pdot" aria-hidden="true" /><span className="so-nav-l">{row.name}</span>
       {row.needs > 0 && !workspace.sensitive && <span className="so-nav-n k-num" aria-label={`${row.needs} ${row.needs === 1 ? "needs" : "need"} you`}>{row.needs}</span>}
     </a>)}
+    <a className="so-nav so-nav-sub so-nav-manage" href="/projects" aria-current={managing ? "page" : undefined} data-manage-projects><KIcon name="projects" small /><span className="so-nav-l">Manage projects</span></a>
   </nav>;
 }
+
+/** Work, filtered to one project. */
+const workHrefOf = (path: string): string => `/?project=${encodeURIComponent(path)}`;
 
 /** Who is signed in, and what stands in for a password on this computer right now. */
 function Account({ workspace }: { workspace: BrowserWorkspace }) {
@@ -206,8 +212,15 @@ async function readNeeds(href: string): Promise<{ rows: SheetRow[]; more: boolea
   url.searchParams.set("format", "workspace");
   const response = await fetch(url.pathname + url.search, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(12_000) });
   if (!response.ok || response.redirected) throw new Error("unavailable");
-  const data = await response.json() as { view?: BrowserTasksView | null };
-  const view = data.view;
+  const data = await response.json() as { view?: BrowserTasksView | BrowserWorkView | null };
+  const read = data.view;
+  // Work's Needs you: every ask it lists (tasks, held publications, flow cards, setup steps), in its groups.
+  if (read?.kind === "work") {
+    publish(href, read.list.needsYou);
+    return { rows: read.needs.flatMap(group => group.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, group: group.label,
+      word: ASK_WORD[group.key] ?? "Needs you" }))), more: read.needs.some(group => group.count > group.rows.length) };
+  }
+  const view = read;
   if (!view || view.kind !== "tasks") throw new Error("unavailable");
   const label = (group: string): string => group in ASK_LABEL ? ASK_LABEL[group as keyof typeof ASK_LABEL] : "Waiting on you";
   publish(href, view.needsYou);
@@ -237,7 +250,7 @@ function NeedsSheet({ needs, trigger, onClose }: { needs: Needs; trigger: HTMLEl
       <KButton variant="ghost" iconOnly="x" label="Close" data-k-close="" /></div>
     <div className="k-sheet-b">
       {read.state === "loading" && <p className="so-sheet-line" role="status">Loading…</p>}
-      {read.state === "failed" && <p className="so-sheet-line" role="alert">Couldn’t load the list. <a className="k-link" href={needs.href}>Open it in Tasks</a></p>}
+      {read.state === "failed" && <p className="so-sheet-line" role="alert">Couldn’t load the list. <a className="k-link" href={needs.href}>Open it in Work</a></p>}
       {read.state === "ready" && read.rows.length === 0 && <p className="so-sheet-line">Nothing needs you.</p>}
       {groups.map(group => <div key={group.label}>
         <p className="so-tri-g">{group.label}</p>
@@ -246,7 +259,7 @@ function NeedsSheet({ needs, trigger, onClose }: { needs: Needs; trigger: HTMLEl
           <span className="so-ti-m"><KChip word={row.word} tone="ask" />{row.project && <span>{row.project}</span>}<span className="k-num">{row.age}</span></span>
         </a>)}
       </div>)}
-      {read.state === "ready" && read.more && <p className="so-sheet-line"><a className="k-link" href={needs.href}>See them all in Tasks</a></p>}
+      {read.state === "ready" && read.more && <p className="so-sheet-line"><a className="k-link" href={needs.href}>See them all in Work</a></p>}
     </div>
   </ShellOverlay>;
 }

@@ -159,8 +159,8 @@ export function useWorkspace(initial: BrowserWorkspace) {
   // A task page follows its task's room (live-task.tsx); a conversation or a live page follows the workspace's.
   const liveTask = page.view?.kind === "task" && page.view.live != null && !page.sensitive;
   // The Agents board follows the workspace too, and its opened agent's own room nudges it (agents-view.tsx).
-  // Home follows the workspace the same way: its counts and rows move as work does, and an answer given in place re-reads it.
-  const agentsBoard = (page.view?.kind === "agents" || page.view?.kind === "home") && !page.sensitive;
+  // Work follows the workspace the same way: its counts and rows move as work does, and an act given in place re-reads it.
+  const agentsBoard = (page.view?.kind === "agents" || page.view?.kind === "work") && !page.sensitive;
   // On a sensitive page no room opens at all (live.ts setLiveQuiet, set by WorkspaceApp), whatever this follows.
   const followsWorkspace = Boolean(page.conversation || page.refreshSeconds || agentsBoard);
   const check = useCallback(async (force = true, retry = false): Promise<void> => {
@@ -444,7 +444,7 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
   const active = workspace.crew.filter(item => !isFinished(item));
   const finished = workspace.crew.filter(isFinished);
   return <section className="so-crew" aria-labelledby="crew-title" data-workspace-crew>
-    <div className="so-section-heading"><h2 id="crew-title">Crew</h2><a href="/tasks">All tasks</a></div>
+    <div className="so-section-heading"><h2 id="crew-title">Crew</h2><a href="/">All tasks</a></div>
     {workspace.crew.length === 0 ? <div className="so-crew-empty"><p>No tasks yet.</p><p>Work you start with the lead appears here.</p></div> : <>
       {active.length === 0 && <p className="so-crew-quiet">Nothing is running or waiting on you.</p>}
       {CREW_GROUPS.map(group => {
@@ -460,7 +460,7 @@ function Crew({ workspace }: { workspace: BrowserWorkspace }) {
       })}
       {finished.length > 0 && <Disclosure summary={`Finished (${finished.length}${workspace.crewTruncated ? "+" : ""})`} className="so-crew-finished"><CrewRows workspace={workspace} items={finished} /></Disclosure>}
     </>}
-    {workspace.crewTruncated && <a className="so-all-work" href="/tasks">View more tasks</a>}
+    {workspace.crewTruncated && <a className="so-all-work" href="/">View more tasks</a>}
   </section>;
 }
 
@@ -729,7 +729,7 @@ function useWindowStaysPut(epoch: number) {
 
 /** The views built from the revamp kit; a server page says so with `data-kit-page` on its root, or by drawing the kit's
  * own phone header (`k-ph`: pageHeader, phoneHeader, settingsShell), which the shell's phone header replaces. */
-const KIT_VIEWS = new Set(["tasks", "task", "agents", "home", "search", "projects", "flow"]);
+const KIT_VIEWS = new Set(["tasks", "task", "agents", "work", "search", "projects", "flow"]);
 const KIT_PAGE_MARK = /data-kit-page|class="k-ph"/;
 export function isKitPage(workspace: BrowserWorkspace): boolean {
   if (workspace.team) return false;

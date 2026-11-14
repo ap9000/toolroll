@@ -395,7 +395,7 @@ test("verified password admission is shared by account across sources, the conso
   if (!other.ok) throw Error("sam");
   const get = (path: string, name = "alex", secret = password, source = "203.0.113.8") => fetch(`${base}${path}`, { headers: { authorization: `Bearer ${name}:${secret}`, "x-forwarded-for": source, "x-forwarded-proto": "https" } });
   for (let i = 0; i < SOURCE_BUDGET_DEFAULTS.password; i++) {
-    const response = await get(["/login", "/api/team", "/tasks"][i % 3]!, "alex", password, `203.0.113.${i % 3 + 1}`);
+    const response = await get(["/login", "/api/team", "/"][i % 3]!, "alex", password, `203.0.113.${i % 3 + 1}`);
     expect(response.status).toBe(200); await response.arrayBuffer();
   }
   const denied = await get("/login", "alex", password, "203.0.113.99");

@@ -286,8 +286,8 @@ export function createSharedGuards(runtime: GuardsRuntime) {
       url.searchParams.delete("scope");
       if (url.searchParams.get("view") === "order") url.searchParams.delete("view");
     }
-    // Tasks (P1.4) keeps the board's rule: the queue's order view stays an instance view, never a limited person's.
-    if (route.id === "tasks" && url.searchParams.get("view") === "order") url.searchParams.set("view", "board");
+    // Work (S2a; Tasks before it, P1.4) keeps the board's rule: the queue's order view stays an instance view, never a limited person's.
+    if ((route.id === "tasks" || route.id === "home") && url.searchParams.get("view") === "order") url.searchParams.set("view", "board");
     return true;
   }
 

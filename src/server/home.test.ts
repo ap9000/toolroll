@@ -6,8 +6,8 @@ import { register } from "../runner.js";
 import { addApprover, approve, propose } from "../scope.js";
 import { openStore, type Store } from "../store.js";
 import { workIndexPage } from "../work-index.js";
-import { HOME_NEEDS_SHOWN, homeView, leadLineOf, startOfToday, type HomeFacts } from "./home.js";
-import { NO_HOME_ASKS, releaseAsks } from "./home-asks.js";
+import { HOME_ASK_ORDER, HOME_NEEDS_SHOWN, homeView, leadLineOf, startOfToday, WORK_GROUP_OF_ASK, workNeeds, type HomeFacts } from "./home.js";
+import { NO_HOME_ASKS, releaseAsks, type HomeAsks } from "./home-asks.js";
 import { releaseFixture, RELEASE_NOW, VERSION, type ReleaseFixture } from "../../test/release-fixture.js";
 import { recordReleaseCi } from "../release-approval.js";
 import { allowAutoPublish, holdAutoPublish } from "../release-auto.js";
@@ -74,6 +74,33 @@ describe("the groups", () => {
     // Listed or not, nothing is lost: what the page doesn't list is still counted under its heading.
     for (const group of [other, wrong]) expect(group.rows.length).toBeLessThanOrEqual(group.count);
     for (const row of view.groups.flatMap(group => group.rows)) expect(row.reason !== null, row.id).toBe(row.ask === "wrong");
+  });
+
+  // The one-workspace plan S2a: Work's Needs you carries every ask Home admits (tasks, held publications, flow cards,
+  // setup steps) through the same reads and rules, grouped Decide / Review / Unblock. Pinned row by row against Home.
+  test("Work's Needs you lists exactly the rows Home lists, every ask kind among them, with exact group counts", () => {
+    const ask = (id: string, repo: string | null, line: string, href: string) => ({ id, title: `Ask ${id}`, href, repo, at: NOW.toISOString(), line, action: { label: "Open", href } });
+    const asks: HomeAsks = { release: () => null, held: [ask("release:held-1", REPO, "Held: checks failed.", "/t/held-1/release")], flows: [ask("flow:4", REPO, "Ship: Waits for your decision.", "/flows/2?card=4")],
+      setup: [{ ...ask("setup:builder", null, "Start a builder.", "/start-builder"), key: "builder" }, { ...ask("setup:agent", null, "Sign in.", "/welcome"), key: "agent" }] };
+    const both = { ...facts(store, [REPO]), asks, approver: true };
+    const home = homeView(both), work = workNeeds(both);
+    const homeRows = home.groups.flatMap(group => group.rows), workRows = work.groups.flatMap(group => group.rows);
+    // The same rows, the same words and links, each in the Work group its ask (or its task's own group) says.
+    expect(new Set(workRows.map(row => row.id))).toEqual(new Set(homeRows.map(row => row.id)));
+    for (const row of homeRows) expect(workRows.find(one => one.id === row.id), row.id).toEqual(row);
+    expect(new Set(workRows.map(row => row.ask))).toEqual(new Set(homeRows.map(row => row.ask)));
+    // Every kind this world has that Home lists (its 30 rows: plans first, so a failed row may be past them).
+    for (const kind of ["approve", "flow", "release", "setup"]) expect(homeRows.some(row => row.ask === kind), kind).toBe(true);
+    for (const group of work.groups) for (const row of group.rows) expect(row.group ?? WORK_GROUP_OF_ASK[row.ask!], row.id).toBe(group.key);
+    // Every kind of ask Home has has a Work group: nothing Home admits can fall out of Work.
+    expect(Object.keys(WORK_GROUP_OF_ASK).sort()).toEqual([...HOME_ASK_ORDER].sort());
+    // Exact counts past the rows listed: the same total as Home's groups, tasks and the rest.
+    expect(work.groups.reduce((sum, group) => sum + group.count, 0)).toBe(home.groups.reduce((sum, group) => sum + group.count, 0));
+    expect(work.total).toBe(APPROVALS + 2 + 4);
+    // Held publications, flow cards and setup steps are an approver's alone, in Work as on Home.
+    const viewer = { ...both, approver: false, canAnswer: false };
+    expect(workNeeds(viewer).groups.flatMap(group => group.rows).map(row => row.id).sort()).toEqual(homeView(viewer).groups.flatMap(group => group.rows).map(row => row.id).sort());
+    expect(workNeeds(viewer).groups.flatMap(group => group.rows).some(row => row.id.includes(":"))).toBe(false);
   });
 
   test("the lead's last message is read only when chat is allowed here, as one plain line", () => {

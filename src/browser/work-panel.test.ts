@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 /**
- * Approve in place from Home (docs/plans/live-pages-and-home.md B2.1-B2.5). Home reads the selected task as data,
+ * Acts in Work's panel (the one-workspace plan S2a, "Approval safety in the panel" criteria 1-6), first as Home had them
+ * (docs/plans/live-pages-and-home.md B2.1-B2.5). Work reads the selected task as data,
  * never minted; it offers its one Approve only for a one-click plan with no form control on a page that is not a password
  * page; anything else is the plan and one link that loads the task page as its own document. A press mints for exactly
  * what is shown, posts in place with no password field, and a moved digest posts nothing. A late read is dropped, a lost
@@ -10,8 +11,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { BrowserHomeRow, BrowserHomeView, BrowserTaskView, BrowserWorkspace } from "../browser-workspace.js";
-import { HomeView } from "./views/home-view.js";
+import type { BrowserHomeRow, BrowserTasksView, BrowserTaskView, BrowserWorkspace, BrowserWorkView } from "../browser-workspace.js";
+import { WorkView } from "./views/work-view.js";
 import { FormToken } from "./ui/index.js";
 import { WORKSPACE_NUDGE } from "./live-task.js";
 import { holdsFormControl, postInPlace, REDRAW_HOLD_MS } from "./act.js";
@@ -33,10 +34,16 @@ const workspaceOf = (id: string, approve: Approve | null, over: Partial<BrowserW
 
 const row = (id: string): BrowserHomeRow => ({ id, title: `Task ${id}`, href: `/t/${id}`, project: "shop", age: "4h ago", state: "needs", ask: "approve", reason: null,
   line: "Review the plan and approve it to start.", action: { label: "Approve plan", href: `/t/${id}#approve` }, question: null });
-const homeOf = (ids: string[]): BrowserHomeView => ({
-  kind: "home", say: `${ids.length} tasks need you`, project: null, scopes: null, counts: [],
-  groups: [{ key: "approve", label: "Approve a plan", count: ids.length, rows: ids.map(row) }],
-  working: [], finishedToday: { count: 0, rows: [], href: "/tasks" }, newTask: "/tasks/new", ask: null, lastLead: null, empty: null });
+const resultRow = (id: string): BrowserHomeRow => ({ ...row(id), ask: "review", group: "review", line: "Checks passed. Review the change, then accept it.", action: { label: "Open result", href: `/t/${id}?tab=result&run=7` } });
+const listOf = (needs: number): BrowserTasksView => ({
+  kind: "tasks", layout: "list", tabs: [{ key: "needs-you", label: "Needs you", href: "/?view=needs-you", count: needs, active: false }, { key: "all", label: "All", href: "/", count: needs, active: true }],
+  projects: null, layouts: { list: "/", board: "/?view=board" }, needsYou: needs, groups: null, rows: [], empty: null, pages: { first: null, next: null }, tools: [],
+  newTask: { label: "New task", href: "/tasks/new" }, limits: null });
+/** Work with these rows under Decide (plans) and, after them, these under Review (results). */
+const homeOf = (ids: string[], review: string[] = []): BrowserWorkView => ({
+  kind: "work", list: listOf(ids.length + review.length), project: null, projectName: "All projects", setup: null, empty: null, needsCount: ids.length + review.length,
+  needs: [...(ids.length === 0 ? [] : [{ key: "decide" as const, label: "Decide", count: ids.length, rows: ids.map(row) }]),
+    ...(review.length === 0 ? [] : [{ key: "review" as const, label: "Review", count: review.length, rows: review.map(resultRow) }])] });
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: string };
 let calls: Call[] = [];
@@ -44,24 +51,30 @@ let calls: Call[] = [];
 let answer: (call: Call) => Promise<Response> | Response;
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 const reads = () => calls.filter(one => one.method === "GET");
+const taskOf = (workspace: BrowserWorkspace) => workspace.view as BrowserTaskView;
 const minting = () => reads().filter(one => one.headers["x-toolroll-read"] === undefined);
 const posts = () => calls.filter(one => one.method === "POST");
 
 let root: Root | null = null;
-const mount = async (view: BrowserHomeView) => {
+const mount = async (view: BrowserWorkView) => {
+  window.history.replaceState(null, "", "/");
   const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
-  await act(async () => root!.render(createElement(FormToken.Provider, { value: "csrf-1" }, createElement(HomeView, { view }))));
+  await act(async () => root!.render(createElement(FormToken.Provider, { value: "csrf-1" }, createElement(WorkView, { view }))));
 };
 const wait = async (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 /** Let a selection read land, and the Approve hold run out. */
 const settle = async () => { await wait(SELECTION_SETTLE_MS + 10); await wait(REDRAW_HOLD_MS + 10); };
-const pane = () => document.querySelector(".so-tri-open")!;
+const pane = () => document.querySelector("[data-work-panel]")!;
+const selectedRow = () => document.querySelector("[data-row][data-selected]")?.getAttribute("data-row");
+const said = () => document.querySelector("[data-work-said]")?.textContent ?? null;
 const approveButton = () => pane().querySelector<HTMLButtonElement>("[data-home-approve]");
 const press = async () => { await act(async () => { approveButton()!.click(); }); await wait(0); await wait(0); };
 const noPasswordField = () => expect(document.querySelector('input[type="password"]')).toBeNull();
 
 beforeEach(() => {
   document.body.innerHTML = "";
+  // A selection lives in the address (`?task=`): every test starts on Work itself.
+  window.history.replaceState(null, "", "/");
   calls = [];
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -142,16 +155,16 @@ test("the press: a minting read, then one post with the form token, that nonce, 
   expect(post.body).not.toContain("token");
   // Approved: the row leaves, the next is selected, "Approved." shows above the list. Home reads itself again only
   // once the row has gone, so a read that lands first cannot leave a still-waiting task hidden.
-  expect(document.querySelector("[data-home-approved]")?.textContent).toBe("Approved.");
+  expect(said()).toBe("Task a Approved.");
   expect(document.querySelector('[data-row="a"]')?.classList.contains("so-ti-leave")).toBe(true);
-  expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("b");
+  expect(selectedRow()).toBe("b");
   expect(nudges).toHaveLength(0);
   await wait(250);
   expect(document.querySelector('[data-row="a"]')).toBeNull();
   expect(nudges.length).toBeGreaterThan(0);
   // The line stays until the person selects another row.
   await settle();
-  expect(document.querySelector("[data-home-approved]")).not.toBeNull();
+  expect(said()).not.toBeNull();
   noPasswordField();
 });
 
@@ -218,7 +231,7 @@ test("arrowing through 600 rows mints nothing and reads only where the selection
   const list = document.querySelector<HTMLElement>(".so-tri-list")!;
   for (let n = 0; n < 599; n++) await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
   await settle();
-  expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("r599");
+  expect(selectedRow()).toBe("r599");
   expect(minting()).toHaveLength(0);
   expect(posts()).toHaveLength(0);
   expect(reads().every(one => one.headers["x-toolroll-read"] === "prefetch")).toBe(true);
@@ -249,7 +262,7 @@ test("a vote and an approval that did not rebuild show the server's words in the
     await settle();
     await press();
     expect(pane().querySelector("[data-home-said]")?.textContent, outcome).toBe(words.charAt(0).toUpperCase() + words.slice(1).replace(/([^.])$/, "$1."));
-    expect(document.querySelector("[data-home-approved]"), outcome).toBeNull();
+    expect(said(), outcome).toBeNull();
     await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
   }
 });
@@ -267,8 +280,8 @@ test("no answer is never called a failure: Checking…, the task read again, and
   await press();
   await wait(0);
   expect(document.body.textContent).not.toMatch(/fail/i);
-  expect(document.querySelector("[data-home-approved]")?.textContent).toBe("Approved.");
-  expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row")).toBe("b");
+  expect(said()).toBe("Task a Approved.");
+  expect(selectedRow()).toBe("b");
 
   // Lost again, and the task still waits: it says so, and Approve comes back only once that read landed.
   await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
@@ -326,17 +339,17 @@ test("a click a script made approves nothing: no read is minted and nothing is p
   await wait(0); await wait(0);
   expect(minting()).toHaveLength(0);
   expect(posts()).toHaveLength(0);
-  expect(document.querySelector("[data-home-approved]")).toBeNull();
+  expect(said()).toBeNull();
   expect(document.querySelector('[data-row="a"]')).not.toBeNull();
   await act(async () => { approveButton()!.dispatchEvent(click(true)); });
   await wait(0); await wait(0);
   expect(minting()).toHaveLength(1);
   expect(posts()).toHaveLength(1);
-  expect(document.querySelector("[data-home-approved]")?.textContent).toBe("Approved.");
+  expect(said()).toBe("Task a Approved.");
   noPasswordField();
 });
 
-test("an answer that lands after the selection moved touches nothing in the pane shown now: no words, no plan of the old task, no load, no Approved", async () => {
+test("an answer that lands after the selection moved touches nothing in the pane shown now, and is said against its own task", async () => {
   const assign = vi.fn();
   vi.spyOn(window.location, "assign").mockImplementation(assign);
   const late: Array<[string, () => Response]> = [
@@ -370,12 +383,13 @@ test("an answer that lands after the selection moved touches nothing in the pane
     await act(async () => { release(respond()); });
     await wait(0); await wait(0);
     // B's pane is B's: its title, its plan, its own Approve ready, nothing said, nothing read for A, no page loaded.
-    expect(document.querySelector('[aria-selected="true"]')?.getAttribute("data-row"), name).toBe("b");
+    expect(selectedRow(), name).toBe("b");
     expect(pane().querySelector(".so-open-t")?.textContent, name).toBe("Task b");
     expect(pane().querySelector("[data-plan-sheet]")?.textContent, name).toBe("Second the listings.");
     expect(pane().querySelector("[data-home-said]"), name).toBeNull();
     expect(pane().querySelector("[data-home-changed]"), name).toBeNull();
-    expect(document.querySelector("[data-home-approved]"), name).toBeNull();
+    // What became of A is said above the list, against A (criterion 4), never in B's pane.
+    expect(said(), name).toMatch(/^Task a /);
     expect(approveButton()?.getAttribute("aria-disabled"), name).toBeNull();
     expect(reads().slice(readsBefore).filter(one => one.url.startsWith("/t/a")), name).toHaveLength(0);
     expect(assign, name).not.toHaveBeenCalled();
@@ -385,4 +399,149 @@ test("an answer that lands after the selection moved touches nothing in the pane
     window.removeEventListener(WORKSPACE_NUDGE, nudged);
     await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
   }
+});
+
+// ---- Accept and Send back in the panel (criteria 1-6 for a result) ------------------------------------------------
+
+const RECEIPT = "cd".repeat(32);
+const REQUEST = (n: number) => n.toString(16).padStart(32, "0");
+type Selected = NonNullable<BrowserTaskView["result"]>["selected"];
+/** A task whose current result waits: accepting it is its one act and it is ready; Send back is beside it. */
+const resultOf = (id: string, over: { revision?: string; receipt?: string; youCheck?: boolean; sensitive?: boolean; request?: number; accept?: boolean } = {}): BrowserWorkspace => {
+  const selected = {
+    taskId: id, title: `Task ${id}`, project: "shop", build: 7, taskHref: `/t/${id}`, chatHref: `/chat?task=${id}`, status: { label: "Ready for review", tone: "ready", token: "ready" },
+    problem: null, next: null, decision: { label: "Accept", ready: true, why: null, effect: "", sentence: "" }, checks: { detail: "Checks passed.", problem: false, logHref: null },
+    mismatch: null, acts: { primary: over.accept === false ? "request-changes" : "accept", secondary: "request-changes", line: null }, runChecks: null, record: null, intent: null, noRun: null, notes: [],
+    complete: over.accept === false ? null : { action: `/t/${id}/complete`, receipt: over.receipt ?? RECEIPT, run: 7, accept: null },
+    panel: { outcome: "Rounds every line at cent precision.", attention: ["Older payouts are not recomputed."], youCheck: over.youCheck ? { lines: [], items: [{ id: "c1" }], accept: null } : null,
+      sendBack: { action: "/r/7/comment", batch: "b1", source: "s1", request: REQUEST(over.request ?? 1) } },
+  } as unknown as Selected;
+  return workspaceOf(id, null, over.sensitive ? { sensitive: true } : {}, { title: `Task ${id}`, status: null, result: { selected, current: true, attempts: [], revision: over.revision ?? "r1" } } as Partial<BrowserTaskView>);
+};
+const acceptButton = () => pane().querySelector<HTMLButtonElement>("[data-work-accept]");
+const pressAccept = async () => { await act(async () => { acceptButton()!.click(); }); await wait(0); await wait(0); };
+const typeNote = async (text: string) => {
+  const box = pane().querySelector<HTMLTextAreaElement>("[data-work-send-back] textarea")!;
+  const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  await act(async () => { set.call(box, text); box.dispatchEvent(new Event("input", { bubbles: true })); });
+};
+
+test("a ready result: its state, outcome, caveat and checks are on screen before Accept, which posts exactly the receipt read, in place, after reading the task again", async () => {
+  answer = call => call.method === "POST" ? json({ outcome: "done", words: "Accepted. The task is complete." }) : json(resultOf(call.url.split("?")[0]!.slice(3)));
+  await mount(homeOf([], ["a", "b"]));
+  await settle();
+  expect(pane().querySelector("[data-work-outcome]")?.textContent).toBe("Rounds every line at cent precision.");
+  expect(pane().querySelector("[data-work-caveat]")?.textContent).toBe("Older payouts are not recomputed.");
+  expect(pane().querySelector("[data-work-checks]")?.textContent).toBe("Checks passed.");
+  expect(reads().every(one => one.headers["x-toolroll-read"] === "prefetch")).toBe(true);
+  const before = reads().length;
+  await pressAccept();
+  // Read again (never minted) before the post, then one post of exactly the pinned terms.
+  expect(reads().length).toBe(before + 1);
+  expect(minting()).toHaveLength(0);
+  expect(posts()).toHaveLength(1);
+  const post = posts()[0]!;
+  expect(post.url).toBe("/t/a/complete");
+  expect(post.headers["x-toolroll-act"]).toBe("in-place");
+  expect([...new URLSearchParams(post.body)]).toEqual([["csrf", "csrf-1"], ["receipt", RECEIPT], ["run", "7"]]);
+  expect(said()).toBe("Task a Accepted. The task is complete.");
+  expect(selectedRow()).toBe("b");
+  noPasswordField();
+});
+
+test("a result that changed by the press posts nothing: the new terms are drawn, the line says so, and Accept waits", async () => {
+  let pressed = false;
+  answer = call => call.method === "POST" ? json({ outcome: "done", words: "Accepted." }) : json(resultOf("a", pressed ? { revision: "r2", receipt: "ef".repeat(32) } : {}));
+  await mount(homeOf([], ["a"]));
+  await settle();
+  pressed = true;
+  await pressAccept();
+  expect(posts()).toHaveLength(0);
+  expect(pane().querySelector("[data-work-changed]")?.textContent).toBe("The result changed. Read it again.");
+  expect(acceptButton()?.getAttribute("aria-disabled")).toBe("true");
+  await act(async () => { acceptButton()!.click(); });
+  await wait(0);
+  expect(posts()).toHaveLength(0);
+  // After the hold, the newer result is accepted only by a new press, for its own receipt.
+  await wait(REDRAW_HOLD_MS + 10);
+  await pressAccept();
+  expect(new URLSearchParams(posts()[0]!.body).get("receipt")).toBe("ef".repeat(32));
+});
+
+test("no in-place Accept on a password page, with a check of the person's own still open, or for a run that isn't this task's: the link loads the task page as a document", async () => {
+  for (const [name, read] of [["sensitive", resultOf("a", { sensitive: true })], ["open check", resultOf("a", { youCheck: true, accept: true })]] as const) {
+    answer = () => json(read);
+    await mount(homeOf([], ["a"]));
+    await settle();
+    if (name === "sensitive") {
+      expect(acceptButton(), name).toBeNull();
+      expect(pane().querySelector("[data-work-review]")?.hasAttribute("data-full-load"), name).toBe(true);
+    } else expect(acceptButton(), name).toBeNull();
+    noPasswordField();
+    await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
+  }
+  // A read whose complete route isn't this task's own is no snapshot at all.
+  const foreign = resultOf("a");
+  (taskOf(foreign).result!.selected.complete as { action: string }).action = "/t/b/complete";
+  (taskOf(foreign).result!.selected.panel as { sendBack: unknown }).sendBack = null;
+  answer = () => json(foreign);
+  await mount(homeOf([], ["a"]));
+  await settle();
+  expect(acceptButton()).toBeNull();
+  expect(posts()).toHaveLength(0);
+});
+
+test("Send back posts the note with the saved notes and diff it was shown and the fresh read's request token; a changed result posts nothing", async () => {
+  let reads_ = 0;
+  answer = call => call.method === "POST" ? json({ outcome: "done", words: "Sent back. The revision is filed." }) : json(resultOf("a", { request: ++reads_ }));
+  await mount(homeOf([], ["a"]));
+  await settle();
+  await typeNote("Round half-cents up.");
+  await act(async () => { pane().querySelector<HTMLFormElement>("[data-work-send-back]")!.requestSubmit(); });
+  await wait(0); await wait(0);
+  expect(posts()).toHaveLength(1);
+  expect(posts()[0]!.url).toBe("/r/7/comment");
+  expect(posts()[0]!.headers["x-toolroll-act"]).toBe("in-place");
+  expect([...new URLSearchParams(posts()[0]!.body)]).toEqual([["csrf", "csrf-1"], ["intent", "revise"], ["batch", "b1"], ["source", "s1"], ["request", REQUEST(2)], ["note", "Round half-cents up."]]);
+  expect(said()).toBe("Task a Sent back. The revision is filed.");
+
+  await act(async () => root!.unmount()); root = null; document.body.innerHTML = ""; calls = [];
+  let pressed = false;
+  answer = call => call.method === "POST" ? json({ outcome: "done", words: "x" }) : json(resultOf("a", pressed ? { revision: "r2" } : {}));
+  await mount(homeOf([], ["a"]));
+  await settle();
+  await typeNote("Round half-cents up.");
+  pressed = true;
+  await act(async () => { pane().querySelector<HTMLFormElement>("[data-work-send-back]")!.requestSubmit(); });
+  await wait(0); await wait(0);
+  expect(posts()).toHaveLength(0);
+  expect(pane().querySelector("[data-work-changed]")).not.toBeNull();
+});
+
+test("an Accept answered after the selection moved: B's pane is untouched and A's outcome is said against A", async () => {
+  let release: (response: Response) => void = () => undefined;
+  answer = call => call.method === "POST" ? new Promise<Response>(done => { release = done; }) : json(resultOf(call.url.split("?")[0]!.slice(3)));
+  await mount(homeOf([], ["a", "b"]));
+  await settle();
+  await pressAccept();
+  expect(posts().map(one => one.url)).toEqual(["/t/a/complete"]);
+  await act(async () => document.querySelector<HTMLElement>('[data-row="b"]')!.click());
+  await settle();
+  expect(pane().querySelector(".so-open-t")?.textContent).toBe("Task b");
+  await act(async () => { release(json({ outcome: "refused", words: "this result changed" }, 409)); });
+  await wait(0); await wait(0);
+  expect(selectedRow()).toBe("b");
+  expect(pane().querySelector("[data-work-said-act]")).toBeNull();
+  expect(said()).toBe("Task a This result changed. Nothing changed.");
+  expect(posts()).toHaveLength(1);
+});
+
+test("a selected task the panel may not read (another project's, refused by its own page) shows nothing of it and no act", async () => {
+  answer = () => new Response("<p class=problem>No such resource in your projects.</p>", { status: 404, headers: { "content-type": "text/html" } });
+  await mount(homeOf([], ["a"]));
+  await settle();
+  expect(pane().querySelector("[data-work-unread]")).not.toBeNull();
+  expect(acceptButton()).toBeNull();
+  expect(pane().querySelector("[data-work-send-back]")).toBeNull();
+  expect(reads()[0]!.url).toBe("/t/a?format=workspace");
 });
