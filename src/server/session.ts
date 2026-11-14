@@ -197,9 +197,10 @@ export class PersistentSessions extends Map<string, Session> {
  * closeCoding starts the coding shutdown on its own, ahead of the rest of a stop; close() awaits the same promise. */
 export type DecisionServer = Server & { mintSignInLink(account: string): string | null; mintLocalLink(): string | null; readonly keyEpoch: string; closeCoding(): Promise<void> };
 /** A one-time sign-in link as the console holds it (only a hash of its code is the key): a full one for an account,
- * or a local owner's (easy-start C4), bound to local mode's generation and the owner's account generation when minted. */
+ * bound to the account's generation when minted (a password changed or reset since ends it), or a local owner's
+ * (easy-start C4), bound to local mode's generation and the owner's account generation when minted. */
 export type SignInLink =
-  | { kind: "full"; account: string; expires: number }
+  | { kind: "full"; account: string; accountGeneration: number; expires: number }
   | { kind: "local-owner"; account: string; localGeneration: number; accountGeneration: number; expires: number };
   // v100: sign-in with the identity provider. A visit waits for the provider (15 minutes); a hand-off
   // carries the proved person from the callback (reached from the provider's site, so without the

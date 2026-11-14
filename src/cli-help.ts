@@ -59,6 +59,10 @@ Starting and running
                                keep this computer's Toolroll running when you log in
   toolroll stop             stop this computer's Toolroll once its running work is saved
   toolroll password set     add a password (typed twice, at your terminal)
+  toolroll password reset   forgot your password? reset it here (typed twice, at this computer's terminal;
+                               --as <name> when several people sign in). Every session of that account ends.
+                               Anyone who can run commands as you on this computer can do this, as they
+                               could read the saved first password: that is the line Toolroll draws.
   toolroll link             put \`toolroll\` on your PATH
   toolroll unlink           take it off again
                                (link shows what it would do and changes nothing; add --yes to apply it,

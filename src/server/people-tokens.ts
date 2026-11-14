@@ -3,7 +3,7 @@ import { adapterPolicy } from "./route-policy.js";
 /** settings handlers, moved without changing their route bodies. */
 import { mintApiToken,TOKEN_DAYS } from "../api-tokens.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
-import { html, htmlString, joinHtml, postForm, reauth, replaceMarkup, scriptElement, type Html } from "../html.js";
+import { html, htmlString, joinHtml, postForm, reauth, replaceMarkup, scriptElement, type Html, type HtmlValue } from "../html.js";
 import { credentialsHtml,tokenShownHtml } from "../credentials-ui.js";
 import {
 projectName
@@ -32,6 +32,8 @@ import { enrollOwnerPassword, liveInviteTerms, localOwnerBinding } from "../stor
 import { KEY_FILL_SCRIPT } from "./mutation-key.js";
 import { LOCAL_OWNER_LAPSED } from "../local-owner.js";
 import { withFormToken } from "./request-context.js";
+import { loginHelpOf } from "./login-help.js";
+import type { Store } from "../store.js";
 import { FULL_SESSION,SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
 import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 
@@ -259,7 +261,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       response.setHeader("Referrer-Policy", "same-origin");
       return page(response, 200, signupPage(null, runtime.setupAttemptsLeft));
     }
-    return page(response, 200, loginPage(null, loginReturn(url.searchParams.get("return")), ssoOffer()));
+    return page(response, 200, loginWith(store, fromThisComputer(ctx.request), null, loginReturn(url.searchParams.get("return")), ssoOffer()));
   }
 
   // The one-time link `up` opens (onboarding): it signs the browser on this computer in and lands on Chat. Spent on
@@ -272,14 +274,14 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     response.setHeader("Referrer-Policy", "no-referrer");
     if (!fromThisComputer(request)) {
       recordSignIn(held?.account ?? "unknown account", "sign-in refused", "one-time link", "opened from another device");
-      return page(response, 403, loginPage("That sign-in link works only in a browser on the computer running Toolroll. Sign in with your password.", "/chat", ssoOffer()));
+      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "That sign-in link works only in a browser on the computer running Toolroll. Sign in with your password.", "/chat", ssoOffer()));
     }
     if (held === undefined || held.expires < Date.now()) {
-      return page(response, 410, loginPage(html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
+      return page(response, 410, loginWith(store, fromThisComputer(ctx.request), html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
     }
     const account = store.accountOf(held.account);
-    if (account === null || account.role !== "approver" || account.revokedAt !== null) return page(response, 403, loginPage("That account can't sign in here any more.", "/chat", ssoOffer()));
-    if (!passwordAllowed(held.account)) return page(response, 403, loginPage(`Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
+    if (account === null || account.role !== "approver" || account.revokedAt !== null) return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "That account can't sign in here any more.", "/chat", ssoOffer()));
+    if (!passwordAllowed(held.account)) return page(response, 403, loginWith(store, fromThisComputer(ctx.request), `Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
     const id = randomBytes(32).toString("hex");
     const keyed = keyFor(request);
     const base = { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
@@ -294,10 +296,19 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         sessions.set(id, { ...base, generation: now.accountGeneration, authority: "local-owner", localGeneration: now.localGeneration, ...keyed.fields });
         return true;
       });
-      if (!made) return page(response, 410, loginPage(html`That sign-in link has been used or has expired. Run <code>toolroll</code> again to open Toolroll.`, "/chat", ssoOffer()));
+      if (!made) return page(response, 410, loginWith(store, fromThisComputer(ctx.request), html`That sign-in link has been used or has expired. Run <code>toolroll</code> again to open Toolroll.`, "/chat", ssoOffer()));
       recordSignIn(held.account, "signed in", "local link");
     } else {
-      sessions.set(id, { ...base, ...FULL_SESSION, ...keyed.fields });
+      // A full link stands only on the credential it was minted under: in the same transaction as the session is saved,
+      // the account is read again and its generation must still be the link's (a password changed or reset since — or a
+      // removal, a role or access change — ends it).
+      const made = store.transact(() => {
+        const now = store.accountOf(held.account);
+        if (now === null || now.role !== "approver" || now.revokedAt !== null || !now.passwordSet || now.generation !== held.accountGeneration) return false;
+        sessions.set(id, { ...base, generation: held.accountGeneration, ...FULL_SESSION, ...keyed.fields });
+        return true;
+      });
+      if (!made) return page(response, 410, loginWith(store, fromThisComputer(ctx.request), html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
       recordSignIn(held.account, "signed in", "one-time link");
     }
     return signedInTo(response, keyed.key, "/chat", [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
@@ -310,14 +321,14 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const settings = ssoSettings();
     const intent: SsoIntent = url.searchParams.get("link") === "1" ? "link" : url.searchParams.get("reauth") === "1" ? "reauth" : "sign-in";
     const returnTo = loginReturn(url.searchParams.get("return"));
-    if (settings === null) return page(response, 404, loginPage("Sign-in with an identity provider isn't on.", returnTo));
+    if (settings === null) return page(response, 404, loginWith(store, fromThisComputer(ctx.request), "Sign-in with an identity provider isn't on.", returnTo));
     if (intent !== "sign-in" && who?.via !== "cookie") return redirect(response, loginHref(returnTo));
     const origin = consoleOrigin(request.headers.host);
-    if (origin === null) return page(response, 400, loginPage("Sign in from this computer (localhost) or from your https address.", returnTo, ssoOffer()));
+    if (origin === null) return page(response, 400, loginWith(store, fromThisComputer(ctx.request), "Sign in from this computer (localhost) or from your https address.", returnTo, ssoOffer()));
     // Discovered as the console starts and in the background (docs/plans/get-side-effects.md): following this link
     // fetches nothing.
     const known = providerKnown(settings.issuer);
-    if (known === null) return page(response, 503, loginPage(`${settings.label} isn't answering yet. Try again in a moment.`, returnTo, ssoOffer()));
+    if (known === null) return page(response, 503, loginWith(store, fromThisComputer(ctx.request), `${settings.label} isn't answering yet. Try again in a moment.`, returnTo, ssoOffer()));
     const found = { provider: known };
     const visit = newOidcVisit(), redirectUri = `${origin}${SSO_CALLBACK}`;
     for (const [key, one] of ssoVisits) if (one.expires < Date.now()) ssoVisits.delete(key);
@@ -339,19 +350,19 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
   async function ssoFinish(ctx: EdgeContext): Promise<void> {
     const { url, who, request, response } = ctx;
     const key = url.searchParams.get("h") ?? "";
-    if (!startedHere(request, key)) return page(response, 400, loginPage("That sign-in was started in another browser. Sign in again from this one.", "/", ssoOffer()));
+    if (!startedHere(request, key)) return page(response, 400, loginWith(store, fromThisComputer(ctx.request), "That sign-in was started in another browser. Sign in again from this one.", "/", ssoOffer()));
     const handoff = ssoHandoffs.get(key);
     ssoHandoffs.delete(key);
     response.setHeader("Set-Cookie", signInSpent("/login/sso/finish"));
     const settings = ssoSettings();
-    if (handoff === undefined || handoff.expires < Date.now() || settings === null) return page(response, 400, loginPage("That sign-in expired. Try again.", "/", ssoOffer()));
+    if (handoff === undefined || handoff.expires < Date.now() || settings === null) return page(response, 400, loginWith(store, fromThisComputer(ctx.request), "That sign-in expired. Try again.", "/", ssoOffer()));
     const { claims } = handoff;
     const identity = { issuer: handoff.issuer, subject: claims.sub, email: claims.email, label: settings.label };
     if (handoff.intent === "link" || handoff.intent === "reauth") {
       if (who?.via !== "cookie") return redirect(response, loginHref(handoff.returnTo));
       // Only the session that asked: same kept session, same credential generation.
       if (handoff.session === null || sessions.hashOf(who.session) !== handoff.session.hash || who.session.generation !== handoff.session.generation) {
-        return page(response, 403, loginPage(`That ${settings.label} check was started by another sign-in. Start it again from this page.`, handoff.returnTo, ssoOffer()));
+        return page(response, 403, loginWith(store, fromThisComputer(ctx.request), `That ${settings.label} check was started by another sign-in. Start it again from this page.`, handoff.returnTo, ssoOffer()));
       }
       if (handoff.intent === "link") {
         const linked = store.linkSsoIdentity(who.name, identity, clock());
@@ -361,7 +372,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         return redirect(response, `/settings/sign-in?said=${encodeURIComponent(`This account signs in with ${settings.label} now.`)}`);
       }
       // A step-up: the provider checked the same person again.
-      if (store.ssoAccount(identity.issuer, identity.subject) !== who.name) return page(response, 403, loginPage(`That ${settings.label} account isn't the one signed in here.`, handoff.returnTo, ssoOffer()));
+      if (store.ssoAccount(identity.issuer, identity.subject) !== who.name) return page(response, 403, loginWith(store, fromThisComputer(ctx.request), `That ${settings.label} account isn't the one signed in here.`, handoff.returnTo, ssoOffer()));
       who.session.sso = { at: handoff.checkedAt ?? 0 };
       // An explicit re-check on request: the one identity-provider event that stands in for a password typed now (for ONE
       // step-up, spent by it) and may start a freshness window (B2). Kept in memory only: a restart forgets it.
@@ -375,7 +386,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       () => accountNameFor(claims, name => store.accountOf(name) !== null), clock());
     if (!signedIn.ok) {
       recordSignIn(store.ssoAccount(identity.issuer, identity.subject) ?? "unknown account", "sign-in refused", signedIn.reason === "no-group" ? "no matching group" : signedIn.reason);
-      return page(response, 403, loginPage(signedIn.reason === "no-group" ? `Your ${settings.label} account isn't in a group that may use Toolroll. Ask whoever runs it.`
+      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), signedIn.reason === "no-group" ? `Your ${settings.label} account isn't in a group that may use Toolroll. Ask whoever runs it.`
         : signedIn.reason === "revoked" ? "This account was removed. Ask whoever runs Toolroll." : "That change would leave no one who can run this installation.", "/", ssoOffer()));
     }
     const account = store.accountOf(signedIn.account)!;
@@ -395,7 +406,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     // five tries: the bootstrap door underneath is atomic, so two first
     // visitors serialize to one owner.
     if (options.setupCode === undefined || store.listApprovers().length > 0) {
-      return page(response, 409, loginPage("An account already exists. Sign in."));
+      return page(response, 409, loginWith(store, fromThisComputer(ctx.request), "An account already exists. Sign in."));
     }
     if (runtime.setupAttemptsLeft <= 0) {
       return page(response, 403, signupPage(null, 0));
@@ -429,9 +440,9 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       return page(response, 400, signupPage({ field: "password", text: `Use at least ${SIGNUP_PASSWORD_MIN} characters.` }, runtime.setupAttemptsLeft, name));
     }
     const made = store.bootstrapApproverIfNone(name, hashPassword(password), clock());
-    if (!made.ok) return page(response, 409, loginPage("An account already exists. Sign in."));
+    if (!made.ok) return page(response, 409, loginWith(store, fromThisComputer(ctx.request), "An account already exists. Sign in."));
     const authenticated = authenticateAccount(store, name, password);
-    if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("The account was created, but signing in failed. Sign in with it now."));
+    if (authenticated === null || !authenticated.ok) return page(response, 500, loginWith(store, fromThisComputer(ctx.request), "The account was created, but signing in failed. Sign in with it now."));
     const id = randomBytes(32).toString("hex");
     const keyed = keyFor(request);
     sessions.set(id, {
@@ -467,7 +478,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (wait > 0) {
       recordSignIn(signInActor(name), "sign-in refused", "too many tries", "from one address");
       response.setHeader("Retry-After", String(Math.ceil(wait / 1000)));
-      return page(response, 429, loginPage(`Too many sign-in attempts. Try again in ${minutesWords(wait)}.`, returnTo));
+      return page(response, 429, loginWith(store, fromThisComputer(ctx.request), `Too many sign-in attempts. Try again in ${minutesWords(wait)}.`, returnTo));
     }
     const authenticated =
       name !== null && token !== null ? authenticateAccount(store, name, token) : null;
@@ -476,15 +487,15 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
         const locked = authenticated.retryAfterMs!;
         recordSignIn(signInActor(name), "sign-in refused", "locked");
         response.setHeader("Retry-After", String(Math.ceil(locked / 1000)));
-        return page(response, 429, loginPage(`Too many wrong passwords. Try again in ${minutesWords(locked)}.`, returnTo));
+        return page(response, 429, loginWith(store, fromThisComputer(ctx.request), `Too many wrong passwords. Try again in ${minutesWords(locked)}.`, returnTo));
       }
       signInBudget.failed(source, at);
       recordSignIn(signInActor(name), "sign-in refused", "wrong password");
-      return page(response, 403, loginPage("wrong username or password", returnTo, ssoOffer()));
+      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "wrong username or password", returnTo, ssoOffer()));
     }
     if (!passwordAllowed(name as string)) {
       recordSignIn(name as string, "sign-in refused", "provider only");
-      return page(response, 403, loginPage(`Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, returnTo, ssoOffer()));
+      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), `Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, returnTo, ssoOffer()));
     }
     recordSignIn(name as string, "signed in", "browser");
     const id = randomBytes(32).toString("hex");
@@ -628,7 +639,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
    */
   /** v100: back from the identity provider. Proves the person, then hands them to /login/sso/finish on this site. */
   async function ssoCallback(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
-    const back = (words: string) => page(response, 400, loginPage(words, "/", ssoOffer()));
+    const back = (words: string) => page(response, 400, loginWith(store, fromThisComputer(request), words, "/", ssoOffer()));
     const state = url.searchParams.get("state") ?? "";
     if (!startedHere(request, state)) return back("That sign-in was started in another browser. Sign in again from this one.");
     const held = ssoVisits.get(state);
@@ -641,7 +652,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const fetcher = options.ssoFetch ?? fetch;
     const token = await exchangeOidcCode(held.provider, settings, code, held.visit, held.redirect, fetcher);
     if (!token.ok) return back(token.said);
-    if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return page(response, 403, loginPage("This sign-in is not allowed."));
+    if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return page(response, 403, loginWith(store, fromThisComputer(request), "This sign-in is not allowed."));
     const verified = await verifyIdToken(token.idToken, held.provider, settings, held.visit.nonce, clock(), fetcher);
     if (!verified.ok) { logEvent("warn", "sso.refused", { reason: verified.said }); return back(verified.said); }
     // When the provider checked the person (its auth_time), proved against this visit (cockpit B2, N18): no earlier than
@@ -861,4 +872,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     "edge.password-set": passwordSetSend,
   });
   return { registrations, takeJoinAttempt, ssoCallback, readAccessForm };
+}
+
+/** The sign-in page, with its footer saying how to get in by install kind (login-help.ts), read at each render. (At the
+ * end of the module: the password tripwire pins the handlers' places.) `here`: the request is from this computer
+ * (fromThisComputer: loopback, no proxy headers) — only then does the footer name the saved file's path. */
+function loginWith(store: Store, here: boolean, problem: HtmlValue | null, returnTo = "/", sso: { label: string; operatorsOnly: boolean } | null = null): Html {
+  return loginPage(problem, returnTo, sso, loginHelpOf(store, { here }));
 }

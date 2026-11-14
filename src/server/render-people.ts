@@ -4,6 +4,7 @@ import { BRAND_HTML,shell } from "./chrome.js";
 import { html, joinHtml, postForm, replaceMarkup, type Html, type HtmlValue } from "../html.js";
 import { btn, disclose, facts, notice, outField, outPage } from "./kit.js";
 import { projectName } from "../project.js";
+import type { LoginHelp } from "./login-help.js";
 
 /** What a live invite grants, said on its join page ("Your access"). Project names only, never paths. */
 export type InviteTerms = { role: "approver" | "viewer"; mintedBy: string; expiresAt: string; projects: readonly string[] | null };
@@ -86,7 +87,23 @@ function expiryWords(iso: string): string {
   return at.toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-export function loginPage(problem: HtmlValue | null, returnTo = "/", sso: { label: string; operatorsOnly: boolean } | null = null): Html {
+/**
+ * The sign-in page's footer: how to get in when the password is forgotten, by install kind (login-help.ts). With an
+ * identity provider it stays as it was: the provider's button is the way in.
+ */
+function loginFoot(sso: { label: string; operatorsOnly: boolean } | null, help: LoginHelp): Html {
+  const invite = html`No account? Ask whoever runs this Toolroll for an invite link.`;
+  if (sso !== null || help.kind === "none") return invite;
+  const reset = html`<code class="k-nowrap">toolroll password reset</code>`;
+  const forgot = help.kind === "local"
+    ? html`Signing in without a password works only on the computer running Toolroll. There, run <code class="k-nowrap">toolroll open --web</code>.${help.passwordSet !== false ? html` Forgot your password? Run ${reset} there.` : ""}`
+    : help.savedAt === null
+      ? html`Forgot your password? Run ${reset} on the computer running Toolroll.`
+      : html`Forgot your password? On the computer running Toolroll, your first password is saved in <code data-saved-login>${joinHtml(help.savedAt.split("/").map((part, index) => index === 0 ? html`${part}` : html`/<wbr>${part}`))}</code> (until you change it). Changed it and forgot? Run ${reset} there.`;
+  return html`<span data-login-help="${help.kind}">${forgot}</span><br>${invite}`;
+}
+
+export function loginPage(problem: HtmlValue | null, returnTo = "/", sso: { label: string; operatorsOnly: boolean } | null = null, help: LoginHelp = { kind: "password", savedAt: null }): Html {
   const form = postForm("/login", joinHtml([
     outField({ id: "login-name", label: "Username", name: "name", attrs: { autocomplete: "username", autocapitalize: "none", spellcheck: "false", required: true, ...(sso === null ? { autofocus: true } : {}) } }),
     outField({ id: "login-password", label: "Password", name: "token", type: "password", attrs: { autocomplete: "current-password" } }),
@@ -102,7 +119,7 @@ export function loginPage(problem: HtmlValue | null, returnTo = "/", sso: { labe
       ]);
   return shell("Sign in · Toolroll", outPage({
     brand: BRAND_HTML, brandHref: "/login", title: "Sign in", body,
-    foot: html`${sso === null ? html`Forgot it? Your first login was shown when Toolroll started, and saved beside its database in <code class="k-nowrap">.toolroll-secrets/up-login.txt</code> on the computer running it.<br>` : ""}No account? Ask whoever runs this Toolroll for an invite link.`,
+    foot: loginFoot(sso, help),
   }), { nav: false });
 }
 
