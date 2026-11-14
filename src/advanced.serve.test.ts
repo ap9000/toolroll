@@ -58,6 +58,9 @@ test("a person's own switch: off by default after the upgrade, theirs only, stri
   // Reading the page (and HEAD) writes nothing; the page lists the switch and every advanced page.
   expect(a.page).toContain("Show advanced features");
   expect(a.page).toContain("href=\"/flows\"");
+  // The old address is a permanent redirect to General's Advanced section, opened, and writes nothing either.
+  const moved = await fetch(`${base}/settings/advanced?said=x&csrf=y`, { headers: { cookie: a.cookie }, redirect: "manual" });
+  expect([moved.status, moved.headers.get("location")]).toEqual([301, "/settings/general?said=x&section=advanced&open=1"]);
   await fetch(`${base}/settings/advanced`, { method: "HEAD", headers: { cookie: a.cookie } });
   expect(ledgerRows()).toBe(0);
   expect(await rail(a.cookie)).toEqual(["Home", "Chat", "Tasks", "Projects", "Settings"]);
@@ -74,7 +77,8 @@ test("a person's own switch: off by default after the upgrade, theirs only, stri
   // The account is the session's: a forged account field changes nothing for anyone else.
   const on = await a.post("advanced=on&account=vic&name=vic");
   expect(on.status).toBe(303);
-  expect(on.headers.get("location")).toMatch(/^\/settings\/advanced\?said=/);
+  // Settings → Advanced is General's Advanced section now (settings plan F0): the answer lands on it.
+  expect(on.headers.get("location")).toMatch(/^\/settings\/general\?section=advanced&said=/);
   expect(advancedPreferenceOf(store, "alex")).toBe(true);
   expect(advancedPreferenceOf(store, "vic")).toBeNull();
   expect(await rail(a.cookie)).toEqual(["Home", "Chat", "Tasks", "Flows", "Agents", "Projects", "Settings"]);
