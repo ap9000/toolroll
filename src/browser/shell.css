@@ -41,7 +41,7 @@
 .so-ti-m { display: flex; flex-wrap: wrap; align-items: center; gap: var(--so-space-xs) 10px; font-size: 12.5px; color: var(--so-muted); }
 
 /* ---------- Live connection (fluid pages slice 1a): one small neutral line, only while the stream is down ---------- */
-.so-live-state { position: fixed; z-index: 14; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; border-radius: 6px; box-shadow: 0 0 0 4px var(--so-paper); pointer-events: none; }
+.so-live-state { position: fixed; z-index: 14; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; border-radius: 6px; box-shadow: 0 0 0 1px var(--so-line), 0 0 0 4px var(--so-paper); pointer-events: none; }
 .so-live-state:empty { display: none; }
 @media (prefers-reduced-motion: no-preference) {
   .so-live-state:not(:empty) { animation: so-live-state-in var(--m-quick) var(--m-ease); }
