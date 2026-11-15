@@ -51,9 +51,12 @@ async fn run_fx(client: &Client, fx: Effect) -> Option<Msg> {
                 .collect();
             Msg::Acted(client.act(&path, &pairs, &done).await)
         }
-        Effect::Send { acts, task, run } => {
-            toolroll_tui::run::send_batch(client, acts, task, run).await
-        }
+        Effect::Send {
+            acts,
+            task,
+            run,
+            text,
+        } => toolroll_tui::run::send_batch(client, acts, task, run, text).await,
         _ => return None,
     })
 }
@@ -262,14 +265,22 @@ async fn a_lost_or_refused_answer_never_saves_the_notes_twice() {
     };
     // The first try reaches the console (the note is saved), but its answer never comes back.
     let fx = submit(&mut app);
-    let [Effect::Send { acts, task, run }] = fx.as_slice() else {
+    let [Effect::Send {
+        acts,
+        task,
+        run,
+        text,
+    }] = fx.as_slice()
+    else {
         panic!("{fx:?}")
     };
     let first_try = vec![acts[0].clone()];
-    let _lost = toolroll_tui::run::send_batch(&client, first_try, task.clone(), *run).await;
+    let _lost =
+        toolroll_tui::run::send_batch(&client, first_try, task.clone(), *run, text.clone()).await;
     app.update(Msg::Sent {
         task: task.clone(),
         run: *run,
+        text: text.clone(),
         kept: 0,
         result: Err(toolroll_api::ApiError::Unreachable(
             "connection reset".into(),

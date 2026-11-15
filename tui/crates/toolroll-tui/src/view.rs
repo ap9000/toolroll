@@ -456,7 +456,6 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         let note_label: String;
         let (label, text) = match &app.mode {
             Mode::Steer(t) => ("Steer: ", t),
-            Mode::Note(NoteKind::SendBack(_), t) => ("Send back, saying what to change: ", t),
             Mode::Note(NoteKind::Line(target), t) => {
                 let place = Note {
                     file: target.file,
@@ -1371,17 +1370,22 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let w = (area.width as usize).saturating_sub(8).min(84);
             let notes = app.notes_of(&pin.task, pin.run);
             let room_lines = (area.height as usize).saturating_sub(12).max(1);
+            let head = if notes.is_empty() {
+                format!("Send back build #{}, saying what to change:", pin.run)
+            } else {
+                format!("Send back build #{} with:", pin.run)
+            };
             let mut lines = vec![
                 Line::raw(""),
-                Line::from(Span::styled(
-                    format!("Send back build #{} with:", pin.run),
-                    ink(),
-                )),
+                Line::from(Span::styled(head, ink())),
                 Line::raw(""),
             ];
             let mut body: Vec<Line<'static>> = vec![];
-            for part in review::batch_text(&notes, "").split('\n') {
-                body.extend(wrap(part, w).into_iter().map(Line::raw));
+            if !notes.is_empty() {
+                for part in review::batch_text(&notes, "").split('\n') {
+                    body.extend(wrap(part, w).into_iter().map(Line::raw));
+                }
+                body.push(Line::raw(""));
             }
             if body.len() > room_lines {
                 let more = body.len() - room_lines + 1;
@@ -1392,8 +1396,11 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 )));
             }
             lines.extend(body);
-            lines.push(Line::raw(""));
-            let label = "For the whole change: ";
+            let label = if notes.is_empty() {
+                "What to change: "
+            } else {
+                "For the whole change: "
+            };
             let room = w.saturating_sub(width(label) + 1);
             let shown: String = {
                 let chars: Vec<char> = typed.chars().collect();

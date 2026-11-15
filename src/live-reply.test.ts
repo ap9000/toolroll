@@ -16,6 +16,8 @@ const SECRETS: Record<string, string[]> = {
   "telegram-bot-token": [`123456789:AA${"a1B2c3D4e5F".repeat(3)}`],
   "discord-bot-token": [`N${"a1B2c3D4e5F6".repeat(2)}.Ab1-Cd.${"a1B2c3D4e5".repeat(3)}`],
   "password-in-url": ["https://deploy:hunter22@db.internal.net/x"],
+  "putty-private-key": ["PuTTY-User-Key-File-3:"],
+  "aws-secret-key": [`aws_secret_access_key = ${"Ab1/".repeat(10)}`, `AWS_SECRET_ACCESS_KEY=${"Zx9+".repeat(10)}`],
 };
 const LEAD = "Here is the value";
 

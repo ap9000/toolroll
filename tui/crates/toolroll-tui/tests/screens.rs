@@ -340,17 +340,21 @@ fn accept_and_send_back_post_the_review_facts() {
     app.key(key('a'));
     assert_eq!(app.key(key('x')), vec![]);
     assert_eq!(app.status.as_ref().unwrap().1, "Not accepted.");
-    // Send back needs words.
+    // Send back needs words, then shows the whole text to read to its end; Enter there sends exactly it.
     app.key(key('r'));
     assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
-    assert!(matches!(app.mode, Mode::Note(..)));
+    assert!(matches!(app.mode, Mode::SendBack(..)));
     for c in "keep the old column order".chars() {
         app.key(key(c));
     }
+    assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
+    assert!(matches!(app.mode, Mode::SendReview { .. }));
+    screen(&mut app, 120, 30);
     let fx = app.key(code(KeyCode::Enter));
-    let Effect::Act { path, fields, .. } = &fx[0] else {
-        panic!()
+    let Effect::Send { acts, .. } = &fx[0] else {
+        panic!("{fx:?}")
     };
+    let (path, fields) = (&acts[0].path, &acts[0].fields);
     assert_eq!(path, "/r/2/comment");
     let field = |k: &str| {
         fields

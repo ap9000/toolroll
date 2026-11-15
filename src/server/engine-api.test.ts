@@ -203,6 +203,27 @@ describe("every answer is its contract's shape", () => {
       const guarded = stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body);
       expect(guarded.review?.accept.needs).toMatch(/^This result changed .*protect/);
       expect(guarded.review?.accept).toMatchObject({ owed: null, blockers: [] });
+      // The terminal's Accept with notes against the real routes: the note saves, the completion is refused (protected
+      // work, its own approver completing), and the retry under the same request identity saves nothing more and is
+      // still refused.
+      const cookie = cookies["operator"]!;
+      const page = await fetch(`${base}/chat?format=workspace`, { headers: { cookie } });
+      const csrf = (JSON.parse(await page.text()) as { csrf: string }).csrf;
+      const act = (path: string, fields: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", redirect: "manual",
+        headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+        body: new URLSearchParams({ csrf, ...fields }).toString() });
+      const note = { note: "Notes on the changes:\n- src/total.ts line 2 — round to cents", request: "e".repeat(32), path: "", line: "" };
+      const complete = { receipt: guarded.review!.receipt, run: String(run) };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const saved = await act(`/r/${run}/comment`, note);
+        expect(saved.status, `note, attempt ${attempt + 1}`).toBe(303);
+        const refused = await act("/t/t-ready/complete", complete);
+        expect(refused.status, `completion, attempt ${attempt + 1}`).toBeGreaterThanOrEqual(400);
+        expect(await refused.json()).toMatchObject({ outcome: "refused", words: expect.stringMatching(/protect/) });
+        expect(store.allDiffComments(run).filter(one => one.note === note.note), "the note saved once").toHaveLength(1);
+      }
+      // Still waiting on someone else, with the same receipt: nothing was completed.
+      expect(stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body).review).toMatchObject({ run, receipt: guarded.review!.receipt });
     } finally {
       store.setApprovalRules(repoA, { notRequester: rules.notRequester, protectProject: rules.protectProject, protectedPaths: rules.protectedPaths }, "alex", T0);
     }
@@ -401,6 +422,10 @@ describe("T2 context expand: lines a hunk hides, read at the result's own commit
       // A key that crosses the 2,000-character cut, one that starts just before it, and a plain long line.
       writeFileSync(join(repoA, "src/long.ts"), ["// long lines", `${"x".repeat(1990)} ${key}`, `${"y".repeat(1998)} ${key}`, "z".repeat(2500), ""].join("\n"));
       writeFileSync(join(repoA, "src/key.ts"), ["// key", "const pem = `", ...pem, "`;", ""].join("\n"));
+      // The other key formats, assembled here: a PuTTY key, a private JWK spread over lines, an AWS secret assignment.
+      writeFileSync(join(repoA, "src/putty.ppk"), [`${"PuTTY"}-User-Key-File-3: ssh-ed25519`, "Encryption: none", "Comment: test", "Public-Lines: 2", "AAAAC3NzaC1lZDI1NTE5", "AAAAIQ", ""].join("\n"));
+      writeFileSync(join(repoA, "src/jwk.json"), ["{", '  "kty": "EC",', '  "crv": "P-256",', '  "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",', `  "${"d"}": "jpsQnnGQmL-YBIffH1136cLvxs4ibs8HnbFuBfmEvr0",`, '  "use": "sig"', "}", ""].join("\n"));
+      writeFileSync(join(repoA, "src/aws.env"), ["# deploy", "REGION=eu-west-1", `${"aws_secret"}_access_key = ${"Qw3/".repeat(10)}`, "BUCKET=shop", ""].join("\n"));
       git("add", "."); git("commit", "-q", "-m", "more");
       const head2 = git("rev-parse", "HEAD");
       const stat = budgetedStatJson(parseNumstat(execFileSync("git", ["diff", "--numstat", "-z", head, head2], { cwd: repoA, encoding: "utf8" }), head, head2));
@@ -432,9 +457,19 @@ describe("T2 context expand: lines a hunk hides, read at the result's own commit
       const file = await fileOf("t-more", more, "src/key.ts");
       for (const from of [1, 4, 5, 7]) {
         const shown = await lines("t-more", more, file, `from=${from}&count=2`);
-        expect(shown).toMatchObject({ lines: [], problem: expect.stringMatching(/private key/) });
+        expect(shown).toMatchObject({ lines: [], problem: expect.stringMatching(/private key or secret/) });
       }
       expect(JSON.stringify(await lines("t-more", more, file, "from=4&count=1"))).not.toContain("MIIBOg");
+    });
+
+    test.each([["src/putty.ppk", "AAAAC3"], ["src/jwk.json", "jpsQnn"], ["src/aws.env", "Qw3/"]])("%s (another key format) shows none of its hidden lines", async (path, secret) => {
+      const file = await fileOf("t-more", more, path);
+      expect(file).toBeGreaterThanOrEqual(0);
+      for (const from of [1, 2, 3, 4, 5]) {
+        const shown = await lines("t-more", more, file, `from=${from}&count=3`);
+        expect(shown).toMatchObject({ lines: [], problem: expect.stringMatching(/private key or secret/) });
+        expect(JSON.stringify(shown)).not.toContain(secret);
+      }
     });
 
     test("the file read is the one git listed as changed, never one the patch text names", async () => {

@@ -164,8 +164,13 @@ impl Loop {
                     .await;
                 let _ = tx.send(Msg::Context(ask, r));
             })),
-            Effect::Send { acts, task, run } => drop(tokio::spawn(async move {
-                let _ = tx.send(send_batch(&client, acts, task, run).await);
+            Effect::Send {
+                acts,
+                task,
+                run,
+                text,
+            } => drop(tokio::spawn(async move {
+                let _ = tx.send(send_batch(&client, acts, task, run, text).await);
             })),
             Effect::Scrollback(lines) => {
                 // The normal screen, mouse off (so the person can select), the lines, then a word on how to come back.
@@ -254,6 +259,7 @@ pub async fn send_batch(
     acts: Vec<crate::app::SendAct>,
     task: String,
     run: i64,
+    text: String,
 ) -> Msg {
     let mut kept = 0;
     let mut result = Ok(toolroll_api::ActOutcome::Done(String::new()));
@@ -276,6 +282,7 @@ pub async fn send_batch(
     Msg::Sent {
         task,
         run,
+        text,
         kept,
         result,
     }

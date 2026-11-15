@@ -200,8 +200,16 @@ function acceptFactsOf(store: Store, assignment: AssignmentSnapshot, viewer: str
 /** The largest file a context read loads (its head blob), and the longest line it sends. */
 const CONTEXT_FILE_BYTES = 2 * 1024 * 1024;
 const CONTEXT_LINE_CHARS = 2_000;
-/** A PEM private key's first line (evidence.ts SECRET_PATTERNS private-key, anywhere in a text). */
-const PRIVATE_KEY_OPENER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
+/**
+ * Whether a file holds key material a context read never shows, anywhere in it (conservative: a false alarm only
+ * hides context): a PEM private key, a PuTTY private key, an AWS secret key assignment (any value), or a private JWK
+ * ("d" alongside "kty", "crv" or "n": a JWK is often spread over many lines, so this looks at the whole file).
+ */
+function keyMaterialIn(content: string): boolean {
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(content) || /PuTTY-User-Key-File-\d+:/.test(content)) return true;
+  if (/\baws_secret_access_key\b\s*[=:]/i.test(content)) return true;
+  return /"d"\s*:\s*"[^"]{8,}"/.test(content) && /"(?:kty|crv|n)"\s*:/.test(content);
+}
 
 /**
  * Lines `from`..`from + count - 1` of one file of a result as its build left it, to show context its hunks hide
@@ -257,9 +265,9 @@ export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: 
   } catch {
     return answer([], null, "This file isn't text.");
   }
-  // A private key spans lines, and any window could start or end inside one: a file holding a key block shows none of
-  // its hidden lines here (anywhere in the file, not only in the lines asked for).
-  if (PRIVATE_KEY_OPENER.test(content)) return answer([], null, "This file holds what looks like a private key, so its hidden lines aren't shown here.");
+  // A private key can span lines, and any window could start or end inside one: a file holding key material anywhere
+  // shows none of its hidden lines here (not only the lines asked for).
+  if (keyMaterialIn(content)) return answer([], null, "This file holds what looks like a private key or secret, so its hidden lines aren't shown here.");
   const all = content.split("\n");
   if (all.at(-1) === "") all.pop();
   const lineCount = all.length;

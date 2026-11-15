@@ -425,7 +425,10 @@ fn send_back_posts_exactly_the_notes_shown() {
     let shown = screen(&mut app, 120, 34);
     insta::assert_snapshot!("send_review", shown);
     let fx = app.key(code(KeyCode::Enter));
-    let [Effect::Send { acts, task, run }] = fx.as_slice() else {
+    let [Effect::Send {
+        acts, task, run, ..
+    }] = fx.as_slice()
+    else {
         panic!("{fx:?}")
     };
     assert_eq!((task.as_str(), *run), ("t-done", 2));
@@ -462,6 +465,7 @@ fn send_back_posts_exactly_the_notes_shown() {
     app.update(Msg::Sent {
         task: "t-done".into(),
         run: 2,
+        text: note.clone(),
         kept: 0,
         result: Ok(ActOutcome::Done("Sent back.".into())),
     });
@@ -498,6 +502,7 @@ fn notes_are_pinned_to_the_result_shown() {
     app.update(Msg::Sent {
         task: "t-done".into(),
         run: 2,
+        text: String::new(),
         kept: 0,
         result: Ok(ActOutcome::Refused("No.".into())),
     });
@@ -722,7 +727,7 @@ fn send_back_review_is_read_to_the_end_and_posts_what_was_drawn() {
     assert!(posted.ends_with(&general));
 }
 
-/// One request identity per batch: a lost answer is retried under the same identity (the console saves it once); a
+/// One request identity per payload: a lost answer is retried under the same identity (the console saves it once); a
 /// note saved before a refused completion is never posted again; a second press while saving does nothing.
 #[test]
 fn accept_with_notes_keeps_one_identity_and_never_saves_twice() {
@@ -731,64 +736,206 @@ fn accept_with_notes_keeps_one_identity_and_never_saves_twice() {
     app.key(key('c'));
     type_words(&mut app, "subtotal reads better");
     app.key(code(KeyCode::Enter));
-    let submit = |app: &mut App| -> Vec<SendAct> {
-        app.key(key('a'));
-        app.key(key('t'));
-        screen(app, 120, 34);
-        let fx = app.key(code(KeyCode::Enter));
-        let [Effect::Send { acts, .. }] = fx.as_slice() else {
-            panic!("{fx:?} {:?}", app.status)
-        };
-        acts.clone()
-    };
-    let request = |acts: &[SendAct]| {
-        acts[0]
-            .fields
-            .iter()
-            .find(|(k, _)| k == "request")
-            .map(|(_, v)| v.clone())
-    };
-    let first = submit(&mut app);
-    assert_eq!(first.len(), 2);
+    let first = submit_accept(&mut app);
+    assert_eq!(first.0.len(), 2);
     // Pressed twice: nothing more.
     assert!(matches!(app.mode, Mode::Sending(_)));
     assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
     assert_eq!(app.key(key('a')), vec![]);
     // The note's answer was lost: the notes stay, and the retry carries the same identity.
-    app.update(Msg::Sent {
-        task: "t-done".into(),
-        run: 2,
-        kept: 0,
-        result: Err(ApiError::Unreachable("reset".into())),
-    });
+    answer(
+        &mut app,
+        &first.1,
+        0,
+        Err(ApiError::Unreachable("reset".into())),
+    );
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(app.notes_of("t-done", 2).len(), 1);
-    let second = submit(&mut app);
-    assert_eq!(second.len(), 2);
-    assert_eq!(request(&second), request(&first));
+    let second = submit_accept(&mut app);
+    assert_eq!(second.0.len(), 2);
+    assert_eq!(request_of(&second.0), request_of(&first.0));
     // The note saved, the completion refused: a retry only completes.
-    app.update(Msg::Sent {
-        task: "t-done".into(),
-        run: 2,
-        kept: 1,
-        result: Ok(ActOutcome::Refused("Not yet.".into())),
-    });
+    answer(
+        &mut app,
+        &second.1,
+        1,
+        Ok(ActOutcome::Refused("Not yet.".into())),
+    );
     assert!(app
         .status
         .as_ref()
         .unwrap()
         .1
         .starts_with("Your notes are saved on the result"));
-    let third = submit(&mut app);
-    assert_eq!(
-        third.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(),
-        vec!["/t/t-done/complete"]
+    let third = submit_accept(&mut app);
+    assert_eq!(paths(&third.0), vec!["/t/t-done/complete"]);
+    answer(
+        &mut app,
+        &third.1,
+        0,
+        Ok(ActOutcome::Done("Accepted.".into())),
     );
+    assert!(app.notes_of("t-done", 2).is_empty() && app.pending.is_empty());
+}
+
+/// Identities are kept per payload for the life of the draft: A's note saves and its completion is refused; the notes
+/// are edited to B and B is submitted; edited back to A, A's retry only completes (its note is never saved again),
+/// and B, submitted again, reuses B's identity.
+#[test]
+fn identities_are_kept_per_payload() {
+    let mut app = review_app(no_accept_facts());
+    to_line(&mut app, 3);
+    app.key(key('c'));
+    type_words(&mut app, "A");
+    app.key(code(KeyCode::Enter));
+    let a = submit_accept(&mut app);
+    answer(
+        &mut app,
+        &a.1,
+        1,
+        Ok(ActOutcome::Refused("Not yet.".into())),
+    );
+    // Edit the note to B and submit B: a new identity, its own note.
+    to_line(&mut app, 3);
+    app.key(key('c'));
+    app.key(code(KeyCode::Backspace));
+    type_words(&mut app, "B");
+    app.key(code(KeyCode::Enter));
+    let b = submit_accept(&mut app);
+    assert_eq!(paths(&b.0), vec!["/r/2/comment", "/t/t-done/complete"]);
+    assert_ne!(request_of(&b.0), request_of(&a.0));
+    answer(
+        &mut app,
+        &b.1,
+        0,
+        Err(ApiError::Unreachable("reset".into())),
+    );
+    // Back to A: A's note was saved, so only the completion goes.
+    to_line(&mut app, 3);
+    app.key(key('c'));
+    app.key(code(KeyCode::Backspace));
+    type_words(&mut app, "A");
+    app.key(code(KeyCode::Enter));
+    let again = submit_accept(&mut app);
+    assert_eq!(again.1, a.1);
+    assert_eq!(
+        paths(&again.0),
+        vec!["/t/t-done/complete"],
+        "A's note would be saved twice"
+    );
+    answer(
+        &mut app,
+        &again.1,
+        0,
+        Ok(ActOutcome::Refused("Not yet.".into())),
+    );
+    // And to B again: B's identity, reused (its note may have saved before its answer was lost).
+    to_line(&mut app, 3);
+    app.key(key('c'));
+    app.key(code(KeyCode::Backspace));
+    type_words(&mut app, "B");
+    app.key(code(KeyCode::Enter));
+    let b2 = submit_accept(&mut app);
+    assert_eq!(request_of(&b2.0), request_of(&b.0));
+}
+
+/// Words alone, no notes on lines: the same review, read to its end, then exactly that text, under a kept identity.
+#[test]
+fn send_back_with_words_only_is_reviewed_to_the_end() {
+    let mut app = review_app(no_accept_facts());
+    app.key(key('r'));
+    let words = format!(
+        "{} THE END",
+        "Keep the old column order and say why in the summary. ".repeat(30)
+    );
+    type_words(&mut app, &words);
+    app.key(code(KeyCode::Enter));
+    let Mode::SendReview { text, .. } = app.mode.clone() else {
+        panic!("{:?}", app.mode)
+    };
+    assert_eq!(text, words.trim());
+    screen(&mut app, 100, 24);
+    assert!(
+        !sends(&app.key(code(KeyCode::Enter))),
+        "sent before the end was shown"
+    );
+    let mut drawn = String::new();
+    for _ in 0..40 {
+        if matches!(app.mode, Mode::SendReview { seen_end: true, .. }) {
+            break;
+        }
+        app.key(key(' '));
+        drawn.push_str(&screen(&mut app, 100, 24));
+    }
+    assert!(drawn.contains("THE END"));
+    let fx = app.key(code(KeyCode::Enter));
+    let [Effect::Send {
+        acts,
+        text: payload,
+        ..
+    }] = fx.as_slice()
+    else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(payload, &text);
+    assert_eq!(
+        &acts[0].fields.iter().find(|(k, _)| k == "note").unwrap().1,
+        &text
+    );
+    let first = request_of(acts);
+    // Its answer lost: sent again, the same identity (the console replays the revision it already filed).
+    answer(
+        &mut app,
+        &text,
+        0,
+        Err(ApiError::Unreachable("reset".into())),
+    );
+    app.key(key('r'));
+    type_words(&mut app, &words);
+    app.key(code(KeyCode::Enter));
+    for _ in 0..40 {
+        if matches!(app.mode, Mode::SendReview { seen_end: true, .. }) {
+            break;
+        }
+        app.key(key(' '));
+        screen(&mut app, 100, 24);
+    }
+    let fx = app.key(code(KeyCode::Enter));
+    let [Effect::Send { acts, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    assert_eq!(request_of(acts), first);
+}
+
+fn submit_accept(app: &mut App) -> (Vec<SendAct>, String) {
+    app.key(key('a'));
+    app.key(key('t'));
+    screen(app, 120, 34);
+    let fx = app.key(code(KeyCode::Enter));
+    let [Effect::Send { acts, text, .. }] = fx.as_slice() else {
+        panic!("{fx:?} {:?}", app.status)
+    };
+    (acts.clone(), text.clone())
+}
+
+fn answer(app: &mut App, text: &str, kept: usize, result: Result<ActOutcome, ApiError>) {
     app.update(Msg::Sent {
         task: "t-done".into(),
         run: 2,
-        kept: 0,
-        result: Ok(ActOutcome::Done("Accepted.".into())),
+        text: text.into(),
+        kept,
+        result,
     });
-    assert!(app.notes_of("t-done", 2).is_empty() && app.pending.is_none());
+}
+
+fn request_of(acts: &[SendAct]) -> Option<String> {
+    acts[0]
+        .fields
+        .iter()
+        .find(|(k, _)| k == "request")
+        .map(|(_, v)| v.clone())
+}
+
+fn paths(acts: &[SendAct]) -> Vec<&str> {
+    acts.iter().map(|a| a.path.as_str()).collect()
 }

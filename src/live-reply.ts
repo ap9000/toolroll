@@ -69,6 +69,10 @@ const SECRET_STARTS: readonly RegExp[] = [
   /(?:^|[^A-Za-z0-9_])\d+(?::(?:A(?:A[A-Za-z0-9_-]*)?)?)?$/,
   // discord-bot-token: "M…24.…6.…27".
   /(?:^|[^A-Za-z0-9_])[MN][A-Za-z\d]*(?:\.[\w-]*(?:\.[\w-]*)?)?$/,
+  // putty-private-key: "PuTTY-User-Key-File-3:", partway.
+  new RegExp(String.raw`(?:^|[^A-Za-z0-9_])${opening(["PuTTY-User-Key-File-"], "[0-9:]")}$`),
+  // aws-secret-key: "aws_secret_access_key = value" (any case), partway.
+  new RegExp(String.raw`(?:^|[^A-Za-z0-9])${opening(["aws_secret_access_key"], String.raw`[\s=:"']`)}\S*$`, "i"),
   // password-in-url: "scheme://user:password@host", partway (a scheme and its colon are enough to wait).
   /(?:^|[^A-Za-z0-9+.-])[a-z][a-z0-9+.-]*:\S*$/i,
 ];

@@ -111,8 +111,6 @@ pub struct AnswerPin {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NoteKind {
-    /// Send back the result pinned here, with the words typed.
-    SendBack(ReviewPin),
     /// A note on a line or hunk of the diff on screen: kept in this task's draft, never sent by itself.
     Line(NoteTarget),
 }
@@ -239,6 +237,8 @@ pub enum Effect {
         acts: Vec<SendAct>,
         task: String,
         run: i64,
+        /// The exact text the batch carries (its identity's key).
+        text: String,
     },
     /// Leave the alternate screen and write these lines to the terminal's own scrollback (copy without OSC 52).
     Scrollback(Vec<String>),
@@ -270,13 +270,10 @@ pub struct FileAsk {
     pub gen: u64,
 }
 
-/// A batch of notes submitted and not yet done: its text, its request identity, and whether the notes are known to be
-/// saved on the result (then a retry of Accept only completes).
+/// A batch submitted and not yet done: its request identity, and whether its notes are known to be saved on the
+/// result (then a retry of Accept only completes). Kept per payload (task, build, the exact text posted).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
-    pub task: String,
-    pub run: i64,
-    pub text: String,
     pub request: String,
     pub saved: bool,
 }
@@ -314,6 +311,7 @@ pub enum Msg {
     Sent {
         task: String,
         run: i64,
+        text: String,
         kept: usize,
         result: Result<ActOutcome, ApiError>,
     },
@@ -384,8 +382,9 @@ pub struct App {
     pub batch_shown: bool,
     /// Accept carries the notes shown (t in the Accept dialog).
     pub accept_attach: bool,
-    /// The last batch submitted and not yet done, with its request identity (reused by a retry of the same text).
-    pub pending: Option<Pending>,
+    /// Every batch submitted for a draft and not yet done, by (task, build, exact text): its request identity, reused
+    /// whenever the same text is submitted again, and whether its notes are saved. Kept for the life of the draft.
+    pub pending: HashMap<(String, i64, String), Pending>,
     /// The diff read whose answer is wanted (the newest asked), and the file read's; anything else is stale.
     diff_wanted: Option<DiffAsk>,
     file_wanted: Option<FileAsk>,
@@ -451,7 +450,7 @@ impl App {
             theme: Theme::Dark,
             batch_shown: false,
             accept_attach: false,
-            pending: None,
+            pending: HashMap::new(),
             diff_wanted: None,
             file_wanted: None,
             diff_gen: 0,
@@ -609,9 +608,10 @@ impl App {
             Msg::Sent {
                 task,
                 run,
+                text,
                 kept,
                 result,
-            } => self.sent(task, run, kept, result),
+            } => self.sent(task, run, text, kept, result),
             Msg::Acted(Ok(ActOutcome::Done(words))) => {
                 self.say(Tone::Said, words);
                 self.refresh()
@@ -1360,13 +1360,9 @@ impl App {
             }
             KeyCode::Char('r') => {
                 if let Some(pin) = self.pin_review() {
-                    // With notes kept for this result: they go back together, shown whole first.
-                    if self.notes_of(&pin.task, pin.run).is_empty() {
-                        self.mode = Mode::Note(NoteKind::SendBack(pin), String::new());
-                    } else {
-                        self.batch_shown = false;
-                        self.mode = Mode::SendBack(pin, String::new());
-                    }
+                    // The notes kept for this result (if any) and words for the whole change, then the whole text to
+                    // read to its end before anything is sent.
+                    self.mode = Mode::SendBack(pin, String::new());
                 }
                 vec![]
             }
@@ -1736,10 +1732,7 @@ impl App {
             {
                 self.diff_agrees(pin).err()
             }
-            Mode::ConfirmAccept(pin)
-            | Mode::SendBack(pin, _)
-            | Mode::SendReview { pin, .. }
-            | Mode::Note(NoteKind::SendBack(pin), _) => {
+            Mode::ConfirmAccept(pin) | Mode::SendBack(pin, _) | Mode::SendReview { pin, .. } => {
                 (!self.review_pin_stands(pin)).then_some(RESULT_CHANGED)
             }
             Mode::ConfirmAnswer(pin) => self
@@ -1787,29 +1780,6 @@ impl App {
                 self.rerow();
                 vec![]
             }
-            NoteKind::SendBack(pin) => {
-                if !self.review_pin_stands(&pin) {
-                    self.say(Tone::Refused, RESULT_CHANGED);
-                    return vec![];
-                }
-                if note.is_empty() {
-                    self.say(Tone::Refused, "Say what to change, then press Enter.");
-                    self.mode = Mode::Note(NoteKind::SendBack(pin), String::new());
-                    return vec![];
-                }
-                let request = self.token(32);
-                self.act(
-                    format!("/r/{}/comment", pin.run),
-                    vec![
-                        ("intent", "revise".into()),
-                        ("note", note),
-                        ("request", request),
-                        ("batch", String::new()),
-                        ("source", pin.source),
-                    ],
-                    "Sent back. The revision is filed.".into(),
-                )
-            }
         }
     }
 
@@ -1836,20 +1806,16 @@ impl App {
     /// an answer that was lost or refused), else a new one. The console dedupes on it (an unchanged retry lands on the
     /// note or revision the first one made), so the same notes are never saved twice.
     fn pending_for(&mut self, task: &str, run: i64, text: &str) -> Pending {
-        match &self.pending {
-            Some(p) if p.task == task && p.run == run && p.text == text => p.clone(),
-            _ => {
-                let p = Pending {
-                    task: task.to_string(),
-                    run,
-                    text: text.to_string(),
-                    request: self.token(32),
-                    saved: false,
-                };
-                self.pending = Some(p.clone());
-                p
-            }
+        let key = (task.to_string(), run, text.to_string());
+        if let Some(p) = self.pending.get(&key) {
+            return p.clone();
         }
+        let p = Pending {
+            request: self.token(32),
+            saved: false,
+        };
+        self.pending.insert(key, p.clone());
+        p
     }
 
     /// Accept with the notes shown: saved on the result as one note (POST /r/<run>/comment, the result page's own Save
@@ -1873,6 +1839,7 @@ impl App {
             return vec![];
         }
         let pending = self.pending_for(&pin.task, pin.run, &text);
+        let payload = text.clone();
         let mut acts = vec![];
         if !pending.saved {
             acts.push(SendAct {
@@ -1899,6 +1866,7 @@ impl App {
             acts,
             task: pin.task,
             run: pin.run,
+            text: payload,
         }]
     }
 
@@ -1937,9 +1905,13 @@ impl App {
             self.say(Tone::Refused, RESULT_CHANGED);
             return vec![];
         }
-        if let Err(why) = self.diff_agrees(&pin) {
-            self.say(Tone::Refused, why);
-            return vec![];
+        // Notes are about lines of the diff: with any, the diff on screen must be the result's (as for Accept). Words
+        // alone for the whole change go back as Send back always has, diff shown or not.
+        if !self.notes_of(&pin.task, pin.run).is_empty() {
+            if let Err(why) = self.diff_agrees(&pin) {
+                self.say(Tone::Refused, why);
+                return vec![];
+            }
         }
         // Bound to the preview: the notes it was made from must still make exactly that text.
         if review::batch_text(&self.notes_of(&pin.task, pin.run), &typed) != text {
@@ -1950,8 +1922,10 @@ impl App {
             return vec![];
         }
         let pending = self.pending_for(&pin.task, pin.run, &text);
+        let payload = text.clone();
         self.mode = Mode::Sending("Sending it back…".into());
         vec![Effect::Send {
+            text: payload,
             acts: vec![SendAct {
                 path: format!("/r/{}/comment", pin.run),
                 fields: vec![
@@ -1961,7 +1935,7 @@ impl App {
                     ("batch".into(), String::new()),
                     ("source".into(), pin.source),
                 ],
-                done: "Sent back with your notes. The revision is filed.".into(),
+                done: "Sent back. The revision is filed.".into(),
             }],
             task: pin.task,
             run: pin.run,
@@ -1975,25 +1949,26 @@ impl App {
         &mut self,
         task: String,
         run: i64,
+        text: String,
         kept: usize,
         result: Result<ActOutcome, ApiError>,
     ) -> Vec<Effect> {
         if matches!(self.mode, Mode::Sending(_)) {
             self.mode = Mode::Normal;
         }
-        let ours = |p: &Pending| p.task == task && p.run == run;
+        let key = (task.clone(), run, text);
         if kept > 0 {
-            if let Some(p) = self.pending.as_mut().filter(|p| ours(p)) {
+            if let Some(p) = self.pending.get_mut(&key) {
                 p.saved = true;
             }
         }
-        let saved = self.pending.as_ref().is_some_and(|p| ours(p) && p.saved);
+        let saved = self.pending.get(&key).is_some_and(|p| p.saved);
         match result {
             Ok(ActOutcome::Done(words)) => {
+                // The draft is done with: its notes and every identity kept for it.
                 self.drafts.remove(&(task.clone(), run));
-                if self.pending.as_ref().is_some_and(ours) {
-                    self.pending = None;
-                }
+                self.pending
+                    .retain(|(t, r, _), _| !(*t == task && *r == run));
                 self.rerow();
                 self.say(Tone::Said, words);
                 self.refresh()
