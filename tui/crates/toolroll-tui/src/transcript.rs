@@ -3,7 +3,8 @@
 //! here before they reach the terminal.
 use crate::app::Transcript;
 use crate::text::{clean, wrap};
-use ratatui::style::{Color, Modifier, Style};
+use crate::theme::{dim, failed, ink, marks, passed, running};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use std::collections::HashMap;
 use toolroll_api::LiveRecord;
@@ -25,10 +26,6 @@ pub fn verb(kind: &str) -> &'static str {
 struct Done<'a> {
     ok: Option<bool>,
     out: Option<&'a Vec<String>>,
-}
-
-fn dim() -> Style {
-    Style::default().add_modifier(Modifier::DIM)
 }
 
 /// Push `text` wrapped to `width`, each line after `prefix` (the first line after `first`).
@@ -116,10 +113,10 @@ fn record_lines(
                     _ => None,
                 });
                 let (mark, mark_style) = match state {
-                    None if ended => ("·", dim()),
-                    None => ("◐", Style::default().fg(Color::Blue)),
-                    Some(Some(false)) => ("✕", Style::default().fg(Color::Red)),
-                    Some(_) => ("✓", Style::default().fg(Color::Green)),
+                    None if ended => (marks().ended, dim()),
+                    None => (marks().running, running()),
+                    Some(Some(false)) => (marks().failed, failed()),
+                    Some(_) => (marks().passed, passed()),
                 };
                 let mut tail = vec![];
                 if let Some(first) = answered.and_then(|d| d.out).and_then(|o| o.first()) {
@@ -195,7 +192,7 @@ fn sub_lines(
         Span::styled(format!("{prefix}┌ "), dim()),
         Span::styled(
             format!("Helper: {}", clean(desc.as_deref().unwrap_or("working"))),
-            Style::default().add_modifier(Modifier::BOLD),
+            ink(),
         ),
     ]));
     let body: Vec<&LiveRecord> = records
@@ -217,7 +214,7 @@ fn sub_lines(
     match end {
         Some(Some(false)) => out.push(Line::from(vec![
             Span::styled(format!("{prefix}└ "), dim()),
-            Span::styled("✕ Helper failed", Style::default().fg(Color::Red)),
+            Span::styled(format!("{} Helper failed", marks().failed), failed()),
         ])),
         Some(_) => out.push(Line::from(Span::styled(
             format!("{prefix}└ Helper finished"),
@@ -225,7 +222,7 @@ fn sub_lines(
         ))),
         None => out.push(Line::from(vec![
             Span::styled(format!("{prefix}└ "), dim()),
-            Span::styled("◐ Helper working", Style::default().fg(Color::Blue)),
+            Span::styled(format!("{} Helper working", marks().running), running()),
         ])),
     }
 }
