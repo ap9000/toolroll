@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { NO_GRANTS, sandboxedSpawn } from "../../src/agent-fence.js";
-import { holder, marker, needs, osFence, underSandboxAsync, useChildren, useScratch } from "./harness.js";
+import { asLaunched, holder, marker, needs, osFence, underSandboxAsync, useChildren, useScratch } from "./harness.js";
 
 const scratch = useScratch("linux-ns");
 const track = useChildren();
@@ -43,7 +43,7 @@ describe("attack: the host's processes and terminal from a Linux build with an o
     const { file, args, env } = sandboxedSpawn("/bin/sh", ["-c", `${probe}; python3 -c 'import fcntl,termios,os
 try:
     fd=os.open("/dev/tty",os.O_RDWR); fcntl.ioctl(fd,termios.TIOCSTI,b"x"); print("tiocsti-sent")
-except OSError as e: print("tiocsti-refused")' 2>/dev/null || echo tiocsti-refused`], [join(dir, "denied")], NO_GRANTS, dir);
+except OSError as e: print("tiocsti-refused")' 2>/dev/null || echo tiocsti-refused`], [join(dir, "denied")], asLaunched(NO_GRANTS, dir), dir);
     const quoted = [file, ...args].map(one => `'${one.replace(/'/g, "'\\''")}'`).join(" ");
     const inside = spawnSync("script", ["-qec", quoted, "/dev/null"], { encoding: "utf8", timeout: 30_000, cwd: dir, env: { ...process.env, ...env } });
     expect(inside.stdout, inside.stderr).toContain("no-tty");
