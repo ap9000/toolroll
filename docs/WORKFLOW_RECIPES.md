@@ -132,7 +132,7 @@ and nothing is spent on one.
 
 ```
 toolroll task scope <id> --repo <path> --goal "Install commit <sha>: …" --candidate <sha> --acceptance "…"
-toolroll task approve <id> --yes --digest <shown> --as <you>
+toolroll task approve <id> --yes --digest <shown> --terms <shown terms> --as <you>
 ```
 
 The commit must be reachable in the repository (fetch it first) and must
@@ -163,7 +163,7 @@ sealed diff still spans from the original base.
 
 ```
 toolroll task scope <id> --repo <path> --goal "Bring the tree to commit <sha> …" --acceptance "…"
-toolroll task approve <id> --yes --digest <shown> --as <you>
+toolroll task approve <id> --yes --digest <shown> --terms <shown terms> --as <you>
 toolroll task requeue <id> --as <you>
 ```
 

@@ -20,6 +20,7 @@ import { isLifecycleNotification, openStore } from "./store.js";
 import type { Runner } from "./builder.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 import { OK, T0, AGENT_SAID, registerRunner, concludeDone } from "../test/tick-kit.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 describe("the outbox", () => {
   let base: string;
@@ -140,7 +141,7 @@ describe("the outbox", () => {
     await runWith(["task", "scope", "t-1", "--goal", "add a guard", "--acceptance", "It is fixed and verified.|manual-review"]);
     await runWith(["task", "approve", "t-1", "--json"]);
     const digest = payload().scope.digest as string;
-    await runWith(["task", "approve", "t-1", "--yes", "--digest", digest, "--as", "alex", "--token", approver]);
+    await runWith(["task", "approve", "t-1", "--yes", "--digest", digest, ...termsArgs(db, "t-1"), "--as", "alex", "--token", approver]);
     await runWith(["tick", "--runner", "builder-1", "--token", token, "--repo", repo, "--pool", join(base, "pool"), "--json"]);
 
     await run(["outbox", "list", "--json"]);
@@ -215,7 +216,7 @@ describe("the morning briefing", () => {
     await run(["task", "scope", id, "--goal", "add a guard", "--acceptance", "It is fixed and verified.|manual-review"]);
     await run(["task", "approve", id, "--json"]);
     const digest = payload().scope.digest as string;
-    await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "alex", "--token", approver]);
+    await run(["task", "approve", id, "--yes", "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approver]);
   };
 
   test("reports the run tally from the run table, offline, honestly", async () => {
@@ -334,7 +335,7 @@ describe("the park, end to end — a judgement call survives the night", () => {
     const digest = payload().scope.digest as string;
     await run([
       "task", "approve", "t-1", "--yes",
-      "--digest", digest, "--as", "alex", "--token", approverToken,
+      "--digest", digest, ...termsArgs(db, "t-1"), "--as", "alex", "--token", approverToken,
     ]);
     return { runnerToken, approverToken };
   };
@@ -523,7 +524,7 @@ describe("decide, end to end — the morning answers and the machine hears it", 
     const digest = payload().scope.digest as string;
     await run([
       "task", "approve", "t-1", "--yes",
-      "--digest", digest, "--as", "alex", "--token", approverToken,
+      "--digest", digest, ...termsArgs(db, "t-1"), "--as", "alex", "--token", approverToken,
     ]);
     return { runnerToken, approverToken };
   };
@@ -801,7 +802,7 @@ describe("the bridge, end to end — a tap on a phone resumes the night", () => 
     await run(["task", "scope", "t-1", "--goal", "add a guard on the payout path", "--acceptance", "It is fixed and verified.|manual-review"]);
     await run(["task", "approve", "t-1", "--json"]);
     const digest = payload().scope.digest as string;
-    await run(["task", "approve", "t-1", "--yes", "--digest", digest, "--as", "alex", "--token", approverToken]);
+    await run(["task", "approve", "t-1", "--yes", "--digest", digest, ...termsArgs(db, "t-1"), "--as", "alex", "--token", approverToken]);
 
     // The bot token, set through the CLI, lands beside the database, 0600.
     let code = await run(["bridge", "telegram", "token", BOT_TOKEN, "--json"]);
@@ -905,7 +906,7 @@ describe("the bridge, end to end — a tap on a phone resumes the night", () => 
     await run(["task", "scope", "t-1", "--goal", "add a guard on the payout path", "--acceptance", "It is fixed and verified.|manual-review"]);
     await run(["task", "approve", "t-1", "--json"]);
     const digest = payload().scope.digest as string;
-    await run(["task", "approve", "t-1", "--yes", "--digest", digest, "--as", "alex", "--token", approverToken]);
+    await run(["task", "approve", "t-1", "--yes", "--digest", digest, ...termsArgs(db, "t-1"), "--as", "alex", "--token", approverToken]);
     await run(["bridge", "telegram", "token", BOT_TOKEN, "--json"]);
     await run(["bridge", "telegram", "pair", "--as", "alex", "--token", approverToken, "--json"]);
     const pairCode = payload().code as string;

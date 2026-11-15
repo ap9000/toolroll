@@ -18,6 +18,7 @@ import { register } from "./runner.js";
 import type { Runner } from "./builder.js";
 import { routeDigestOf } from "./phase-routing.js";
 import { digestOf } from "./scope.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-09-03T00:00:00.000Z");
@@ -73,7 +74,7 @@ describe("a stale approval holds the task instead of retrying every pass", () =>
     const before = openStore(db);
     const digest = before.getScope("dedupe")?.digest as string;
     before.close();
-    await run(["task", "approve", "dedupe", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"]);
+    await run(["task", "approve", "dedupe", "--as", "alex", "--token", approverToken, "--digest", digest, ...termsArgs(db, "dedupe"), "--yes", "--json"]);
     expect(payload().ok).toBe(true);
 
     // The routing moves under the approval: what was signed no longer
@@ -122,7 +123,7 @@ describe("a stale approval holds the task instead of retrying every pass", () =>
     const currentDigest = refiled.getScope("dedupe")?.digest as string;
     expect(refiled.getScope("dedupe")?.routeEra).not.toBeNull();
     refiled.close();
-    await run(["task", "approve", "dedupe", "--as", "alex", "--token", approverToken, "--digest", currentDigest, "--yes", "--json"], new Date(T0.getTime() + 180_000));
+    await run(["task", "approve", "dedupe", "--as", "alex", "--token", approverToken, "--digest", currentDigest, ...termsArgs(db, "dedupe"), "--yes", "--json"], new Date(T0.getTime() + 180_000));
     expect(payload().ok).toBe(true);
     const after = openStore(db);
     expect(after.activeHolds(ref.id, new Date(T0.getTime() + 180_000)).some(one => one.reason.startsWith("stale-approval"))).toBe(false);
@@ -189,7 +190,7 @@ describe("a sealed route governs dispatch (v47)", () => {
     const before = openStore(db);
     const digest = before.getScope("payouts")?.digest as string;
     before.close();
-    await run(["task", "approve", "payouts", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"]);
+    await run(["task", "approve", "payouts", "--as", "alex", "--token", approverToken, "--digest", digest, ...termsArgs(db, "payouts"), "--yes", "--json"]);
     expect(payload().ok).toBe(true);
 
     // The runner reports claude unavailable.

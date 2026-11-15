@@ -15,6 +15,7 @@ import { openStore, Store } from "./store.js";
 import { register } from "./runner.js";
 import type { Runner } from "./builder.js";
 import { maySlotTake, ProjectPasses, PROJECT_CONCURRENCY_DEFAULT, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const AGENT_SAID = JSON.stringify({ result: "Added the guard." });
@@ -126,7 +127,7 @@ describe("parallel builds from the service's builder", () => {
       await run(["task", "scope", id, "--goal", "add a guard on the payout path", "--acceptance", "It is fixed and verified.|manual-review"], idle);
       await run(["task", "approve", id, "--json"], idle);
       const digest = payload().scope.digest as string;
-      await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "alex", "--token", approverToken], idle);
+      await run(["task", "approve", id, "--yes", "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approverToken], idle);
     }
     return { runnerToken, approverToken };
   };

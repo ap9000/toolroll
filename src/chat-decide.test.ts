@@ -24,6 +24,7 @@ import { runOperate } from "./operate.js";
 import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
 import { readYouiyouxRequest } from "./contracts/youiyoux-request.js";
 import { fileYouiyouxRequest, noteYouiyouxFiled } from "./youiyoux-intake.js";
+import { scopeTermsText } from "./chat-terms.js";
 
 const T0 = new Date("2026-10-03T09:00:00.000Z");
 const BOT = "777000";
@@ -148,7 +149,7 @@ describe("decisions finish in the chat app", () => {
   /** A plan written and waiting for approval, filed by alex, with the scope's own limits. */
   const planWaiting = (id: string, title: string, extra: Partial<Parameters<typeof propose>[1]> = {}) => {
     const ref = placed(id, title);
-    propose(store, { taskId: id, goal: `${title}.\nKeep the public API unchanged.\nA third line the card leaves out.`, touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
+    propose(store, { taskId: id, goal: `${title}.\nKeep the public API unchanged.\nA third line the card once left out.`, touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now, ...extra });
     return ref;
   };
@@ -252,6 +253,22 @@ describe("decisions finish in the chat app", () => {
     expect(script.acks().at(-1)).toBe("That button isn't for this chat.");
   });
 
+  test("terms diet: a tap whose prompt would name a folder on this computer opens no prompt, and the next message answers nothing", async () => {
+    const { run } = readyResult("guard-private", "Copy the guard from ~/notes/guard.ts");
+    await pass();
+    const card = script.cardWith(BOB, /^Send back$/);
+    await tapIn(BOB, card.token(/^Send back$/), card.messageId);
+    // The card goes back to Toolroll: no "What should change?" asked, no prompt left open, no button live.
+    expect(script.current(BOB, card.messageId).text).toContain("name a key or a folder on this computer");
+    expect(script.inChat(BOB).filter(call => call.method === "sendMessage").some(call => String(call.params["text"]).startsWith("What should change?"))).toBe(false);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_prompt WHERE consumed_at IS NULL").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_action WHERE consumed_at IS NULL AND phase <> 'offer'").get()?.["n"]).toBe(0);
+    // A typed reply now is ordinary chat: no revision, no feedback recorded, nothing approved.
+    await sayIn(BOB, "Rename the helper to guardPayout.");
+    expect(store.taskFamilyOf("guard-private", [REPO], false)!.current.id).toBe("guard-private");
+    expect(store.allDiffComments(run)).toEqual([]);
+  });
+
   test("c1: Request changes asks what should change, and the next message becomes the revision's feedback", async () => {
     const { run } = readyResult("guard-3", "Keep the guard readable");
     await pass();
@@ -335,9 +352,14 @@ describe("decisions finish in the chat app", () => {
     await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
     expect(script.current(BOB, card.messageId).text).toBe(`${[
       "Plan ready: Refuse over-limit payouts",
-      "Starting allows: file edits and routine commands; anything risky stops · up to $2.00 per attempt", "",
-      "Refuse over-limit payouts.", "Keep the public API unchanged.", "Only in: src/guard.ts", "",
-      "Done when:", "• Over-limit payouts are refused.",
+      // The approval summary: the signed goal whole (no line left out), then the decisions and the usual settings.
+      "",
+      "Refuse over-limit payouts.", "Keep the public API unchanged.", "A third line the card once left out.", "",
+      "Done when:", "• Over-limit payouts are refused. (runs automatically)", "",
+      "Agent: Claude Sonnet plans, builds, fixes and reviews",
+      "Files: only src/guard.ts", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops",
+      "May cost: up to $2.00 per attempt; the agent is stopped there",
+      "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed",
     ].join("\n")}\n\nApprove and start "Refuse over-limit payouts"? This approves exactly this plan.`);
     expect(script.current(BOB, card.messageId).labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
     expect(store.getScope("plan-5")!.approvedDigest).toBeNull();
@@ -352,6 +374,58 @@ describe("decisions finish in the chat app", () => {
     // Approval policy §1.2: the tap's own person proof, bound to these exact words, so release and deploy count it.
     expect(approvalProofOf(store, "plan-5", "bob", scope.digest)).toMatchObject({ method: "chat" });
     expect(personApprovalOf(store, "plan-5")).toMatchObject({ ok: true, by: "bob", method: "chat" });
+  });
+
+  test("terms diet: a card whose whole text can't fit one Telegram message offers no Approve, only Toolroll", async () => {
+    sign("bob");
+    const ref = planWaiting("plan-long", "Refuse over-limit payouts", { goal: `Refuse over-limit payouts. ${"Every word of this goal is signed. ".repeat(150)}` });
+    expect(store.getScope("plan-long")!.goal.length).toBeGreaterThan(5_000);
+    planReady(ref, "plan-long");
+    await pass();
+    const card = script.cardWith(BOB, /^Review plan$/);
+    await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
+    const after = script.current(BOB, card.messageId);
+    // Through the real bridge and the scripted Bot API: no live Approve under a cut card, the reason said, a link kept.
+    expect(after.labels).not.toContain("Approve & start");
+    expect(after.text).toContain("full terms don't fit in one chat message");
+    expect(after.text.length).toBeLessThanOrEqual(4_000);
+    expect(store.getScope("plan-long")!.approvedAt).toBeNull();
+  });
+
+  test("terms diet: a machine-written plan's card shows its words whole and the summary, and a usual setting changed before the yes refuses", async () => {
+    sign("bob");
+    const ref = planWaiting("plan-scout", "Refuse over-limit payouts", { proposedVia: "scout" });
+    planReady(ref, "plan-scout");
+    await pass();
+    const card = script.cardWith(BOB, /^Review plan$/);
+    await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
+    const armed = script.current(BOB, card.messageId);
+    // Every word (scopeTermsText), then the summary's other rows: who builds, what it may touch, the usual settings.
+    expect(armed.text).toContain("Goal:\nRefuse over-limit payouts.");
+    expect(armed.text).toMatch(/\nAgent: Claude [^\n]+ builds/);
+    expect(armed.text).toContain("\nFiles: only src/guard.ts\nNetwork: ");
+    expect(armed.text).toContain("Your usual project settings: checks Default");
+    expect(armed.labels).toContain("Approve & start");
+    // Between the card and the yes, the project's usual writes widen: the card no longer says what is usual.
+    store.setProjectWrites(REPO, "anywhere", "alex", now);
+    await tapIn(BOB, armed.token(/^Approve & start$/), card.messageId);
+    expect(store.getScope("plan-scout")!.approvedAt).toBeNull();
+    expect(script.current(BOB, card.messageId).text).toMatch(/changed/);
+  });
+
+  test("terms diet: a machine-written plan whose summary names a folder on this computer offers no Approve in chat", async () => {
+    sign("bob");
+    store.setProjectSandbox(REPO, { readDeny: ["~/.ssh"], machLookup: [] }, "alex", now);
+    const ref = planWaiting("plan-private", "Refuse over-limit payouts", { proposedVia: "scout" });
+    expect(scopeTermsText(store.getScope("plan-private")!)).not.toContain("~/.ssh");
+    planReady(ref, "plan-private");
+    await pass();
+    const card = script.cardWith(BOB, /^Review plan$/);
+    await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
+    const after = script.current(BOB, card.messageId);
+    expect(after.text).not.toContain("~/.ssh");
+    expect(after.text).toContain("name a key or a folder on this computer");
+    expect(after.labels).not.toContain("Approve & start");
   });
 
   test("c2: Not now leaves the plan waiting; a plan that changed after the card was sent acts on nothing", async () => {
@@ -585,14 +659,19 @@ describe("decisions finish in the chat app", () => {
       noteYouiyouxFiled(store, [calm, wide], now);
       await pass();
       const card = script.cardWith(BOB, /^Approve all \(2\)$/);
+      const agent = "Agent: Claude Sonnet builds, fixes and reviews; Claude Sonnet plans only if you ask for a plan (small change: everyday model, no plan)";
+      const usual = "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed";
       // One card for the pass, not one per request.
       expect(script.inChat(BOB).filter(call => call.method === "sendMessage" && String(call.params["text"]).includes("youiyoux change requests"))).toHaveLength(1);
       expect(card.text).toBe([
         "2 youiyoux change requests wait for you · alpha", "",
         "1. Calmer button", "Goal:", "From youiyoux request r-0000000001 on /flows.", "", "Make calmer button on /flows.", "", "Not this:", "- New dependencies", "",
         "Files: src/button.tsx", "", "Done when:", "• Calmer button is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`, "",
+        // Then the approval summary's other rows, bound with the words (approval-summary.ts).
+        agent, "Files: only src/button.tsx", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: no cap: an attempt runs until it finishes or reaches its time limit", "", usual, "",
         "2. Wider page", "Goal:", "From youiyoux request r-0000000002 on /flows.", "", "Make wider page on /flows.", "", "Not this:", "- New dependencies", "",
-        "Files: any file (no file list)", "", "Done when:", "• Wider page is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`,
+        "Files: any file (no file list)", "", "Done when:", "• Wider page is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`, "",
+        agent, "Files: any file in the project", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: no cap: an attempt runs until it finishes or reaches its time limit", "", usual,
       ].join("\n"));
       expect(card.labels).toEqual(["Approve all (2)", "Approve 1", "Open 1 ↗", "Approve 2", "Open 2 ↗"]);
       // A plain plan card never approves a change request: only its own card, which shows every word.
@@ -648,6 +727,37 @@ describe("decisions finish in the chat app", () => {
       expect(after.text).toMatch(/^✓ Approved "Calmer button"\. Work starts when a worker is free\.\n✗ Not approved: "Wider page": its terms changed since this card was sent\n\nA youiyoux change request waits for you · alpha\n\n1\. Wider page\n/);
       expect(after.text).toContain("Also delete the tests.");
       expect(after.labels).toEqual(["Approve & start", "Open in Toolroll ↗"]);
+    });
+
+    test("terms diet: a usual setting changed after a youiyoux card was sent leaves its tasks out, never approved on the old summary", async () => {
+      chatApprovalOn();
+      const calm = fileRequest("r-0000000011", "Calmer button");
+      noteYouiyouxFiled(store, [calm], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Approve & start$/);
+      // Each task's words whole, then its summary rows.
+      expect(card.text).toContain("\nAgent: ");
+      expect(card.text).toContain("Your usual project settings: ");
+      await tapIn(BOB, card.token(/^Approve & start$/), card.messageId);
+      store.setQualityDefault("strict", "alex", now);
+      await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+      expect(store.getScope(calm)!.approvedAt).toBeNull();
+      expect(proofs(calm)).toBe(0);
+      expect(script.current(BOB, card.messageId).text).toContain("its terms changed since this card was sent");
+    });
+
+    test("terms diet: a folder named only in the summary beside the words keeps that task in Toolroll", async () => {
+      chatApprovalOn();
+      // The project hides a home folder from builds: its path is in the summary's reads line, never in the task's words.
+      store.setProjectSandbox(REPO, { readDeny: ["~/.ssh"], machLookup: [] }, "alex", now);
+      const calm = fileRequest("r-0000000012", "Calmer button");
+      expect(scopeTermsText(store.getScope(calm)!)).not.toContain("~/.ssh");
+      noteYouiyouxFiled(store, [calm], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Open in Toolroll$/);
+      expect(card.text).not.toContain("~/.ssh");
+      expect(card.text).toContain("Calmer button: its terms name a key or a folder on this computer");
+      expect(card.labels).toEqual(["Open in Toolroll ↗"]);
     });
 
     test("y3: a task whose full terms don't fit in one message, or would show a private folder, is named with its link, and Approve never covers it", async () => {

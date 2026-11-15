@@ -30,7 +30,8 @@ import { openStore, type Store } from "./store.js";
 import type { Runner } from "./builder.js";
 import { withActor } from "./actor.js";
 import { bindRunToWalk, chainCustodyProblem, clearFallbackChain, setFallbackChain, setPaidGrant, chainJsonOf, chainSealProblem, dispatchEntryOf, fallbackBriefFor, fallbackSettingOf, moveOnIfExhausted, pinnedEntryOf, ranOutOnChain, reconcileWalks } from "./fallback.js";
-import { canonicalChainJson, chainFromJson, chainTermsLines, describeScope, liveChainFromJson, scopeAuthorityOf } from "./scope.js";
+import { canonicalChainJson, chainFromJson, chainTermsLines, liveChainFromJson, scopeAuthorityOf } from "./scope.js";
+import { describeScope } from "./approval-summary.js";
 import { cardShowsScope, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
 import { planCardText } from "./chat-decide.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
@@ -38,6 +39,7 @@ import { approvalSheetHtml, approveKitOf } from "./server/render-tasks.js";
 import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
 import { OK, T0, AGENT_SAID, registerRunner, concludeDone } from "../test/tick-kit.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("../test/fixtures/fallback/claude-subscription-weekly-limit.json", import.meta.url), "utf8")) as { terminal: { text: string } };
 const PARK = { urgency: "blocking", recap: "The guard needs a policy call: the payout path can fail open or fail closed.", question: "Fail open or fail closed on timeout?",
@@ -92,7 +94,7 @@ describe("a chain, against real git", () => {
   };
   const approve = async (id: string) => {
     await say(["task", "approve", id, "--json"]);
-    await say(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, "--as", "alex", "--token", approver]);
+    await say(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, ...termsArgs(db, id), "--as", "alex", "--token", approver]);
   };
   const outcomeOf = (id: string) => (payload().dispatched as { id: string; outcome: string; reason?: string }[]).find(one => one.id === id)!;
   const refOf = (id: string) => withStore(store => store.lookupRef(id)!.id);
@@ -465,11 +467,14 @@ describe("a chain, against real git", () => {
       const input = { surface: "task" as const, action: "/t/t-1/approve", csrf: "c", nonce: "n", digest: scope.digest, returnTo: null, scope, planDocument: null, planContract: null,
         revision: null, revisionSourceHref: "", repairChain: null, route: null, coordinator: null, origin: null, deliverable: "branch" as const, editHref: "#", notNowHref: "#", sticky: false, earlier: { active: 0, running: 0 }, edit: null };
       const sheet = withFormToken("c", () => htmlString(approvalSheetHtml(input)));
-      expect(sheet).toContain("data-approval-fallback");
-      expect(sheet).toContain("opus");
-      const allowing = /data-approval-allowing>([^<]*)</.exec(sheet)?.[1] ?? "";
-      expect(allowing, sheet.slice(sheet.indexOf("approval-allowing") - 20, sheet.indexOf("approval-allowing") + 400)).toMatch(/opus/i);
-      expect(allowing).toContain("which spends money");
+      // The chain is a risk in the approval summary: said whole above the terms, before Approve, never folded.
+      const warning = /data-terms-warning>([^<]*)</.exec(sheet)?.[1] ?? "";
+      expect(warning.startsWith(chainTermsLines(scope).join(" "))).toBe(true);
+      // Each fallback's own access and limits are said too, where they differ from the first agent's.
+      expect(warning).toMatch(/Fallback 2 (differs from the first|has the same access and limits as the first)/);
+      expect(warning).toMatch(/opus/i);
+      expect(warning).toContain("which spends money");
+      expect(sheet.indexOf("data-terms-warning")).toBeLessThan(sheet.indexOf('<div class="approval-act"'));
       const kit = withFormToken("c", () => approveKitOf(input, null));
       expect(JSON.stringify(kit)).toContain("on an API key, which spends money");
       expect(chainTermsLines(scope).join("\n")).toContain("which spends money");

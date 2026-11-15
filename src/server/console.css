@@ -1245,6 +1245,12 @@
   .approval-detail p, .approval-detail ul, .approval-detail dl { margin: var(--so-space-xs) 0; }
   .approval-detail ul { padding-left: 1.25rem; }
   .approval-detail .revision-card { margin: 0; padding: 0; border: 0; background: none; }
+  /* The approval summary's usual settings, one tap away (approval-summary.ts). */
+  details.terms-usual > summary { color: var(--muted-foreground); }
+  details.terms-usual > .approval-rows { margin: var(--so-space-sm) 0 0; gap: var(--so-space-sm); }
+  details.terms-usual .approval-row dt { font: var(--so-typography-caption); color: var(--so-muted); }
+  details.terms-usual .approval-row dd p, .plan-sheet details.terms-usual .approval-row dd p { font-size: var(--so-typography-body-font-size); line-height: 1.5; color: var(--so-ink); }
+  .approval-revision-plain { max-width: 75ch; margin: 0; font-size: 14px; line-height: 1.6; }
   .approval-roles { display: grid; gap: var(--so-space-sm); }
   .approval-roles > div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: var(--so-space-md); }
   .approval-roles dt { color: var(--muted-foreground); font-weight: 500; }
@@ -1253,14 +1259,35 @@
   .chat-plan .approval-sheet { padding: 0; border: 0; background: none; }
   /* The plan sheet (task page, docs/plans/task-page-steps.md): the same terms read top to bottom — one lead sentence,
      Steps, Done when, Will change / Won't touch, Worth knowing, the agent — every part open, small muted headings. */
-  .plan-sheet { display: grid; gap: 22px; margin: 0; min-width: 0; color: var(--so-ink); }
+  /* The plan sheet (the terms diet, DESIGN.md Signal): three groups under hairlines — the plan, before you approve, what
+     it may do — 24px above each hairline and 16px below; 20px between parts, 8px from a heading to its body. */
+  .plan-sheet { display: grid; gap: 0; margin: 0; min-width: 0; color: var(--so-ink); }
+  .plan-sheet > .approval-note { margin: 0 0 var(--so-space-lg); }
+  .plan-group { display: grid; gap: var(--so-space-xl); min-width: 0; }
+  .plan-group + .plan-group { margin-top: var(--so-space-2xl); padding-top: var(--so-space-lg); border-top: 1px solid var(--so-line); }
+  .plan-notice { display: grid; gap: var(--so-space-sm); padding: var(--so-space-md) var(--so-space-lg); border-radius: var(--so-radius-md); background: var(--so-raised); color: var(--so-ink); }
+  .plan-notice > *, .plan-notice p { margin: 0; }
+  .plan-sheet .approval-revision.plan-sheet-revision { margin: 0; font-size: var(--so-typography-body-reading-font-size); font-weight: 500; line-height: 1.6; }
+  .plan-sheet .plan-sheet-brief { color: var(--so-ink); }
+  .plan-sheet-foot { margin: 0; font: var(--so-typography-caption); font-weight: 400; color: var(--so-muted); }
+  .plan-sheet-foot .mono { font: var(--so-typography-mono); }
+  .plan-sheet .approval-path { font: var(--so-typography-mono); color: var(--so-ink); overflow-wrap: anywhere; }
+  details.plan-sheet-full { margin: 0; }
+  details.plan-sheet-full > summary { min-height: 32px; font: var(--so-typography-label); color: var(--so-ink); cursor: pointer; }
+  details.plan-sheet-full[open] { display: grid; gap: var(--so-space-xl); }
   .plan-sheet > * { margin: 0; }
-  .plan-sheet-lead { max-width: 66ch; font-size: 17px; line-height: 1.5; letter-spacing: -.01em; overflow-wrap: anywhere; }
-  .plan-sheet-lead-long { font-size: 15px; line-height: 1.6; letter-spacing: 0; }
+  .plan-sheet-lead { max-width: 66ch; font-size: 16px; font-weight: 500; line-height: 1.5; letter-spacing: -.01em; color: var(--so-ink); overflow-wrap: anywhere; }
+  .plan-sheet-lead-long { font-size: var(--so-typography-title-font-size); font-weight: 400; line-height: 1.6; letter-spacing: 0; }
   .plan-sheet-text { max-width: 66ch; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; }
-  .plan-sheet-part { display: grid; align-content: start; gap: var(--so-space-sm); min-width: 0; max-width: 75ch; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+  .plan-sheet-part { display: grid; align-content: start; gap: var(--so-space-sm); min-width: 0; max-width: 75ch; font-size: var(--so-typography-body-reading-font-size); line-height: 1.6; color: var(--so-ink); overflow-wrap: anywhere; }
   .plan-sheet-part > *, .plan-sheet-part p, .plan-sheet-part ul, .plan-sheet-part ol, .plan-sheet-part dl { margin: 0; }
-  .plan-sheet-h { margin: 0; font-size: 12px; font-weight: 500; line-height: 1.5; letter-spacing: 0; text-transform: none; color: var(--so-muted); }
+  /* Section headings read as headings (Title, ink), beating the workspace's generic h3 (.so-native-region :where(h3)). */
+  .plan-sheet .plan-sheet-h { margin: 0; font: var(--so-typography-title); letter-spacing: var(--so-typography-title-letter-spacing); text-transform: none; color: var(--so-ink); }
+  .plan-sheet .approval-goal { font-size: var(--so-typography-body-reading-font-size); line-height: 1.6; color: var(--so-ink); }
+  .plan-sheet .approval-rows { gap: var(--so-space-md); }
+  .plan-sheet .approval-row { grid-template-columns: 120px minmax(0, 1fr); }
+  .plan-sheet .approval-row dt { font: var(--so-typography-caption); color: var(--so-muted); }
+  .plan-sheet .approval-row dd, .plan-sheet .approval-row dd p { font-size: var(--so-typography-body-reading-font-size); line-height: 1.6; color: var(--so-ink); }
   .plan-sheet-sub { color: var(--so-muted); font-size: 12.5px; }
   .plan-sheet-steps { display: grid; gap: var(--so-space-sm); padding: 0; list-style: none; counter-reset: plan-step; }
   .plan-sheet-steps > li { display: flex; gap: var(--so-space-md); counter-increment: plan-step; }
@@ -1270,7 +1297,7 @@
   .plan-sheet-done > li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--so-space-xs) var(--so-space-md); padding: var(--so-space-sm) 0; border-bottom: 1px solid var(--so-line); }
   .plan-sheet-done > li:last-child { border-bottom: 0; }
   .plan-sheet-done > li > span:first-child { flex: 1 1 260px; min-width: 0; }
-  .plan-sheet-how { flex: none; font-size: 12.5px; color: var(--so-muted); }
+  .plan-sheet-how { flex: none; font: var(--so-typography-caption); font-weight: 400; color: var(--so-muted); }
   .plan-sheet-pair { display: flex; flex-wrap: wrap; gap: var(--so-space-lg) 40px; }
   .plan-sheet-pair > .plan-sheet-part { flex: 1 1 220px; }
   .plan-sheet .approval-paths li { color: var(--so-ink); font-size: 13px; line-height: 1.7; }

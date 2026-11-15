@@ -206,7 +206,7 @@ test("while the plan is being edited nothing approves: no Approve, no dock, unti
   const editor = host.querySelector<HTMLDetailsElement>("#plan-editor")!;
   act(() => { editor.open = true; editor.dispatchEvent(new Event("toggle")); });
   expect(approves()).toHaveLength(0);
-  expect(host.textContent).toContain("You’re editing the plan.");
+  expect(host.textContent).toContain("You have unsaved changes to the plan.");
   expect(submitted).toEqual([]);
   act(() => { editor.open = false; editor.dispatchEvent(new Event("toggle")); });
   expect(approves().length).toBeGreaterThan(0);
@@ -250,8 +250,11 @@ const waiting = (approve: Approve): BrowserTaskView => {
   return { ...view, steps: stepRowsOf(view) };
 };
 
-test("in the step rows the approval is the open Approval row: one outline, one chip, the act, then the plan it signs, nothing folded", () => {
-  show(waiting({ ...approveOf({ passwordless: true, remembered: false }), planHtml: '<article data-plan-sheet><p id="plan-words">Goal</p></article><details id="plan-editor"><summary>Request changes</summary></details>' }));
+test("in the step rows the approval is the open Approval row: one outline, one chip, the heading, the plan it signs, then the acts", () => {
+  const sheet = '<article data-plan-sheet><p id="plan-words">Goal</p></article>';
+  const editor = '<details id="plan-editor" class="approval-edit"><summary>Request changes</summary></details>';
+  show({ ...waiting({ ...approveOf({ passwordless: true, remembered: false }), planHtml: `${sheet}${editor}`, sheetHtml: sheet, editorHtml: editor, heading: "Plan ready", text: "Approving starts the build." }),
+    cancel: { open: false, html: "<p>Cancel this task?</p>" } });
   const row = host.querySelector<HTMLElement>('[data-step-row="approve"]')!;
   expect(row.classList.contains("needs")).toBe(true);
   expect(row.getAttribute("aria-current")).toBe("step");
@@ -259,12 +262,27 @@ test("in the step rows the approval is the open Approval row: one outline, one c
   expect(row.querySelector("button.k-steprow-head")).toBeNull();
   const body = row.querySelector<HTMLElement>(".k-steprow-body")!;
   expect(body.hidden).toBe(false);
-  // The act first, then the sheet, both in the row's body; the plan row above is one line pointing below.
-  expect(body.querySelector("[data-task-approval]")).not.toBeNull();
-  const sheet = body.querySelector("[data-plan-sheet]")!;
-  expect(sheet.closest("details, [hidden]")).toBeNull();
-  expect(body.querySelector("[data-task-approval]")!.compareDocumentPosition(sheet) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(host.querySelector('[data-step-row="plan"]')!.textContent).toContain("Shown below");
+  // The terms diet: the heading and its one line, then the plan it signs, then the acts — after the evidence, in the
+  // document too — with the password note under them.
+  const box = body.querySelector("[data-task-approval]")!;
+  const heading = box.querySelector(".k-slot-status h2")!;
+  const plan = box.querySelector("[data-plan-sheet]")!;
+  const approveButton = [...box.querySelectorAll<HTMLButtonElement>(".k-slot-acts button")].find(one => one.textContent === "Approve and start")!;
+  const terms = box.querySelector(".k-slot-terms")!;
+  expect(heading.textContent).toBe("Plan ready");
+  expect(box.querySelector(".k-slot-text")!.textContent).toBe("Approving starts the build.");
+  expect(plan.closest("details, [hidden]")).toBeNull();
+  const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  expect(after(heading, plan)).toBe(true);
+  expect(after(plan, approveButton)).toBe(true);
+  expect(after(approveButton, terms)).toBe(true);
+  // Reject is a real control (it opens Cancel task, which asks again), never a bare link.
+  expect(box.querySelector("[data-approval-reject]")!.tagName).toBe("BUTTON");
+  // The editor and its own form stay outside the approval's form: forms never nest.
+  expect(box.querySelector("#plan-editor")).toBeNull();
+  expect(body.querySelector("#plan-editor")).not.toBeNull();
+  // While the approval is open its card holds the plan: no Plan row saying "shown below".
+  expect(host.querySelector('[data-step-row="plan"]')).toBeNull();
   // The chip is said once, by the row.
   expect([...host.querySelectorAll(".k-chip.needs")].map(one => one.closest("[data-step-row]")?.getAttribute("data-step-row"))).toEqual(["approve"]);
   expect(host.querySelectorAll("[data-task-approval]")).toHaveLength(1);
@@ -294,14 +312,15 @@ test("in the step rows a refused password keeps the terms shown and sends nothin
 
 test("approved in another window: the Plan row takes the approved plan sheet in a live update; the same body is never swapped", () => {
   const editor = '<details id="plan-editor"><summary>Edit plan</summary></details>';
-  const base = waiting(approveOf({ passwordless: true, remembered: false }));
+  const base = waiting({ ...approveOf({ passwordless: true, remembered: false }), sheetHtml: '<article data-plan-sheet><p id="plan-words">Goal</p></article>', editorHtml: editor });
   const before: BrowserTaskView = { ...base, plan: { lead: "Add subtract.", by: null, at: null, planning: false, key: "editor", html: editor } };
   show(before);
   const plan = () => host.querySelector<HTMLElement>('[data-step-row="plan"]')!;
-  expect(plan().querySelector("[data-plan-sheet]")).toBeNull();
+  // While the approval waits its card holds the plan and the editor: no Plan row of its own.
+  expect(host.querySelector('[data-step-row="plan"]')).toBeNull();
   // A refresh while it still waits changes nothing in the installed body (a person may be typing in the editor).
-  show({ ...before, plan: { ...before.plan!, html: `<p id="swapped">x</p>${editor}` } });
-  expect(plan().querySelector("#swapped")).toBeNull();
+  show({ ...before, approve: { ...before.approve!, editorHtml: `<p id="swapped">x</p>${editor}` } });
+  expect(host.querySelector("#swapped")).toBeNull();
   // Somebody approves elsewhere: the live update carries the approved view, and the Plan row now holds the sheet.
   const approved = viewOf(cardOf("Building", null), { journey: taskRoad({ stage: "building" }, true, false, {}),
     approved: { by: "sam", at: "2026-11-10T09:00:00.000Z", automatic: false, rule: null, how: "", version: "v" },
@@ -379,4 +398,21 @@ test("what a person decides sits in the step that waits, on the page: open quest
   // A task with no road keeps them on the page all the same: never dropped.
   show(viewOf(cardOf("Needs you", null), { lead: [questions, pending] }), "no-road");
   expect(host.querySelectorAll("#task-questions form, #plan-revisions form")).toHaveLength(2);
+});
+
+test("an unsaved change in the plan's own text editor takes Approve away, with why, until it is saved or undone", () => {
+  const sheet = '<article data-plan-sheet><p id="plan-words">Goal</p></article>';
+  const planText = '<details id="plan-edit" open><summary>Edit plan</summary><form><textarea name="plan-document">Steps as drafted</textarea></form></details>';
+  const view = waiting({ ...approveOf({ passwordless: true, remembered: false }), sheetHtml: sheet, editorHtml: "", planHtml: sheet });
+  show({ ...view, plan: { lead: "Add subtract.", by: null, at: null, planning: false, key: "editor", html: planText } });
+  const buttons = () => [...host.querySelectorAll<HTMLButtonElement>("[data-task-approval] .k-slot-acts button")].map(one => one.textContent);
+  expect(buttons()).toContain("Approve and start");
+  const text = host.querySelector<HTMLTextAreaElement>('#plan-edit textarea[name="plan-document"]')!;
+  act(() => { text.value = "Steps as drafted, and one more"; text.dispatchEvent(new Event("input", { bubbles: true })); });
+  expect(buttons()).not.toContain("Approve and start");
+  expect(buttons()).toContain("Back to the edit");
+  expect(host.querySelector("[data-task-approval] .k-slot-terms")!.textContent).toContain("You have unsaved changes to the plan.");
+  // Undone: Approve is back.
+  act(() => { text.value = "Steps as drafted"; text.dispatchEvent(new Event("input", { bubbles: true })); });
+  expect(buttons()).toContain("Approve and start");
 });

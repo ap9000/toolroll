@@ -27,6 +27,7 @@ import { run as exec, type ExecResult, type RunOptions } from "./exec.js";
 import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { assignmentOf, assignmentEvidenceIntact } from "./assignment.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 
 /** The exact route authority a fixture PRESENTS at admission (v48 authority repair): the
@@ -181,7 +182,7 @@ describe("the night: twelve tasks, one fake clock", () => {
     for (const id of TASKS.filter(one => one !== "t-10")) {
       await run(["task", "approve", id, "--json"], T0);
       const digest = payload().scope.digest as string;
-      await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "alex", "--token", approverToken], T0);
+      await run(["task", "approve", id, "--yes", "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approverToken], T0);
     }
     await run(["task", "block", "t-09", "--on", "t-01"], T0);
     await run([
@@ -213,7 +214,7 @@ describe("the night: twelve tasks, one fake clock", () => {
     expect(payload().ok).toBe(true);
     await run(["task", "approve", "t-10", "--json"], at(15));
     const digest10 = payload().scope.digest as string;
-    await run(["task", "approve", "t-10", "--yes", "--digest", digest10, "--as", "alex", "--token", approverToken], at(15));
+    await run(["task", "approve", "t-10", "--yes", "--digest", digest10, ...termsArgs(db, "t-10"), "--as", "alex", "--token", approverToken], at(15));
 
     await tick(16);     // t-07 (strikes reset) and t-10 build
 

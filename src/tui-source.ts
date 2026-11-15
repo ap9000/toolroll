@@ -19,7 +19,7 @@ import type { OperateOptions } from "./operate.js";
 import { snapshotLiveRuns } from "./peek-cli.js";
 import type { ConnectionChecker } from "./provider-connection.js";
 import { loadProjectRegistry } from "./repos.js";
-import { describeScope } from "./scope.js";
+import { approvalSummaryOf, describeScope, summaryContextOf } from "./approval-summary.js";
 import { localModeOf, openStoreReadOnly, type Store } from "./store.js";
 import { routeChangeOf } from "./route-change.js";
 import { flakyCount } from "./flaky.js";
@@ -116,7 +116,10 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
       const task = record(answer["task"]), work = record(answer["work"]), status = record(work["status"]);
       const store = read();
       const scope = store === null ? null : store.getScope(id);
-      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: [...(store === null ? [] : routeLines(store, id)), ...describeScope(scope)].map(line => terminalText(line)) };
+      // The approval summary with its whole context (approval-summary.ts): the lines a yes here agrees to, and their key.
+      const context = store === null || scope === null ? null : summaryContextOf(store, id, scope, clock());
+      const plan = scope === null || scope.approvedDigest === scope.digest ? null : { digest: scope.digest, lines: [...(store === null ? [] : routeLines(store, id)), ...describeScope(scope, undefined, null, context)].map(line => terminalText(line)),
+        ...(context === null ? {} : { terms: approvalSummaryOf(scope, context).key }) };
       let hasResult = false;
       try { hasResult = store !== null && assignmentOf(store, id, clock(), { principal: "operator", repos: null })?.receipt != null; } catch { hasResult = false; }
       const decisions: TuiDecision[] = store === null ? [] : store.listDecisions("unanswered").filter(one => one.taskId === id)
@@ -153,7 +156,7 @@ export function createTuiSource(options: TuiSourceOptions): TuiSource & { close(
         case "new": argv = ["task", "add", act.text, ...(act.repo === null ? [] : ["--repo", act.repo])]; done = "Filed."; break;
         case "plan": argv = ["task", "plan", act.id, "--digest", act.source]; done = "Asked for a plan. You'll approve it before anything is built."; break;
         case "build": argv = ["task", "new", "--build", act.preview, "--digest", act.digest]; done = "Building. It starts next."; break;
-        case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest]; done = "Approved. An agent starts on it."; break;
+        case "approve": argv = ["task", "approve", act.id, "--yes", "--digest", act.digest, ...(act.terms === undefined ? [] : ["--terms", act.terms])]; done = "Approved. An agent starts on it."; break;
         case "stop": argv = ["task", "stop", act.id, "--run", String(act.runId)]; done = "Stopping. Its work so far is kept."; break;
         // Send back: the build the screen read when b was pressed, never the one current when this is sent.
         case "revise": argv = ["task", "revise", act.id, "--run", String(act.runId), "--feedback", act.text]; done = "Sent back with your note."; break;

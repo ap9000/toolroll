@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { hashSecret, mintCredential } from "./api-tokens.js";
 import { canonicalRepos } from "./runner.js";
 import { fileTaskProposal } from "./proposal.js";
-import { describeScope } from "./scope.js";
+import { describeScope, summaryContextOf } from "./approval-summary.js";
 import { reportSummaryFor } from "./lead-tools.js";
 import type { Store } from "./store.js";
 import { claimedNowSql, markedRunningSql } from "./task-moves.js";
@@ -566,7 +566,7 @@ export function taskDetailFor(
       sealed: store.scopeSealed(taskId),
       goal: scope?.goal ?? null,
       // The scope in the console's own words.
-      words: scope === null ? [] : describeScope(scope),
+      words: scope === null ? [] : describeScope(scope, undefined, null, summaryContextOf(store, taskId, scope, now)),
     },
     waits,
     attempts,

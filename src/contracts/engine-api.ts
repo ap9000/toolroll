@@ -134,6 +134,17 @@ export const stepCardSchema = z.object({
   /** The step's runs' recorded cost together; null when none is recorded. */
   costUsd: z.number().nullable(),
   runs: z.array(z.number().int()),
+  /** The Approval step's terms while an approval waits (approval-summary.ts, the same summary every surface shows):
+   * decisions and differences as rows, risks never folded, the usual project settings by name, and `key`, which a yes
+   * pins (`task approve --terms <key>`) so a change to what was shown refuses. Absent on every other card. */
+  terms: z.object({
+    key: z.string(),
+    revision: z.string().nullable(),
+    rows: z.array(z.object({ label: z.string(), words: z.string(), lines: z.array(z.string()) })),
+    warnings: z.array(z.string()),
+    usualLabel: z.string(),
+    usual: z.array(z.object({ label: z.string(), words: z.string() })),
+  }).optional(),
 });
 
 /** `GET /t/<task>/steps`: the task page's stepper rows (workspace-ui.ts stepRowsOf over the same road) with who ran

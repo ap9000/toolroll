@@ -45,10 +45,10 @@ export { isAcpProfile };
  */
 
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { networkFromValue, networkWords, type NetworkProfile } from "./egress.js";
-import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
-import { checkAccessWords, isCheckAccess, type CheckAccess } from "./check-access.js";
-import { MAX_MACH_LOOKUP, MAX_READ_DENY, sandboxTermsWords, validMachLookup, validReadDeny } from "./project-sandbox.js";
+import { networkFromValue, type NetworkProfile } from "./egress.js";
+import { isWritesMode, type WritesMode } from "./writes-mode.js";
+import { isCheckAccess, type CheckAccess } from "./check-access.js";
+import { MAX_MACH_LOOKUP, MAX_READ_DENY, validMachLookup, validReadDeny } from "./project-sandbox.js";
 import { z } from "zod";
 import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
@@ -1847,38 +1847,6 @@ export function scopeRouteWords(scope: Pick<Scope, "proposedRouteJson">, readine
   return route === null ? [] : routeWords(projectRoute(route, readiness));
 }
 
-/** The scope, in the words an operator has to be able to agree or disagree with. */
-export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READINESS,
-  /** Results routing: the evidence line when an earned rule chose the builder (route-rules.ts taskEvidenceWords). */
-  evidence: string | null = null): string[] {
-  const approval = approvalOf(scope);
-  return [
-    `  goal         ${scope.goal}`,
-    ...(scope.outOfScope === null ? [] : [`  not this     ${scope.outOfScope}`]),
-    ...(scope.candidate ? [`  commit       ${scope.candidate.slice(0, 7)} — checked out by Toolroll, no agent runs`] : []),
-    ...(scope.touches.length === 0 ? [] : [`  files        ${scope.touches.join(", ")}`]),
-    ...acceptanceWords(scope.acceptance),
-    ...(scope.budgetMicrousd === null
-      ? []
-      : [`  budget       $${(scope.budgetMicrousd / 1_000_000).toFixed(2)} per build attempt — the agent is stopped at this figure`]),
-    // The ROUTE, in the words the yes agrees to (v47): posture and every
-    // leg with its reason and readiness — before anyone signs.
-    ...scopeRouteWords(scope, readiness),
-    ...(evidence === null ? [] : [`  why model    ${evidence.replace(/^Why this model: /, "")}`]),
-    ...chainTermsLines(scope).map((line, at) => at === 0 ? `  fallback     ${line}` : `               ${line}`),
-    // What the build may reach (egress.ts), part of what the yes agrees to.
-    ...(scope.profile === null || scope.profile === undefined ? [] : [`  network      ${networkWords(scope.profile.network ?? null).replace(/^Network: /, "")}`]),
-    ...(scope.profile === null || scope.profile === undefined ? [] : [`  writes       ${writesWords(scope.profile.writes)}`]),
-    ...(scope.profile?.checkAccess === undefined ? [] : [`  checks       ${checkAccessWords(scope.profile.checkAccess)}`]),
-    // Its sandbox terms (project-sandbox.ts), part of what the yes agrees to: what it reads, and any widening.
-    ...(scope.profile === null || scope.profile === undefined ? [] : ((terms) => [`  reads        ${terms.reads}`, ...(terms.mach === null ? [] : [`  services     ${terms.mach}`])])(sandboxTermsWords(scope.profile))),
-    ...releaseTermsWords(scope.releaseTerms ?? null),
-    ...(scope.releaseCheck == null ? [] : [`  release      ${releaseCheckSentence(scope.releaseCheck)}`]),
-    `  version      ${scope.digest.slice(0, 8)} (the full plan version is in --json)`,
-    `  approved     ${describeApproval(approval)}`,
-  ];
-}
-
 /** The approval sheet's release lines (release-once.md): the release in one sentence, then what asks again. */
 export function releaseTermsSentence(terms: ReleaseTerms): string {
   if (!terms.policy.carry) return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Every later commit asks for your approval again.`;
@@ -1901,12 +1869,9 @@ export function releaseAsksAgainWords(terms: ReleaseTerms): string[] {
     `and always once the deploy starts. Repository ${terms.repo}, branch ${terms.branch} into ${terms.base}, check grant ${terms.grant.id}, ${terms.access === "sandboxed" ? "checks in the sandbox" : `checks outside the sandbox (${terms.access}), carried because the project allows it`}, until ${terms.expiresAt}.`,
   ];
 }
-function releaseTermsWords(terms: ReleaseTerms | null): string[] {
-  if (terms === null) return [];
-  return [`  release      ${releaseTermsSentence(terms)}`, ...(terms.policy.carry ? releaseAsksAgainWords(terms).map(line => `               ${line}`) : [])];
-}
 
-function describeApproval(approval: Approval): string {
+/** Whether a scope is approved, in words (describeScope's last line, approval-summary.ts). */
+export function describeApproval(approval: Approval): string {
   if (approval.approved) return `yes, by ${approval.by} at ${approval.at}`;
   if (approval.reason === "changed") {
     return "no — edited after approval; approve it again";

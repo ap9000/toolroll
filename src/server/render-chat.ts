@@ -103,6 +103,8 @@ export type TaskChatFocus = {
     repairChain: RepairChainRow | null;
     /** A release filed while its pull request's checks still ran: the sheet says nothing deploys until they pass. */
     releaseCiRunning?: boolean;
+    /** The approval summary the task view read (approval-summary.ts), its key in `digest`. */
+    summary?: import("../approval-summary.js").ApprovalSummary | null;
   } | null;
   decisions: (Decision & { taskId: string; repo: string | null })[];
   publication: Publication | null;
@@ -157,6 +159,7 @@ export function taskChatApproval(focus: TaskChatFocus, csrf: string): Html {
       digest: approval.digest,
       returnTo,
       scope,
+      summary: approval.summary ?? null,
       planDocument: approval.planDocument,
       planContract: approval.planDocument === null ? null : approval.planContract,
       revision: approval.revision,

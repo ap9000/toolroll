@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { register } from "./runner.js";
-import { addApprover, approve, approvalOf, canonicalChainJson, chainFromJson, digestOf, describeScope, propose, type ChainEntry, type Scope } from "./scope.js";
+import { addApprover, approve, approvalOf, canonicalChainJson, chainFromJson, digestOf, propose, type ChainEntry, type Scope } from "./scope.js";
+import { describeScope } from "./approval-summary.js";
 import { canonicalRouteJson, NO_READINESS, projectRoute, routeDigestOf, routeFromJson, type PhaseRoute } from "./phase-routing.js";
 import { proveApprovedProfile } from "./builder.js";
 

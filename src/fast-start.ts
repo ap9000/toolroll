@@ -31,6 +31,7 @@ import { levelOfProfile } from "./policy.js";
 import { fileTaskProposal } from "./proposal.js";
 import { releaseCiHoldOf } from "./release-ci-hold.js";
 import { COMPLETION_ACTION, COMPLETION_BY_PERSON } from "./result-completion.js";
+import { approvalSummaryOf, summaryContextOf } from "./approval-summary.js";
 import { deployGateScope, machineActing, propose, releaseCheckScope, type ApproveResult, type Scope } from "./scope.js";
 import { BUILT_IN, withdrawApproval, type Store } from "./store.js";
 import { classifyTask, filingSizer, heuristicSizing } from "./task-sizing.js";
@@ -172,6 +173,18 @@ function dryRun<T>(store: Store, body: () => T): T {
   throw new Error("unreachable");
 }
 
+/** The approval summary's key for a dry-run filing's scope, read inside the dry run (its project and rules in place). */
+function withTermsKey<T extends { ok: boolean }>(store: Store, read: T, taskId: string, now: Date): T & { termsKey: string } {
+  const scope = store.getScope(taskId);
+  return { ...read, termsKey: scope === null ? "" : approvalSummaryOf(scope, summaryContextOf(store, taskId, scope, now)).key };
+}
+/** The preview row's digest column: the scope's digest, then the summary key the form showed. */
+const previewDigest = (scope: string, terms: string): string => `${scope} ${terms}`;
+function previewParts(value: unknown): { scope: string; terms: string | null } {
+  const [scope, terms] = String(value ?? "").split(" ");
+  return { scope: scope ?? "", terms: terms === undefined || terms === "" ? null : terms };
+}
+
 export type FastPreview =
   | { eligible: true; preview: string; digest: string; scope: Scope; taskId: string }
   | { eligible: false; reason: FastRefusal };
@@ -196,12 +209,12 @@ export async function prepareFastStart(store: Store, input: FastInput & { via: E
   const read = dryRun(store, () => {
     const filed = fileIt(store, taskId, { ...input, sizing }, now);
     if (!filed.ok) return { ok: false as const, reason: "plan" as const };
-    return fastStartEligible(store, { ...input, taskId, sizing }, now);
+    return withTermsKey(store, fastStartEligible(store, { ...input, taskId, sizing }, now), taskId, now);
   });
   if (!read.ok) return { eligible: false, reason: read.reason };
   const preview = randomBytes(16).toString("hex");
   store.handle.prepare(`INSERT INTO fast_preview (id, actor, via, task_id, repo, title, permission, sizing_json, digest, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(preview, input.actor, input.via, taskId, input.repo, input.title, input.permissionMode ?? null, JSON.stringify(sizing), read.scope.digest, now.toISOString(), new Date(now.getTime() + FAST_PREVIEW_MS).toISOString());
+    .run(preview, input.actor, input.via, taskId, input.repo, input.title, input.permissionMode ?? null, JSON.stringify(sizing), previewDigest(read.scope.digest, read.termsKey), now.toISOString(), new Date(now.getTime() + FAST_PREVIEW_MS).toISOString());
   return { eligible: true, preview, digest: read.scope.digest, scope: read.scope, taskId };
 }
 
@@ -241,6 +254,12 @@ export function fastStartBuild(store: Store, input: { preview: string; digest: s
       if (!filed.ok) return refuse({ ok: false, reason: "changed", message: filed.message });
       const eligible = fastStartEligible(store, { ...filing, taskId, sizing, proof }, now);
       if (!eligible.ok) return refuse({ ok: false, reason: eligible.reason, message: FAST_WORDS[eligible.reason] });
+      // The terms the form showed, as the approval summary said them (its key, kept with the preview): the project's usual
+      // settings or anything else it showed changed since, and Build approves nothing.
+      const shownKey = previewParts(row["digest"]).terms;
+      const filedScope = store.getScope(taskId);
+      if (shownKey === null || filedScope === null || approvalSummaryOf(filedScope, summaryContextOf(store, taskId, filedScope, now)).key !== shownKey)
+        return refuse({ ok: false, reason: "changed", message: "This changed since you read it. Read it again." });
       const at = now.toISOString();
       // approve() compares the digest the person saw with the plan just filed: changed terms refuse "changed".
       const approved = input.approveNow(taskId, input.digest, { rule: FAST_START_RULE, at });
@@ -451,12 +470,12 @@ export async function prepareChatStart(store: Store, input: ChatStartInput, now:
   const read = dryRun(store, () => {
     const filed = fileIt(store, taskId, { ...filing, via: "chat", sizing }, now);
     if (!filed.ok) return { ok: false as const, reason: "plan" as const };
-    return fastStartRules(store, { ...filing, taskId, sizing, proof: { chat: { fullAccess: false, capMicrousd: null } } }, now);
+    return withTermsKey(store, fastStartRules(store, { ...filing, taskId, sizing, proof: { chat: { fullAccess: false, capMicrousd: null } } }, now), taskId, now);
   });
   if (!read.ok) return { eligible: false, reason: read.reason };
   const preview = randomBytes(16).toString("hex");
   store.handle.prepare(`INSERT INTO fast_preview (id, actor, via, task_id, repo, title, permission, sizing_json, digest, created_at, expires_at, turn) VALUES (?, ?, 'chat', ?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
-    .run(preview, input.actor, taskId, input.repo, input.title, JSON.stringify(sizing), read.scope.digest, now.toISOString(), new Date(now.getTime() + FAST_PREVIEW_MS).toISOString(), input.turn);
+    .run(preview, input.actor, taskId, input.repo, input.title, JSON.stringify(sizing), previewDigest(read.scope.digest, read.termsKey), now.toISOString(), new Date(now.getTime() + FAST_PREVIEW_MS).toISOString(), input.turn);
   return { eligible: true, preview, digest: read.scope.digest, scope: read.scope, taskId };
 }
 
@@ -465,7 +484,7 @@ export async function prepareChatStart(store: Store, input: ChatStartInput, now:
 export function chatStartPreview(store: Store, preview: string, actor: string, turn: number, now: Date): { taskId: string; repo: string; title: string; sizing: TaskSizing; digest: string } | null {
   const row = store.handle.prepare("SELECT * FROM fast_preview WHERE id = ? AND consumed_at IS NULL AND expires_at > ?").get(preview, now.toISOString());
   if (row === undefined || row["actor"] !== actor || row["via"] !== "chat" || row["turn"] === null || Number(row["turn"]) !== turn) return null;
-  return { taskId: String(row["task_id"]), repo: String(row["repo"]), title: String(row["title"]), sizing: JSON.parse(String(row["sizing_json"])) as TaskSizing, digest: String(row["digest"]) };
+  return { taskId: String(row["task_id"]), repo: String(row["repo"]), title: String(row["title"]), sizing: JSON.parse(String(row["sizing_json"])) as TaskSizing, digest: previewParts(row["digest"]).scope };
 }
 
 /** A dismissed Start card's preview can't be used: consumed, in the dismissal's transaction. */

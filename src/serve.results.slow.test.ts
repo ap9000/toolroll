@@ -2139,7 +2139,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       expect(feedback?.textContent).toContain(feedbackNote);
       expect(feedback?.textContent).toContain("Name the helper.");
       expect(feedback?.textContent).toContain("src/a.ts:2");
-      expect(feedback?.closest('details')).toBe(reviewPlan.querySelector('details.approval-details'));
+      expect(feedback?.closest('details')).toBe(reviewPlan.querySelector('details.approval-details:not(.terms-usual)'));
       expect(revisionWindow.document.querySelectorAll('[data-revision-feedback]')).toHaveLength(1);
     } finally { await revisionWindow.happyDOM.close(); }
     // Looks good never became a publication or an approval.

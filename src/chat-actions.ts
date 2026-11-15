@@ -25,6 +25,7 @@ import { isProviderId } from "./provider.js";
 import { approverStandsNow, familyRepoOf } from "./tidy.js";
 import { chatApproveMode, effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
 import { cardTermsDigest, chatLimitProblem, scopeTermsText, shownAsWritten, type CardChannel } from "./chat-terms.js";
+import { approvalSummaryOf, describeScope, summaryContextOf, summaryText } from "./approval-summary.js";
 import { chatStartDryRun, chatStartPreview, fastRefusalWords, fastStartBuild, FAST_MAX_FILES, FAST_MAX_LINES, type FastApprove, type FastProof } from "./fast-start.js";
 import { fastTermsLines } from "./fast-terms.js";
 import { TYPED_START_REFUSED, typedStartNames } from "./typed-start.js";
@@ -53,7 +54,6 @@ import {
 import { passwordlessSessionFor,
   approve,
   authenticateApprover,
-  describeScope,
   scopeAuthorityOf,
   machineActing,
   type ExecutionProfile,
@@ -1037,18 +1037,13 @@ export function prepareSharedAction(
       if (!authority.ok) throw Error(authority.problem);
       state["authMode"] = authority.authMode;
       // The whole terms word for word (the yes is bound to this text: chat-terms.ts cardShowsScope), then everything else.
+      // The summary's other rows (approval-summary.ts): who builds, what it may reach and cost, what differs from the
+      // project's usual settings, every risk, and the usual settings by name. The goal, exclusions and requirements are
+      // in the whole terms above.
+      const summary = approvalSummaryOf(scope, summaryContextOf(store, scope.taskId, scope, now, taskEvidenceWords(store, scope.taskId, now)));
       terms.push(
         scopeTermsText(scope),
-        ...describeScope(scope, undefined, taskEvidenceWords(store, scope.taskId, now))
-          .filter((line) => !/^\s*(reference|approved|goal|not this|touches)\s/.test(line))
-          .map((line) =>
-            line
-              .trimStart()
-              .replace(/^why model\s+/, "Why this model: ")
-              .replace(/^goal\s+/, "Work: ")
-              .replace(/^not this\s+/, "Excluded: ")
-              .replace(/^touches\s+/, "Allowed files: "),
-          ),
+        summaryText(summary, one => one.fields.includes("goal") || one.fields.includes("outOfScope") || one.fields.includes("acceptance")),
         `Agent permissions and limits\n${runtimeTerms(authority.profile)}\n${authority.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : authority.authMode === "subscription" ? "Uses your subscription login." : ""}`,
       );
       const plan = store.latestPlanArtifact(ref.id),
@@ -1656,12 +1651,12 @@ function fileSweepChild(store: Store, who: VerifiedApprover, repo: string, brief
 }
 
 /** A filed child's scope in the words an approval agrees to (no identity lines), its runtime terms, and their digest. */
-function sweepChildScopeOf(store: Store, taskId: string): { fingerprint: string; runtime: string; words: string[]; terms: string } {
+function sweepChildScopeOf(store: Store, taskId: string, now: Date): { fingerprint: string; runtime: string; words: string[]; terms: string } {
   const scope = store.getScope(taskId);
   if (scope === null) throw Error("A sweep item has no scope to show.");
   const authority = scopeAuthorityOf(scope, { authMode: readAuthModeStrict });
   if (!authority.ok) throw Error(authority.problem);
-  const words = describeScope(scope).filter(line => !/^\s*(reference|approved)\s/.test(line)).map(line => line.trim());
+  const words = describeScope(scope, undefined, null, summaryContextOf(store, taskId, scope, now)).filter(line => !/^\s*(reference|approved)\s/.test(line)).map(line => line.trim());
   const runtime = `Agent permissions and limits: ${runtimeTerms(authority.profile)} ${authority.authMode === "api-key" ? "Uses your API key; spend is charged to that account." : authority.authMode === "subscription" ? "Uses your subscription login." : ""}`.trim();
   // The fingerprint covers the scope's every field, not only what is rendered (a profile setting no sentence names, such
   // as an agent's idle timeout, still makes the card stale): its exact terms with only identity left out.
@@ -1681,7 +1676,7 @@ function sweepChildScopes(store: Store, who: VerifiedApprover, repo: string, bri
         found = items.map((one, index) => {
           const made = fileSweepChild(store, who, repo, brief, one, acceptance, now);
           if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) can't be filed: ${made.message}`);
-          return sweepChildScopeOf(store, made.id);
+          return sweepChildScopeOf(store, made.id, now);
         });
         throw dryRun;
       });
@@ -1770,7 +1765,7 @@ function fileSweep(store: Store, who: VerifiedApprover, proposal: number, payloa
     const made = fileSweepChild(store, who, payload.repo, brief, one, req["acceptance"], now);
     if (!made.ok) throw Error(`Item ${index + 1} (${one.title}) couldn't be filed: ${made.message}. Nothing was filed.`);
     // Each filed scope must be exactly the one the card showed (words, permissions, limits, route); else nothing is filed.
-    if (sweepChildScopeOf(store, made.id).fingerprint !== (payload.state["children"] as string[] | undefined)?.[index])
+    if (sweepChildScopeOf(store, made.id, now).fingerprint !== (payload.state["children"] as string[] | undefined)?.[index])
       throw Error(`Item ${index + 1} (${one.title}) no longer matches what you reviewed (a project default changed). Nothing was filed; ask for a fresh card.`);
     store.addSweepTask(sweep, made.id, index, one.title);
     filed.push({ id: made.id, title: one.title });
