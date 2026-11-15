@@ -16,6 +16,7 @@
  */
 import type { LeadProgress } from "./lead-progress.js";
 import { createLiveReply, createLiveSender, LIVE_STATUS, type LiveView } from "./live-reply.js";
+import { privateValue, safeWords } from "./outbound-privacy.js";
 import { shapedWindow, telegramReply, type ShapeOptions, type TelegramEntity } from "./reply-shape.js";
 import type { Store } from "./store.js";
 import type { TelegramTransport } from "./telegram.js";
@@ -71,7 +72,9 @@ export function telegramDraftOf(view: LiveView): DraftPayload | null {
   }
   const head = view.status;
   const gap = "\n\n";
-  const body = draftBody(view.text, TELEGRAM_TEXT_MAX - head.length - gap.length);
+  // The partial reply checked whole before the draft's window cuts it (outbound-privacy.ts): a folder the cut would
+  // shorten is still withheld; the client checks the draft again on the way out.
+  const body = privateValue(view.text) ? { text: safeWords(null), entities: [] } : draftBody(view.text, TELEGRAM_TEXT_MAX - head.length - gap.length);
   if (body.text === "") return { text: head, entities: [{ type: "italic", offset: 0, length: head.length }] };
   const shift = head.length + gap.length;
   return {

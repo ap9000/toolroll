@@ -26,6 +26,7 @@
 import { createLiveReply, createLiveSender, LIVE_STATUS, type LiveView } from "./live-reply.js";
 import type { LeadProgress } from "./lead-progress.js";
 import { renderReply, shapeReplyParts, type ShapeOptions } from "./reply-shape.js";
+import { checkedChunks } from "./outbound-privacy.js";
 import type { ChatContent, ChatEvent, ChatState } from "./chat-delivery-state.js";
 import { unsent } from "./chat-message-states.js";
 
@@ -119,7 +120,8 @@ export function liveText(view: LiveView, platform: LivePlatform, limit: number, 
     case "writing": {
       const marker = italic(platform, view.status === LIVE_STATUS.writing ? LIVE_WORDS.notFinal : `${view.status} ${LIVE_WORDS.notFinal}`);
       const room = Math.max(200, limit - marker.length - LIVE_WORDS.continues.length - 8);
-      const windows = shapeReplyParts(view.text, room, shape, shaped => renderReply(shaped, platform).length);
+      // Checked whole before the cut (outbound-privacy.ts): a folder the first window would cut short is still withheld.
+      const windows = checkedChunks(view.text, shapeReplyParts(view.text, room, shape, shaped => renderReply(shaped, platform).length));
       const first = renderReply(windows[0] ?? "", platform).slice(0, room);
       const more = windows.length > 1 ? `\n\n${italic(platform, LIVE_WORDS.continues)}` : "";
       return `${first}${more}\n\n${marker}`;

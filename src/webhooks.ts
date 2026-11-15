@@ -4,6 +4,7 @@ import type { Notification, Store } from "./store.js";
 import {loadDiscordCredentials} from "./discord-api.js";
 import { loadTeamsCredentials } from "./teams-api.js";
 import { loadSlackCredentials } from "./slack-api.js";
+import { outboundPrivate, safeWords } from "./outbound-privacy.js";
 /**
  * Messaging settings beside the database: which connected chat service
  * receives alerts (the primary), and the console URL that links in chats
@@ -225,19 +226,24 @@ export async function postWebhook(
   link: string | null,
   fetcher: typeof fetch = fetch,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  // The rule every outbound message shares (outbound-privacy.ts): words that name a key or a folder on this computer
+  // go as the safe version, the project's name and the link to Toolroll, never as written.
+  const withheld = outboundPrivate([notification.subject, notification.body]);
+  const subject = withheld ? safeWords({ project: notification.project }) : notification.subject;
+  const said = withheld ? [] : [notification.body];
   const body =
     target.kind === "slack"
       ? {
           text: [
-            `*${notification.subject}*`,
-            notification.body,
+            `*${subject}*`,
+            ...said,
             ...(link === null ? [] : [`<${link}|open in Toolroll>`]),
           ].join("\n"),
         }
       : {
           content: [
-            `**${notification.subject}**`,
-            notification.body,
+            `**${subject}**`,
+            ...said,
             ...(link === null ? [] : [link]),
           ].join("\n").slice(0, 1900),
         };

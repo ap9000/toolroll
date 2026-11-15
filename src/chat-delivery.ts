@@ -16,6 +16,7 @@ import {
 } from "./chat-channel.js";
 import { LEAD_MESSAGE_MAX_CHARS, leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
 import { shapeReplyParts } from "./reply-shape.js";
+import { checkedChunks, taskSubject } from "./outbound-privacy.js";
 import { warmTurn, type WarmHooks } from "./chat-warmth.js";
 import { openChatLive, planWithLive, settleLive, type ChatLiveTransport, type ChatLiveTurn } from "./chat-live.js";
 import {
@@ -645,7 +646,8 @@ export async function processChatEvent(
         )?.text ?? "The reply is no longer in the saved thread.";
     // The lead's answer about one task names it: a reply to it stays on that task.
     // Split as written, then shape each part: no cut ever lands inside a link, code or a bold anchor.
-    const shapedParts = shapeReplyParts(reply, options.partSize ?? CHAT_PART_SIZE, { asked: text, appOrigin: options.origin() });
+    // Checked whole before the cut (outbound-privacy.ts), then part by part at each app's client.
+    const shapedParts = checkedChunks(reply, shapeReplyParts(reply, options.partSize ?? CHAT_PART_SIZE, { asked: text, appOrigin: options.origin() }), taskSubject(store, about?.task));
     const parts: ChatContent[] = (shapedParts.length > 0 ? shapedParts : splitChatText("")).map(
       (text) => (about === null ? { text, voice: true } : { text, voice: true, task: about.task, ...(about.run === null ? {} : { run: about.run }) }),
     );
@@ -948,7 +950,7 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
       if (carrier === null) break;
       const parts: ChatContent[] = [];
       if (text !== null) {
-        if (message.role === "assistant") for (const part of shapeReplyParts(text, options.partSize ?? CHAT_PART_SIZE, { appOrigin: options.origin() })) parts.push({ text: part, voice: true, channel: room.chat });
+        if (message.role === "assistant") for (const part of checkedChunks(text, shapeReplyParts(text, options.partSize ?? CHAT_PART_SIZE, { appOrigin: options.origin() }))) parts.push({ text: part, voice: true, channel: room.chat });
         else parts.push({ text, channel: room.chat });
       }
       if (message.role === "assistant" && message.turn !== null)
