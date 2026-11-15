@@ -110,12 +110,13 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime,type Screen } from "./chrome.js";
 import { retiredHandler, retiredRedirect, TASK_VIEW_REDIRECTS } from "./retired-routes.js";
-import { answersInPlace,chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
+import { answersInPlace,refusedInPlace,chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
 import { taskLinkOf } from "../task-link.js";
 import { putAwayPage,boardBody,boardWorkers,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { timingFor } from "../latency-timeline.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
+import { approvalSummaryFor } from "../approval-summary.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
@@ -922,6 +923,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
       && (qualityMode === null || qualityMode === "default") && (permissionMode === null || permissionMode === "auto")) {
       const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who) }, now);
+      // The terminal workbench's New task asks for the same offer as data (http.ts refusedInPlace's terminal act).
+      if (fast.eligible && requestContext.getStore()?.terminalAct === true) return answerTermsInPlace(response, { preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) });
       if (fast.eligible) return sendScreen(response, 200, fastStartPage(chromeFor(project ?? null, "tasks"), { title: typed.trim(), repo, preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) }));
     }
     let chainProblem: string | null = null;
@@ -2352,8 +2355,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (sheet) return releaseSheet.approveFromSheet({ who, response, project: null }, taskId, digest, token);
         const scopeRow = store.getScope(taskId);
         if (scopeRow === null) return approvalProblem("refused", "this task has no scope to approve", 409);
-        const planView = planViewOf(ref.id);
-        const expectedDigest = approvalFormDigest(scopeRow.digest, planView?.sha256 ?? null);
+        // What the form showed: the scope, the plan beside it, and the approval summary as it reads now (the project's usual
+        // settings it names, a revision's sentence, the rules it says). Any of them changed since: the form is stale.
+        const formDigestNow = (): string | null => {
+          const live = store.getScope(taskId);
+          return live === null ? null : approvalFormDigest(live.digest, planViewOf(ref.id)?.sha256 ?? null, approvalSummaryFor(store, taskId, now)?.key ?? null);
+        };
+        const expectedDigest = formDigestNow();
         if (digest !== expectedDigest) {
           return approvalProblem("refused", "the scope or plan changed while this form was open — read the latest version and approve again", 409);
         }
@@ -2369,7 +2377,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           }
         }
         // A re-check is spent only if this yes is kept (sealed, or a protected-work vote recorded).
-        const approved = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => approveScope(store, taskId, who.name, now, scopeRow.digest, token)),
+        // Read again inside the seal's transaction: what the form showed is still what it would approve, then the yes.
+        const approved = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => store.transact(() =>
+          formDigestNow() !== digest ? { ok: false as const, reason: "changed" as const } : approveScope(store, taskId, who.name, now, scopeRow.digest, token))),
           result => !result.ok && !(result.reason === "second-approver" && !result.already));
         if (!approved.ok) {
           // v102: a first yes on protected work is recorded, not refused — the page says who else is needed.
@@ -3032,6 +3042,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
    * filing's own words and status (the draft keeps the project revision it was written against). */
   function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null, text: string | null = null): Promise<void> | void {
     const { who, response, project } = ctx;
+    // A terminal client's act: the refusal's own words, in place (http.ts refusedInPlace).
+    if (problem !== null && refusedInPlace(response, status, problem)) return;
     const chainable = store
       .listTasksScoped(project, undefined, 100, null)
       .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
@@ -3385,3 +3397,13 @@ export function withContext(context: string | null, typed: string): string {
 
 /** The most "You said" quotes a result reads (one-workspace S5): the newest; the page folds all but a few. */
 export const YOU_SAID_CAP = 8;
+
+/**
+ * Build's offer to a terminal client (the terminal workbench's New task, solo-workbench plan T1): the exact terms a
+ * small task would be approved on, and the preview and digest its Build posts to POST /tasks/fast, as
+ * `{ outcome: "terms", preview, digest, terms: [{ label, words }] }` — the offer the page shows, as data. Nothing is
+ * filed or approved here; Build re-proves the preview and digest as it does for the page.
+ */
+export function answerTermsInPlace(response: ServerResponse, offer: { preview: string; digest: string; terms: ReadonlyArray<readonly [string, string]> }): void {
+  respond(response, 200, "application/json; charset=utf-8", JSON.stringify({ outcome: "terms", preview: offer.preview, digest: offer.digest, terms: offer.terms.map(([label, words]) => ({ label, words })) }));
+}

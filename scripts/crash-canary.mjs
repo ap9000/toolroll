@@ -131,7 +131,7 @@ async function one(stage, round) {
     } else {
       await cli(["task", "scope", "work", "--goal", "Write the result and verify it.", "--acceptance", acceptance.map(c => `${c.statement}|${c.evidence.join(",")}`).join(";")]);
       const preview = await cli(["task", "show", "work"]);
-      await cli(["task", "approve", "work", "--yes", "--digest", preview.scope.digest, ...auth]);
+      await cli(["task", "approve", "work", "--yes", "--digest", preview.scope.digest, "--terms", preview.approvalTerms, ...auth]);
     }
     const workerArgs = ["watch", "--runner", "worker", "--token-file", join(control,"token"), "--repo", repo, "--pool", pool, "--tick-every", "200", "--reconcile-every", "500", "--bridge-every", "3600000", "--stop-grace", "1000", "--db", db, "--json"];
     worker = start([...workerArgs, "--for", "180000"], opts);

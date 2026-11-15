@@ -15,9 +15,11 @@ import { assignmentStageOf, stageOfCode } from "./task-status.js";
 import { taskRoad, type RoadChecks } from "./first-run.js";
 import { stepRowsOf, type StepRowFacts } from "./workspace-ui.js";
 import { approvalOf } from "./scope.js";
+import { approvalSummaryOf, summaryContextOf } from "./approval-summary.js";
 import { taskWorkSummaryOf, type WorkSummaryAccess } from "./work-summary.js";
 import { terminalDiffView } from "./result-evidence-readers.js";
 import { parseReviewDiff } from "./server/render-results.js";
+import { revisionSourceOf } from "./result-review.js";
 import { ENGINE_API_VERSION, type ResultDiff, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
@@ -69,10 +71,18 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot }: StepRe
   const builds = runs.filter(run => run.role === "builder" || run.role === "scout" || run.role === "repair");
   const reviews = runs.filter(run => run.role === "reviewer");
   const behind: Record<StepCard["key"], Run[]> = { plan: plannerRuns, approve: [], build: builds, checks: [], review: reviews, ready: [] };
+  // The waiting approval's terms: the one summary every surface shows (approval-summary.ts), its key what a yes pins.
+  const terms = scope === null || approved ? null : (() => {
+    const summary = approvalSummaryOf(scope, summaryContextOf(store, current.id, scope, now));
+    return { key: summary.key, revision: summary.revision,
+      rows: [...summary.revisionChanges, ...summary.decisions, ...(summary.why === null ? [] : [{ label: "Why model", words: summary.why }]), ...summary.differs].map(one => ({ label: one.label, words: one.words, lines: "lines" in one ? [...(one.lines ?? [])] : [] })),
+      warnings: summary.warnings.map(one => one.words), usualLabel: summary.usualLabel, usual: summary.usual.map(one => ({ label: one.label, words: one.words })) };
+  })();
   const cards: StepCard[] | null = rows === null ? null : rows.map(row => ({
     key: row.key, label: row.label, state: row.state, mark: row.mark, sentence: row.sentence, at: row.at, needsYou: row.needsYou,
     inChain: !(justCode && (row.key === "plan" || row.key === "approve")),
     ...runFacts(behind[row.key]),
+    ...(row.key === "approve" && terms !== null ? { terms } : {}),
   }));
   // The automatic review, where one ran: its own card after Checks (a chain's Review step reads the same way).
   if (cards !== null && reviews.length > 0) {
@@ -92,6 +102,9 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot }: StepRe
     headline: card?.status.headline ?? null,
     liveRun: live?.id ?? null,
     cards,
+    // The result this task's page offers Accept and Send back on (chat-decide.ts resultFresh reads the same facts).
+    review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
+      ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
   };
 }

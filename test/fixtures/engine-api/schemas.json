@@ -1,5 +1,5 @@
 {
-  "digest": "cd17d6d49d900ef5f14b3165c9e1d1a6c585db0b9faab551c3a8c7cd8fd65b85",
+  "digest": "1eac84cb1a4846cb7d9f8fb62171ddd31586c788f546bc677c6a8ec37aee52f0",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1172,6 +1172,83 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     }
+                  },
+                  "terms": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "revision": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "label": {
+                              "type": "string"
+                            },
+                            "words": {
+                              "type": "string"
+                            },
+                            "lines": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "required": [
+                            "label",
+                            "words",
+                            "lines"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "warnings": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "usualLabel": {
+                        "type": "string"
+                      },
+                      "usual": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "label": {
+                              "type": "string"
+                            },
+                            "words": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label",
+                            "words"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "revision",
+                      "rows",
+                      "warnings",
+                      "usualLabel",
+                      "usual"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -1197,6 +1274,36 @@
             }
           ]
         },
+        "review": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "receipt": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "receipt",
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "room": {
           "type": "string"
         }
@@ -1208,6 +1315,7 @@
         "headline",
         "liveRun",
         "cards",
+        "review",
         "room"
       ],
       "additionalProperties": false

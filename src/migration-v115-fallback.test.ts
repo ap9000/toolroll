@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, type Store } from "./store.js";
 import { register } from "./runner.js";
-import { addApprover, approve, approvalOf, canonicalChainJson, chainFromJson, digestOf, describeScope, propose, type ChainEntry, type Scope } from "./scope.js";
+import { addApprover, approve, approvalOf, canonicalChainJson, chainFromJson, digestOf, propose, type ChainEntry, type Scope } from "./scope.js";
+import { describeScope } from "./approval-summary.js";
 import { canonicalRouteJson, NO_READINESS, projectRoute, routeDigestOf, routeFromJson, type PhaseRoute } from "./phase-routing.js";
 import { proveApprovedProfile } from "./builder.js";
 
@@ -190,8 +191,8 @@ test("v114 → v115: fallback chains go; what a chain owned ends ordinary and re
 
   store = openStore(file);
   const handle = store.handle;
-  expect(SCHEMA_VERSION).toBe(164);
-  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(164);
+  expect(SCHEMA_VERSION).toBe(165);
+  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(165);
   // The tables and their indexes are gone; the run's history columns stay, without their foreign key.
   expect(handle.prepare(`SELECT name FROM sqlite_master WHERE name IN ${FALLBACK_NAMES}`).all()).toEqual([]);
   const runDdl = String(handle.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'run'").get()?.["sql"]);

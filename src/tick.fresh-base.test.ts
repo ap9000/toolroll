@@ -15,6 +15,7 @@ import { run as exec } from "./exec.js";
 import { openStore } from "./store.js";
 import type { Runner } from "./builder.js";
 import { OK, T0, AGENT_SAID, registerRunner, concludeDone } from "../test/tick-kit.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 describe("fresh base, against real git", () => {
   let base: string;
@@ -76,7 +77,7 @@ describe("fresh base, against real git", () => {
     await run(["task", "add", "the work", "--id", id, "--repo", repo]);
     await run(["task", "scope", id, "--goal", "add a guard on the payout path", "--acceptance", "It is fixed and verified.|manual-review"]);
     await run(["task", "approve", id, "--json"]);
-    await run(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, "--as", "alex", "--token", approverToken]);
+    await run(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, ...termsArgs(db, id), "--as", "alex", "--token", approverToken]);
     return runnerToken;
   };
   const tick = (runnerToken: string, runner: Runner, now: Date) =>

@@ -8,8 +8,9 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { acquire } from "../claim.js";
+import { acquire, release } from "../claim.js";
 import { storeEvidence } from "../evidence.js";
+import { sealVerificationReceipt } from "../verification-evidence.js";
 import { mintApiToken } from "../api-tokens.js";
 import { register } from "../runner.js";
 import { addApprover, propose } from "../scope.js";
@@ -18,6 +19,8 @@ import { openStore, type Store } from "../store.js";
 import { presented, T0 } from "../../test/serve-kit.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
 import * as reads from "../engine-reads.js";
+import * as fast from "../fast-start.js";
+import * as newTask from "./render-new-task.js";
 import * as mainRead from "../live-main-read.js";
 import { engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
 
@@ -25,6 +28,15 @@ import { engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWin
 vi.mock("../engine-reads.js", async importOriginal => {
   const real = await importOriginal<typeof import("../engine-reads.js")>();
   return { ...real, stepCardsOf: vi.fn(real.stepCardsOf), resultDiffOf: vi.fn(real.resultDiffOf), resultDiffFileOf: vi.fn(real.resultDiffFileOf), resultRunsOf: vi.fn(real.resultRunsOf) };
+});
+// Build's offer is the fast start's (fast-start.ts, sized by a model): stood in for, one call at a time, where a test says.
+vi.mock("../fast-start.js", async importOriginal => {
+  const real = await importOriginal<typeof import("../fast-start.js")>();
+  return { ...real, prepareFastStart: vi.fn(real.prepareFastStart) };
+});
+vi.mock("./render-new-task.js", async importOriginal => {
+  const real = await importOriginal<typeof import("./render-new-task.js")>();
+  return { ...real, fastTermsRows: vi.fn(real.fastTermsRows) };
 });
 vi.mock("../live-main-read.js", async importOriginal => {
   const real = await importOriginal<typeof import("../live-main-read.js")>();
@@ -162,6 +174,30 @@ describe("each engine read admits per persona as the page it mirrors; a refusal 
 });
 
 describe("every answer is its contract's shape", () => {
+  test("a result waiting to be checked carries the facts its Accept and Send back post", async () => {
+    store.createTask({ id: "t-ready", title: "Fix t-ready" }, T0);
+    const ref = store.refFor("built-in", "t-ready", "ours").id;
+    store.placeTask(ref, repoA);
+    propose(store, { taskId: "t-ready", goal: "Fix t-ready", now: T0 });
+    if (!store.sealScopeApproval("t-ready", "alex", T0)) throw new Error("seal");
+    const taken = acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+    if (!taken.ok) throw new Error("claim failed");
+    const run = store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", branch: "b-t-ready", worktree, now: new Date(), ...presented(store, ref, "builder") });
+    // A build whose project check passed on its exact commit: Ready for the person.
+    const head = "b".repeat(40);
+    store.setVerifyCommand({ repo: repoA, command: "npm test", timeoutMs: 60_000, approvedBy: "alex" }, new Date(Date.now() - 60_000));
+    store.stampRun(run, { scopeDigest: store.getScope("t-ready")!.digest, baseRevision: "a".repeat(40) });
+    storeEvidence(store, evidenceRoot, run, "terminal-diff", "diff.patch", Buffer.from(PATCH), "git diff (exit 0)", T0, { captureStatus: "ok" });
+    storeEvidence(store, evidenceRoot, run, "check-log", "check.txt", Buffer.from("1 passed"), "npm test", T0, { captureStatus: "ok" });
+    store.recordOutcomeFacts(run, { headRevision: head, handoff: "Fixed it." });
+    store.finishRun(run, { outcome: "built", committed: true, now: new Date() } as never);
+    sealVerificationReceipt(store, evidenceRoot, run, head, store.liveVerifyCommand(repoA)!, { configured: true, ran: true, exitCode: 0 }, new Date());
+    release(store, taken.claim.leaseId, new Date());
+    store.setTaskState("t-ready", "done", T0);
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body);
+    expect(steps.review).toEqual({ run, receipt: expect.stringMatching(/^[0-9a-f]{64}$/), source: store.getScope("t-ready")!.digest });
+  });
+
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {
     // The handshake first: this build's contract, the one the fixtures and schemas.json hold.
     expect(helloSchema.parse((await read("operator", "/engine/hello")).body)).toMatchObject({ version: 1, contract: engineContractDigest() });
@@ -172,10 +208,14 @@ describe("every answer is its contract's shape", () => {
     expect(steps.chain).toBe("just-code");
     expect(steps.cards?.filter(card => !card.inChain).map(card => card.key)).toEqual(["plan", "approve"]);
     expect(steps.cards?.find(card => card.key === "build")).toMatchObject({ state: "done", agent: { provider: "claude" }, runs: [resultRun] });
+    // Its result isn't waiting to be checked (a build still holds the task): no Accept or Send back facts.
+    expect(steps.review).toBeNull();
     // A task filed for a plan reads plan first, its Plan step waiting.
     const planFirst = stepCardsSchema.parse((await read("operator", "/t/t-b/steps")).body);
     expect(planFirst.chain).toBe("plan-first");
     expect(planFirst.cards?.[0]).toMatchObject({ key: "plan", inChain: true });
+    // Nothing to check yet: no Accept or Send back facts.
+    expect(planFirst.review).toBeNull();
     const diff = resultDiffSchema.parse((await read("operator", "/t/t-done/diff")).body);
     expect(diff).toMatchObject({ run: resultRun, problem: null });
     expect(diff.files).toEqual([
@@ -225,6 +265,57 @@ describe("the local owner reads them with the session a terminal client redeems"
     expect(resultDiffSchema.parse((await get("/t/one/diff")).body)).toMatchObject({ run: null, problem: "No result yet." });
     expect((await get("/agents/live/run/1")).status).toBe(404);
     expect((await get(THREAD)).body).toEqual({ error: "not-available" });
+  });
+  test("a terminal client's New task hears Build's offer as data: the terms, and the preview and digest Build posts", async () => {
+    const link = world.server.mintLocalLink()!;
+    const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
+    const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
+    const cookie = `${body.cookie.name}=${body.cookie.value}`;
+    const add = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      new URLSearchParams({ csrf: body.csrf, title: "Fix the typo in the README", repo: world.repo }).toString());
+    // Not a small task (nothing sized it here): filed for a plan, as the page does.
+    expect(add.status).toBe(303);
+    expect(add.headers.location).toMatch(/^\/t\//);
+    // A small task: its exact terms, preview and digest as data, nothing filed or approved yet.
+    vi.mocked(fast.prepareFastStart).mockResolvedValueOnce({ eligible: true, preview: "p".repeat(32), digest: "d".repeat(64), scope: {} } as never);
+    vi.mocked(newTask.fastTermsRows).mockReturnValueOnce([["Goal", "Fix the typo"], ["Done when", "c1: the typo is gone\nthe build passes"]]);
+    const before = world.store.listTasksScoped(null, undefined, 100, null).length;
+    const offer = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      new URLSearchParams({ csrf: body.csrf, title: "Fix the typo", repo: world.repo }).toString());
+    expect(offer.status).toBe(200);
+    expect(JSON.parse(offer.body)).toEqual({ outcome: "terms", preview: "p".repeat(32), digest: "d".repeat(64), terms: [{ label: "Goal", words: "Fix the typo" }, { label: "Done when", words: "c1: the typo is gone\nthe build passes" }] });
+    expect(world.store.listTasksScoped(null, undefined, 100, null).length).toBe(before);
+    // A browser's post of the same gets the page, as before.
+    vi.mocked(fast.prepareFastStart).mockResolvedValueOnce({ eligible: true, preview: "p".repeat(32), digest: "d".repeat(64), scope: {} } as never);
+    vi.mocked(newTask.fastTermsRows).mockReturnValueOnce([["Goal", "Fix the typo"]]);
+    const page = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key },
+      new URLSearchParams({ csrf: body.csrf, title: "Fix the typo", repo: world.repo }).toString());
+    expect(page.headers["content-type"]).toMatch(/^text\/html/);
+  });
+
+  test("a terminal client's act hears a refusal in place, in the page's own words; a browser's still gets the page", async () => {
+    const link = world.server.mintLocalLink()!;
+    const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
+    const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
+    const cookie = `${body.cookie.name}=${body.cookie.value}`;
+    const act = (headers: Record<string, string>) => world.send("/t/one/stop", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key, ...headers },
+      new URLSearchParams({ csrf: body.csrf, run: "999", return: "task" }).toString());
+    // The terminal's act: JSON, the refusal's status and words, nothing else.
+    const terminal = await act({ "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" });
+    expect(terminal.status).toBe(409);
+    expect(terminal.headers["content-type"]).toMatch(/^application\/json/);
+    expect(JSON.parse(terminal.body)).toEqual({ outcome: "refused", words: "there is no run #999" });
+    // Without the terminal's header (a browser's in-place act, or a plain form post) the answer is the page, as before.
+    for (const headers of [{ "x-toolroll-act": "in-place" }, {}]) {
+      const page = await act(headers);
+      expect(page.status).toBe(409);
+      expect(page.headers["content-type"]).toMatch(/^text\/html/);
+    }
+    // A refusal from before the act (a missing key) is in place too.
+    const unkeyed = await world.send("/t/one/stop", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+      new URLSearchParams({ csrf: body.csrf, run: "999", return: "task" }).toString());
+    expect(unkeyed.status).toBe(403);
+    expect(JSON.parse(unkeyed.body)).toMatchObject({ outcome: "refused" });
   });
 });
 

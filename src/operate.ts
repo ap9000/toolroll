@@ -90,6 +90,7 @@ import { scheduledTidy } from "./memory-tidy.js";
 import { CI_READ_EVERY_MS, ciCursorKey, ciRepositoriesOf, observeCiAttempts } from "./flaky-ci.js";
 import { runKnowledgeApply, runKnowledgeCommand } from "./knowledge-cli.js";
 import { FLOWS_VALUE_FLAGS, runFlowsCommand } from "./flows-cli.js";
+import { approvalSummaryFor, approvalSummaryOf, describeScope, summaryContextOf } from "./approval-summary.js";
 import type { FetchLike } from "./flow-share.js";
 import { runAssignmentCommand } from "./assignment-adapters.js";
 import { applyProjectProfile, runProjectCommand } from "./project-cli.js";
@@ -311,7 +312,7 @@ import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
 import { hashPassword } from "./scope.js";
 import { noticeDueOnce, CONTAINMENT_NOTICE_FACT, passwordResetRefusal, resetAccountPassword } from "./store.js";
-import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
+import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
 import { baseStandingWords, freshBaseFor, taskBaseOf } from "./task-base.js";
@@ -645,7 +646,7 @@ External trackers — build what a tracker nominates, under local approvals
   toolroll task scope <id> --goal <what success is>
       [--not <text>] [--touches a,b] [--budget-usd <n>]
   toolroll task approve <id>         the yes — interactive, or
-      --yes --digest <d> --as <you> --token <t> for scripts
+      --yes --digest <d> --terms <key> --as <you> --token <t>
   toolroll task requeue <id> --as <you> --token <t>
                                         exit a stall: incidents resolved,
                                         strikes cleared, queued again
@@ -930,7 +931,7 @@ export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "passwo
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "key", "db", "runner", "ttl", "state", "flow", "on", "reason", "until", "id", "backend", "build", "from",
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity", "agents",
-  "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "as", "branch", "pool", "base", "model", "turns",
+  "goal", "not", "touches", "acceptance", "candidate", "by", "digest", "terms", "as", "branch", "pool", "base", "model", "turns",
   "max", "cap", "probe", "kind", "expires", "cmd", "since", "repair-model",
   "choose", "choice", "claim", "revision", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
@@ -10101,6 +10102,8 @@ function showTask(positional: readonly string[], context: Context): number {
     // Operator steering (v120), in the task page's words: read (and when), waiting, or for the next attempt.
     steering: store.listSteerNotes(ref.id).map(one => ({ id: one.id, author: one.author, createdAt: one.createdAt, note: one.note,
       standing: steerStandingOf(one, steeringLive), words: steerStandingWords(one, steeringLive, utcMinute) })),
+    // The approval summary's key for the terms this shows (approval-summary.ts): what `task approve --terms` names.
+    approvalTerms: scope === null ? null : approvalSummaryOf(scope, summaryContextOf(store, id, scope, now)).key,
   };
 
   return succeed(write, json, "task show", detail, () => [
@@ -10153,7 +10156,7 @@ function showTask(positional: readonly string[], context: Context): number {
     ...(detail.automaticReview === null ? reviewStatusLines(detail.review, latestFinished?.id ?? null) : buildReviewLines(detail.automaticReview)),
     ...(scope === null
       ? ["  no plan yet — nothing is built until one is written and approved"]
-      : describeScope(scope, readiness, taskEvidenceWords(store, task.id, now))),
+      : describeScope(scope, readiness, taskEvidenceWords(store, task.id, now), summaryContextOf(store, task.id, scope, now))),
     ...planContractLines(store, context.evidenceRoot, id),
     // The route's standing (v47): sealed, proposed, legacy, or unreadable —
     // the projection itself is in describeScope's lines above.
@@ -10965,13 +10968,13 @@ async function scopeTask(
   if (filed.modeRefusedCoordinator === true) {
     return succeed(write, json, "task scope", { scope, approvedUnderMode: false, quarantined: true }, () => [
       `Scope written for ${id} — but coordinator-filed: mode coverage cannot admit it; sign the scope.`,
-      ...describeScope(scope),
+      ...describeScope(scope, undefined, null, summaryContextOf(store, id, scope, now)),
     ]);
   }
   if (filed.sealedUnderMode) {
     return succeed(write, json, "task scope", { scope, approvedUnderMode: true }, () => [
       `Scope written AND approved for ${id} — your operating mode covered it; it dispatches on the next pass.`,
-      ...describeScope(scope),
+      ...describeScope(scope, undefined, null, summaryContextOf(store, id, scope, now)),
     ]);
   }
 
@@ -10982,7 +10985,7 @@ async function scopeTask(
     replanned
       ? `Scope written for ${id}. The scope changed, so planning starts again; nothing builds until somebody approves the new plan.`
       : `Scope written for ${id}. Nothing will build it until somebody approves it.`,
-    ...describeScope(scope),
+    ...describeScope(scope, undefined, null, summaryContextOf(store, id, scope, now)),
     "",
     `  toolroll task approve ${id} --yes`,
   ]);
@@ -11140,6 +11143,10 @@ async function approveTask(
   if (store.lookupRef(id)?.plan === "requested") return fail(write, json, "task approve", "planning", `${id} is waiting on a planner — approval is blocked until the drafted plan lands`, EXIT.refused);
 
   let saw = text(flags, "digest");
+  // The summary as it reads now (approval-summary.ts), and the one a person read (`--terms`, the key a screen printed):
+  // when they differ, the yes refuses as a changed plan does.
+  const summary = approvalSummaryOf(scope, summaryContextOf(store, id, scope, now));
+  let shownTerms = text(flags, "terms");
   let { name: asWho, token } = credentialsFrom(flags, context);
 
   let confirmedAloud = false;
@@ -11153,7 +11160,7 @@ async function approveTask(
     write("");
     const changed = routeChangeOf(store, id);
     if (changed !== null) { write(changed); write(""); }
-    for (const line of describeScope(scope)) write(line);
+    for (const line of describeScope(scope, undefined, null, summaryContextOf(store, id, scope, now))) write(line);
     for (const line of planContractLines(store, context.evidenceRoot, id)) write(line);
     write("");
     const agreed = await confirm("Approve exactly this?");
@@ -11162,6 +11169,7 @@ async function approveTask(
       return EXIT.refused;
     }
     saw ??= scope.digest;
+    shownTerms ??= summary.key;
     const acting = await askCredentials(flags, context);
     if (acting === null) return fail(write, json, "task approve", "usage", "approval needs who is agreeing", EXIT.usage);
     asWho = acting.name;
@@ -11174,31 +11182,48 @@ async function approveTask(
     saw !== undefined && asWho !== undefined && token !== undefined;
   if (!armed) {
     if (json) {
-      write(envelopeJson({ ok: false, command: "task approve", reason: "unconfirmed", scope }));
+      write(envelopeJson({ ok: false, command: "task approve", reason: "unconfirmed", scope, terms: summary.key }));
       return EXIT.refused;
     }
     write(`Would approve this, and let a builder work on ${id}:`);
     write("");
     const changed = routeChangeOf(store, id);
     if (changed !== null) { write(changed); write(""); }
-    for (const line of describeScope(scope)) write(line);
+    for (const line of describeScope(scope, undefined, null, summaryContextOf(store, id, scope, now))) write(line);
     for (const line of planContractLines(store, context.evidenceRoot, id)) write(line);
     write("");
     write("Nothing has been approved. Agree to this exact scope with:");
     write(
-      `  toolroll task approve ${id} --yes --digest ${scope.digest} --as <you> --token <your password>`,
+      `  toolroll task approve ${id} --yes --digest ${scope.digest} --terms ${summary.key} --as <you> --token <your password>`,
     );
     // Unconfirmed is "no, not yet" — exit 3 in both modes (round-4 finding 10).
     return EXIT.refused;
   }
-  if (saw === undefined || asWho === undefined || token === undefined) return fail(write, json, "task approve", "usage", "approving non-interactively takes --yes --digest <d> --as <you> --token <t>", EXIT.usage);
+  if (saw === undefined || asWho === undefined || token === undefined) return fail(write, json, "task approve", "usage", "approving non-interactively takes --yes --digest <d> --terms <key> --as <you> --token <t>", EXIT.usage);
+  // A yes from a script names the terms it read, as well as the plan version (the terms diet, Codex r1 finding 4): the
+  // summary's key, which `task approve <id>` prints. Without it nothing is approved, and the terms and key are said so a
+  // person can read them and run it again.
+  if (shownTerms === undefined) {
+    if (json) {
+      write(envelopeJson({ ok: false, command: "task approve", reason: "unconfirmed", message: "Name the terms you read: --terms <key>. Nothing was approved.", scope, terms: summary.key }));
+      return EXIT.refused;
+    }
+    write(`Name the terms you read. Nothing was approved. ${id} would be approved on exactly this:`);
+    write("");
+    for (const line of describeScope(scope, undefined, null, summaryContextOf(store, id, scope, now))) write(line);
+    write("");
+    write(`  toolroll task approve ${id} --yes --digest ${scope.digest} --terms ${summary.key} --as <you> --token <your password>`);
+    return EXIT.refused;
+  }
 
   // The digest is named rather than assumed, so an operator who read one scope
   // cannot approve a different one that replaced it while they were reading.
   // The credential is required for a different reason: an agent that can run
   // these commands can read the digest out of `task show`, and an approval
   // nobody has to authenticate would let it agree to its own brief.
-  const approved = approve(store, id, asWho, now, saw, token, mutationFrom(flags, now));
+  const terms = shownTerms;
+  const approved = store.transact(() => terms !== undefined && approvalSummaryFor(store, id, now)?.key !== terms ? { ok: false as const, reason: "changed" as const }
+    : approve(store, id, asWho, now, saw, token, mutationFrom(flags, now)));
   if (!approved.ok) {
     if (approved.reason === "policy") return fail(write, json, "task approve", "policy", `${id}: ${approved.message}`, EXIT.refused);
     return fail(write, json, "task approve", approved.reason, describeApproveFailure(approved.reason, id), EXIT.refused);
@@ -11206,7 +11231,7 @@ async function approveTask(
 
   return succeed(write, json, "task approve", { scope: approved.scope }, () => [
     `Approved. A builder may now work on ${id}, within this scope:`,
-    ...describeScope(approved.scope),
+    ...describeScope(approved.scope, undefined, null, summaryContextOf(store, id, approved.scope, now)),
   ]);
 }
 

@@ -456,6 +456,7 @@ const HISTORY_RULES: Record<string, HistoryRule> = {
   // v162 adds a table only (flexible_thread): likewise.
   // v163 adds a table only (typed_by_person): likewise.
   // v164 adds tables only (thread_turn, flexible_installation_caps): likewise.
+  // v165 adds tables only (flexible_thread_launch, flexible_relay_grant, flexible_thread_level): likewise.
   ...Object.fromEntries(Object.entries(addedColumns(V119_ADDED_COLUMNS, V120_ADDED_COLUMNS, V121_ADDED_COLUMNS, V122_ADDED_COLUMNS, V123_ADDED_COLUMNS, V125_ADDED_COLUMNS, V126_ADDED_COLUMNS, V128_ADDED_COLUMNS, V129_ADDED_COLUMNS, V134_ADDED_COLUMNS, V135_ADDED_COLUMNS, V138_ADDED_COLUMNS, V143_ADDED_COLUMNS, V147_ADDED_COLUMNS, V148_ADDED_COLUMNS, V150_ADDED_COLUMNS, V151_ADDED_COLUMNS, V152_ADDED_COLUMNS, V153_ADDED_COLUMNS, V158_ADDED_COLUMNS, V159_ADDED_COLUMNS))
     .map(([table, rule]) => [table, { ...EARLIER_RULES[table], ...rule }])),
 };

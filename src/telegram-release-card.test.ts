@@ -10,22 +10,24 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover, propose } from "./scope.js";
+import { addApprover, propose, type Scope } from "./scope.js";
 import { releaseTermsFor } from "./release-carry.js";
 import { setChatApproval } from "./chat-approval.js";
 import { verifyApproverStanding } from "./principal.js";
 import { decideOffer, mintDecideButtons } from "./chat-decide.js";
+import { approvalTermsOf, releaseCardOf, termsText } from "./release-card.js";
+import { permissionPlainWords } from "./chat-terms.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 
 const NOW = new Date("2026-10-25T12:00:00.000Z");
 const BOT = "777000", USER = 31337;
 let dir: string, repo: string, root: string, store: Store;
-type Call = { method: string; params: Record<string, unknown> };
+type Call = { method: string; params: Record<string, unknown>; upload?: string };
 let calls: Call[], updates: unknown[][], documentFault: "throw" | "refuse" | null;
 
-const transport: TelegramTransport = async (method, params) => {
+const transport: TelegramTransport = async (method, params, _signal, upload) => {
   if (method === "getUpdates") return { ok: true, result: updates.shift() ?? [] };
-  calls.push({ method, params });
+  calls.push({ method, params, ...(upload === undefined ? {} : { upload: `${upload.fileName}\n${Buffer.from(upload.bytes).toString("utf8")}` }) });
   if (method === "sendDocument") {
     if (documentFault === "throw") throw new Error("socket hang up");
     if (documentFault === "refuse") return { ok: false, description: "Bad Request: file is too big" };
@@ -129,4 +131,88 @@ test.each([null, "refuse", "throw"] as const)("a release that changed while it w
   if (fault === null) return;
   documentFault = null;
   expect((await tap(refreshed.tokens[0]!)).labels).toEqual(["Approve", "Cancel"]);
+});
+
+test("a folder on this computer named only in the full-terms file sends no file, no buttons, and approves nothing", async () => {
+  // A commit whose subject names a home folder, older than the five the card's short text lists: only the file has it.
+  git("commit", "-q", "--allow-empty", "-m", "Rotate the deploy key in ~/.ssh/deploy");
+  for (let n = 1; n <= 5; n++) git("commit", "-q", "--allow-empty", "-m", `Tidy step ${n}`);
+  const candidate = git("rev-parse", "HEAD");
+  store.createTask({ id: "release-0.9.73", title: "Release 0.9.73" }, NOW);
+  store.placeTask(store.refFor("built-in", "release-0.9.73").id, repo, {}, NOW);
+  const terms = releaseTermsFor(store, { repo, version: "0.9.73", branch: "release-0.9.73", pr: 260, candidate, now: NOW });
+  if (!terms.ok) throw new Error(terms.why);
+  propose(store, { taskId: "release-0.9.73", goal: "Verify 0.9.73", candidate, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], releaseTerms: terms.terms, now: NOW });
+  const card = releaseCardOf(store, store.getScope("release-0.9.73")!, "f".repeat(64), { profile: permissionPlainWords });
+  expect(card.short).not.toContain("~/.ssh");
+  expect(card.full).toContain("~/.ssh/deploy");
+  const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [repo]);
+  if (!who.ok) throw new Error("standing");
+  const offer = decideOffer(store, { kind: "plan", taskId: "release-0.9.73" }, who.who, NOW, "telegram", root)!;
+  // No file, no act (only the link to Toolroll), and none of the words.
+  expect(offer.file).toBeUndefined();
+  expect(offer.rows.flat().every(one => !("act" in one))).toBe(true);
+  expect(JSON.stringify(offer)).not.toContain("~/.ssh");
+  expect(offer.text).toContain("name a key or a folder on this computer");
+  const binding = store.liveTelegramBinding(BOT)!;
+  const seat = { channel: "telegram" as const, binding: binding.id, chat: binding.chatId, approver: "alex", generation: binding.approverGeneration };
+  expect(mintDecideButtons(store, seat, { kind: "plan", taskId: "release-0.9.73" }, offer, NOW, "77").tokens).toEqual([]);
+  expect(calls.filter(call => call.method === "sendDocument")).toHaveLength(0);
+  expect(sealed()).toBe(false);
+});
+
+test("a release whose full terms come to name a folder on this computer while it is read sends no file and leaves no button", async () => {
+  const before = git("rev-parse", "HEAD");
+  git("commit", "-q", "--allow-empty", "-m", "Rotate the deploy key in ~/.ssh/deploy");
+  for (let n = 1; n <= 5; n++) git("commit", "-q", "--allow-empty", "-m", `Tidy step ${n}`);
+  // The last verified release is after that commit: the card shown first doesn't list it.
+  recordRelease(git("rev-parse", "HEAD~1"), "0.9.72-1");
+  const token = continueToken();
+  // While it is read, an older release becomes the last verified one: the change list now reaches the private commit.
+  recordRelease(before, "0.9.72-2");
+  const documents = calls.filter(call => call.method === "sendDocument").length;
+  const after = await tap(token);
+  expect(calls.filter(call => call.method === "sendDocument")).toHaveLength(documents);
+  expect(after.tokens).toEqual([]);
+  expect(after.text).not.toContain("~/.ssh");
+  expect(after.text).toContain("name a key or a folder on this computer");
+  expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_action WHERE consumed_at IS NULL AND phase <> 'offer'").get()?.["n"]).toBe(0);
+  expect(sealed()).toBe(false);
+});
+
+test("a release card names its project, never its folder, and still reaches Telegram with its file and Approve", async () => {
+  const continued = await tap(continueToken());
+  expect(continued.labels).toEqual(["Approve", "Cancel"]);
+  const documents = calls.filter(call => call.method === "sendDocument");
+  expect(documents).toHaveLength(1);
+  // The file names the project by its GitHub owner/name; the folder is nowhere in anything sent.
+  expect(documents[0]!.upload).toContain("Project: project (example-invalid/project)");
+  expect(documents[0]!.upload).toContain("Repository: example-invalid/project");
+  const sent = JSON.stringify(calls);
+  expect(sent).not.toContain(repo);
+  expect(sent).not.toContain(dir);
+  // The web and the CLI keep the path: the same card worded for them names the folder.
+  expect(releaseCardOf(store, store.getScope("release-0.9.73")!, "f".repeat(64), { profile: permissionPlainWords }).full).toContain(repo);
+  // Approving from chat works as before: the binding is the card's digest, not its words.
+  const approved = await tap(continued.tokens[0]!);
+  expect(approved.text).toContain("Release approved");
+  expect(sealed()).toBe(true);
+});
+
+test("in a chat app a project under a home folder is its name and owner/name; the web and the CLI keep the folder", () => {
+  // A project as a person's own Mac registers it: under /Users/…, which a chat card must never print.
+  const home = "/Users/someone/shop";
+  store.upsertProject(home, "shop", NOW, { remoteUrl: "https://github.com/example-invalid/shop.git" });
+  store.createTask({ id: "release-shop", title: "Release 1.0.0" }, NOW);
+  store.placeTask(store.refFor("built-in", "release-shop").id, home, {}, NOW);
+  const terms = { v: 1, repo: home, packageVersion: "1.0.0", branch: "release-1.0.0", pr: 7, base: "main", approvedSha: "a".repeat(40), approvedTree: "b".repeat(40),
+    policy: { v: 1, rules: 1, carry: false, protectProject: false, protectedPaths: [], limits: { lines: 400, files: 20, churn: 800 } },
+    grant: { id: 3, digest: "g".repeat(16) }, access: "sandboxed", expiresAt: "2026-11-13T09:00:00.000Z" } as unknown as NonNullable<Scope["releaseTerms"]>;
+  const scope = { ...propose(store, { taskId: "release-shop", goal: "Release 1.0.0", now: NOW }), releaseTerms: terms } as Scope;
+  const chat = termsText(approvalTermsOf(store, scope, { profile: permissionPlainWords, chat: true }));
+  expect(chat).toContain("Project: shop (example-invalid/shop)");
+  expect(chat).toContain("Repository: example-invalid/shop");
+  expect(chat).not.toContain("/Users/");
+  const web = termsText(approvalTermsOf(store, scope, { profile: permissionPlainWords }));
+  expect(web).toContain(`Project: shop (${home})`);
 });

@@ -68,10 +68,11 @@ approvalOf,
 type Scope
 } from "../scope.js";
 import { oneLineOf,refuse,screen,withScript,type Chrome,type Screen } from "./chrome.js";
-import { chatResultHref,reviewHref,taskChatHref,taskHref,type ServeOptions } from "./http.js";
+import { chatResultHref,refusedInPlace,reviewHref,taskChatHref,taskHref,type ServeOptions } from "./http.js";
 import { decisionsFor,type TaskChatFocus } from "./render-chat.js";
 import { type ProjectPeek,type WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
+import { approvalSummaryOf, summaryContextOf } from "../approval-summary.js";
 import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView,type LocalApprovalView } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { mergeReadyViewOf } from "./merge-ready-view.js";
@@ -323,14 +324,17 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     // IV-3): no nonce is minted over a batch nobody can verify.
     const revisionBroken = revision !== null && "problem" in revision;
     const planView = ref === null ? null : planViewOf(ref.id);
-    const approvalDigest =
-      scope === null ? null : approvalFormDigest(scope.digest, planView?.sha256 ?? null);
     // The nonce is minted at render, per viewer, bound to the digest being
     // shown — the browser approval flow starts here and nowhere else.
     // …and only through an OPEN consent door (v48): an unreadable route,
     // a route that cannot run, or a pre-routing row whose approval lapsed
     // gets recovery copy, never a nonce.
     const routeView = routeViewOf(taskId, ref, scope, now, who);
+    // The approval summary (the terms diet), read once with its whole context: what every approval surface here shows,
+    // and its key is part of the digest the form posts, so a change to what it says refuses a stale press.
+    const approvalSummary = scope === null ? null : approvalSummaryOf(scope, summaryContextOf(runtime.store, taskId, scope, now, routeView?.evidence ?? null));
+    const approvalDigest =
+      scope === null ? null : approvalFormDigest(scope.digest, planView?.sha256 ?? null, approvalSummary?.key ?? null);
     // A read-only refresh (package 2) reads the same facts WITHOUT minting:
     // a five-second poll must never churn the bounded nonce store, and a
     // fragment carries no password form to bind a nonce to.
@@ -529,6 +533,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         mirror: runtime.store.mirrorByTask(taskId),
         scope,
         approvalDigest,
+        approvalSummary,
         // The phase route (v47): one projection for the card, the ceremony,
         // and the focused chat, with the readiness this task's runners report.
         route: routeView,
@@ -696,6 +701,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               scope,
               nonce: view.nonce,
               digest: view.approvalDigest ?? scope.digest,
+              summary: view.approvalSummary ?? null,
               planDocument: view.planDocument,
               planContract: view.planContract ?? null,
               deliverable: view.deliverable ?? "branch",
@@ -867,6 +873,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     editPlan = false,
     extras: TaskPageExtras = {},
   ): void {
+    // A terminal client's act: the refusal's own words, in place (http.ts refusedInPlace).
+    if (problem !== null && refusedInPlace(response, status, problem)) return;
     const admittedFamily = runtime.familyOf(taskId);
     // A history that can't be read still shows the result the address named (the one result view): its own warning
     // says the history is unavailable, and its forms stay this result's.

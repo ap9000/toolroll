@@ -13,6 +13,7 @@ import { runAsLocalOwner } from "../../src/local-owner.js";
 import { COMMAND_GUIDE, LOCAL_POLICY } from "../../src/surface.js";
 import { initLocalMode, openStore, setLocalModeOff } from "../../src/store.js";
 import { propose } from "../../src/scope.js";
+import { termsArgs } from "../approval-terms.js";
 
 const now = new Date("2026-11-03T12:00:00Z");
 let root: string, file: string;
@@ -97,8 +98,9 @@ describe("CLI commands as the local owner", () => {
     try {
       digest = propose(store, { now, taskId: "one", goal: "Make the footer link work." }).digest;
     } finally { store.close(); }
-    // The terminal UI's yes: the exact digest it showed, and no --as or --token (the local owner's authority is its own).
-    const approved = await asOwner("task approve one", ["--yes", "--digest", digest]);
+    // The terminal UI's yes: the exact digest and terms it showed, and no --as or --token (the local owner's authority is
+    // its own).
+    const approved = await asOwner("task approve one", ["--yes", "--digest", digest, ...termsArgs(file, "one")]);
     expect(approved.envelope, JSON.stringify(approved.envelope)).toMatchObject({ ok: true });
     const check = openStore(file);
     try {

@@ -5,7 +5,7 @@ import { whenUtc } from "../when-html.js";
 import { networkWords } from "../egress.js";
 import { wasInterrupted } from "../run-ending.js";
 import type { ReleaseView } from "../release-view.js";
-import { chainTermsLines, liveChainFromJson, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence } from "../scope.js";
+import { liveChainFromJson, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence } from "../scope.js";
 import { SUBSCRIPTION_CAPABLE } from "../keys.js";
 import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
 import { writesWords } from "../writes-mode.js";
@@ -17,6 +17,7 @@ import { closedQuestionReason, closedQuestionWords } from "../decision.js";
 import { type RunActivity } from "../activity-line.js";
 import { type AgentChoice } from "../agentconfig.js";
 import { gateWords } from "../approval-policy.js";
+import { approvalSummaryOf, EVIDENCE_WORDS, REPAIR_BRIEF, revisionWords, type ApprovalSummary, type SummaryRow } from "../approval-summary.js";
 import { type AssignmentCard,assignmentCardOf,assignmentStatusOf,assignmentSummaryHtml } from "../assignment-ui.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { holdOwnerWords } from "../board.js";
@@ -34,7 +35,7 @@ import { readAuthModeStrict } from "../keys.js";
 import type { FollowThroughView } from "./render-follow-through.js";
 import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref,STORAGE_HOLD_PREFIX } from "../needs-you.js";
 import { planVersionWords } from "../plain-words.js";
-import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
+import { chosenWords, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
 import { type ContractChange } from "../planner-source.js";
 import { projectName } from "../project.js";
@@ -296,6 +297,9 @@ export type ApprovalSheetInput = {
   localOwner?: LocalApprovalView | null;
   /** A release filed while its pull request's checks still ran: the plan sheet says nothing deploys until they pass. */
   releaseCiRunning?: boolean;
+  /** The approval summary (approval-summary.ts) with its whole context, read once for this view: what the sheet shows
+   * and the form's digest pins. Absent: read from the scope alone. */
+  summary?: ApprovalSummary | null;
 };
 export type LocalApprovalView = { eligible: true } | { eligible: false; message: string; href: string; action: string };
 
@@ -335,11 +339,13 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   sheet: Html;
   /** The sheet's lead sentence (the approach's first sentence, else the goal), for a one-line summary of the plan. */
   sheetLead: string } {
-  const { scope, route } = input;
+  const { scope } = input;
   // A machine-drafted repair appends its brief to the signed goal; the row
   // shows the goal and one sentence says what the repair fixes. The whole
   // signed goal stays in Details.
-  const repairText = / — (repair exactly the unmet criteria named below; a comment cannot widen the scope\. Unmet: ([^.]+)\.|Collect only the missing observations for ([^.]+)\. .*|Diagnose the saved failed project check and repair within the original scope\. .*)$/s.exec(scope.goal);
+  const repairText = REPAIR_BRIEF.exec(scope.goal);
+  // The terms, short and plain (the terms diet): one summary every surface reads, its context read once by the caller.
+  const summary = input.summary ?? approvalSummaryOf(scope);
   const goalShown = repairText === null ? scope.goal : scope.goal.slice(0, repairText.index);
   const statementsOf = (ids: string): string => ids.split(",").map(id => id.trim()).map(id => scope.acceptance.find(one => one.id === id)?.statement ?? id).map(one => one.replace(/[.\s]+$/, "")).join("; ");
   const repairBuild = input.revision?.sourceRun ?? input.repairChain?.sourceRun ?? null;
@@ -351,57 +357,30 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     : `Fixes the checks that failed in ${builtBy}.`;
   const plan = input.planDocument === null ? null : parseExecutionPlanDocument(input.planDocument);
   const milestones = plan !== null && plan.ok ? plan.document.milestones : [];
-  const permission = permissionWordsOf(scope.profile);
   const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
   const row = (label: string, body: Html): Html => html`<div class="approval-row"><dt>${label}</dt><dd>${body}</dd></div>`;
-  const changes = joinHtml([
-    milestones.length > 0 ? html`<ol class="approval-steps">${milestones.map(one => html`<li>${one}</li>`)}</ol>` : "",
-    scope.touches.length > 0
-      ? html`<p>Only in these paths:</p>${approvalPathsHtml(scope.touches)}`
-      : html`<p${milestones.length > 0 ? html` class="meta"` : ""}>Any file in the project.</p>`,
-  ]);
   const doneWhen = scope.acceptance.length === 0
     ? html`<p>You decide when you review the result.</p>`
-    : html`<ul class="approval-done">${scope.acceptance.map(one => html`<li>${one.statement}</li>`)}</ul>`;
-  // Who builds, in one line: the builder and planner by name, the cap, and full access when granted.
-  const legs = route?.projection?.legs ?? [];
-  const legOf = (phase: Phase) => legs.find(one => one.phase === phase);
-  const who: string[] = [];
-  const builder = legOf("build");
-  if (builder !== undefined) who.push(`Builder ${agentNameWords(builder.provider, builder.model)}`);
-  else if (route?.legacy != null) who.push(`Builder ${agentNameWords(route.legacy.provider, route.legacy.model)}`);
-  else if (scope.profile != null) who.push(`Builder ${agentNameWords(scope.profile.provider, scope.profile.model)}`);
-  const planner = legOf("plan");
-  // A small change makes no plan: no planner is named (a person's chosen planner still is).
-  const sized = route?.projection?.size ?? null;
-  const unplanned = route?.projection != null && makesNoPlan(sized, route.projection.risk) && planner?.chosen === "recommended";
-  if (planner !== undefined && !unplanned) who.push(`Planner ${agentNameWords(planner.provider, planner.model)}`);
+    : html`<ul class="approval-done">${scope.acceptance.map(one => html`<li>${one.statement} <span class="meta">${one.evidence.map(kind => EVIDENCE_SHEET[kind] ?? kind).join(" · ")}</span></li>`)}</ul>`;
   // What the yes allows, in plain words, right above it: the agent's
   // permissions, the per-attempt limit, and an earlier version still running.
   const allowing: string[] = [];
-  // The clauses of `allowing` the plan sheet says under Worth knowing (a paid fallback, an earlier version still
-  // running): warnings, said first, never folded.
+  // The clauses of `allowing` the plan sheet says under Worth knowing (an earlier version still running; the summary
+  // says a fallback whole): warnings, said first, never folded.
   const warnings: string[] = [];
   const allowed = permissionPlainWords(scope.profile);
   if (allowed !== null) allowing.push(allowed);
   allowing.push(scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`);
   // Fallback agents are terms: who takes over when an agent runs out, with any that spend money said before the yes.
-  const chain = chainTermsLines(scope);
   const fallbacks = liveChainFromJson(scope.proposedChainJson ?? null)?.slice(1) ?? [];
   if (fallbacks.length > 0) {
     const paid = fallbacks.filter(one => one.authMode === "api-key" || (SUBSCRIPTION_CAPABLE as Record<string, boolean>)[one.profile.provider] !== true);
     // Each agent named once, the paid one said where it stands in the order.
     const clause = `if it runs out of its plan, the work moves to ${fallbacks.map(one => `${agentNameWords(one.profile.provider, one.profile.model)}${paid.includes(one) ? " on an API key, which spends money" : ""}`).join(", then ")}`;
     allowing.push(clause);
-    if (paid.length > 0) warnings.push(clause);
   }
   const earlier = earlierVersionsWords(input.earlier.active, input.earlier.running);
   if (earlier !== null) { allowing.push(earlier); warnings.push(earlier); }
-  const yoursToCheck = scope.acceptance.filter(one => one.evidence.includes("manual-review")).map(one => one.statement.trim().replace(/[.\s]+$/, ""));
-  const consent = joinHtml([
-    allowing.length === 0 ? "" : html`<p class="approval-allowing" data-approval-allowing>You’re allowing: ${allowing.join(" · ")}</p>`,
-    yoursToCheck.length === 0 ? "" : html`<p class="approval-you-check" data-approval-you-check>You’ll check: ${yoursToCheck.join("; ")}</p>`,
-  ]);
   const rebuild = input.rebuild ?? null;
   const after = rebuild !== null
     ? html`Build #${rebuild} was made to the earlier plan. Approving builds it again to this one.`
@@ -412,14 +391,16 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
 
   // Everything else the digest binds, one tap away.
   const detail = (title: string, body: Html, attrs: Html = html``): Html => isEmptyHtml(body) ? html`` : html`<section class="approval-detail"${attrs}><h3>${title}</h3>${body}</section>`;
-  const revisionBody = input.revision === null ? html`` : joinHtml([
+  const revisionBodyOf = (sentenceToo: boolean): Html => input.revision === null ? html`` : joinHtml([
     html`<div class="revision-card" data-revision-feedback>`,
     html`<p><a href="${input.revisionSourceHref}"${input.surface === "chat" ? html` data-revision-source` : ""}>${input.surface === "chat" ? html`Original result: build #${input.revision.sourceRun} →` : html`build #${input.revision.sourceRun}`}</a></p>`,
     input.revision.comments.length === 0 ? "" : html`<ul>${input.revision.comments.map(one => html`<li>${revisionImageLink(one.image)}${one.path === null ? "" : html`<span class="mono">${one.path}${one.line === null ? "" : `:${one.line}`}</span> · `}${one.note} <span class="meta">— ${one.author}</span></li>`)}</ul>`,
-    revisionLineageHtml(input.revision.lineage),
+    !sentenceToo || summary.revision === null ? "" : html`<p data-revision-plain>${summary.revision}</p>`,
     html`</div>`,
   ]);
-  const revisionDetail = input.revision === null ? "" : detail("Earlier build", revisionBody);
+  const revisionBody = revisionBodyOf(true);
+  // The rows say the revision's sentence already: the fold keeps the build and its notes.
+  const revisionDetail = input.revision === null ? "" : detail("Earlier build", revisionBodyOf(false));
   const contract = input.planContract;
   const amendment = approvalAmendmentHtml(contract);
   const contractDetail = input.planDocument === null || !isEmptyHtml(amendment) ? html``
@@ -429,34 +410,13 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     : html`<p class="meta">${contract.revision === true ? "Same terms as the previous version." : "The plan keeps exactly what you filed."} <a href="/r/${contract.run}">Planner's record</a></p>`;
   const criteriaDetail = scope.acceptance.length === 0 ? html``
     : html`<ul class="approval-signed-criteria">${scope.acceptance.map(one => html`<li><code>${one.id}</code> ${one.statement} <span class="meta">shown by ${one.evidence.map(kind => EVIDENCE_PLAIN[kind] ?? kind).join(", ")}</span></li>`)}</ul>`;
-  const projection = route?.projection ?? null;
-  const agentsDetail = route === null || route === undefined ? html``
-    : projection === null
-      ? route.legacy === null ? html`` : html`<p>${agentsSummaryWords(route)}</p>`
-      : joinHtml([
-        html`<p>${projection.summary}</p>`,
-        html`<p class="meta">Uses ${projection.postureWords}.</p>`,
-        projection.demands.length === 0 ? "" : html`<ul class="meta">${projection.demands.map(one => html`<li>${one}</li>`)}</ul>`,
-        html`<dl class="approval-roles">${projection.legs.map(leg =>
-          html`<div><dt>${ROLE_NOUN[leg.phase]}</dt><dd><span class="mono">${leg.provider} · ${leg.model}</span> <span class="meta">${chosenWords(leg)}</span><ul>${leg.reasons.map(reason => html`<li>${reason}</li>`)}${leg.problem === null ? "" : html`<li><strong>${leg.problem}</strong></li>`}</ul></dd></div>`)}</dl>`,
-        html`<p class="meta">These exact agents are part of what you approve. Changing any of them asks for a fresh approval.</p>`,
-      ]);
-  const limits = joinHtml([
-    profileWords(scope),
-    html`<p class="meta">Checks level: ${qualityModeTitle(scope.qualityMode ?? "default")}${permission === null ? "" : ` · ${permission}`}</p>`,
-    scope.budgetMicrousd === null ? "" : html`<p class="meta">Each build attempt has a ${money(scope.budgetMicrousd)} agent-reported usage cap. On a subscription this limits work; it is not an API charge.</p>`,
-  ]);
   const details = joinHtml([
     // On the task page the details are open: the page without script shows every term before the yes. Chat keeps the fold.
     html`<details class="approval-details"${input.surface === "task" ? html` open` : ""}><summary>Plan details</summary>`,
     revisionDetail,
-    repairText === null ? "" : detail("Full goal", html`<p>${scope.goal}</p>`),
     detail("Plan record", contractDetail),
     detail("Requirements", criteriaDetail),
-    detail("Why these agents", agentsDetail, html` id="${input.surface === "task" ? "approval-agents" : "chat-approval-agents"}"`),
-    detail("Runtime limits", limits),
-    scope.candidate ? detail("Saved commit", html`<p><code class="approval-commit">${scope.candidate}</code></p>`) : "",
-    detail("Plan version", html`<p class="meta">Approving agrees to exactly this plan. <span class="seal mono" title="${planVersionWords(scope.digest)}">${planVersionWords(scope.digest)}</span></p>`),
+    detail("Plan version", html`<p class="meta"><span class="seal mono" title="${planVersionWords(scope.digest)}">${planVersionWords(scope.digest)}</span></p>`),
     html`</details>`,
   ]);
   const passwordNote = input.surface === "task" ? "approval-password-note" : "chat-approval-password-note";
@@ -528,28 +488,36 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   ]);
   // A release's terms are part of what the yes agrees to (the digest signs them): said whole on every approval
   // surface (the plan sheet, the page without script, chat), before Approve, with nothing folded.
-  const releaseBody: Html | "" = scope.releaseTerms == null && scope.releaseCheck == null ? "" : joinHtml([
-    scope.releaseTerms == null ? "" : html`<p>${releaseTermsSentence(scope.releaseTerms)}</p>`,
-    scope.releaseCheck == null ? "" : html`<p>${releaseCheckSentence(scope.releaseCheck)}</p>`,
+  // The summary's release rows (approval-summary.ts): the sentence, then its repository, branch, grant and access, or
+  // with carry, what asks again (whose last line names them).
+  const releaseRows = summary.decisions.filter(one => one.fields.includes("releaseTerms") || one.fields.includes("releaseCheck"));
+  const releaseBody: Html | "" = releaseRows.length === 0 ? "" : joinHtml([
+    ...releaseRows.map(one => html`<p>${one.words}</p>`),
     input.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : "",
-    scope.releaseTerms?.policy.carry !== true ? "" : html`<p class="plan-sheet-sub">What asks again</p><ul class="plan-sheet-list">${releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`)}</ul>`,
+    ...releaseRows.map(one => (one.lines ?? []).length === 0 ? "" : one.fields.includes("releaseTerms") && scope.releaseTerms?.policy.carry === true
+      ? html`<p class="plan-sheet-sub">What asks again</p><ul class="plan-sheet-list">${one.lines!.map(line => html`<li>${line}</li>`)}</ul>`
+      : html`${one.lines!.map(line => html`<p>${line}</p>`)}`),
   ]);
+  // The decisions, in the open; every risk above them; the rest of what the yes binds one tap away, named whole.
+  const termRow = (one: SummaryRow): Html => one.label === "Done when" ? row("Done when", doneWhen)
+    // Paths are machine facts: each in Geist Mono, as signed.
+    : one.fields.includes("touches") && scope.touches.length > 0 ? row(one.label, html`<p>Only ${joinHtml(scope.touches.map(path => html`<code class="approval-path">${path}</code>`), ", ")}</p>`)
+    : row(one.label, html`<p>${one.words}</p>${(one.lines ?? []).length === 0 ? "" : html`<ul>${one.lines!.map(line => html`<li>${line}</li>`)}</ul>`}`);
   const rows = joinHtml([
-      html`<dl class="approval-rows">`,
-      row("Goal", html`<p class="approval-goal">${goalShown}</p>`),
-      row("Changes", changes),
-      row("Won’t touch", html`<p>${scope.outOfScope === null ? "Nothing is ruled out." : scope.outOfScope}</p>`),
-      row("Done when", doneWhen),
+      summary.revision === null ? "" : html`<p class="approval-revision-plain" data-terms-revision>${summary.revision}</p>`,
+      summary.revisionChanges.length === 0 ? "" : html`<dl class="approval-rows" data-terms-revision-changes>${summary.revisionChanges.map(termRow)}</dl>`,
+      summaryWarningsHtml(summary),
+      html`<dl class="approval-rows" data-terms-summary>`,
+      ...summary.decisions.filter(one => !one.fields.includes("releaseTerms") && !one.fields.includes("releaseCheck")).map(one => one.label === "Goal" ? row("Goal", html`<p class="approval-goal">${one.words}</p>`) : termRow(one)),
+      milestones.length === 0 ? "" : row("Steps", html`<ol class="approval-steps">${milestones.map(one => html`<li>${one}</li>`)}</ol>`),
       releaseBody === "" ? "" : html`<div class="approval-row" data-approval-release><dt>Release</dt><dd>${releaseBody}</dd></div>`,
-      chain.length === 0 ? "" : row("If it runs out", html`<p>${chain[0]!}</p><ol class="approval-steps" data-approval-fallback>${chain.slice(1).map(one => html`<li>${one.replace(/^\d+\. /, "")}</li>`)}</ol>`),
+      ...summary.differs.map(termRow),
+      summary.why === null ? "" : row("Why this model", html`<p>${summary.why}</p>`),
       html`</dl>`,
       amendment,
-      // The size, said once and plainly beside who builds: "Small change: fast model, no plan".
-      projection === null ? "" : sizeLineHtml(projection),
-      who.length === 0 ? "" : html`<p class="approval-who">${who.join(" · ")}</p>`,
-      routeEvidenceHtml(route, "approval-evidence"),
-      consent,
+      summaryUsualHtml(summary),
   ]);
+
 
   // The plan sheet (docs/plans/task-page-steps.md): the same parts, re-ordered and re-labelled to read top to bottom —
   // one lead sentence, Steps, Done when, Will change / Won't touch, Worth knowing, the agent — with nothing a person
@@ -570,46 +538,95 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     extraProof.length === 0 ? "" : html`<ul class="plan-sheet-done plan-sheet-proof">${extraProof.map(line => html`<li><span>${line}</span><span class="plan-sheet-how">From the plan</span></li>`)}</ul>`,
   ]);
   const reportNote = input.deliverable === "report" ? html`<p class="approval-note">Read-only: it reports back and changes nothing in the repository.</p>` : "";
-  const notAllowingWarnings = allowing.filter(one => !warnings.includes(one));
+  // A revision leads with what changed, in one line: which build it revises, what it fixes, whether its limits moved,
+  // and what an extra attempt needs (the summary's own sentence, approval-summary.ts revisionWords).
+  // The lead is one sentence: which build, and what it fixes. What else it says (its limits, what an extra attempt needs)
+  // and each limit it changes are said under Before you approve, never folded.
+  const revisionTail = "";
+  const fixes = (text: string): string => /^[A-Z][a-z]/.test(text) ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text;
+  const revisionLead = ((): string | null => {
+    const tail = revisionTail === "" ? "" : ` ${revisionTail}`;
+    if (sentence !== null) {
+      const missed = /^Fixes what (.+?) missed: ([\s\S]*)$/.exec(sentence);
+      if (missed !== null) return `Revises ${missed[1]}: fixes ${fixes(missed[2]!)}${tail}`;
+      const checks = /^Fixes the checks that failed in (.+)\.$/.exec(sentence);
+      if (checks !== null) return `Revises ${checks[1]}: fixes the checks that failed.${tail}`;
+      const shows = /^Shows what (.+?) couldn't show for: ([\s\S]*)$/.exec(sentence);
+      if (shows !== null) return `Revises ${shows[1]}: shows what it couldn't show for: ${shows[2]}${tail}`;
+      const back = /^Sends back (.+)\.$/.exec(sentence);
+      if (back !== null) return `Revises ${back[1]}.${tail}`;
+      return `${sentence}${tail}`;
+    }
+    return summary.revision === null ? null : summary.revision.replace(/^This revises ([^.]+\.).*$/s, "Revises $1");
+  })();
+  const revising = revisionLead !== null;
+  // The signed goal, every word: the part a person wrote, then a machine-drafted repair's brief on its own line with
+  // each requirement it names said beside its id (the words are the signed ones; nothing is cut or reworded).
+  const briefText = repairText === null ? null : scope.goal.slice(repairText.index).replace(/^\s*—\s*/, "");
+  const briefShown = briefText === null ? null : briefText.replace(/\b(c\d+)\b/g, id => {
+    const named = scope.acceptance.find(one => one.id === id);
+    return named === undefined ? id : `${id} (“${named.statement.replace(/[.\s]+$/, "")}”)`;
+  });
+  const goalBody = joinHtml([
+    goalShown.trim() === sheetLead && !revising ? "" : html`<p class="approval-goal">${goalShown}</p>`,
+    briefShown === null ? "" : html`<p class="approval-goal plan-sheet-brief" data-plan-brief>${briefShown}</p>`,
+  ], " ");
+  const comments = input.revision === null || input.revision.comments.length === 0 ? "" : revisionBodyOf(false);
+  const leadHtml = joinHtml([
+    html`<p class="${sheetLead.length > 180 ? "plan-sheet-lead plan-sheet-lead-long" : "plan-sheet-lead"}">${sheetLead}</p>`,
+    approachRest === "" ? "" : html`<p class="plan-sheet-text">${approachRest}</p>`,
+  ]);
+  // A plan that can't be read as steps keeps its text, as written, in the open (a revision's Full plan fold never holds
+  // it: whatever it warns about must be seen before the yes).
+  const unparsedHtml = plan !== null && !plan.ok
+    ? html`<section class="plan-sheet-part" data-plan-unparsed><p class="plan-sheet-sub">This plan couldn’t be read as steps, so it is shown as written.</p><pre class="recap plan-doc">${input.planDocument ?? ""}</pre></section>` : html``;
+  const stepsHtml = milestones.length === 0 ? html`` : part("Steps", html`<ol class="plan-sheet-steps">${milestones.map(one => html`<li><span>${one}</span></li>`)}</ol>`);
+  // (b) Before you approve: every risk, every deviation and every risky access, said in the open (never folded).
+  const riskyRows = [...summary.decisions.filter(one => one.risky === true && !one.fields.includes("releaseTerms") && !one.fields.includes("releaseCheck")), ...summary.differs];
+  const contractNote = contract === null || contract === undefined || "problem" in contract || !contract.filed && contract.revision !== true ? contractDetail : html``;
+  const before = joinHtml([
+    amendment,
+    summaryWarningsHtml(summary),
+    // A revision: its notes, then each limit it changes from that build ("Network: was …, now …").
+    ...summary.revisionNotes.filter(one => summary.revisionChanges.length === 0 || !/ from that build: /.test(one)).map(one => html`<p data-plan-revision-note>${one}</p>`),
+    summary.revisionChanges.length === 0 ? "" : html`<dl class="approval-rows" data-plan-revision-changes>${summary.revisionChanges.map(termRow)}</dl>`,
+    ...warnings.map(one => html`<p class="plan-sheet-warn" data-plan-warning>${one.charAt(0).toUpperCase()}${one.slice(1)}.</p>`),
+    riskyRows.length === 0 ? "" : html`<dl class="approval-rows" data-terms-risky>${riskyRows.map(termRow)}</dl>`,
+    (parsedPlan?.risks.length ?? 0) === 0 ? "" : html`<ul class="plan-sheet-list">${parsedPlan!.risks.map(one => html`<li>${one}</li>`)}</ul>`,
+    (parsedPlan?.dependencies.length ?? 0) === 0 ? "" : html`<p class="plan-sheet-sub">Depends on</p><ul class="plan-sheet-list">${parsedPlan!.dependencies.map(one => html`<li>${one}</li>`)}</ul>`,
+    input.planDocument === null || !isEmptyHtml(amendment) ? "" : contractNote,
+  ]);
+  const record = contract !== null && contract !== undefined && !("problem" in contract) && (contract.filed || contract.revision === true) && isEmptyHtml(amendment)
+    ? html` · <a href="/r/${contract.run}">Planner’s record</a>` : html``;
   const sheet = joinHtml([
     html`<article class="plan-sheet" data-plan-sheet aria-label="${input.deliverable === "report" ? "The investigation" : "The plan"}">`,
-    sentence === null ? "" : html`<p class="approval-revision">${sentence}</p>`,
     input.coordinator === null ? "" : html`<p class="approval-note">An agent filed this: <span class="mono">${input.coordinator.label}</span>${input.coordinator.filedAgo === null ? "" : html`, ${input.coordinator.filedAgo}`}. Nothing runs until you approve, and approving runs its request.</p>`,
     reportNote,
     originNote(input.origin) === null ? "" : html`<p class="approval-note" data-plan-origin>${originNote(input.origin)!}</p>`,
-    html`<p class="${sheetLead.length > 180 ? "plan-sheet-lead plan-sheet-lead-long" : "plan-sheet-lead"}">${sheetLead}</p>`,
-    approachRest === "" ? "" : html`<p class="plan-sheet-text">${approachRest}</p>`,
-    // An older plan that doesn't parse keeps its text, as written.
-    plan !== null && !plan.ok ? html`<pre class="recap plan-doc">${input.planDocument ?? ""}</pre>` : "",
-    goalShown.trim() === sheetLead ? "" : part("Goal", html`<p class="approval-goal">${goalShown}</p>`),
-    repairText === null ? "" : part("Full goal", html`<p>${scope.goal}</p>`),
-    input.revision === null ? "" : part("Asked for changes", revisionBody),
+    // (a) The plan. A revision leads with what changed; its full plan is one labelled fold (the signed goal and
+    // requirements stay in the open beside it).
+    html`<section class="plan-group" data-plan-group="plan">`,
+    revisionLead === null ? "" : html`<p class="approval-revision plan-sheet-revision" data-plan-revision>${revisionLead}</p>`,
+    revising ? "" : leadHtml,
+    unparsedHtml,
+    part("Goal", goalBody),
+    comments === "" ? "" : part("Asked for changes", comments),
     releaseBody === "" ? "" : part("Release", releaseBody, html` data-plan-release`),
-    milestones.length === 0 ? "" : part("Steps", html`<ol class="plan-sheet-steps">${milestones.map(one => html`<li><span>${one}</span></li>`)}</ol>`),
+    revising ? "" : stepsHtml,
     part("Done when", doneWhenSheet),
-    html`<div class="plan-sheet-pair">`,
-    part("Will change", scope.touches.length > 0 ? approvalPathsHtml(scope.touches) : html`<p>Any file in the project.</p>`),
-    part("Won’t touch", html`<p>${scope.outOfScope === null ? "Nothing is ruled out." : scope.outOfScope}</p>`),
-    html`</div>`,
-    part("Worth knowing", joinHtml([
-      amendment,
-      ...warnings.map(one => html`<p class="plan-sheet-warn" data-plan-warning>${one.charAt(0).toUpperCase()}${one.slice(1)}.</p>`),
-      (parsedPlan?.risks.length ?? 0) === 0 ? "" : html`<ul class="plan-sheet-list">${parsedPlan!.risks.map(one => html`<li>${one}</li>`)}</ul>`,
-      (parsedPlan?.dependencies.length ?? 0) === 0 ? "" : html`<p class="plan-sheet-sub">Depends on</p><ul class="plan-sheet-list">${parsedPlan!.dependencies.map(one => html`<li>${one}</li>`)}</ul>`,
-    ])),
-    part("The agent", joinHtml([
-      projection === null ? "" : sizeLineHtml(projection),
-      who.length === 0 ? "" : html`<p class="approval-who">${who.join(" · ")}</p>`,
-      routeEvidenceHtml(route, "approval-evidence"),
-      agentsDetail,
-      limits,
-      notAllowingWarnings.length === 0 ? "" : html`<p class="approval-allowing" data-plan-allowing>You’re allowing: ${notAllowingWarnings.join(" · ")}</p>`,
-      yoursToCheck.length === 0 ? "" : html`<p class="approval-you-check" data-plan-you-check>You’ll check: ${yoursToCheck.join("; ")}</p>`,
-      chain.length === 0 ? "" : html`<p>${chain[0]!}</p><ol class="plan-sheet-list" data-plan-fallback>${chain.slice(1).map(one => html`<li>${one.replace(/^\d+\. /, "")}</li>`)}</ol>`,
-    ])),
-    part("Plan record", contractDetail),
-    scope.candidate ? part("Saved commit", html`<p><code class="approval-commit">${scope.candidate}</code></p>`) : "",
-    part("Plan version", html`<p class="meta">Approving agrees to exactly this plan. <span class="seal mono" title="${planVersionWords(scope.digest)}">${planVersionWords(scope.digest)}</span></p>`),
+    revising && parsedPlan !== null && (!isEmptyHtml(leadHtml) || !isEmptyHtml(stepsHtml))
+      ? html`<details class="plan-sheet-full" data-plan-full><summary>Full plan</summary>${leadHtml}${stepsHtml}</details>` : "",
+    html`</section>`,
+    isEmptyHtml(before) ? "" : html`<section class="plan-group plan-group-before" data-plan-group="before"><h3 class="plan-sheet-h">Before you approve</h3><div class="plan-notice">${before}</div></section>`,
+    // (c) What it may do: the decisions not said above, then the usual settings, then the version.
+    html`<section class="plan-group" data-plan-group="may-do"><h3 class="plan-sheet-h">What it may do</h3>`,
+    html`<dl class="approval-rows" data-terms-summary>`,
+    ...summary.decisions.filter(one => one.risky !== true && !one.fields.some(field => field === "goal" || field === "acceptance" || field === "releaseTerms" || field === "releaseCheck")).map(termRow),
+    summary.why === null ? "" : row("Why this model", html`<p>${summary.why}</p>`),
+    html`</dl>`,
+    summaryUsualHtml(summary),
+    html`<p class="plan-sheet-foot" data-plan-version>Plan version <span class="mono">${scope.digest.slice(0, 8)}</span>${record}</p>`,
+    html`</section>`,
     html`</article>`,
   ]);
   return { lead, rows, editor, editorForm, details, submit, label: rebuild !== null ? "Approve and retry" : "Approve", after, allowing, passwordNote, sheet, sheetLead };
@@ -620,8 +637,20 @@ export function planSheetHtml(input: ApprovalSheetInput): Html {
   return approvalSheetParts(input).sheet;
 }
 
+/** The summary's risks and rules: said in the open, before the yes, never folded. */
+export function summaryWarningsHtml(summary: ApprovalSummary): Html {
+  return joinHtml(summary.warnings.map(one => html`<p class="plan-sheet-warn" data-terms-warning>${one.words}</p>`));
+}
+
+/** The rest of what the yes binds, in plain words, one tap away: "Your usual project settings". */
+export function summaryUsualHtml(summary: ApprovalSummary): Html {
+  if (summary.usual.length === 0) return html``;
+  return html`<details class="approval-details terms-usual" data-terms-usual><summary>${summary.usualLabel}</summary><dl class="approval-rows">${summary.usual.map(one =>
+    html`<div class="approval-row"><dt>${one.label}</dt><dd><p>${one.words}</p></dd></div>`)}</dl></details>`;
+}
+
 /** Evidence kinds on the plan sheet: how each requirement is proven, in plain words. */
-export const EVIDENCE_SHEET: Record<string, string> = { check: "Runs automatically", screenshot: "Shown in a screenshot", "changed-path": "Seen in the changed files", "manual-review": "You review it" };
+export const EVIDENCE_SHEET: Record<string, string> = Object.fromEntries(Object.entries(EVIDENCE_WORDS).map(([kind, words]) => [kind, `${words.charAt(0).toUpperCase()}${words.slice(1)}`]));
 /** Earlier versions of a task still in flight, in plain words: queued
  * while they only wait, running once one has started; null when none. */
 export function earlierVersionsWords(active: number, running: number): string | null {
@@ -768,7 +797,7 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
   // What the build may reach is part of what is approved (egress.ts): said on every approval form.
   // Its sandbox terms (project-sandbox.ts): what it reads always, and any widening, part of what the yes agrees to.
   const terms = sandboxTermsWords(profile);
-  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
+  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null, profile.provider)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
 }
 /** The Agents view every console surface renders (v47): the SAME
  * projection the CLI prints — who plans, builds, and revises,
@@ -1050,17 +1079,19 @@ export function approveRefusalWords(reason: string): string {
 }
 
 /** The browser's one-click approval binds not only the signed scope but the
- * exact advisory plan revision shown beside it. The scope digest remains the
+ * exact advisory plan revision shown beside it, and the approval summary as it
+ * was shown (approval-summary.ts `key`: the project's usual settings it names,
+ * a revision's sentence, the rules it says). The scope digest remains the
  * durable authority; this composite makes a stale open tab fail when somebody
- * edits the plan before approval. The empty middle slot keeps the bytes of
- * forms already open (it once held other terms, always empty here). */
-export function approvalFormDigest(scopeDigest: string, planSha: string | null): string {
-  if (planSha === null) return scopeDigest;
+ * edits the plan, or changes what the summary says, before approval. The middle
+ * slot once held other terms and now holds the summary's key. */
+export function approvalFormDigest(scopeDigest: string, planSha: string | null, termsKey: string | null = null): string {
+  if (planSha === null && termsKey === null) return scopeDigest;
   return createHash("sha256")
     .update("standing-orders/browser-approval/v1\0", "utf8")
     .update(scopeDigest, "utf8")
     .update("\0", "utf8")
-    .update("", "utf8")
+    .update(termsKey ?? "", "utf8")
     .update("\0", "utf8")
     .update(planSha ?? "", "utf8")
     .digest("hex");
@@ -1534,42 +1565,17 @@ export type RevisionView =
   | { problem: string };
 
 /**
- * A revision's lineage and ACTUAL terms, in the same words on the task
- * page, the approval card, and chat (contract handoff task 2): which
- * source and build it revises, the ancestry to its root, the terms the
- * child really carries (read from its own scope — never restated from the
- * brief), what is re-resolved for THIS approval, what never inherits, and
- * — when the task continues a repair chain — the attempts used against
- * the signed cap.
+ * A revision's lineage in plain words (the terms diet): which build it revises and what an extra attempt needs, the
+ * sentence the approval summary says (approval-summary.ts revisionWords). The terms it carries are the summary's own
+ * rows, read from the child's scope, never restated here.
  */
 export function revisionLineageWords(lineage: RevisionLineage): string[] {
-  const words: string[] = [];
-  if (lineage.problem !== undefined) words.push(`lineage verification gap: ${lineage.problem}; no automatic repair allowance can be inferred`);
-  const chain = lineage.ancestors.length > 1 ? ` · lineage ${lineage.ancestors.join(" → ")}` : "";
-  words.push(`revises ${lineage.sourceTask}${lineage.sourceRun === null ? "" : ` (build #${lineage.sourceRun})`}${chain}`);
-  if (!lineage.sourceHadScope) {
-    words.push("the earlier version had no plan, so nothing was copied; the placeholder requirements wait for real ones");
-  } else if (lineage.terms !== null) {
-    const terms = lineage.terms;
-    words.push(
-      `inherited terms, as they stand now: ${qualityModeTitle(terms.qualityMode)} quality · ` +
-        `${terms.permissionMode === "bypassPermissions" ? "full access" : "auto permissions"} · ` +
-        `${terms.budgetMicrousd === null ? "no attempt cap" : `$${(terms.budgetMicrousd / 1_000_000).toFixed(2)} attempt cap`} · ` +
-        `${terms.exclusions ? "its exclusions" : "no exclusions"} · ${terms.touches === 0 ? "any path" : `${terms.touches} path limit${terms.touches === 1 ? "" : "s"}`} · ` +
-        `${terms.criteria} criteri${terms.criteria === 1 ? "on" : "a"}${terms.routeOverrides === 0 ? "" : ` · ${terms.routeOverrides} agent override${terms.routeOverrides === 1 ? "" : "s"}`}`,
-    );
-  }
-  words.push("re-resolved for this approval: the agents route — a yes on the source never covers it");
-  words.push("never inherited: the source's approval, publication and merge grants");
-  if (lineage.repair !== null) {
-    const repair = lineage.repair;
-    words.push(
-      `repair chain rooted at ${repair.rootTask}: ${repair.attemptsUsed} attempt${repair.attemptsUsed === 1 ? "" : "s"} used` +
-        `${repair.cap === null ? " — each further attempt needs your yes" : ` of ${repair.cap} automatic · ${repair.remaining} remaining`}` +
-        `${repair.thisAttempt === null ? "" : ` · this is attempt ${repair.thisAttempt}`}${repair.via === null ? "" : ` · continued through ${repair.via}`}`,
-    );
-  }
-  return words;
+  const facts = { sourceTask: lineage.sourceTask, sourceRun: lineage.sourceRun, hadPlan: lineage.sourceHadScope, changed: null,
+    problem: lineage.problem ?? null, repair: lineage.repair === null ? null : { cap: lineage.repair.cap, remaining: lineage.repair.remaining } };
+  return [
+    ...(facts.problem === null ? [] : [`Toolroll can’t check what this revises (${facts.problem}), so no fix runs on its own.`]),
+    revisionWords(facts),
+  ];
 }
 
 export function revisionLineageHtml(lineage: RevisionLineage | null): Html {
@@ -1696,6 +1702,8 @@ export function taskBodyParts(data: {
   scope: Scope | null;
   /** What the approval nonce/digest bind: scope digest, or the joint fingerprint. */
   approvalDigest?: string | null;
+  /** The approval summary with its whole context (approval-summary.ts), read once; its key is in `approvalDigest`. */
+  approvalSummary?: ApprovalSummary | null;
   spendDefaults?: { buildPerRunMicrousd: number | null } | null;
   /** Installation starting value for a task that has no profile yet. */
   permissionDefault?: UnattendedPermissionMode;
@@ -1852,6 +1860,8 @@ export function taskBodyParts(data: {
   // gives the nearest concrete repair rather than making the operator infer
   // it from the rest of the page.
   const dispatchStatus = ((): Html => {
+    // The approval this person can give is the Approval step's own (the plan sheet and its act): never said twice.
+    if (data.dispatch?.action === "approve-scope" && (data.nonce ?? "") !== "" && task.state !== "cancelled") return html``;
     // data-work-status is the shared projection's token (package 1) —
     // the same one the Work row, chat, and cockpit carry for this task.
     const workToken = resultStatus?.token ?? data.dispatch?.code ?? "unknown";
@@ -2270,6 +2280,7 @@ export function taskBodyParts(data: {
           csrf: data.csrf,
           nonce: data.nonce,
           digest: data.approvalDigest ?? scope.digest,
+          summary: data.approvalSummary ?? null,
           freshSince: data.approvalFresh ?? null,
           localOwner: data.approvalLocal ?? null,
           returnTo: null,
@@ -3051,7 +3062,7 @@ export function taskBodyParts(data: {
   // approval's own (`approve.planHtml`), so this row carries only the editor: the plan is shown once.
   const plannerRun = familyRuns.filter(run => run.role === "planner" && run.outcome !== null).sort((a, b) => b.id - a.id)[0];
   const sheetShown = scope === null ? null : sheetInput ?? {
-    surface: "task" as const, action: "", csrf: "", nonce: "", digest: scope.digest, returnTo: null, scope,
+    surface: "task" as const, action: "", csrf: "", nonce: "", digest: scope.digest, returnTo: null, scope, summary: data.approvalSummary ?? null,
     planDocument: data.planDocument ?? null, planContract: data.planContract ?? null,
     revision: data.revision == null || "problem" in data.revision ? null : data.revision,
     revisionSourceHref: data.revision == null || "problem" in data.revision ? "" : `/r/${data.revision.sourceRun}`,
@@ -3188,6 +3199,8 @@ export function taskBodyParts(data: {
       key === "plan" ? planCard : "",
       // The shared approval sheet, its Plan details open here: nothing the yes agrees to is folded on this page.
       key === "approve" ? (approvalHtml !== "" ? approvalHtml : view.approved == null ? "" : html`<p class="meta">${view.approved.automatic ? `Approved automatically by ${view.approved.rule ?? "a rule"}` : `Approved by ${view.approved.by}`} · ${whenTime(view.approved.at)}</p>`) : "",
+      // No Plan row while the approval holds the plan: what that row held (the plan's own editor) follows the approval.
+      key === "approve" && !rowFacts.some(row => row.key === "plan") ? planCard : "",
       key === "build" ? joinHtml([controlHtml, progressCard, revisionLedgerCard]) : "",
       key === "ready" && previousResult !== null ? html`<section class="task-previous-result" aria-label="${previousResult.title}">${previousResult.html}</section>` : "",
     ]);
@@ -3331,14 +3344,14 @@ export function approveKitOf(input: ApprovalSheetInput, freshSince: string | nul
   const parts = approvalSheetParts(input);
   const rebuild = input.rebuild ?? null;
   const after = rebuild !== null ? "builds it again to this plan" : input.deliverable === "report" ? "starts the investigation" : "starts the build";
-  const allowing = parts.allowing.length === 0 ? "" : ` You’re allowing ${parts.allowing.join(", ")}.`;
   const until = freshSince === null ? null : freshUntil(freshSince);
   return {
     action: input.action,
     fields: { nonce: input.nonce, digest: input.digest, ...(rebuild === null ? {} : { rebuild: String(rebuild) }) },
     label: parts.label,
     heading: rebuild !== null ? "The plan changed" : input.deliverable === "report" ? "Investigation ready" : "Plan ready",
-    text: `Approving ${after}.${allowing}`,
+    // One line: what the yes does. The terms are the sheet's alone (the terms diet).
+    text: `Approving ${after}.`,
     kind: "standard",
     facts: { passwordless: passwordlessRendering() || input.localOwner?.eligible === true, remembered: until !== null },
     rememberedUntil: until,
@@ -3346,8 +3359,11 @@ export function approveKitOf(input: ApprovalSheetInput, freshSince: string | nul
     ...(input.localOwner?.eligible === true ? { termsWords: "No password needed on this computer." } : {}),
     // What it signs: the plan sheet (the same parts as the chat's sheet, re-ordered), then the in-place editor.
     planHtml: htmlString(joinHtml([parts.sheet, parts.editor ?? "", parts.editorForm])),
-    // The plan sheet alone, with no editor and no form: what Home shows beside its one-click Approve (B2.1).
+    // The plan sheet alone, with no editor and no form: what Home shows beside its one-click Approve (B2.1), and what the
+    // task page's Approval card holds between its heading and its acts.
     sheetHtml: htmlString(parts.sheet),
+    // The in-place editor and its own form, kept outside the approval's form (forms never nest).
+    editorHtml: htmlString(joinHtml([parts.editor ?? "", parts.editorForm])),
   };
 }
 

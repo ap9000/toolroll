@@ -1,0 +1,14 @@
+---
+source: crates/toolroll-tui/tests/screens.rs
+expression: small
+---
+"┌ Toolroll · shop ───────────────────────────── 2 need you ┐"
+"│Ne┌ New task ──────────────────────────────────────────┐l │"
+"│● │These terms are too long to show here — press w to  │  │"
+"│● │review them in the browser.                         │·…│"
+"│  │                                                    │r.│"
+"│Wo│                                                    │t.│"
+"│◐ │                                                    │B…│"
+"│  │                                                    │  │"
+"│j/└────────────────────────────────────────────────────┘it│"
+"└──────────────────────────────────────────────────────────┘"

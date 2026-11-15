@@ -78,7 +78,8 @@ const said = (shown: string, term: string): boolean => term.startsWith(CLAUSE) ?
 function termsOf(markup: string): string[] {
   const host = document.createElement("div");
   host.innerHTML = markup;
-  host.querySelectorAll("h2, h3, dt, summary, .approval-signed-criteria code, .approval-signed-criteria .meta").forEach(one => one.remove());
+  // The usual project settings are one disclosure on both (the terms diet): compared on their own below.
+  host.querySelectorAll("h2, h3, dt, summary, .approval-signed-criteria code, .approval-signed-criteria .meta, [data-terms-usual]").forEach(one => one.remove());
   const out: string[] = [];
   const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
@@ -91,7 +92,31 @@ function termsOf(markup: string): string[] {
   return out;
 }
 
-/** The new sheet's text a person can see: no <details>, nothing hidden. */
+/** The sheet's folds: the usual project settings (approval-summary.ts), the same rows on both; and a revision's one
+ * "Full plan" (the plan's own lead and steps: the signed goal and requirements stay in the open beside it). */
+function onlyUsualFolded(sheet: string, old: string, revision: boolean): void {
+  const host = document.createElement("div");
+  host.innerHTML = sheet;
+  const folds = [...host.querySelectorAll("details")];
+  expect(folds.every(one => one.hasAttribute("data-terms-usual") || revision && one.hasAttribute("data-plan-full"))).toBe(true);
+  const usual = folds.filter(one => one.hasAttribute("data-terms-usual"));
+  expect(usual.length).toBeLessThanOrEqual(1);
+  const was = document.createElement("div");
+  was.innerHTML = old;
+  expect(usual[0]?.textContent ?? "").toBe(was.querySelector("[data-terms-usual]")?.textContent ?? "");
+  // The full plan holds none of the signed goal or requirements, and no risk.
+  const full = host.querySelector("[data-plan-full]");
+  if (full !== null) expect(full.querySelector(".approval-goal, .plan-sheet-done, [data-terms-warning], [data-terms-risky]")).toBeNull();
+}
+
+/** A revision's Full plan, read when a term is looked for there (the plan's advisory lead and steps). */
+function fullPlanText(markup: string): string {
+  const host = document.createElement("div");
+  host.innerHTML = markup;
+  return (host.querySelector("[data-plan-full]")?.textContent ?? "").replace(/\s+/g, " ");
+}
+
+/** The new sheet's text a person can see: nothing folded, nothing hidden. */
 function visibleText(markup: string): string {
   const host = document.createElement("div");
   host.innerHTML = markup;
@@ -100,13 +125,17 @@ function visibleText(markup: string): string {
 }
 
 for (const [name, input] of Object.entries(CASES)) {
-  test(`plan sheet parity, ${name}: every term the approval sheet shows is in the plan sheet, nothing folded`, () => {
+  test(`plan sheet parity, ${name}: every term the approval sheet shows is in the plan sheet, folded only as the usual settings or a revision's full plan`, () => {
     const parts = withFormToken("c", () => approvalSheetParts(input));
     const old = htmlString(parts.lead) + htmlString(parts.rows) + htmlString(parts.details);
     const sheet = withFormToken("c", () => htmlString(planSheetHtml(input)));
-    expect(sheet).not.toContain("<details");
-    const shown = visibleText(sheet);
-    const terms = termsOf(old);
+    const revision = input.revision !== null || /— repair exactly/.test(input.scope.goal);
+    onlyUsualFolded(sheet, old, revision);
+    // Said differently on purpose (the terms diet): a repair's lead is one "Revises build #N: fixes …" line, and its brief
+    // stands on its own line with each requirement it names said beside its id. Every signed word is still there.
+    const shown = `${visibleText(sheet)} ${fullPlanText(sheet)}`.replace(/ \(“[^”]*”\)/g, "");
+    const lower = (text: string) => /^[A-Z][a-z]/.test(text) ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text;
+    const terms = termsOf(old).map(term => term.replace(/^Fixes what (.+?) missed: (.*)$/s, (_all, build: string, what: string) => `Revises ${build}: fixes ${lower(what)}`).replace(/ — (repair exactly)/, " $1"));
     expect(terms.length).toBeGreaterThan(5);
     expect(terms.filter(term => !said(shown, term)), `missing from the ${name} plan sheet`).toEqual([]);
     // Each requirement says how it is proven, in the sheet's words, and no internal id shows.
@@ -122,10 +151,10 @@ for (const [name, input] of Object.entries(CASES)) {
 test("the fixtures carry what they are named for", () => {
   expect(chainTermsLines(CASES["fallback"]!.scope).length).toBeGreaterThan(1);
   const fallback = visibleText(withFormToken("c", () => htmlString(planSheetHtml(CASES["fallback"]!))));
-  // The paid fallback and an earlier running version are warnings: said under Worth knowing.
-  expect(fallback).toMatch(/Worth knowing.*which spends money/);
-  expect(visibleText(htmlString(planSheetHtml(CASES["repair"]!)))).toMatch(/Worth knowing.*An earlier version is still running/);
-  expect(visibleText(htmlString(planSheetHtml(CASES["amended"]!)))).toMatch(/Worth knowing.*The plan makes 2 changes to what you filed/);
+  // The paid fallback and an earlier running version are warnings: said under Before you approve.
+  expect(fallback).toMatch(/Before you approve.*which spends money/);
+  expect(visibleText(htmlString(planSheetHtml(CASES["repair"]!)))).toMatch(/Before you approve.*An earlier version is still running/);
+  expect(visibleText(htmlString(planSheetHtml(CASES["amended"]!)))).toMatch(/Before you approve.*The plan makes 2 changes to what you filed/);
   // The lead is the approach's first sentence; the rest of the approach follows; the goal shows because it differs.
   const plain = visibleText(htmlString(planSheetHtml(CASES["plain"]!)));
   expect(plain).toContain("Add subtract right under add.");
@@ -152,7 +181,8 @@ test("a release's terms are in the plan sheet, whole: what later ships without a
     policy: { v: 1, rules: 1, carry: true, protectProject: false, protectedPaths: ["src/billing"], limits: { lines: 400, files: 20, churn: 800 } },
     grant: { id: 3, digest: "g".repeat(16) }, access: "sandboxed", expiresAt: "2026-11-13T09:00:00.000Z" } as unknown as NonNullable<Scope["releaseTerms"]>;
   const markup = htmlString(planSheetHtml(inputOf({ scope: scopeOf({ releaseTerms: terms } as Partial<Scope>), releaseCiRunning: true })));
-  expect(markup).not.toContain("<details");
+  expect(markup.match(/<details/g) ?? []).toEqual(["<details"]);
+  expect(markup).toContain("<details class=\"approval-details terms-usual\" data-terms-usual>");
   const sheet = visibleText(markup);
   expect(sheet).toContain(releaseTermsSentence(terms));
   expect(sheet).toContain("ship without asking you again");
@@ -181,4 +211,32 @@ test("a release's terms are in the plan sheet, whole: what later ships without a
     for (const line of releaseAsksAgainWords(terms)) expect(before, surface).toContain(line);
     expect(withFormToken("c", () => htmlString(approvalSheetHtml(inputOf({ surface }))))).not.toContain("data-approval-release");
   }
+});
+
+test("a revision whose plan can't be read as steps shows it all, in the open, with why", () => {
+  const scope = scopeOf({ goal: "Add subtract(a, b) next to add. — repair exactly the unmet criteria named below; a comment cannot widen the scope. Unmet: c1." });
+  const input = inputOf({ scope, planDocument: "WARNING: this changes production data.\nNo headings here.",
+    revision: { sourceTask: "t-0", sourceRun: 12, kind: "criterion-repair", lineage: null, comments: [] }, revisionSourceHref: "/r/12" });
+  const sheet = htmlString(planSheetHtml(input));
+  // Nothing of it inside the Full plan fold (there is none for a plan with no steps), and its text in view.
+  expect(sheet).not.toContain("data-plan-full");
+  expect(visibleText(sheet)).toContain("WARNING: this changes production data.");
+  expect(visibleText(sheet)).toContain("This plan couldn’t be read as steps, so it is shown as written.");
+});
+
+test("a revision leads with one sentence, and each limit it changes is a row under Before you approve, never folded", async () => {
+  const { approvalSummaryOf } = await import("../approval-summary.js");
+  const scope = scopeOf({ goal: "Add subtract(a, b) next to add. — repair exactly the unmet criteria named below; a comment cannot widen the scope. Unmet: c1." });
+  const summary = approvalSummaryOf(scope, { usual: null, rules: null, revision: { sourceTask: "t-0", sourceRun: 12, hadPlan: true, problem: null,
+    repair: { cap: null, remaining: null }, changed: [{ label: "network", was: "the agent's provider", now: "open — any host" }, { label: "writes", was: "only its checkout", now: "anywhere" }] } });
+  const input = inputOf({ scope, summary, revision: { sourceTask: "t-0", sourceRun: 12, kind: "criterion-repair", lineage: null, comments: [] }, revisionSourceHref: "/r/12" });
+  const host = document.createElement("div");
+  host.innerHTML = htmlString(planSheetHtml(input));
+  // One sentence: which build, and what it fixes.
+  expect(host.querySelector("[data-plan-revision]")!.textContent).toBe("Revises build #12: fixes subtract(a, b) returns a minus b.");
+  const before = host.querySelector('[data-plan-group="before"]')!;
+  const rows = [...before.querySelectorAll("[data-plan-revision-changes] .approval-row")].map(row => row.textContent);
+  expect(rows).toEqual(["Networkwas the agent's provider, now open — any host", "Writeswas only its checkout, now anywhere"]);
+  expect(before.closest("details")).toBeNull();
+  expect(before.textContent).toContain("Each extra attempt asks you first.");
 });

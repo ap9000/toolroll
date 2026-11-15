@@ -54,7 +54,9 @@ async function filed(alex: Session, id: string) {
   store.createTask({ id, title: id }, new Date());
   expect((await alex.post(`/t/${id}/scope`, { acceptance: "c1: ok | manual-review", sawDigest: "", goal: `do ${id}`, not: "", touches: "" })).status).toBe(303);
   const page = await alex.page(id);
-  return { digest: store.getScope(id)?.digest ?? "", nonce: nonceOf(page) };
+  // The form's own digest, as the page renders it: the scope's with the approval summary's key (approvalFormDigest). The
+  // scope's digest is what the scope editor names as the one it saw.
+  return { digest: /name="digest" value="([0-9a-f]+)"/.exec(page)?.[1] ?? "", scopeDigest: store.getScope(id)?.digest ?? "", nonce: nonceOf(page) };
 }
 
 type Case = {
@@ -85,8 +87,8 @@ const CASES: Case[] = [
   { name: "a plan that changed after the form was drawn (wrong digest)", outcome: "refused", status: 409, approved: false, words: /changed while this form was open/,
     setup: async (alex, id) => {
       const plan = await filed(alex, id);
-      expect((await alex.post(`/t/${id}/scope`, { acceptance: "c1: ok | manual-review", sawDigest: plan.digest, goal: `do ${id} differently`, not: "", touches: "" })).status).toBe(303);
-      expect(store.getScope(id)?.digest).not.toBe(plan.digest);
+      expect((await alex.post(`/t/${id}/scope`, { acceptance: "c1: ok | manual-review", sawDigest: plan.scopeDigest, goal: `do ${id} differently`, not: "", touches: "" })).status).toBe(303);
+      expect(store.getScope(id)?.digest).not.toBe(plan.scopeDigest);
       return { nonce: plan.nonce, digest: plan.digest };
     } },
   { name: "another viewer's nonce", outcome: "refused", status: 409, approved: false, words: /stale/,
@@ -223,8 +225,10 @@ test("Home's road against the real console (Passwordless on): a selection read m
   // The press: a header-less read mints for the digest shown, then one post in place, no password field.
   const press = await read({});
   expect(press.view.approve.fields["digest"]).toBe(selection.view.approve.fields["digest"]);
+  // The same form as the task page drew: one digest for the same plan and terms on both surfaces.
+  expect(press.view.approve.fields["digest"]).toBe(plan.digest);
   expect(press.view.approve.fields["nonce"]).toMatch(/^[0-9a-f]{32}$/);
-  const posted = await alex.post("/t/t-home/approve", { nonce: press.view.approve.fields["nonce"]!, digest: plan.digest, return: "next" }, IN_PLACE);
+  const posted = await alex.post("/t/t-home/approve", { nonce: press.view.approve.fields["nonce"]!, digest: press.view.approve.fields["digest"]!, return: "next" }, IN_PLACE);
   expect(posted.status).toBe(200);
   expect(await posted.json()).toEqual({ outcome: "approved", words: "Approved." });
   expect(store.getScope("t-home")?.approvedBy).toBe("alex");

@@ -121,6 +121,12 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
     // A person's merge between its last check and GitHub's answer (v145); a row older than 15 minutes is a crash.
     + count("SELECT COUNT(*) AS n FROM merge_in_flight WHERE at > ? AND task_ref IN (SELECT value FROM json_each(?))", new Date(now.getTime() - 15 * 60_000).toISOString(), json(d.refs));
   const checkouts = count("SELECT COUNT(*) AS n FROM worktree WHERE repo = ? AND runner IS NOT NULL AND released_at IS NULL", repo);
+  // Flexible threads (flexible-thread.ts): their own repositories, the keep-refs in this project's repository and any
+  // agent process are removed with the thread, never by deleting the project under them. A thread still open (or an
+  // agent of one whose exit isn't verified yet) holds the project.
+  const threads = tableExists(db, "flexible_thread") ? count("SELECT COUNT(*) AS n FROM flexible_thread WHERE repo = ? AND state IN ('preparing', 'ready', 'removing')", repo) : 0;
+  const agents = tableExists(db, "flexible_thread_launch")
+    ? count("SELECT COUNT(*) AS n FROM flexible_thread_launch WHERE state <> 'exited' AND thread IN (SELECT id FROM flexible_thread WHERE repo = ?)", repo) : 0;
   return [
     ...(building > 0 ? [`${plural(building, "task")} ${building === 1 ? "is" : "are"} being built`] : []),
     ...(slots > 0 ? ["an agent is working"] : []),
@@ -129,6 +135,8 @@ export function projectRunning(store: Store, repo: string, now: Date): string[] 
     ...(calls > 0 ? ["a subagent is working"] : []),
     ...(merges > 0 ? ["a merge is in progress"] : []),
     ...(checkouts > 0 && building === 0 ? [`${plural(checkouts, "checkout")} ${checkouts === 1 ? "is" : "are"} in use`] : []),
+    ...(agents > 0 ? ["a Flexible thread's agent is still running"] : []),
+    ...(threads > 0 ? [`${plural(threads, "Flexible thread")} ${threads === 1 ? "is" : "are"} still open (remove ${threads === 1 ? "it" : "them"} first)`] : []),
   ];
 }
 
@@ -357,6 +365,12 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   for (const table of ["knowledge_change", "project_identity_carry", "project_skill_change", "memory_gap", "memory_proposal", "memory_rejection", "memory_session", "memory_search", "mode_rail", "side_spend", "watch_episode", "worktree", "coordinator_proposal", "lead_commitment"]) del(table, "repo = ?", repo);
   // A builder watching the project keeps its lease until it stops; an ended one goes.
   del("watch_lease", "repo = ? AND expires_at <= ?", repo, now.toISOString());
+  // Its ended Flexible threads' records (projectRunning refuses while any thread is open): turns, launches, levels, threads.
+  const flexibleThreads = `thread IN (SELECT id FROM flexible_thread WHERE repo = ? AND state IN ('removed', 'failed'))`;
+  del("thread_turn", flexibleThreads, repo);
+  del("flexible_thread_launch", flexibleThreads, repo);
+  del("flexible_thread_level", flexibleThreads, repo);
+  del("flexible_thread", "repo = ? AND state IN ('removed', 'failed')", repo);
   del("project", "path = ?", repo);
   return rows;
 }

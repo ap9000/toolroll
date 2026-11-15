@@ -1,14 +1,15 @@
 /** A fast start's terms, the words a yes agrees to (scope.ts describeScope, the lines every plan approval reads), plus the
  * project tools its seal will carry. The same lines on the New task form, in the terminal UI and in `task new`. The
  * plan version and approval state rows say nothing yet: nothing is approved. */
-import { describeScope, type Scope } from "./scope.js";
+import type { Scope } from "./scope.js";
+import { describeScope, summaryContextOf } from "./approval-summary.js";
 import type { Store } from "./store.js";
 
 const LABELS: Readonly<Record<string, string>> = { goal: "Goal", "not this": "Not this", files: "Files", budget: "Budget", network: "Network", writes: "Writes", reads: "Reads", checks: "Checks", services: "Services" };
 
 export function fastTermsLines(store: Store, scope: Scope, repo: string): { label: string; words: string }[] {
   const lines: { label: string; words: string }[] = [];
-  for (const raw of describeScope(scope)) {
+  for (const raw of describeScope(scope, undefined, null, summaryContextOf(store, scope.taskId, scope, new Date(), null, repo))) {
     const line = raw.trimEnd();
     const named = /^ {2}(\S+(?: \S+)?) {2,}(.*)$/.exec(line);
     if (named !== null && (named[1] === "version" || named[1] === "approved")) continue;

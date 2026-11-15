@@ -1,0 +1,18 @@
+[package]
+name = "toolroll-tui-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Measurement tools only (drives the binary in a real PTY against the fake engine). Never packaged.
+[dependencies]
+portable-pty = "0.9"
+vt100 = "0.16"
+serde_json = "1"
+anyhow = "1"
+toolroll-fake-engine = { path = "../toolroll-fake-engine" }
+toolroll-tui = { path = "../toolroll-tui" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+ratatui = { version = "0.30" }
+crossterm = "0.29"

@@ -134,6 +134,17 @@ export const stepCardSchema = z.object({
   /** The step's runs' recorded cost together; null when none is recorded. */
   costUsd: z.number().nullable(),
   runs: z.array(z.number().int()),
+  /** The Approval step's terms while an approval waits (approval-summary.ts, the same summary every surface shows):
+   * decisions and differences as rows, risks never folded, the usual project settings by name, and `key`, which a yes
+   * pins (`task approve --terms <key>`) so a change to what was shown refuses. Absent on every other card. */
+  terms: z.object({
+    key: z.string(),
+    revision: z.string().nullable(),
+    rows: z.array(z.object({ label: z.string(), words: z.string(), lines: z.array(z.string()) })),
+    warnings: z.array(z.string()),
+    usualLabel: z.string(),
+    usual: z.array(z.object({ label: z.string(), words: z.string() })),
+  }).optional(),
 });
 
 /** `GET /t/<task>/steps`: the task page's stepper rows (workspace-ui.ts stepRowsOf over the same road) with who ran
@@ -145,6 +156,11 @@ export const stepCardsSchema = z.object({
   headline: z.string().nullable(),
   liveRun: z.number().int().nullable(),
   cards: z.array(stepCardSchema).nullable(),
+  /** The result waiting for this person's Accept or Send back, as the task page's own forms carry it: `run` and the
+   * `receipt` digest it was read at (POST /t/<task>/complete), and the `source` its revision is bound to
+   * (POST /r/<run>/comment intent=revise). Null when no result waits to be checked. Read facts only, never permission:
+   * every act re-proves them. */
+  review: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string() }).nullable(),
   room: z.string(),
 });
 

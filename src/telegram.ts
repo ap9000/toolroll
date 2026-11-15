@@ -2437,6 +2437,11 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
       // A file without its gate never reaches here (chat-decide pairs them); fail closed: nothing that approves is shown.
       if (tapped.edit !== undefined) dropDecideTokens(store, tapped.edit.tokens, clock());
       editText(`${message.text ?? ""}\n\nThis release can't be approved here. Open it in Toolroll.`.trim().slice(0, 4000), []);
+    } else if (tapped.edit !== undefined && tapped.edit.text.length > 4000 && tapped.edit.tokens.length > 0) {
+      // Never a cut card with live buttons: Telegram would show part of the words under a yes to all of them. The buttons
+      // are dropped (chat-decide.ts applyDecideTap already refuses such a card; this is the transport's own belt).
+      dropDecideTokens(store, tapped.edit.tokens, clock());
+      editText(`${tapped.edit.text.slice(0, 3_000)}…\n\nThis doesn't fit in one Telegram message, so you approve it in Toolroll. Nothing was done.`, []);
     } else if (tapped.edit !== undefined) editText(tapped.edit.text.slice(0, 4000), decideKeyboard(context.conversation?.phoneOrigin, tapped.edit.rows));
     if (tapped.prompt !== undefined) {
       const prompt = tapped.prompt;

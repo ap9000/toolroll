@@ -25,8 +25,8 @@
  *   only), and a probe runs in exactly those terms first and must be refused Toolroll's canaries, or the thread doesn't
  *   start.
  */
-import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -40,6 +40,9 @@ import { SANDBOX_LAUNCH_SPEC, SEATBELT_NO_KEYCHAIN, type SandboxLaunchSpec } fro
 import { hardenedGit, lazyFetchSetting, recordedCommonDir } from "./teardown-git.js";
 import { withCheckoutLock } from "./git-views.js";
 import { processMayBeAlive } from "./process-liveness.js";
+import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
+import type { FlexibleClock } from "./flexible-turns.js";
+import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
 
@@ -289,10 +292,11 @@ export async function prepareFlexibleThread(store: Store, input: { repo: string;
 /**
  * Remove a thread's repository: the record moves ready → removing, the keep-ref goes by compare-and-swap (only while it
  * still names the recorded base; a ref someone moved is left and said), the thread's folder goes (only the real folder
- * the record names, under the threads root), and the record ends removed. The thread's processes must already be
- * gone (the caller's custody check, F2c): this removes files, not running agents.
+ * the record names, under the threads root), and the record ends removed. An agent still running refuses (stop it
+ * first, stopFlexibleThreadAgent); processes a stopped or crashed launch left behind are found and stopped first, and
+ * nothing is removed until the whole tree's exit is verified (F2c custody).
  */
-export async function removeFlexibleThread(store: Store, input: { id: string; by: string; now: Date; runner?: Runner }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
+export async function removeFlexibleThread(store: Store, input: { id: string; by: string; now: Date; runner?: Runner; io?: CustodyIO }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   // The thread's lock (withThreadLock), taken before anything else: a launch admitted, probed and spawned under it is
@@ -300,16 +304,27 @@ export async function removeFlexibleThread(store: Store, input: { id: string; by
   return withThreadLock(input.id, () => removeLocked(store, input));
 }
 
-async function removeLocked(store: Store, input: { id: string; by: string; now: Date; runner?: Runner }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
+async function removeLocked(store: Store, input: { id: string; by: string; now: Date; runner?: Runner; io?: CustodyIO }): Promise<{ ok: true; keepRef: "removed" | "already-gone" | "moved" } | FlexibleThreadRefusal> {
   const state = stateFolderOf(store);
   if (state === null) return refuse("no-state-folder");
   const thread = flexibleThread(store, input.id);
   if (thread === null) return refuse("thread-unknown");
-  // Its last launch's process group may still be running: its files stay. (Only the group: a descendant that left it, by
-  // setsid, is the custody check's to find, F2c.)
-  if (thread.livePid !== null && processMayBeAlive(thread.livePid, true)) return refuse("thread-running");
-  const claimed = store.transact(() => Number(store.handle.prepare("UPDATE flexible_thread SET state = 'removing', live_pid = NULL, live_since = NULL WHERE id = ? AND state IN ('ready', 'removing') AND live_pid IS ?")
-    .run(thread.id, thread.livePid).changes) === 1);
+  // Custody first (F2c): an agent still running refuses (stop it first); a launch whose agent is gone but may have left
+  // processes behind (a setsid or double-forked descendant, a crash) has them found and stopped, and its exit verified,
+  // before anything is removed. Nothing of the thread's is removed while custody is unresolved.
+  const paths = flexibleThreadPaths(state, thread.id);
+  const launch = unsettledLaunch(store, thread.id);
+  if (launch !== null) {
+    const leaderRuns = launch.leaderPid !== null && launch.state === "live" && processMayBeAlive(launch.leaderPid, true);
+    if (leaderRuns) return refuse("thread-running");
+    const settled = await settleLaunch(store, { thread: thread.id, folder: paths.folder, reason: "the thread is being removed", stop: true, clock: () => input.now, ...(input.io === undefined ? {} : { io: input.io }) });
+    if (!settled.ok) return refuse("thread-running", settled.why);
+  }
+  // A group registered without a launch record (a build before custody): its files stay while it may run.
+  const after = flexibleThread(store, thread.id)!;
+  if (after.livePid !== null && processMayBeAlive(after.livePid, true)) return refuse("thread-running");
+  const claimed = store.transact(() => Number(store.handle.prepare("UPDATE flexible_thread SET state = 'removing', live_pid = NULL, live_since = NULL WHERE id = ? AND state IN ('ready', 'removing') AND live_pid IS ? AND NOT EXISTS (SELECT 1 FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited')")
+    .run(thread.id, after.livePid, thread.id).changes) === 1);
   if (!claimed) return refuse("thread-not-ready");
   const inner = input.runner ?? run;
   const build = gitIn(inner, "build"), read = gitIn(inner, "read");
@@ -321,7 +336,6 @@ async function removeLocked(store: Store, input: { id: string; by: string; now: 
     if (removed.code === 0) keepRef = "removed";
     else keepRef = (await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", thread.keepRef])).code === 0 ? "moved" : "already-gone";
   }
-  const paths = flexibleThreadPaths(state, thread.id);
   // Only the folder the record names, as the real folder under the threads root it was made as: a link planted in its
   // place is removed as a link, never followed.
   if (thread.folder === paths.folder && ownFolder(paths.root)) rmSync(paths.folder, { recursive: true, force: true });
@@ -532,34 +546,81 @@ function withThreadLock<T>(id: string, work: () => Promise<T>): Promise<T> {
   return withCheckoutLock(real(homedir()), `flexible-thread:${id}`, work);
 }
 
-/** What the caller starts: exactly this, as a process group of its own (detached), returning its leader's pid. It must
- * not throw once it has spawned (a pid it never returned can't be stopped here; F2c's custody closes that gap). */
-export type FlexibleThreadStart = (spawn: { file: string; args: string[]; env: Record<string, string>; cwd: string }) => number;
+/** Run `work` under one thread's lock (the same one its launches, stops and removal take; re-entrant within this call),
+ * so a level change and a turn start are wholly before or wholly after each other. */
+export async function withFlexibleThreadLock<T>(id: string, work: () => Promise<T>): Promise<T | FlexibleThreadRefusal> {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!FLEXIBLE_THREAD_ID.test(id)) return refuse("thread-unknown");
+  return withThreadLock(id, work);
+}
+
+/** The start gate every thread launch runs behind (inside the sandbox): the agent itself runs only once Toolroll writes
+ * `start` on its input, which it does only after the launch is registered. If Toolroll dies first, or the registration
+ * fails, the input closes and the gate exits without running anything: a crash between the spawn and its registration
+ * leaves no agent. The agent reads the rest of its input as its own. */
+export const FLEXIBLE_START_GATE = 'IFS= read -r gate || exit 125; [ "$gate" = start ] || exit 125; exec "$@"';
+
+/** A digest of exactly the terms a launch runs in (its fence and grants), recorded with the launch: a turn whose fence
+ * would differ starts a new launch rather than reuse it. */
+export function flexibleFenceDigest(launch: LaunchFence): string {
+  return createHash("sha256").update(`standing-orders:flexible-fence:${JSON.stringify({ fence: launch.fence, grants: launch.fenceGrants })}`, "utf8").digest("hex").slice(0, 32);
+}
+
+/**
+ * Stop a launch whose start gate never opened: its whole process group, not just the leader. On Linux the leader is the
+ * launch helper (sandbox-launch.ts), and the network relays it started (and bubblewrap) share its group; killing the
+ * leader alone leaves them running, since only the helper stops them. The group is signalled by number only while the
+ * leader is Toolroll's own child and not yet reaped (checked in the same synchronous step, before any reaping can run):
+ * the group's number is then provably this launch's. Once the leader has been reaped, nothing is signalled by number;
+ * whatever is left is the custody scan's to find.
+ */
+function stopUnopenedLaunch(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1 || child.exitCode !== null || child.signalCode !== null) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+}
+
+/** Test seams (a parameter, never a setting): what to do right after the spawn, before the registration (a test
+ * throws here to prove a spawned-then-failed launch leaves nothing running), and the OS custody reads. */
+export type FlexibleThreadSpawnSeams = { afterSpawn?: (pid: number) => void; io?: CustodyIO };
+export type FlexibleThreadSpawnInput = FlexibleThreadLaunchInput & { proxyEnv: Record<string, string>; launch: FlexibleLaunchMeta;
+  /** What the agent's own adapter adds to the thread's environment (its relay and its configuration folder); never
+   * replaces a variable the thread's environment already sets. */
+  agentEnv?: Record<string, string>;
+  /** Run under the thread's lock after the launch is registered and immediately before its start gate opens: a reason to
+   * keep the gate shut (the caller's authority or level no longer holds), or null. */
+  beforeOpen?: () => string | null;
+  /** What the agent's adapter adds once the launch has its id (its relay grant, bound to exactly this launch): run after
+   * the launch is recorded, before the spawn; never replaces a variable already set. */
+  agentEnvFor?: (launchId: string) => Record<string, string> };
+export type FlexibleThreadSpawned = { ok: true; pid: number; launchId: string; launch: LaunchFence; fenceDigest: string; child: ChildProcess };
 
 /**
  * Start `file args` as a thread's agent, inside the thread fence, with exactly the thread's environment, or say why not.
  * All of it runs under the thread's lock (withThreadLock), so a removal can't slip between the checks and the spawn:
  * the fence is made from the record, its terms checked (no keychain, proxy only), a probe runs in exactly those terms
- * and must be refused Toolroll's canaries, the record and the fence are made again and must be unchanged, and only
- * then does `start` run, with the spawn the sandbox runtime made (refused if it lacks the keychain denial). Its pid is
- * registered on the record before the lock goes, so a removal after it sees the running group and refuses. No sandbox
- * here, a refused probe or a changed record each refuse, and `start` is never called.
+ * and must be refused Toolroll's canaries, the record and the fence are made again and must be unchanged, and the thread
+ * must have no launch left unsettled (custody). Then the launch is recorded (`spawning`), Toolroll itself spawns it as
+ * a process group of its own behind the start gate, registers the leader's pid and start identity (the launch goes
+ * live, the thread names the group) and only then opens the gate. Nothing the caller passes spawns anything: a spawn
+ * that fails to register is killed with its gate still shut, and its record ends as never started.
  */
-export async function flexibleThreadSpawn(store: Store, input: FlexibleThreadLaunchInput & { proxyEnv: Record<string, string> }, file: string, args: readonly string[], start: FlexibleThreadStart,
-  platform: NodeJS.Platform = process.platform): Promise<{ ok: true; pid: number; launch: LaunchFence } | FlexibleThreadRefusal> {
+export async function flexibleThreadSpawn(store: Store, input: FlexibleThreadSpawnInput, file: string, args: readonly string[],
+  platform: NodeJS.Platform = process.platform, seams: FlexibleThreadSpawnSeams = {}): Promise<FlexibleThreadSpawned | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
-  return withThreadLock(input.id, () => spawnLocked(store, input, file, args, start, platform));
+  return withThreadLock(input.id, () => spawnLocked(store, input, file, args, platform, seams));
 }
 
-async function spawnLocked(store: Store, input: FlexibleThreadLaunchInput & { proxyEnv: Record<string, string> }, file: string, args: readonly string[], start: FlexibleThreadStart,
-  platform: NodeJS.Platform): Promise<{ ok: true; pid: number; launch: LaunchFence } | FlexibleThreadRefusal> {
+async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: string, args: readonly string[], platform: NodeJS.Platform,
+  seams: FlexibleThreadSpawnSeams): Promise<FlexibleThreadSpawned | FlexibleThreadRefusal> {
   const fenced = flexibleThreadFence(store, input);
   if (!fenced.ok) return fenced;
   const { launch, paths } = fenced;
   const terms = termsProblem(launch);
   if (terms !== null) return refuse("containment", terms);
-  const env = flexibleThreadEnv(paths, input.proxyEnv);
+  const base = flexibleThreadEnv(paths, input.proxyEnv);
+  const env = { ...Object.fromEntries(Object.entries(input.agentEnv ?? {}).filter(([name]) => !(name in base))), ...base };
   const probed = await probeContainment(launch, paths, env, platform);
   if (probed !== null) return refuse("containment", probed);
   // At the moment of use: the record still ready and unchanged, and its folder still the one Toolroll made (the fence is
@@ -567,25 +628,80 @@ async function spawnLocked(store: Store, input: FlexibleThreadLaunchInput & { pr
   const again = flexibleThreadFence(store, input);
   if (!again.ok) return again;
   if (JSON.stringify(again.thread) !== JSON.stringify(fenced.thread)) return refuse("thread-not-ready", "it changed while the sandbox was checked");
+  // Custody: no earlier launch of this thread may be unsettled (its processes are stopped and verified gone first).
+  if (unsettledLaunch(store, input.id) !== null) return refuse("thread-running");
   if (again.thread.livePid !== null && processMayBeAlive(again.thread.livePid, true)) return refuse("thread-running");
   let spawned: { file: string; args: string[]; env: Record<string, string> };
-  try { spawned = confined(file, args, { fence: launch.fence, fenceGrants: launch.fenceGrants, confinement: "required", cwd: paths.repo, temp: paths.tmp }); }
+  try { spawned = confined("/bin/sh", ["-c", FLEXIBLE_START_GATE, "toolroll-start-gate", file, ...args], { fence: launch.fence, fenceGrants: launch.fenceGrants, confinement: "required", cwd: paths.repo, temp: paths.tmp }); }
   catch (error) { return refuse("containment", error instanceof Error ? error.message : undefined); }
   const problem = spawnProblem(spawned, platform);
   if (problem !== null) return refuse("containment", problem);
-  const pid = start({ file: spawned.file, args: spawned.args, env: { ...outerEnv(env, platform), ...spawned.env }, cwd: paths.repo });
-  // Anything that goes wrong from here (a bad pid, a record that moved, the write itself throwing) ends the group it
-  // started and leaves the record as it was: nothing runs that isn't on the record, and nothing is on it that doesn't run.
-  let registered = false;
-  try {
-    registered = Number.isSafeInteger(pid) && pid > 0 && store.transact(() =>
-      Number(store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ? AND state = 'ready'").run(pid, new Date().toISOString(), input.id).changes) === 1);
-  } catch { registered = false; }
-  if (!registered) {
-    try { if (Number.isSafeInteger(pid) && pid > 0) process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
-    return refuse("containment", "the agent's process couldn't be registered, so it was stopped");
+  const io = seams.io ?? defaultCustodyIO();
+  const fenceDigest = flexibleFenceDigest(launch);
+  const record = recordSpawning(store, { thread: input.id, meta: input.launch, fenceDigest, bootId: io.bootId() });
+  let launchEnv: Record<string, string>;
+  try { launchEnv = Object.fromEntries(Object.entries(input.agentEnvFor?.(record.id) ?? {}).filter(([name]) => !(name in env))); }
+  catch (error) {
+    recordNeverStarted(store, record.id, `the agent's launch couldn't be prepared: ${error instanceof Error ? error.message : String(error)}`);
+    return refuse("setup-failed", "the agent's launch couldn't be prepared");
   }
-  return { ok: true, pid, launch };
+  let child: ChildProcess;
+  try {
+    child = spawn(spawned.file, spawned.args, { cwd: paths.repo, env: { ...outerEnv({ ...launchEnv, ...env }, platform), ...spawned.env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  } catch (error) {
+    recordNeverStarted(store, record.id, `the agent couldn't be started: ${error instanceof Error ? error.message : String(error)}`);
+    return refuse("containment", "the agent couldn't be started");
+  }
+  child.on("error", () => { /* a spawn that failed has no pid: handled below */ });
+  child.stdin?.on("error", () => { /* a gate whose reader is gone */ });
+  const pid = child.pid;
+  // Anything that goes wrong from here (no pid, a test's injected failure, an unreadable start, a record that moved, the
+  // write itself throwing) closes the gate for good and kills the group: nothing of the agent ever ran, and the record
+  // says so. A crash here leaves the row `spawning` and the gate's pipe closed with this process, so the same holds.
+  try {
+    if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) throw new Error("the agent's process didn't start");
+    seams.afterSpawn?.(pid);
+    const start = startIdentityOf(pid, io);
+    if (start === null) throw new Error("the agent's process couldn't be identified");
+    recordLive(store, { launch: record.id, thread: input.id, pid, start });
+    holdLaunch(record.id, child);
+  } catch (error) {
+    try { child.stdin?.destroy(); } catch { /* already closed */ }
+    stopUnopenedLaunch(child);
+    try { recordNeverStarted(store, record.id, `stopped before it ran: ${error instanceof Error ? error.message : String(error)}`); } catch { /* left spawning: settleLaunch ends it */ }
+    return refuse("containment", "the agent's process couldn't be registered, so it was stopped before it ran");
+  }
+  // At the moment of use: the caller's own re-check (its turn, its level, its authority), with the gate still shut.
+  let shut: string | null;
+  try { shut = input.beforeOpen?.() ?? null; } catch (error) { shut = error instanceof Error ? error.message : "the start couldn't be re-checked"; }
+  if (shut !== null) {
+    try { child.stdin?.destroy(); } catch { /* already closed */ }
+    stopUnopenedLaunch(child);
+    recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: `stopped before it ran: ${shut}` });
+    return refuse("thread-not-ready", shut);
+  }
+  child.stdin!.write("start\n");
+  return { ok: true, pid: pid!, launchId: record.id, launch, fenceDigest, child };
+}
+
+/**
+ * Stop a thread's agent and prove it stopped (F2c custody), under the thread's lock: its proxy and relay closed at once,
+ * every process of it found (its group, its Linux pid namespaces, every descendant seen, anything of it working in the
+ * thread's folder) and stopped, and the whole tree's exit verified. Then the launch is exited, the thread's live_pid
+ * cleared and its running turn interrupted. When the exit can't be verified, the launch stays unresolved: no new turn,
+ * relaunch or removal until a later stop proves it.
+ */
+export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO; keepTurn?: string; holderGone?: boolean }): Promise<SettleResult | FlexibleThreadRefusal> {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
+  return withThreadLock(input.id, async () => {
+    const state = stateFolderOf(store);
+    if (state === null) return refuse("no-state-folder");
+    const thread = flexibleThread(store, input.id);
+    if (thread === null) return refuse("thread-unknown");
+    return settleLaunch(store, { thread: thread.id, folder: flexibleThreadPaths(state, thread.id).folder, reason: input.reason, stop: true, ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }),
+      ...(input.keepTurn === undefined ? {} : { keepTurn: input.keepTurn }), ...(input.holderGone === true ? { holderGone: true } : {}) });
+  });
 }
 
 /**
