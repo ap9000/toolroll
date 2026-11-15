@@ -25,6 +25,12 @@ import { usageChipOf } from './limits-ui.js';
  * computer's agent sign-ins are asked again. */
 const BACKGROUND_CHECKS_MS = 30_000;
 const LOCAL_AGENTS_EVERY_MS = 2 * 60_000;
+/** The two agents this computer's sign-in check asks (serve.ts checkLocalAgents). */
+const LOCAL_AGENTS = ["claude", "codex"] as const;
+type LocalAgent = typeof LOCAL_AGENTS[number];
+const SIGNED_IN_STATES: ReadonlySet<string> = new Set(["connected", "key-works", "key-present"]);
+/** How long a sign-in seen here outlasts checks that couldn't conclude (heldSignIn). */
+const SIGNED_IN_HOLD_MS = 10 * 60_000;
 import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { PAGE_WORK_HEADER,PAGE_WORK_VERSION } from './page-work-contract.js';
 import { sharedActionPayload } from './chat-actions.js';
@@ -157,7 +163,7 @@ import { noteSignInProbe,signInNotices } from "./provider-auth.js";
 import { createConnectionChecker,type ProviderConnection } from "./provider-connection.js";
 import { detectAgents,type AgentDetection } from "./agent-detect.js";
 import { acpCheckedHere,firstTaskRouted } from "./welcome-facts.js";
-import { givenRepos,statusProbe } from "./status-probe.js";
+import { BACKGROUND_STATUS_TIMEOUT_MS,givenRepos,statusProbe } from "./status-probe.js";
 import { ALL_CREDENTIAL_ENV,type ProviderId } from "./provider.js";
 import { hstsFor,LOOPBACK_PEERS,plainHttpRefusal,requestFromThisComputer,transportOf } from "./public-access.js";
 import { attachReadExecutor,defaultReadWorkers,ReadExecutor } from "./read-executor.js";
@@ -323,7 +329,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // Sign-in status commands only from a trusted install outside every project and worktree, bounded, with their own
   // environment (status-probe.ts); tests pass their own probe.
   const checkConnection = createConnectionChecker({ home: providerHome, clock,
-    probe: options.connectionProbe ?? statusProbe({ store, untrusted: givenRepos(options) }) });
+    probe: options.connectionProbe ?? statusProbe({ store, untrusted: givenRepos(options), timeoutMs: BACKGROUND_STATUS_TIMEOUT_MS }) });
   // Every sign-in check the console makes also answers a sign-in pause.
   // Whether this computer can fence agents: asked once as the console starts (a sandbox running /usr/bin/true), so
   // Settings → Project never starts a process (docs/plans/get-side-effects.md).
@@ -1239,12 +1245,33 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * engine's agents read show. Null until the first detection answers. */
   let localAgents: AgentDetection | null = null;
   let leadRecheckedAt = 0;
+  /** Each agent's last signed-in answer, and when it was last seen: what an inconclusive check keeps (heldSignIn). */
+  const signedInSeen = new Map<LocalAgent, { at: number; value: ProviderConnection }>();
+  /**
+   * A check that couldn't conclude (its status command ended at the deadline on a busy computer, or refused to run)
+   * reads "unverified": it never takes back a sign-in seen within SIGNED_IN_HOLD_MS, so a slow check doesn't send the
+   * first task to a plan or put "Sign in" back on screen. A conclusive answer (signed out, not installed, a refused key)
+   * replaces it at once.
+   */
+  function heldSignIn(agent: LocalAgent, value: ProviderConnection | null, at: number): ProviderConnection | null {
+    if (value !== null && SIGNED_IN_STATES.has(value.state)) { signedInSeen.set(agent, { at, value }); return value; }
+    const seen = signedInSeen.get(agent);
+    if (value === null || value.state === "unverified") return seen !== undefined && at - seen.at < SIGNED_IN_HOLD_MS ? seen.value : value;
+    signedInSeen.delete(agent);
+    return value;
+  }
   /** Ask this computer's agent CLIs again (no model, nothing spent); `fresh` skips their 30-second cache. */
   function checkLocalAgents(fresh = false): Promise<void> {
     if (localSignInChecking !== null) return localSignInChecking;
-    localSignInChecking = Promise.all((["claude", "codex"] as const).map(one => connectionCheck(one, fresh).then(value => value.state, () => "unverified" as const)))
-      .then(async ([claude, codex]) => {
-        localSignIn = { at: Date.now(), signedIn: [claude, codex].some(state => state === "connected" || state === "key-works" || state === "key-present"), states: { claude: claude!, codex: codex! } };
+    const ask = (again: boolean) => Promise.all(LOCAL_AGENTS.map(one => connectionCheck(one, again).catch(() => null)));
+    localSignInChecking = ask(fresh)
+      // Nobody signed in and one of them couldn't be checked: asked once more, fresh, before anything is concluded.
+      .then(first => first.some(one => one !== null && SIGNED_IN_STATES.has(one.state)) || !first.some(one => one === null || one.state === "unverified") ? first : ask(true))
+      .then(async answers => {
+        const at = clock().getTime();
+        const [claudeSeen, codexSeen] = answers.map((value, index) => heldSignIn(LOCAL_AGENTS[index]!, value, at));
+        const claude = claudeSeen?.state ?? "unverified", codex = codexSeen?.state ?? "unverified";
+        localSignIn = { at: Date.now(), signedIn: [claude, codex].some(state => SIGNED_IN_STATES.has(state)), states: { claude, codex } };
         leadByDefault();
         // Models for an agent signed in after the first start (model-choices.ts fillRoutingOnSignIn): the first start's
         // policy and door, only while no models were ever chosen here, never touching the lead (one turned off stays
@@ -1254,14 +1281,24 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // (its cache, just filled). The first task goes to the agent it picks: on any install where models were never
         // chosen or cleared, that agent's models are filled through the detected door (one transaction with the check
         // that nothing is set; ledgered, and the agent recorded once), never over a choice.
-        // Claude Code's and Codex's answers are the ones just read above, from the check's cache.
-        localAgents = await detectAgents({ check: checkConnection, home: providerHome, clock, routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store) });
+        // Claude Code's and Codex's answers are the ones just read above (a sign-in kept through an inconclusive check
+        // included); every other agent's come from the check's cache.
+        const held: Partial<Record<ProviderId, ProviderConnection>> = { ...(claudeSeen ? { claude: claudeSeen } : {}), ...(codexSeen ? { codex: codexSeen } : {}) };
+        const check = (provider: ProviderId, again?: boolean): Promise<ProviderConnection> => { const kept = held[provider]; return kept !== undefined ? Promise.resolve(kept) : checkConnection(provider, again); };
+        localAgents = await detectAgents({ check, home: providerHome, clock, routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store) });
         const pick = localAgents.firstTask;
         if ((pick === "claude" || pick === "codex") && options.leadByDefault === true && !store.isDemo()) fillDefaultRouting(store, pick, "toolroll", { kind: "detected" }, clock());
       })
       .catch(() => {})
       .finally(() => { localSignInChecking = null; });
     return localSignInChecking;
+  }
+  /** The check under way, if one is, waited for at most `maxMs` (the first task's filing: tasks.ts). */
+  function localAgentsSettled(maxMs: number): Promise<void> {
+    const checking = localSignInChecking;
+    if (checking === null) return Promise.resolve();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([checking, new Promise<void>(done => { timer = setTimeout(done, maxMs); timer.unref?.(); })]).finally(() => clearTimeout(timer));
   }
   /** The last answer only (docs/plans/get-side-effects.md): this computer is asked again by the background checks or a
    * person's Check now, never because a page was opened. */
@@ -2303,6 +2340,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get leadRecheckedAt(): ServerRuntime['leadRecheckedAt'] { return leadRecheckedAt; },
     set leadRecheckedAt(value) { leadRecheckedAt = value; },
     get checkLocalAgents(): ServerRuntime['checkLocalAgents'] { return checkLocalAgents; },
+    get localAgentsSettled(): ServerRuntime['localAgentsSettled'] { return localAgentsSettled; },
     get localSignIn(): ServerRuntime['localSignIn'] { return localSignIn; },
     set localSignIn(value) { localSignIn = value; },
     get agentSignInCommand(): ServerRuntime['agentSignInCommand'] { return agentSignInCommand; },

@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ExecResult } from "./exec.js";
 import { htmlString } from "./html.js";
 import { addApprover, hashPassword } from "./scope.js";
@@ -469,3 +469,88 @@ test("models a person chose and then cleared stay cleared through the whole sign
   for (const phase of ["plan", "build", "review"]) expect(store.phaseConfig("installation", phase), phase).toBeNull();
   expect(store.handle.prepare("SELECT COUNT(*) n FROM phase_tier_config").get()?.["n"]).toBe(0);
 }, 20_000);
+
+describe("instant start on a busy computer: a sign-in check past its deadline", () => {
+  /** What the console's status probe answers when its deadline ends the command (status-probe.ts runBoundedStatus). */
+  const pastDeadline: ExecResult = { code: 124, stdout: "", stderr: "", timedOut: true, notFound: false };
+  const claudeSignedIn = answer(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", subscriptionType: "max" }));
+  const later = (ms: number) => new Promise(done => setTimeout(done, ms));
+
+  test("the first task, filed while the first check is still answering and that check runs out of time, still goes the fast road to the signed-in agent", async () => {
+    store.close();
+    store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
+    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: new Date() }).ok).toBe(true);
+    const shop = join(dir, "shop");
+    execFileSync("git", ["-C", shop, "-c", "user.email=q@example.com", "-c", "user.name=q", "add", "README.md"], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+    execFileSync("git", ["-C", shop, "-c", "user.email=q@example.com", "-c", "user.name=q", "commit", "-qm", "readme"], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+    const { installFilingSizer } = await import("./task-sizing.js");
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    try {
+      // Claude Code is signed in, but the first status command is ended at its deadline (a slow check), after a delay;
+      // asked again, it answers. Codex isn't installed.
+      let claudeAsked = 0;
+      const slow = async (file: string): Promise<ExecResult> => {
+        if (file !== "claude") return notInstalled;
+        claudeAsked++;
+        await later(400);
+        return claudeAsked === 1 ? pastDeadline : claudeSignedIn;
+      };
+      await start({ leadByDefault: true, connectionProbe: slow as never });
+      // The local owner files a small task at once, while that first check is still answering.
+      const cookie = cookieOf((await raw(server.mintLocalLink()!)).headers);
+      const csrf = (await workspace(cookie)).csrf;
+      expect(store.phaseConfig("installation", "build")).toBeNull();
+      const filed = await fetch(`${base}/tasks/add`, { method: "POST", redirect: "manual", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ csrf, title: "Fix the typo in the README", repo: realpathSync(shop) }).toString() });
+      // The fast road: the exact terms and Build, not a filing for a plan.
+      expect(filed.status).toBe(200);
+      expect(await filed.text()).toContain("Build approves exactly these terms.");
+      expect(claudeAsked).toBe(2);
+      expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude" });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE id LIKE 'task-%'").get()?.["n"]).toBe(0);
+    } finally { dropSizer(); }
+  }, 20_000);
+
+  test("a check that times out never takes back a sign-in seen minutes ago; a signed-out answer does at once, and so does the end of the hold", async () => {
+    store.close();
+    store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
+    expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: new Date() }).ok).toBe(true);
+    let claude: "in" | "slow" | "out" = "in";
+    let asked = 0;
+    const flaky = async (file: string): Promise<ExecResult> => {
+      if (file !== "claude") return notInstalled;
+      asked++;
+      return claude === "in" ? claudeSignedIn : claude === "slow" ? pastDeadline : answer(JSON.stringify({ loggedIn: false }), 1);
+    };
+    await start({ leadByDefault: true, backgroundChecks: true, backgroundChecksMs: 50, connectionProbe: flaky as never });
+    const cookie = cookieOf((await raw(server.mintLocalLink()!)).headers);
+    const { agentsReadSchema } = await import("./contracts/engine-api.js");
+    const agents = async () => agentsReadSchema.parse(await (await fetch(`${base}/engine/agents`, { headers: { cookie, accept: "application/json" } })).json());
+    for (let i = 0; i < 200 && (await agents()).firstTask === null; i++) await later(20);
+    expect((await agents()).firstTask).toEqual({ id: "claude", name: "Claude Code" });
+    // Now every check runs out of time. Past the check's own 30-second memory, the next pass asks, can't conclude, and
+    // asks once more (Date stands still from here, so exactly one pass runs).
+    claude = "slow";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 31_000);
+    const before = asked;
+    for (let i = 0; i < 200 && asked < before + 2; i++) await later(20);
+    await later(100);
+    expect(asked).toBe(before + 2);
+    expect((await agents()).firstTask?.id).toBe("claude");
+    expect((await agents()).agents.find(one => one.id === "claude")?.state).toBe("signed-in");
+    // Ten minutes on, the hold is over: a check that still can't conclude says so.
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    for (let i = 0; i < 200 && (await agents()).firstTask !== null; i++) await later(20);
+    expect((await agents()).agents.find(one => one.id === "claude")?.state).toBe("unknown");
+    // Signed in again, then signed out: a conclusive answer takes the sign-in back at once.
+    claude = "in";
+    vi.setSystemTime(Date.now() + 31_000);
+    for (let i = 0; i < 200 && (await agents()).firstTask === null; i++) await later(20);
+    expect((await agents()).firstTask?.id).toBe("claude");
+    claude = "out";
+    vi.setSystemTime(Date.now() + 31_000);
+    for (let i = 0; i < 200 && (await agents()).firstTask !== null; i++) await later(20);
+    expect((await agents()).agents.find(one => one.id === "claude")?.state).toBe("signed-out");
+  }, 30_000);
+});
