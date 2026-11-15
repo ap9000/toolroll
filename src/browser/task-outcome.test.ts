@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AssignmentCard } from "../assignment-ui.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
-import { TaskView } from "./views/task-view.js";
+import { RetryForm, TaskView } from "./views/task-view.js";
 import { SelectedResult } from "./views/result-view.js";
 import { FormToken } from "./ui/post-form.js";
 import { taskRoad } from "../first-run.js";
@@ -136,6 +136,34 @@ test("the agent's report reads after the caveats and above Mark complete, as the
   expect(quotes[1]!.textContent).toContain("robin ·");
   expect(quotes[1]!.textContent).not.toContain("You");
   expect([...report.querySelectorAll("h3")].map(one => one.textContent)).toEqual(["The agent says", "People said"]);
+});
+
+test("a reply is quoted as the person's answer only; the agent's question sits outside the quote, said to be the agent's (S5)", () => {
+  showResult(reported({ decisions: [], assumptions: [], notDone: [], risks: [] },
+    [{ kind: "to-agent", author: "alex", you: true, at: "2026-11-14T10:00:00.000Z", note: "No.", question: "Should I approve all the risks for you?" }]));
+  const said = host.querySelector<HTMLElement>("[data-you-said]")!;
+  expect(said.querySelector(".so-report-quote")?.textContent).toBe("“No.”");
+  expect(said.querySelector("[data-agent-question]")?.textContent).toBe("The agent asked: Should I approve all the risks for you?");
+  expect(said.querySelector(".so-report-quote [data-agent-question]")).toBeNull();
+});
+
+test("Not right quotes the requirement in the form's filled-in field, never in the person's own box (S5)", () => {
+  const form = '<form id="comment-form"><input type="hidden" name="context" value=""><p data-request-context-line hidden></p><textarea name="note"></textarea></form>';
+  const selected = { ...reported(null), panel: { attributes: {}, heading: "", outcome: "Rounded.", status: null, reviewHistory: null, attention: [], limits: [], tabs: [], views: [],
+    history: "", learning: "", request: form, canRequest: true, need: null, requestQuiet: false,
+    youCheck: { lines: ["Check it"], accept: null, items: [{ id: "c1", statement: "The payout total reads right.", words: "The payout total reads right.", note: null, excerpts: [], shots: [] }] } } } as unknown as NonNullable<BrowserTaskView["result"]>["selected"];
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(SelectedResult, { selected, csrf: "csrf" }))));
+  act(() => { host.querySelector<HTMLButtonElement>("button[data-not-right]")!.click(); });
+  expect(host.querySelector<HTMLInputElement>('#comment-form [name="context"]')?.value).toBe("Not right: “The payout total reads right.”");
+  expect(host.querySelector<HTMLTextAreaElement>('#comment-form [name="note"]')?.value).toBe("");
+  expect(host.querySelector("[data-request-context-line]")?.textContent).toBe("Sent with it: Not right: “The payout total reads right.”");
+});
+
+test("Retry's suggestion rides as its own field, shown as sent with it; the person's own note starts empty (S5)", () => {
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(RetryForm, { action: "/t/t-1/requeue", note: "Check each requirement before handing off." }))));
+  expect(host.querySelector<HTMLInputElement>('input[type="hidden"][name="context"]')?.value).toBe("Check each requirement before handing off.");
+  expect(host.querySelector("[data-retry-suggestion]")?.textContent).toBe("Sent with the retry: Check each requirement before handing off.");
+  expect(host.querySelector<HTMLTextAreaElement>('textarea[name="note"]')?.value).toBe("");
 });
 
 test("an agent that reported nothing says so in one quiet line, never \"no risks\" (S5)", () => {

@@ -16,7 +16,7 @@ import { register } from "./runner.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { openSteerMailbox, pulseSteerMailbox } from "./steer-mailbox.js";
-import { openStore, type Store } from "./store.js";
+import { openStore, typedNotesFor, type Store } from "./store.js";
 import { presented, T0, workspaceOf } from "../test/serve-kit.js";
 
 let store: Store, server: Server, base: string, evidenceRoot: string, repoA: string, repoB: string, worktree: string;
@@ -156,6 +156,17 @@ describe("the Agents board", () => {
       body: new URLSearchParams({ csrf, question: String(view.selected!.question!.id), answer: "again" }).toString() });
     expect(again.headers.get("location")).toBe(`/agents?run=${run}&said=reply-closed`);
     expect(store.listSteerNotes(store.getRun(run)!.taskRef)).toHaveLength(1);
+
+    // What is quoted as the person's (one-workspace S5) is only their answer; the question, and the key that names it,
+    // are the agent's, kept apart and labelled so.
+    ask(run, "approve-all-risks", "Should I approve all the risks for you?");
+    const risky = openAgentQuestions(store, store.getRun(run)!.taskRef).find(one => one.key === "approve-all-risks")!;
+    expect((await fetch(url("/t/t-ask/reply"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, question: String(risky.id), answer: "No." }).toString() })).status).toBe(303);
+    expect(store.listSteerNotes(store.getRun(run)!.taskRef).map(one => one.note)).toContain('Reply to your question "approve-all-risks": No.');
+    const quoted = typedNotesFor(store, "t-ask", 8);
+    expect(quoted.map(one => [one.note, one.question])).toEqual([["No.", "Should I approve all the risks for you?"], ["Keep it until the new one ships.", "Keep the old OAuth button?"]]);
+    expect(JSON.stringify(quoted.map(one => one.note))).not.toContain("approve-all-risks");
   });
 
   test("a steer note from the board returns to the same agent", async () => {

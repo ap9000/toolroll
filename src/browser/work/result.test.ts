@@ -25,6 +25,7 @@ const PAGE = (o: PageOptions = {}): string => {
     `<input type="hidden" name="tab" value="summary"><input type="hidden" name="request" value="${TOKEN}">` +
     `<input type="hidden" name="batch" value="${o.batch ?? ""}"><input type="hidden" data-recorded-requests value="${o.recorded ?? ""}">` +
     `<input type="hidden" name="image" value=""><figure data-feedback-image hidden><img alt="Selected screenshot" hidden><figcaption></figcaption><button type="button" data-remove-image>Remove image</button></figure>` +
+    `<input type="hidden" name="context" value=""><p data-request-context-line hidden></p>` +
     `<textarea name="note"${o.limit === null ? "" : ` maxlength="${o.limit ?? 4000}"`}></textarea><span id="comment-note-limit">up to 4000 characters</span>` +
     `<details class="result-pin"><summary>Attach to a file or line</summary><input type="text" name="path"><input type="text" name="line"></details>` +
     `<button type="submit" name="intent" value="revise" data-request-changes>Send back</button><button type="submit" name="intent" value="note" data-save-feedback>Save for later</button>` +
@@ -227,31 +228,29 @@ describe.each([asString, asApp])("reviewing a result: $name", form => {
     expect(draft()).toMatchObject({ path: "src/a.ts", line: "" });
   });
 
-  test("a reviewer's note is taken as the draft; a draft already typed is replaced only on a yes", () => {
+  test("a reviewer's note rides as its own field, shown as sent with it, and never enters the person's own box (S5)", () => {
     const asked: string[] = [];
-    let yes = false;
-    begin({}, text => { asked.push(text); return yes; });
-    // Nothing typed: nothing to ask.
+    begin({}, text => { asked.push(text); return true; });
     click("#finding");
+    // Nothing typed is replaced, so nothing is asked; the reviewer's words are the page's, never the person's box.
     expect(asked).toEqual([]);
-    expect(noteBox().value).toBe("Reviewer: handle the empty list");
+    expect(noteBox().value).toBe("");
+    expect(field("context").value).toBe("Reviewer: handle the empty list");
+    expect($("[data-request-context-line]").textContent).toBe("Sent with it: Reviewer: handle the empty list");
+    expect(($("[data-request-context-line]") as HTMLElement).hidden).toBe(false);
     expect(field("path").value).toBe("src/b.ts");
     expect(field("line").value).toBe("3");
+    // Send back is open with only the reviewer's note to send; what the person types stays their own box's alone.
+    expect(($("[data-request-changes]") as HTMLButtonElement).disabled).toBe(false);
     typeNote("my own words");
-    field("path").value = "kept.ts";
     click("#finding");
-    expect(asked).toEqual(["Replace the feedback draft with this note?"]);
-    // No: the words and the pin stay as they were.
+    expect(asked).toEqual([]);
     expect(noteBox().value).toBe("my own words");
-    expect(field("path").value).toBe("kept.ts");
-    yes = true;
-    click("#finding");
-    expect(noteBox().value).toBe("Reviewer: handle the empty list");
-    expect(field("path").value).toBe("src/b.ts");
-    // A plain pin never asks: it leaves the words alone.
+    expect(draft()).toMatchObject({ note: "my own words", context: "Reviewer: handle the empty list" });
+    // A plain pin leaves both alone.
     click("button.diff-annotate");
-    expect(asked.length).toBe(2);
-    expect(noteBox().value).toBe("Reviewer: handle the empty list");
+    expect(noteBox().value).toBe("my own words");
+    expect(field("context").value).toBe("Reviewer: handle the empty list");
   });
 
   test("a screenshot joins the feedback with its own picture, and leaves again", () => {

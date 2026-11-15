@@ -36,9 +36,10 @@ export function feedbackImageProblem(store: Store, root: string, runId: number, 
  * saved notes. A refusal rolls back the note; a replay returns the same task. */
 export function requestResultChanges(store: Store, evidenceRoot: string, input: RevisionInput & {
   note: string; path: string; line: string; request: string | null; image?: FeedbackImage | null;
-  /** One-workspace S5: a signed-in browser session typed this note (the result form's own road, never the CLI, chat or a
-   * token), so it may later be quoted as that person's words. */
-  typedInBrowser?: boolean;
+  /** One-workspace S5: the words a signed-in browser session typed into its own note field (the result form's own road,
+   * never the CLI, chat or a token), without anything the page filled in: only these may later be quoted as that
+   * person's. Absent or empty: nothing is. */
+  typedWords?: string | null;
 }, now: Date): RevisionResult {
   try {
     return store.transact(() => store.savepoint((): RevisionResult => {
@@ -73,7 +74,7 @@ export function requestResultChanges(store: Store, evidenceRoot: string, input: 
       }
       const noteId = earlier?.id ?? store.addDiffComment({ artifactId: artifact.id, runId: run.id, path, line, note: valid.note, author: input.actor, sourceKey, image: input.image ?? null }, now);
       if (noteId === null) return fail(409, "This feedback changed while saving. Your draft is unchanged; reopen the result.");
-      if (earlier === null && input.typedInBrowser === true) markTypedByPerson(store, { comment: noteId }, input.actor, now);
+      if (earlier === null) markTypedByPerson(store, { comment: noteId }, input.actor, input.typedWords, now);
       const result = createResultRevision(store, evidenceRoot, { ...input, batch: [...new Set([...batch, noteId])].sort((a, b) => a - b).join(",") }, now);
       if (!result.ok) return fail(result.status, result.message);
       return result;

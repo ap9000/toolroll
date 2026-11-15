@@ -43,7 +43,9 @@ function SaidLine({ one }: { one: Said }) {
   return <li className="so-report-line" data-you-said={one.you ? "you" : "other"}>
     <span className="so-report-quote"><bdi>“{one.note}”</bdi></span>
     <span className="k-note">{one.you ? "You" : <bdi>{one.author}</bdi>} · <time dateTime={one.at} title={whenTitle(one.at)}>{threadWhen(one.at)}</time>
-      {" · "}{one.kind === "sent-back" ? "sent back" : "note to the agent"}</span>
+      {" · "}{one.question != null ? "reply to the agent" : one.kind === "sent-back" ? "sent back" : "note to the agent"}</span>
+    {/* What a reply answered is the agent's words: outside the quote, and said to be the agent's. */}
+    {one.question != null && <span className="k-note" data-agent-question="">The agent asked: <bdi>{one.question}</bdi></span>}
   </li>;
 }
 

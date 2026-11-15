@@ -498,7 +498,9 @@ export type BrowserResultView = {
     agentReport?: import("./result-evidence-readers.js").AgentReport | null;
     /** One-workspace S5: words a signed-in person typed for this version, newest first, each with its author (`you`:
      * the viewer's own) and time. Only those: never planned scope, a reviewer's observation, or a note any other road filed. */
-    youSaid?: { kind: "sent-back" | "to-agent"; author: string; you: boolean; at: string; note: string }[];
+    youSaid?: { kind: "sent-back" | "to-agent"; author: string; you: boolean; at: string; note: string;
+      /** The agent's question a reply answers: agent-written, shown outside the quote as the agent's. */
+      question?: string | null }[];
   } | null;
 };
 export type BrowserFailure = { line: string; evidence: string | null; suggestion: string; link: { label: string; href: string } | null };

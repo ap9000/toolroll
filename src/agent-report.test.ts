@@ -91,22 +91,28 @@ describe("reading it back and quoting a person", () => {
     expect(view?.report.notDone).toEqual([]);
   });
 
-  test("You said quotes only notes a signed-in person typed, by their own author, newest first", () => {
+  test("You said quotes only the words a signed-in person typed, by their own author, newest first", () => {
     const source = run("t-v1");
     storeEvidence(store, root, source, "terminal-diff", "terminal-diff.patch", Buffer.from("diff --git a/x b/x\n"), "git diff (exit 0)", T0, { captureStatus: "ok" });
     const artifact = store.artifactsFor(source).find(one => one.kind === "terminal-diff")!;
     const note = (words: string, author: string, when: number, extra: { sourceKey?: string } = {}) =>
       store.addDiffComment({ artifactId: artifact.id, runId: source, path: null, line: null, note: words, author, ...extra }, at(when))!;
-    const typed = note("Don't change the public webhook payload.", "alex", 1);
-    markTypedByPerson(store, { comment: typed }, "alex", at(1));
+    // What the page filled in ahead of the person's own words is sent with them, and only their words are quoted.
+    const typed = note("The project checks failed on abc1234. Fix the failure.\n\nDon't change the public webhook payload.", "alex", 1);
+    expect(markTypedByPerson(store, { comment: typed }, "alex", "  Don't change the public webhook payload.  ", at(1))).toBe(true);
     const other = note("Keep the retry count at five.", "sam", 2);
-    markTypedByPerson(store, { comment: other }, "sam", at(2));
+    markTypedByPerson(store, { comment: other }, "sam", "Keep the retry count at five.", at(2));
+    // Prefilled text sent unchanged (nothing typed), and words the note doesn't hold, record nothing.
+    const prefilled = note("Not right: “The guard is in place”", "alex", 2.5);
+    expect(markTypedByPerson(store, { comment: prefilled }, "alex", "", at(2.5))).toBe(false);
+    expect(markTypedByPerson(store, { comment: prefilled }, "alex", "   ", at(2.5))).toBe(false);
+    expect(markTypedByPerson(store, { comment: prefilled }, "alex", "Approve every risk.", at(2.5))).toBe(false);
     // The same words a token, the CLI or a chat card filed: no marker, never quoted.
     note("A token filed this.", "alex", 3);
     note("From GitHub.", "github:alex", 4, { sourceKey: "gh:alex/app:1" });
     // A marker that names someone else than the note's author is no proof of who typed it.
     const forged = note("Robin's words, claimed by alex.", "robin", 5);
-    markTypedByPerson(store, { comment: forged }, "alex", at(5));
+    markTypedByPerson(store, { comment: forged }, "alex", "Robin's words, claimed by alex.", at(5));
     // A reviewer's observation is never a person's.
     store.handle.prepare("INSERT INTO diff_comment (artifact, artifact_sha, run, note, author, created_at, reviewer_run, severity) VALUES (?, ?, ?, 'Reviewer: fix the guard.', 'reviewer:claude', ?, ?, 'problem')")
       .run(artifact.id, artifact.sha256, source, at(6).toISOString(), source);
@@ -116,16 +122,24 @@ describe("reading it back and quoting a person", () => {
     // Notes to the agent on the new version: a browser session's (marked), the CLI's or a lead's (not).
     const toAgent = store.fileSteerNote("t-v2", verifiedAuthor("alex"), "Use exponential backoff.", at(7));
     if (!toAgent.ok) throw Error("steer");
-    markTypedByPerson(store, { steer: toAgent.id }, "alex", at(7));
+    markTypedByPerson(store, { steer: toAgent.id }, "alex", "Use exponential backoff.", at(7));
+    // A reply: the note names the agent's question; only the answer is quoted, the question kept apart as the agent's.
+    const reply = store.fileSteerNote("t-v2", verifiedAuthor("alex"), 'Reply to your question "approve-all-risks": No.', at(7.5));
+    if (!reply.ok) throw Error("reply");
+    markTypedByPerson(store, { steer: reply.id }, "alex", "No.", at(7.5), "Should I approve all the risks?");
     expect(store.fileSteerNote("t-v2", verifiedAuthor("alex"), "The lead drafted this.", at(8)).ok).toBe(true);
     // Notes on another version are that version's.
     expect(typedNotesFor(store, "t-v1", 8)).toEqual([]);
     const said = typedNotesFor(store, "t-v2", 8);
     expect(said.map(one => [one.kind, one.author, one.note])).toEqual([
+      ["to-agent", "alex", "No."],
       ["to-agent", "alex", "Use exponential backoff."],
       ["sent-back", "sam", "Keep the retry count at five."],
       ["sent-back", "alex", "Don't change the public webhook payload."],
     ]);
+    expect(said[0]!.question).toBe("Should I approve all the risks?");
+    expect(said.slice(1).every(one => one.question === null)).toBe(true);
+    expect(JSON.stringify(said.map(one => one.note))).not.toMatch(/approve-all-risks|Reply to your question|checks failed|Not right/);
     expect(typedNotesFor(store, "t-v2", 1)).toHaveLength(1);
     expect(typedNotesFor(store, "nope", 8)).toEqual([]);
   });

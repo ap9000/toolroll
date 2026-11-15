@@ -1486,7 +1486,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(pages.review).toContain('data-result-place="review"');
   });
 
-  test("one-workspace S5: the agent's report reads as the agent's, and You said quotes only what a signed-in person typed", async () => {
+  test("one-workspace S5: the agent's report reads as the agent's, and You said quotes only the words a signed-in person typed into their own field", async () => {
     const ref = seed("t-said", "Retry webhook deliveries", "/repo/main", { goal: "PLANNED: retry with backoff, never twice." });
     const run = build("t-said", ref, { ...RICH, handoff: { ...RICH.handoff, decisions: ["Keyed retries by delivery id."], risks: ["Backoff limits are constants."] } });
     store.stampRun(run, { scopeDigest: store.getScope("t-said")!.digest });
@@ -1503,9 +1503,17 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       body: new URLSearchParams({ note: "A token filed this.", request: "3".repeat(32) }), redirect: "manual" });
     expect(bearer.status).toBe(303);
     expect(store.allDiffComments(run).map(one => one.note)).toContain("A token filed this.");
-    // Sent back from the browser: a fresh typed note seals with the saved ones into the next version.
-    const sealed = await post(cookie, `/r/${run}/comment`, { csrf: csrfOf(await read(cookie)), intent: "revise", request: "4".repeat(32), note: "Use exponential backoff.", ...revisionFormOf(await read(cookie)) });
+    // Text the page filled in and the person sent unchanged (a requirement marked Not right, a reviewer's note): it
+    // travels with the note, and nothing of it is the person's.
+    const notRight = "Not right: “PLANNED requirement text”";
+    expect((await post(cookie, `/r/${run}/comment`, { csrf: csrfOf(await read(cookie)), context: notRight, note: "", request: "5".repeat(32) })).status).toBe(303);
+    expect(store.allDiffComments(run).map(one => one.note)).toContain(notRight);
+    // Sent back from the browser ("Ask the agent to fix"): the generated feedback rides as its own field, and the person's
+    // own words beside it are the only part quoted.
+    const generated = "The project checks failed on abc1234 (exit 1). Fix the failure.";
+    const sealed = await post(cookie, `/r/${run}/comment`, { csrf: csrfOf(await read(cookie)), intent: "revise", request: "4".repeat(32), context: generated, note: "Use exponential backoff.", ...revisionFormOf(await read(cookie)) });
     expect(sealed.status).toBe(303);
+    expect(store.allDiffComments(run).map(one => one.note)).toContain(`${generated}\n\nUse exponential backoff.`);
     const child = store.revisionsFromRun(run)[0]!.id;
     plannerKeptTerms(store, child);
     const agreed = approve(store, child, "alex", T0, store.getScope(child)!.digest, approverToken);
@@ -1524,7 +1532,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     ]);
     // Never the planned scope, the token's note or the agent's own words.
     const quoted = JSON.stringify(said.youSaid);
-    for (const never of ["PLANNED", "A token filed this.", "The lead drafted this.", "Edited the value."]) expect(quoted).not.toContain(never);
+    for (const never of ["PLANNED", "A token filed this.", "The lead drafted this.", "Edited the value.", "project checks failed", "Not right"]) expect(quoted).not.toContain(never);
     // The same quotes from robin's seat: robin's own is "you", alex's is alex's.
     expect((await resultView(robinCookie, child, childRun)).selected!.youSaid!.map(one => [one.author, one.you])).toEqual([["alex", false], ["alex", false], ["robin", true], ["alex", false]]);
     // The first version's agent report is its own; the second reported none, and says so by empty lists.

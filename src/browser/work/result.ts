@@ -142,6 +142,14 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
   const pin = form.querySelector<HTMLDetailsElement>("details.result-pin");
   const imageBox = form.querySelector<Field>("[name=image]"), imagePreview = form.querySelector<HTMLElement>("[data-feedback-image]");
   const limit = panel.querySelector<HTMLElement>("#comment-note-limit"), requestBox = form.querySelector<Field>("[name=request]");
+  // What the page fills in for the person (a reviewer's note to act on, a requirement marked Not right) is its own field,
+  // shown as sent with the note and never written into the person's own box: only what they type is theirs (S5).
+  const contextBox = form.querySelector<Field>("[name=context]"), contextLine = form.querySelector<HTMLElement>("[data-request-context-line]");
+  const setContext = (text: string): void => {
+    if (contextBox === null) return;
+    contextBox.value = text;
+    if (contextLine !== null) { contextLine.textContent = text ? `Sent with it: ${text}` : ""; contextLine.hidden = !text; }
+  };
   const showImage = (): void => {
     if (imageBox === null || imagePreview === null) return;
     imagePreview.hidden = !imageBox.value;
@@ -176,7 +184,7 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
     }
   }, { signal });
   const updateActions = (): void => {
-    const typed = noteBox !== null && noteBox.value.trim() !== "", batch = form.querySelector<Field>("[name=batch]");
+    const typed = (noteBox !== null && noteBox.value.trim() !== "") || (contextBox !== null && contextBox.value.trim() !== ""), batch = form.querySelector<Field>("[name=batch]");
     const requestAction = form.querySelector<HTMLButtonElement>("[data-request-changes]"), saveAction = form.querySelector<HTMLButtonElement>("[data-save-feedback]");
     if (requestAction !== null) requestAction.disabled = !typed && !(batch !== null && batch.value !== "");
     if (saveAction !== null) saveAction.disabled = !typed;
@@ -194,8 +202,7 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
     const button = within(event, "button.pick-file,button.pick-line");
     if (button === null) return;
     const reviewNote = button.getAttribute("data-review-note");
-    if (reviewNote !== null && noteBox !== null && noteBox.value && !deps.confirm("Replace the feedback draft with this note?")) return;
-    if (reviewNote !== null && noteBox !== null) noteBox.value = reviewNote;
+    if (reviewNote !== null) setContext(reviewNote);
     if (pathBox !== null) pathBox.value = button.getAttribute("data-path") || "";
     if (lineBox !== null) lineBox.value = button.getAttribute("data-line") || "";
     if (pin !== null) pin.open = true;
@@ -219,7 +226,8 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
     try { crypto.getRandomValues(bytes); } catch { for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256); }
     return [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("");
   };
-  const payload = (): string => JSON.stringify([noteBox?.value ?? "", pathBox?.value ?? "", lineBox?.value ?? "", imageBox?.value ?? ""]);
+  // The filled-in field joins the identity only when it holds something, so a draft sent before it existed keeps its own.
+  const payload = (): string => JSON.stringify([noteBox?.value ?? "", pathBox?.value ?? "", lineBox?.value ?? "", imageBox?.value ?? "", ...(contextBox?.value ? [contextBox.value] : [])]);
   // What the current identity was last submitted with (null: never sent), and what it was last shown with.
   let sent: string | null = null, bound: string | null = null;
   // The server refused this identity for a different note or another result: the words stay, the identity does not.
@@ -241,8 +249,9 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
     if (typeof saved["request"] === "string" && /^[a-f0-9]{32}$/.test(saved["request"]) && requestBox !== null) requestBox.value = saved["request"];
     if (typeof saved["sent"] === "string") sent = saved["sent"];
     if (imageBox !== null && typeof saved["image"] === "string" && saved["image"].length < 250) imageBox.value = saved["image"];
+    if (contextBox !== null && !contextBox.value && typeof saved["context"] === "string" && saved["context"].length <= 4000) setContext(saved["context"]);
     showImage();
-    bound = JSON.stringify([saved["note"], saved["path"] || "", saved["line"] || "", saved["image"] || ""]);
+    bound = JSON.stringify([saved["note"], saved["path"] || "", saved["line"] || "", saved["image"] || "", ...(saved["context"] ? [saved["context"]] : [])]);
     noteBox?.dispatchEvent(new Event("input"));
   }
   function save(): void {
@@ -252,8 +261,9 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
     const current = payload();
     if ((bound !== null && current !== bound) || (sent !== null && current !== sent)) { sent = null; if (requestBox !== null) requestBox.value = mint(); }
     bound = current;
-    if (!note && !path && !line && !(imageBox !== null && imageBox.value)) { write(draftKey, null); return; }
-    write(draftKey, { note, path, line, image: imageBox?.value ?? "", request: requestBox?.value ?? "", sent, at: Date.now() });
+    const context = contextBox?.value ?? "";
+    if (!note && !path && !line && !context && !(imageBox !== null && imageBox.value)) { write(draftKey, null); return; }
+    write(draftKey, { note, path, line, image: imageBox?.value ?? "", context, request: requestBox?.value ?? "", sent, at: Date.now() });
     if (!storage && limit !== null) limit.textContent = "Draft stays on this page only. Browser storage is unavailable.";
   }
   form.addEventListener("input", save, { signal });

@@ -785,7 +785,8 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     notes: view.notes.map(one => ({ author: one.author, at: one.createdAt, note: one.note })),
     // One-workspace S5: the agent's own account (agent-written, never a check), and only words a signed-in person typed.
     agentReport: run === null || view.detail === null ? null : view.detail.handoff?.report ?? EMPTY_AGENT_REPORT,
-    youSaid: (view.youSaid ?? []).map(one => ({ kind: one.kind, author: one.author, you: one.author === user, at: one.at, note: quotedNoteOf(one.note) })),
+    youSaid: (view.youSaid ?? []).map(one => ({ kind: one.kind, author: one.author, you: one.author === user, at: one.at, note: quotedNoteOf(one.note),
+      question: one.question === null ? null : quotedNoteOf(one.question) })),
     efficiency: view.efficiency ?? null,
     network: view.network ?? null,
     timing: view.timing ?? null,
@@ -2365,6 +2366,8 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
         revisionSealFields(detail.comments, detail.sourceDigest),
         html`<input type="hidden" data-recorded-requests value="${[...detail.comments, ...(detail.pastComments ?? [])].filter(one => one.sourceKey?.startsWith(`review:${o.user}:`)).map(one => one.sourceKey!.slice(`review:${o.user}:`.length)).join(",")}">`,
         html`<input type="hidden" name="image" value=""><figure class="feedback-image" data-feedback-image hidden><img alt="Selected screenshot" hidden><figcaption></figcaption><button type="button" class="quiet" data-remove-image>Remove image</button></figure>`,
+        // What the page fills in (a reviewer's note, a requirement marked Not right) is its own field, never the person's box.
+        html`<input type="hidden" name="context" value=""><p class="meta" data-request-context-line hidden></p>`,
         html`<textarea name="note" rows="2" maxlength="${LIMITS.note}" placeholder="Describe the change…" aria-label="review comment" aria-describedby="comment-note-limit"${o.noted ? " autofocus" : ""}></textarea>`,
         html`<span class="meta diff-comment-limit" id="comment-note-limit">up to ${LIMITS.note} characters</span>`,
         html`<details class="result-pin"><summary>Attach to a file or line</summary>`,

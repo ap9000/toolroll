@@ -44,11 +44,12 @@ describe("v163", () => {
     store.createTask({ id: "t-1", title: "x" }, new Date(T0));
     const ref = store.refFor("built-in", "t-1").id;
     const steer = Number(db.prepare("INSERT INTO task_steer (task_ref, author, note, created_at, authorship_state) VALUES (?, 'alex', 'n', ?, 'verified')").run(ref, T0).lastInsertRowid);
-    const insert = (comment: number | null, steerId: number | null, author = "alex") =>
-      db.prepare("INSERT INTO typed_by_person (comment, steer, author, typed_at) VALUES (?, ?, ?, ?)").run(comment, steerId, author, T0);
+    const insert = (comment: number | null, steerId: number | null, author = "alex", words = "n") =>
+      db.prepare("INSERT INTO typed_by_person (comment, steer, author, words, typed_at) VALUES (?, ?, ?, ?, ?)").run(comment, steerId, author, words, T0);
     expect(() => insert(null, null)).toThrow();
     expect(() => insert(999, null)).toThrow(/FOREIGN KEY/);
     expect(() => insert(null, steer, "")).toThrow();
+    expect(() => insert(null, steer, "alex", "   ")).toThrow();
     insert(null, steer);
     expect(() => insert(null, steer)).toThrow(/UNIQUE/);
     expect(() => db.prepare("UPDATE typed_by_person SET author = 'mallory'").run()).toThrow(/written once/);
@@ -75,7 +76,7 @@ describe("v163", () => {
   });
 
   test.each([
-    ["the table", "DROP TABLE typed_by_person; CREATE TABLE typed_by_person (id INTEGER PRIMARY KEY, comment INTEGER, steer INTEGER, author TEXT, typed_at TEXT)", /typed_by_person table typed_by_person has an unknown shape/],
+    ["the table", "DROP TABLE typed_by_person; CREATE TABLE typed_by_person (id INTEGER PRIMARY KEY, comment INTEGER, steer INTEGER, author TEXT, words TEXT, question TEXT, typed_at TEXT)", /typed_by_person table typed_by_person has an unknown shape/],
     ["the trigger", "DROP TRIGGER typed_by_person_written_once", /trigger typed_by_person_written_once is missing/],
   ])("a current file whose %s isn't this build's refuses to open", (_what, damage, refusal) => {
     const dir = mkdtempSync(join(tmpdir(), "toolroll-v163-"));

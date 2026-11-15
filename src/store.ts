@@ -27468,35 +27468,43 @@ function typedByPersonShapeProblem(db: Database): string | null {
   return null;
 }
 
-/** One-workspace S5: record that a signed-in person typed this note themselves, in a Toolroll browser form. Call it in
- * the transaction that saved the note, only from a browser session's own act, under that session's account. A repeat
- * (a replayed form landing on the same note) records nothing more. Nothing else ever writes this. */
-export function markTypedByPerson(store: Store, note: { comment: number } | { steer: number }, author: string, now: Date): void {
+/** One-workspace S5: record what a signed-in person typed themselves into a Toolroll browser form, for the note it went
+ * into. Call it in the transaction that saved the note, only from a browser session's own act, under that session's
+ * account, with only the text of the person's own field (`words`), never text the page filled in for them. Nothing is
+ * recorded when they typed nothing, or when the saved note doesn't hold their words. `question`: the agent's question a
+ * reply answers. A repeat (a replayed form landing on the same note) records nothing more. Nothing else writes this. */
+export function markTypedByPerson(store: Store, note: { comment: number } | { steer: number }, author: string, words: string | null | undefined, now: Date, question: string | null = null): boolean {
+  const typed = (words ?? "").trim();
+  if (typed === "" || typed.length > 8000) return false;
   const comment = "comment" in note ? note.comment : null, steer = "steer" in note ? note.steer : null;
-  store.handle.prepare("INSERT INTO typed_by_person (comment, steer, author, typed_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
-    .run(comment, steer, author, now.toISOString());
+  const saved = store.handle.prepare(comment !== null ? "SELECT note FROM diff_comment WHERE id = ?" : "SELECT note FROM task_steer WHERE id = ?").get(comment ?? steer);
+  if (saved === undefined || !String(saved["note"]).includes(typed)) return false;
+  return Number(store.handle.prepare("INSERT INTO typed_by_person (comment, steer, author, words, question, typed_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING")
+    .run(comment, steer, author, typed, question === null ? null : question.slice(0, 400) || null, now.toISOString()).changes) === 1;
 }
 
-/** One quoted note: the person's own words, their account and when they wrote them. */
-export type TypedNote = { kind: "sent-back" | "to-agent"; id: number; author: string; at: string; note: string };
+/** One quoted note: exactly the words the person typed, their account, when, and (a reply) the agent's question. */
+export type TypedNote = { kind: "sent-back" | "to-agent"; id: number; author: string; at: string; note: string; question: string | null };
 
-/** The words a person typed for this task version (one-workspace S5, "You said"), newest first, at most `cap`: the
+/** The words a person typed for this task version (one-workspace S5, "You said"), newest first, at most `cap`: from the
  * notes sent back that made this version (each its signed-in typist's, consumed into it) and the notes sent to its
- * agents. Only notes with a typed_by_person row naming the note's own author: a reviewer's observation, a GitHub
- * comment, a note filed by an API token, the CLI or a lead's chat card, and every note saved before v163 are not. An
- * imageless copy of a typed note (a dropped screenshot) is the same person's same words. */
+ * agents. Only the typed_by_person row's own words, never the rest of the note (a retry's suggestion, generated
+ * feedback, a quoted requirement, a reply's question), and only when the row names the note's own author and the note
+ * still holds those words: a reviewer's observation, a GitHub comment, a note filed by an API token, the CLI or a
+ * lead's chat card, and every note saved before v163 are never quoted. An imageless copy of a typed note (a dropped
+ * screenshot) is the same person's same words. */
 export function typedNotesFor(store: Store, taskId: string, cap: number): TypedNote[] {
   const ref = store.handle.prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?").get(BUILT_IN, taskId);
   const rows = store.handle.prepare(`
-    SELECT 'sent-back' AS kind, c.id AS id, c.author AS author, c.created_at AS at, c.note AS note FROM diff_comment c
-     WHERE c.consumed_by = ? AND c.reviewer_run IS NULL
-       AND EXISTS (SELECT 1 FROM typed_by_person t JOIN diff_comment o ON o.id = t.comment
-                    WHERE (o.id = c.id OR o.superseded_by = c.id) AND o.note = c.note AND o.author = c.author AND t.author = c.author)
+    SELECT 'sent-back' AS kind, c.id AS id, c.author AS author, c.created_at AS at, t.words AS words, t.question AS question FROM diff_comment c
+      JOIN diff_comment o ON (o.id = c.id OR o.superseded_by = c.id) AND o.note = c.note AND o.author = c.author
+      JOIN typed_by_person t ON t.comment = o.id AND t.author = c.author
+     WHERE c.consumed_by = ? AND c.reviewer_run IS NULL AND instr(c.note, t.words) > 0
     UNION ALL
-    SELECT 'to-agent' AS kind, s.id AS id, s.author AS author, s.created_at AS at, s.note AS note FROM task_steer s
+    SELECT 'to-agent' AS kind, s.id AS id, s.author AS author, s.created_at AS at, t.words AS words, t.question AS question FROM task_steer s
       JOIN typed_by_person t ON t.steer = s.id AND t.author = s.author
-     WHERE s.task_ref = ? AND s.authorship_state = 'verified'
+     WHERE s.task_ref = ? AND s.authorship_state = 'verified' AND instr(s.note, t.words) > 0
     ORDER BY at DESC, id DESC LIMIT ?`).all(taskId, ref === undefined ? -1 : Number(ref["id"]), Math.max(0, cap));
   return rows.map(row => ({ kind: row["kind"] === "sent-back" ? "sent-back" as const : "to-agent" as const, id: Number(row["id"]), author: String(row["author"]),
-    at: String(row["at"]), note: String(row["note"]) }));
+    at: String(row["at"]), note: String(row["words"]), question: row["question"] == null ? null : String(row["question"]) }));
 }

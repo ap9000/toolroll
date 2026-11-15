@@ -1289,13 +1289,17 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     const image = parseFeedbackImage(body.get("image"));
     if (image === false) return refuse(response, who, 400, "Choose a screenshot from this result again. Your draft is unchanged.", back);
+    // What the page filled in for the person (`context`: a check's failure, a quoted requirement) travels with the note,
+    // ahead of what they typed (`note`); only what they typed is ever theirs to quote (one-workspace S5).
+    const typedNote = (body.get("note") ?? "").trim();
+    const sentNote = withContext(body.get("context"), typedNote);
     if (body.get("intent") === "revise") {
       const result = requestResultChanges(store, evidenceRoot, {
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
         // A browser session is a person's proof; a bearer credential is a machine's.
-        origin: who.via === "cookie" ? "person" : "machine", typedInBrowser: who.via === "cookie",
-        note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"), image,
+        origin: who.via === "cookie" ? "person" : "machine", typedWords: who.via === "cookie" ? typedNote : null,
+        note: sentNote, path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"), image,
       }, now);
       // Work's panel asked for its answer in place (read only after requestResultChanges decided).
       if (answersInPlace(incoming)) return result.ok ? answerActInPlace(response, "done", "Sent back. The revision is filed.", 200) : answerActInPlace(response, "refused", result.message, result.status);
@@ -1320,7 +1324,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (!proven.ok) {
       return refuse(response, who, 409, `the terminal diff no longer verifies (${proven.problem}) — nothing to comment on`, back);
     }
-    const note = validateNote(body.get("note") ?? "");
+    const note = validateNote(sentNote);
     if (!note.ok) return refuse(response, who, 400, note.problem, back);
     const rawPath = (body.get("path") ?? "").trim();
     if (rawPath.length > 300 || hasForbiddenControls(rawPath)) {
@@ -1347,8 +1351,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, image, ...(sourceKey === undefined ? {} : { sourceKey }) },
         now,
       );
-      // A browser session typed these words (one-workspace S5): the one road that may later quote them as a person's.
-      if (inserted !== null && who.via === "cookie") markTypedByPerson(store, { comment: inserted }, who.name, now);
+      // What a browser session typed itself (one-workspace S5): the one road that may later quote words as a person's.
+      if (inserted !== null && who.via === "cookie") markTypedByPerson(store, { comment: inserted }, who.name, typedNote, now);
       return { inserted };
     });
     if ("problem" in saved) return refuse(response, who, 409, saved.problem, `/r/${id}?record=1#request-changes`);
@@ -1712,7 +1716,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
             return taskScreen(response, who, taskId, "that note did not say which agent it came from, so nothing was sent", 400);
           }
           // The same receipt as a send to that run: a draft already filed while it ran comes back as sent, not twice.
-          const filed = typedSteer(store, who, () => store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: ended.id, key: keyRaw, onward: true }), now);
+          const filed = typedSteer(store, who, () => store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: ended.id, key: keyRaw, onward: true }), now, body.get("note"));
           // From the task page or a flow card: back there with the draft's key (only that draft clears), or the refusal in words.
           if (afterBack !== null) {
             if (filed.ok) return redirect(response, afterFlow !== null ? `/flows/${afterFlow.flow}?card=${afterFlow.card}&sent=${keyRaw}` : `${taskHref(taskId)}?sent=${keyRaw}#steering`);
@@ -1738,7 +1742,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           if (capability !== null && capability.send === null) {
             return from === "agents" ? redirect(response, `/agents?run=${shown.id}&said=steer-no-notes`) : taskScreen(response, who, taskId, capability.words, 409);
           }
-          const bound = typedSteer(store, who, () => store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: shown.id, key: keyRaw }), now);
+          const bound = typedSteer(store, who, () => store.fileSteerNoteForRun(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now, { run: shown.id, key: keyRaw }), now, body.get("note"));
           // From the task page: back to its steering card, or the refusal in words (the page keeps nothing to restore).
           if (from === "task") {
             // Back where it was written (the task page, or a flow card's task), with its draft's key: only that draft clears.
@@ -1753,7 +1757,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           return redirect(response, `/agents?run=${shown.id}&said=steer-stale`);
         }
         // The session IS the verified principal here — cookie + CSRF proved it.
-        const filed = typedSteer(store, who, () => store.fileSteerNote(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now), now);
+        const filed = typedSteer(store, who, () => store.fileSteerNote(taskId, verifiedAuthor(who.name), body.get("note") ?? "", now), now, body.get("note"));
         if (!filed.ok) {
           const said =
             filed.reason === "task-finished"
@@ -1776,7 +1780,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const asked = Number.isSafeInteger(id) && id > 0 ? agentQuestion(store, id) : null;
         if (asked === null || asked.taskRef !== ref.id) return taskScreen(response, who, taskId, "that question is not on this task", 404);
         const answered = answerAgentQuestion(store, { question: id, answer: body.get("answer") ?? "", author: who.name, at: now,
-          file: (task, note) => typedSteer(store, who, () => store.fileSteerNote(task, verifiedAuthor(who.name), note, now), now) });
+          // Only the answer is the person's; the note around it names the agent's question, which is the agent's words.
+          file: (task, note) => typedSteer(store, who, () => store.fileSteerNote(task, verifiedAuthor(who.name), note, now), now, body.get("answer"), asked.question) });
         const said = answered.ok ? "replied" : answered.reason === "invalid-answer" || answered.reason === "not-saved" ? "reply-invalid" : answered.reason === "closed" ? "reply-closed" : "reply-stale";
         return redirect(response, `/agents?run=${asked.run}&said=${said}`);
       }
@@ -1918,8 +1923,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }
       case "requeue": {
         const body = readForm(posted, CONSOLE_FORMS.taskRequeue);
-        // Retry may carry a note for the next attempt: the same steering note, checked before anything changes.
-        const note = (body.get("note") ?? "").trim();
+        // Retry may carry a note for the next attempt: the same steering note, checked before anything changes. What the page
+        // suggested (`context`) rides ahead of what the person typed (`note`); only the typed part is ever theirs to quote.
+        const typedNote = (body.get("note") ?? "").trim();
+        const note = withContext(body.get("context"), typedNote);
         if (note !== "" && who.via !== "cookie") return refuse(response, who, 403, "steering is a browser session's act");
         if (note !== "" && !validateNote(note).ok) return taskScreen(response, who, taskId, "that note will not store, so nothing was retried", 400);
         // Local-owner slice 3: the laptop's local owner retries its own approved build on its own road, bound to the
@@ -1936,7 +1943,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           }
         }
         if (note !== "" && !replayed) {
-          const filed = typedSteer(store, who, () => store.fileSteerNote(taskId, verifiedAuthor(who.name), note, now), now);
+          const filed = typedSteer(store, who, () => store.fileSteerNote(taskId, verifiedAuthor(who.name), note, now), now, typedNote);
           if (!filed.ok) return taskScreen(response, who, taskId, "Retried. The note wasn't saved; add it under Steering.", 409);
         }
         // Allow-listed return only — never an arbitrary URL from the form.
@@ -2516,7 +2523,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         const asked = body.get("mode") === "resume"
           ? store.requestResume({ taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", requestId: body.get("request") ?? "" }, now)
           : typedSteer(store, who, () => { const paused = store.requestPause({ taskId, runId: Number(named), by: verifiedAuthor(who.name), via: "web", requestId: body.get("request") ?? "", ...(note === "" ? {} : { note }) }, now);
-              return paused.ok && !paused.duplicate && paused.note !== null ? { ...paused, id: paused.note } : paused; }, now);
+              return paused.ok && !paused.duplicate && paused.note !== null ? { ...paused, id: paused.note } : paused; }, now, note);
         if (!asked.ok) {
           const words: Record<string, string> = {
             stale: `build #${named} has stopped taking notes — reload to see the current attempt`,
@@ -3358,14 +3365,22 @@ export function answerActInPlace(response: ServerResponse, outcome: "done" | "re
  * tasks ride only the first, unfiltered page). */
 export type WorkList = { screen: Screen; work: WorkIndexPage; filtered: boolean };
 
-/** A note to the agent a browser session filed (one-workspace S5): in the same transaction, recorded as typed by that
- * session's own person, the one road that may later quote it as theirs. Any other caller files it unrecorded. */
-function typedSteer<T extends { ok: boolean; id?: number }>(store: Store, who: Who, file: () => T, now: Date): T {
+/** A note to the agent a browser session filed (one-workspace S5): in the same transaction, the words its own person typed
+ * (`words`: their field's text only, never what the page filled in or what a reply answers) are recorded as theirs, the
+ * one road that may later quote them. `question`: the agent's question a reply answers, kept apart from the quote. Any
+ * other caller files the note unrecorded. */
+function typedSteer<T extends { ok: boolean; id?: number }>(store: Store, who: Who, file: () => T, now: Date, words: string | null, question: string | null = null): T {
   return store.transact(() => {
     const filed = file();
-    if (filed.ok && typeof filed.id === "number" && who.via === "cookie") markTypedByPerson(store, { steer: filed.id }, who.name, now);
+    if (filed.ok && typeof filed.id === "number" && who.via === "cookie") markTypedByPerson(store, { steer: filed.id }, who.name, words, now, question);
     return filed;
   });
+}
+
+/** A note as the agent receives it: what the page filled in for the person (`context`: a retry's suggestion, a check's
+ * failure, a quoted requirement), then what they typed. Either may be empty. */
+export function withContext(context: string | null, typed: string): string {
+  return [(context ?? "").trim(), typed.trim()].filter(one => one !== "").join("\n\n");
 }
 
 /** The most "You said" quotes a result reads (one-workspace S5): the newest; the page folds all but a few. */

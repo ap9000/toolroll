@@ -248,7 +248,7 @@ export const CONSOLE_FORMS = {
   // A recipe's own answers and editor fields are read by recipes.ts from the whole form (`sent`; item 17).
   recipes: formContract("POST /recipes/prepare, /recipes/preview, /recipes/import, /recipes/launch, /recipes/save", ["repo", "projectRevision", "recipe", "recipeRevision", "document", "purpose", "source", "sourceRevision", "preview", "next"]),
   runNote: formContract("POST /r/<run>/note", ["note"]),
-  diffComment: formContract("POST /r/<run>/comment", ["return", "tab", "intent", "batch", "source", "note", "path", "line", "request", "image", "comment"]),
+  diffComment: formContract("POST /r/<run>/comment", ["return", "tab", "intent", "batch", "source", "context", "note", "path", "line", "request", "image", "comment"]),
   editorLinks: formContract("POST /session/editor-links", ["on", "return"]),
   revise: formContract("POST /r/<run>/revise", ["return", "batch", "source"]),
   followUp: formContract("POST /r/<run>/checks|add-tests", ["return", "level"]),
@@ -266,7 +266,7 @@ export const CONSOLE_FORMS = {
   taskNext: formContract("POST /t/<task>/next", ["undo"]),
   taskReopen: formContract("POST /t/<task>/reopen", ["token"]),
   // Local-owner slice 3: the build and approved plan the page read (`run`, `digest`), read only for the laptop's local owner.
-  taskRequeue: formContract("POST /t/<task>/requeue", ["note", "return", "run", "digest"]),
+  taskRequeue: formContract("POST /t/<task>/requeue", ["context", "note", "return", "run", "digest"]),
   // Local-owner slice 2: the planning source the page read (planner-source.ts), read only for the laptop's local owner.
   taskPlan: formContract("POST /t/<task>/plan", ["source"]),
   taskFollowUp: formContract("POST /t/<task>/follow-up", ["index"]),

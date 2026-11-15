@@ -149,15 +149,20 @@ function StatusCard({ selected, acts, answers, bare = false }: { selected: Selec
   </Card>;
 }
 
-/** Not right: the request form opens with the item quoted, ready for the why. */
+/** Not right: the request form opens with the item quoted, ready for the why. The quote rides in the form's own
+ * filled-in field, shown as sent with the note, never in the person's box (one-workspace S5: only what they type is
+ * ever quoted as theirs). */
 function requestChange(statement: string) {
   const form = document.getElementById("comment-form");
   const box = form?.querySelector<HTMLTextAreaElement>("textarea[name=note]") ?? null;
+  const context = form?.querySelector<HTMLInputElement>("input[name=context]") ?? null;
   const shell = form?.closest("details") ?? null;
   if (shell !== null && !shell.open) shell.open = true;
-  if (box === null) { window.location.hash = "request-changes"; return; }
-  const quote = `Not right: “${statement}” — `;
-  if (!box.value.includes(quote)) box.value = box.value.trim() === "" ? quote : `${box.value.trimEnd()}\n\n${quote}`;
+  if (box === null || context === null) { window.location.hash = "request-changes"; return; }
+  const quote = `Not right: “${statement}”`;
+  if (!context.value.includes(quote)) context.value = context.value.trim() === "" ? quote : `${context.value.trimEnd()}\n${quote}`;
+  const line = form?.querySelector<HTMLElement>("[data-request-context-line]") ?? null;
+  if (line !== null) { line.textContent = `Sent with it: ${context.value}`; line.hidden = false; }
   box.dispatchEvent(new Event("input", { bubbles: true }));
   box.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
   box.focus();
