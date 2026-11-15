@@ -10,12 +10,12 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover, propose } from "./scope.js";
+import { addApprover, propose, type Scope } from "./scope.js";
 import { releaseTermsFor } from "./release-carry.js";
 import { setChatApproval } from "./chat-approval.js";
 import { verifyApproverStanding } from "./principal.js";
 import { decideOffer, mintDecideButtons } from "./chat-decide.js";
-import { releaseCardOf } from "./release-card.js";
+import { approvalTermsOf, releaseCardOf, termsText } from "./release-card.js";
 import { permissionPlainWords } from "./chat-terms.js";
 import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
 
@@ -36,12 +36,8 @@ const transport: TelegramTransport = async (method, params, _signal, upload) => 
 };
 const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
 
-/** A test named for it puts the project under the checkout, a person's own folder on a Mac (/Users/…) and on CI
- * (/home/…): what a chat card must never print. Removed after, like every other test folder. */
-const UNDER_HOME = "[project under a home folder]";
 beforeEach(() => {
-  const parent = expect.getState().currentTestName?.includes(UNDER_HOME) === true ? process.cwd() : tmpdir();
-  dir = realpathSync(mkdtempSync(join(parent, ".so-telegram-release-")));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "so-telegram-release-")));
   repo = join(dir, "project"); root = join(dir, "evidence");
   mkdirSync(repo); mkdirSync(root);
   git("init", "-q", "-b", "main");
@@ -184,8 +180,7 @@ test("a release whose full terms come to name a folder on this computer while it
   expect(sealed()).toBe(false);
 });
 
-test(`a release card names its project, never its folder, and still reaches Telegram with its file and Approve ${UNDER_HOME}`, async () => {
-  expect(/^\/(Users|home)\//.test(repo)).toBe(true);
+test("a release card names its project, never its folder, and still reaches Telegram with its file and Approve", async () => {
   const continued = await tap(continueToken());
   expect(continued.labels).toEqual(["Approve", "Cancel"]);
   const documents = calls.filter(call => call.method === "sendDocument");
@@ -202,4 +197,22 @@ test(`a release card names its project, never its folder, and still reaches Tele
   const approved = await tap(continued.tokens[0]!);
   expect(approved.text).toContain("Release approved");
   expect(sealed()).toBe(true);
+});
+
+test("in a chat app a project under a home folder is its name and owner/name; the web and the CLI keep the folder", () => {
+  // A project as a person's own Mac registers it: under /Users/…, which a chat card must never print.
+  const home = "/Users/someone/shop";
+  store.upsertProject(home, "shop", NOW, { remoteUrl: "https://github.com/example-invalid/shop.git" });
+  store.createTask({ id: "release-shop", title: "Release 1.0.0" }, NOW);
+  store.placeTask(store.refFor("built-in", "release-shop").id, home, {}, NOW);
+  const terms = { v: 1, repo: home, packageVersion: "1.0.0", branch: "release-1.0.0", pr: 7, base: "main", approvedSha: "a".repeat(40), approvedTree: "b".repeat(40),
+    policy: { v: 1, rules: 1, carry: false, protectProject: false, protectedPaths: [], limits: { lines: 400, files: 20, churn: 800 } },
+    grant: { id: 3, digest: "g".repeat(16) }, access: "sandboxed", expiresAt: "2026-11-13T09:00:00.000Z" } as unknown as NonNullable<Scope["releaseTerms"]>;
+  const scope = { ...propose(store, { taskId: "release-shop", goal: "Release 1.0.0", now: NOW }), releaseTerms: terms } as Scope;
+  const chat = termsText(approvalTermsOf(store, scope, { profile: permissionPlainWords, chat: true }));
+  expect(chat).toContain("Project: shop (example-invalid/shop)");
+  expect(chat).toContain("Repository: example-invalid/shop");
+  expect(chat).not.toContain("/Users/");
+  const web = termsText(approvalTermsOf(store, scope, { profile: permissionPlainWords }));
+  expect(web).toContain(`Project: shop (${home})`);
 });

@@ -97,7 +97,7 @@ for(const provider of providers) {
     await cli('request planning',['task','plan','catalog',...auth]);
     console.log(provider+': planning the detailed filed intent');await tick('plan filed intent');
     const planned=await show('catalog','planned');assert.deepEqual(scopeTerms(planned.scope),scopeTerms(filed.scope),'Planner changed the fixed filed requirements');
-    await cli('ordinary exact-scope approval',['task','approve','catalog','--yes','--digest',planned.scope.digest,...auth]);
+    await cli('ordinary exact-scope approval',['task','approve','catalog','--yes','--digest',planned.scope.digest,'--terms',planned.approvalTerms,...auth]);
     console.log(provider+': building and checking');await tick('approved build');
     const built=await show('catalog','built');assert.equal(built.task.state,'done');
     const build=built.runs.find(r=>r.role==='builder'&&r.outcome==='built');assert(build);
@@ -110,7 +110,7 @@ for(const provider of providers) {
     const revision=await show(child,'revision-filed');
     for(const key of ['outOfScope','touches','acceptance','qualityMode','budgetMicrousd'])assert.deepEqual(revision.scope[key],filed.scope[key],'Revision dropped '+key);
     assert.equal(revision.scope.approvedAt,null,'Child inherited approval');
-    await cli('approve exact revision',['task','approve',child,'--yes','--digest',revision.scope.digest,...auth]);
+    await cli('approve exact revision',['task','approve',child,'--yes','--digest',revision.scope.digest,'--terms',revision.approvalTerms,...auth]);
     console.log(provider+': building scoped revision and checking inherited code');await tick('scoped revision build');
     const final=await show(child,'revision-built');record.final=final;assert.equal(final.task.state,'done');
     const revisionBuild=final.runs.find(r=>r.role==='builder'&&r.outcome==='built');assert(revisionBuild);

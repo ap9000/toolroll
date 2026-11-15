@@ -9,6 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { releaseFixture, FIXTURE_PASSWORD, RELEASE_REFUSALS, VERSION, type ReleaseFixture } from "../test/release-fixture.js";
 import { EXIT, runOperate } from "./operate.js";
+import { approvalSummaryFor } from "./approval-summary.js";
 import { journalFile } from "./release.js";
 import { personApprovalOf, propose } from "./scope.js";
 import { releaseCheckPurposeFor } from "./release-carry.js";
@@ -167,7 +168,9 @@ describe("toolroll release approve", () => {
 });
 
 describe("toolroll task approve on a release", () => {
-  const taskApprove = async (digest: string) => { lines = []; return runOperate("task", ["approve", f.taskId, "--yes", "--digest", digest, ...credentials, "--json"], line => lines.push(line), { databaseFile: f.databaseFile, now: NOW }); };
+  // A scripted yes names the terms it read (the approval summary's key, as `task approve <id>` prints it), at the same now.
+  const termsNow = (): string => approvalSummaryFor(f.store, f.taskId, NOW)?.key ?? "none";
+  const taskApprove = async (digest: string) => { lines = []; return runOperate("task", ["approve", f.taskId, "--yes", "--digest", digest, "--terms", termsNow(), ...credentials, "--json"], line => lines.push(line), { databaseFile: f.databaseFile, now: NOW }); };
 
   test.each(RELEASE_REFUSALS.map(one => [one.name, one] as const))("%s: refused in the sheet's words, nothing sealed", async (_name, one) => {
     one.apply(f, NOW);
