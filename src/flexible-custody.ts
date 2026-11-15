@@ -25,9 +25,11 @@
  * Every signal is bound to the identity it was scanned with. Linux: a pidfd (pidfd_open, the start identity checked
  * through it, pidfd_send_signal), so a reused pid can't be hit; where this computer can't do that, nothing is signalled
  * and custody is unresolved. macOS has no identity-bound handle: each target's start identity is read again
- * immediately before its signal, and a mismatch is "not ours". The window between that read and the signal remains;
- * any pid custody signalled that later shows another start identity means a race was possible, and the exit is never
- * reported verified then.
+ * immediately before its signal, and a mismatch is "not ours". The window between that read and the signal remains (an
+ * unrelated process is hit only if its pid was recycled in that instant), so a macOS stop that sent any such signal is
+ * recorded "best-effort", never fully verified (the owner's decision: macOS custody is best effort); any pid custody
+ * signalled that later shows another start identity is a race seen, and the exit is unresolved. The leader itself is
+ * signalled through the child handle Toolroll holds, where this process spawned it.
  *
  * macOS has no pid namespace or cgroup Toolroll can use, and another process's environment isn't readable there, so a
  * descendant that double-forks between two observations, leaves the thread's folder and closes every file in it is not
@@ -40,7 +42,8 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { constants } from "node:os";
-import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { provenDeadByBootChange } from "./boot-identity.js";
 
 // ---- what custody knows about a launch -------------------------------------------------------------------------------
@@ -76,8 +79,11 @@ export type CustodyIO = {
   namespaceOf(pid: number): string | null | "unreadable";
   /** Processes whose working folder or an open file is inside `folder`, or null when that can't be listed whole. */
   holdersOf(folder: string): number[] | null;
-  /** Send `signal` to each process, bound to its identity (pid AND start identity), never to a bare pid. */
+  /** Send `signal` to each process, checked against its identity (pid AND start identity) first. */
   signal(targets: readonly ProcessWitness[], signal: NodeJS.Signals): Map<number, SignalResult>;
+  /** Whether `signal` is bound to the identity through the signal itself (Linux pidfd), or only checked just before a
+   * signal sent to the bare pid (macOS: a stop that needed one is best effort, never fully verified). */
+  identityBound: boolean;
   /** This boot's identity, or null when it can't be read. */
   bootId(): string | null;
   sleep(ms: number): Promise<void>;
@@ -160,7 +166,14 @@ export function scanCustody(custody: LaunchCustody, io: CustodyIO, options: { ho
   if (options.holders !== false) {
     const holding = io.holdersOf(custody.folder);
     if (holding === null) incomplete ??= "the programs using the thread's folder couldn't all be listed";
-    else for (const pid of holding) { const row = byPid.get(pid); if (live(row) && !members.has(pid)) blockers.set(pid, "in-folder"); }
+    else for (const pid of holding) {
+      if (pid === io.self) continue;
+      const row = byPid.get(pid);
+      // The two looks disagree (a process in the folder the table didn't have): it was born or the table was stale while
+      // the scan ran, so the scan can't be called complete.
+      if (row === undefined) { incomplete ??= `process ${pid} appeared while the scan ran`; continue; }
+      if (live(row) && !members.has(pid)) blockers.set(pid, "in-folder");
+    }
   }
   // A member whose start identity can't be read can't be signalled by identity: it blocks instead.
   for (const [pid, row] of members) if (row.start === null) { members.delete(pid); blockers.set(pid, "unidentified"); }
@@ -189,7 +202,10 @@ export function observeCustody(custody: LaunchCustody, io: CustodyIO): { namespa
 // ---- stopping, and proving the exit ---------------------------------------------------------------------------------------
 
 export type CustodyOutcome =
-  | { verified: true; how: "boot-changed" | "none-left"; namespaces: string[]; witnesses: ProcessWitness[] }
+  /** none-left: every process was stopped by identity-bound signals (or none needed one) and a full scan found none;
+   * best-effort (macOS): the same, but a signal went to a bare pid after its start identity was checked, so an unrelated
+   * process could have been hit only if that pid was recycled in the instant between the check and the signal. */
+  | { verified: true; how: "boot-changed" | "none-left" | "best-effort"; namespaces: string[]; witnesses: ProcessWitness[] }
   | { verified: false; survivors: number[]; blockers: CustodyBlocker[]; why: string; namespaces: string[]; witnesses: ProcessWitness[] };
 
 /** Whether this boot is provably not the launch's (a reboot ends every process of the old one). */
@@ -228,7 +244,9 @@ export function custodySettled(custody: LaunchCustody, io: CustodyIO): CustodyOu
  * can't be complete, this computer can't send an identity-bound signal, or a pid custody signalled now names another
  * process (a race was possible).
  */
-export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options: { deadlineMs?: number } = {}): Promise<CustodyOutcome> {
+export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options: { deadlineMs?: number;
+  /** The leader's own handle, where this process spawned it: its signals go there, never to its pid. */
+  leaderSignal?: (signal: NodeJS.Signals) => SignalResult } = {}): Promise<CustodyOutcome> {
   if (bootChanged(custody, io)) return { verified: true, how: "boot-changed", namespaces: [], witnesses: [] };
   const deadline = Date.now() + (options.deadlineMs ?? 10_000);
   let current: LaunchCustody = custody;
@@ -241,10 +259,16 @@ export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options
   const frozen = new Map<number, string>();
   const signalled = new Map<number, string>();
   let problem: string | null = null;
+  let bare = false;
   const send = (targets: readonly ProcessWitness[], signal: NodeJS.Signals): Map<number, SignalResult> => {
-    const results = io.signal(targets, signal);
+    const leader = custody.leader;
+    const viaHandle = options.leaderSignal !== undefined && leader !== null ? targets.find(one => one.pid === leader.pid && one.start === leader.start) : undefined;
+    const rest = viaHandle === undefined ? targets : targets.filter(one => one !== viaHandle);
+    const results = rest.length > 0 ? io.signal(rest, signal) : new Map<number, SignalResult>();
+    if (viaHandle !== undefined) results.set(viaHandle.pid, options.leaderSignal!(signal));
     for (const target of targets) {
       const result = results.get(target.pid) ?? "unavailable";
+      if (result === "sent" && target !== viaHandle && !io.identityBound) bare = true;
       if (result === "sent") signalled.set(target.pid, target.start);
       if (result === "unavailable") problem ??= "this computer can't send a signal bound to a process's identity, so nothing was stopped";
     }
@@ -272,7 +296,7 @@ export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options
     if (problem !== null) return unresolved(scan);
     if (scan.members.length === 0) {
       if (!full) { full = true; continue; }
-      if (scan.blockers.length === 0 && scan.incomplete === null) return { verified: true, how: "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
+      if (scan.blockers.length === 0 && scan.incomplete === null) return { verified: true, how: bare ? "best-effort" : "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
       return unresolved(scan);
     }
     full = false;
@@ -290,7 +314,7 @@ export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options
       const last = scanCustody(current, io);
       learn(last);
       problem ??= raced(last.table);
-      if (problem === null && last.members.length === 0 && last.blockers.length === 0 && last.incomplete === null) return { verified: true, how: "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
+      if (problem === null && last.members.length === 0 && last.blockers.length === 0 && last.incomplete === null) return { verified: true, how: bare ? "best-effort" : "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
       return unresolved(last);
     }
     await io.sleep(fresh.length > 0 ? 20 : 100);
@@ -437,11 +461,33 @@ for target in request["targets"]:
         os.close(fd)
 print(json.dumps(out))
 `;
+/** Where a trusted Python may be, in order: never found through PATH (which a build or a person's shell can change). */
+export const TRUSTED_PYTHONS: readonly string[] = Object.freeze(["/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"]);
+let pinnedPython: string | null | undefined;
+/** The first of TRUSTED_PYTHONS that is a real program owned by root or this user, that no one else can change (the
+ * file and its folder not group- or world-writable), resolved once per Toolroll process and pinned; null when none. */
+export function trustedPython(candidates: readonly string[] = TRUSTED_PYTHONS): string | null {
+  if (pinnedPython !== undefined && candidates === TRUSTED_PYTHONS) return pinnedPython;
+  const uid = process.getuid?.();
+  const safe = (path: string): boolean => { try { const held = statSync(path); return (held.uid === 0 || held.uid === uid) && (held.mode & 0o022) === 0; } catch { return false; } };
+  let found: string | null = null;
+  for (const candidate of candidates) {
+    try {
+      const real = realpathSync(candidate);
+      if (statSync(real).isFile() && (statSync(real).mode & 0o111) !== 0 && safe(real) && safe(dirname(real))) { found = real; break; }
+    } catch { /* not there */ }
+  }
+  if (candidates === TRUSTED_PYTHONS) pinnedPython = found;
+  return found;
+}
+
 function linuxSignal(targets: readonly ProcessWitness[], signal: NodeJS.Signals): Map<number, SignalResult> {
   const results = new Map<number, SignalResult>(targets.map(one => [one.pid, "unavailable"]));
   if (targets.length === 0) return results;
-  const ran = spawnSync("python3", ["-I", "-c", PIDFD_HELPER], { input: JSON.stringify({ targets, signal: constants.signals[signal] }), encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL",
-    env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", LC_ALL: "C" } });
+  const python = trustedPython();
+  if (python === null) return results;
+  const ran = spawnSync(python, ["-I", "-c", PIDFD_HELPER], { input: JSON.stringify({ targets, signal: constants.signals[signal] }), encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL",
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } });
   if (ran.error !== undefined || ran.status !== 0) return results;
   try {
     const answer = JSON.parse(ran.stdout) as Record<string, unknown>;
@@ -476,6 +522,7 @@ export function realCustodyIO(bootId: () => string | null): CustodyIO {
   return {
     platform,
     self: process.pid,
+    identityBound: platform === "linux",
     table: () => platform === "linux" ? linuxTable() : platform === "darwin" ? macTable() : null,
     namespaceOf: pid => platform === "linux" ? linuxNamespace(pid) : null,
     holdersOf: folder => platform === "linux" ? linuxHolders(folder) : platform === "darwin" ? macHolders(folder) : null,

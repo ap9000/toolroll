@@ -6,16 +6,22 @@
  * and an enabled plugin, a home .claude.json MCP server. None may load: no hook runs, no MCP server starts, and no
  * hostile text reaches the model request.
  *
+ * What it proves, exactly: from start-up through one model request (which the stand-in refuses), that version of
+ * claude with those arguments loads none of that configuration. It doesn't prove anything about later turns, tools a
+ * model would call, or another claude version.
+ *
  * Zero model calls and nothing of the person's: HOME and the configuration folder are temporary; the process runs under
- * a Seatbelt profile that denies the keychain and every network connection but loopback; its only "model" is a local
- * stand-in that records the request and answers 401, as the relay's stand-in does for a token it doesn't know. Runs
- * only on a Mac with `claude` installed; otherwise it is skipped and says why. Checked against the version it reports
- * (VERIFIED_CLAUDE is the one this row was written against; a different installed version still runs the row).
+ * a Seatbelt profile that denies the keychain, the person's real home folder (only the claude program itself is
+ * readable there) and every network connection but loopback; its only "model" is a local stand-in that records the
+ * request and answers 401, as the relay's stand-in does for a token it doesn't know. Pinned to VERIFIED_CLAUDE: the
+ * version is read inside the same sandbox, with its own temporary HOME, and any other version is skipped with the
+ * reason (prove it again before trusting a new one). Runs only on a Mac with claude installed.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flexibleAgentLaunch } from "../../src/flexible-agents.js";
@@ -26,11 +32,39 @@ vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }))
 
 export const VERIFIED_CLAUDE = "2.1.321";
 
-function claudeProbe(): { available: boolean; note: string; platform?: NodeJS.Platform; version?: string } {
-  if (process.platform !== "darwin") return { available: false, note: "Claude startup check skipped: it needs a Mac (a Seatbelt profile keeps the real binary off the network and the keychain)" };
-  const version = spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 30_000, env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: tmpdir() } });
-  if (version.error !== undefined || version.status !== 0) return { available: false, note: "Claude startup check skipped: claude is not installed" };
-  return { available: true, note: "", version: version.stdout.trim().split(/\s+/)[0] ?? "" };
+/** The real claude program, by its real path (never through PATH inside the sandbox), or null. */
+function claudeProgram(): string | null {
+  const found = spawnSync("/usr/bin/which", ["claude"], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" } });
+  if (found.status !== 0 || found.stdout.trim() === "") return null;
+  try { return realpathSync(found.stdout.trim()); } catch { return null; }
+}
+/** The Seatbelt profile every claude run here gets: no keychain, no network but loopback, and nothing of the person's
+ * real home but the claude program's own folder (and the folders on the way to it, by name only). */
+function profileFor(program: string): string {
+  const home = realpathSync(userInfo().homedir);
+  const parents: string[] = [];
+  for (let at = dirname(program); at.startsWith(`${home}/`) || at === home; at = dirname(at)) parents.push(at);
+  const quote = (path: string) => JSON.stringify(path);
+  return ["(version 1)", "(allow default)", SEATBELT_NO_KEYCHAIN,
+    "(deny network-outbound)", '(allow network-outbound (remote ip "localhost:*"))', "(allow network-outbound (remote unix-socket))",
+    `(deny file-read* file-write* (subpath ${quote(home)}))`,
+    `(allow file-read* (subpath ${quote(dirname(program))}))`,
+    ...parents.map(path => `(allow file-read-metadata (literal ${quote(path)}))`)].join("\n");
+}
+
+function claudeProbe(scratch: string): { available: boolean; note: string; platform?: NodeJS.Platform; program?: string } {
+  if (process.platform !== "darwin") return { available: false, note: "Claude startup check skipped: it needs a Mac (a Seatbelt profile keeps the real binary off the network, the keychain and the person's home)" };
+  const program = claudeProgram();
+  if (program === null) return { available: false, note: "Claude startup check skipped: claude is not installed" };
+  // The version, read inside the same sandbox, with its own temporary HOME.
+  const home = join(scratch, "version-home");
+  mkdirSync(home, { recursive: true });
+  const version = spawnSync("/usr/bin/sandbox-exec", ["-p", profileFor(program), program, "--version"], { encoding: "utf8", timeout: 30_000, cwd: scratch,
+    env: { PATH: "/usr/bin:/bin", HOME: home, TMPDIR: scratch } });
+  if (version.error !== undefined || version.status !== 0) return { available: false, note: `Claude startup check skipped: claude --version failed in the sandbox (${version.stderr.trim().slice(0, 200)})` };
+  const said = version.stdout.trim().split(/\s+/)[0] ?? "";
+  if (said !== VERIFIED_CLAUDE) return { available: false, note: `Claude startup check skipped: installed claude is ${said}, proven only on ${VERIFIED_CLAUDE}; prove the new version before trusting it` };
+  return { available: true, note: "", program };
 }
 
 let dir: string, server: Server | null = null;
@@ -43,8 +77,12 @@ afterEach(async () => {
 
 describe("attack: hostile configuration loading into a thread's Claude", () => {
   test("native: the real claude, at Full access with the thread's arguments, loads no CLAUDE.md, settings, hooks, plugin or MCP server from the repository or home", async ctx => {
-    const probe = claudeProbe();
+    const probe = claudeProbe(dir);
     needs(ctx, probe);
+    const program = probe.program!;
+    // The profile really keeps the person's home out (only the program's own folder is readable there).
+    const peek = spawnSync("/usr/bin/sandbox-exec", ["-p", profileFor(program), "/bin/ls", realpathSync(userInfo().homedir)], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+    expect(peek.status, peek.stdout).not.toBe(0);
     const tag = `HOSTILE-${Date.now().toString(36)}`;
     const markers = join(dir, "markers");
     const repo = join(dir, "repo"), home = join(dir, "home"), config = join(dir, "config"), temp = join(dir, "tmp");
@@ -79,9 +117,9 @@ describe("attack: hostile configuration loading into a thread's Claude", () => {
     const token = `tr-relay-${"ab".repeat(24)}`;
     const launch = flexibleAgentLaunch("claude", "full", { model: "claude-sonnet-4-5", relay: { url, token }, configHome: config });
     if (!launch.ok) throw new Error(launch.message);
-    const profile = ["(version 1)", "(allow default)", SEATBELT_NO_KEYCHAIN, "(deny network-outbound)", '(allow network-outbound (remote ip "localhost:*"))', "(allow network-outbound (remote unix-socket))"].join("\n");
-    const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: home, TMPDIR: temp, LANG: "C", ...launch.spec.env };
-    const child = spawn("/usr/bin/sandbox-exec", ["-p", profile, launch.spec.file, ...launch.spec.args], { cwd: repo, env, stdio: ["pipe", "pipe", "pipe"] });
+    expect(launch.spec.file).toBe("claude");
+    const env = { PATH: "/usr/bin:/bin", HOME: home, TMPDIR: temp, LANG: "C", ...launch.spec.env };
+    const child = spawn("/usr/bin/sandbox-exec", ["-p", profileFor(program), program, ...launch.spec.args], { cwd: repo, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.stderr.on("data", chunk => { stderr += chunk; });
@@ -95,7 +133,7 @@ describe("attack: hostile configuration loading into a thread's Claude", () => {
     await closed;
     const events = stdout.split("\n").flatMap(line => { try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; } });
     const init = events.find(one => one["type"] === "system" && one["subtype"] === "init");
-    const said = `claude ${probe.version} (verified ${VERIFIED_CLAUDE}); stderr: ${stderr.slice(0, 800)}; stdout: ${stdout.slice(0, 800)}`;
+    const said = `claude ${VERIFIED_CLAUDE}; stderr: ${stderr.slice(0, 800)}; stdout: ${stdout.slice(0, 800)}`;
     expect(init, said).toBeDefined();
     expect(JSON.stringify(init!["mcp_servers"] ?? []), said).not.toMatch(/evil/);
     expect(JSON.stringify(init!["plugins"] ?? []), said).not.toMatch(/evil/);

@@ -17,7 +17,7 @@ import { FLEXIBLE_START_GATE, prepareFlexibleThread, removeFlexibleThread, flexi
 import { spawnSync } from "node:child_process";
 import { flexibleAgentLaunch, lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, RELAY_STUB_REFUSAL, startFlexibleRelayStub, startFlexibleTurn, type FlexibleRelayStub } from "./flexible-agents.js";
 import { FLEXIBLE_PROVEN, threadLevelAllowed } from "./flexible-levels.js";
-import { flexibleLaunch, onLaunchStopped, revokeLaunch, unsettledLaunch, watchLaunch } from "./flexible-launch.js";
+import { flexibleLaunch, holdLaunch, onLaunchStopped, revokeLaunch, unsettledLaunch, watchLaunch } from "./flexible-launch.js";
 import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -67,14 +67,19 @@ const startInput = (turn: string, over: Partial<Parameters<typeof startFlexibleT
 function agent(paths: FlexibleThreadPaths, script = "sleep 30"): { pid: number; start: string; closed: Promise<void> } {
   const child = spawn("/bin/sh", ["-c", script], { cwd: paths.repo, detached: true, stdio: "ignore" });
   children.push(child);
+  spawnedHere.set(child.pid!, child);
   return { pid: child.pid!, start: startIdentityOf(child.pid!, io)!, closed: new Promise(done => child.once("close", () => done())) };
 }
 /** A live launch on the record for `pid`, as flexibleThreadSpawn registers one. */
-function live(id: string, pid: number, start: string, over: { level?: string; state?: string; holder?: string; fence?: string } = {}): string {
+const spawnedHere = new Map<number, ChildProcess>();
+function live(id: string, pid: number, start: string, over: { level?: string; state?: string; holder?: string; fence?: string; held?: boolean } = {}): string {
   const launch = `${pid.toString(16).padStart(8, "0")}${randomBytes(12).toString("hex")}`;
   world.store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
     VALUES (?, ?, 'claude', ?, ?, ?, 'here', ?, ?, ?, ?, ?)`).run(launch, id, over.level ?? "full", over.fence ?? "f".repeat(32), over.holder ?? "h1", "9".repeat(32), pid, start, over.state ?? "live", NOW.toISOString());
   world.store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ?").run(pid, NOW.toISOString(), id);
+  // This process started it, as flexibleThreadSpawn does: it holds the leader's handle and confirms its own network.
+  const child = spawnedHere.get(pid);
+  if (child !== undefined && over.held !== false) holdLaunch(launch, child);
   return launch;
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -88,11 +93,11 @@ describe("the relay's stand-in", () => {
   test("refuses every call on every route and method (a live grant 503, anything else 401); a grant revoked durably is refused at once; tunnels get nothing", async () => {
     const { id, paths } = await thread();
     const turn = admit(id);
-    const endpoint = stub.issue({ thread: id, turn });
-    expect(endpoint.url).toBe(stub.url);
-    // The grant counts only while the thread's launch is live.
+    // The grant counts only while its own launch is live.
     const running = agent(paths);
-    live(id, running.pid, running.start);
+    const launch = live(id, running.pid, running.start);
+    const endpoint = stub.issue({ thread: id, turn, launch });
+    expect(endpoint.url).toBe(stub.url);
     const tries: [string, RequestInit][] = [
       ["/v1/messages", { method: "POST", headers: { "x-api-key": endpoint.token, authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 1, messages: [] }) }],
       ["/v1/messages/count_tokens", { method: "POST", headers: { authorization: `Bearer ${endpoint.token}` }, body: "{}" }],
@@ -122,6 +127,24 @@ describe("the relay's stand-in", () => {
     expect(tunnel).toMatch(/^HTTP\/1\.1 403/);
     expect(stub.authorized()).toBe(tries.length);
   }, 30_000);
+
+  test("a grant is bound to exactly its launch: another launch of the thread spawning doesn't authorize it, and an old endpoint's revoke ends only its own grant", async () => {
+    const { id } = await thread();
+    const turn = admit(id);
+    const insert = (launch: string, state: string) => world.store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, state, started_at${state === "exited" ? ", ended_at" : ""})
+      VALUES (?, ?, 'claude', 'full', ?, 'h1', 'here', ?, ?, ?${state === "exited" ? ", ?" : ""})`).run(launch, id, "f".repeat(32), "9".repeat(32), state, NOW.toISOString(), ...(state === "exited" ? [NOW.toISOString()] : []));
+    const old = "1".repeat(32), next = "2".repeat(32);
+    insert(old, "exited");
+    insert(next, "spawning");
+    const stale = stub.issue({ thread: id, turn, launch: old });
+    const fresh = stub.issue({ thread: id, turn, launch: next });
+    const status = async (token: string) => (await fetch(`${stub.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" })).status;
+    expect(await status(stale.token)).toBe(401); // its launch ended; another one spawning doesn't make it count
+    expect(await status(fresh.token)).toBe(503);
+    stale.revoke(); // a late revoke of the old endpoint
+    expect(await status(fresh.token)).toBe(503);
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_relay_grant WHERE revoked_at IS NULL").get()!["n"]).toBe(1);
+  });
 });
 
 describe("each agent at its level, and the proven matrix", () => {
@@ -310,15 +333,59 @@ describe("a stopped launch's network ends at once, whichever process stops it", 
     expect(tries).toBe(2);
   });
 
+  test("stopped by a process that doesn't hold the launch, with no confirmation from its holder: never called cut, unresolved", async () => {
+    const { id, paths } = await thread();
+    const running = agent(paths);
+    const launch = live(id, running.pid, running.start, { held: false });
+    expect(await stopFlexibleThreadAgent(world.store, { id, reason: "test", io })).toMatchObject({ ok: false, why: "the Toolroll process that started it hasn't confirmed its network handles closed yet" });
+    await running.closed;
+    expect(flexibleLaunch(world.store, launch)).toMatchObject({ state: "unresolved", networkClosedAt: null });
+    // A holder proven gone (a restart) closed them with its process.
+    expect(await stopFlexibleThreadAgent(world.store, { id, reason: "test", io, holderGone: true })).toMatchObject({ ok: true });
+  }, 30_000);
+
+  test("a network handle that fails to close keeps the launch unresolved (its processes are stopped anyway); once it closes, the stop settles", async () => {
+    const { id, paths } = await thread();
+    const running = agent(paths);
+    const launch = live(id, running.pid, running.start);
+    let failing = true;
+    onLaunchStopped(launch, () => { if (failing) throw new Error("the proxy wouldn't close"); });
+    expect(await stopFlexibleThreadAgent(world.store, { id, reason: "test", io })).toMatchObject({ ok: false, why: "1 of its network handles couldn't be closed yet; Toolroll keeps trying" });
+    await running.closed; // the processes were stopped regardless
+    expect(flexibleLaunch(world.store, launch)).toMatchObject({ state: "unresolved", networkClosedAt: null });
+    failing = false;
+    expect(await stopFlexibleThreadAgent(world.store, { id, reason: "test", io })).toMatchObject({ ok: true });
+    expect(flexibleLaunch(world.store, launch)!.networkClosedAt).not.toBeNull();
+  }, 30_000);
+
+  test("the holder's watcher keeps trying through database errors, then closes its handles and confirms", async () => {
+    const { id, paths } = await thread();
+    const running = agent(paths);
+    const launch = live(id, running.pid, running.start, { held: false });
+    world.store.handle.prepare("UPDATE flexible_thread_launch SET state = 'unresolved' WHERE id = ?").run(launch); // stopped elsewhere
+    let fails = 5, closed = 0;
+    const flaky = new Proxy(world.store, { get(target, prop) {
+      if (prop === "handle" && fails > 0) { fails--; throw new Error("database is locked"); }
+      const value = Reflect.get(target, prop) as unknown;
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    } });
+    onLaunchStopped(launch, () => { closed++; });
+    const stopWatching = watchLaunch(flaky, launch, paths.folder, io, 50);
+    try {
+      await until(() => closed === 1 && flexibleLaunch(world.store, launch)!.networkClosedAt !== null);
+      expect(fails).toBe(0);
+    } finally { stopWatching(); }
+  }, 30_000);
+
   test("a second Toolroll process stops the thread: the relay grant is revoked in the database, and this holder's proxy closes as its watcher sees it", async () => {
     const { id, paths } = await thread();
     const turn = admit(id);
     expect(beginFlexibleTurn(world.store, { turn, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
     const running = agent(paths);
-    const launch = live(id, running.pid, running.start);
+    const launch = live(id, running.pid, running.start, { held: false }); // as if this process's watcher were the holder's
     const made = await startFlexibleRelayStub(world.store);
     if ("ok" in made) throw new Error(made.message);
-    const endpoint = made.issue({ thread: id, turn });
+    const endpoint = made.issue({ thread: id, turn, launch });
     let proxyClosed = 0;
     onLaunchStopped(launch, () => { proxyClosed++; });
     const stopWatching = watchLaunch(world.store, launch, paths.folder, io, 100);
@@ -330,10 +397,20 @@ describe("a stopped launch's network ends at once, whichever process stops it", 
             modules: { store: new URL("./store.ts", import.meta.url).href, thread: new URL("./flexible-thread.ts", import.meta.url).href } }) } },
         (error, stdout, stderr) => error === null ? resolve(stdout) : reject(new Error(`${error.message}\n${stderr}`)));
       });
-      expect(JSON.parse(stopped)).toMatchObject({ ok: true, how: "none-left" });
+      // The other process stops every process of it and revokes its relay grant at once, but can't call the network cut
+      // until this holder confirms its own proxy closed: unresolved, and it says why.
+      // (This holder's watcher may confirm before the other process finishes; then that stop settles at once.)
+      const result = JSON.parse(stopped) as { ok: boolean; why?: string };
       await running.closed;
       expect((await fetch(`${made.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${endpoint.token}` }, body: "{}" })).status).toBe(401);
       await until(() => proxyClosed === 1);
+      await until(() => flexibleLaunch(world.store, launch)!.networkClosedAt !== null);
+      if (!result.ok) {
+        expect(result.why).toBe("the Toolroll process that started it hasn't confirmed its network handles closed yet");
+        // Confirmed: the next stop settles it.
+        expect(await stopFlexibleThreadAgent(world.store, { id, reason: "test", io })).toMatchObject({ ok: true });
+      }
+      expect(flexibleLaunch(world.store, launch)!.state).toBe("exited");
       expect(flexibleTurn(world.store, turn)!.status).toBe("interrupted");
     } finally { stopWatching(); await made.close(); }
   }, 60_000);

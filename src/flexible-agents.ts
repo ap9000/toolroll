@@ -25,7 +25,7 @@ import type { ChildProcess } from "node:child_process";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { threadLevelAllowed, FLEXIBLE_PROVEN, type FlexibleProvenMatrix } from "./flexible-levels.js";
-import { defaultCustodyIO, issueRelayGrant, onLaunchStopped, relayGrantLive, revokeRelayGrants, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
+import { defaultCustodyIO, issueRelayGrant, onLaunchStopped, relayGrantLive, revokeRelayGrant, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
 import { startIdentityOf } from "./flexible-custody.js";
 import { flexibleFenceDigest, flexibleThread, flexibleThreadFence, flexibleThreadSpawn, stopFlexibleThreadAgent, withFlexibleThreadLock, type FlexibleThreadRefusal, type FlexibleThreadSpawnSeams } from "./flexible-thread.js";
 import { beginFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleTurnsOf, withdrawFlexibleTurn, withdrawFlexibleTurnsAbove, type FlexibleClock, type FlexibleTurnRefusal } from "./flexible-turns.js";
@@ -51,7 +51,7 @@ const refuse = (reason: keyof typeof WORDS, message: string = WORDS[reason]): Fl
 /** Where a launch's agent signs in: the relay's base URL and this launch's relay token. `revoke` ends the token at once. */
 export type FlexibleRelayEndpoint = { url: string; token: string; revoke: () => void };
 /** The relay as the thread start uses it: where it listens, and a grant for one thread's turn. */
-export type FlexibleRelay = { url: string; issue: (grant: { thread: string; turn: string }) => FlexibleRelayEndpoint };
+export type FlexibleRelay = { url: string; issue: (grant: { thread: string; turn: string; launch: string }) => FlexibleRelayEndpoint };
 export const RELAY_STUB_REFUSAL = "Toolroll's sign-in relay isn't available in this version, so no model was called.";
 export const RELAY_NOT_AUTHORIZED = "This relay token isn't authorized (it was never issued, or its thread was stopped).";
 
@@ -87,7 +87,8 @@ export async function startFlexibleRelayStub(store: Store): Promise<FlexibleRela
     url,
     issue: grant => {
       const token = issueRelayGrant(store, grant);
-      return { url, token, revoke: () => { revokeRelayGrants(store, grant.thread); } };
+      // Revoking an endpoint ends exactly its own grant, never another launch's.
+      return { url, token, revoke: () => { revokeRelayGrant(store, token); } };
     },
     refused: () => refused,
     authorized: () => authorized,
@@ -223,21 +224,28 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   // A fresh configuration folder for every launch, made by Toolroll: nothing an earlier launch wrote there loads again.
   try { freshFolder(join(fenced.paths.cache, "provider"), configHome); }
   catch { endTurn("the agent's configuration folder couldn't be made"); return { ok: false, reason: "setup-failed", message: "The agent's configuration folder couldn't be made, so it didn't start." }; }
-  const endpoint = input.relay.issue({ thread: turn.thread, turn: turn.id });
-  const spec = flexibleAgentLaunch(turn.provider, turn.level, { model: turn.model, relay: endpoint, configHome });
-  if (!spec.ok) { endpoint.revoke(); endTurn(spec.message); return spec; }
+  // The relay grant is issued for exactly the launch once it has its id (its variables come with it); everything else
+  // of the agent's environment is known now.
+  let endpoint: FlexibleRelayEndpoint | null = null;
+  const agentEnvFor = (launchId: string): Record<string, string> => {
+    endpoint = input.relay.issue({ thread: turn.thread, turn: turn.id, launch: launchId });
+    const spec = flexibleAgentLaunch(turn.provider, turn.level, { model: turn.model, relay: endpoint, configHome });
+    if (!spec.ok) throw new Error(spec.message);
+    return spec.spec.env;
+  };
   const spawned = await flexibleThreadSpawn(store, { id: turn.thread, network: { proxyPort: input.network.proxyPort, token: input.network.token }, storage: input.storage,
-    proxyEnv: input.network.proxyEnv, agentEnv: spec.spec.env, launch: { provider: turn.provider, level: turn.level, turn: turn.id, holder: input.holder },
+    proxyEnv: input.network.proxyEnv, agentEnvFor, launch: { provider: turn.provider, level: turn.level, turn: turn.id, holder: input.holder },
     beforeOpen: () => stillMayStart(store, turn.id, input.holder) },
-    spec.spec.file, spec.spec.args, input.platform ?? process.platform, input.seams ?? {});
+    agent.spec.file, agent.spec.args, input.platform ?? process.platform, input.seams ?? {});
+  const issued = endpoint as FlexibleRelayEndpoint | null;
   if (!spawned.ok) {
     // Nothing of the agent ran: its grant ends and the turn ends at no cost.
-    endpoint.revoke();
+    issued?.revoke();
     endTurn(`the agent didn't start: ${spawned.message}`);
     return spawned;
   }
   onLaunchStopped(spawned.launchId, input.network.close);
-  onLaunchStopped(spawned.launchId, endpoint.revoke);
+  if (issued !== null) onLaunchStopped(spawned.launchId, issued.revoke);
   const stopWatching = watchLaunch(store, spawned.launchId, fenced.paths.folder, input.seams?.io);
   // When the agent's own process ends (its exit, not its output closing: a survivor may hold that open), what it left
   // behind is stopped and the exit proved (its network closes first).
@@ -322,7 +330,8 @@ export async function recoverFlexibleLaunchesOf(store: Store, input: { holder: s
   const threads = store.handle.prepare("SELECT DISTINCT thread FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited'").all(input.holder).map(row => String(row["thread"]));
   let settled = 0, unresolved = 0;
   for (const thread of threads) {
-    const result = await stopFlexibleThreadAgent(store, { id: thread, reason: "Toolroll restarted", ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }) });
+    // The caller proved the holder gone: its proxy and relay handles died with it.
+    const result = await stopFlexibleThreadAgent(store, { id: thread, reason: "Toolroll restarted", holderGone: true, ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }) });
     if ("reason" in result || !result.ok) unresolved++; else settled++;
   }
   if (unresolved > 0) return { ok: true, settled, unresolved, withdrawn: 0, interrupted: 0 };

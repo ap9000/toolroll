@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { gitViewsRoot, lockCheckout } from "./git-views.js";
+import { gitViewsRoot, lockCheckout, withCheckoutLock } from "./git-views.js";
 
 let home: string;
 const children: ChildProcess[] = [];
@@ -28,6 +28,18 @@ test("one holder at a time in this process; the next takes it once released", as
   const waiting = lockCheckout(home, "/work/a", 5_000);
   release();
   (await waiting)();
+});
+
+test("re-entrant only inside a live hold: a callback that inherited a hold and runs after it ended takes the lock again", async () => {
+  let fired: Promise<boolean> | null = null;
+  await withCheckoutLock(home, "/work/r", async () => {
+    // Truly nested, while the hold is live: runs under it, no waiting.
+    expect(await withCheckoutLock(home, "/work/r", async () => true, 150)).toBe(true);
+    // A timer registered inside the hold carries its context, but fires after the hold ended.
+    fired = new Promise(done => setTimeout(() => { withCheckoutLock(home, "/work/r", async () => true, 150).then(() => done(true), () => done(false)); }, 100));
+  });
+  const other = await lockCheckout(home, "/work/r"); // another holder takes the lock right after the release
+  try { expect(await fired!).toBe(false); } finally { other(); }
 });
 
 test("a release lets go of its own lock only, and only once", async () => {

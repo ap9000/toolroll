@@ -15,7 +15,7 @@
  *   tree (no group member, no namespace member, no witness, no descendant and no process of the thread's working in its
  *   folder left), or for a launch whose start gate never opened. At most one unsettled launch per thread.
  * - `flexible_relay_grant`: each relay token Toolroll handed a thread's agent (by its SHA-256, never the token), for
- *   which thread and turn, and when it was revoked. The relay checks it on every call; any Toolroll process revokes it
+ *   exactly which launch (and its thread and turn), and when it was revoked. The relay checks it on every call; any Toolroll process revokes it
  *   when it stops the thread, so the relay's service ends at once whichever process stopped it. Only ever revoked.
  * - `flexible_thread_level`: the level a thread's owner last chose for it (lowered to, or raised to with a fresh proof);
  *   no row is the level its turns were admitted at.
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS flexible_thread_launch (
   stop_reason  TEXT CHECK (stop_reason IS NULL OR length(stop_reason) <= 200),
   ended_at     TEXT,
   end_detail   TEXT CHECK (end_detail IS NULL OR length(end_detail) <= 2000),
+  network_closed_at TEXT,
   CHECK ((leader_pid IS NULL) = (leader_start IS NULL)),
   CHECK (state NOT IN ('live', 'stopping', 'unresolved') OR leader_pid IS NOT NULL),
   CHECK ((ended_at IS NULL) = (state <> 'exited'))
@@ -53,6 +54,7 @@ WHEN NEW.id IS NOT OLD.id OR NEW.thread IS NOT OLD.thread OR NEW.turn IS NOT OLD
   OR NEW.fence_digest IS NOT OLD.fence_digest OR NEW.holder IS NOT OLD.holder OR NEW.host IS NOT OLD.host OR NEW.machine_id IS NOT OLD.machine_id
   OR NEW.boot_id IS NOT OLD.boot_id OR NEW.marker IS NOT OLD.marker OR NEW.started_at IS NOT OLD.started_at
   OR (OLD.leader_pid IS NOT NULL AND (NEW.leader_pid IS NOT OLD.leader_pid OR NEW.leader_start IS NOT OLD.leader_start))
+  OR (OLD.network_closed_at IS NOT NULL AND NEW.network_closed_at IS NOT OLD.network_closed_at)
   OR OLD.state = 'exited'
   OR (OLD.state = 'spawning' AND NEW.state NOT IN ('spawning', 'live', 'exited'))
   OR (OLD.state = 'live' AND NEW.state = 'spawning')
@@ -65,12 +67,13 @@ CREATE TABLE IF NOT EXISTS flexible_relay_grant (
   token_digest TEXT PRIMARY KEY CHECK (length(token_digest) = 64 AND token_digest NOT GLOB '*[^0-9a-f]*'),
   thread       TEXT NOT NULL CHECK (length(thread) = 32 AND thread NOT GLOB '*[^0-9a-f]*'),
   turn         TEXT NOT NULL CHECK (length(turn) = 32 AND turn NOT GLOB '*[^0-9a-f]*'),
+  launch       TEXT NOT NULL CHECK (length(launch) = 32 AND launch NOT GLOB '*[^0-9a-f]*'),
   issued_at    TEXT NOT NULL,
   revoked_at   TEXT
 );
-CREATE INDEX IF NOT EXISTS flexible_relay_grant_thread ON flexible_relay_grant (thread, revoked_at);
+CREATE INDEX IF NOT EXISTS flexible_relay_grant_launch ON flexible_relay_grant (launch, revoked_at);
 CREATE TRIGGER IF NOT EXISTS flexible_relay_grant_written_once BEFORE UPDATE ON flexible_relay_grant
-WHEN NEW.token_digest IS NOT OLD.token_digest OR NEW.thread IS NOT OLD.thread OR NEW.turn IS NOT OLD.turn OR NEW.issued_at IS NOT OLD.issued_at
+WHEN NEW.token_digest IS NOT OLD.token_digest OR NEW.thread IS NOT OLD.thread OR NEW.turn IS NOT OLD.turn OR NEW.launch IS NOT OLD.launch OR NEW.issued_at IS NOT OLD.issued_at
   OR OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL
 BEGIN
   SELECT RAISE(ABORT, 'a relay grant is written once and only revoked');
@@ -89,6 +92,6 @@ export const V165_STEPS = Object.freeze(["thread-launch"] as const);
 /** v165's named objects, as a current or resumed file must hold them exactly (store.ts checks each). */
 export const V165_OBJECTS = Object.freeze([
   ["table", "flexible_thread_launch"], ["index", "flexible_thread_launch_unsettled"], ["index", "flexible_thread_launch_holder"],
-  ["trigger", "flexible_thread_launch_written_once"], ["table", "flexible_relay_grant"], ["index", "flexible_relay_grant_thread"],
+  ["trigger", "flexible_thread_launch_written_once"], ["table", "flexible_relay_grant"], ["index", "flexible_relay_grant_launch"],
   ["trigger", "flexible_relay_grant_written_once"], ["table", "flexible_thread_level"],
 ] as const);

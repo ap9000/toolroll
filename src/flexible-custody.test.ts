@@ -9,23 +9,24 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { custodySettled, observeCustody, realCustodyIO, scanCustody, startIdentityOf, stopCustody, type CustodyIO, type LaunchCustody, type ProcRow, type ProcessWitness, type SignalResult } from "./flexible-custody.js";
+import { custodySettled, observeCustody, realCustodyIO, scanCustody, startIdentityOf, stopCustody, trustedPython, type CustodyIO, type LaunchCustody, type ProcRow, type ProcessWitness, type SignalResult } from "./flexible-custody.js";
 
 const BOOT = "11111111-1111-4111-8111-111111111111";
 
 /** A stand-in OS: a mutable process table, identity-bound signals that freeze and kill rows, and a log of every signal. */
 function fakeOS(rows: ProcRow[], options: { platform?: NodeJS.Platform; namespaces?: Record<number, string>; holders?: number[] | null; boot?: string | null; immortal?: number[];
   /** Before a signal reaches it, this pid is replaced by a new process with this start identity (pid reuse). */
-  replaceBeforeSignal?: { pid: number; start: string }; noIdentitySignals?: boolean } = {}) {
+  replaceBeforeSignal?: { pid: number; start: string }; noIdentitySignals?: boolean; identityBound?: boolean } = {}) {
   const table = new Map(rows.map(row => [row.pid, { ...row }]));
   const stopped = new Set<number>();
   const log: string[] = [];
   const io: CustodyIO = {
     platform: options.platform ?? "darwin",
     self: 1000,
+    identityBound: options.identityBound ?? true,
     table: () => [...table.values()].map(row => ({ ...row })),
     namespaceOf: pid => pid === 1000 || table.has(pid) ? options.namespaces?.[pid] ?? "pid:[1]" : null,
     holdersOf: () => options.holders === null ? null : (options.holders ?? []).filter(pid => table.has(pid)),
@@ -105,6 +106,12 @@ describe("which processes are proven the launch's, and which only block", () => 
     expect([...os.table.keys()].sort()).toEqual([600, 601]);
   });
 
+  test("two looks that disagree (a process in the folder the table didn't have) are never a verified exit", () => {
+    const os = fakeOS([], { holders: [600] });
+    os.io.holdersOf = () => [600]; // listed by lsof, absent from the process table read just before
+    expect(custodySettled(custody({ leader: null }), os.io)).toMatchObject({ verified: false, why: "process 600 appeared while the scan ran" });
+  });
+
   test("a table or listing that can't be read whole is never a verified exit", () => {
     expect(custodySettled(custody(), { ...fakeOS([]).io, table: () => null })).toMatchObject({ verified: false, why: "the process table couldn't be read" });
     expect(custodySettled(custody(), fakeOS([], { holders: null }).io)).toMatchObject({ verified: false, why: expect.stringContaining("couldn't all be listed") });
@@ -141,6 +148,17 @@ describe("stopping, by identity, and proving the exit", () => {
     expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: false, why: "process 600 was replaced by another while it was being stopped, so the stop can't be proven" });
   });
 
+  test("macOS: a stop that signalled anything by a bare pid (start identity checked just before) is best effort, never fully verified; the leader through its own handle isn't", async () => {
+    const os = fakeOS([row(500), row(600, { ppid: 500, pgid: 600, start: "s1002" })], { identityBound: false });
+    expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: true, how: "best-effort" });
+    const leaderOnly = fakeOS([row(500)], { identityBound: false });
+    const handled: string[] = [];
+    const outcome = await stopCustody(custody(), leaderOnly.io, { leaderSignal: signal => { handled.push(signal); if (signal === "SIGKILL") leaderOnly.table.delete(500); return "sent"; } });
+    expect(outcome).toMatchObject({ verified: true, how: "none-left" });
+    expect(handled).toEqual(["SIGSTOP", "SIGKILL"]);
+    expect(leaderOnly.log).toEqual([]); // nothing went to its pid
+  });
+
   test("where no identity-bound signal can be sent, nothing is signalled and custody stays unresolved", async () => {
     const os = fakeOS([row(500)], { noIdentitySignals: true });
     expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: false, why: expect.stringContaining("can't send a signal bound to a process's identity") });
@@ -160,6 +178,30 @@ describe("stopping, by identity, and proving the exit", () => {
     expect(await stopCustody(custody({ host }), after.io)).toMatchObject({ verified: true, how: "boot-changed" });
     expect(after.log).toEqual([]);
     expect(custodySettled(custody({ host }), fakeOS([row(500)], { boot: null }).io)).toMatchObject({ verified: false });
+  });
+});
+
+describe("the interpreter that sends Linux's identity-bound signals", () => {
+  test("only from a fixed list of places, never PATH; a program anyone else can change is refused; none found means none", () => {
+    const scratch = realpathSync(mkdtempSync(join(tmpdir(), "so-python-")));
+    try {
+      const planted = join(scratch, "bin");
+      mkdirSync(planted, { mode: 0o755 });
+      writeFileSync(join(planted, "python3"), "#!/bin/sh\nexit 0\n");
+      chmodSync(join(planted, "python3"), 0o755);
+      const path = process.env["PATH"];
+      process.env["PATH"] = `${planted}:${path ?? ""}`;
+      try { expect(trustedPython([join(scratch, "nowhere", "python3")])).toBeNull(); } finally { process.env["PATH"] = path; }
+      // A program in the list, but group-writable: refused.
+      chmodSync(join(planted, "python3"), 0o775);
+      expect(trustedPython([join(planted, "python3")])).toBeNull();
+      // Owned by this user, writable by no one else, in a folder no one else can change: accepted.
+      chmodSync(join(planted, "python3"), 0o755);
+      expect(trustedPython([join(planted, "python3")])).toBe(join(planted, "python3"));
+      chmodSync(planted, 0o777);
+      expect(trustedPython([join(planted, "python3")])).toBeNull();
+      chmodSync(planted, 0o755);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
   });
 });
 

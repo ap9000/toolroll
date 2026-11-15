@@ -68,6 +68,8 @@ describe("v165", () => {
     db.prepare(`UPDATE flexible_thread_launch SET witnesses = '[{"pid":5,"start":"t101"}]', namespaces = '["pid:[4026532000]"]' WHERE id = ?`).run(ID);
     expect(() => db.prepare("UPDATE flexible_thread_launch SET witnesses = '[]' WHERE id = ?").run(ID)).toThrow(/only grows/);
     expect(() => db.prepare("UPDATE flexible_thread_launch SET namespaces = '{}' WHERE id = ?").run(ID)).toThrow();
+    db.prepare("UPDATE flexible_thread_launch SET network_closed_at = ? WHERE id = ?").run(T0, ID);
+    expect(() => db.prepare("UPDATE flexible_thread_launch SET network_closed_at = NULL WHERE id = ?").run(ID)).toThrow(/written once/);
     db.prepare("UPDATE flexible_thread_launch SET state = 'unresolved' WHERE id = ?").run(ID);
     expect(() => db.prepare("UPDATE flexible_thread_launch SET state = 'live' WHERE id = ?").run(ID)).toThrow(/only moves forward/);
     db.prepare("UPDATE flexible_thread_launch SET state = 'exited', ended_at = ? WHERE id = ?").run(T0, ID);
@@ -75,9 +77,11 @@ describe("v165", () => {
     // Settled, the thread may launch again.
     insert(db, { id: "1".repeat(32) });
     // A relay grant: only its digest, only ever revoked.
-    expect(() => db.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, issued_at) VALUES ('tr-relay-raw', ?, ?, ?)").run(THREAD, ID, T0)).toThrow();
-    db.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, issued_at) VALUES (?, ?, ?, ?)").run("e".repeat(64), THREAD, ID, T0);
+    expect(() => db.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, launch, issued_at) VALUES ('tr-relay-raw', ?, ?, ?, ?)").run(THREAD, ID, ID, T0)).toThrow();
+    expect(() => db.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, issued_at) VALUES (?, ?, ?, ?)").run("d".repeat(64), THREAD, ID, T0)).toThrow(); // bound to a launch
+    db.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, launch, issued_at) VALUES (?, ?, ?, ?, ?)").run("e".repeat(64), THREAD, ID, ID, T0);
     expect(() => db.prepare("UPDATE flexible_relay_grant SET thread = ?").run("b".repeat(32))).toThrow(/only revoked/);
+    expect(() => db.prepare("UPDATE flexible_relay_grant SET launch = ?").run("b".repeat(32))).toThrow(/only revoked/);
     db.prepare("UPDATE flexible_relay_grant SET revoked_at = ?").run(T0);
     expect(() => db.prepare("UPDATE flexible_relay_grant SET revoked_at = NULL").run()).toThrow(/only revoked/);
     // A thread's chosen level: one row per thread, a level it can name.

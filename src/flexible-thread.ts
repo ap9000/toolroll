@@ -42,7 +42,7 @@ import { withCheckoutLock } from "./git-views.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
-import { defaultCustodyIO, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
 
@@ -575,7 +575,10 @@ export type FlexibleThreadSpawnInput = FlexibleThreadLaunchInput & { proxyEnv: R
   agentEnv?: Record<string, string>;
   /** Run under the thread's lock after the launch is registered and immediately before its start gate opens: a reason to
    * keep the gate shut (the caller's authority or level no longer holds), or null. */
-  beforeOpen?: () => string | null };
+  beforeOpen?: () => string | null;
+  /** What the agent's adapter adds once the launch has its id (its relay grant, bound to exactly this launch): run after
+   * the launch is recorded, before the spawn; never replaces a variable already set. */
+  agentEnvFor?: (launchId: string) => Record<string, string> };
 export type FlexibleThreadSpawned = { ok: true; pid: number; launchId: string; launch: LaunchFence; fenceDigest: string; child: ChildProcess };
 
 /**
@@ -622,9 +625,15 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
   const io = seams.io ?? defaultCustodyIO();
   const fenceDigest = flexibleFenceDigest(launch);
   const record = recordSpawning(store, { thread: input.id, meta: input.launch, fenceDigest, bootId: io.bootId() });
+  let launchEnv: Record<string, string>;
+  try { launchEnv = Object.fromEntries(Object.entries(input.agentEnvFor?.(record.id) ?? {}).filter(([name]) => !(name in env))); }
+  catch (error) {
+    recordNeverStarted(store, record.id, `the agent's launch couldn't be prepared: ${error instanceof Error ? error.message : String(error)}`);
+    return refuse("setup-failed", "the agent's launch couldn't be prepared");
+  }
   let child: ChildProcess;
   try {
-    child = spawn(spawned.file, spawned.args, { cwd: paths.repo, env: { ...outerEnv(env, platform), ...spawned.env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    child = spawn(spawned.file, spawned.args, { cwd: paths.repo, env: { ...outerEnv({ ...launchEnv, ...env }, platform), ...spawned.env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
   } catch (error) {
     recordNeverStarted(store, record.id, `the agent couldn't be started: ${error instanceof Error ? error.message : String(error)}`);
     return refuse("containment", "the agent couldn't be started");
@@ -641,6 +650,7 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
     const start = startIdentityOf(pid, io);
     if (start === null) throw new Error("the agent's process couldn't be identified");
     recordLive(store, { launch: record.id, thread: input.id, pid, start });
+    holdLaunch(record.id, child);
   } catch (error) {
     try { child.stdin?.destroy(); } catch { /* already closed */ }
     // Through the handle Toolroll holds (its own child: the pid can't be reused until it is reaped). The rest of the
@@ -669,7 +679,7 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
  * cleared and its running turn interrupted. When the exit can't be verified, the launch stays unresolved: no new turn,
  * relaunch or removal until a later stop proves it.
  */
-export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO; keepTurn?: string }): Promise<SettleResult | FlexibleThreadRefusal> {
+export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO; keepTurn?: string; holderGone?: boolean }): Promise<SettleResult | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   return withThreadLock(input.id, async () => {
@@ -678,7 +688,7 @@ export async function stopFlexibleThreadAgent(store: Store, input: { id: string;
     const thread = flexibleThread(store, input.id);
     if (thread === null) return refuse("thread-unknown");
     return settleLaunch(store, { thread: thread.id, folder: flexibleThreadPaths(state, thread.id).folder, reason: input.reason, stop: true, ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }),
-      ...(input.keepTurn === undefined ? {} : { keepTurn: input.keepTurn }) });
+      ...(input.keepTurn === undefined ? {} : { keepTurn: input.keepTurn }), ...(input.holderGone === true ? { holderGone: true } : {}) });
   });
 }
 
