@@ -554,9 +554,9 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-task-more-h { margin: 0; font: 600 14px/1.4 var(--so-font-sans); color: var(--so-ink); }
 /* One-workspace S5: what the agent says about its own work and what a person said, before the act. Agent lines carry a
  * quiet neutral chip; a person's words are quoted in ink with their author and time. Text only, wrapped, never sideways. */
-.so-report { gap: 8px; padding-top: 10px; border-top: 1px solid var(--so-line); }
+.so-report { gap: var(--so-space-sm); padding-top: 10px; border-top: 1px solid var(--so-line); }
 .so-report-lines { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.so-report-line { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 2px 8px; min-width: 0; font-size: 13px; line-height: 1.45; color: var(--so-ink); }
+.so-report-line { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; gap: 2px var(--so-space-sm); min-width: 0; font-size: 13px; line-height: 1.45; color: var(--so-ink); }
 .so-report-line[data-you-said] { grid-template-columns: minmax(0, 1fr); }
 .so-report-line > .k-chip { min-width: 64px; justify-content: center; }
 .so-report-text, .so-report-quote { min-width: 0; overflow-wrap: anywhere; }
