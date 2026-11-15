@@ -17,14 +17,14 @@ import { coverageStateWords,coverageWords,type CriterionEvidenceRef,type Criteri
 import { type PullRequestView } from "../pull-request-flow.js";
 import { qualityModeTitle } from "../quality.js";
 import { acceptWithChecksOf,type ResultActFacts,resultActsOf,SEND_BACK_PUBLISHED,SEND_BACK_UNPUBLISHED } from "../result-acts.js";
-import { SCREENSHOT_CAPTURE,structuredHandoffView,type StructuredHandoffView,terminalDiffView,type TerminalDiffView } from "../result-evidence-readers.js";
+import { SCREENSHOT_CAPTURE,structuredHandoffView,type AgentReport,type StructuredHandoffView,terminalDiffView,type TerminalDiffView } from "../result-evidence-readers.js";
 import { ADD_TESTS_ACTION,type FollowUpCheck,followUpChecksOf } from "../result-follow-ups.js";
 import type { RunEfficiency } from "../run-efficiency.js";
 import { evidenceHealthOf,evidenceProblemDetailsOf,evidenceResultStatusOf,isRevisionFeedback,RESULT_REVIEW_SCRIPT,RESULT_TABS,resultFactsAttributeMap,resultLeadOf,type ResultScreenshot,type ResultTab,revisionBatchOf,revisionSourceOf,type SharedResultFacts } from "../result-review.js";
 import { type BuildReviewView,findingWords } from "../review-switch.js";
 import { type AcceptanceCriterion,type approvalOf } from "../scope.js";
 import { parseReport,type ReportItem } from "../scout-report.js";
-import { type Artifact,type DiffComment,type Publication,type RepairChainRow,type ReviewRetryState,type Run,type Store,type TaskState } from "../store.js";
+import { type Artifact,type DiffComment,type Publication,type RepairChainRow,type ReviewRetryState,type Run,type Store,type TaskState,type TypedNote } from "../store.js";
 import { runCostWords } from "../summary.js";
 import { approvedCheckOf,approvedCheckStateOf,CHECK_COMMAND_CHANGED,CHECK_UNREADABLE,checkBackingOf,CHECKED_AT_RELEASE,checksFactOf,receiptChecksOf,type ChecksFact,demoChecksOf,type ReleaseState,type PullRequestFact,pullRequestFactOf,requirementsOf,requirementWordOf,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,type TaskStatus } from "../task-status.js";
 import { ACCEPT_NEEDS_REASON,acceptWordsOf,cantAcceptYetOf,type DisplayStatus,evidenceProblemOf,MISMATCH_HEADLINE,type PublicationFacts,receiptHeadingOf,receiptPublicationWords,reportMismatchesOf,RESULT_DECISION_SENTENCE,resultHeadlineOf,resultStatusOf,REVIEW_TOKENS,type ReviewFacts } from "../workspace-ui.js";
@@ -495,6 +495,9 @@ export type ReviewCockpitView = {
   /** The same history as the shared projection's facts (review fixes). */
   review: ReviewFacts | null;
   notes: { id: number; author: string; note: string; createdAt: string }[];
+  /** One-workspace S5: the words a signed-in person typed for this version (store typedNotesFor), newest first. Never a
+   * planner's scope, a reviewer's observation or anything a token, the CLI or a chat card filed. */
+  youSaid?: TypedNote[];
   /** The demo database: no check runs here, and the Checks row says so. */
   demo?: boolean;
   /** A build that didn't deliver a result: what it missed, the suggestion, and Retry when the task can be retried here. */
@@ -780,6 +783,10 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     problem: view.detail === null ? view.historyProblem : null,
     next: reviewNextActionOf(view, csrf, host.kind === "task" && run !== null ? `${host.base}&run=${run.id}` : undefined), complete: null, decision: null, checks: null, intent: intentView, noRun: null, panel: null,
     notes: view.notes.map(one => ({ author: one.author, at: one.createdAt, note: one.note })),
+    // One-workspace S5: the agent's own account (agent-written, never a check), and only words a signed-in person typed.
+    agentReport: run === null || view.detail === null ? null : view.detail.handoff?.report ?? EMPTY_AGENT_REPORT,
+    youSaid: (view.youSaid ?? []).map(one => ({ kind: one.kind, author: one.author, you: one.author === user, at: one.at, note: quotedNoteOf(one.note),
+      question: one.question === null ? null : quotedNoteOf(one.question) })),
     efficiency: view.efficiency ?? null,
     network: view.network ?? null,
     timing: view.timing ?? null,
@@ -2359,6 +2366,8 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
         revisionSealFields(detail.comments, detail.sourceDigest),
         html`<input type="hidden" data-recorded-requests value="${[...detail.comments, ...(detail.pastComments ?? [])].filter(one => one.sourceKey?.startsWith(`review:${o.user}:`)).map(one => one.sourceKey!.slice(`review:${o.user}:`.length)).join(",")}">`,
         html`<input type="hidden" name="image" value=""><figure class="feedback-image" data-feedback-image hidden><img alt="Selected screenshot" hidden><figcaption></figcaption><button type="button" class="quiet" data-remove-image>Remove image</button></figure>`,
+        // What the page fills in (a reviewer's note, a requirement marked Not right) is its own field, never the person's box.
+        html`<input type="hidden" name="context" value=""><div class="meta" data-request-context-line hidden></div>`,
         html`<textarea name="note" rows="2" maxlength="${LIMITS.note}" placeholder="Describe the change…" aria-label="review comment" aria-describedby="comment-note-limit"${o.noted ? " autofocus" : ""}></textarea>`,
         html`<span class="meta diff-comment-limit" id="comment-note-limit">up to ${LIMITS.note} characters</span>`,
         html`<details class="result-pin"><summary>Attach to a file or line</summary>`,
@@ -2662,4 +2671,13 @@ export function runFactsFragment(run: Run, taskId: string, live: boolean, route:
     return html`<p class="k-note" data-region-stop>It stopped without finishing. <a class="k-link" href="/r/${run.id}">Reload for the record</a></p>`;
   }
   return runFactsRows(run, taskId, live, route);
+}
+
+/** No report: what an agent that reported none (or a handoff from before S5) reads as. Said as "didn't report". */
+export const EMPTY_AGENT_REPORT: AgentReport = Object.freeze({ decisions: [], assumptions: [], notDone: [], risks: [] }) as AgentReport;
+
+/** A person's note as a quote: one line, at most 280 characters. Their words, shown as text only. */
+export function quotedNoteOf(note: string): string {
+  const flat = note.replace(/\s+/g, " ").trim();
+  return flat.length <= 280 ? flat : `${flat.slice(0, 279).trimEnd()}…`;
 }

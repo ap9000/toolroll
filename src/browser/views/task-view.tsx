@@ -136,13 +136,16 @@ export function Html({ html, className }: { html: string; className?: string }) 
   return <GuardedHtml html={html} immutable {...(className === undefined ? {} : { className })} />;
 }
 
-/** Retry itself, on the failed box: the task page's requeue (branch and workspace kept), its note for the next
- * attempt starting with the one suggestion of what to change, ready to edit. */
+/** Retry itself, on the failed box: the task page's requeue (branch and workspace kept). The one suggestion of what to
+ * change rides along as its own field, shown as Toolroll's; the person's own note starts empty (one-workspace S5: only
+ * what they type is ever quoted as theirs). */
 export function RetryForm({ action, note, pins }: { action: string; csrf?: string; note?: string | undefined; variant?: "default" | "attention"; pins?: RetryPins | null | undefined }) {
+  const suggestion = (note ?? "").trim();
   return <PostForm action={action} data-retry className="k-field">
     <RetryPinFields pins={pins} />
-    <label htmlFor="retry-note" className="k-label">What to change next time</label>
-    <KTextarea id="retry-note" name="note" maxLength={RETRY_NOTE_LIMIT} rows={2} defaultValue={note ?? ""} placeholder="Note for the next attempt (optional)" data-retry-note="" />
+    {suggestion !== "" && <><input type="hidden" name="context" value={suggestion} /><p className="k-note" data-retry-suggestion="">Sent with the retry: {suggestion}</p></>}
+    <label htmlFor="retry-note" className="k-label">Your note for the next attempt</label>
+    <KTextarea id="retry-note" name="note" maxLength={RETRY_NOTE_LIMIT} rows={2} placeholder="Optional" data-retry-note="" />
     <div className="k-acts"><KButton type="submit" variant="primary" label="Retry" data-primary-action="" title="Keeps the branch and workspace" /></div>
   </PostForm>;
 }
@@ -356,8 +359,9 @@ function ReleaseBox({ release }: { release: NonNullable<BrowserTaskView["release
 }
 
 /** "Can I merge?" (docs/plans/plain-toolroll.md P1.6; `toolroll task ready` is its twin): one row per fact from
- * Toolroll's records, and each blocker's existing act. Ask the agent to fix is Send back with the blocker as its note,
- * editable before it is sent; Run checks and Retry post exactly as their own boxes do. Nothing here acts on its own. */
+ * Toolroll's records, and each blocker's existing act. Ask the agent to fix is Send back with the blocker riding as its
+ * own field and the person's own note starting empty; Run checks and Retry post exactly as their own boxes do. Nothing
+ * here acts on its own. */
 function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["mergeReady"]>; retry: BrowserTaskView["retry"] }) {
   const MARK: Readonly<Record<string, string>> = { yes: "✓", no: "✗", waiting: "…", unknown: "?" };
   const chip = ready.answer === "yes" || ready.answer === "merged" ? <KChip word={ready.answer === "merged" ? "Merged" : "Ready"} tone="done" />
@@ -386,7 +390,9 @@ function MergeReadyBox({ ready, retry }: { ready: NonNullable<BrowserTaskView["m
             <input type="hidden" name="source" value={row.act.source} />
             <input type="hidden" name="request" value={row.act.request} />
             <input type="hidden" name="return" value={row.act.returnTo} />
-            <KTextarea name="note" rows={3} maxLength={TEXT_LIMITS.note} defaultValue={row.act.note} aria-label="What the agent should fix" />
+            {/* What failed rides along as its own field, shown as Toolroll's; the person's own note starts empty. */}
+            {row.act.note.trim() !== "" && <><input type="hidden" name="context" value={row.act.note} /><p className="k-note" data-fix-context="">Sent with it: {row.act.note}</p></>}
+            <KTextarea name="note" rows={3} maxLength={TEXT_LIMITS.note} placeholder="Your note (optional)" aria-label="Your note for the agent" />
             <div className="k-acts"><KButton type="submit" label="Ask the agent to fix" title="Sends it back with this note, as Send back does" /></div>
           </PostForm>
         </KDisclose>}

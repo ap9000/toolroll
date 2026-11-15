@@ -1798,6 +1798,13 @@ describe("scope text is data, not instructions", () => {
       expect(block).toContain("0123456789abcdef");
       expect(brief).toMatch(/write ONE file named exactly STANDING-ORDERS-DONE-[0-9a-f]{16}\.json/);
     });
+
+    test("the handoff asks for the agent's report: decisions, assumptions, what it left undone and risks, optional and short (S5)", async () => {
+      const brief = await briefFor({ goal: "Add the guard." });
+      for (const field of ['"decisions"', '"assumptions"', '"notDone"', '"risks"']) expect(brief).toContain(field);
+      expect(brief).toContain("four optional lists of at most 5 short lines each");
+      expect(brief).toContain("Leave a list out rather");
+    });
   });
 });
 

@@ -383,6 +383,15 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
   if(form){
     var noteBox=form.querySelector('[name=note]'),pathBox=form.querySelector('[name=path]'),lineBox=form.querySelector('[name=line]'),pin=form.querySelector('details.result-pin');
     var imageBox=form.querySelector('[name=image]'),imagePreview=form.querySelector('[data-feedback-image]');
+    // What the page fills in for the person (a reviewer's note to act on, a requirement marked Not right) is its own
+    // field, shown as sent with the note and never written into the person's own box: only what they type is theirs.
+    var contextBox=form.querySelector('[name=context]'),contextLine=form.querySelector('[data-request-context-line]');
+    // One item per line; each is shown, as text, in a list under "Sent with it".
+    function setContext(text){if(!contextBox)return;contextBox.value=text;if(contextLine){contextLine.textContent='';var items=text.split('\n').filter(function(one){return one.trim()!=='';});
+      if(items.length>0){contextLine.appendChild(document.createTextNode('Sent with it:'));var list=document.createElement('ul');items.forEach(function(one){var li=document.createElement('li');li.textContent=one;list.appendChild(li);});contextLine.appendChild(list);}
+      contextLine.hidden=items.length===0;}}
+    // A further item joins what is already there (the same one again changes nothing): earlier feedback is never lost.
+    function addContext(item){if(!contextBox||!item.trim())return;var items=contextBox.value.split('\n').filter(function(one){return one.trim()!=='';});if(items.indexOf(item)<0)items.push(item);setContext(items.join('\n'));}
     function showImage(){
       if(!imageBox||!imagePreview)return;
       imagePreview.hidden=!imageBox.value;
@@ -400,7 +409,7 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
     });
     var limit=document.getElementById('comment-note-limit'),requestBox=form.querySelector('[name=request]');
     function updateActions(){
-      var typed=!!(noteBox&&noteBox.value.trim()),batch=form.querySelector('[name=batch]');
+      var typed=!!(noteBox&&noteBox.value.trim())||!!(contextBox&&contextBox.value.trim()),batch=form.querySelector('[name=batch]');
       var requestAction=form.querySelector('[data-request-changes]'),saveAction=form.querySelector('[data-save-feedback]');
       if(requestAction)requestAction.disabled=!typed&&!(batch&&batch.value);
       if(saveAction)saveAction.disabled=!typed;
@@ -413,8 +422,7 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
     document.addEventListener('click',function(ev){
       var button=ev.target&&ev.target.closest?ev.target.closest('button.pick-file,button.pick-line'):null;if(!button)return;
       var reviewNote=button.getAttribute('data-review-note');
-      if(reviewNote!==null&&noteBox&&noteBox.value&&!window.confirm('Replace the feedback draft with this note?'))return;
-      if(reviewNote!==null&&noteBox)noteBox.value=reviewNote;
+      if(reviewNote!==null){var at=button.getAttribute('data-path');addContext(reviewNote.replace(/\s+/g,' ')+(at?' ('+at+(button.getAttribute('data-line')?':'+button.getAttribute('data-line'):'')+')':''));}
       if(pathBox)pathBox.value=button.getAttribute('data-path')||'';
       if(lineBox)lineBox.value=button.getAttribute('data-line')||'';
       if(pin)pin.open=true;
@@ -432,7 +440,8 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
     // A fresh request identity: 16 random bytes as hex, the server's own shape.
     function mint(){var bytes=new Uint8Array(16);try{crypto.getRandomValues(bytes);}catch(e){for(var i=0;i<16;i++)bytes[i]=Math.floor(Math.random()*256);}
       var hex='';for(var j=0;j<16;j++)hex+=(bytes[j]<16?'0':'')+bytes[j].toString(16);return hex;}
-    function payload(){return JSON.stringify([noteBox?noteBox.value:'',pathBox?pathBox.value:'',lineBox?lineBox.value:'',imageBox?imageBox.value:'']);}
+    // The filled-in field joins the identity only when it holds something, so a draft sent before it existed keeps its own.
+    function payload(){var parts=[noteBox?noteBox.value:'',pathBox?pathBox.value:'',lineBox?lineBox.value:'',imageBox?imageBox.value:''];if(contextBox&&contextBox.value)parts.push(contextBox.value);return JSON.stringify(parts);}
     // What the current token was last submitted with; null = never sent.
     var sent=null,bound=null;
     // The server refused this token for a different note or another result:
@@ -455,8 +464,9 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
       if(typeof saved.request==='string'&&/^[a-f0-9]{32}$/.test(saved.request)&&requestBox)requestBox.value=saved.request;
       if(typeof saved.sent==='string')sent=saved.sent;
       if(imageBox&&typeof saved.image==='string'&&saved.image.length<250)imageBox.value=saved.image;
+      if(contextBox&&!contextBox.value&&typeof saved.context==='string'&&saved.context.length<=4000)setContext(saved.context);
       showImage();
-      bound=JSON.stringify([saved.note,saved.path||'',saved.line||'',saved.image||'']);
+      bound=JSON.stringify([saved.note,saved.path||'',saved.line||'',saved.image||''].concat(saved.context?[saved.context]:[]));
       if(noteBox)noteBox.dispatchEvent(new Event('input'));
     }
     function save(){
@@ -466,8 +476,9 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
       var current=payload();
       if((bound!==null&&current!==bound)||(sent!==null&&current!==sent)){sent=null;if(requestBox)requestBox.value=mint();}
       bound=current;
-      if(!note&&!path&&!line&&!(imageBox&&imageBox.value)){write(draftKey,null);return;}
-      write(draftKey,{note:note,path:path,line:line,image:imageBox?imageBox.value:'',request:requestBox?requestBox.value:'',sent:sent,at:Date.now()});
+      var context=contextBox?contextBox.value:'';
+      if(!note&&!path&&!line&&!context&&!(imageBox&&imageBox.value)){write(draftKey,null);return;}
+      write(draftKey,{note:note,path:path,line:line,image:imageBox?imageBox.value:'',context:context,request:requestBox?requestBox.value:'',sent:sent,at:Date.now()});
       if(!storage&&limit)limit.textContent='Draft stays on this page only. Browser storage is unavailable.';
     }
     form.addEventListener('input',save);

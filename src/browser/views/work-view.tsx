@@ -20,6 +20,7 @@ import { WORKSPACE_NUDGE } from "../live-task.js";
 import { keyed } from "../mutation-key.js";
 import { ACT_TIMEOUT_MS, REDRAW_HOLD_MS, selectionRead, sentence, taskViewOf } from "../act.js";
 import { HomeApproval, SELECTION_SETTLE_MS } from "./home-approval.js";
+import { AgentReport } from "./agent-report.js";
 import { ShellOverlay } from "../shell.js";
 import { RestoreAct, TaskBoard, ToolsMenu, usageSummary } from "./tasks-view.js";
 import { WithCode } from "./task-view.js";
@@ -346,6 +347,8 @@ function TaskPanel({ item, kicker, onDone, onSettled }: { item: Item; kicker: Re
       ? <KDisclose summary={`${caveats.length} things to know before you decide`} open><div className="so-work-caveats">{caveats.map(one => <p key={one} className="so-work-caveat" data-work-caveat>{one}</p>)}</div></KDisclose>
       : caveats.map(one => <p key={one} className="so-work-caveat" data-work-caveat>{one}</p>)}
     {checks && <p className={`so-work-checks${checks.problem ? " is-problem" : ""}`} data-work-checks>{checks.detail}</p>}
+    {/* What the agent says about its own work, and what a person said (one-workspace S5): before the act. */}
+    {result !== null && <AgentReport report={result.agentReport} said={result.youSaid} />}
     {act}
     {view.plan?.lead && <section className="so-work-sec" aria-label="Plan"><h3 className="so-work-sec-h">Plan</h3><p className="so-open-x">{view.plan.lead}</p></section>}
     {view.progress?.steps && view.progress.steps.length > 0 && <ol className="so-work-steps" aria-label="Steps">{view.progress.steps.map((step, at) =>

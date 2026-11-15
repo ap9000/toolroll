@@ -843,7 +843,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createReleaseSheetHandlers@6>sheetScreen@2>remembered@1>fresh:withFreshness(approve-standard,_)@1": 1,
     // Build's password rule (fast-start.ts) reads what the approve forms read.
     "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61>freshAt:withFreshness(approve-standard,_)@1": 1,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>withFreshness(approve-standard,_)@10": 1,
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>withFreshness(approve-standard,_)@14": 1,
   },
   "mergeAsPerson": {
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
@@ -970,7 +970,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTasksHandlers@2>buildNow@62>built:spendingOnlyOnSuccess(_,_)@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2>fastPasswordFacts@61": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 1,
-    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@11": 1,
+    "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40>approved:spendingOnlyOnSuccess(_,_)@15": 1,
     // Lead sweeps (docs/plans/lead-fan-out.md): reviewed new sites — one approval per child, as the ordinary approval.
     "src/chat-actions.ts#fileSweep@34": 1,
   },
