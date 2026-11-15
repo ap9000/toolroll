@@ -90,6 +90,7 @@ import { answerSubagentQuestion } from "./subagent-work.js";
 import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleLoosens, ruleWords, setToolRules } from "./subagent-tools.js";
 import { aboutYouOf, checkAboutYouLine, saveAboutYou, withAboutYouLine } from "./lead-about.js";
 import { CHAT_ACTION_FIELDS, readChatActionRequest, readSharedAction, SHARED_ACTION_VERSION, type ChatActionOperation, type SharedAction } from "./contracts/chat-actions.js";
+import { soloChatSeatRefusal } from "./install-mode.js";
 
 export { CHAT_ACTION_FIELDS, type SharedAction };
 
@@ -1747,6 +1748,9 @@ function approvalBy(store: Store, who: VerifiedApprover, repo: string, now: Date
     const allowed = effectiveChatApproval(store, repo, who.name);
     return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.setting.digest, shown } } : { ok: false, why: allowed.why };
   }
+  // A solo install takes a chat yes only from the owner's own paired chat identity (read in the confirm's transaction).
+  const solo = soloChatSeatRefusal(store, { provider: options.via, binding: options.binding, approver: who.name });
+  if (solo !== null) return { ok: false, why: solo };
   const allowed = chatApproveMode(store, repo, who.name, now, options.via);
   return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.digest, shown } } : allowed;
 }

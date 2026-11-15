@@ -8733,7 +8733,9 @@ async function publishCommand(
       return EXIT.refused;
     }
     const acting = await askCredentials(flags, context);
-    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token, repo);
+    // Letting Toolroll push this project to GitHub is a credential act (network reach): a password typed now, never the
+    // remembered login, solo or not.
+    const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token, repo);
     if (acting === null || !verified?.ok) return refuseApprover(context, "publish setup", verified, "turning on pull requests takes --as <you> --token <your password>", acting?.name);
     savePublishing(store, plan, acting.name, settings, clock());
     return succeed(write, json, "publish setup", { publishing: publishingOf(store, repo) }, () => ["Pull requests are on.", ...terms]);
@@ -8795,7 +8797,8 @@ async function publishCommand(
     }
 
     const acting = await askCredentials(flags, context);
-    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    // A standing grant to push is a credential act, as turning pull requests on is.
+    const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token);
     if (acting === null || !verified?.ok) return refuseApprover(context, "publish grant", verified, "granting takes --as <you> --token <your password> — pushing your repos is a person's yes", acting?.name);
     const { name: asWho, token } = acting;
 

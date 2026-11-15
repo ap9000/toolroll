@@ -1178,10 +1178,16 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver sets up pull requests.", "/projects");
     const back = sayTo(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}`);
     const act = body.get("act");
-    if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to change pull requests.");
+    // Turning pull requests on lets Toolroll push this project to GitHub: a credential act (network reach), never the
+    // session; settings and turning off are ordinary step-ups.
+    const provedGeneration = store.accountOf(who.name)?.generation ?? -1;
+    if (!(act === "on" ? authenticateCredential(who, body.get("password") ?? "", repo) : authenticateApprover(who, body.get("password") ?? "", repo)).ok) return back("problem", "Enter your Toolroll password to change pull requests.");
     if (act === "on") {
       const checked = await checkPublishing(repo, options.publishExec === undefined ? {} : { exec: options.publishExec });
       if (!checked.ok) return back("problem", checked.message);
+      // After the wait: the account that typed the password still stands as it did.
+      const account = store.accountOf(who.name);
+      if (account === null || account.revokedAt !== null || account.role !== "approver" || account.generation !== provedGeneration || !store.accountCanAccess(who.name, repo)) return back("problem", "Your access changed meanwhile. Nothing changed.");
       if (checked.plan.githubRepo !== body.get("github") || checked.plan.base !== body.get("base")) return back("problem", "GitHub answered differently from what you saw. Check the details again.");
       savePublishing(store, checked.plan, who.name, {}, now);
       return back("said", "Pull requests are on.");
@@ -1361,7 +1367,8 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     const body = readForm(posted, CONSOLE_FORMS.monitoring);
     if (!options.configDir) return refuse(response, who, 403, "An instance operator sets up monitoring.", "/settings");
     const back = sayTo(response, "/settings/monitoring");
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change monitoring.");
+    // Where alerts go (addresses, and secrets in their headers): a credential act, never the session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change monitoring.");
     const before = readMonitoring(options.configDir);
     // Never into Toolroll's own folder, a project or the build checkouts: an agent could read the stream there.
     const saved = saveMonitoring(options.configDir, { webhook: body.get("webhook") ?? "", folder: body.get("folder") ?? "", tracesEndpoint: body.get("traces") ?? "",
@@ -1410,7 +1417,8 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
       if (connectionsOf(store, repo).find(one => one.id === service.id)?.state !== "connected") return back(`${service.label} isn't connected to ${projectName(repo)}.`);
       if (connectionsOf(store, target).find(one => one.id === service.id)?.state !== "open") return back(`${projectName(target)} already has ${service.label}.`);
     }
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("Enter your Toolroll password to connect a tool.");
+    // Connecting a tool stores a sign-in for it: a credential act (a password typed now, never the session, solo or not).
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("Enter your Toolroll password to connect a tool.");
     // An app on this computer: added like a common tool and tested; one that can't be reached isn't kept.
     if (local !== null) {
       const had = projectToolsOf(store, repo).find(one => one.name === local.id);
@@ -1457,10 +1465,14 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     }
     const action = body.get("action") ?? "";
     const name = body.get("name") ?? "";
-    // Anything that adds what a build can run or reach, or a secret, needs the password.
-    if (["add-catalog", "add-custom", "import", "secret"].includes(action) && !authenticateApprover(who, body.get("password") ?? "").ok) {
+    // Anything that adds what a build can run or reach, or a secret, is a credential act: a password typed now, never the
+    // session (solo or Passwordless). The account it proved is held to the end, across the import's waits.
+    const widening = ["add-catalog", "add-custom", "import", "secret"].includes(action);
+    const provedGeneration = store.accountOf(who.name)?.generation ?? -1;
+    if (widening && !authenticateCredential(who, body.get("password") ?? "").ok) {
       return back("problem", "Enter your Toolroll password to change this project's tools.");
     }
+    const stillProved = (): boolean => { const account = store.accountOf(who.name); return account !== null && account.revokedAt === null && account.role === "approver" && account.generation === provedGeneration && store.accountCanAccess(who.name, repo); };
     const now = clock();
     const finish = (added: { ok: true; spec: ToolSpec } | { ok: false; message: string }, label: string) => {
       if (!added.ok) return back("problem", added.message);
@@ -1494,6 +1506,8 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
           projectConfig = looked.value;
         }
         const found = discoverTools(repo, await codexServers(repo), toolHome, process.env, projectConfig);
+        // After the waits: the account that typed the password still stands as it did, or nothing is added.
+        if (!stillProved()) return back("problem", "Your access changed while this was read. Nothing was added.");
         const added: string[] = [], problems: string[] = [];
         for (const one of wanted) {
           const match = found.find(tool => tool.spec.name === one);
@@ -1925,9 +1939,9 @@ ${postForm("/settings/chat-approval/save", html`\
     if (wanted !== "auto" && wanted !== "bypassPermissions") {
       return refuse(response, who, 400, "permissions must be Auto or Full access", "/settings");
     }
-    // Widening every new task to Full access takes a password (chat-management.md §0a.3): an ordinary step-up, so a
-    // signed-in session does under Passwordless. Back to Auto narrows, and needs none.
-    if (wanted === "bypassPermissions" && store.permissionDefault().mode !== "bypassPermissions" && !authenticateApprover(who, body.get("password") ?? "").ok) {
+    // Widening every new task to Full access widens where builds write: a credential act, a password typed now, never the
+    // session (solo or Passwordless). Back to Auto narrows, and needs none.
+    if (wanted === "bypassPermissions" && store.permissionDefault().mode !== "bypassPermissions" && !authenticateCredential(who, body.get("password") ?? "").ok) {
       return redirect(response, `/settings/approval?problem=${encodeURIComponent("Enter your Toolroll password to start new tasks with Full access. Nothing changed.")}#defaults`);
     }
     store.setPermissionDefault(wanted, who.name, now);

@@ -26,13 +26,14 @@ import type { Store } from "./store.js";
 export type InstallMode = "solo" | "team";
 /** Why an install is team, each one a fact read now. `existing-install`: no solo declaration was ever recorded. */
 export type TeamFact =
-  | "existing-install" | "unreadable"
+  | "existing-install" | "outdated-declaration" | "unreadable"
+  | "invite-open" | "invite-added"
   | "second-person" | "person-added"
   | "token-for-someone-else" | "token-added"
   | "chat-person" | "chat-person-added"
   | "chat-group" | "chat-group-added";
 /** The facts that stand now and block "It's just me"; the rest are history it may set aside. */
-const LIVE_FACTS: ReadonlySet<TeamFact> = new Set(["unreadable", "second-person", "token-for-someone-else", "chat-person", "chat-group"]);
+const LIVE_FACTS: ReadonlySet<TeamFact> = new Set(["unreadable", "invite-open", "second-person", "token-for-someone-else", "chat-person", "chat-group"]);
 
 export type InstallModeRead = {
   mode: InstallMode;
@@ -48,8 +49,17 @@ export type DeclaredWhy = "new-install" | "just-me" | "upgrade";
 const WHYS: ReadonlySet<unknown> = new Set(["new-install", "just-me", "upgrade"]);
 /** The ledger entry a solo declaration is: one action, `source` access, naming no project, task or run. */
 export const INSTALL_MODE_ACTION = "install mode";
-/** What a declaration counts (rows are revoked, never deleted, so each only grows). */
-type Counts = { v: 1; people: number; tokens: number; chat: number; groups: number };
+/** What a declaration counts (rows are revoked, never deleted, so each only grows). v2: chat identities by their fully
+ * scoped key, and invitations. A v1 declaration (chat members by app and member only, no invitations) is outdated: its
+ * counts can't be compared, so it no longer stands, and the owner says "It's just me" again. */
+type Counts = { v: 2; people: number; tokens: number; chat: number; groups: number; invites: number };
+const COUNT_KEYS = ["people", "tokens", "chat", "groups", "invites"] as const;
+/**
+ * One chat identity, fully scoped: the app, its installation (the bot, the workspace app), the workspace or tenant
+ * (`team`: Slack's team id, Teams' tenant) and the member's id there. A member id alone is not an identity: the same id
+ * in two Slack workspaces is two people. Wider than any one app needs, so it can only count more identities, never fewer.
+ */
+const CHAT_IDENTITIES = "SELECT DISTINCT provider, installation, team, member FROM chat_binding";
 
 const ACTIVE_PEOPLE = "SELECT name FROM approver WHERE revoked_at IS NULL";
 /** A token that acts for someone else: minted by one account for another, or one whose account is no active person. */
@@ -64,41 +74,47 @@ function count(store: Pick<Store, "handle">, sql: string): number {
 /** The counts a declaration keeps, read now. */
 function countsNow(store: Pick<Store, "handle">): Counts {
   return {
-    v: 1,
+    v: 2,
     people: count(store, "SELECT count(*) AS n FROM approver"),
     tokens: count(store, "SELECT count(*) AS n FROM credential WHERE access = 'act' AND account <> created_by"),
     // Chat-app identities beyond the first, ever, across every chat app (identities on two apps can't be told to be the
     // same person, so a second one is a second person).
-    chat: count(store, "SELECT max(0, (SELECT count(*) FROM (SELECT DISTINCT provider, member FROM chat_binding)) - 1) AS n"),
+    chat: count(store, `SELECT max(0, (SELECT count(*) FROM (${CHAT_IDENTITIES})) - 1) AS n`),
     groups: count(store, "SELECT count(*) AS n FROM chat_room WHERE kind = 'group'"),
+    invites: count(store, "SELECT count(*) AS n FROM invite"),
   };
 }
 
 /** The facts that say team now, whatever was declared. */
 function liveFacts(store: Pick<Store, "handle">): TeamFact[] {
   const facts: TeamFact[] = [];
+  // An invitation still open is a second person on the way: team from the moment it is made.
+  if (Number(store.handle.prepare("SELECT count(*) AS n FROM invite WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?").get(new Date().toISOString())?.["n"] ?? 1) > 0) facts.push("invite-open");
   if (count(store, "SELECT count(*) AS n FROM approver WHERE revoked_at IS NULL") > 1) facts.push("second-person");
   if (count(store, `SELECT count(*) AS n FROM credential WHERE revoked_at IS NULL AND ${TOKEN_FOR_OTHER}`) > 0) facts.push("token-for-someone-else");
-  if (count(store, "SELECT count(*) AS n FROM (SELECT DISTINCT provider, member FROM chat_binding WHERE revoked IS NULL)") > 1
+  if (count(store, `SELECT count(*) AS n FROM (${CHAT_IDENTITIES} WHERE revoked IS NULL)`) > 1
     || count(store, `SELECT count(*) AS n FROM chat_binding WHERE revoked IS NULL AND approver NOT IN (${ACTIVE_PEOPLE})`) > 0) facts.push("chat-person");
   if (count(store, "SELECT count(*) AS n FROM chat_room WHERE revoked IS NULL AND kind = 'group'") > 0) facts.push("chat-group");
   return facts;
 }
 
-function countsOf(detail: unknown): Counts | null {
+/** A declaration's counts, exactly the store's own shape: "outdated" for a well-formed v1 one, null for anything else. */
+function countsOf(detail: unknown): Counts | "outdated" | null {
   if (typeof detail !== "string") return null;
   let parsed: unknown;
   try { parsed = JSON.parse(detail); } catch { return null; }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const record = parsed as Record<string, unknown>;
-  const keys = ["v", "people", "tokens", "chat", "groups", "why"];
-  if (Object.keys(record).length !== keys.length || !keys.every(key => Object.hasOwn(record, key))) return null;
-  if (record["v"] !== 1 || !WHYS.has(record["why"])) return null;
-  for (const key of ["people", "tokens", "chat", "groups"]) {
+  const counted = record["v"] === 2 ? COUNT_KEYS : record["v"] === 1 ? COUNT_KEYS.filter(key => key !== "invites") : null;
+  if (counted === null) return null;
+  const keys = ["v", ...counted, "why"];
+  if (Object.keys(record).length !== keys.length || !keys.every(key => Object.hasOwn(record, key)) || !WHYS.has(record["why"])) return null;
+  for (const key of counted) {
     const value = record[key];
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return null;
   }
-  return { v: 1, people: record["people"] as number, tokens: record["tokens"] as number, chat: record["chat"] as number, groups: record["groups"] as number };
+  if (record["v"] === 1) return "outdated";
+  return { v: 2, people: record["people"] as number, tokens: record["tokens"] as number, chat: record["chat"] as number, groups: record["groups"] as number, invites: record["invites"] as number };
 }
 
 /**
@@ -112,7 +128,9 @@ export function installModeNow(store: Pick<Store, "handle">): InstallModeRead {
       WHERE action = ? AND source = 'access' AND repo IS NULL AND task_id IS NULL AND run_id IS NULL ORDER BY id DESC LIMIT 1`).get(INSTALL_MODE_ACTION);
     const kept = row === undefined || row["outcome"] !== "solo" ? null : countsOf(row["detail"]);
     if (kept === null) return { mode: "team", facts: ["existing-install", ...facts], declared: null };
+    if (kept === "outdated") return { mode: "team", facts: ["outdated-declaration", ...facts], declared: null };
     const now = countsNow(store);
+    if (now.invites > kept.invites) facts.push("invite-added");
     if (now.people > kept.people) facts.push("person-added");
     if (now.tokens > kept.tokens) facts.push("token-added");
     if (now.chat > kept.chat) facts.push("chat-person-added");
@@ -189,6 +207,9 @@ export function justMeAllowed(read: InstallModeRead): boolean {
 /** Each fact in words a person can act on. */
 export const TEAM_FACT_WORDS: Readonly<Record<TeamFact, string>> = Object.freeze({
   "existing-install": "This install was set up before solo mode.",
+  "outdated-declaration": "This install was marked solo by an earlier version. Say it's just you again.",
+  "invite-open": "An invitation is open. Cancel it first.",
+  "invite-added": "Someone was invited since this install became solo.",
   unreadable: "Toolroll couldn't read who uses this install.",
   "second-person": "Another person has an account here. Remove them first.",
   "person-added": "Another person joined since this install became solo.",
@@ -237,7 +258,7 @@ export function declareSoloOnUpgrade(store: Store, now: Date): boolean {
       };
       const clean = none("SELECT count(*) AS n FROM credential WHERE account <> ? OR created_by <> ?", owner, owner)
         && none("SELECT count(*) AS n FROM chat_binding WHERE approver <> ?", owner)
-        && count(store, "SELECT count(*) AS n FROM (SELECT DISTINCT provider, member FROM chat_binding)") <= 1
+        && count(store, `SELECT count(*) AS n FROM (${CHAT_IDENTITIES})`) <= 1
         && none("SELECT count(*) AS n FROM chat_pair WHERE approver <> ?", owner)
         && none("SELECT count(*) AS n FROM chat_room WHERE kind = 'group'")
         && none("SELECT count(*) AS n FROM invite")
@@ -251,5 +272,27 @@ export function declareSoloOnUpgrade(store: Store, now: Date): boolean {
     });
   } catch {
     return false;
+  }
+}
+
+/**
+ * Chat on a solo install (owner decision: chat apps notify and can approve for the owner's own paired account in solo).
+ * A chat act stands in solo only from the one chat identity there is, paired by the owner through the credentialed
+ * pairing: that exact binding (the app's own id for it), live, speaking for the one active person, and the only live
+ * identity (fully scoped). Read inside the act's own transaction, with the mode. On a team install this says nothing:
+ * the team rules decide, as before. Null when the act may go on; otherwise why not.
+ */
+export function soloChatSeatRefusal(store: Pick<Store, "handle">, seat: { provider: string; binding: number | undefined; approver: string }): string | null {
+  const refusal = "On this install, chat acts come only from the chat account its owner paired. Nothing was done.";
+  try {
+    if (!soloNow(store)) return null;
+    if (seat.binding === undefined) return refusal;
+    const people = store.handle.prepare("SELECT name FROM approver WHERE revoked_at IS NULL").all();
+    const live = store.handle.prepare("SELECT provider, id, approver FROM chat_binding WHERE revoked IS NULL").all();
+    const mine = live.find(row => row["provider"] === seat.provider && Number(row["id"]) === seat.binding);
+    if (people.length !== 1 || people[0]!["name"] !== seat.approver || mine === undefined || mine["approver"] !== seat.approver) return refusal;
+    return count(store, `SELECT count(*) AS n FROM (${CHAT_IDENTITIES} WHERE revoked IS NULL)`) === 1 ? null : refusal;
+  } catch {
+    return refusal;
   }
 }

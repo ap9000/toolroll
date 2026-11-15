@@ -19,6 +19,8 @@ import { verifiedDatabaseBackup } from "./desktop-update.js";
 import { approvalPasswordField } from "./approval-password.js";
 import { declareJustMe, declareSoloOnUpgrade, installModeNow, INSTALL_MODE_ACTION, justMeAllowed, sessionStandsIn, SOLO_ON_UPGRADE_WORDS, soloNow } from "./install-mode.js";
 import { setPasswordless } from "./passwordless.js";
+import { soloChatSeatRefusal } from "./install-mode.js";
+import { applyDecideTap } from "./chat-decide.js";
 import { createDecisionServer } from "./serve.js";
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
@@ -137,11 +139,30 @@ describe("what is solo", () => {
 });
 
 describe("every way an install becomes multi-person flips it to team in the act's transaction", () => {
+  test("an invitation made: team at once, before anyone accepts it", () => {
+    flipsInItsTransaction(() => { store.mintInvite("viewer", "alex", new Date()); }, "invite-open");
+    expect(declareJustMe(store, "alex", NOW)).toEqual({ ok: false, reason: "team", facts: ["invite-open"] });
+  });
+
   test("an invite accepted", () => {
-    const invite = store.mintInvite("viewer", "alex", NOW);
-    flipsInItsTransaction(() => {
-      expect(store.consumeInviteAndCreateAccount({ tokenValue: invite.token, name: "robin", credentialHash: hashPassword("robin-pw-1") }, NOW)).toEqual({ ok: true, role: "viewer" });
-    }, "second-person");
+    const invite = store.mintInvite("viewer", "alex", new Date());
+    expect(soloNow(store)).toBe(false);
+    store.transact(() => {
+      expect(store.consumeInviteAndCreateAccount({ tokenValue: invite.token, name: "robin", credentialHash: hashPassword("robin-pw-1") }, new Date())).toEqual({ ok: true, role: "viewer" });
+      expect(installModeNow(store).facts).toEqual(expect.arrayContaining(["second-person", "invite-added"]));
+      expect(shortcut()).toBe(false);
+    });
+    filed("after");
+    expect(approveEmpty("after")).toEqual({ ok: false, reason: "not-an-approver" });
+  });
+
+  test("an invitation withdrawn: still team until It's just me", () => {
+    const invite = store.mintInvite("viewer", "alex", new Date());
+    expect(store.revokeInvite(invite.id, new Date())).toBe(true);
+    expect(installModeNow(store)).toMatchObject({ mode: "team", facts: ["invite-added"] });
+    expect(shortcut()).toBe(false);
+    expect(declareJustMe(store, "alex", NOW)).toEqual({ ok: true });
+    expect(soloNow(store)).toBe(true);
   });
 
   test("a person added directly (the CLI's approver add, a saved account)", () => {
@@ -196,7 +217,7 @@ describe("every way an install becomes multi-person flips it to team in the act'
     live.saveApprover("robin", hashPassword("robin-pw-1"), NOW);
     // A declaration that claims solo over both people (an edited or foreign backup) is not believed either.
     live.recordAction({ at: NOW.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: INSTALL_MODE_ACTION, outcome: "solo", source: "access",
-      detail: JSON.stringify({ v: 1, people: 2, tokens: 0, chat: 0, groups: 0, why: "just-me" }) });
+      detail: JSON.stringify({ v: 2, people: 2, tokens: 0, chat: 0, groups: 0, invites: 0, why: "just-me" }) });
     live.close();
     const backup = join(dir, "backup.db");
     await verifiedDatabaseBackup(file, backup, GATE);
@@ -258,12 +279,13 @@ describe("It's just me", () => {
   test("a declaration that isn't exactly the store's own shape is not believed", () => {
     const old = setup(openStore(":memory:"));
     expect(addApprover(old, "alex", NOW).ok).toBe(true);
-    const forge = (over: Record<string, unknown>, detail: unknown = { v: 1, people: 1, tokens: 0, chat: 0, groups: 0, why: "just-me" }) =>
+    const forge = (over: Record<string, unknown>, detail: unknown = { v: 2, people: 1, tokens: 0, chat: 0, groups: 0, invites: 0, why: "just-me" }) =>
       old.recordAction({ at: NOW.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: INSTALL_MODE_ACTION, outcome: "solo", source: "access", detail: typeof detail === "string" ? detail : JSON.stringify(detail), ...over });
     for (const [over, detail] of [
       [{ source: "request" }, undefined], [{ repo: REPO }, undefined], [{ outcome: "team" }, undefined],
-      [{}, "solo"], [{}, { v: 2, people: 1, tokens: 0, chat: 0, groups: 0, why: "just-me" }], [{}, { v: 1, people: 1, tokens: 0, chat: 0, why: "just-me" }],
-      [{}, { v: 1, people: -1, tokens: 0, chat: 0, groups: 0, why: "just-me" }], [{}, { v: 1, people: 1, tokens: 0, chat: 0, groups: 0, why: "header" }],
+      [{}, "solo"], [{}, { v: 3, people: 1, tokens: 0, chat: 0, groups: 0, invites: 0, why: "just-me" }], [{}, { v: 2, people: 1, tokens: 0, chat: 0, groups: 0, why: "just-me" }],
+      [{}, { v: 2, people: -1, tokens: 0, chat: 0, groups: 0, invites: 0, why: "just-me" }], [{}, { v: 2, people: 1, tokens: 0, chat: 0, groups: 0, invites: 0, why: "header" }],
+      [{}, { v: 2, people: 1, tokens: 0, chat: 0, groups: 0, invites: 0, why: "just-me", extra: 1 }],
     ] as [Record<string, unknown>, unknown][]) {
       forge(over, detail);
       expect(installModeNow(old).mode, JSON.stringify([over, detail])).toBe("team");
@@ -424,5 +446,46 @@ describe("an upgraded laptop install that is provably one person becomes solo, o
     laptop = laptopBefore();
     const broken = { transact: (body: () => unknown) => body(), handle: { prepare: () => { throw new Error("gone"); } } } as unknown as Store;
     expect(declareSoloOnUpgrade(broken, NOW)).toBe(false);
+  });
+});
+
+describe("chat identities are fully scoped", () => {
+  test("the same member id in two Slack workspaces is two people: team", () => {
+    // Slack's app is installed once per workspace: each workspace its own installation and team id, the same member id.
+    const insert = (id: number, team: string) => store.handle.prepare(`INSERT INTO chat_binding (provider, id, installation, team, app, member, channel, approver, generation, created)
+      VALUES ('slack', ?, ?, ?, 'a', 'U01SAME', 'dm', 'alex', 1, ?)`).run(id, `app-${team}`, team, NOW.toISOString());
+    insert(1, "T0ACME");
+    expect(soloNow(store)).toBe(true);
+    flipsInItsTransaction(() => { insert(2, "T0OTHER"); }, "chat-person");
+  });
+
+  test("a declaration from before the scoped key (v1) no longer stands: It's just me again", () => {
+    store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: INSTALL_MODE_ACTION, outcome: "solo", source: "access",
+      detail: JSON.stringify({ v: 1, people: 1, tokens: 0, chat: 0, groups: 0, why: "just-me" }) });
+    expect(installModeNow(store)).toEqual({ mode: "team", facts: ["outdated-declaration"], declared: null });
+    expect(justMeAllowed(installModeNow(store))).toBe(true);
+    expect(declareJustMe(store, "alex", later(1000))).toEqual({ ok: true });
+    expect(soloNow(store)).toBe(true);
+  });
+});
+
+describe("chat in solo: only the owner's own paired chat identity acts", () => {
+  test("its exact binding stands; any other seat refuses, read in the act's transaction; a team install leaves it to the team rules", () => {
+    const own = pair("alex-phone");
+    expect(soloChatSeatRefusal(store, { provider: "telegram", binding: own, approver: "alex" })).toBeNull();
+    for (const seat of [{ provider: "telegram", binding: own + 1, approver: "alex" }, { provider: "slack", binding: own, approver: "alex" },
+      { provider: "telegram", binding: undefined, approver: "alex" }, { provider: "telegram", binding: own, approver: "robin" }]) {
+      expect(soloChatSeatRefusal(store, seat), JSON.stringify(seat)).toMatch(/chat account its owner paired/);
+    }
+    // The tap road reads it first: a decide button from another seat acts on nothing; the owner's own goes on to its token.
+    const tap = (binding: number) => applyDecideTap(store, { channel: "telegram", binding, chat: "dm-alex-phone", approver: "alex", generation: 1 }, { token: "d:none", message: "m", shown: "", repos: [REPO], now: NOW });
+    expect(tap(own + 1)).toMatchObject({ ignored: true, ack: expect.stringMatching(/chat account its owner paired/) });
+    expect(tap(own)).toBeNull();
+    // An unpaired seat after the owner unpairs: refused too.
+    chat().revokeBinding({ id: own }, NOW, "alex");
+    expect(soloChatSeatRefusal(store, { provider: "telegram", binding: own, approver: "alex" })).not.toBeNull();
+    // Team: the team rules decide, as before.
+    store.saveApprover("robin", hashPassword("robin-pw-1"), NOW);
+    expect(soloChatSeatRefusal(store, { provider: "telegram", binding: own + 1, approver: "alex" })).toBeNull();
   });
 });

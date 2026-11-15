@@ -144,12 +144,16 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       const stopped = store.sessionPolicyRefusal(program, null, "live terminals");
       if (stopped !== null) return json(ctx, 403, { ok: false, error: stopped });
     }
-    if (!runtime.authenticateApprover(who, body.get("password") ?? "").ok) return json(ctx, 403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
+    const proved = runtime.authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return json(ctx, 403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
     // The same session, still an operator of the same generation, and the project still theirs: asked right before the
-    // program starts (after the slow worktree work) and again once it has.
+    // program starts (after the slow worktree work) and again once it has. A start the session alone proved (solo or
+    // Passwordless, install-mode.ts) also needs the session to stand in still: a person who joined, or Passwordless
+    // turned off, during the preparation refuses it.
     const stillAllowed = (): string | null => {
       const again = rereadBrowser(runtime, ctx.request, who);
       if (again === null || operatorOf(again) === null) return "Your access changed. Sign in again.";
+      if (proved.method === "session" && !sessionStandsIn(store)) return "This install's sign-in rules changed. Enter your Toolroll password to start a terminal.";
       return projectAllowed(who.name, repo) && runtime.consoleProjects().includes(repo) ? null : "That project is no longer available to your account.";
     };
     try {
