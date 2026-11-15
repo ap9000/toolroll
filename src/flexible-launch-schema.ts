@@ -14,6 +14,9 @@
  *   unresolved; unresolved → stopping | exited | unresolved. `exited` is written only on a verified exit of the whole
  *   tree (no group member, no namespace member, no witness, no descendant and no process of the thread's working in its
  *   folder left), or for a launch whose start gate never opened. At most one unsettled launch per thread.
+ * - `flexible_relay_grant`: each relay token Toolroll handed a thread's agent (by its SHA-256, never the token), for
+ *   which thread and turn, and when it was revoked. The relay checks it on every call; any Toolroll process revokes it
+ *   when it stops the thread, so the relay's service ends at once whichever process stopped it. Only ever revoked.
  * - `flexible_thread_level`: the level a thread's owner last chose for it (lowered to, or raised to with a fresh proof);
  *   no row is the level its turns were admitted at.
  */
@@ -58,6 +61,20 @@ WHEN NEW.id IS NOT OLD.id OR NEW.thread IS NOT OLD.thread OR NEW.turn IS NOT OLD
 BEGIN
   SELECT RAISE(ABORT, 'a flexible launch is written once, its state only moves forward and what it saw only grows');
 END;
+CREATE TABLE IF NOT EXISTS flexible_relay_grant (
+  token_digest TEXT PRIMARY KEY CHECK (length(token_digest) = 64 AND token_digest NOT GLOB '*[^0-9a-f]*'),
+  thread       TEXT NOT NULL CHECK (length(thread) = 32 AND thread NOT GLOB '*[^0-9a-f]*'),
+  turn         TEXT NOT NULL CHECK (length(turn) = 32 AND turn NOT GLOB '*[^0-9a-f]*'),
+  issued_at    TEXT NOT NULL,
+  revoked_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS flexible_relay_grant_thread ON flexible_relay_grant (thread, revoked_at);
+CREATE TRIGGER IF NOT EXISTS flexible_relay_grant_written_once BEFORE UPDATE ON flexible_relay_grant
+WHEN NEW.token_digest IS NOT OLD.token_digest OR NEW.thread IS NOT OLD.thread OR NEW.turn IS NOT OLD.turn OR NEW.issued_at IS NOT OLD.issued_at
+  OR OLD.revoked_at IS NOT NULL OR NEW.revoked_at IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'a relay grant is written once and only revoked');
+END;
 CREATE TABLE IF NOT EXISTS flexible_thread_level (
   thread       TEXT PRIMARY KEY CHECK (length(thread) = 32 AND thread NOT GLOB '*[^0-9a-f]*'),
   level        TEXT NOT NULL CHECK (level IN ('supervised', 'auto', 'full')),
@@ -66,11 +83,12 @@ CREATE TABLE IF NOT EXISTS flexible_thread_level (
 );
 `;
 
-export const V165_TABLES = Object.freeze(["flexible_thread_launch", "flexible_thread_level"] as const);
+export const V165_TABLES = Object.freeze(["flexible_thread_launch", "flexible_relay_grant", "flexible_thread_level"] as const);
 /** The v165 migration's steps, in order (a test seam may stop after each). */
 export const V165_STEPS = Object.freeze(["thread-launch"] as const);
 /** v165's named objects, as a current or resumed file must hold them exactly (store.ts checks each). */
 export const V165_OBJECTS = Object.freeze([
   ["table", "flexible_thread_launch"], ["index", "flexible_thread_launch_unsettled"], ["index", "flexible_thread_launch_holder"],
-  ["trigger", "flexible_thread_launch_written_once"], ["table", "flexible_thread_level"],
+  ["trigger", "flexible_thread_launch_written_once"], ["table", "flexible_relay_grant"], ["index", "flexible_relay_grant_thread"],
+  ["trigger", "flexible_relay_grant_written_once"], ["table", "flexible_thread_level"],
 ] as const);

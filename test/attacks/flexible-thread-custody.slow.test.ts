@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flexibleThread, flexibleThreadSpawn, prepareFlexibleThread, stopFlexibleThreadAgent, type FlexibleThreadPaths } from "../../src/flexible-thread.js";
-import { flexibleLaunch, unsettledLaunch, watchLaunch } from "../../src/flexible-launch.js";
+import { flexibleLaunch, relayGrantLive, unsettledLaunch, watchLaunch } from "../../src/flexible-launch.js";
 import { lowerFlexibleThreadLevel, startFlexibleRelayStub, startFlexibleTurn, type FlexibleRelayStub } from "../../src/flexible-agents.js";
 import { admitFlexibleTurn, flexibleTurn } from "../../src/flexible-turns.js";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../../src/flexible.js";
@@ -51,7 +51,7 @@ async function beating(file: string): Promise<boolean> {
  * after a second and a half as the agent's descendant, it leaves its group, the thread's folder and every open file. */
 const survivor = (beat: string, leave: boolean): string => leave
   ? `perl -MPOSIX -e 'exit if fork; sleep 1.5; POSIX::setsid(); chdir "/"; POSIX::close($_) for 0..255; for (1..300) { open(my $f, ">>", $ARGV[0]); print $f "."; close $f; select(undef, undef, undef, 0.1) }' ${q(beat)}`
-  : `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; for (1..300) { open(my $f, ">>", "${beat}"); print $f "."; close $f; select(undef, undef, undef, 0.1) }'`;
+  : `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; open(my $p, ">", "${beat}.pid"); print $p $$; close $p; for (1..300) { open(my $f, ">>", "${beat}"); print $f "."; close $f; select(undef, undef, undef, 0.1) }'`;
 
 describe("attack: a Flexible thread's agent leaving processes behind", () => {
   test("native: a setsid + double-forked survivor keeps the thread from relaunching until custody settles, and is then stopped", async ctx => {
@@ -67,7 +67,16 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     // The launch is unsettled: no replacement, whatever is or isn't left.
     const again = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
     expect(again).toMatchObject({ ok: false, reason: "thread-running" });
-    if (process.platform === "darwin") expect(await beating(beat)).toBe(true); // Seatbelt has no pid namespace: it lives on
+    if (process.platform === "darwin") {
+      // Seatbelt has no pid namespace: it lives on. Found only by working in the thread's folder, it isn't proven the
+      // agent's (it could be a person's program), so it is never signalled: custody stays unresolved and names it.
+      expect(await beating(beat)).toBe(true);
+      const pid = Number(readFileSync(`${beat}.pid`, "utf8"));
+      expect(await stopFlexibleThreadAgent(world.store, { id, reason: "attack" })).toMatchObject({ ok: false, blockers: [{ pid, why: "in-folder" }] });
+      expect(await beating(beat)).toBe(true);
+      expect(await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"])).toMatchObject({ ok: false, reason: "thread-running" });
+      process.kill(pid, "SIGKILL");
+    }
     const settled = await stopFlexibleThreadAgent(world.store, { id, reason: "attack" });
     expect(settled).toMatchObject({ ok: true, how: "none-left" });
     expect(await beating(beat)).toBe(false);
@@ -99,10 +108,36 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     expect(unsettledLaunch(world.store, id)).toBeNull();
   }, 90_000);
 
+  test.runIf(process.platform === "linux")("native (Linux): one that double-forks at once, leaves the folder and closes every file, never seen by the holder, still dies with the launch's pid namespace", async ctx => {
+    needs(ctx, osFence());
+    const { id, paths } = await thread();
+    const beat = join(paths.tmp, "unseen-beat");
+    const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH },
+      "/bin/sh", ["-c", `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; chdir "/"; POSIX::close($_) for 0..255; for (1..300) { open(my $f, ">>", $ARGV[0]); print $f "."; close $f; select(undef, undef, undef, 0.1) }' ${q(beat)}; sleep 1`]);
+    if (!launch.ok) throw new Error(launch.message);
+    launch.child.stdin!.end();
+    await new Promise(done => launch.child.once("exit", done));
+    expect(await stopFlexibleThreadAgent(world.store, { id, reason: "attack" })).toMatchObject({ ok: true });
+    expect(await beating(beat)).toBe(false);
+  }, 90_000);
+
+  test("native: a start whose re-check fails at the last moment (the thread was lowered) keeps its gate shut: nothing of the agent runs", async ctx => {
+    needs(ctx, osFence());
+    const { id, paths } = await thread();
+    const ran = join(paths.tmp, "gate-ran");
+    const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH,
+      beforeOpen: () => "the thread was lowered to Supervised" }, "/bin/sh", ["-c", `echo ran > ${q(ran)}; sleep 30`]);
+    expect(refused).toMatchObject({ ok: false, message: expect.stringContaining("the thread was lowered to Supervised") });
+    await sleep(1_000);
+    expect(existsSync(ran)).toBe(false);
+    expect(world.store.handle.prepare("SELECT state, end_detail FROM flexible_thread_launch").all().map(row => ({ ...row }))).toEqual([{ state: "exited", end_detail: "stopped before it ran: the thread was lowered to Supervised" }]);
+    expect(flexibleThread(world.store, id)!.livePid).toBeNull();
+  }, 60_000);
+
   describe("a turn's agent at Full access, signed in through the relay's stand-in, lowered mid-turn", () => {
     let relay: FlexibleRelayStub, path: string | undefined;
     beforeEach(async () => {
-      const made = await startFlexibleRelayStub();
+      const made = await startFlexibleRelayStub(world.store);
       if ("ok" in made) throw new Error(made.message);
       relay = made;
       path = process.env["PATH"];
@@ -125,6 +160,7 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
         'echo "args: $*"',
         'echo "base: $ANTHROPIC_BASE_URL"',
         'echo "token: $ANTHROPIC_AUTH_TOKEN"',
+        'echo "config: $CLAUDE_CONFIG_DIR"',
         '[ -n "$ANTHROPIC_API_KEY$CLAUDE_CODE_OAUTH_TOKEN$OPENAI_API_KEY" ] && echo LEAKED-KEY',
         '(curl -s -m 5 -o /dev/null -w "relay-status %{http_code}\\n" -X POST "$ANTHROPIC_BASE_URL/v1/messages" -d "{}" 2>/dev/null) || echo relay-unreachable',
         "echo ready",
@@ -132,13 +168,12 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       ].join("\n"));
       chmodSync(join(bin, "claude"), 0o755);
       process.env["PATH"] = `${bin}:${path ?? "/usr/bin:/bin"}`;
-      const { id } = await thread();
+      const { id, paths } = await thread();
       const admitted = admitFlexibleTurn(world.store, { thread: id, starter: { name: "alex", generation: world.store.accountOf("alex")!.generation }, digest, level: "full", freshProof: false,
         provider: "claude", model: "claude-sonnet-4-5", billing: "subscription", requestKey: "m-1", holder: "attack" });
       if (!admitted.ok) throw new Error(admitted.message);
-      const endpoint = relay.issue();
       let proxyClosed = 0;
-      const started = await startFlexibleTurn(world.store, { turn: admitted.turn, holder: "attack", relay: endpoint, storage: STORAGE,
+      const started = await startFlexibleTurn(world.store, { turn: admitted.turn, holder: "attack", relay, storage: STORAGE,
         network: { proxyPort: 1, token: "run-token", proxyEnv: {}, close: () => { proxyClosed++; } } });
       if (!started.ok || started.launched !== "started") throw new Error(JSON.stringify(started));
       let out = "";
@@ -147,17 +182,18 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       await until(() => out.includes("ready"), () => out);
       expect(out).toContain("--permission-mode bypassPermissions");
       expect(out).toContain(`base: ${relay.url}`);
-      expect(out).toContain(`token: ${endpoint.token}`);
+      const token = /token: (tr-relay-[0-9a-f]{48})/.exec(out)?.[1] ?? "";
+      expect(relayGrantLive(world.store, token)).toBe(true);
+      expect(out).toContain(`config: ${join(paths.cache, "provider", admitted.turn)}\n`);
       expect(out).not.toContain("LEAKED-KEY");
       // The fence lets it reach only its proxy (here a dead port): the relay's stand-in isn't even reached, and it would refuse.
       expect(out).toMatch(/relay-status (000|503)|relay-unreachable/);
       expect(relay.refused()).toBe(0);
       expect(flexibleTurn(world.store, admitted.turn)!.status).toBe("running");
-      expect(relay.live()).toBe(1);
       const lowered = await lowerFlexibleThreadLevel(world.store, { thread: id, by: { name: "alex", generation: world.store.accountOf("alex")!.generation }, level: "supervised" });
       expect(lowered).toMatchObject({ ok: true, stopped: "stopped", message: "Lowered to Supervised; the current step was stopped." });
       await closed;
-      expect(relay.live()).toBe(0);
+      expect(relayGrantLive(world.store, token)).toBe(false);
       expect(proxyClosed).toBe(1);
       expect(flexibleTurn(world.store, admitted.turn)!.status).toBe("interrupted");
       expect(unsettledLaunch(world.store, id)).toBeNull();

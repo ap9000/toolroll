@@ -1235,7 +1235,7 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // Flexible limits (thread_turn and flexible_installation_caps, new tables; flexible-turns-schema.ts). Nothing writes
 // them while Flexible isn't available.
 // v165 adds, and changes no saved row (the Flexible plan v2, slice F2c): Flexible threads' agent launches with their
-// process custody, and each thread's chosen level (flexible_thread_launch and flexible_thread_level, new tables;
+// process custody, and each thread's chosen level (flexible_thread_launch, flexible_relay_grant and flexible_thread_level, new tables;
 // flexible-launch-schema.ts). Nothing writes them while Flexible isn't available.
 export const SCHEMA_VERSION = 165;
 

@@ -74,6 +74,12 @@ describe("v165", () => {
     expect(() => db.prepare("UPDATE flexible_thread_launch SET end_detail = 'x' WHERE id = ?").run(ID)).toThrow(/only moves forward/);
     // Settled, the thread may launch again.
     insert(db, { id: "1".repeat(32) });
+    // A relay grant: only its digest, only ever revoked.
+    expect(() => db.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, issued_at) VALUES ('tr-relay-raw', ?, ?, ?)").run(THREAD, ID, T0)).toThrow();
+    db.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, issued_at) VALUES (?, ?, ?, ?)").run("e".repeat(64), THREAD, ID, T0);
+    expect(() => db.prepare("UPDATE flexible_relay_grant SET thread = ?").run("b".repeat(32))).toThrow(/only revoked/);
+    db.prepare("UPDATE flexible_relay_grant SET revoked_at = ?").run(T0);
+    expect(() => db.prepare("UPDATE flexible_relay_grant SET revoked_at = NULL").run()).toThrow(/only revoked/);
     // A thread's chosen level: one row per thread, a level it can name.
     expect(() => db.prepare("INSERT INTO flexible_thread_level (thread, level, set_by, set_at) VALUES (?, 'root', 'alex', ?)").run(THREAD, T0)).toThrow();
     db.prepare("INSERT INTO flexible_thread_level (thread, level, set_by, set_at) VALUES (?, 'supervised', 'alex', ?)").run(THREAD, T0);
@@ -105,6 +111,7 @@ describe("v165", () => {
     ["the table", "DROP TABLE flexible_thread_launch; CREATE TABLE flexible_thread_launch (id TEXT PRIMARY KEY, thread TEXT)", /flexible_thread_launch has an unknown shape|flexible_thread_launch_\w+ is missing/],
     ["the trigger", "DROP TRIGGER flexible_thread_launch_written_once", /trigger flexible_thread_launch_written_once is missing/],
     ["the unsettled index", "DROP INDEX flexible_thread_launch_unsettled; CREATE INDEX flexible_thread_launch_unsettled ON flexible_thread_launch (thread)", /index flexible_thread_launch_unsettled has an unknown shape/],
+    ["the relay grants' trigger", "DROP TRIGGER flexible_relay_grant_written_once", /trigger flexible_relay_grant_written_once is missing/],
     ["the level table", "DROP TABLE flexible_thread_level; CREATE TABLE flexible_thread_level (thread TEXT PRIMARY KEY)", /flexible_thread_level has an unknown shape/],
   ])("a current file whose %s isn't this build's refuses to open", (_what, damage, refusal) => {
     const dir = mkdtempSync(join(tmpdir(), "toolroll-v165-"));

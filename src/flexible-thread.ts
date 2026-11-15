@@ -42,7 +42,7 @@ import { withCheckoutLock } from "./git-views.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
-import { defaultCustodyIO, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { defaultCustodyIO, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
 
@@ -546,6 +546,14 @@ function withThreadLock<T>(id: string, work: () => Promise<T>): Promise<T> {
   return withCheckoutLock(real(homedir()), `flexible-thread:${id}`, work);
 }
 
+/** Run `work` under one thread's lock (the same one its launches, stops and removal take; re-entrant within this call),
+ * so a level change and a turn start are wholly before or wholly after each other. */
+export async function withFlexibleThreadLock<T>(id: string, work: () => Promise<T>): Promise<T | FlexibleThreadRefusal> {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!FLEXIBLE_THREAD_ID.test(id)) return refuse("thread-unknown");
+  return withThreadLock(id, work);
+}
+
 /** The start gate every thread launch runs behind (inside the sandbox): the agent itself runs only once Toolroll writes
  * `start` on its input, which it does only after the launch is registered. If Toolroll dies first, or the registration
  * fails, the input closes and the gate exits without running anything: a crash between the spawn and its registration
@@ -564,7 +572,10 @@ export type FlexibleThreadSpawnSeams = { afterSpawn?: (pid: number) => void; io?
 export type FlexibleThreadSpawnInput = FlexibleThreadLaunchInput & { proxyEnv: Record<string, string>; launch: FlexibleLaunchMeta;
   /** What the agent's own adapter adds to the thread's environment (its relay and its configuration folder); never
    * replaces a variable the thread's environment already sets. */
-  agentEnv?: Record<string, string> };
+  agentEnv?: Record<string, string>;
+  /** Run under the thread's lock after the launch is registered and immediately before its start gate opens: a reason to
+   * keep the gate shut (the caller's authority or level no longer holds), or null. */
+  beforeOpen?: () => string | null };
 export type FlexibleThreadSpawned = { ok: true; pid: number; launchId: string; launch: LaunchFence; fenceDigest: string; child: ChildProcess };
 
 /**
@@ -632,9 +643,20 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
     recordLive(store, { launch: record.id, thread: input.id, pid, start });
   } catch (error) {
     try { child.stdin?.destroy(); } catch { /* already closed */ }
-    if (pid !== undefined && Number.isSafeInteger(pid) && pid > 1) io.signal(pid, "SIGKILL", true);
+    // Through the handle Toolroll holds (its own child: the pid can't be reused until it is reaped). The rest of the
+    // wrapper exits on its own: the gate's input is closed.
+    try { child.kill("SIGKILL"); } catch { /* already gone */ }
     try { recordNeverStarted(store, record.id, `stopped before it ran: ${error instanceof Error ? error.message : String(error)}`); } catch { /* left spawning: settleLaunch ends it */ }
     return refuse("containment", "the agent's process couldn't be registered, so it was stopped before it ran");
+  }
+  // At the moment of use: the caller's own re-check (its turn, its level, its authority), with the gate still shut.
+  let shut: string | null;
+  try { shut = input.beforeOpen?.() ?? null; } catch (error) { shut = error instanceof Error ? error.message : "the start couldn't be re-checked"; }
+  if (shut !== null) {
+    try { child.stdin?.destroy(); } catch { /* already closed */ }
+    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: `stopped before it ran: ${shut}` });
+    return refuse("thread-not-ready", shut);
   }
   child.stdin!.write("start\n");
   return { ok: true, pid: pid!, launchId: record.id, launch, fenceDigest, child };
@@ -647,7 +669,7 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
  * cleared and its running turn interrupted. When the exit can't be verified, the launch stays unresolved: no new turn,
  * relaunch or removal until a later stop proves it.
  */
-export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO }): Promise<SettleResult | FlexibleThreadRefusal> {
+export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO; keepTurn?: string }): Promise<SettleResult | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   return withThreadLock(input.id, async () => {
@@ -655,7 +677,8 @@ export async function stopFlexibleThreadAgent(store: Store, input: { id: string;
     if (state === null) return refuse("no-state-folder");
     const thread = flexibleThread(store, input.id);
     if (thread === null) return refuse("thread-unknown");
-    return settleLaunch(store, { thread: thread.id, folder: flexibleThreadPaths(state, thread.id).folder, reason: input.reason, stop: true, ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }) });
+    return settleLaunch(store, { thread: thread.id, folder: flexibleThreadPaths(state, thread.id).folder, reason: input.reason, stop: true, ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }),
+      ...(input.keepTurn === undefined ? {} : { keepTurn: input.keepTurn }) });
   });
 }
 

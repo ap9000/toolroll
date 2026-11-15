@@ -15,10 +15,10 @@
  *   later settle proves the exit; only then are the turns interrupted (flexible-turns.ts interruptFlexibleThreadTurns:
  *   this is the proof it needs).
  */
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { currentBootId } from "./boot-identity.js";
-import { observeCustody, realCustodyIO, stopCustody, custodySettled, type CustodyIO, type CustodyOutcome, type LaunchCustody, type ProcessWitness } from "./flexible-custody.js";
+import { observeCustody, realCustodyIO, stopCustody, custodySettled, type CustodyBlocker, type CustodyIO, type CustodyOutcome, type LaunchCustody, type ProcessWitness } from "./flexible-custody.js";
 import type { FlexibleLevel } from "./flexible.js";
 import { interruptFlexibleThreadTurns, type FlexibleClock } from "./flexible-turns.js";
 import { currentMachineId } from "./machine-identity.js";
@@ -99,6 +99,16 @@ export function recordLive(store: Store, input: { launch: string; thread: string
   });
 }
 
+/** A launch registered live whose start gate was then kept shut (a re-check before opening it refused): nothing of its
+ * agent ran. Its record ends and the thread's live_pid (exactly this leader's) is cleared, in one transaction. */
+export function recordGateShut(store: Store, input: { launch: string; thread: string; pid: number; detail: string; clock?: FlexibleClock }): void {
+  store.transact(() => {
+    const at = (input.clock ?? (() => new Date()))().toISOString();
+    store.handle.prepare("UPDATE flexible_thread_launch SET state = 'exited', ended_at = ?, end_detail = ? WHERE id = ? AND state = 'live' AND leader_pid = ?").run(at, input.detail.slice(0, 2000), input.launch, input.pid);
+    store.handle.prepare("UPDATE flexible_thread SET live_pid = NULL, live_since = NULL WHERE id = ? AND live_pid = ?").run(input.thread, input.pid);
+  });
+}
+
 /** A launch whose start gate never opened ended: nothing of its agent ran. */
 export function recordNeverStarted(store: Store, launch: string, detail: string, clock: FlexibleClock = () => new Date()): void {
   store.transact(() => {
@@ -129,7 +139,12 @@ export function watchLaunch(store: Store, launchId: string, folder: string, io: 
   const tick = () => {
     try {
       const launch = flexibleLaunch(store, launchId);
-      if (launch === null || launch.state === "exited") { clearInterval(timer); return; }
+      // Stopped from anywhere (another Toolroll process included): this holder's own proxy and relay handles close now,
+      // and any that failed to close are tried again on every tick until they do.
+      if (launch === null || launch.state !== "live") {
+        void revokeLaunch(launchId).then(left => { if (left === 0 && (launch === null || launch.state === "exited")) clearInterval(timer); });
+        return;
+      }
       recordSeen(store, launch, observeCustody(custodyOf(launch, folder), io));
     } catch { /* the next tick tries again; settling never depends on this having run */ }
   };
@@ -141,23 +156,56 @@ export function watchLaunch(store: Store, launchId: string, folder: string, io: 
 
 // ---- network capabilities that end at once ----------------------------------------------------------------------------
 
-/** What closes a live launch's network the moment it is stopped: its run proxy, its relay token. In-process: a crash
- * closes them with the process. */
+/**
+ * A launch's network ends two ways, both at once when it is stopped. Durably: its relay grants are revoked in the
+ * database (flexible_relay_grant), which the relay checks on every call, so a stop from any Toolroll process ends the
+ * relay's service to it. In the holder: its run proxy and its relay handle are closed here, or by the holder's watcher
+ * (watchLaunch) the moment it sees the launch no longer live. A crash closes them with the process. A handle that fails
+ * to close is kept and tried again until it does.
+ */
 const revokers = new Map<string, (() => void | Promise<void>)[]>();
 export function onLaunchStopped(launchId: string, revoke: () => void | Promise<void>): void {
   revokers.set(launchId, [...revokers.get(launchId) ?? [], revoke]);
 }
-async function revokeLaunch(launchId: string): Promise<void> {
+/** Close this holder's handles for a launch; returns how many failed (kept for the next try). */
+export async function revokeLaunch(launchId: string): Promise<number> {
   const all = revokers.get(launchId) ?? [];
-  revokers.delete(launchId);
-  for (const revoke of all) { try { await revoke(); } catch { /* each one closes on its own; one failing never keeps another open */ } }
+  const failed: (() => void | Promise<void>)[] = [];
+  for (const revoke of all) { try { await revoke(); } catch { failed.push(revoke); } }
+  // Handles registered while these ran are kept too.
+  const added = (revokers.get(launchId) ?? []).filter(one => !all.includes(one));
+  if (failed.length + added.length === 0) revokers.delete(launchId); else revokers.set(launchId, [...failed, ...added]);
+  return failed.length + added.length;
+}
+
+const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+/** Record a relay grant for a thread's turn (the token itself is never stored, only its digest). */
+export function issueRelayGrant(store: Store, input: { thread: string; turn: string; clock?: FlexibleClock }): string {
+  const token = `tr-relay-${randomBytes(24).toString("hex")}`;
+  store.transact(() => {
+    store.handle.prepare("INSERT INTO flexible_relay_grant (token_digest, thread, turn, issued_at) VALUES (?, ?, ?, ?)")
+      .run(sha256(token), input.thread, input.turn, (input.clock ?? (() => new Date()))().toISOString());
+  });
+  return token;
+}
+/** Whether a relay token is a live grant: issued, never revoked, for a thread whose launch is live. The relay checks this
+ * on every call, from the database, so a revocation by any process counts at once. */
+export function relayGrantLive(store: Store, token: string): boolean {
+  if (typeof token !== "string" || !/^tr-relay-[0-9a-f]{48}$/.test(token)) return false;
+  const row = store.handle.prepare(`SELECT 1 AS ok FROM flexible_relay_grant g WHERE g.token_digest = ? AND g.revoked_at IS NULL
+    AND EXISTS (SELECT 1 FROM flexible_thread_launch l WHERE l.thread = g.thread AND l.state IN ('spawning', 'live'))`).get(sha256(token));
+  return row !== undefined;
+}
+/** Revoke every relay grant of a thread, durably. */
+export function revokeRelayGrants(store: Store, thread: string, clock: FlexibleClock = () => new Date()): number {
+  return store.transact(() => Number(store.handle.prepare("UPDATE flexible_relay_grant SET revoked_at = ? WHERE thread = ? AND revoked_at IS NULL").run(clock().toISOString(), thread).changes));
 }
 
 // ---- settling a launch ---------------------------------------------------------------------------------------------------
 
 export type SettleResult =
   | { ok: true; launch: string | null; how: "nothing-running" | "never-started" | "boot-changed" | "none-left"; interrupted: number }
-  | { ok: false; launch: string; survivors: number[]; outsiders: number[]; why: string };
+  | { ok: false; launch: string; survivors: number[]; blockers: CustodyBlocker[]; why: string };
 
 /**
  * Settle the thread's unsettled launch (the caller holds the thread's lock): its network closed, then — with `stop` —
@@ -165,7 +213,9 @@ export type SettleResult =
  * (live_pid cleared, the thread's running turns interrupted) or to `unresolved` (nothing replaces it). A launch still
  * `spawning` with no leader never opened its start gate: its wrapper exits by itself when the gate's pipe closes.
  */
-export async function settleLaunch(store: Store, input: { thread: string; folder: string; reason: string; stop: boolean; clock?: FlexibleClock; io?: CustodyIO }): Promise<SettleResult> {
+export async function settleLaunch(store: Store, input: { thread: string; folder: string; reason: string; stop: boolean; clock?: FlexibleClock; io?: CustodyIO;
+  /** A turn the caller is about to start on a fresh launch: left as it is when the old launch's turns end. */
+  keepTurn?: string }): Promise<SettleResult> {
   const clock = input.clock ?? (() => new Date());
   const launch = unsettledLaunch(store, input.thread);
   if (launch === null) return { ok: true, launch: null, how: "nothing-running", interrupted: 0 };
@@ -175,6 +225,8 @@ export async function settleLaunch(store: Store, input: { thread: string; folder
     recordNeverStarted(store, launch.id, "its start gate never opened, so its agent never ran", clock);
     return { ok: true, launch: launch.id, how: "never-started", interrupted: 0 };
   }
+  // Its network first: durably (the relay checks every call), then this holder's own handles.
+  revokeRelayGrants(store, launch.thread, clock);
   await revokeLaunch(launch.id);
   if (input.stop) {
     store.transact(() => {
@@ -192,12 +244,12 @@ export async function settleLaunch(store: Store, input: { thread: string; folder
       store.handle.prepare("UPDATE flexible_thread_launch SET state = 'unresolved', end_detail = ? WHERE id = ? AND state <> 'exited'").run(outcome.why.slice(0, 2000), launch.id);
       store.recordAction({ at, actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: "flexible agent custody unresolved", outcome: "unresolved",
         detail: `thread ${launch.thread} · launch ${launch.id} · ${outcome.why}` });
-      return { ok: false, launch: launch.id, survivors: outcome.survivors, outsiders: outcome.outsiders, why: outcome.why };
+      return { ok: false, launch: launch.id, survivors: outcome.survivors, blockers: outcome.blockers, why: outcome.why };
     }
     const detail = outcome.how === "boot-changed" ? "the computer restarted since it was launched" : "every process of it was found stopped";
     store.handle.prepare("UPDATE flexible_thread_launch SET state = 'exited', ended_at = ?, end_detail = ? WHERE id = ? AND state <> 'exited'").run(at, detail, launch.id);
     store.handle.prepare("UPDATE flexible_thread SET live_pid = NULL, live_since = NULL WHERE id = ? AND live_pid IS ?").run(launch.thread, launch.leaderPid);
-    const turns = interruptFlexibleThreadTurns(store, { thread: launch.thread, detail: `the thread's agent was stopped (${input.reason})`, clock: () => now });
+    const turns = interruptFlexibleThreadTurns(store, { thread: launch.thread, detail: `the thread's agent was stopped (${input.reason})`, clock: () => now, ...(input.keepTurn === undefined ? {} : { except: input.keepTurn }) });
     const ended = turns.ok ? turns.interrupted : 0;
     store.recordAction({ at, actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: "flexible agent stopped", outcome: "exited",
       detail: `thread ${launch.thread} · launch ${launch.id} · ${input.reason} · ${detail}` });

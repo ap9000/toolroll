@@ -16,8 +16,8 @@ import { addApprover } from "./scope.js";
 import { runOperate, EXIT } from "./operate.js";
 import { createDecisionServer } from "./serve.js";
 import { ROUTES } from "./server/route-table.js";
-import { flexibleThreadCodexProfile, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
-import { admitFlexibleTurn, beginFlexibleTurn, chargeFlexibleTurn, finishFlexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, setFlexibleInstallationCaps, withdrawFlexibleTurn } from "./flexible-turns.js";
+import { flexibleThreadCodexProfile, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent, withFlexibleThreadLock } from "./flexible-thread.js";
+import { admitFlexibleTurn, beginFlexibleTurn, chargeFlexibleTurn, finishFlexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, setFlexibleInstallationCaps, withdrawFlexibleTurn, withdrawFlexibleTurnsAbove } from "./flexible-turns.js";
 import { flexibleAgentLaunch, lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, startFlexibleRelayStub, startFlexibleTurn } from "./flexible-agents.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
@@ -92,11 +92,14 @@ describe("switched off", () => {
     const launchesBefore = store.handle.prepare("SELECT * FROM flexible_thread_launch").all().map(row => ({ ...row }));
     expect(await stopFlexibleThreadAgent(store, { id, reason: "test", clock: () => NOW })).toEqual(refused);
     expect(await startFlexibleTurn(store, { turn: "c".repeat(32), holder: "h1", clock: () => NOW, network: { proxyPort: 41_000, token: "t", proxyEnv: {}, close: () => {} },
-      relay: { url: "http://127.0.0.1:1", token: "r", revoke: () => {} }, storage: { names: [], denies: [] } })).toEqual(refused);
+      relay: { url: "http://127.0.0.1:1", issue: () => ({ url: "http://127.0.0.1:1", token: "r", revoke: () => {} }) }, storage: { names: [], denies: [] } })).toEqual(refused);
+    let locked = false;
+    expect(await withFlexibleThreadLock(id, async () => { locked = true; })).toEqual(refused);
+    expect(locked).toBe(false);
     expect(await lowerFlexibleThreadLevel(store, { thread: id, by: { name: "alex", generation: store.accountOf("alex")!.generation }, level: "supervised", clock: () => NOW })).toEqual(refused);
     expect(await recoverFlexibleLaunchesOf(store, { holder: "h1", clock: () => NOW })).toEqual(refused);
     expect(flexibleAgentLaunch("claude", "full", { model: "claude-sonnet-4-5", relay: { url: "http://127.0.0.1:1", token: "r" }, configHome: join(dir, "home") })).toEqual(refused);
-    expect(await startFlexibleRelayStub()).toEqual(refused);
+    expect(await startFlexibleRelayStub(store)).toEqual(refused);
     expect(store.handle.prepare("SELECT * FROM flexible_thread_launch").all().map(row => ({ ...row }))).toEqual(launchesBefore);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread_level").get()!["n"]).toBe(0);
     expect(existsSync(marker)).toBe(false);
@@ -123,6 +126,7 @@ describe("switched off", () => {
     expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 1, turnsPerDay: null, measuredMicrousdPerDay: null }, clock: () => NOW })).toEqual(refused);
     expect(withdrawFlexibleTurn(store, { turn, holder: "h1", detail: "x", clock: () => NOW })).toEqual(refused);
     expect(interruptFlexibleThreadTurns(store, { thread: id, detail: "x", clock: () => NOW })).toEqual(refused);
+    expect(withdrawFlexibleTurnsAbove(store, { thread: id, level: "supervised", detail: "x", clock: () => NOW })).toEqual(refused);
     expect(store.handle.prepare("SELECT * FROM thread_turn").all().map(row => ({ ...row }))).toEqual(before);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_installation_caps").get()!["n"]).toBe(0);
   });
@@ -206,10 +210,10 @@ describe("the switch can't become a runtime override", () => {
     // The thread engine (F2a): every entry point that makes, removes, fences or starts a thread.
     const thread = readFileSync("src/flexible-thread.ts", "utf8");
     const entries = [...thread.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!);
-    const threadWriters = ["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn", "flexibleThreadCodexProfile", "stopFlexibleThreadAgent"];
+    const threadWriters = ["prepareFlexibleThread", "removeFlexibleThread", "flexibleThreadFence", "flexibleThreadSpawn", "flexibleThreadCodexProfile", "stopFlexibleThreadAgent", "withFlexibleThreadLock"];
     expect(entries).toEqual(expect.arrayContaining(threadWriters));
     for (const name of threadWriters) {
-      expect(thread, name).toMatch(new RegExp(`export (?:async )?function ${name}\\([^]*?\\{\\n  if \\(!FLEXIBLE_AVAILABLE\\) return refuse\\("not-available"\\);`));
+      expect(thread, name).toMatch(new RegExp(`export (?:async )?function ${name}(?:<[^>]*>)?\\([^]*?\\{\\n  if \\(!FLEXIBLE_AVAILABLE\\) return refuse\\("not-available"\\);`));
     }
     // Nothing outside the thread engine (and its tests) calls into it yet: no route, CLI command, MCP tool or chat action.
     // The engine's own modules (F2c: the thread start, launches, custody and levels) import each other and nothing else does.
@@ -227,7 +231,7 @@ describe("the switch can't become a runtime override", () => {
     // Turn admission (F2e): every entry point that admits, starts, charges, finishes or ends a turn, or sets the
     // installation's limits; and nothing outside it (and its tests) calls into it yet.
     const turns = readFileSync("src/flexible-turns.ts", "utf8");
-    const writers = ["admitFlexibleTurn", "beginFlexibleTurn", "chargeFlexibleTurn", "finishFlexibleTurn", "interruptFlexibleTurnsOf", "setFlexibleInstallationCaps", "withdrawFlexibleTurn", "interruptFlexibleThreadTurns"];
+    const writers = ["admitFlexibleTurn", "beginFlexibleTurn", "chargeFlexibleTurn", "finishFlexibleTurn", "interruptFlexibleTurnsOf", "setFlexibleInstallationCaps", "withdrawFlexibleTurn", "interruptFlexibleThreadTurns", "withdrawFlexibleTurnsAbove"];
     expect([...turns.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual([...writers, "flexibleInstallationCaps", "flexibleTurn"].sort());
     for (const name of writers) {
       // The first statement of the body (the line after the signature's last line) is the check.

@@ -9,15 +9,18 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, flexibleTurn } from "./flexible-turns.js";
-import { FLEXIBLE_START_GATE, prepareFlexibleThread, removeFlexibleThread, flexibleThread, type FlexibleThreadPaths } from "./flexible-thread.js";
+import { FLEXIBLE_START_GATE, prepareFlexibleThread, removeFlexibleThread, flexibleThread, stopFlexibleThreadAgent, type FlexibleThreadPaths } from "./flexible-thread.js";
 import { spawnSync } from "node:child_process";
 import { flexibleAgentLaunch, lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, RELAY_STUB_REFUSAL, startFlexibleRelayStub, startFlexibleTurn, type FlexibleRelayStub } from "./flexible-agents.js";
 import { FLEXIBLE_PROVEN, threadLevelAllowed } from "./flexible-levels.js";
-import { flexibleLaunch, unsettledLaunch } from "./flexible-launch.js";
+import { flexibleLaunch, onLaunchStopped, revokeLaunch, unsettledLaunch, watchLaunch } from "./flexible-launch.js";
+import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { realCustodyIO, startIdentityOf } from "./flexible-custody.js";
 import { deleteProject, projectRunning } from "./project-delete.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
@@ -59,7 +62,7 @@ function admit(id: string, over: Partial<Parameters<typeof admitFlexibleTurn>[1]
 const launches = () => world.store.handle.prepare("SELECT id, state FROM flexible_thread_launch ORDER BY started_at").all().map(row => ({ ...row }));
 const startInput = (turn: string, over: Partial<Parameters<typeof startFlexibleTurn>[1]> = {}) => ({
   turn, holder: "h1", clock: () => NOW, network: { proxyPort: 41_000, token: "run-token", proxyEnv: {}, close: () => {} },
-  relay: { url: "http://127.0.0.1:1", token: "relay-token", revoke: () => {} }, storage: STORAGE, ...over });
+  relay: { url: "http://127.0.0.1:1", issue: () => ({ url: "http://127.0.0.1:1", token: "relay-token", revoke: () => {} }) }, storage: STORAGE, ...over });
 /** A real process standing in for a thread's agent: its own group, working in the thread's repository. */
 function agent(paths: FlexibleThreadPaths, script = "sleep 30"): { pid: number; start: string; closed: Promise<void> } {
   const child = spawn("/bin/sh", ["-c", script], { cwd: paths.repo, detached: true, stdio: "ignore" });
@@ -67,10 +70,10 @@ function agent(paths: FlexibleThreadPaths, script = "sleep 30"): { pid: number; 
   return { pid: child.pid!, start: startIdentityOf(child.pid!, io)!, closed: new Promise(done => child.once("close", () => done())) };
 }
 /** A live launch on the record for `pid`, as flexibleThreadSpawn registers one. */
-function live(id: string, pid: number, start: string, over: { level?: string; state?: string; holder?: string } = {}): string {
-  const launch = `${pid.toString(16).padStart(8, "0")}${"0".repeat(24)}`;
+function live(id: string, pid: number, start: string, over: { level?: string; state?: string; holder?: string; fence?: string } = {}): string {
+  const launch = `${pid.toString(16).padStart(8, "0")}${randomBytes(12).toString("hex")}`;
   world.store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
-    VALUES (?, ?, 'claude', ?, ?, ?, 'here', ?, ?, ?, ?, ?)`).run(launch, id, over.level ?? "full", "f".repeat(32), over.holder ?? "h1", "9".repeat(32), pid, start, over.state ?? "live", NOW.toISOString());
+    VALUES (?, ?, 'claude', ?, ?, ?, 'here', ?, ?, ?, ?, ?)`).run(launch, id, over.level ?? "full", over.fence ?? "f".repeat(32), over.holder ?? "h1", "9".repeat(32), pid, start, over.state ?? "live", NOW.toISOString());
   world.store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ?").run(pid, NOW.toISOString(), id);
   return launch;
 }
@@ -79,18 +82,21 @@ const until = async (test: () => boolean) => { for (let i = 0; i < 100 && !test(
 
 describe("the relay's stand-in", () => {
   let stub: FlexibleRelayStub;
-  beforeEach(async () => { const made = await startFlexibleRelayStub(); if ("ok" in made) throw new Error(made.message); stub = made; });
+  beforeEach(async () => { const made = await startFlexibleRelayStub(world.store); if ("ok" in made) throw new Error(made.message); stub = made; });
   afterEach(async () => { await stub.close(); });
 
-  test("refuses every call, with a token, without one, after it was revoked, on every route and method; tunnels and upgrades get nothing", async () => {
-    const endpoint = stub.issue();
+  test("refuses every call on every route and method (a live grant 503, anything else 401); a grant revoked durably is refused at once; tunnels get nothing", async () => {
+    const { id, paths } = await thread();
+    const turn = admit(id);
+    const endpoint = stub.issue({ thread: id, turn });
     expect(endpoint.url).toBe(stub.url);
-    expect(stub.live()).toBe(1);
+    // The grant counts only while the thread's launch is live.
+    const running = agent(paths);
+    live(id, running.pid, running.start);
     const tries: [string, RequestInit][] = [
       ["/v1/messages", { method: "POST", headers: { "x-api-key": endpoint.token, authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 1, messages: [] }) }],
       ["/v1/messages/count_tokens", { method: "POST", headers: { authorization: `Bearer ${endpoint.token}` }, body: "{}" }],
-      ["/v1/models", { method: "GET" }],
-      ["/../../etc/passwd", { method: "GET" }],
+      ["/../../etc/passwd", { method: "GET", headers: { authorization: `Bearer ${endpoint.token}` } }],
       ["/v1beta/models/gemini:generateContent", { method: "POST", headers: { "x-goog-api-key": endpoint.token }, body: "{}" }],
     ];
     for (const [path, init] of tries) {
@@ -98,9 +104,14 @@ describe("the relay's stand-in", () => {
       expect(answer.status, path).toBe(503);
       expect(await answer.json()).toEqual({ type: "error", error: { type: "relay_unavailable", message: RELAY_STUB_REFUSAL } });
     }
-    endpoint.revoke();
-    expect(stub.live()).toBe(0);
-    expect((await fetch(`${stub.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${endpoint.token}` }, body: "{}" })).status).toBe(503);
+    for (const token of ["", "tr-relay-" + "0".repeat(48), "nonsense"]) {
+      expect((await fetch(`${stub.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: "{}" })).status).toBe(401);
+    }
+    // Stopped (from anywhere): the grant is revoked in the database and the next call is refused as unauthorized.
+    expect(await stopFlexibleThreadAgent(world.store, { id, reason: "test", clock: () => NOW, io })).toMatchObject({ ok: true });
+    expect(world.store.handle.prepare("SELECT revoked_at FROM flexible_relay_grant").get()!["revoked_at"]).not.toBeNull();
+    expect((await fetch(`${stub.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${endpoint.token}` }, body: "{}" })).status).toBe(401);
+    expect(world.store.handle.prepare("SELECT token_digest FROM flexible_relay_grant").get()!["token_digest"]).not.toBe(endpoint.token); // only its digest is kept
     const { connect } = await import("node:net");
     const tunnel = await new Promise<string>(done => {
       const socket = connect(Number(new URL(stub.url).port), "127.0.0.1", () => socket.write("CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n"));
@@ -109,8 +120,8 @@ describe("the relay's stand-in", () => {
       socket.on("close", () => done(said));
     });
     expect(tunnel).toMatch(/^HTTP\/1\.1 403/);
-    expect(stub.refused()).toBe(tries.length + 2);
-  });
+    expect(stub.authorized()).toBe(tries.length);
+  }, 30_000);
 });
 
 describe("each agent at its level, and the proven matrix", () => {
@@ -169,29 +180,51 @@ describe("a turn start that refuses spawns nothing and leaves custody as it was"
     expect(flexibleThread(world.store, id)!.livePid).toBeNull();
   });
 
-  test("a level the agent isn't offered at (the matrix changed since admission), or another agent still running: withdrawn, nothing stopped or started", async () => {
-    const { id, paths } = await thread();
+  test("a level the agent isn't offered at (the matrix changed since admission): withdrawn, nothing started, the caller's proxy closed", async () => {
+    const { id } = await thread();
     const turn = admit(id);
-    const closed = { proxy: 0, relay: 0 };
+    let closed = 0;
     const noClaude = { ...FLEXIBLE_PROVEN, claude: { ...FLEXIBLE_PROVEN.claude, full: { offered: false as const, why: "test" } } };
-    expect(await startFlexibleTurn(world.store, startInput(turn, { proven: noClaude, network: { proxyPort: 41_000, token: "t", proxyEnv: {}, close: () => { closed.proxy++; } } }))).toMatchObject({ ok: false, reason: "level-unavailable" });
+    expect(await startFlexibleTurn(world.store, startInput(turn, { proven: noClaude, network: { proxyPort: 41_000, token: "t", proxyEnv: {}, close: () => { closed++; } } }))).toMatchObject({ ok: false, reason: "level-unavailable" });
     expect(flexibleTurn(world.store, turn)!.status).toBe("withdrawn");
-    // Another agent of the thread's still runs at another level: the turn waits for it, and it is left as it is.
-    const other = agent(paths);
-    const launch = live(id, other.pid, other.start, { level: "auto" });
-    const next = admitFlexibleTurn(world.store, { thread: id, starter: { name: "alex", generation: gen() }, digest, level: "full", freshProof: false, provider: "claude", model: "claude-sonnet-4-5",
-      billing: "subscription", requestKey: "m-x", holder: "h1", clock: () => NOW });
-    expect(next).toMatchObject({ ok: false, reason: "level-pending" });
-    world.store.handle.prepare("UPDATE flexible_thread_launch SET state = 'exited', ended_at = ? WHERE id = ?").run(NOW.toISOString(), launch);
-    const raced = admit(id);
-    world.store.handle.prepare("DELETE FROM flexible_thread_launch").run();
-    live(id, other.pid, other.start, { level: "auto" });
-    expect(await startFlexibleTurn(world.store, startInput(raced, { relay: { url: "http://127.0.0.1:1", token: "r", revoke: () => { closed.relay++; } } }))).toMatchObject({ ok: false, reason: "level-pending" });
-    expect(flexibleTurn(world.store, raced)!.status).toBe("withdrawn");
-    expect(alive(other.pid)).toBe(true);
-    expect(unsettledLaunch(world.store, id)!.state).toBe("live");
-    expect(closed).toEqual({ proxy: 0, relay: 0 });
+    expect(launches()).toEqual([]);
+    expect(closed).toBe(1);
   });
+
+  test("a running agent is reused only when it is provably the same launch in the same fence: another fence digest, holder or leader start means it is stopped first", async () => {
+    const { id, paths } = await thread();
+    // A stand-in `claude` (never the real one) for the launch that follows.
+    const bin = join(world.dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\nsleep 30\n");
+    chmodSync(join(bin, "claude"), 0o755);
+    const path = process.env["PATH"];
+    process.env["PATH"] = `${bin}:${path ?? "/usr/bin:/bin"}`;
+    try {
+    for (const stale of [{ fence: "f".repeat(32) }, { holder: "h2" }, { start: "t1" }]) {
+      const old = agent(paths);
+      const launch = live(id, old.pid, stale.start ?? old.start, { holder: stale.holder ?? "h1", fence: stale.fence });
+      const turn = admit(id);
+      const started = await startFlexibleTurn(world.store, startInput(turn));
+      expect(started, JSON.stringify(stale)).not.toMatchObject({ launched: "reused" });
+      if (stale.start === undefined) {
+        // Proven the launch's: stopped, its exit verified, then a new launch was tried (inside the fence where there is one).
+        await old.closed;
+        expect(flexibleLaunch(world.store, launch)).toMatchObject({ state: "exited", stopReason: "its agent was replaced" });
+      } else {
+        // A leader whose start doesn't match the record isn't proven the launch's: never signalled; the turn waits.
+        expect(started).toMatchObject({ ok: false, reason: "level-pending" });
+        expect(alive(old.pid)).toBe(true);
+        process.kill(-old.pid, "SIGKILL");
+        await old.closed;
+      }
+      if (started.ok && started.launched === "started") { started.child.stdin!.end(); await stopFlexibleThreadAgent(world.store, { id, reason: "test", io }); }
+      world.store.handle.prepare("UPDATE flexible_thread_launch SET state = 'exited', ended_at = ? WHERE state <> 'exited'").run(NOW.toISOString());
+      world.store.handle.prepare("UPDATE thread_turn SET status = 'withdrawn', ended_at = ? WHERE status = 'admitted'").run(NOW.toISOString());
+      world.store.handle.prepare("UPDATE thread_turn SET status = 'finished', ended_at = ?, cost_basis = 'unknown' WHERE status = 'running'").run(NOW.toISOString());
+    }
+    } finally { process.env["PATH"] = path; }
+  }, 60_000);
 });
 
 describe("lowering a thread's level at runtime", () => {
@@ -254,6 +287,58 @@ describe("the start gate", () => {
   });
 });
 
+describe("lowering and a turn start are never interleaved", () => {
+  test("lowering withdraws every turn admitted above the new level, even one not started yet, so it can never begin", async () => {
+    const { id } = await thread();
+    const waiting = admit(id);
+    expect(await lowerFlexibleThreadLevel(world.store, { thread: id, by: { name: "alex", generation: gen() }, level: "auto", clock: () => NOW })).toMatchObject({ ok: true, stopped: "none" });
+    expect(flexibleTurn(world.store, waiting)).toMatchObject({ status: "withdrawn" });
+    expect(beginFlexibleTurn(world.store, { turn: waiting, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "turn-not-admitted" });
+    expect(await startFlexibleTurn(world.store, startInput(waiting))).toMatchObject({ ok: false, reason: "turn-not-admitted" });
+    expect(launches()).toEqual([]);
+  });
+});
+
+describe("a stopped launch's network ends at once, whichever process stops it", () => {
+  test("a handle that fails to close is kept and tried again until it does", async () => {
+    let tries = 0;
+    onLaunchStopped("a".repeat(32), () => { tries++; if (tries === 1) throw new Error("busy"); });
+    expect(await revokeLaunch("a".repeat(32))).toBe(1);
+    expect(await revokeLaunch("a".repeat(32))).toBe(0);
+    expect(tries).toBe(2);
+    expect(await revokeLaunch("a".repeat(32))).toBe(0);
+    expect(tries).toBe(2);
+  });
+
+  test("a second Toolroll process stops the thread: the relay grant is revoked in the database, and this holder's proxy closes as its watcher sees it", async () => {
+    const { id, paths } = await thread();
+    const turn = admit(id);
+    expect(beginFlexibleTurn(world.store, { turn, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
+    const running = agent(paths);
+    const launch = live(id, running.pid, running.start);
+    const made = await startFlexibleRelayStub(world.store);
+    if ("ok" in made) throw new Error(made.message);
+    const endpoint = made.issue({ thread: id, turn });
+    let proxyClosed = 0;
+    onLaunchStopped(launch, () => { proxyClosed++; });
+    const stopWatching = watchLaunch(world.store, launch, paths.folder, io, 100);
+    try {
+      expect((await fetch(`${made.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${endpoint.token}` }, body: "{}" })).status).toBe(503);
+      const stopped = await new Promise<string>((resolve, reject) => {
+        execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", SECOND_HOLDER], { cwd: fileURLToPath(new URL("..", import.meta.url)), timeout: 60_000,
+          env: { ...process.env, FLEXIBLE_SECOND: JSON.stringify({ file: world.databaseFile, thread: id,
+            modules: { store: new URL("./store.ts", import.meta.url).href, thread: new URL("./flexible-thread.ts", import.meta.url).href } }) } },
+        (error, stdout, stderr) => error === null ? resolve(stdout) : reject(new Error(`${error.message}\n${stderr}`)));
+      });
+      expect(JSON.parse(stopped)).toMatchObject({ ok: true, how: "none-left" });
+      await running.closed;
+      expect((await fetch(`${made.url}/v1/messages`, { method: "POST", headers: { authorization: `Bearer ${endpoint.token}` }, body: "{}" })).status).toBe(401);
+      await until(() => proxyClosed === 1);
+      expect(flexibleTurn(world.store, turn)!.status).toBe("interrupted");
+    } finally { stopWatching(); await made.close(); }
+  }, 60_000);
+});
+
 describe("after a crash, and before removal or a project's deletion", () => {
   test("a launch left spawning (Toolroll died between the spawn and its registration) never ran: recovery settles it and ends the holder's turns", async () => {
     const { id } = await thread();
@@ -266,12 +351,14 @@ describe("after a crash, and before removal or a project's deletion", () => {
     expect(flexibleTurn(world.store, turn)!.status).toBe("interrupted");
   });
 
-  test("removal: refused while the agent runs; a survivor of a gone agent is found and stopped first, then the thread goes", async () => {
+  test("removal: refused while the agent runs; a survivor of a gone agent that only shares the thread's folder blocks it (named, never signalled) until it's gone", async () => {
     const { id, paths } = await thread();
     const running = agent(paths);
     live(id, running.pid, running.start);
     expect(await removeFlexibleThread(world.store, { id, by: "alex", now: NOW, io })).toMatchObject({ ok: false, reason: "thread-running" });
     // The agent's own process ends, leaving a setsid + double-forked survivor in the thread's folder.
+    process.kill(-running.pid, "SIGKILL");
+    await running.closed;
     world.store.handle.prepare("DELETE FROM flexible_thread_launch").run();
     const file = join(world.dir, "survivor.pid");
     const leader = agent(paths, `perl -MPOSIX -e 'exit if fork; POSIX::setsid(); exit if fork; open(my $f, ">", "${file}"); print $f $$; close $f; sleep 30'; sleep 0.3`);
@@ -279,14 +366,16 @@ describe("after a crash, and before removal or a project's deletion", () => {
     await leader.closed;
     await until(() => existsSync(file));
     const survivor = Number((await import("node:fs")).readFileSync(file, "utf8"));
-    expect(alive(survivor)).toBe(true);
-    // Relaunch and removal wait on custody: a project's deletion too.
+    // Relaunch, removal and a project's deletion wait on custody.
     expect(projectRunning(world.store, world.project, NOW)).toEqual(["a Flexible thread's agent is still running", "1 Flexible thread is still open (remove it first)"]);
-    expect(await removeFlexibleThread(world.store, { id, by: "alex", now: NOW, io })).toMatchObject({ ok: true });
+    expect(await removeFlexibleThread(world.store, { id, by: "alex", now: NOW, io })).toMatchObject({ ok: false, reason: "thread-running", message: expect.stringContaining(`process ${survivor} is using the thread's folder`) });
+    expect(alive(survivor)).toBe(true);
+    expect(existsSync(paths.folder)).toBe(true);
+    process.kill(survivor, "SIGKILL");
     await until(() => !alive(survivor));
+    expect(await removeFlexibleThread(world.store, { id, by: "alex", now: NOW, io })).toMatchObject({ ok: true });
     expect(existsSync(paths.folder)).toBe(false);
     expect(launches()).toEqual([expect.objectContaining({ state: "exited" })]);
-    expect(world.store.handle.prepare("SELECT action FROM action_ledger WHERE action = 'flexible agent stopped'").all()).toHaveLength(1);
   }, 30_000);
 
   test("a project with an open Flexible thread isn't deleted; once its threads are removed, it is, with their records", async () => {
@@ -298,3 +387,17 @@ describe("after a crash, and before removal or a project's deletion", () => {
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"]).toBe(0);
   });
 });
+
+/** Another Toolroll process (its own database handle; the build's constant replaced by a module hook as vi.mock does
+ * here) stopping a thread. */
+const SECOND_HOLDER = `
+const env = JSON.parse(process.env.FLEXIBLE_SECOND);
+const { register } = await import("node:module");
+register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
+const { openStore } = await import(env.modules.store);
+const { stopFlexibleThreadAgent } = await import(env.modules.thread);
+const store = openStore(env.file);
+const result = await stopFlexibleThreadAgent(store, { id: env.thread, reason: "stopped from another process" });
+store.close();
+process.stdout.write(JSON.stringify(result));
+`;

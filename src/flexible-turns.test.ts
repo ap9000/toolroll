@@ -142,6 +142,13 @@ describe("admission", () => {
     expect(admit()).toMatchObject({ ok: true });
   });
 
+  test("a turn admitted before its thread was lowered never begins above the new level (F2c)", () => {
+    const waiting = admitted();
+    store.handle.prepare("INSERT INTO flexible_thread_level (thread, level, set_by, set_at) VALUES (?, 'auto', 'pat', ?)").run(T1, NOW.toISOString());
+    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "level-pending", message: expect.stringContaining("lowered to Auto") });
+    expect(statusOf(waiting)).toBe("withdrawn");
+  });
+
   test("a thread its owner lowered: a turn above that level needs a fresh proof, and then raises it", () => {
     store.handle.prepare("INSERT INTO flexible_thread_level (thread, level, set_by, set_at) VALUES (?, 'supervised', 'pat', ?)").run(T1, NOW.toISOString());
     expect(admit({ level: "full", freshProof: false })).toMatchObject({ ok: false, reason: "proof-required", message: "This thread was lowered to Supervised. Raising it to Full access needs your password." });

@@ -1,33 +1,45 @@
 /**
  * Process custody for Flexible threads (the Flexible plan v2 §5 and Codex round 2 item 10; F2 breakdown, enable gate 1
- * "full process custody", slice F2c): finding every process a thread's agent left behind, stopping them, and proving
- * the whole tree has exited before a relaunch, a lowered level, a removal or a project's deletion goes on.
+ * "full process custody", slice F2c): finding every process a thread's agent left behind, stopping the ones proven to
+ * be its own, and proving the whole tree has exited before a relaunch, a lowered level, a removal or a project's
+ * deletion goes on.
  *
  * A launch is known by a durable identity, never a bare pid: the boot it started in (boot-identity.ts), the leader's
  * pid AND start identity (a reused number never reads as the agent), the Linux pid namespaces the sandbox made for it,
- * and every descendant seen while it ran (pid and start identity, recorded as they appear). A process is the launch's
- * when any of these holds:
- *   - it is in the leader's process group (while the leader is the launch's own, or its number is free: a group's
- *     number can't be reused while the group has a member), and it was born no earlier than the leader;
- *   - Linux: it is in one of the launch's pid namespaces (bubblewrap --unshare-pid). A setsid or double-forked process
- *     can't leave a pid namespace, and when the namespace's first process dies the kernel kills every other member,
- *     so a namespace with no member left is a verified exit of everything inside it;
- *   - it is a recorded witness (the same pid with the same start identity);
- *   - its parent is one of the above (a setsid child whose parent still runs);
- *   - its working folder, or a file it holds open, is inside the thread's own folder (which no other launch can reach,
- *     agent-fence.ts denies the threads root to all of them) and it was born no earlier than the leader. One that is
- *     older is somebody else's program (a person's shell in that folder): it is never signalled, and custody refuses
- *     until it is gone.
+ * and every descendant seen while it ran (pid and start identity, recorded as they appear).
  *
- * macOS has no pid namespace or cgroup Toolroll can use, and the environment of another process isn't readable there,
- * so a descendant that double-forks between two observations, leaves the thread's folder and closes every file in it is
- * not found (the same residual containment.ts names for builds). It stays inside the thread's Seatbelt fence (no
- * keychain, writes only to the thread's own folders), and the thread's proxy and relay are closed before anything is
- * stopped, so it has no network. Everything that can be found is found, and custody refuses while any of it survives.
+ * Proven the launch's (and only these are ever signalled):
+ *   - the leader itself (its pid with its start identity);
+ *   - a member of the leader's process group while the leader is alive with its start identity (continuity is proven
+ *     by the leader, never by its pid being free: a free number may have been reused for another group), born no
+ *     earlier than the leader;
+ *   - Linux: a process in one of the launch's pid namespaces (bubblewrap --unshare-pid). A setsid or double-forked
+ *     process can't leave a pid namespace, and when the namespace's first process dies the kernel kills every other
+ *     member, so a namespace with no member left is a verified exit of everything inside it;
+ *   - a recorded witness (the same pid with the same start identity);
+ *   - a process whose live parent is one of the above (a setsid child whose parent still runs).
+ * Not proven, so never signalled, but blocking (custody stays unresolved and says which process, until it is gone): a
+ * process working in or holding a file in the thread's own folder (it may be a person's shell or editor), and a member
+ * of the leader's group once the leader is gone (the group number may have been reused).
+ *
+ * Every signal is bound to the identity it was scanned with. Linux: a pidfd (pidfd_open, the start identity checked
+ * through it, pidfd_send_signal), so a reused pid can't be hit; where this computer can't do that, nothing is signalled
+ * and custody is unresolved. macOS has no identity-bound handle: each target's start identity is read again
+ * immediately before its signal, and a mismatch is "not ours". The window between that read and the signal remains;
+ * any pid custody signalled that later shows another start identity means a race was possible, and the exit is never
+ * reported verified then.
+ *
+ * macOS has no pid namespace or cgroup Toolroll can use, and another process's environment isn't readable there, so a
+ * descendant that double-forks between two observations, leaves the thread's folder and closes every file in it is not
+ * found (the same residual containment.ts names for builds). It stays inside the thread's Seatbelt fence, and the
+ * thread's proxy and relay are closed before anything is stopped. Whether that residual is acceptable is the owner's
+ * decision (Codex round 1 on F2c, finding 1); until then a scan that couldn't be complete (an unreadable table, an
+ * lsof listing that wasn't whole) is never a verified exit.
  *
  * Nothing here decides who may stop a thread; it is the mechanism flexible-launch.ts calls under the thread's lock.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { constants } from "node:os";
 import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { provenDeadByBootChange } from "./boot-identity.js";
 
@@ -48,6 +60,9 @@ export type LaunchCustody = {
 };
 
 export type ProcRow = { pid: number; ppid: number; pgid: number; uid: number; start: string | null; zombie: boolean };
+/** What a signal bound to an identity did: sent to exactly that process; it was gone; its pid now names another process
+ * (nothing sent); not allowed; or this computer can't send an identity-bound signal (nothing sent). */
+export type SignalResult = "sent" | "gone" | "changed" | "denied" | "unavailable";
 
 /** How custody reads and signals processes: the real OS (realCustodyIO), or a test's stand-in. */
 export type CustodyIO = {
@@ -59,10 +74,10 @@ export type CustodyIO = {
   /** Linux: the pid namespace a process is in (`pid:[inode]`); null when it is gone, "unreadable" when it can't be
    * read. Elsewhere always null. */
   namespaceOf(pid: number): string | null | "unreadable";
-  /** Processes whose working folder or an open file is inside `folder`, or null when that can't be listed. */
+  /** Processes whose working folder or an open file is inside `folder`, or null when that can't be listed whole. */
   holdersOf(folder: string): number[] | null;
-  /** Send a signal to a process (or, with group, its group): "gone" when there is none, "denied" when it isn't ours. */
-  signal(pid: number, signal: NodeJS.Signals, group?: boolean): "sent" | "gone" | "denied";
+  /** Send `signal` to each process, bound to its identity (pid AND start identity), never to a bare pid. */
+  signal(targets: readonly ProcessWitness[], signal: NodeJS.Signals): Map<number, SignalResult>;
   /** This boot's identity, or null when it can't be read. */
   bootId(): string | null;
   sleep(ms: number): Promise<void>;
@@ -76,8 +91,7 @@ function startValue(start: string | null): number | null {
   const match = /^[ts](\d{1,20})$/.exec(start);
   return match === null ? null : Number(match[1]);
 }
-/** Whether `row` was born no earlier than the launch's leader (same unit: both come from this OS). Unknown is false:
- * a process whose age can't be read is never taken as the agent's by age alone. */
+/** Whether `row` was born no earlier than the launch's leader (same unit: both come from this OS). Unknown is false. */
 function bornSinceLeader(row: ProcRow, leader: ProcessWitness | null): boolean {
   if (leader === null) return false;
   const born = startValue(row.start), since = startValue(leader.start);
@@ -86,32 +100,40 @@ function bornSinceLeader(row: ProcRow, leader: ProcessWitness | null): boolean {
 
 // ---- finding the launch's processes ---------------------------------------------------------------------------------------
 
+/** A process custody won't signal, and why it keeps custody unresolved. */
+export type CustodyBlocker = { pid: number; why: "in-folder" | "orphaned-group" | "unidentified" };
 export type CustodyScan = {
-  /** Live processes that are the launch's (never this process, never a zombie). */
-  members: ProcRow[];
-  /** Processes using the thread's folder that are provably older than the launch: somebody else's, never signalled. */
-  outsiders: number[];
+  /** Live processes proven the launch's (never this process, never a zombie, each with its start identity). */
+  members: (ProcRow & { start: string })[];
+  /** Live processes that may be the launch's or may be somebody else's: never signalled, never a verified exit. */
+  blockers: CustodyBlocker[];
   /** Why the scan can't be complete (an unreadable process table or listing), or null. */
   incomplete: string | null;
   /** Namespaces and witnesses newly seen (to be recorded). */
   namespaces: string[];
   witnesses: ProcessWitness[];
+  /** The table the scan read (to tell a replaced pid later). */
+  table: ProcRow[];
 };
 
 /** The launch's processes now, by every rule above. Read-only. */
 export function scanCustody(custody: LaunchCustody, io: CustodyIO, options: { holders?: boolean } = {}): CustodyScan {
   const rows = io.table();
-  if (rows === null) return { members: [], outsiders: [], incomplete: "the process table couldn't be read", namespaces: [], witnesses: [] };
+  if (rows === null) return { members: [], blockers: [], incomplete: "the process table couldn't be read", namespaces: [], witnesses: [], table: [] };
   const byPid = new Map(rows.map(row => [row.pid, row]));
   const live = (row: ProcRow | undefined): row is ProcRow => row !== undefined && !row.zombie && row.pid !== io.self && row.pid > 1;
   const members = new Map<number, ProcRow>();
+  const blockers = new Map<number, CustodyBlocker["why"]>();
   const leader = custody.leader;
-  // The leader's group: the leader is the launch's own (same start), or its number is free (no process holds it, so
-  // no other group can have taken the number while the launch's group still has a member).
   if (leader !== null) {
     const holder = byPid.get(leader.pid);
-    const groupOurs = holder === undefined || holder.start === leader.start;
-    if (groupOurs) for (const row of rows) if (live(row) && row.pgid === leader.pid && (row.pid === leader.pid ? row.start === leader.start : bornSinceLeader(row, leader))) members.set(row.pid, row);
+    const leaderLives = live(holder) && holder.start === leader.start;
+    for (const row of rows) {
+      if (!live(row) || row.pgid !== leader.pid) continue;
+      // The group is proven the launch's only while its leader is (same pid, same start identity).
+      if (leaderLives && (row.pid === leader.pid || bornSinceLeader(row, leader))) members.set(row.pid, row);
+      else if (!leaderLives && bornSinceLeader(row, leader)) blockers.set(row.pid, "orphaned-group");
+    }
   }
   for (const witness of custody.witnesses) {
     const row = byPid.get(witness.pid);
@@ -124,7 +146,6 @@ export function scanCustody(custody: LaunchCustody, io: CustodyIO, options: { ho
       if (!live(row) || members.has(row.pid)) continue;
       const ns = io.namespaceOf(row.pid);
       if (ns === "unreadable") {
-        // A process of this user whose namespace can't be read, born since the launch: it may be inside.
         if (row.uid === process.getuid?.() && bornSinceLeader(row, leader)) incomplete ??= `process ${row.pid}'s namespace couldn't be read`;
         continue;
       }
@@ -136,31 +157,26 @@ export function scanCustody(custody: LaunchCustody, io: CustodyIO, options: { ho
     grew = false;
     for (const row of rows) if (live(row) && !members.has(row.pid) && members.has(row.ppid)) { members.set(row.pid, row); grew = true; }
   }
-  const outsiders: number[] = [];
   if (options.holders !== false) {
     const holding = io.holdersOf(custody.folder);
-    if (holding === null) incomplete ??= "the programs using the thread's folder couldn't be listed";
-    else {
-      for (const pid of holding) {
-        const row = byPid.get(pid);
-        if (!live(row) || members.has(pid)) continue;
-        if (bornSinceLeader(row, leader)) members.set(pid, row);
-        else outsiders.push(pid);
-      }
-    }
+    if (holding === null) incomplete ??= "the programs using the thread's folder couldn't all be listed";
+    else for (const pid of holding) { const row = byPid.get(pid); if (live(row) && !members.has(pid)) blockers.set(pid, "in-folder"); }
   }
-  // What to record: every member's identity, and on Linux every namespace a member is in other than this process's own.
+  // A member whose start identity can't be read can't be signalled by identity: it blocks instead.
+  for (const [pid, row] of members) if (row.start === null) { members.delete(pid); blockers.set(pid, "unidentified"); }
+  for (const pid of members.keys()) blockers.delete(pid);
   const known = new Set(custody.witnesses.map(one => `${one.pid}:${one.start}`));
-  const witnesses = [...members.values()].filter(row => row.start !== null && !known.has(`${row.pid}:${row.start}`)).map(row => ({ pid: row.pid, start: row.start! }));
+  const proven = [...members.values()] as (ProcRow & { start: string })[];
+  const witnesses = proven.filter(row => !known.has(`${row.pid}:${row.start}`)).map(row => ({ pid: row.pid, start: row.start }));
   const freshNamespaces: string[] = [];
   if (io.platform === "linux") {
     const own = io.namespaceOf(io.self);
-    for (const row of members.values()) {
+    for (const row of proven) {
       const ns = io.namespaceOf(row.pid);
       if (typeof ns === "string" && ns !== "unreadable" && ns !== own && !namespaces.has(ns)) { namespaces.add(ns); freshNamespaces.push(ns); }
     }
   }
-  return { members: [...members.values()].sort((a, b) => a.pid - b.pid), outsiders: outsiders.sort((a, b) => a - b), incomplete, namespaces: freshNamespaces, witnesses };
+  return { members: proven.sort((a, b) => a.pid - b.pid), blockers: [...blockers].map(([pid, why]) => ({ pid, why })).sort((a, b) => a.pid - b.pid), incomplete, namespaces: freshNamespaces, witnesses, table: rows };
 }
 
 /** The leader's descendants by ancestry alone, as the holder watches a live launch (cheap: no listing of open files).
@@ -174,32 +190,43 @@ export function observeCustody(custody: LaunchCustody, io: CustodyIO): { namespa
 
 export type CustodyOutcome =
   | { verified: true; how: "boot-changed" | "none-left"; namespaces: string[]; witnesses: ProcessWitness[] }
-  | { verified: false; survivors: number[]; outsiders: number[]; why: string; namespaces: string[]; witnesses: ProcessWitness[] };
+  | { verified: false; survivors: number[]; blockers: CustodyBlocker[]; why: string; namespaces: string[]; witnesses: ProcessWitness[] };
 
 /** Whether this boot is provably not the launch's (a reboot ends every process of the old one). */
 function bootChanged(custody: LaunchCustody, io: CustodyIO): boolean {
   return provenDeadByBootChange({ host: custody.host, bootId: custody.bootId, machineId: custody.machineId }, { bootId: io.bootId() });
 }
 
+const BLOCKER_WORDS: Readonly<Record<CustodyBlocker["why"], string>> = Object.freeze({
+  "in-folder": "is using the thread's folder and isn't proven to be the agent's, so it wasn't stopped. Close it, then try again",
+  "orphaned-group": "is left in the agent's process group after the agent ended, and can't be proven to be the agent's, so it wasn't stopped. Stop it, then try again",
+  "unidentified": "couldn't be identified well enough to stop safely. Stop it, then try again",
+});
+
+/** Why custody isn't settled, in one line. */
+function why(scan: Pick<CustodyScan, "members" | "blockers" | "incomplete">, problem: string | null): string {
+  if (problem !== null) return problem;
+  if (scan.incomplete !== null) return scan.incomplete;
+  if (scan.members.length > 0) return `${scan.members.length === 1 ? "1 of the agent's processes is" : `${scan.members.length} of the agent's processes are`} still running`;
+  const first = scan.blockers[0]!;
+  return `process ${first.pid} ${BLOCKER_WORDS[first.why]}${scan.blockers.length > 1 ? ` (and ${scan.blockers.length - 1} more)` : ""}`;
+}
+
 /** Whether every process of the launch has exited, without signalling anything. */
 export function custodySettled(custody: LaunchCustody, io: CustodyIO): CustodyOutcome {
   if (bootChanged(custody, io)) return { verified: true, how: "boot-changed", namespaces: [], witnesses: [] };
   const scan = scanCustody(custody, io);
-  if (scan.members.length === 0 && scan.outsiders.length === 0 && scan.incomplete === null) return { verified: true, how: "none-left", namespaces: scan.namespaces, witnesses: scan.witnesses };
-  return { verified: false, survivors: scan.members.map(row => row.pid), outsiders: scan.outsiders, why: why(scan), namespaces: scan.namespaces, witnesses: scan.witnesses };
-}
-
-function why(scan: CustodyScan): string {
-  if (scan.incomplete !== null) return scan.incomplete;
-  if (scan.members.length > 0) return `${scan.members.length === 1 ? "1 of the agent's processes is" : `${scan.members.length} of the agent's processes are`} still running`;
-  return `a program that isn't the agent's (process ${scan.outsiders.join(", ")}) is using the thread's folder`;
+  if (scan.members.length === 0 && scan.blockers.length === 0 && scan.incomplete === null) return { verified: true, how: "none-left", namespaces: scan.namespaces, witnesses: scan.witnesses };
+  return { verified: false, survivors: scan.members.map(row => row.pid), blockers: scan.blockers, why: why(scan, null), namespaces: scan.namespaces, witnesses: scan.witnesses };
 }
 
 /**
- * Stop every process of the launch and prove they are gone. Freezes first (SIGSTOP, parents before their children are
- * read again, so nothing forks between the last look and the kill), looks again until nothing new appears, then kills
- * them all (SIGKILL; the leader's group as a whole while it is the launch's), and waits until a scan finds none, at
- * most `deadlineMs`. A process found only by the folder rule that is older than the launch is never signalled.
+ * Stop every process proven the launch's and prove they are gone. Freezes first (SIGSTOP, each bound to its identity),
+ * looks again until nothing new appears, then kills them all (SIGKILL, each bound to its identity; never the group as a
+ * number), and waits until a scan finds none, at most `deadlineMs`. A process that only blocks (in the thread's folder,
+ * left in an ended leader's group) is never signalled. Unresolved, never verified, when: anything blocks, the scan
+ * can't be complete, this computer can't send an identity-bound signal, or a pid custody signalled now names another
+ * process (a race was possible).
  */
 export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options: { deadlineMs?: number } = {}): Promise<CustodyOutcome> {
   if (bootChanged(custody, io)) return { verified: true, how: "boot-changed", namespaces: [], witnesses: [] };
@@ -211,36 +238,60 @@ export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options
     seenWitnesses.push(...scan.witnesses);
     current = { ...current, namespaces: [...current.namespaces, ...scan.namespaces], witnesses: [...current.witnesses, ...scan.witnesses] };
   };
-  const frozen = new Set<number>();
+  const frozen = new Map<number, string>();
+  const signalled = new Map<number, string>();
+  let problem: string | null = null;
+  const send = (targets: readonly ProcessWitness[], signal: NodeJS.Signals): Map<number, SignalResult> => {
+    const results = io.signal(targets, signal);
+    for (const target of targets) {
+      const result = results.get(target.pid) ?? "unavailable";
+      if (result === "sent") signalled.set(target.pid, target.start);
+      if (result === "unavailable") problem ??= "this computer can't send a signal bound to a process's identity, so nothing was stopped";
+    }
+    return results;
+  };
+  /** A pid custody signalled that now names another process: a race was possible. */
+  const raced = (table: readonly ProcRow[]): string | null => {
+    for (const row of table) {
+      const was = signalled.get(row.pid);
+      if (was !== undefined && row.start !== was) return `process ${row.pid} was replaced by another while it was being stopped, so the stop can't be proven`;
+    }
+    return null;
+  };
+  const unresolved = (scan: CustodyScan): CustodyOutcome => {
+    for (const [pid, start] of frozen) if (scan.members.some(row => row.pid === pid && row.start === start)) io.signal([{ pid, start }], "SIGCONT");
+    return { verified: false, survivors: scan.members.map(row => row.pid), blockers: scan.blockers, why: why(scan, problem), namespaces: seenNamespaces, witnesses: seenWitnesses };
+  };
   // Listing every open file is slow (lsof on a Mac): the first look and the last are full; the looks between follow the
   // group, the namespaces, the ancestry and every process already found (each found one is a witness from then on).
   let full = true;
   for (;;) {
     const scan = scanCustody(current, io, { holders: full });
     learn(scan);
-    const fresh = scan.members.filter(row => !frozen.has(row.pid));
+    problem ??= raced(scan.table);
+    if (problem !== null) return unresolved(scan);
     if (scan.members.length === 0) {
       if (!full) { full = true; continue; }
-      if (scan.outsiders.length === 0 && scan.incomplete === null) return { verified: true, how: "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
-      return { verified: false, survivors: [], outsiders: scan.outsiders, why: why(scan), namespaces: seenNamespaces, witnesses: seenWitnesses };
+      if (scan.blockers.length === 0 && scan.incomplete === null) return { verified: true, how: "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
+      return unresolved(scan);
     }
     full = false;
+    const fresh = scan.members.filter(row => frozen.get(row.pid) !== row.start);
     if (fresh.length > 0) {
       // Freeze what is new, then look again: a process born during this look is caught by the next one.
-      for (const row of fresh) if (io.signal(row.pid, "SIGSTOP") !== "denied") frozen.add(row.pid);
+      const results = send(fresh, "SIGSTOP");
+      for (const row of fresh) if (results.get(row.pid) === "sent") frozen.set(row.pid, row.start);
     } else {
-      // Nothing new while everything is frozen: nothing can fork now. Kill all of it.
-      const leader = current.leader;
-      if (leader !== null && scan.members.some(row => row.pgid === leader.pid)) io.signal(leader.pid, "SIGKILL", true);
-      for (const row of scan.members) io.signal(row.pid, "SIGKILL");
+      // Nothing new while everything is frozen: nothing can fork now. Kill all of it, each by its identity.
+      send(scan.members, "SIGKILL");
     }
+    if (problem !== null) return unresolved(scan);
     if (Date.now() >= deadline) {
       const last = scanCustody(current, io);
       learn(last);
-      if (last.members.length === 0 && last.outsiders.length === 0 && last.incomplete === null) return { verified: true, how: "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
-      // Nothing is left frozen: a process custody couldn't end gets to run (and keeps the thread unresolved).
-      for (const pid of frozen) io.signal(pid, "SIGCONT");
-      return { verified: false, survivors: last.members.map(row => row.pid), outsiders: last.outsiders, why: why(last), namespaces: seenNamespaces, witnesses: seenWitnesses };
+      problem ??= raced(last.table);
+      if (problem === null && last.members.length === 0 && last.blockers.length === 0 && last.incomplete === null) return { verified: true, how: "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
+      return unresolved(last);
     }
     await io.sleep(fresh.length > 0 ? 20 : 100);
   }
@@ -341,8 +392,9 @@ function macHolders(folder: string): number[] | null {
   const out = spawnSync("/usr/sbin/lsof", ["-n", "-P", "-w", "-u", String(process.getuid?.() ?? ""), "-F", "pn"], {
     encoding: "utf8", env: { PATH: "/usr/bin:/bin:/usr/sbin", LC_ALL: "C" }, timeout: 20_000, killSignal: "SIGKILL", maxBuffer: 128 * 1024 * 1024,
   });
-  // lsof exits 1 when it couldn't read some file; anything else (a signal, a timeout, an overflow) is no listing.
-  if (out.error !== undefined || out.signal !== null || (out.status !== 0 && out.status !== 1)) return null;
+  // Only a whole listing counts: lsof exits 1 when it couldn't read some process or file, and anything else (a signal, a
+  // timeout, an overflow) is no listing. Either way the scan is incomplete, never a verified exit.
+  if (out.error !== undefined || out.signal !== null || out.status !== 0) return null;
   const found = new Set<number>();
   let pid = 0;
   for (const line of out.stdout.split("\n")) {
@@ -350,6 +402,72 @@ function macHolders(folder: string): number[] | null {
     else if (line.startsWith("n") && pid > 0 && inside(line.slice(1))) found.add(pid);
   }
   return [...found];
+}
+
+/** Linux: each signal through a pidfd, the start identity checked through it first (pidfd_open pins the process, so the
+ * check and the signal are about the same one, whatever happens to the number). Node has no pidfd call, so a short
+ * Python helper (3.9+, isolated mode) does it; without one, nothing is signalled ("unavailable"). */
+const PIDFD_HELPER = `
+import json, os, signal, sys
+request = json.load(sys.stdin)
+out = {}
+for target in request["targets"]:
+    pid, start = target["pid"], target["start"]
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        out[str(pid)] = "gone"; continue
+    except OSError:
+        out[str(pid)] = "denied"; continue
+    try:
+        try:
+            with open("/proc/%d/stat" % pid) as handle: stat = handle.read()
+        except OSError:
+            out[str(pid)] = "gone"; continue
+        fields = stat[stat.rindex(")") + 2:].split()
+        if "t" + fields[19] != start:
+            out[str(pid)] = "changed"; continue
+        try:
+            signal.pidfd_send_signal(fd, request["signal"]); out[str(pid)] = "sent"
+        except ProcessLookupError:
+            out[str(pid)] = "gone"
+        except OSError:
+            out[str(pid)] = "denied"
+    finally:
+        os.close(fd)
+print(json.dumps(out))
+`;
+function linuxSignal(targets: readonly ProcessWitness[], signal: NodeJS.Signals): Map<number, SignalResult> {
+  const results = new Map<number, SignalResult>(targets.map(one => [one.pid, "unavailable"]));
+  if (targets.length === 0) return results;
+  const ran = spawnSync("python3", ["-I", "-c", PIDFD_HELPER], { input: JSON.stringify({ targets, signal: constants.signals[signal] }), encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL",
+    env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", LC_ALL: "C" } });
+  if (ran.error !== undefined || ran.status !== 0) return results;
+  try {
+    const answer = JSON.parse(ran.stdout) as Record<string, unknown>;
+    for (const one of targets) {
+      const said = answer[String(one.pid)];
+      if (said === "sent" || said === "gone" || said === "changed" || said === "denied") results.set(one.pid, said);
+    }
+  } catch { /* an unreadable answer: every target stays "unavailable" */ }
+  return results;
+}
+
+/** macOS: no identity-bound handle exists. Each target's start identity is read again just before its signal and a
+ * mismatch is "changed" (nothing sent). The window between that read and the signal remains (stopCustody refuses to
+ * call an exit verified when a signalled pid later shows another start identity). */
+function macSignal(targets: readonly ProcessWitness[], signal: NodeJS.Signals): Map<number, SignalResult> {
+  const results = new Map<number, SignalResult>();
+  for (const one of targets) {
+    const ran = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(one.pid)], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, timeout: 2_000, killSignal: "SIGKILL" });
+    if (ran.error !== undefined || ran.signal !== null) { results.set(one.pid, "unavailable"); continue; }
+    const seconds = ran.stdout.trim() === "" ? null : lstartSeconds(ran.stdout);
+    if (ran.stdout.trim() === "") { results.set(one.pid, "gone"); continue; }
+    if (seconds === null || `s${seconds}` !== one.start) { results.set(one.pid, "changed"); continue; }
+    try { process.kill(one.pid, signal); results.set(one.pid, "sent"); }
+    catch (error) { results.set(one.pid, (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "denied"); }
+  }
+  return results;
 }
 
 /** The OS as custody sees it, on macOS and Linux. Elsewhere every read fails, so custody never verifies an exit. */
@@ -361,10 +479,11 @@ export function realCustodyIO(bootId: () => string | null): CustodyIO {
     table: () => platform === "linux" ? linuxTable() : platform === "darwin" ? macTable() : null,
     namespaceOf: pid => platform === "linux" ? linuxNamespace(pid) : null,
     holdersOf: folder => platform === "linux" ? linuxHolders(folder) : platform === "darwin" ? macHolders(folder) : null,
-    signal: (pid, signal, group = false) => {
-      if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return "denied";
-      try { process.kill(group ? -pid : pid, signal); return "sent"; }
-      catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ESRCH" ? "gone" : "denied"; }
+    signal: (targets, signal) => {
+      const safe = targets.filter(one => Number.isSafeInteger(one.pid) && one.pid > 1 && one.pid !== process.pid);
+      const results = platform === "linux" ? linuxSignal(safe, signal) : platform === "darwin" ? macSignal(safe, signal) : new Map(safe.map(one => [one.pid, "unavailable" as const]));
+      for (const one of targets) if (!safe.includes(one)) results.set(one.pid, "denied");
+      return results;
     },
     bootId,
     sleep: ms => new Promise(done => setTimeout(done, ms)),

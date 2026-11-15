@@ -427,6 +427,11 @@ export function beginFlexibleTurn(store: Store, input: { turn: string; holder: s
     // The admission already required a fresh proof where this level needs one, for exactly this turn.
     const delegation = flexibleDelegationAtUse(store, { repo: turn.repo, starter: { name: turn.owner, generation: turn.ownerGeneration }, digest: turn.termsDigest, level: turn.level, freshProof: true });
     if (!delegation.ok) return withdraw(delegation);
+    // A thread lowered since this turn was admitted: a turn above its level never starts (raising needs a fresh proof).
+    const chosen = store.handle.prepare("SELECT level FROM flexible_thread_level WHERE thread = ?").get(turn.thread);
+    if (chosen !== undefined && isFlexibleLevel(chosen["level"]) && FLEXIBLE_LEVELS.indexOf(turn.level) > FLEXIBLE_LEVELS.indexOf(chosen["level"])) {
+      return withdraw({ ok: false, reason: "level-pending", message: `This thread was lowered to ${FLEXIBLE_LEVEL_WORDS[chosen["level"]]} after this message was sent, so it didn't start. Send it again.` });
+    }
     // The exact terms row it was admitted under: terms turned off and on again (even with the same words) are new terms.
     if (delegation.termsId !== turn.termsId) {
       return withdraw({ ok: false, reason: "terms-changed", message: "This project's Flexible terms changed since this turn was admitted, so it didn't start. Send the message again." });
@@ -588,7 +593,7 @@ export function withdrawFlexibleTurn(store: Store, input: { turn: string; holder
  * still counts; a keyed one's cost becomes unknown), and a turn waiting to start is withdrawn. Called inside the
  * transaction that records the verified exit.
  */
-export function interruptFlexibleThreadTurns(store: Store, input: { thread: string; detail: string; clock?: FlexibleClock }): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal {
+export function interruptFlexibleThreadTurns(store: Store, input: { thread: string; detail: string; clock?: FlexibleClock; except?: string }): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal => {
@@ -596,11 +601,32 @@ export function interruptFlexibleThreadTurns(store: Store, input: { thread: stri
     let withdrawn = 0, interrupted = 0;
     for (const row of store.handle.prepare("SELECT * FROM thread_turn WHERE thread = ? AND status IN ('admitted', 'running')").all(input.thread)) {
       const turn = readTurn(row as Record<string, unknown>)!;
+      if (turn.id === input.except) continue;
       if (turn.status === "admitted") { withdrawTurn(store, turn, input.detail, at); withdrawn++; continue; }
       const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";
       store.handle.prepare("UPDATE thread_turn SET status = 'interrupted', ended_at = ?, end_detail = ?, cost_basis = ? WHERE id = ? AND status = 'running'").run(at, input.detail.slice(0, 2000), basis, turn.id);
       interrupted++;
     }
     return { ok: true as const, withdrawn, interrupted };
+  });
+}
+
+/**
+ * A thread was lowered to `level` (F2c, in the transaction that records it): every turn of it admitted above that level
+ * and not yet started is withdrawn (it counts toward nothing). A running one is the stop's to end.
+ */
+export function withdrawFlexibleTurnsAbove(store: Store, input: { thread: string; level: FlexibleLevel; detail: string; clock?: FlexibleClock }): { ok: true; withdrawn: number } | FlexibleTurnRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (typeof input.thread !== "string" || !isFlexibleLevel(input.level) || typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
+  return store.transact((): { ok: true; withdrawn: number } | FlexibleTurnRefusal => {
+    const at = timeOf(input.clock).toISOString();
+    let withdrawn = 0;
+    for (const row of store.handle.prepare("SELECT * FROM thread_turn WHERE thread = ? AND status = 'admitted'").all(input.thread)) {
+      const turn = readTurn(row as Record<string, unknown>)!;
+      if (FLEXIBLE_LEVELS.indexOf(turn.level) <= FLEXIBLE_LEVELS.indexOf(input.level)) continue;
+      withdrawTurn(store, turn, input.detail, at);
+      withdrawn++;
+    }
+    return { ok: true as const, withdrawn };
   });
 }
