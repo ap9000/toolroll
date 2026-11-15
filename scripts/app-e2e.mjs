@@ -620,7 +620,7 @@ await journey("console", SCRIPTED, "The command line answers: the task list, the
   const list = cli(["task", "list"]);
   const people = cli(["approver", "list"]);
   const verify = cli(["verify", "show", "--repo", repo], { json: false });
-  const help = execFileSync(process.execPath, [w.bin, "--help"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } });
+  const help = execFileSync(process.execPath, [w.bin, "--help"], { encoding: "utf8", env: checkedEnv(process.env, { NODE_OPTIONS: "" }) });
   if (list === null || typeof list !== "object") throw new Error("task list didn't answer as JSON");
   if (!JSON.stringify(people).includes("sam")) throw new Error(`the approvers: ${JSON.stringify(people).slice(0, 200)}`);
   if (!/npm test/.test(verify)) throw new Error(`the project's check: ${verify.slice(0, 200)}`);
@@ -2925,9 +2925,6 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
   // tools: no agent CLI but the one a journey puts in this bin), recording openers and gh, refusing supervisors.
   const computer = isolatedEnvironment({ root });
   ownRoot(root);
-  symlinkSync(process.execPath, join(bin, "node"));
-  const npm = join(dirname(process.execPath), "npm");
-  if (existsSync(npm)) symlinkSync(realpathSync(npm), join(bin, "npm"));
   const signIn = () => {
     // This computer's Claude Code, with its own home and user (its sign-in lives in the user's keychain).
     const user = JSON.stringify(process.env.USER ?? "");

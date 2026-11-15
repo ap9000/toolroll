@@ -37,7 +37,7 @@ describe("a test worker's environment", () => {
     if (process.platform === "win32") return;
     const folders = process.env["PATH"]!.split(delimiter).filter(one => !one.endsWith("codex-sandbox"));
     expect(folders).toHaveLength(1);
-    for (const name of readdirSync(folders[0]!)) expect(APPROVED_TOOLS, name).toContain(name);
+    for (const name of readdirSync(folders[0]!).filter(one => one !== ".approved.json")) expect(APPROVED_TOOLS, name).toContain(name);
     for (const name of [...AGENT_CLIS, "gh", "security", "open", "xdg-open", "osascript"]) expect(existsSync(join(folders[0]!, name)), name).toBe(false);
     expect(execFileSync("sh", ["-lc", "command -v claude || echo none"], { encoding: "utf8" }).trim()).toBe("none");
   });

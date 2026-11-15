@@ -22,15 +22,17 @@ const WORKER_PASS = ["VITEST", "VITEST_MODE", "VITEST_POOL_ID", "VITEST_WORKER_I
   "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "CI", "GITHUB_ACTIONS", "RUNNER_OS", "TMPDIR", "TMP", "TEMP", "USER", "LOGNAME",
   "TOOLROLL_TEST_OUTER_HOME", "TOOLROLL_REQUIRE_NATIVE", "TOOLROLL_ATTACK_SKIPS", "SO_EXPECT_NATIVE_CONTAINMENT", "TOOLROLL_RELEASE_BUILD",
   "TOOLROLL_CHECK_RESULTS_FD", "TOOLROLL_CHECK_GATE", "PLAIN_WORDS_DUMP", "PLAIN_WORDS_OUT", "FAST_READS_OUT", "TELEGRAM_CARDS_OUT", "SANDBOX_RUNTIME",
-  // Windows keeps what its processes can't start without (the PATH rebuild below is POSIX only).
-  ...(process.platform === "win32" ? ["PATH", "PATHEXT", "SystemRoot", "SYSTEMROOT", "windir", "ComSpec", "COMSPEC", "SystemDrive", "ProgramFiles", "ProgramData", "APPDATA", "LOCALAPPDATA", "NUMBER_OF_PROCESSORS"] : [])];
+  // Windows keeps what its processes can't start without. A stated Windows residual: its PATH stays the runner's own
+  // (an approved-tools folder needs symlinks, which a Windows runner without developer mode can't make); APPDATA and
+  // LOCALAPPDATA are this file's own (below). Windows CI runs only the Job Object containment tests.
+  ...(process.platform === "win32" ? ["PATH", "PATHEXT", "SystemRoot", "SYSTEMROOT", "windir", "ComSpec", "COMSPEC", "SystemDrive", "ProgramFiles", "ProgramData", "NUMBER_OF_PROCESSORS"] : [])];
 
 const outer = { ...process.env };
 const kept: Record<string, string> = {};
 for (const name of WORKER_PASS) { const value = outer[name]; if (value !== undefined) kept[name] = value; }
 for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"]) { const value = outer[name]; if (value !== undefined && passes(name, value)) kept[name] = value; }
 mkdirSync(home);
-for (const one of [join(home, ".cache"), join(home, ".local", "share"), join(home, ".local", "state")]) mkdirSync(one, { recursive: true });
+for (const one of [join(home, ".cache"), join(home, ".local", "share"), join(home, ".local", "state"), ...(process.platform === "win32" ? [join(home, "AppData", "Roaming"), join(home, "AppData", "Local")] : [])]) mkdirSync(one, { recursive: true });
 // The approved tools only, by exact name, each linked by its resolved path (scripts/isolated-env.mjs APPROVED_TOOLS);
 // a test that needs a stand-in puts its own folder first. Nothing the person installed (an agent CLI, gh, a browser)
 // is on it.
@@ -50,6 +52,7 @@ Object.assign(process.env, kept, {
   HOME: home, USERPROFILE: home,
   XDG_CONFIG_HOME: join(state, "config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
   ...(tools === null ? {} : { PATH: codexDir === null ? tools : `${tools}${delimiter}${codexDir}`, SHELL: join(tools, "sh") }),
+  ...(process.platform === "win32" ? { APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local") } : {}),
   // Git in this home never guesses an identity from the host name (macOS does, Linux CI can't): a test that commits
   // sets one (test/git-identity.ts withGitIdentity), so a missing one fails here as it would in CI. No system config.
   GIT_CONFIG_GLOBAL: join(home, ".gitconfig"), GIT_CONFIG_NOSYSTEM: "1",

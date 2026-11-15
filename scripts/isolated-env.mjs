@@ -4,6 +4,11 @@
  * (2026-11-14: a script spread `{ ...process.env }` after its throwaway HOME and PATH, and a "scripted" build ran this
  * computer's real Claude Code under the person's own login).
  *
+ * The bar is ACCIDENT-PROOF: a test, journey or script can't reach the person's setup by accident (a spread
+ * environment, a login shell's PATH, a default rooted in HOME, a forgotten credential variable). It is not a sandbox
+ * against hostile test code: an approved interpreter (node, python3, perl, env, xargs, find, npm/npx, make) can still
+ * run any absolute path, and macOS can't nest sandbox-exec, so journeys can't add an OS fence around Toolroll's own.
+ *
  * It is an allowlist, never a blocklist:
  *   - PATH is only run-owned folders: the world's stand-ins (`bin`), and `tools`, which holds exactly APPROVED_TOOLS,
  *     each linked by its resolved absolute path (node from this process, npm/npx/corepack from beside it; never an
@@ -40,7 +45,7 @@ export const APPROVED_TOOLS = Object.freeze([
   "lsof", "id", "uname", "true", "false", "test", "expr", "printf", "echo", "tee", "xargs", "find", "diff", "cmp", "patch", "tar",
   "gzip", "gunzip", "zip", "unzip", "shasum", "sha256sum", "md5", "md5sum", "base64", "od", "xxd", "mkfifo", "stat", "du", "df",
   "whoami", "hostname", "sw_vers", "sysctl", "tput", "stty", "nohup", "setsid", "timeout", "file", "make", "openssl", "plutil",
-  "defaults", "bwrap", "socat", "rg", "toolroll",
+  "defaults", "bwrap", "socat", "rg", "cc", "as", "ld", "seq", "yes", "truncate", "sync", "printenv", "nproc", "getconf", "curl",
 ]);
 /** Approved only where a journey says so (the mail journey's server runs in Docker). */
 export const OPTIONAL_TOOLS = Object.freeze(["docker"]);
@@ -53,8 +58,25 @@ export const PASS_NAMES = Object.freeze(["LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE
   "CI", "GITHUB_ACTIONS", "RUNNER_OS", "SANDBOX_RUNTIME", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
   "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
   "TOOLROLL_CHECK_RESULTS_FD", "TOOLROLL_CHECK_GATE", "TOOLROLL_CHECK_KEEP_GOING", "TOOLROLL_RELEASE_FAIL_FAST", "TOOLROLL_RELEASE_NO_RETRY",
-  "TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS", "TOOLROLL_STORAGE_SWEEP", "PLAYWRIGHT_BROWSERS_PATH"]);
+  "TOOLROLL_RELEASE_SCRIPTED_TIMEOUT_SECONDS", "TOOLROLL_STORAGE_SWEEP", "TOOLROLL_RESIDUE_UNREADABLE", "PLAYWRIGHT_BROWSERS_PATH"]);
 const PROXY = /^(https?|no|all)_proxy$/i;
+/** The names isolatedEnvironment itself sets. */
+export const BUILT_NAMES = Object.freeze(["HOME", "USERPROFILE", "USER", "LOGNAME", "SHELL", "ZDOTDIR", "TMPDIR", "TMP", "TEMP", "PATH",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "BROWSER", "TOOLROLL_BROWSER_COMMAND", "TOOLROLL_SECRET_STORE",
+  "TOOLROLL_STORAGE_SWEEP", "TOOLROLL_NO_UPDATE_CHECK", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT"]);
+/** Names the journeys give their children on purpose (a world's database, commit identity, plan probe, traces, npm
+ * prefix for an install path, a stand-in tool server). Exact names; anything else needs to be given per call. */
+export const JOURNEY_NAMES = Object.freeze(["TOOLROLL_DB", "STANDING_ORDERS_DB", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL", "TOOLROLL_NO_PLAN_PROBE", "STANDING_ORDERS_NO_PLAN_PROBE", "TOOLROLL_MATE_TRACE", "STANDING_ORDERS_MATE_TRACE",
+  "NODE_OPTIONS", "TOOLROLL_TEST_CONNECT", "npm_config_cache", "npm_config_prefix", "npm_config_update_notifier", "npm_config_fund",
+  "npm_config_audit", "npm_config_registry"]);
+/** A credential by its name: never in a world, whatever put it there. */
+export const CREDENTIAL_NAME = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$|^(ANTHROPIC|OPENAI|AWS|GH)_|^GITHUB_TOKEN$/;
+/** Startup hooks: a variable that makes a shell or interpreter run something before the program. */
+export function startupHook(name, value) {
+  if (["BASH_ENV", "ENV", "PYTHONSTARTUP", "PERL5OPT", "LD_PRELOAD", "LD_AUDIT"].includes(name) || /^DYLD_/.test(name)) return true;
+  return name === "NODE_OPTIONS" && String(value ?? "") !== "";
+}
 
 /** Whether `name=value` from the caller's environment may pass into a world. A proxy carrying credentials never does. */
 export function passes(name, value = "") {
@@ -106,6 +128,7 @@ while [ "$n" -gt 0 ]; do
   fi
   set -- "$@" "$a"
 done
+unset BASH_ENV ENV
 exec ${shellWord(target)}${extra} "$@"
 `;
 }
@@ -125,7 +148,6 @@ export function approvedTools(dir, { outerPath = process.env.PATH, names = APPRO
     let target = null;
     if (name === "node") target = real(process.execPath);
     else if (["npm", "npx", "corepack"].includes(name)) { const beside = join(dirname(process.execPath), name); target = existsSync(beside) ? real(beside) : null; }
-    else if (name === "toolroll") target = null; // a world links its own `toolroll` where it has one
     else {
       const found = onPath(name, outerPath) ?? (SHELLS.has(name) && existsSync(`/bin/${name}`) ? `/bin/${name}` : null);
       target = found === null ? null : real(found);
@@ -138,7 +160,27 @@ export function approvedTools(dir, { outerPath = process.env.PATH, names = APPRO
       linked.push(name);
     } catch { if (existsSync(at)) linked.push(name); else missing.push(name); }
   }
+  recordTools(dir);
   return { dir, linked, missing };
+}
+
+/** What each approved tool resolved to when its folder was made (path, device, inode; a shell wrapper's bytes): kept in
+ * this process and in the folder's manifest, so assertIsolated checks targets, not names. */
+const TOOL_MANIFESTS = new Map();
+const MANIFEST = ".approved.json";
+const identity = path => { const target = realpathSync(path); const info = statSync(target); return { target, dev: info.dev, ino: info.ino,
+  ...(target.startsWith(realpathSync(dirname(path))) ? { sha256: createHash("sha256").update(readFileSync(target)).digest("hex") } : {}) }; };
+function recordTools(dir) {
+  // What was recorded when the folder was first made stands; only tools new since then are recorded now.
+  const manifest = { ...(toolManifest(dir) ?? {}) };
+  for (const name of readdirSync(dir)) if (name !== MANIFEST && manifest[name] === undefined && executable(join(dir, name))) manifest[name] = identity(join(dir, name));
+  TOOL_MANIFESTS.set(real(dir), manifest);
+  writeFileSync(join(dir, MANIFEST), JSON.stringify(manifest), { mode: 0o600 });
+}
+function toolManifest(dir) {
+  const known = TOOL_MANIFESTS.get(real(dir));
+  if (known !== undefined) return known;
+  try { return JSON.parse(readFileSync(join(dir, MANIFEST), "utf8")); } catch { return null; }
 }
 
 /** A recording stand-in gh: `auth status` signed in, `api` answers an empty list for what flow triggers ask, and every
@@ -218,13 +260,15 @@ export function validOverrides(set, { root, tmp = null }) {
 /**
  * Throws unless `env` keeps a process inside the world at `root`:
  *   - HOME (never the person's), and every XDG folder, credential folder and git config that is set, inside `root`;
- *     no SSH agent;
- *   - PATH: no empty or relative entry, every entry a run-owned folder; in every entry, every program named like an
- *     agent CLI, browser opener, gh or `security` (STAND_IN_ONLY) a run-owned file by its resolved target, every other
- *     program run-owned or an approved tool; a folder named `tools` holds approved tools only.
+ *     no SSH agent, no credential-shaped name (CREDENTIAL_NAME), no startup hook (startupHook); with `names`, only
+ *     those exact names;
+ *   - PATH: no empty or relative entry, every entry a run-owned folder that can be read; a `tools` folder holds only
+ *     what approvedTools recorded, each still resolving to the exact target it was made with (path, device, inode, a
+ *     wrapper's bytes); every other program on PATH a run-owned file by its resolved target, and agent CLIs, browser
+ *     openers, gh and `security` (STAND_IN_ONLY) nowhere else.
  * Run it on the exact environment a process starts with, after every spread and override.
  */
-export function assertIsolated(env, { root, homes = personHomes(), approved = [...APPROVED_TOOLS, ...OPTIONAL_TOOLS] }) {
+export function assertIsolated(env, { root, homes = personHomes(), names = null }) {
   const base = real(root);
   const problems = [];
   if (!env.HOME || !inside(real(env.HOME), base)) problems.push(`HOME is ${env.HOME ?? "unset"}, outside ${base}`);
@@ -232,21 +276,33 @@ export function assertIsolated(env, { root, homes = personHomes(), approved = [.
   for (const name of ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "ZDOTDIR", "GIT_CONFIG_GLOBAL", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GEMINI_CLI_HOME", "GH_CONFIG_DIR", "DOCKER_CONFIG"]) {
     if (env[name] && !inside(real(env[name]), base)) problems.push(`${name} is ${env[name]}, outside ${base}`);
   }
-  if (env.SSH_AUTH_SOCK) problems.push("SSH_AUTH_SOCK is set");
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (name === "SSH_AUTH_SOCK") problems.push("SSH_AUTH_SOCK is set");
+    else if (CREDENTIAL_NAME.test(name)) problems.push(`${name} looks like a credential`);
+    else if (startupHook(name, value)) problems.push(`${name} is a startup hook`);
+    else if (names !== null && !names.includes(name)) problems.push(`${name} isn't a name this child may get`);
+  }
   for (const folder of String(env.PATH ?? "").split(delimiter)) {
     if (folder === "" || !isAbsolute(folder)) { problems.push(`PATH has ${folder === "" ? "an empty" : "a relative"} entry (${folder || "the working folder"})`); continue; }
     if (!inside(real(folder), base)) { problems.push(`PATH entry ${folder} is not a folder of the world`); continue; }
-    let names = [];
-    try { names = readdirSync(folder); } catch { continue; }
-    const toolsFolder = real(folder).endsWith(`${sep}tools`);
-    for (const name of names) {
+    let entries;
+    try { entries = readdirSync(folder); } catch (error) { if (error?.code !== "ENOENT") problems.push(`PATH entry ${folder} can't be read (${error?.code ?? "error"})`); continue; }
+    const manifest = real(folder).endsWith(`${sep}tools`) ? toolManifest(folder) : null;
+    if (real(folder).endsWith(`${sep}tools`) && manifest === null) { problems.push(`${folder} has no record of its approved tools`); continue; }
+    for (const name of entries) {
       const path = join(folder, name);
-      if (!executable(path)) continue;
+      if (name === MANIFEST || !executable(path)) continue;
+      if (manifest !== null) {
+        const want = manifest[name];
+        if (want === undefined) { problems.push(`${path} isn't an approved tool`); continue; }
+        let now = null;
+        try { now = identity(path); } catch { /* gone or unreadable */ }
+        if (now === null || now.target !== want.target || now.dev !== want.dev || now.ino !== want.ino || now.sha256 !== want.sha256) problems.push(`${path} no longer resolves to the approved ${want.target}`);
+        continue;
+      }
       const target = real(path);
-      const owned = inside(target, base);
-      if (STAND_IN_ONLY.has(name)) { if (!owned) problems.push(`${name} on PATH (${path}) resolves to ${target}, not a stand-in of the world`); continue; }
-      if (toolsFolder && !approved.includes(name)) { problems.push(`${path} isn't an approved tool`); continue; }
-      if (!owned && !approved.includes(name)) problems.push(`${path} resolves to ${target}, outside the world, and isn't an approved tool`);
+      if (!inside(target, base)) problems.push(STAND_IN_ONLY.has(name) ? `${name} on PATH (${path}) resolves to ${target}, not a stand-in of the world` : `${path} resolves to ${target}, outside the world`);
     }
   }
   if (problems.length > 0) throw new Error(`not an isolated environment: ${problems.join("; ")}`);
@@ -261,27 +317,33 @@ export const claudeSlug = path => path.replace(/[^a-zA-Z0-9]/g, "-");
  * a world has left traces: Claude's transcript folders named after a path under `root` (new ones, and any change in a
  * listing that was already there), the build cache folders of `repos` (only when `repos` is given; agent-fence.ts
  * buildCacheFolder), and lines of ~/.toolroll/git-incidents.jsonl naming a path under `root`. It can't see any other
- * write. `also`: more run-owned folders whose paths count as this run's. A place that exists but can't be read is UNKNOWN, and `check()` reports it as such: a caller fails on it unless
- * the run's own sandbox denies that place (`deniedBySandbox`, said in the result), which denies writes there too.
+ * write. `also`: more run-owned folders whose paths count as this run's. A place that exists but can't be read is UNKNOWN,
+ * and `check()` reports it as such and fails on it, unless the caller said up front that it accepts unreadable places
+ * (`acceptUnreadable`, from TOOLROLL_RESIDUE_UNREADABLE=accept, named in the result): a run inside a fence that hides
+ * the person's home can't see them at all. A failed sandbox probe is never taken as proof of anything.
  */
-export function residueCheck({ root, also = [], repos = [], homes = personHomes(), platform = process.platform, deniedBySandbox = false }) {
+export function residueCheck({ root, also = [], repos = [], homes = personHomes(), platform = process.platform, acceptUnreadable = false }) {
   const base = real(root);
   const watched = homes.map(real).filter(home => !inside(home, base));
   const paths = [...new Set([root, base, ...also, ...also.map(real)])];
   const slugs = paths.map(claudeSlug);
   const cacheRoot = home => platform === "darwin" ? join(home, "Library", "Caches", "toolroll-builds") : join(home, ".cache", "toolroll-builds");
   const hashes = repos.map(repo => createHash("sha256").update(real(repo)).digest("hex").slice(0, 16));
-  const listing = folder => { try { return readdirSync(folder).sort().map(name => { const at = join(folder, name); try { const info = lstatSync(at); return `${name}:${info.size}:${info.mtimeMs}`; } catch { return `${name}:?`; } }).join("|"); } catch { return null; } };
   const read = (what, fn, unknown) => { try { return fn(); } catch (error) { if (error?.code !== "ENOENT") unknown.push(`${what} (${error?.code ?? "unreadable"})`); return null; } };
+  // A folder's listing with each entry's size and time; anything in it that can't be read makes the place unknown.
+  const listing = (folder, unknown) => read(folder, () => readdirSync(folder).sort().map(name => {
+    const info = read(join(folder, name), () => lstatSync(join(folder, name)), unknown);
+    return info === null ? `${name}:?` : `${name}:${info.size}:${info.mtimeMs}`;
+  }).join("|"), unknown);
   const snapshot = () => {
     const found = new Map(), unknown = [];
     for (const home of watched) {
       const projects = join(home, ".claude", "projects");
       const names = read(projects, () => readdirSync(projects), unknown) ?? [];
-      for (const name of names) if (slugs.some(slug => name.startsWith(slug))) found.set(join(projects, name), listing(join(projects, name)));
+      for (const name of names) if (slugs.some(slug => name.startsWith(slug))) found.set(join(projects, name), listing(join(projects, name), unknown));
       if (hashes.length > 0) {
         const caches = read(cacheRoot(home), () => readdirSync(cacheRoot(home)), unknown) ?? [];
-        for (const name of caches) if (hashes.includes(name)) found.set(join(cacheRoot(home), name), listing(join(cacheRoot(home), name)));
+        for (const name of caches) if (hashes.includes(name)) found.set(join(cacheRoot(home), name), listing(join(cacheRoot(home), name), unknown));
       }
       const log = join(home, ".toolroll", "git-incidents.jsonl");
       const text = read(log, () => (statSync(log).size > 64 * 1024 * 1024 ? "" : readFileSync(log, "utf8")), unknown);
@@ -297,7 +359,7 @@ export function residueCheck({ root, also = [], repos = [], homes = personHomes(
       const now = snapshot();
       const left = [...now.found].filter(([path, value]) => !before.found.has(path) || before.found.get(path) !== value).map(([path]) => path).sort();
       const unknown = [...new Set([...before.unknown, ...now.unknown])].sort();
-      return { left, unknown, unknownFails: unknown.length > 0 && !deniedBySandbox };
+      return { left, unknown, unknownFails: unknown.length > 0 && !acceptUnreadable, acceptedUnreadable: unknown.length > 0 && acceptUnreadable };
     },
   };
 }

@@ -49,6 +49,8 @@ export function makeTempRoot(prefix, { keep = false, parent = tmpdir() } = {}) {
  * this process made.
  */
 export function removeRoot(root) {
+  // Only a root this process made or recorded (makeTempRoot, removeOnExit): a path it never recorded is never removed.
+  if (!roots.has(root)) return;
   const keep = roots.get(root) === true;
   roots.delete(root);
   if (keep) return;

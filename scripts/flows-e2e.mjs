@@ -32,7 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { flag, keyedHeaders, kitSave, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
+import { checkedEnv, flag, keyedHeaders, kitSave, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
 
 /** The groups, in the order they're listed, with how many journeys each has (the first-run setup included), how many of
  * those are real-model, and how many scripted ones every group shares (checked at the end of every run). */
@@ -540,7 +540,7 @@ await journey("triggers", SCRIPTED, "A GitHub trigger checks a repository throug
   // A real-model run keeps the person's own computer, gh included: only with --live-gh (off by default; the owner says
   // when), which checks a real repository through the person's own gh login.
   if (!w.scripted && !flag("--live-gh")) throw new Skip("live gh lane: off unless --live-gh (it uses the person's own GitHub login)");
-  if (spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status !== 0) throw new Error(w.scripted ? "the world's gh stand-in didn't answer" : "gh isn't signed in (--live-gh)");
+  if (spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000, env: checkedEnv() }).status !== 0) throw new Error(w.scripted ? "the world's gh stand-in didn't answer" : "gh isn't signed in (--live-gh)");
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "github"); await type(form, "Repository", "ap9000/standing-orders"); await pick(form, "Watch", "checks"); });
   const row = page.locator("[data-trigger-row]", { hasText: "Failed checks on main" });
   await row.locator("button", { hasText: "Check now" }).click();

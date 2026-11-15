@@ -34,6 +34,16 @@ describe("checkedEnv", () => {
     expect(() => checkedEnv({ ...world.env, HOME: dir })).toThrow(/outside every world/);
   });
 
+  it("refuses an override that restores a credential or a startup hook, and a name nothing gave on purpose", () => {
+    for (const name of ["GH_TOKEN", "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "BASH_ENV", "ENV", "PYTHONSTARTUP", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]) {
+      expect(() => checkedEnv(world.env, { [name]: "x" }), name).toThrow(new RegExp(name));
+    }
+    expect(() => checkedEnv(world.env, { NODE_OPTIONS: "--require /x.js" })).toThrow(/NODE_OPTIONS/);
+    expect(() => checkedEnv(world.env, { ZDOTDIR: join(dir, "elsewhere") })).toThrow(/ZDOTDIR/);
+    expect(() => checkedEnv({ ...world.env, STRAY_NAME: "1" })).toThrow(/STRAY_NAME isn't a name this child may get/);
+    expect(checkedEnv(world.env, { STRAY_NAME: "1" })["STRAY_NAME"]).toBe("1");
+  });
+
   it("is what spawnOwned runs: a bad environment never starts", () => {
     expect(() => spawnOwned("bad", "/bin/sh", ["-c", "true"], { env: { ...world.env, HOME: "/" }, stdio: "ignore" })).toThrow(/outside every world/);
   });

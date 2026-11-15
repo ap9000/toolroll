@@ -47,7 +47,7 @@ describe("isolatedEnvironment", () => {
     const world = isolatedEnvironment({ root: join(dir, "world"), outer });
     const env = world.env as Env;
     for (const one of env["PATH"]!.split(":")) expect(inside(realpathSync(one), world.root), one).toBe(true);
-    for (const name of readdirSync(world.tools)) expect(APPROVED_TOOLS, name).toContain(name);
+    for (const name of readdirSync(world.tools).filter(one => one !== ".approved.json")) expect(APPROVED_TOOLS, name).toContain(name);
     for (const agent of AGENT_CLIS) expect(onPath(agent, env["PATH"]), agent).toBeNull();
     for (const absent of ["security", "docker", "osascript"]) expect(onPath(absent, env["PATH"]), absent).toBeNull();
     expect(realpathSync(onPath("node", env["PATH"]))).toBe(realpathSync(process.execPath));
@@ -115,13 +115,51 @@ describe("assertIsolated", () => {
     expect(() => assertIsolated({ ...made.env, PATH: `${made.env["PATH"]}:${sneaky}` }, { root: made.root })).toThrow(/claude on PATH .* resolves to .*\.local\/bin\/claude, not a stand-in/);
   });
 
-  it("refuses an unlisted program in the tools folder, and a program from outside that isn't approved", () => {
+  it("refuses an unlisted program in the tools folder, and a program from outside the world anywhere else", () => {
     const made = world();
     symlinkSync(join(tools, "docker"), join(made.tools, "kubectl"));
     expect(() => assertIsolated(made.env, { root: made.root })).toThrow(/kubectl isn't an approved tool/);
     rmSync(join(made.tools, "kubectl"));
     symlinkSync(join(tools, "docker"), join(made.bin, "dockerish"));
     expect(() => assertIsolated(made.env, { root: made.root })).toThrow(/dockerish resolves to .*outside the world/);
+  });
+
+  it("checks approved tools by their recorded target: a swapped link or an edited shell wrapper fails", () => {
+    const made = world();
+    rmSync(join(made.tools, "git"));
+    symlinkSync(join(tools, "docker"), join(made.tools, "git"));
+    expect(() => assertIsolated(made.env, { root: made.root })).toThrow(/tools\/git no longer resolves to the approved/);
+    const again = isolatedEnvironment({ root: join(dir, "again"), outer });
+    writeFileSync(join(again.tools, "sh"), "#!/bin/sh\nexec /bin/sh -l \"$@\"\n");
+    expect(() => assertIsolated(again.env, { root: again.root })).toThrow(/tools\/sh no longer resolves to the approved/);
+  });
+
+  it("fails on a PATH folder it can't read", () => {
+    const made = world();
+    const locked = join(made.root, "locked");
+    mkdirSync(locked);
+    chmodSync(locked, 0o000);
+    try { expect(() => assertIsolated({ ...made.env, PATH: `${made.env["PATH"]}:${locked}` }, { root: made.root })).toThrow(/locked can't be read/); }
+    finally { chmodSync(locked, 0o755); }
+  });
+
+  it("refuses credential-shaped names and startup hooks, whatever brought them; with `names`, any name not listed", () => {
+    const made = world();
+    for (const [name, value] of [["GH_TOKEN", "x"], ["MY_API_KEY", "x"], ["DB_PASSWORD", "x"], ["AWS_PROFILE", "x"], ["ANTHROPIC_BASE_URL", "x"], ["GITHUB_TOKEN", "x"],
+      ["BASH_ENV", "/x"], ["ENV", "/x"], ["NODE_OPTIONS", "--require /x.js"], ["PYTHONSTARTUP", "/x.py"], ["PERL5OPT", "-Mx"], ["LD_PRELOAD", "/x.so"], ["DYLD_INSERT_LIBRARIES", "/x.dylib"]]) {
+      expect(() => assertIsolated({ ...made.env, [name]: value }, { root: made.root }), name).toThrow(new RegExp(name));
+    }
+    expect(assertIsolated({ ...made.env, NODE_OPTIONS: "" }, { root: made.root })).toBe(true);
+    expect(() => assertIsolated({ ...made.env, SOMETHING_ELSE: "1" }, { root: made.root, names: Object.keys(made.env) })).toThrow(/SOMETHING_ELSE isn't a name this child may get/);
+  });
+
+  it("starts shells without BASH_ENV or ENV, so neither can run first", () => {
+    const made = world();
+    const hook = join(made.root, "hook.sh");
+    writeFileSync(hook, "echo HOOK\n");
+    for (const shell of ["bash", "sh"].filter(one => onPath(one, made.env["PATH"]) !== null)) {
+      expect(execFileSync(shell, ["-c", "echo ran"], { env: { ...made.env, BASH_ENV: hook, ENV: hook }, encoding: "utf8" }).trim(), shell).toBe("ran");
+    }
   });
 
   it("refuses credential folders and an SSH agent pointed outside the world", () => {
@@ -168,16 +206,24 @@ describe("residueCheck (limited)", () => {
     expect(again.check().left).toEqual([transcripts]);
   });
 
-  it("says a place it can't read is unknown, which fails unless the run's own sandbox denies it", () => {
-    const { root } = setup();
+  it("says a place it can't read is unknown and fails on it, inside a watched folder too, unless the caller accepts that up front", () => {
+    const { root, transcripts } = setup();
     const projects = join(person, ".claude", "projects");
     chmodSync(projects, 0o000);
     try {
       const result = residueCheck({ root, homes: [person], platform: "darwin" }).check();
       expect(result.unknown.join(" ")).toContain(projects);
       expect(result.unknownFails).toBe(true);
-      expect(residueCheck({ root, homes: [person], platform: "darwin", deniedBySandbox: true }).check().unknownFails).toBe(false);
+      expect(residueCheck({ root, homes: [person], platform: "darwin", acceptUnreadable: true }).check()).toMatchObject({ unknownFails: false, acceptedUnreadable: true });
     } finally { chmodSync(projects, 0o755); }
+    // A transcript folder of this run that can't be listed is unknown too, never "nothing there".
+    mkdirSync(transcripts);
+    chmodSync(transcripts, 0o000);
+    try {
+      const result = residueCheck({ root, homes: [person], platform: "darwin" }).check();
+      expect(result.unknown.join(" ")).toContain(transcripts);
+      expect(result.unknownFails).toBe(true);
+    } finally { chmodSync(transcripts, 0o755); }
   });
 
   it("says what it covers: build caches only with a repository", () => {

@@ -262,44 +262,44 @@ console.log(JSON.stringify(process.argv.at(-1).includes('/attempts/')
 });
 
 describe("the upgrade path step", () => {
-  /** A fake registry: one tarball's bytes per version, its integrity, and npm's global layout for an install. */
-  const fakeNpm = (root: string) => {
+  /** A fake registry: one tarball's bytes per version and their integrity; an install unpacks npm's global layout and
+   * records the bytes it was handed. */
+  const fakeNpm = () => {
     const counts = { installs: 0, fetches: 0 };
+    const handed: string[] = [];
     const bytes = (version: string) => `tarball of toolroll ${version}\n`;
-    const integrityOf = (version: string) => `sha512-${createHash("sha512").update(bytes(version)).digest("base64")}`;
-    const fetch = (into: string) => { counts.fetches++; const at = join(into, "toolroll-x.tgz"); writeFileSync(at, bytes(current)); return at; };
-    let current = "0.9.7";
+    const integrity = (version: string) => `sha512-${createHash("sha512").update(bytes(version)).digest("base64")}`;
+    const fetch = (into: string) => { counts.fetches++; const at = join(into, "toolroll-x.tgz"); writeFileSync(at, bytes("0.9.7")); return at; };
     // npm's global layout: the command a relative link into lib/node_modules.
-    const install = (into: string) => {
+    const install = (into: string, tarball: string) => {
       counts.installs++;
+      handed.push(readFileSync(tarball, "utf8"));
       mkdirSync(join(into, "lib", "node_modules", "toolroll", "dist"), { recursive: true }); mkdirSync(join(into, "bin"));
       writeFileSync(join(into, "lib", "node_modules", "toolroll", "dist", "bin.js"), "// 0.9.7\n");
       symlinkSync("../lib/node_modules/toolroll/dist/bin.js", join(into, "bin", "toolroll"));
     };
-    void root;
-    return { counts, seams: { integrityOf, fetch, install }, version: (v: string) => { current = v; } };
+    return { counts, handed, bytes, seams: { integrity, fetch, install } };
   };
 
-  test("a published release is installed once, then copied from the cache; an interrupted install is not used", () => {
+  test("a published release's tarball is fetched once, then taken from the cache; every home is a fresh install of the verified bytes", () => {
     const root = mkdtempSync(join(tmpdir(), "so-upgrade-cache-"));
     try {
       const cache = join(root, "cache");
-      const npm = fakeNpm(root);
-      // A run killed mid-install left a partial copy behind.
+      const npm = fakeNpm();
+      // A run killed mid-fetch left a partial folder behind; it is never used.
       mkdirSync(cache, { mode: 0o700 });
-      mkdirSync(join(cache, "0.9.7", "lib"), { recursive: true });
+      mkdirSync(join(cache, "0.9.7.part-x"), { recursive: true });
       expect(installPublished("0.9.7", join(root, "a"), {}, { cache, ...npm.seams })).toBe("installed");
       expect(installPublished("0.9.7", join(root, "b"), {}, { cache, ...npm.seams })).toBe("cached");
-      expect(npm.counts.installs).toBe(1);
+      expect(npm.counts.fetches).toBe(1);
+      expect(npm.counts.installs).toBe(2);
+      expect(npm.handed).toEqual([npm.bytes("0.9.7"), npm.bytes("0.9.7")]);
       for (const home of ["a", "b"]) {
         expect(readlinkSync(join(root, home, "bin", "toolroll"))).toBe("../lib/node_modules/toolroll/dist/bin.js");
         expect(realpathSync(join(root, home, "bin", "toolroll"))).toBe(realpathSync(join(root, home, "lib", "node_modules", "toolroll", "dist", "bin.js")));
-        expect(existsSync(join(root, home, ".complete"))).toBe(false);
-        expect(existsSync(join(root, home, ".tarball.tgz"))).toBe(false);
       }
-      // Each home is its own copy: what one release's run writes never reaches the cache.
-      writeFileSync(join(root, "a", "lib", "node_modules", "toolroll", "dist", "bin.js"), "changed");
-      expect(readFileSync(join(cache, "0.9.7", "lib", "node_modules", "toolroll", "dist", "bin.js"), "utf8")).toBe("// 0.9.7\n");
+      // Only tarballs are cached: no installed tree, no record of one.
+      expect(readdirSync(cache).sort()).toEqual(["0.9.7.part-x", "toolroll-0.9.7.tgz"]);
       expect(() => installPublished("../x", join(root, "c"), {}, { cache, ...npm.seams })).toThrow("not a release version");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -307,7 +307,7 @@ describe("the upgrade path step", () => {
   test("the cache is used only as this user's own 0700 folder: a link or a group-writable folder is refused, never fixed", () => {
     const root = mkdtempSync(join(tmpdir(), "so-upgrade-owned-"));
     try {
-      const npm = fakeNpm(root);
+      const npm = fakeNpm();
       const elsewhere = join(root, "elsewhere");
       mkdirSync(elsewhere, { mode: 0o700 });
       symlinkSync(elsewhere, join(root, "linked"));
@@ -322,22 +322,43 @@ describe("the upgrade path step", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  test("a cached release whose tarball or files were changed is discarded and fetched again; a fetched tarball that doesn't match is never installed", () => {
+  test("a cached tarball that doesn't match the registry is discarded and fetched again; a forged record beside it changes nothing", () => {
     const root = mkdtempSync(join(tmpdir(), "so-upgrade-tamper-"));
     try {
       const cache = join(root, "cache");
-      const npm = fakeNpm(root);
+      const npm = fakeNpm();
       expect(installPublished("0.9.7", join(root, "a"), {}, { cache, ...npm.seams })).toBe("installed");
-      writeFileSync(join(cache, "0.9.7", ".tarball.tgz"), "planted\n");
+      writeFileSync(join(cache, "toolroll-0.9.7.tgz"), "planted\n");
+      // An old-style record that vouches for itself: never read.
+      writeFileSync(join(cache, ".complete"), JSON.stringify({ version: "0.9.7", integrity: "sha512-planted", tree: "forged" }));
       expect(installPublished("0.9.7", join(root, "b"), {}, { cache, ...npm.seams })).toBe("installed");
-      expect(npm.counts.installs).toBe(2);
-      writeFileSync(join(cache, "0.9.7", "lib", "node_modules", "toolroll", "dist", "bin.js"), "planted");
-      expect(installPublished("0.9.7", join(root, "c"), {}, { cache, ...npm.seams })).toBe("installed");
-      expect(readFileSync(join(root, "c", "lib", "node_modules", "toolroll", "dist", "bin.js"), "utf8")).toBe("// 0.9.7\n");
+      expect(npm.counts.fetches).toBe(2);
+      expect(npm.handed.at(-1)).toBe(npm.bytes("0.9.7"));
+      expect(readFileSync(join(cache, "toolroll-0.9.7.tgz"), "utf8")).toBe(npm.bytes("0.9.7"));
       // The registry says something else than the bytes fetched: refused before any install.
-      expect(() => installPublished("0.9.8", join(root, "d"), {}, { cache, ...npm.seams, integrityOf: () => "sha512-other" })).toThrow(/doesn't match the registry's integrity/);
-      expect(npm.counts.installs).toBe(3);
+      expect(() => installPublished("0.9.8", join(root, "d"), {}, { cache, ...npm.seams, integrity: () => "sha512-other" })).toThrow(/doesn't match the registry's integrity/);
+      expect(npm.counts.installs).toBe(2);
       expect(existsSync(join(root, "d"))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("a cached tarball swapped after it was checked is never what gets installed", () => {
+    const root = mkdtempSync(join(tmpdir(), "so-upgrade-swap-"));
+    try {
+      const cache = join(root, "cache");
+      const npm = fakeNpm();
+      installPublished("0.9.7", join(root, "a"), {}, { cache, ...npm.seams });
+      let given = "";
+      const swapping = (into: string, tarball: string) => {
+        // Swapped in the cache between the check and the install: the install reads its own verified copy.
+        writeFileSync(join(cache, "toolroll-0.9.7.tgz"), "swapped after the check\n");
+        given = tarball;
+        npm.seams.install(into, tarball);
+      };
+      expect(installPublished("0.9.7", join(root, "b"), {}, { cache, ...npm.seams, install: swapping })).toBe("cached");
+      expect(npm.handed.at(-1)).toBe(npm.bytes("0.9.7"));
+      expect(given.startsWith(realpathSync(cache)) || given.startsWith(cache)).toBe(false);
+      expect(existsSync(given)).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

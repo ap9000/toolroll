@@ -180,8 +180,6 @@ function newcomer(name, { agent = "signed-in", where = "repo" } = {}) {
   const computer = isolatedEnvironment({ root });
   kit.ownRoot(root);
   for (const one of [home, bin, tmp]) mkdirSync(one, { recursive: true });
-  symlinkSync(process.execPath, join(bin, "node"));
-  for (const tool of ["npm", "npx"]) { const found = join(dirname(process.execPath), tool); if (existsSync(found)) symlinkSync(realpathSync(found), join(bin, tool)); }
   const exe = (file, text) => { writeFileSync(join(bin, file), text); chmodSync(join(bin, file), 0o755); };
   // This checkout's build as `toolroll` (a scripted run; a real run's comes from the package).
   if (install === "local") exe("toolroll", `#!/bin/sh\nexec ${shellWord(process.execPath)} ${shellWord(w.bin)} "$@"\n`);
@@ -204,7 +202,7 @@ function newcomer(name, { agent = "signed-in", where = "repo" } = {}) {
   // The frozen shop.
   mkdirSync(join(shop, "src"), { recursive: true }); mkdirSync(join(shop, "test"), { recursive: true });
   for (const [file, text] of Object.entries(SHOP_FILES)) writeFileSync(join(shop, file), text);
-  const git = (...args) => execFileSync("git", ["-C", shop, ...args], { encoding: "utf8", env: { ...process.env, ...SHOP_COMMIT_ENV } }).trim();
+  const git = (...args) => execFileSync("git", ["-C", shop, ...args], { encoding: "utf8", env: kit.checkedEnv(process.env, SHOP_COMMIT_ENV) }).trim();
   git("init", "-q", "-b", "main"); git("add", "."); git("commit", "-qm", "First version");
   const shopCommit = git("rev-parse", "HEAD");
   report.repo ??= `shop (${Object.keys(SHOP_FILES).length} files, one passing test), commit ${shopCommit.slice(0, 12)}`;
@@ -287,7 +285,7 @@ async function openTerminal(inst, label, command, { cwd = inst.cwd, rows = 40, c
   const dir = join(inst.root, `terminal-${label}`);
   mkdirSync(dir, { recursive: true });
   const fifo = join(dir, "keys"), log = join(dir, "screen.log"), pidFile = join(dir, "pid"), go = join(dir, "go");
-  execFileSync("mkfifo", [fifo]);
+  execFileSync("mkfifo", [fifo], { env: kit.checkedEnv() });
   // Read and write, so opening never waits for the other end.
   const keys = openSync(fifo, fsConstants.O_RDWR);
   const inner = `while [ ! -e ${shellWord(go)} ]; do sleep 0.05; done; exec ${command}`;
@@ -364,8 +362,9 @@ function upOf(term) {
 function joinPlanPath(inst, plan) {
   if (plan.path.length === 0) return;
   if (install !== "brew") { inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`; return; }
+  // A run-owned launcher (a link would point outside the world, which a newcomer's PATH never does).
   const linked = join(inst.bin, "toolroll");
-  if (!existsSync(linked)) symlinkSync(join(plan.path[0], "toolroll"), linked);
+  if (!existsSync(linked)) { writeFileSync(linked, `#!/bin/sh\nexec ${shellWord(join(plan.path[0], "toolroll"))} "$@"\n`); chmodSync(linked, 0o755); }
 }
 
 /** Start bare `toolroll` (or the plan's command) in this home and wait for its first screen. Marks installed/started. */
@@ -421,7 +420,7 @@ function packageFacts(inst) {
     } else if (install === "npm") {
       found.version = JSON.parse(readFileSync(join(inst.root, "npm-prefix", "lib", "node_modules", "toolroll", "package.json"), "utf8")).version;
     } else if (install === "brew") {
-      found.version = execFileSync(join(inst.brewPrefix, "bin", "toolroll"), ["--version"], { encoding: "utf8", env: inst.env }).trim();
+      found.version = execFileSync(join(inst.brewPrefix, "bin", "toolroll"), ["--version"], { encoding: "utf8", env: kit.checkedEnv(inst.env) }).trim();
     }
   } catch { /* unread: the report says so */ }
   return found;
@@ -854,7 +853,7 @@ async function notARepository({ trace, criterion, note }) {
 
 /** A shell command in this home, as the person types it (no terminal: stdout is a pipe). Its output and exit status. */
 function shell(inst, args, cwd = inst.shop) {
-  try { return { code: 0, out: execFileSync(join(inst.bin, "toolroll"), args, { cwd, env: inst.env, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] }) }; }
+  try { return { code: 0, out: execFileSync(join(inst.bin, "toolroll"), args, { cwd, env: kit.checkedEnv(inst.env), encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] }) }; }
   catch (error) { return { code: error.status ?? 1, out: `${error.stdout ?? ""}${error.stderr ?? ""}` }; }
 }
 /** A criterion this journey proves: recorded, and the journey fails when it isn't met. */

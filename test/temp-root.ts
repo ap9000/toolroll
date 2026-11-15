@@ -1,9 +1,9 @@
-import { accessSync, constants, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { accessSync, constants, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { makeTempRoot, removeOnExit, removeRoot } from "../scripts/suite-lifecycle.mjs";
 // @ts-expect-error plain ESM script without declarations
-import { insideMacSandbox, residueCheck } from "../scripts/isolated-env.mjs";
+import { residueCheck } from "../scripts/isolated-env.mjs";
 
 /**
  * Tests leave no temp folders. Every test run gets one temp root of its own, before any worker starts: the workers
@@ -22,22 +22,26 @@ import { insideMacSandbox, residueCheck } from "../scripts/isolated-env.mjs";
  * Claude transcript folders named after this run's folders (new, or changed inside) and lines of
  * ~/.toolroll/git-incidents.jsonl naming them. It doesn't see build caches here (no repository is known to it) nor any
  * other write. Residue fails the run, naming what was left (the person decides about removing it); a place it can't
- * read fails it too, as unknown, unless this run's own macOS sandbox denies it. `homes`: where to look (tests of this
- * check), else the account's own home and the HOME this run started with.
+ * read fails it too, as unknown, unless the run was started with TOOLROLL_RESIDUE_UNREADABLE=accept (a fence that hides
+ * those places). `homes`: where to look (tests of this check), else the account's own home and the HOME this run started
+ * with. Cleanup removes only what this run made and recorded (scripts/suite-lifecycle.mjs removeRoot).
  */
 export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, options: { homes?: string[]; outerParent?: string } = {}): () => void {
   const own = project?.vitest?._tmpDir;
   if (typeof own === "string" && dirname(own) === tmpdir() && /^[\w-]{21}$/.test(basename(own))) removeOnExit(own);
   const before = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP, TOOLROLL_TEST_OUTER_HOME: process.env.TOOLROLL_TEST_OUTER_HOME };
   const root = makeTempRoot("so-t", { parent: shortTempParent() });
-  const outer = join(options.outerParent ?? join(import.meta.dirname, "..", ".test-outer"), basename(root));
-  mkdirSync(outer, { recursive: true, mode: 0o700 });
+  const outerParent = options.outerParent ?? join(import.meta.dirname, "..", ".test-outer");
+  mkdirSync(outerParent, { recursive: true, mode: 0o700 });
+  const outer = join(outerParent, basename(root));
+  // Made here, never adopted: a folder already there by that name is someone else's and is left alone.
+  mkdirSync(outer, { mode: 0o700 });
   removeOnExit(outer);
   process.env.TMPDIR = root;
   process.env.TMP = root;
   process.env.TEMP = root;
   process.env.TOOLROLL_TEST_OUTER_HOME = outer;
-  const residue = residueCheck({ root, also: [outer], deniedBySandbox: insideMacSandbox(), ...(options.homes === undefined ? {} : { homes: options.homes }) });
+  const residue = residueCheck({ root, also: [outer], acceptUnreadable: process.env.TOOLROLL_RESIDUE_UNREADABLE === "accept", ...(options.homes === undefined ? {} : { homes: options.homes }) });
   return () => {
     for (const [name, value] of Object.entries(before)) {
       if (value === undefined) delete process.env[name];
@@ -45,7 +49,7 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, o
     }
     const { left, unknown, unknownFails } = residue.check() as { left: string[]; unknown: string[]; unknownFails: boolean };
     removeRoot(root);
-    rmSync(outer, { recursive: true, force: true });
+    removeRoot(outer);
     if (left.length > 0) throw new Error(`Residue check: these tests left ${left.length} trace(s) in the person's real home: ${left.slice(0, 10).join(", ")}. A test's HOME is its own (test/setup-state.ts); find what ignored it.`);
     if (unknownFails) throw new Error(`Residue check: couldn't read ${unknown.join(", ")}, so this run's traces there are unknown, not clean.`);
   };
