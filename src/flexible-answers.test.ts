@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, type Store } from "./store.js";
@@ -762,6 +762,12 @@ describe("the catalog's path", () => {
     expect(spawnSync("/bin/chmod", ["+a", "group:everyone allow add_file,write", fresh.folder]).status).toBe(0);
     try { expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("its folder's ACL") }); }
     finally { spawnSync("/bin/chmod", ["-N", fresh.folder]); }
+    expect(existsSync(fresh.catalogFile)).toBe(false);
+    // The same ACL on a folder above the catalog's folder is refused too.
+    const parent = dirname(fresh.folder);
+    expect(spawnSync("/bin/chmod", ["+a", "group:everyone allow add_subdirectory,delete_child", parent]).status).toBe(0);
+    try { expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining(`the ACL of ${parent}`) }); }
+    finally { spawnSync("/bin/chmod", ["-N", parent]); }
     expect(existsSync(fresh.catalogFile)).toBe(false);
     fresh.store.close();
   });

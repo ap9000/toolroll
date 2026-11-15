@@ -251,6 +251,10 @@ function folderBoundaryProblem(folder: string, acl: ((path: string) => AclVerdic
       if (!dir.isDirectory()) return `${up} isn't a folder`;
       if (dir.uid !== uid && dir.uid !== 0) return `${up} is owned by another user`;
       if ((dir.mode & 0o022) !== 0 && (dir.mode & 0o1000) === 0) return `others can change ${up} (group- or world-writable)`;
+      // Every folder above gets the same ACL check as the catalog's own folder (as trustedBinary does): an allow-write
+      // entry anywhere up the path would let someone else swap what lies below it.
+      const above = acl?.(up);
+      if (above !== undefined && !above.ok) return `the ACL of ${up} ${above.why}`;
     }
   } catch { return "its folder can't be checked"; }
   return null;
