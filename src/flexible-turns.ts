@@ -41,6 +41,7 @@ import { threadLevelAllowed } from "./flexible-levels.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel, type FlexibleRefusalReason, type FlexibleTerms } from "./flexible.js";
 import { budgetHoldWords, budgetLabel, budgetStates, canPrice, countsToward, monthOf, priceWork, spendItems, type Billing, type SpendItem } from "./spend.js";
 import type { Store } from "./store.js";
+import { relayCancel } from "./flexible-relay-cancel.js";
 
 // ---- records ----------------------------------------------------------------------------------------------------------
 
@@ -163,7 +164,7 @@ function usageOf(store: Store, day: string, repo: string | null): { threads: num
   const where = repo === null ? "" : " AND repo = ?";
   const params = repo === null ? [day] : [day, repo];
   const today = store.handle.prepare(`SELECT COUNT(*) AS turns, COALESCE(SUM(cost_microusd), 0) AS spent,
-      COALESCE(SUM(CASE WHEN billing = 'api-key' AND status IN ('finished', 'interrupted', 'unknown') AND cost_basis = 'unknown' THEN 1 ELSE 0 END), 0) AS blind
+      COALESCE(SUM(CASE WHEN billing = 'api-key' AND status IN ('finished', 'interrupted', 'unknown') AND (cost_basis = 'unknown' OR id IN (SELECT turn FROM thread_relay_pending)) THEN 1 ELSE 0 END), 0) AS blind
     FROM thread_turn WHERE utc_day = ? AND status <> 'withdrawn'${where}`).get(...params)!;
   const live = store.handle.prepare(`SELECT COUNT(DISTINCT thread) AS n FROM thread_turn WHERE status IN ('admitted', 'running')${where}`).get(...(repo === null ? [] : [repo]))!;
   return { threads: Number(live["n"]), turns: Number(today["turns"]), spent: Number(today["spent"]), blind: Number(today["blind"]) };
@@ -462,21 +463,24 @@ function priced(store: Store, turn: FlexibleTurnRow, usage: FlexibleUsage, model
  * Charge one relay call to a turn (F2b's relay calls this for every call it forwarded, with the usage it counted
  * itself, outside the fence). A turn that started takes the charge even after it ended (a call can finish after its
  * turn did): usage only grows, and an unpriceable call makes the turn's cost unknown. A turn that never started takes
- * none: the relay must forward nothing for it.
+ * none: the relay must forward nothing for it. `incomplete`: the relay couldn't read the call's whole usage (its answer
+ * was cut off or unreadable): what it did read is added, and the call's cost is unknown, never what was read alone.
  */
-export function chargeFlexibleTurn(store: Store, input: { turn: string; usage: FlexibleUsage; model?: string }): { ok: true; costMicrousd: number } | FlexibleTurnRefusal {
+export function chargeFlexibleTurn(store: Store, input: { turn: string; usage: FlexibleUsage; model?: string; incomplete?: boolean }): { ok: true; costMicrousd: number; basis: FlexibleCostBasis } | FlexibleTurnRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
-  if (!validUsage(input.usage) || (input.model !== undefined && (typeof input.model !== "string" || !MODEL.test(input.model)))) return refuse("invalid-request");
-  return store.transact((): { ok: true; costMicrousd: number } | FlexibleTurnRefusal => {
+  if (!validUsage(input.usage) || (input.model !== undefined && (typeof input.model !== "string" || !MODEL.test(input.model)))
+    || (input.incomplete !== undefined && typeof input.incomplete !== "boolean")) return refuse("invalid-request");
+  return store.transact((): { ok: true; costMicrousd: number; basis: FlexibleCostBasis } | FlexibleTurnRefusal => {
     const turn = flexibleTurn(store, input.turn);
     if (turn === null) return refuse("turn-unknown");
     if (turn.status === "admitted" || turn.status === "withdrawn") return refuse("turn-not-running");
-    const cost = priced(store, turn, input.usage, input.model ?? turn.model);
+    const priced1 = priced(store, turn, input.usage, input.model ?? turn.model);
+    const cost = input.incomplete === true ? { microusd: priced1.microusd, basis: "unknown" as const } : priced1;
     // A running turn's basis is the worst of its calls; an ended turn's can only get less certain.
     const basis = turn.status === "running" ? worse(turn.costBasis, cost.basis) : cost.basis === "unknown" ? "unknown" : turn.costBasis!;
     store.handle.prepare("UPDATE thread_turn SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, cost_microusd = cost_microusd + ?, relay_calls = relay_calls + 1, cost_basis = ? WHERE id = ?")
       .run(input.usage.tokensIn, input.usage.tokensOut, cost.microusd, basis, turn.id);
-    return { ok: true as const, costMicrousd: cost.microusd };
+    return { ok: true as const, costMicrousd: cost.microusd, basis: cost.basis };
   });
 }
 
@@ -505,6 +509,8 @@ export function finishFlexibleTurn(store: Store, input: { turn: string; holder: 
     } else {
       store.handle.prepare("UPDATE thread_turn SET status = ?, ended_at = ?, end_detail = ?, cost_basis = 'unknown' WHERE id = ?").run(input.outcome, at, detail, turn.id);
     }
+    // Its relay calls lose their authority now, not at the relay's next look.
+    relayCancel({ turn: turn.id });
     return { ok: true as const, turn: flexibleTurn(store, turn.id)! };
   });
 }
@@ -530,6 +536,7 @@ export function interruptFlexibleTurnsOf(store: Store, input: { holder: string; 
       } else {
         const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";
         store.handle.prepare("UPDATE thread_turn SET status = 'interrupted', ended_at = ?, end_detail = 'interrupted when Toolroll restarted', cost_basis = ? WHERE id = ?").run(at, basis, turn.id);
+        relayCancel({ turn: turn.id });
         interrupted++;
       }
     }
@@ -605,6 +612,7 @@ export function interruptFlexibleThreadTurns(store: Store, input: { thread: stri
       if (turn.status === "admitted") { withdrawTurn(store, turn, input.detail, at); withdrawn++; continue; }
       const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";
       store.handle.prepare("UPDATE thread_turn SET status = 'interrupted', ended_at = ?, end_detail = ?, cost_basis = ? WHERE id = ? AND status = 'running'").run(at, input.detail.slice(0, 2000), basis, turn.id);
+      relayCancel({ turn: turn.id });
       interrupted++;
     }
     return { ok: true as const, withdrawn, interrupted };

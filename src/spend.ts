@@ -309,10 +309,14 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
   // its owner. A withdrawn turn never reached the provider. A plan's turn is $0; a keyed turn whose cost Toolroll couldn't
   // measure is unpriced (never free); a turn still running counts what it has cost so far.
   if (db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'thread_turn'").get() !== undefined) {
-    for (const row of db.prepare(`SELECT COALESCE(started_at, admitted_at) AS at, repo, owner, provider, model, billing, status, cost_basis, cost_microusd, tokens_in, tokens_out
+    // v166: a relay call whose charge was never recorded (its reservation is still there) leaves an ended keyed turn's
+    // cost unknown too.
+    const reservations = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'thread_relay_pending'").get() !== undefined;
+    for (const row of db.prepare(`SELECT COALESCE(started_at, admitted_at) AS at, repo, owner, provider, model, billing, status, cost_basis, cost_microusd, tokens_in, tokens_out,
+        ${reservations ? "(status IN ('finished', 'interrupted', 'unknown') AND id IN (SELECT turn FROM thread_relay_pending))" : "0"} AS unsettled
         FROM thread_turn WHERE status <> 'withdrawn' AND COALESCE(started_at, admitted_at) >= ? AND COALESCE(started_at, admitted_at) < ? ORDER BY admitted_at, id`).all(from, to)) {
       const billing: Billing = row["billing"] === "subscription" ? "subscription" : "api-key";
-      const blind = billing === "api-key" && row["cost_basis"] === "unknown";
+      const blind = billing === "api-key" && (row["cost_basis"] === "unknown" || Number(row["unsettled"]) === 1);
       items.push({ at: String(row["at"]), kind: "flexible", microusd: billing === "subscription" ? 0 : blind ? null : Number(row["cost_microusd"]),
         source: billing === "subscription" ? "subscription" : blind ? "unpriced" : row["cost_basis"] === "measured" ? "reported" : "estimated",
         project: String(row["repo"]), person: String(row["owner"]), subagent: null, provider: String(row["provider"]), model: text(row["model"]),

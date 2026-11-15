@@ -16,12 +16,15 @@
  *   this is the proof it needs).
  */
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { hostname } from "node:os";
 import { currentBootId } from "./boot-identity.js";
 import { observeCustody, realCustodyIO, stopCustody, custodySettled, type CustodyBlocker, type CustodyIO, type CustodyOutcome, type LaunchCustody, type ProcessWitness } from "./flexible-custody.js";
 import type { FlexibleLevel } from "./flexible.js";
 import { interruptFlexibleThreadTurns, type FlexibleClock } from "./flexible-turns.js";
 import { currentMachineId } from "./machine-identity.js";
+import { relayCancel } from "./flexible-relay-cancel.js";
 import type { Store } from "./store.js";
 
 export const FLEXIBLE_AGENT_PROVIDERS = ["claude", "codex", "gemini", "openrouter"] as const;
@@ -228,11 +231,15 @@ export function relayGrantLive(store: Store, token: string): boolean {
 }
 /** Revoke one relay grant (by its token), durably; nothing else of the thread's. */
 export function revokeRelayGrant(store: Store, token: string, clock: FlexibleClock = () => new Date()): number {
-  return store.transact(() => Number(store.handle.prepare("UPDATE flexible_relay_grant SET revoked_at = ? WHERE token_digest = ? AND revoked_at IS NULL").run(clock().toISOString(), sha256(token)).changes));
+  const revoked = store.transact(() => Number(store.handle.prepare("UPDATE flexible_relay_grant SET revoked_at = ? WHERE token_digest = ? AND revoked_at IS NULL").run(clock().toISOString(), sha256(token)).changes));
+  relayCancel({ digest: sha256(token) });
+  return revoked;
 }
 /** Revoke every relay grant of one launch, durably. */
 export function revokeLaunchGrants(store: Store, launch: string, clock: FlexibleClock = () => new Date()): number {
-  return store.transact(() => Number(store.handle.prepare("UPDATE flexible_relay_grant SET revoked_at = ? WHERE launch = ? AND revoked_at IS NULL").run(clock().toISOString(), launch).changes));
+  const revoked = store.transact(() => Number(store.handle.prepare("UPDATE flexible_relay_grant SET revoked_at = ? WHERE launch = ? AND revoked_at IS NULL").run(clock().toISOString(), launch).changes));
+  relayCancel({ launch });
+  return revoked;
 }
 
 // ---- settling a launch ---------------------------------------------------------------------------------------------------
@@ -315,3 +322,55 @@ function recordSeenInside(store: Store, launchId: string, seen: { namespaces: re
   const launch = flexibleLaunch(store, launchId);
   if (launch !== null) recordSeen(store, launch, seen);
 }
+
+// ---- the launch's provider configuration folder ----------------------------------------------------------------------------
+
+/** A real folder of this user's, not a link: lstat, never followed. */
+function ownRealFolder(path: string): boolean {
+  try {
+    const held = lstatSync(path);
+    return held.isDirectory() && !held.isSymbolicLink() && (process.getuid === undefined || held.uid === process.getuid());
+  } catch { return false; }
+}
+
+/** Remove `path` and what is in it without ever following a link: a link (or any file) is unlinked as itself, and only
+ * a real folder is entered. */
+function removeNoFollow(path: string): void {
+  const held = lstatSync(path);
+  if (!held.isDirectory() || held.isSymbolicLink()) { unlinkSync(path); return; }
+  for (const name of readdirSync(path)) removeNoFollow(join(path, name));
+  rmdirSync(path);
+}
+
+/**
+ * Make the launch's provider configuration home (`configHome`, inside `<cache>/provider`) fresh, or say why it can't be.
+ * Only while the thread is quiet: no launch of it is unsettled (every earlier one recorded `exited`, which settleLaunch
+ * writes only on a verified exit of its whole tree, or for one whose agent never ran), checked here, under the thread's
+ * lock the caller holds (every launch of the thread is made under it). Nothing else writes the cache: it is writable only
+ * from inside the thread's fence. So nothing can swap a folder while it is being emptied.
+ * The cache is writable by the thread's agent, so before anything is removed: every folder from the threads root down
+ * to the cache is a real folder of this user's (lstat, never followed), the cache's real path is exactly the recorded
+ * one, and `provider` is either absent or a real folder too. Then `provider` is removed without following any link
+ * inside it and made again exclusively. Anything else refuses (null is success); nothing outside is ever touched.
+ */
+export function freshProviderFolder(store: Store, thread: string, paths: { root: string; folder: string; cache: string }, configHome: string): string | null {
+  // Quiet first: an agent of the thread that may still run could swap what is checked below.
+  let quiet = false;
+  try { quiet = unsettledLaunch(store, thread) === null; } catch { quiet = false; }
+  if (!quiet) return "an earlier agent of the thread isn't proved stopped, so its folders weren't touched";
+  const provider = join(paths.cache, "provider");
+  if (dirname(configHome) !== provider) return "its configuration folder isn't inside the thread's cache";
+  for (const folder of [paths.root, paths.folder, paths.cache]) if (!ownRealFolder(folder)) return `${basename(folder)} isn't a real folder of Toolroll's (a link or something else is there)`;
+  try { if (realpathSync(paths.cache) !== paths.cache) return "the thread's cache isn't where Toolroll put it"; } catch { return "the thread's cache can't be read"; }
+  try {
+    if (existsSync(provider) || isLink(provider)) {
+      if (!ownRealFolder(provider)) return "the cache's provider folder isn't a real folder (a link or something else is there)";
+      removeNoFollow(provider);
+    }
+    mkdirSync(provider, { mode: 0o700 });
+    if (!ownRealFolder(provider)) return "the cache's provider folder couldn't be made";
+    mkdirSync(configHome, { mode: 0o700 });
+    return null;
+  } catch { return "the cache's provider folder couldn't be made fresh"; }
+}
+const isLink = (path: string): boolean => { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } };

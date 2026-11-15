@@ -24,6 +24,7 @@ import { V162_SCHEMA, V162_STEPS } from "./flexible-thread-schema.js";
 import { V163_SCHEMA, V163_STEPS } from "./typed-words-schema.js";
 import { V164_OBJECTS, V164_SCHEMA, V164_STEPS } from "./flexible-turns-schema.js";
 import { V165_OBJECTS, V165_SCHEMA, V165_STEPS } from "./flexible-launch-schema.js";
+import { V166_OBJECTS, V166_SCHEMA, V166_STEPS } from "./flexible-relay-schema.js";
 import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
@@ -1237,7 +1238,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v165 adds, and changes no saved row (the Flexible plan v2, slice F2c): Flexible threads' agent launches with their
 // process custody, and each thread's chosen level (flexible_thread_launch, flexible_relay_grant and flexible_thread_level, new tables;
 // flexible-launch-schema.ts). Nothing writes them while Flexible isn't available.
-export const SCHEMA_VERSION = 165;
+// v166 adds, and changes no saved row (the Flexible plan v2, slice F2b): the calls Flexible threads' sign-in relay handled
+// and the ones it has reserved but not yet recorded (thread_relay_call and thread_relay_pending, new tables;
+// flexible-relay-schema.ts). Nothing writes them while Flexible isn't available.
+export const SCHEMA_VERSION = 166;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1375,7 +1379,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1639,7 +1643,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2049,7 +2053,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6034,7 +6038,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6484,6 +6488,12 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const launchDamaged = flexibleLaunchShapeProblem(db);
   if (launchDamaged !== null) throw new Error(`${file}: refusing to open — ${launchDamaged}`);
   step("thread-launch");
+  // v166: the calls Flexible threads' sign-in relay handled (a new table, its indexes and its written-once trigger).
+  // Idempotent; a table already here (a resumed epoch, a later upgrade) must be exactly this shape.
+  db.exec(V166_SCHEMA);
+  const relayDamaged = flexibleRelayShapeProblem(db);
+  if (relayDamaged !== null) throw new Error(`${file}: refusing to open — ${relayDamaged}`);
+  step("thread-relay-call");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -27553,6 +27563,19 @@ function flexibleLaunchShapeProblem(db: Database): string | null {
     if (row === undefined) return `the Flexible launches ${type} ${name} is missing`;
     const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
     if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want).trim()) return `the Flexible launches ${type} ${name} has an unknown shape`;
+  }
+  return null;
+}
+
+/** v166's table, indexes and written-once trigger, as a current or resumed file must hold them
+ * (flexible-relay-schema.ts): each there, and exactly this build's DDL. Null when they are; else what is wrong, in words. */
+function flexibleRelayShapeProblem(db: Database): string | null {
+  const statements = V166_SCHEMA.split(/;\s*\n(?=CREATE )/).map(one => one.trim().replace(/;$/, "")).filter(one => one !== "");
+  for (const [type, name] of V166_OBJECTS) {
+    const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = ? AND name = ?").get(type, name);
+    if (row === undefined) return `the Flexible relay calls ${type} ${name} is missing`;
+    const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
+    if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want).trim()) return `the Flexible relay calls ${type} ${name} has an unknown shape`;
   }
   return null;
 }
