@@ -134,6 +134,8 @@ export interface ServerRuntime {
   leadRecheckedAt: number;
   checkLocalAgents: (fresh?: boolean) => Promise<void>;
   localSignIn: { at: number; signedIn: boolean; states: Record<"claude" | "codex", ProviderConnection["state"] | "unverified">; } | null;
+  /** Every supported agent on this computer, as the last detection saw them (agent-detect.ts); null until it answers. */
+  localAgents: import("../agent-detect.js").AgentDetection | null;
   agentSignInCommand: () => string;
   connectionCheck: (provider: ProviderId, fresh?: boolean) => Promise<ProviderConnection>;
   /** What the last sign-in check said: what a page shows. A page never checks (docs/plans/get-side-effects.md). */

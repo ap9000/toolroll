@@ -12,7 +12,7 @@ import { openStore, BUILT_IN, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { INSTALLATION_SCOPE, resolveAgentAuthority, resolveRouteCandidates } from "./agentconfig.js";
 import { recommendRoute } from "./phase-routing.js";
-import { applyModelChoices, checkScope, HAIKU, OPUS, presetChange, presetInUse, previewModelChange, rowAt, SONNET, stateDigest, switchChange, type ApplyInput, type ModelAuthority, type ModelChange } from "./model-choices.js";
+import { applyModelChoices, checkScope, fillDefaultRouting, FIRST_TASK_AGENT_FACT, HAIKU, OPUS, presetChange, presetInUse, previewModelChange, rowAt, SONNET, stateDigest, switchChange, type ApplyInput, type ModelAuthority, type ModelChange } from "./model-choices.js";
 import { runOperate, writeModelRow } from "./operate.js";
 import { setPasswordless } from "./passwordless.js";
 
@@ -352,4 +352,28 @@ describe("the command line in separate processes (0.9.84 release check)", () => 
     expect(refused.out).not.toMatch(/page loaded/);
     expect(checkScope(store, null).kind).toBe("ok");
   }, 120_000);
+});
+
+describe("the detected door (A0b instant start): the agent found signed in gets the first task's models", () => {
+  test("a password install with nothing ever chosen: filled once in one write, ledgered and recorded; never over a choice, never after one was cleared", () => {
+    // No local mode here: the first-start door refuses, the detected door fills.
+    expect(fillDefaultRouting(store, "codex", "toolroll", { kind: "first-start" }, T0)).toMatchObject({ filled: false, reason: "authority" });
+    expect(fillDefaultRouting(store, "codex", "toolroll", { kind: "detected" }, T0)).toMatchObject({ filled: true });
+    expect(store.phaseConfig(INSTALLATION_SCOPE, "build")).toMatchObject({ provider: "codex", model: "gpt-6-sol", updatedBy: "toolroll" });
+    expect(store.installationFact(FIRST_TASK_AGENT_FACT)).toBe("codex");
+    expect(store.handle.prepare("SELECT COUNT(*) n FROM action_ledger WHERE detail LIKE '%found signed in on this computer%'").get()?.["n"]).toBeGreaterThan(0);
+    // Set now: a second fill (another agent found later) changes nothing, and the record stays the first.
+    expect(fillDefaultRouting(store, "claude", "toolroll", { kind: "detected" }, T0)).toMatchObject({ filled: false, reason: "already-set" });
+    expect(store.phaseConfig(INSTALLATION_SCOPE, "build")).toMatchObject({ provider: "codex" });
+    expect(store.installationFact(FIRST_TASK_AGENT_FACT)).toBe("codex");
+    // Models chosen and then cleared: they stay cleared.
+    const other = openStore(join(dir, "cleared.db"));
+    try {
+      other.setPhaseConfig(INSTALLATION_SCOPE, "build", "claude", SONNET, "alex", T0);
+      expect(other.clearPhaseConfig(INSTALLATION_SCOPE, "build")).toBe(true);
+      expect(fillDefaultRouting(other, "codex", "toolroll", { kind: "detected" }, T0)).toMatchObject({ filled: false, reason: "already-set" });
+      expect(other.phaseConfig(INSTALLATION_SCOPE, "build")).toBeNull();
+      expect(other.installationFact(FIRST_TASK_AGENT_FACT)).toBeNull();
+    } finally { other.close(); }
+  });
 });

@@ -1,32 +1,18 @@
 //! Drawing the screen from the App, immediate-mode, every frame (layout from the live size each time).
 //!
-//! DESIGN.md: plain words in sentence case; ink (the terminal's own foreground, bold) for what needs you, never amber;
-//! blue only for running, green only for passed, red only for failed.
+//! DESIGN.md: plain words in sentence case; ink for what needs you, never amber; blue only for running, green only for
+//! passed, red only for failed. Every style is a theme role (theme.rs), every mark the glyph set's.
 use crate::app::{App, Item, Mode, NoteKind, Section, Tab, Tone};
+use crate::settings::{Column, Density};
 use crate::text::{clean, fit, width, wrap};
+use crate::theme::{base, dim, failed, ink, line, marks, needs_you, passed, running, selected};
 use crate::transcript;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use toolroll_api::{StepCard, StepCards};
-
-fn ink() -> Style {
-    Style::default().add_modifier(Modifier::BOLD)
-}
-fn dim() -> Style {
-    Style::default().add_modifier(Modifier::DIM)
-}
-fn running() -> Style {
-    Style::default().fg(Color::Blue)
-}
-fn passed() -> Style {
-    Style::default().fg(Color::Green)
-}
-fn failed() -> Style {
-    Style::default().fg(Color::Red)
-}
 
 /// "2026-11-14T12:00:00.000Z" → seconds since the epoch (UTC only; anything else is None).
 pub fn epoch(iso: &str) -> Option<i64> {
@@ -64,13 +50,14 @@ pub fn duration(secs: i64) -> String {
 }
 
 fn mark_of(card: &StepCard) -> (&'static str, Style) {
+    let m = marks();
     match card.mark.as_str() {
-        "done" => ("✓", passed()),
-        "live" => ("◐", running()),
-        "needs" => ("●", ink()),
-        "stuck" => ("✕", failed()),
-        "skipped" => ("–", dim()),
-        _ => ("○", dim()),
+        "done" => (m.passed, passed()),
+        "live" => (m.running, running()),
+        "needs" => (m.needs, needs_you()),
+        "stuck" => (m.failed, failed()),
+        "skipped" => (m.skipped, dim()),
+        _ => (m.todo, dim()),
     }
 }
 
@@ -148,7 +135,7 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
             .unwrap_or(app.now);
         parts.push(duration(end - start));
     }
-    if let Some(cost) = card.cost_usd {
+    if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
         parts.push(format!("${cost:.2}"));
     }
     if let Some(run) = card.runs.first() {
@@ -178,6 +165,22 @@ fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
+    draw_frame(f, app);
+    if app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii {
+        // Every symbol drawn, borders included, as its ASCII stand-in.
+        for cell in f.buffer_mut().content.iter_mut() {
+            let mut chars = cell.symbol().chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                if let Some(a) = crate::theme::ascii_of(c) {
+                    cell.set_char(a);
+                }
+            }
+        }
+    }
+}
+
+fn draw_frame(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let title_right = if !app.loaded {
         "Reading…".to_string()
@@ -195,6 +198,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     let outer = Block::default()
         .borders(Borders::ALL)
+        .style(base())
+        .border_style(line())
         .title(Line::from(vec![
             Span::styled(" Toolroll", ink()),
             Span::raw(format!(
@@ -205,7 +210,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .title(
             Line::from(Span::styled(
                 format!(" {title_right} "),
-                if app.needs_count > 0 { ink() } else { dim() },
+                if app.needs_count > 0 {
+                    needs_you()
+                } else {
+                    dim()
+                },
             ))
             .right_aligned(),
         );
@@ -218,7 +227,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let [body, status, keys] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(u16::from(app.prefs.settings.key_bar)),
     ])
     .areas(inner);
     let split = app
@@ -236,14 +245,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_list(f, app, left);
     f.render_widget(
         Paragraph::new(vec![
-            Line::from(Span::styled("│", dim()));
+            Line::from(Span::styled("│", line()));
             sep.height as usize
         ]),
         sep,
     );
     draw_right(f, app, right);
     draw_status(f, app, status);
-    draw_keys(f, keys);
+    if app.prefs.settings.key_bar {
+        draw_keys(f, keys);
+    }
     draw_overlay(f, app, area);
 }
 
@@ -256,6 +267,8 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let mut last: Option<Section> = None;
     let w = area.width as usize;
+    let cols = columns(app);
+    let comfortable = app.prefs.settings.density == Density::Comfortable;
     for (index, item) in app.items.iter().enumerate() {
         if last != Some(item.section) {
             if last.is_some() {
@@ -275,13 +288,33 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             ));
             last = Some(item.section);
         }
-        lines.push((item_line(item, index == app.selected, w), Some(index)));
+        let here = index == app.selected;
+        lines.push((
+            item_line(item, here, w, &cells(app, item, &cols)),
+            Some(index),
+        ));
+        if comfortable {
+            // Comfortable: a second line with what it is doing, quiet.
+            let style = if here { selected() } else { dim() };
+            let text = fit(&format!("  {}", item.detail), w);
+            let pad = w.saturating_sub(width(&text));
+            lines.push((
+                Line::from(vec![
+                    Span::styled(text, style),
+                    Span::styled(
+                        " ".repeat(pad),
+                        if here { selected() } else { Style::default() },
+                    ),
+                ]),
+                Some(index),
+            ));
+        }
     }
-    // Keep the selected row in view.
+    // Keep the selected row in view (all of its lines).
     let h = area.height as usize;
     let at = lines
         .iter()
-        .position(|(_, i)| *i == Some(app.selected))
+        .rposition(|(_, i)| *i == Some(app.selected))
         .unwrap_or(0);
     let top = (at + 1).saturating_sub(h);
     let shown: Vec<Line<'static>> = lines
@@ -296,32 +329,85 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(shown), area);
 }
 
-fn item_line(item: &Item, selected: bool, w: usize) -> Line<'static> {
+/// The list's right-hand columns (tui.toml `columns`), each with its width: the widest value shown, capped.
+fn columns(app: &App) -> Vec<(Column, usize)> {
+    let s = &app.prefs.settings;
+    s.columns
+        .iter()
+        .copied()
+        .filter(|c| *c != Column::Cost || s.show_costs)
+        .map(|c| {
+            let w = app
+                .items
+                .iter()
+                .map(|i| width(&cell(app, i, c)))
+                .max()
+                .unwrap_or(0);
+            (c, w)
+        })
+        .filter(|(_, w)| *w > 0)
+        .collect()
+}
+
+fn cell(app: &App, item: &Item, column: Column) -> String {
+    match column {
+        Column::Step => fit(&item.word, 12),
+        Column::Age => fit(item.age.trim_end_matches(" ago"), 8),
+        Column::Project => fit(item.project.as_deref().unwrap_or(""), 12),
+        Column::Agent => fit(app.facts.agent(&item.id).unwrap_or(""), 16),
+        Column::Cost => app
+            .facts
+            .cost(&item.id)
+            .map(|c| format!("${c:.2}"))
+            .unwrap_or_default(),
+    }
+}
+
+/// A row's columns, each right-aligned in its width, two spaces apart.
+fn cells(app: &App, item: &Item, cols: &[(Column, usize)]) -> String {
+    cols.iter()
+        .map(|(c, w)| {
+            let v = cell(app, item, *c);
+            format!("{}{v}", " ".repeat(w.saturating_sub(width(&v))))
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn item_line(item: &Item, here: bool, w: usize, right: &str) -> Line<'static> {
+    let m = marks();
     let (mark, style) = match item.section {
-        Section::NeedsYou => ("●", ink()),
-        Section::Working if item.paused => ("‖", dim()),
-        Section::Working => ("◐", running()),
-        Section::DoneToday => ("✓", passed()),
+        Section::NeedsYou => (m.needs, needs_you()),
+        Section::Working if item.paused => (m.paused, dim()),
+        Section::Working => (m.running, running()),
+        Section::DoneToday => (m.passed, passed()),
     };
-    let word = fit(&item.word, 12);
-    let room = w.saturating_sub(width(&word) + 4);
+    // Columns that leave the title too little room are left off, from the right.
+    let mut right = right.trim_start().to_string();
+    while !right.is_empty() && w.saturating_sub(width(&right) + 4) < 10 {
+        right = match right.rfind("  ") {
+            Some(i) => right[..i].trim_end().to_string(),
+            None => String::new(),
+        };
+    }
+    let room = w.saturating_sub(width(&right) + 4);
     let title = fit(&item.title, room);
-    let pad = w.saturating_sub(2 + width(&title) + width(&word) + 1);
-    let base = if selected {
-        Style::default().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::default()
-    };
+    let gap = w.saturating_sub(2 + width(&title) + width(&right));
+    let row = if here { selected() } else { Style::default() };
     let title_style = if item.section == Section::NeedsYou {
-        base.add_modifier(Modifier::BOLD)
+        if here {
+            row.add_modifier(Modifier::BOLD)
+        } else {
+            needs_you()
+        }
     } else {
-        base
+        row
     };
     Line::from(vec![
-        Span::styled(format!("{mark} "), if selected { base } else { style }),
+        Span::styled(format!("{mark} "), if here { row } else { style }),
         Span::styled(title, title_style),
-        Span::styled(" ".repeat(pad + 1), base),
-        Span::styled(word, if selected { base } else { dim() }),
+        Span::styled(" ".repeat(gap), row),
+        Span::styled(right, if here { row } else { dim() }),
     ])
 }
 
@@ -370,15 +456,21 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             "Reading your tasks…"
         };
-        f.render_widget(
-            Paragraph::new(
-                wrap(words, content.width as usize)
-                    .into_iter()
-                    .map(Line::raw)
-                    .collect::<Vec<_>>(),
-            ),
-            content,
-        );
+        let width = content.width as usize;
+        let mut lines: Vec<Line> = wrap(words, width).into_iter().map(Line::raw).collect();
+        // The first run's lines (the engine's agents read, the same words every screen shows): who the first task goes
+        // to, or one "Sign in to <Agent>: run …" per installed agent, or how to install one.
+        if let Some(agents) = app.agents.as_ref().filter(|_| app.loaded) {
+            lines.push(Line::raw(""));
+            for said in &agents.lines {
+                lines.extend(
+                    wrap(&clean(said), width)
+                        .into_iter()
+                        .map(|l| Line::from(Span::styled(l, ink()))),
+                );
+            }
+        }
+        f.render_widget(Paragraph::new(lines), content);
         return;
     };
     // Head: the task, then what's running it.
@@ -428,7 +520,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(Span::styled(
                 format!("  {}", fit(&text, qa.width as usize - 2)),
                 if chosen {
-                    ink().add_modifier(Modifier::REVERSED)
+                    selected().add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 },
@@ -606,7 +698,7 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
         ) {
             facts.push(duration(e - s));
         }
-        if let Some(cost) = card.cost_usd {
+        if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
             facts.push(format!("${cost:.2}"));
         }
         if !facts.is_empty() {
@@ -657,7 +749,7 @@ fn draw_diff(f: &mut Frame, app: &App, area: Rect) {
     for (i, file) in diff.files.iter().enumerate() {
         let here = i == app.diff_index;
         let style = if here {
-            ink().add_modifier(Modifier::REVERSED)
+            selected().add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -733,7 +825,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 const KEYS: &[(&str, &str)] = &[
     ("j/k", "move"),
-    ("⏎", "open"),
+    ("Enter", "open"),
     ("s", "steer"),
     ("p", "pause"),
     ("x", "stop"),
@@ -764,7 +856,10 @@ fn draw_keys(f: &mut Frame, area: Rect) {
     };
     let mut keep = KEYS.len();
     loop {
-        let mut set: Vec<(&str, &str)> = KEYS[..keep.min(KEYS.len() - 2)].to_vec();
+        let mut set: Vec<(&str, &str)> = KEYS[..keep.min(KEYS.len() - 2)]
+            .iter()
+            .map(|&(k, what)| (if k == "Enter" { marks().enter } else { k }, what))
+            .collect();
         set.extend_from_slice(&KEYS[KEYS.len() - 2..]);
         let (spans, w) = render(&set);
         if w <= area.width as usize || keep == 0 {
@@ -807,11 +902,16 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 "q            quit",
                 "",
                 "Mouse: click to select, wheel to scroll, drag the divider.",
-                "Press any key to close.",
+                "Press s for settings, any other key to close.",
             ]
             .into_iter()
             .map(Line::raw)
             .collect(),
+        ),
+        Mode::Settings => (
+            " Settings ",
+            app.prefs
+                .screen((area.width as usize).saturating_sub(8).min(88)),
         ),
         Mode::Quit => (
             " Quit Toolroll? ",
@@ -859,7 +959,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             lines.extend(
                 wrap(&clean(&q.text), w)
                     .into_iter()
-                    .map(|l| Line::from(Span::styled(l, dim()))),
+                    .map(|l| Line::from(Span::styled(l, ink()))),
             );
             lines.push(Line::raw(""));
             lines.extend(
@@ -937,6 +1037,8 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
+                .style(base())
+                .border_style(line())
                 .title(Span::styled(title, ink())),
         ),
         r,
@@ -980,6 +1082,8 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Clear, r);
     let block = Block::default()
         .borders(Borders::ALL)
+        .style(base())
+        .border_style(line())
         .title(Span::styled(" New task ", ink()));
     if text_w < 16 || visible < 3 {
         // Too small to show them: no in-terminal Build.

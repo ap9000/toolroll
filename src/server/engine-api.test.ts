@@ -22,7 +22,7 @@ import * as reads from "../engine-reads.js";
 import * as fast from "../fast-start.js";
 import * as newTask from "./render-new-task.js";
 import * as mainRead from "../live-main-read.js";
-import { engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { agentsReadSchema, engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
 
 // Every loader a spy around the real one: a refused caller must cause none of them.
 vi.mock("../engine-reads.js", async importOriginal => {
@@ -105,7 +105,11 @@ beforeAll(async () => {
   store.setTaskState("t-done", "done", T0);
   storeEvidence(store, evidenceRoot, resultRun, "terminal-diff", "diff.patch", Buffer.from(PATCH), "git diff (exit 0)", T0, { captureStatus: "ok" });
   started("t-b", repoB);
-  server = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(), localRunner: "builder-1" });
+  // This computer's sign-in check (stubbed, no process): Codex signed in, nothing else installed. Builds are already set
+  // to Claude Code here, so the first task waits for it.
+  const notFound = { code: 127, stdout: "", stderr: "", timedOut: false, notFound: true };
+  server = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(), localRunner: "builder-1", leadByDefault: true,
+    connectionProbe: (async (file: string) => file === "codex" ? { code: 0, stdout: "Logged in using ChatGPT\n", stderr: "", timedOut: false, notFound: false } : notFound) as never });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   cookies["operator"] = await login("alex", alex.token);
@@ -121,7 +125,7 @@ afterAll(async () => {
 });
 
 const THREAD = `/agents/live/thread/${"a".repeat(32)}`;
-const paths = () => ({ hello: "/engine/hello", work: "/work/rows", steps: "/t/t-done/steps", diff: "/t/t-done/diff", file: `/t/t-done/diff?run=${resultRun}&file=0`, live: `/agents/live/run/${liveRun}?file=main`, thread: THREAD });
+const paths = () => ({ hello: "/engine/hello", agents: "/engine/agents", work: "/work/rows", steps: "/t/t-done/steps", diff: "/t/t-done/diff", file: `/t/t-done/diff?run=${resultRun}&file=0`, live: `/agents/live/run/${liveRun}?file=main`, thread: THREAD });
 type Route = keyof ReturnType<typeof paths>;
 async function read(persona: string, path: string): Promise<{ status: number; body: unknown }> {
   const headers: Record<string, string> = persona === "token" ? { authorization: `Bearer ${readToken}` } : { cookie: cookies[persona]! };
@@ -135,11 +139,11 @@ async function read(persona: string, path: string): Promise<{ status: number; bo
 /** Who reads what, written out by hand from the pages each route mirrors: Work and the task page admit any signed-in
  * caller with the project (a token too); the Live grid's reads are a browser session's only; a thread is refused for now. */
 const ADMITTED: Record<string, Record<Route, number>> = {
-  operator: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  approver: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  viewer: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  "project-limited": { hello: 200, work: 200, steps: 404, diff: 404, file: 404, live: 404, thread: 404 },
-  token: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 403, thread: 403 },
+  operator: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  approver: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  viewer: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  "project-limited": { hello: 200, agents: 200, work: 200, steps: 404, diff: 404, file: 404, live: 404, thread: 404 },
+  token: { hello: 200, agents: 403, work: 200, steps: 200, diff: 200, file: 200, live: 403, thread: 403 },
 };
 
 describe("each engine read admits per persona as the page it mirrors; a refusal reads nothing", () => {
@@ -173,6 +177,27 @@ describe("each engine read admits per persona as the page it mirrors; a refusal 
   });
 });
 
+describe("this computer's agents: one inventory policy for the engine read and the welcome", () => {
+  test("an instance operator sees each agent; another person's session sees only who the first task goes to; a token nothing", async () => {
+    // The console's own check looked once at start (the lead on by default); wait for its answer, not a window.
+    let full = agentsReadSchema.parse((await read("operator", "/engine/agents")).body);
+    for (let i = 0; i < 100 && full.checkedAt === null; i++) { await new Promise(done => setTimeout(done, 20)); full = agentsReadSchema.parse((await read("operator", "/engine/agents")).body); }
+    expect(full.agents.map(one => [one.id, one.state]).slice(0, 2)).toEqual([["claude", "not-installed"], ["codex", "signed-in"]]);
+    expect(full.firstTask).toBeNull();
+    expect(full.lines).toContain("Codex is signed in. To give it tasks, choose it in Settings → Models.");
+    for (const persona of ["viewer", "project-limited"]) {
+      const summary = agentsReadSchema.parse((await read(persona, "/engine/agents")).body);
+      expect(summary, persona).toMatchObject({ agents: [], firstTask: null, lines: ["No coding agent can take tasks on this computer yet."] });
+    }
+    expect((await read("token", "/engine/agents")).status).toBe(403);
+    // The welcome reads the same policy (its rendering per view: welcome.test.ts).
+    const { agentInventoryOf } = await import("./welcome.js");
+    const who = (name: string) => ({ name, via: "cookie" }) as never;
+    expect(["alex", "vera", "robin"].map(name => agentInventoryOf(who(name), store))).toEqual(["full", "summary", "summary"]);
+    expect(agentInventoryOf({ name: "alex", via: "bearer", role: "approver", generation: 1 }, store)).toBe("none");
+  });
+});
+
 describe("every answer is its contract's shape", () => {
   test("a result waiting to be checked carries the facts its Accept and Send back post", async () => {
     store.createTask({ id: "t-ready", title: "Fix t-ready" }, T0);
@@ -201,6 +226,7 @@ describe("every answer is its contract's shape", () => {
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {
     // The handshake first: this build's contract, the one the fixtures and schemas.json hold.
     expect(helloSchema.parse((await read("operator", "/engine/hello")).body)).toMatchObject({ version: 1, contract: engineContractDigest() });
+    expect((await read("operator", "/engine/agents?fresh=1")).status).toBe(400);
     workRowsSchema.parse((await read("operator", "/work/rows")).body);
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body);
     expect(steps).toMatchObject({ task: { id: "t-done" }, room: "task:t-done" });
