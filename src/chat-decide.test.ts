@@ -253,6 +253,22 @@ describe("decisions finish in the chat app", () => {
     expect(script.acks().at(-1)).toBe("That button isn't for this chat.");
   });
 
+  test("terms diet: a tap whose prompt would name a folder on this computer opens no prompt, and the next message answers nothing", async () => {
+    const { run } = readyResult("guard-private", "Copy the guard from ~/notes/guard.ts");
+    await pass();
+    const card = script.cardWith(BOB, /^Send back$/);
+    await tapIn(BOB, card.token(/^Send back$/), card.messageId);
+    // The card goes back to Toolroll: no "What should change?" asked, no prompt left open, no button live.
+    expect(script.current(BOB, card.messageId).text).toContain("name a key or a folder on this computer");
+    expect(script.inChat(BOB).filter(call => call.method === "sendMessage").some(call => String(call.params["text"]).startsWith("What should change?"))).toBe(false);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_prompt WHERE consumed_at IS NULL").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_action WHERE consumed_at IS NULL AND phase <> 'offer'").get()?.["n"]).toBe(0);
+    // A typed reply now is ordinary chat: no revision, no feedback recorded, nothing approved.
+    await sayIn(BOB, "Rename the helper to guardPayout.");
+    expect(store.taskFamilyOf("guard-private", [REPO], false)!.current.id).toBe("guard-private");
+    expect(store.allDiffComments(run)).toEqual([]);
+  });
+
   test("c1: Request changes asks what should change, and the next message becomes the revision's feedback", async () => {
     const { run } = readyResult("guard-3", "Keep the guard readable");
     await pass();

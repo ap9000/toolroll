@@ -433,7 +433,7 @@ function decideOfferUnchecked(store: Store, target: DecideTarget, who: VerifiedA
       // links to the approval in Toolroll, and offers no Continue or Approve that would dead-end. A release or a plan.
       if (passwordOnlySeal(plan.scope)) {
         let head: string[];
-        try { head = release ? releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }).short.split("\n").slice(0, 3)
+        try { head = release ? releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords, chat: true }).short.split("\n").slice(0, 3)
           : planCardText(store, target.taskId, plan.scope, root, channel).split("\n").slice(0, 1); }
         catch { head = [title(store, target.taskId)]; }
         return { text: [...head, "", needsFullCard(plan.scope)].join("\n"), rows: [[{ label: "Approve in Toolroll", path: chatControlHref("approval", target.taskId) }]] };
@@ -618,7 +618,7 @@ export function releaseInChat(store: Store, taskId: string, approver: string, no
   if (ref === null || nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
   if (seat !== "offer" && (seat.channel !== channel || !privateReleaseChat(store, seat))) return { ok: false, why: "A release is approved only in your private chat with Toolroll." };
   let card: ReleaseCard;
-  try { card = releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }); }
+  try { card = releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords, chat: true }); }
   catch { return { ok: false, why: "This release's terms can't be shown here, so you approve it in Toolroll." }; }
   // What changed is part of what's approved: a list that couldn't be read (or was refused as rewritten history) is no card.
   if (plan.scope.releaseTerms != null && card.changes.commits === null) return { ok: false, why: "This release's list of changes couldn't be read, so you approve it in Toolroll." };
@@ -764,6 +764,8 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
   // The one gate every chat app's tap passes through (Telegram's bridge and chat-delivery for the others).
   if (outboundPrivate(tapFields(outcome))) {
     for (const card of [outcome.edit, outcome.unsent]) if (card !== undefined) dropDecideTokens(store, card.tokens, input.now);
+    // A prompt this tap opened is closed with them, in the same transaction: no later message answers a withdrawn card.
+    if (outcome.prompt !== undefined && outcome.prompt.id > 0) store.handle.prepare("UPDATE chat_decide_prompt SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL").run(input.now.toISOString(), outcome.prompt.id);
     const target = decideTargetOfToken(store, input.token);
     // Only the words change: an act this tap already did (a merge to finish after it) still runs, and the card says where
     // to see where it stands, never that nothing happened.
@@ -874,8 +876,11 @@ function decideTapUnchecked(store: Store, seat: DecideSeat, input: { token: stri
 
   if (row.phase === "offer") {
     if (row.act === "changes") {
+      // The privacy gate first: a prompt that couldn't be sent is never opened (nothing could answer it).
+      const asked = `${WHAT_SHOULD_CHANGE} Your next message is the feedback for "${name}".`;
+      if (privateWords(asked)) return { ack: WHAT_SHOULD_CHANGE, prompt: { id: 0, text: asked } };
       const id = openDecidePrompt(store, seat, row.taskId, row.run ?? 0, row.digest, now);
-      return { ack: WHAT_SHOULD_CHANGE, prompt: { id, text: `${WHAT_SHOULD_CHANGE} Your next message is the feedback for "${name}".` } };
+      return { ack: WHAT_SHOULD_CHANGE, prompt: { id, text: asked } };
     }
     if (row.act === "not-now") {
       spend();

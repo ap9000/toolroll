@@ -22,12 +22,12 @@ import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type Tele
 const NOW = new Date("2026-10-25T12:00:00.000Z");
 const BOT = "777000", USER = 31337;
 let dir: string, repo: string, root: string, store: Store;
-type Call = { method: string; params: Record<string, unknown> };
+type Call = { method: string; params: Record<string, unknown>; upload?: string };
 let calls: Call[], updates: unknown[][], documentFault: "throw" | "refuse" | null;
 
-const transport: TelegramTransport = async (method, params) => {
+const transport: TelegramTransport = async (method, params, _signal, upload) => {
   if (method === "getUpdates") return { ok: true, result: updates.shift() ?? [] };
-  calls.push({ method, params });
+  calls.push({ method, params, ...(upload === undefined ? {} : { upload: `${upload.fileName}\n${Buffer.from(upload.bytes).toString("utf8")}` }) });
   if (method === "sendDocument") {
     if (documentFault === "throw") throw new Error("socket hang up");
     if (documentFault === "refuse") return { ok: false, description: "Bad Request: file is too big" };
@@ -36,8 +36,12 @@ const transport: TelegramTransport = async (method, params) => {
 };
 const git = (...args: string[]) => execFileSync("git", ["-C", repo, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
 
+/** A test named for it puts the project under the checkout, a person's own folder on a Mac (/Users/…) and on CI
+ * (/home/…): what a chat card must never print. Removed after, like every other test folder. */
+const UNDER_HOME = "[project under a home folder]";
 beforeEach(() => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), "so-telegram-release-")));
+  const parent = expect.getState().currentTestName?.includes(UNDER_HOME) === true ? process.cwd() : tmpdir();
+  dir = realpathSync(mkdtempSync(join(parent, ".so-telegram-release-")));
   repo = join(dir, "project"); root = join(dir, "evidence");
   mkdirSync(repo); mkdirSync(root);
   git("init", "-q", "-b", "main");
@@ -178,4 +182,24 @@ test("a release whose full terms come to name a folder on this computer while it
   expect(after.text).toContain("name a key or a folder on this computer");
   expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_action WHERE consumed_at IS NULL AND phase <> 'offer'").get()?.["n"]).toBe(0);
   expect(sealed()).toBe(false);
+});
+
+test(`a release card names its project, never its folder, and still reaches Telegram with its file and Approve ${UNDER_HOME}`, async () => {
+  expect(/^\/(Users|home)\//.test(repo)).toBe(true);
+  const continued = await tap(continueToken());
+  expect(continued.labels).toEqual(["Approve", "Cancel"]);
+  const documents = calls.filter(call => call.method === "sendDocument");
+  expect(documents).toHaveLength(1);
+  // The file names the project by its GitHub owner/name; the folder is nowhere in anything sent.
+  expect(documents[0]!.upload).toContain("Project: project (example-invalid/project)");
+  expect(documents[0]!.upload).toContain("Repository: example-invalid/project");
+  const sent = JSON.stringify(calls);
+  expect(sent).not.toContain(repo);
+  expect(sent).not.toContain(dir);
+  // The web and the CLI keep the path: the same card worded for them names the folder.
+  expect(releaseCardOf(store, store.getScope("release-0.9.73")!, "f".repeat(64), { profile: permissionPlainWords }).full).toContain(repo);
+  // Approving from chat works as before: the binding is the card's digest, not its words.
+  const approved = await tap(continued.tokens[0]!);
+  expect(approved.text).toContain("Release approved");
+  expect(sealed()).toBe(true);
 });
