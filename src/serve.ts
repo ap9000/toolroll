@@ -978,6 +978,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       ...(who.via === "cookie" && who.authority === "local-owner" && store.accountOf(who.name)?.passwordSet === false
         ? { localStepUp: localOwnerRefusal(false, method === "GET" ? passwordSetNext(pagePathOf(url)) : "/").href } : {}),
       reconnect: browserKeys.stale(who, method === "GET" ? safeReturn(pagePathOf(url)) : "/"),
+      // The terminal workbench's acts: refusals answered as `{ outcome, words }` (http.ts refusedInPlace), shape only.
+      ...(method === "POST" && who.via === "cookie" && request.headers["x-toolroll-act"] === "in-place" && request.headers["x-toolroll-client"] === "terminal" ? { terminalAct: true } : {}),
     };
     // A read ahead writes nothing, not even a slow request's record.
     if (purpose !== 'prefetch') response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));

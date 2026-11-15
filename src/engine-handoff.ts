@@ -21,6 +21,8 @@ export type HandoffOptions = {
   env?: NodeJS.ProcessEnv;
   /** Its standard input, output and error (default: the launcher's own, for a terminal program). */
   stdio?: readonly [Stdio, Stdio, Stdio];
+  /** Also a pipe on descriptor 4 for the binary's asks to the launcher (tui-launch.ts): it carries no credential. */
+  control?: boolean;
 };
 
 /**
@@ -28,6 +30,17 @@ export type HandoffOptions = {
  * appears in the arguments or the environment it would be given (it must travel only over the pipe).
  */
 export function spawnWithLink(command: string, args: readonly string[], link: string, options: HandoffOptions = {}): ChildProcess {
+  const held = spawnHoldingLink(command, args, link, options);
+  held.send();
+  return held.child;
+}
+
+/**
+ * Start `command` with descriptor 3 open but empty: the link is written only when `send()` is called (once; later calls
+ * do nothing), so the caller can wait until the program has said it is ready for a secret (tui-launch.ts: crash dumps
+ * off). A program that ends before `send()` never had the link written anywhere. Same refusals as spawnWithLink.
+ */
+export function spawnHoldingLink(command: string, args: readonly string[], link: string, options: HandoffOptions = {}): { child: ChildProcess; send: () => boolean } {
   if (!LINK.test(link)) throw new Error("not a local one-time sign-in link");
   const code = link.slice(link.lastIndexOf("/") + 1);
   const env = options.env ?? process.env;
@@ -35,11 +48,17 @@ export function spawnWithLink(command: string, args: readonly string[], link: st
     throw new Error("the sign-in link goes only over the pipe, never in arguments or the environment");
   }
   const [stdin, stdout, stderr] = options.stdio ?? ["inherit", "inherit", "inherit"];
-  const child = spawn(command, [...args], { cwd: options.cwd, env, stdio: [stdin, stdout, stderr, "pipe"] });
+  const child = spawn(command, [...args], { cwd: options.cwd, env, stdio: options.control === true ? [stdin, stdout, stderr, "pipe", "pipe"] : [stdin, stdout, stderr, "pipe"] });
   const pipe = child.stdio[LINK_FD];
   if (pipe === null || pipe === undefined || !("write" in pipe)) { child.kill(); throw new Error("no pipe for the sign-in link"); }
   // A binary that exits before reading it: the write fails quietly (the link is single-use and expires anyway).
   pipe.on("error", () => {});
-  (pipe as NodeJS.WritableStream).end(`${link}\n`);
-  return child;
+  let sent = false;
+  const send = (): boolean => {
+    if (sent || child.exitCode !== null || child.signalCode !== null) return false;
+    sent = true;
+    (pipe as NodeJS.WritableStream).end(`${link}\n`);
+    return true;
+  };
+  return { child, send };
 }

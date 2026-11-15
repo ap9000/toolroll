@@ -156,6 +156,11 @@ export const stepCardsSchema = z.object({
   headline: z.string().nullable(),
   liveRun: z.number().int().nullable(),
   cards: z.array(stepCardSchema).nullable(),
+  /** The result waiting for this person's Accept or Send back, as the task page's own forms carry it: `run` and the
+   * `receipt` digest it was read at (POST /t/<task>/complete), and the `source` its revision is bound to
+   * (POST /r/<run>/comment intent=revise). Null when no result waits to be checked. Read facts only, never permission:
+   * every act re-proves them. */
+  review: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string() }).nullable(),
   room: z.string(),
 });
 

@@ -22,6 +22,7 @@ import { type launchRuntimeUpdate } from "../toolroll-update.js";
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { SIGN_IN_LINK_PATH } from "./session.js";
+import { requestContext } from "./request-context.js";
 import { matchRoute } from "./route-table.js";
 import { type FolderLookRunner } from "../folder-look.js";
 import { type ProjectIdentities } from "../project-identity.js";
@@ -513,4 +514,17 @@ export function refusalNext(method: string, url: URL): string {
  */
 export function answersInPlace(request: IncomingMessage | null | undefined): boolean {
   return request?.headers["x-toolroll-act"] === "in-place";
+}
+
+/**
+ * A terminal client's act (the terminal workbench, solo-workbench plan T1) asks for its answer in place with both
+ * `x-toolroll-act: in-place` and `x-toolroll-client: terminal`; serve.ts notes it in the request's facts. Its refusals
+ * then answer `{ outcome: "refused", words }` with their status instead of a page: the same words the page would show,
+ * so the terminal says them in one line. It shapes only the answer, read where a refusal is already decided (refuse,
+ * a task page's or the new-task page's refusal); no decision reads it. True when it answered.
+ */
+export function refusedInPlace(response: ServerResponse, status: number, words: string): boolean {
+  if (requestContext.getStore()?.terminalAct !== true || status < 400 || response.headersSent) return false;
+  respond(response, status, "application/json; charset=utf-8", JSON.stringify({ outcome: "refused", words }));
+  return true;
 }

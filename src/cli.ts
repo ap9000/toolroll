@@ -460,6 +460,8 @@ async function dispatch(
         databaseFile, write, build: (await import("./monitoring.js")).packageVersion(),
         ...(mainOptions.operate === undefined ? {} : { operate: mainOptions.operate }),
         admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
+        ...(easyStartArgs(argv)!.screenReader === true ? { screenReader: true } : {}),
+        ...(easyStartArgs(argv)!.tuiBinary === undefined ? {} : { tuiBinary: easyStartArgs(argv)!.tuiBinary }),
       });
       return easy.runEasyStart("start", easyStartArgs(argv)!, { ...seams, ...mainOptions.easyStart?.seams });
     }

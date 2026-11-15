@@ -50,6 +50,8 @@ export type RequestFacts = {
   localStepUp?: string;
   /** Easy-start C2: the browser mutation key is required here, so every page that posts carries the key fill script. */
   keyFill?: boolean;
+  /** A terminal client's act asked for its refusals in place (http.ts refusedInPlace): the answer's shape only. */
+  terminalAct?: boolean;
   /** Easy-start C2: this session's key is from an earlier console start (or it has none): how to reconnect. */
   reconnect?: import("./mutation-key.js").Reconnect | null;
 };

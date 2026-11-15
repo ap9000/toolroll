@@ -1,0 +1,58 @@
+name: Rust
+
+# The terminal workbench (tui/, docs/plans/solo-workbench.md T1): rustfmt, clippy with every warning an error, and the
+# workspace's tests (the contract fixtures in test/fixtures/engine-api parsed by the Rust models, the client against a
+# stand-in console, every screen state's snapshot) on Linux and macOS. Pull requests that touch the workbench, its
+# contract, or this file.
+#
+# Advisory for now: not one of REQUIRED_PR_CHECKS, and the release verdict leaves these jobs out by name and workflow
+# (release.ts ADVISORY_PR_CHECKS), until the workbench ships in the package. It reads no secret.
+
+on:
+  pull_request:
+    paths:
+      - "tui/**"
+      - "test/fixtures/engine-api/**"
+      - "src/contracts/engine-api.ts"
+      - ".github/workflows/rust.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: rust · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          persist-credentials: false
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable && cargo --version
+      - name: Format
+        working-directory: tui
+        run: cargo fmt --all --check
+      - name: Clippy
+        working-directory: tui
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Tests
+        working-directory: tui
+        run: cargo test --locked --workspace

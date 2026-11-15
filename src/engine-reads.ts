@@ -19,6 +19,7 @@ import { approvalSummaryOf, summaryContextOf } from "./approval-summary.js";
 import { taskWorkSummaryOf, type WorkSummaryAccess } from "./work-summary.js";
 import { terminalDiffView } from "./result-evidence-readers.js";
 import { parseReviewDiff } from "./server/render-results.js";
+import { revisionSourceOf } from "./result-review.js";
 import { ENGINE_API_VERSION, type ResultDiff, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
@@ -101,6 +102,9 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot }: StepRe
     headline: card?.status.headline ?? null,
     liveRun: live?.id ?? null,
     cards,
+    // The result this task's page offers Accept and Send back on (chat-decide.ts resultFresh reads the same facts).
+    review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
+      ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
   };
 }

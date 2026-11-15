@@ -2,25 +2,32 @@
 
 export type EasyStartArgs = { web: boolean; projectRoot: string | null; port?: string | null;
   /** `up`'s own --verbose; if the `up` this terminal started stops on its own, its last output is printed here. */
-  verbose?: boolean };
+  verbose?: boolean;
+  /** --screen-reader: the classic screen, which works with screen readers (tui-launch.ts). */
+  screenReader?: boolean;
+  /** --tui-binary <absolute path>: a developer's own terminal workbench build, an explicit choice (tui-launch.ts). */
+  tuiBinary?: string };
 
-/** The flags bare `toolroll` takes at a terminal (--web, --project-root <dir>, --port <n>, --verbose), or null: not an easy start.
+/** The flags bare `toolroll` takes at a terminal (--web, --project-root <dir>, --port <n>, --verbose, --screen-reader,
+ * --tui-binary <path>), or null: not an easy start.
  * The port is checked where it is used (runEasyStart), so a bad one is told as such. */
 export function easyStartArgs(argv: readonly string[]): EasyStartArgs | null {
-  let web = false, verbose = false, projectRoot: string | null = null, port: string | null = null;
+  let web = false, verbose = false, screenReader = false, projectRoot: string | null = null, port: string | null = null, tuiBinary: string | null = null;
   for (let index = 0; index < argv.length; index += 1) {
     const one = argv[index]!;
     if (one === "--web" && !web) web = true;
     else if (one === "--verbose" && !verbose) verbose = true;
-    else if ((one === "--project-root" && projectRoot === null) || (one === "--port" && port === null)) {
+    else if (one === "--screen-reader" && !screenReader) screenReader = true;
+    else if ((one === "--project-root" && projectRoot === null) || (one === "--port" && port === null) || (one === "--tui-binary" && tuiBinary === null)) {
       const value = argv[index + 1];
       if (value === undefined || value === "" || value.startsWith("-")) return null;
       if (one === "--port") port = value;
+      else if (one === "--tui-binary") tuiBinary = value;
       else projectRoot = value;
       index += 1;
     } else return null;
   }
-  return { web, projectRoot, port, ...(verbose ? { verbose } : {}) };
+  return { web, projectRoot, port, ...(verbose ? { verbose } : {}), ...(screenReader ? { screenReader } : {}), ...(tuiBinary === null ? {} : { tuiBinary }) };
 }
 
 /** Whether this invocation is an easy start: only those flags, a person at a terminal, no coding agent. */
