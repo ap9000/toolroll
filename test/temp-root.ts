@@ -31,16 +31,20 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, o
   if (typeof own === "string" && dirname(own) === tmpdir() && /^[\w-]{21}$/.test(basename(own))) removeOnExit(own);
   const before = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP, TOOLROLL_TEST_OUTER_HOME: process.env.TOOLROLL_TEST_OUTER_HOME };
   const root = makeTempRoot("so-t", { parent: shortTempParent() });
+  // Windows keeps its suite as it was (test/setup-state.ts): no fake outer home there (outsideTempDir serves POSIX tests).
+  const windows = process.platform === "win32" && options.outerParent === undefined;
   const outerParent = options.outerParent ?? join(import.meta.dirname, "..", ".test-outer");
-  mkdirSync(outerParent, { recursive: true, mode: 0o700 });
   const outer = join(outerParent, basename(root));
-  // Made here, never adopted: a folder already there by that name is someone else's and is left alone.
-  mkdirSync(outer, { mode: 0o700 });
-  removeOnExit(outer);
+  if (!windows) {
+    mkdirSync(outerParent, { recursive: true, mode: 0o700 });
+    // Made here, never adopted: a folder already there by that name is someone else's and is left alone.
+    mkdirSync(outer, { mode: 0o700 });
+    removeOnExit(outer);
+  }
   process.env.TMPDIR = root;
   process.env.TMP = root;
   process.env.TEMP = root;
-  process.env.TOOLROLL_TEST_OUTER_HOME = outer;
+  if (!windows) process.env.TOOLROLL_TEST_OUTER_HOME = outer;
   const residue = residueCheck({ root, also: [outer], acceptUnreadable: process.env.TOOLROLL_RESIDUE_UNREADABLE === "accept", ...(options.homes === undefined ? {} : { homes: options.homes }) });
   return () => {
     for (const [name, value] of Object.entries(before)) {

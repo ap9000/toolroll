@@ -21,27 +21,26 @@ const personHomes = [userInfo().homedir, process.env.HOME].filter((one): one is 
 const WORKER_PASS = ["VITEST", "VITEST_MODE", "VITEST_POOL_ID", "VITEST_WORKER_ID", "TEST", "NODE_ENV", "MODE", "DEV", "PROD", "SSR", "BASE_URL",
   "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "CI", "GITHUB_ACTIONS", "RUNNER_OS", "TMPDIR", "TMP", "TEMP", "USER", "LOGNAME",
   "TOOLROLL_TEST_OUTER_HOME", "TOOLROLL_REQUIRE_NATIVE", "TOOLROLL_ATTACK_SKIPS", "SO_EXPECT_NATIVE_CONTAINMENT", "TOOLROLL_RELEASE_BUILD",
-  "TOOLROLL_CHECK_RESULTS_FD", "TOOLROLL_CHECK_GATE", "PLAIN_WORDS_DUMP", "PLAIN_WORDS_OUT", "FAST_READS_OUT", "TELEGRAM_CARDS_OUT", "SANDBOX_RUNTIME",
-  // Windows keeps the system names its processes need (PowerShell, which runs the Job Object helper, among them). A
-  // stated Windows residual: PATH, APPDATA and LOCALAPPDATA stay the runner's own. An approved-tools folder needs
-  // symlinks a Windows runner without developer mode can't make, and PowerShell under a fresh empty APPDATA spends its
-  // first start building caches, past the containment helper's admission deadline. Windows CI runs only the Job Object
-  // containment tests.
-  ...(process.platform === "win32" ? ["PATH", "PATHEXT", "SystemRoot", "SYSTEMROOT", "windir", "ComSpec", "COMSPEC", "SystemDrive", "ProgramFiles",
-    "ProgramFiles(x86)", "ProgramW6432", "ProgramData", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "ALLUSERSPROFILE",
-    "PUBLIC", "APPDATA", "LOCALAPPDATA", "PSModulePath", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS", "OS",
-    "COMPUTERNAME", "USERDOMAIN", "USERNAME", "DriverData"] : [])];
+  "TOOLROLL_CHECK_RESULTS_FD", "TOOLROLL_CHECK_GATE", "PLAIN_WORDS_DUMP", "PLAIN_WORDS_OUT", "FAST_READS_OUT", "TELEGRAM_CARDS_OUT", "SANDBOX_RUNTIME"];
+/**
+ * Windows: no rebuild at all, exactly as before the POSIX isolation — the worker keeps the environment it was started
+ * with and only these names change. A stated Windows residual: Windows CI runs only the Job Object containment tests,
+ * and nobody runs the suite on a person's Windows machine today; PATH, APPDATA, LOCALAPPDATA and every other inherited
+ * name stay the runner's own there.
+ */
+const WINDOWS = process.platform === "win32";
 
 const outer = { ...process.env };
+if (WINDOWS) process.env.TOOLROLL_TEST_OUTER_HOME ??= process.env.HOME ?? "";
 const kept: Record<string, string> = {};
 for (const name of WORKER_PASS) { const value = outer[name]; if (value !== undefined) kept[name] = value; }
 for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"]) { const value = outer[name]; if (value !== undefined && passes(name, value)) kept[name] = value; }
 mkdirSync(home);
-for (const one of [join(home, ".cache"), join(home, ".local", "share"), join(home, ".local", "state")]) mkdirSync(one, { recursive: true });
+if (!WINDOWS) for (const one of [join(home, ".cache"), join(home, ".local", "share"), join(home, ".local", "state")]) mkdirSync(one, { recursive: true });
 // The approved tools only, by exact name, each linked by its resolved path (scripts/isolated-env.mjs APPROVED_TOOLS);
 // a test that needs a stand-in puts its own folder first. Nothing the person installed (an agent CLI, gh, a browser)
 // is on it.
-const tools = process.platform === "win32" ? null : approvedTools(join(state, "tools"), { outerPath: outer.PATH }).dir as string;
+const tools = WINDOWS ? null : approvedTools(join(state, "tools"), { outerPath: outer.PATH }).dir as string;
 // The one agent CLI a test may run, and only when a person asks for it: the installed Codex's own `sandbox` command (no
 // model, its own CODEX_HOME), which the native attack checks exercise. TOOLROLL_TEST_CODEX_SANDBOX names that binary;
 // unset (the default, and CI), those checks are skipped with a note.
@@ -52,6 +51,16 @@ if (tools !== null && codexSandbox !== undefined && isAbsolute(codexSandbox) && 
   mkdirSync(codexDir);
   symlinkSync(realpathSync(codexSandbox), join(codexDir, "codex"));
 }
+if (WINDOWS) {
+  // As before: these names, set over the inherited environment.
+  Object.assign(process.env, {
+    TOOLROLL_DB: join(state, "orders.db"), STANDING_ORDERS_DB: join(state, "orders.db"), XDG_CONFIG_HOME: join(state, "config"),
+    TOOLROLL_NO_UPDATE_CHECK: "1", TOOLROLL_STORAGE_SWEEP: "off", HOME: home, USERPROFILE: home, TOOLROLL_SECRET_STORE: "files",
+  });
+  delete process.env.TOOLROLL_TEST_LANE;
+  delete process.env.CODEX_HOME;
+  delete process.env.CLAUDE_CONFIG_DIR;
+} else {
 for (const name of Object.keys(process.env)) delete process.env[name];
 Object.assign(process.env, kept, {
   HOME: home, USERPROFILE: home,
@@ -69,6 +78,7 @@ Object.assign(process.env, kept, {
   // No test reads or writes the developer's own keychain: tool secrets stay in files unless a test picks a keychain of its own.
   TOOLROLL_SECRET_STORE: "files",
 });
+}
 // Fail closed: a test file never runs with the person's own home as its HOME (os.homedir(), and so every default rooted
 // in it: ~/.toolroll, ~/.claude, the build caches, follows HOME), nor with a PATH folder of theirs.
 if (personHomes.includes(real(process.env["HOME"]!))) throw new Error(`test/setup-state.ts: a test's HOME must be its own throwaway folder, not ${process.env["HOME"]}`);
