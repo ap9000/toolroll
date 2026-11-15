@@ -4,6 +4,7 @@
  * constant can't become a runtime override: one literal, no environment, config or exported setter, imported only by
  * name, and the built file says false too.
  */
+import { fakePid } from "../test/fake-pid.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -88,7 +89,7 @@ describe("switched off", () => {
     // F2c: stopping a thread's agent, starting a turn, lowering a level, recovering a holder's launches, building an
     // agent's launch and the relay's stand-in all refuse too, and nothing is launched, recorded or listened on.
     store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
-      VALUES (?, ?, 'claude', 'full', ?, 'h1', 'here', ?, 4242, 't1', 'live', ?)`).run("e".repeat(32), id, "f".repeat(32), "9".repeat(32), NOW.toISOString());
+      VALUES (?, ?, 'claude', 'full', ?, 'h1', 'here', ?, ${fakePid(1)}, 't1', 'live', ?)`).run("e".repeat(32), id, "f".repeat(32), "9".repeat(32), NOW.toISOString());
     const launchesBefore = store.handle.prepare("SELECT * FROM flexible_thread_launch").all().map(row => ({ ...row }));
     expect(await stopFlexibleThreadAgent(store, { id, reason: "test", clock: () => NOW })).toEqual(refused);
     expect(await startFlexibleTurn(store, { turn: "c".repeat(32), holder: "h1", clock: () => NOW, network: { proxyPort: 41_000, token: "t", proxyEnv: {}, close: () => {} },

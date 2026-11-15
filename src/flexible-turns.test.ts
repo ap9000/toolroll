@@ -7,6 +7,7 @@
  * flexible-disabled.test.ts proves every entry point refuses then). The race runs in separate processes, each with its
  * own database handle, with the same replacement made by a module hook in the child.
  */
+import { fakePid } from "../test/fake-pid.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -122,9 +123,9 @@ describe("admission", () => {
   test("a different level or agent waits while the thread's agent still runs at the old one, and every turn waits while its custody is unresolved (F2c)", () => {
     turn({ level: "full" });
     // A live pid alone is no longer read as the agent's level: only a launch record is.
-    store.handle.prepare("UPDATE flexible_thread SET live_pid = 4242, live_since = ? WHERE id = ?").run(NOW.toISOString(), T1);
+    store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ?").run(fakePid(1), NOW.toISOString(), T1);
     const launch = (state: string) => store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
-      VALUES (?, ?, 'claude', 'full', ?, 'h1', 'here', ?, 4242, 't1', ?, ?)`).run("e".repeat(32), T1, "f".repeat(32), "9".repeat(32), state, NOW.toISOString());
+      VALUES (?, ?, 'claude', 'full', ?, 'h1', 'here', ?, ${fakePid(1)}, 't1', ?, ?)`).run("e".repeat(32), T1, "f".repeat(32), "9".repeat(32), state, NOW.toISOString());
     launch("live");
     expect(admit({ level: "auto" })).toMatchObject({ ok: false, reason: "level-pending", message: expect.stringContaining("still running at Full access") });
     expect(admit({ provider: "codex" })).toMatchObject({ ok: false, reason: "level-pending" });
