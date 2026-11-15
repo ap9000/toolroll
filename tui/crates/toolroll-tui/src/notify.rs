@@ -7,7 +7,8 @@
 //! are built here, from constants, and nowhere else: agent text never sets a title, a notification or anything else.
 //!
 //! Desktop notifications are OSC 9 (iTerm2, WezTerm, Ghostty, kitty and most others) or OSC 777 (foot, urxvt, VTE);
-//! inside tmux they go out only when tmux passes them through (`allow-passthrough`), wrapped for it. The bell (when
+//! inside tmux they go out only when the person says tmux passes them through (`tmux-passthrough = true` in tui.toml,
+//! for a tmux with `allow-passthrough` on), wrapped for it; nothing is run to find out. The bell (when
 //! on) rings with each one, in or out of tmux (tmux shows a bell itself).
 use crate::app::{Item, Section};
 use crate::settings::{Env, Notify};
@@ -190,7 +191,7 @@ impl Default for Reach {
 }
 
 impl Reach {
-    /// Where notifications go in this terminal (`passthrough`: tmux said it passes them on).
+    /// Where notifications go in this terminal (`passthrough`: tui.toml says tmux passes them on).
     pub fn of(env: &Env, passthrough: bool) -> Reach {
         let osc777 = env.vte
             || env
@@ -220,7 +221,9 @@ impl Reach {
 
     pub fn words(self) -> &'static str {
         match (self.desktop, self.tmux) {
-            (Desktop::Off, _) => "the bell only (tmux isn't passing notifications through)",
+            (Desktop::Off, _) => {
+                "the bell only: in tmux, tmux-passthrough = true sends desktop ones"
+            }
             (Desktop::Osc777, true) => "desktop notifications (OSC 777, through tmux)",
             (Desktop::Osc9, true) => "desktop notifications (OSC 9, through tmux)",
             (Desktop::Osc777, false) => "desktop notifications (OSC 777)",
@@ -269,65 +272,6 @@ pub fn title_sequence(needs: i64) -> String {
 /// Keep the title the terminal had (xterm's title stack), to give it back on the way out.
 pub const TITLE_PUSH: &str = "\x1b[22;2t";
 pub const TITLE_POP: &str = "\x1b[23;2t";
-
-/// Whether tmux passes escape sequences on (`allow-passthrough` on or all, for this pane or globally): asked once, of
-/// tmux itself, waiting at most half a second.
-#[cfg(unix)]
-pub fn tmux_passthrough(env: &Env) -> bool {
-    if !env.tmux {
-        return false;
-    }
-    let pane = env.tmux_pane.as_deref().filter(|p| {
-        p.len() > 1 && p.starts_with('%') && p[1..].bytes().all(|b| b.is_ascii_digit())
-    });
-    let ask = |global: bool| -> Option<String> {
-        let mut cmd = std::process::Command::new("tmux");
-        cmd.arg("show-options");
-        cmd.arg(if global { "-gpqv" } else { "-pqv" });
-        if let (false, Some(p)) = (global, pane) {
-            cmd.args(["-t", p]);
-        }
-        cmd.arg("allow-passthrough");
-        cmd.stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped());
-        let mut child = cmd.spawn().ok()?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(10))
-                }
-                _ => {
-                    // Only the child started here, by its own handle.
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-            }
-        }
-        let mut out = String::new();
-        use std::io::Read;
-        child
-            .stdout
-            .take()?
-            .take(64)
-            .read_to_string(&mut out)
-            .ok()?;
-        Some(out.trim().to_string())
-    };
-    let value = ask(false)
-        .filter(|v| !v.is_empty())
-        .or_else(|| ask(true))
-        .unwrap_or_default();
-    matches!(value.as_str(), "on" | "all")
-}
-
-#[cfg(not(unix))]
-pub fn tmux_passthrough(_env: &Env) -> bool {
-    false
-}
 
 #[cfg(test)]
 mod tests {

@@ -420,17 +420,6 @@ fn an_unsafe_file_is_ignored() {
             "tui.toml was ignored: other people can change it (chmod go-w fixes that).".to_string()
         ]
     );
-    // A link to a file elsewhere.
-    let home = Home::new("link");
-    let elsewhere = home.0.join("elsewhere.toml");
-    std::fs::write(&elsewhere, "theme = \"dark\"\n").unwrap();
-    std::os::unix::fs::symlink(&elsewhere, home.file()).unwrap();
-    let (s, _, _, warnings) = settings::load(&home.env());
-    assert_eq!(s, Settings::default());
-    assert_eq!(
-        warnings,
-        vec!["tui.toml was ignored: it is a link, not the file itself.".to_string()]
-    );
     // A folder, not a file.
     let home = Home::new("dir");
     std::fs::create_dir(home.file()).unwrap();
@@ -449,6 +438,62 @@ fn an_unsafe_file_is_ignored() {
     home.write(&"# x\n".repeat(20_000), 0o600);
     let (_, _, file, _) = settings::load(&home.env());
     assert_eq!(file, FileState::Ignored("it is larger than 64 KB".into()));
+}
+
+#[test]
+fn a_link_is_followed_only_to_a_safe_real_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let set = |p: &Path, mode: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap()
+    };
+    // A dotfile manager's link to a private file in a private folder of the home: read.
+    let home = Home::new("dotfiles");
+    let dots = home.0.join("dotfiles");
+    std::fs::create_dir(&dots).unwrap();
+    set(&dots, 0o700);
+    std::fs::write(dots.join("tui.toml"), "theme = \"dark\"\n").unwrap();
+    set(&dots.join("tui.toml"), 0o600);
+    std::os::unix::fs::symlink(dots.join("tui.toml"), home.file()).unwrap();
+    let (s, _, file, warnings) = settings::load(&home.env());
+    assert_eq!(
+        (s.theme, file, warnings),
+        (ThemeName::Dark, FileState::Read, vec![])
+    );
+    // The file it points at can be changed by others: ignored.
+    set(&dots.join("tui.toml"), 0o666);
+    let (s, _, file, _) = settings::load(&home.env());
+    assert_eq!(s, Settings::default());
+    assert_eq!(
+        file,
+        FileState::Ignored("other people can change it (chmod go-w fixes that)".into())
+    );
+    // The folder it points into can be changed by others: ignored.
+    set(&dots.join("tui.toml"), 0o600);
+    set(&dots, 0o777);
+    let (s, _, file, _) = settings::load(&home.env());
+    assert_eq!(s, Settings::default());
+    assert_eq!(
+        file,
+        FileState::Ignored(
+            "it links into a folder other people can change, or that isn't yours".into()
+        )
+    );
+    set(&dots, 0o700);
+    // A link out of the home folder, and a link to nothing: ignored.
+    let outside = Home::new("outside");
+    std::fs::write(outside.0.join("tui.toml"), "theme = \"dark\"\n").unwrap();
+    let home = Home::new("out-link");
+    std::os::unix::fs::symlink(outside.0.join("tui.toml"), home.file()).unwrap();
+    let (s, _, file, _) = settings::load(&home.env());
+    assert_eq!(s, Settings::default());
+    assert_eq!(
+        file,
+        FileState::Ignored("it links outside your home folder".into())
+    );
+    let home = Home::new("dangling");
+    std::os::unix::fs::symlink(home.0.join("gone.toml"), home.file()).unwrap();
+    let (_, _, file, _) = settings::load(&home.env());
+    assert_eq!(file, FileState::Ignored("it is a link to nothing".into()));
 }
 
 #[test]

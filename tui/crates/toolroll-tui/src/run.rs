@@ -255,6 +255,13 @@ async fn event_loop(
     app.now = now_secs();
     app.status = prefs.first_warning().map(|w| (crate::app::Tone::Said, w));
     app.split = prefs.settings.list_width();
+    // A background answer that comes late is dropped, never read as keys (for about a second from now).
+    let watch = if prefs.late_reply {
+        Duration::from_secs(1)
+    } else {
+        Duration::ZERO
+    };
+    let mut late = crate::theme::LateReply::new(Instant::now() + watch);
     app.prefs = prefs;
     let mut titled: Option<i64> = None;
     // The workspace room, for as long as the screen is open.
@@ -306,7 +313,13 @@ async fn event_loop(
                 match ev {
                     Event::Key(k) if k.kind != KeyEventKind::Release => {
                         let received = Instant::now();
-                        pending.extend(app.key(k));
+                        let keys = late.feed(k, received);
+                        if keys.is_empty() {
+                            continue;
+                        }
+                        for k in keys {
+                            pending.extend(app.key(k));
+                        }
                         // Echoed in the same frame: drawn now, not at the next cap slot.
                         let done = draw(term, &mut app, &mut frames)?;
                         last_frame = Some(done);
@@ -324,6 +337,10 @@ async fn event_loop(
                 dirty = false;
             }
             _ = tick.tick() => {
+                for k in late.flush(Instant::now()) {
+                    pending.extend(app.key(k));
+                    dirty = true;
+                }
                 let now = now_secs();
                 if now != app.now { app.now = now; dirty = true; }
                 pending.extend(app.update(Msg::Tick));

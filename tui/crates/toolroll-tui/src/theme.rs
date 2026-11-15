@@ -791,6 +791,81 @@ pub fn ask_background(_wait: std::time::Duration) -> Option<Rgb> {
     None
 }
 
+/// A background answer that came after `ask_background` stopped waiting reaches the keyboard reader, which would read
+/// it as keys: `ESC ]` as Alt+], then `1`, `1`, `;`, the colour, and BEL as Ctrl+G (or ST, `ESC \`, as Alt+\). Until
+/// `until` (about a second after start), keys that spell its start are held; once `11;` follows, everything up to its
+/// end is dropped. Keys that turn out to be a person's are given back, in order.
+#[derive(Debug, Clone)]
+pub struct LateReply {
+    until: std::time::Instant,
+    held: Vec<crossterm::event::KeyEvent>,
+    /// Inside an answer: how many keys of it were dropped.
+    inside: Option<usize>,
+}
+
+/// Longer than any colour answer: past this, keys are a person's again.
+const LATE_REPLY_MAX: usize = 64;
+
+impl LateReply {
+    /// Watching until `until` (a moment already past: never).
+    pub fn new(until: std::time::Instant) -> LateReply {
+        LateReply {
+            until,
+            held: vec![],
+            inside: None,
+        }
+    }
+
+    /// The keys to act on, for this one.
+    pub fn feed(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        now: std::time::Instant,
+    ) -> Vec<crossterm::event::KeyEvent> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let is = |c: char, m: KeyModifiers| key.code == KeyCode::Char(c) && key.modifiers == m;
+        if let Some(n) = self.inside {
+            let end = is('g', KeyModifiers::CONTROL) || is('\\', KeyModifiers::ALT);
+            if end || n + 1 >= LATE_REPLY_MAX {
+                // One answer only: done watching.
+                self.inside = None;
+                self.until = now;
+            } else {
+                self.inside = Some(n + 1);
+            }
+            return vec![];
+        }
+        if !self.held.is_empty() {
+            const NEXT: [char; 3] = ['1', '1', ';'];
+            if is(NEXT[self.held.len() - 1], KeyModifiers::NONE) {
+                self.held.push(key);
+                if self.held.len() == 4 {
+                    self.held.clear();
+                    self.inside = Some(0);
+                }
+                return vec![];
+            }
+            let mut out = std::mem::take(&mut self.held);
+            out.extend(self.feed(key, now));
+            return out;
+        }
+        if now < self.until && is(']', KeyModifiers::ALT) {
+            self.held.push(key);
+            return vec![];
+        }
+        vec![key]
+    }
+
+    /// On a tick: keys held past the watch were a person's, given back.
+    pub fn flush(&mut self, now: std::time::Instant) -> Vec<crossterm::event::KeyEvent> {
+        if now >= self.until && self.inside.is_none() {
+            std::mem::take(&mut self.held)
+        } else {
+            vec![]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -854,6 +929,69 @@ mod tests {
         assert_eq!(parse_osc11(b"\x1b[?62;22c"), None);
         assert_eq!(parse_osc11(b"\x1b]11;rgb:zz/00/00\x07"), None);
         assert_eq!(parse_osc11(b"\x1b]11;rgb:00/00/00/00\x07"), None);
+    }
+
+    /// The keys crossterm reads from these bytes (its parser: ESC then a byte is Alt+that byte, 0x01–0x1A Ctrl+letter).
+    fn keys_of(bytes: &[u8]) -> Vec<crossterm::event::KeyEvent> {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut out = vec![];
+        let mut i = 0;
+        while i < bytes.len() {
+            let (b, m) = if bytes[i] == 0x1b && i + 1 < bytes.len() {
+                i += 1;
+                (bytes[i], KeyModifiers::ALT)
+            } else {
+                (bytes[i], KeyModifiers::NONE)
+            };
+            out.push(match b {
+                0x01..=0x1a => KeyEvent::new(
+                    KeyCode::Char((b - 1 + b'a') as char),
+                    m | KeyModifiers::CONTROL,
+                ),
+                b => KeyEvent::new(KeyCode::Char(b as char), m),
+            });
+            i += 1;
+        }
+        out
+    }
+
+    #[test]
+    fn a_late_background_answer_never_becomes_keys() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let soon = start + Duration::from_millis(400);
+        let mut late = LateReply::new(start + Duration::from_secs(1));
+        let mut acted = vec![];
+        let feed = |late: &mut LateReply, bytes: &[u8], at: Instant| {
+            keys_of(bytes)
+                .into_iter()
+                .flat_map(|k| late.feed(k, at))
+                .collect::<Vec<_>>()
+        };
+        // Typed before, the answer (BEL-ended), typed after: only the typing is acted on.
+        acted.extend(feed(&mut late, b"j", soon));
+        acted.extend(feed(&mut late, b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07", soon));
+        acted.extend(feed(&mut late, b"k", soon));
+        assert_eq!(acted, keys_of(b"jk"));
+        // ST-ended too.
+        let mut late = LateReply::new(start + Duration::from_secs(1));
+        assert!(feed(&mut late, b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\", soon).is_empty());
+        // One answer only: a second one later is a person's keys again.
+        assert_eq!(feed(&mut late, b"\x1b]1", soon), keys_of(b"\x1b]1"));
+        // After the watch: passed straight through.
+        let mut late = LateReply::new(start + Duration::from_secs(1));
+        let after = start + Duration::from_secs(2);
+        assert_eq!(feed(&mut late, b"\x1b]11;x", after), keys_of(b"\x1b]11;x"));
+        // A person's Alt+] then another key: both given back, in order.
+        let mut late = LateReply::new(start + Duration::from_secs(1));
+        assert_eq!(feed(&mut late, b"\x1b]1j", soon), keys_of(b"\x1b]1j"));
+        // Alt+] alone: given back once the watch ends.
+        assert!(feed(&mut late, b"\x1b]", soon).is_empty());
+        assert!(late.flush(soon).is_empty());
+        assert_eq!(late.flush(after), keys_of(b"\x1b]"));
+        // Never watching: nothing held.
+        let mut never = LateReply::new(start);
+        assert_eq!(feed(&mut never, b"\x1b]11;", soon), keys_of(b"\x1b]11;"));
     }
 
     #[test]

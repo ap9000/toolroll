@@ -14,6 +14,7 @@
 //! glyphs = "unicode"          # unicode | ascii | nerd
 //! bell = true
 //! reduced-motion = false
+//! tmux-passthrough = false    # true: desktop notifications inside tmux (needs tmux's allow-passthrough on)
 //!
 //! [notifications]
 //! asks = true
@@ -95,6 +96,8 @@ pub struct Settings {
     pub notify: Notify,
     pub bell: bool,
     pub reduced_motion: bool,
+    /// Inside tmux, send desktop notifications (wrapped for its passthrough); off: the bell only.
+    pub tmux_passthrough: bool,
     /// Role colours, in the file's order.
     pub colors: Vec<(Role, Rgb)>,
 }
@@ -133,6 +136,7 @@ impl Default for Settings {
             },
             bell: true,
             reduced_motion: false,
+            tmux_passthrough: false,
             colors: vec![],
         }
     }
@@ -390,6 +394,7 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
             ("", "show-costs") => flag(&mut warnings, &mut s.show_costs),
             ("", "bell") => flag(&mut warnings, &mut s.bell),
             ("", "reduced-motion") => flag(&mut warnings, &mut s.reduced_motion),
+            ("", "tmux-passthrough") => flag(&mut warnings, &mut s.tmux_passthrough),
             ("", "columns") => match &v {
                 Value::List(names) => {
                     let mut cols = vec![];
@@ -454,6 +459,7 @@ fn known(name: &str) -> bool {
         "glyphs",
         "bell",
         "reduced-motion",
+        "tmux-passthrough",
         "notifications.asks",
         "notifications.finished",
         "notifications.failed",
@@ -542,9 +548,12 @@ pub fn judge(regular: bool, uid: u32, mode: u32, size: u64, me: u32) -> Result<(
     Ok(())
 }
 
-/// Read the settings file when it is safe to: never through a link, never a file or folder others can change.
+/// Read the settings file when it is safe to: never a file or folder others can change. A link (a dotfile manager's)
+/// is followed only to a real path inside the home folder whose every folder, up to and including the home folder, is
+/// this user's and can't be changed by anyone else; the file is then opened at that real path without following links,
+/// and judged by what was opened.
 #[cfg(unix)]
-pub fn read_safely(path: &Path) -> Result<Option<String>, String> {
+pub fn read_safely(path: &Path, home: Option<&Path>) -> Result<Option<String>, String> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     // SAFETY: geteuid has no preconditions.
@@ -559,10 +568,44 @@ pub fn read_safely(path: &Path) -> Result<Option<String>, String> {
             }
         }
     }
+    let real = match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("it couldn't be opened".into()),
+        Ok(m) if m.file_type().is_symlink() => {
+            let home = home
+                .and_then(|h| std::fs::canonicalize(h).ok())
+                .ok_or("it is a link, and there's no home folder to check it against")?;
+            let target =
+                std::fs::canonicalize(path).map_err(|_| "it is a link to nothing".to_string())?;
+            // Real paths both, compared as bytes: strictly inside the home folder.
+            use std::os::unix::ffi::OsStrExt;
+            let (t, h) = (target.as_os_str().as_bytes(), home.as_os_str().as_bytes());
+            if !(t.len() > h.len() && t.starts_with(h) && t[h.len()] == b'/') {
+                return Err("it links outside your home folder".into());
+            }
+            let mut dir = target.parent();
+            while let Some(d) = dir {
+                let ok = std::fs::symlink_metadata(d)
+                    .is_ok_and(|m| m.is_dir() && m.uid() == me && m.mode() & 0o022 == 0);
+                if !ok {
+                    return Err(
+                        "it links into a folder other people can change, or that isn't yours"
+                            .into(),
+                    );
+                }
+                if d.as_os_str() == home.as_os_str() {
+                    break;
+                }
+                dir = d.parent();
+            }
+            target
+        }
+        Ok(_) => path.to_path_buf(),
+    };
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path);
+        .open(&real);
     let mut file = match file {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -590,7 +633,7 @@ pub fn read_safely(path: &Path) -> Result<Option<String>, String> {
 }
 
 #[cfg(not(unix))]
-pub fn read_safely(_path: &Path) -> Result<Option<String>, String> {
+pub fn read_safely(_path: &Path, _home: Option<&Path>) -> Result<Option<String>, String> {
     Ok(None)
 }
 
@@ -599,7 +642,7 @@ pub fn load(env: &Env) -> (Settings, Option<PathBuf>, FileState, Vec<String>) {
     let Some(path) = env.settings_path() else {
         return (Settings::default(), None, FileState::Missing, vec![]);
     };
-    match read_safely(&path) {
+    match read_safely(&path, env.home.as_deref()) {
         Ok(None) => (Settings::default(), Some(path), FileState::Missing, vec![]),
         Ok(Some(text)) => {
             let (s, warnings) = parse(&text);
@@ -624,13 +667,17 @@ pub fn load(env: &Env) -> (Settings, Option<PathBuf>, FileState, Vec<String>) {
 pub fn start(env: &Env) -> Prefs {
     let (settings, path, file, warnings) = load(env);
     let depth = env.depth();
-    let background = if depth == Depth::Off || env.ssh {
-        None
-    } else {
+    let ask = depth != Depth::Off && !env.ssh;
+    let background = if ask {
         crate::theme::ask_background(std::time::Duration::from_millis(150))
+    } else {
+        None
     };
-    let reach = Reach::of(env, crate::notify::tmux_passthrough(env));
-    Prefs::new(settings, path, file, warnings, depth, background, reach)
+    let reach = Reach::of(env, settings.tmux_passthrough);
+    let mut prefs = Prefs::new(settings, path, file, warnings, depth, background, reach);
+    // Asked and not answered in time: an answer may still come, and must not be read as keys (theme::LateReply).
+    prefs.late_reply = ask && background.is_none();
+    prefs
 }
 
 // ---- what the screen holds ------------------------------------------------------------------------------------------
@@ -651,6 +698,8 @@ pub struct Prefs {
     pub background: Option<Rgb>,
     pub theme: Theme,
     pub reach: Reach,
+    /// The background was asked for and not answered in time (the loop drops a late answer: theme::LateReply).
+    pub late_reply: bool,
 }
 
 impl Default for Prefs {
@@ -665,6 +714,7 @@ impl Default for Prefs {
             background: None,
             theme: Theme::default(),
             reach: Reach::default(),
+            late_reply: false,
         }
     }
 }
@@ -691,6 +741,7 @@ impl Prefs {
             background,
             theme,
             reach,
+            late_reply: false,
         }
     }
 
@@ -882,7 +933,7 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.theme, ThemeName::Terminal);
         assert_eq!(s.density, Density::Compact);
-        assert!(s.key_bar && s.show_costs && s.bell && !s.reduced_motion);
+        assert!(s.key_bar && s.show_costs && s.bell && !s.reduced_motion && !s.tmux_passthrough);
         assert_eq!(s.columns, vec![Column::Step]);
         assert_eq!(s.glyphs, Glyphs::Unicode);
         assert_eq!(
@@ -911,6 +962,7 @@ columns = [
 glyphs = "ascii"
 bell = false
 reduced-motion = true
+tmux-passthrough = true
 
 [notifications]
 asks = false
@@ -924,7 +976,7 @@ running = "#5aa9ff"
         assert_eq!(warnings, Vec::<String>::new());
         assert_eq!(s.theme, ThemeName::HighContrast);
         assert_eq!(s.density, Density::Comfortable);
-        assert!(!s.key_bar && !s.show_costs && !s.bell && s.reduced_motion);
+        assert!(!s.key_bar && !s.show_costs && !s.bell && s.reduced_motion && s.tmux_passthrough);
         assert_eq!(s.columns, vec![Column::Agent, Column::Age, Column::Cost]);
         assert_eq!(s.glyphs, Glyphs::Ascii);
         assert_eq!(
