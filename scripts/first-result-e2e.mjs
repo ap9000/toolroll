@@ -299,7 +299,8 @@ async function openTerminal(inst, label, command, { cwd = inst.cwd, rows = 40, c
     press(key) {
       if (closed) throw new Error("the terminal is closed");
       const now = term.text();
-      if (/Keep Toolroll running in the background/.test(now) && key !== "n") throw new Error("a journey only ever answers n to the background question");
+      // The login-item question, in its words before and after eight W2: a journey only ever answers n.
+      if (/Keep Toolroll running in the background|Start Toolroll when you log in/.test(now) && key !== "n") throw new Error("a journey only ever answers n to the background question");
       if (/Quit Toolroll\?/.test(now) && key === "b") throw new Error("a journey never keeps Toolroll running in the background");
       writeSync(keys, key);
     },
@@ -320,6 +321,8 @@ const boxLines = (text, pattern) => text.split("\n").map(line => line.replace(/[
 async function quit(term) {
   if (!term.alive()) { term.close(); return; }
   try {
+    // The login-item question (asked after the first accepted result) is answered no before quitting.
+    if (/Keep Toolroll running in the background|Start Toolroll when you log in/.test(term.text())) { term.press("n"); await sleep(400); }
     term.press("\u001b"); await sleep(400);
     term.press("q");
     const asked = await until("the quit question", async () => /Quit Toolroll\?/.test(term.text()) || !term.alive(), { timeoutMs: 5_000, everyMs: 100 }).catch(() => false);
