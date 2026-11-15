@@ -1,0 +1,62 @@
+---
+source: crates/toolroll-tui/tests/look.rs
+expression: "themed(ThemeName::Dark, Depth::Ansi16, None)"
+---
+┌ Toolroll · shop ───────────────────────────────────────────────────────────────────── 2 need you ┐
+│Needs you 2                         │Live · Steps · Diff · Terminal                               │
+│● Fix the login redirect    Question│Upgrade the test runner                                      │
+│● Add CSV export              Result│claude sonnet · Building now · 4m 12s · $0.31 · build #7     │
+│                                    │  Started.                                                   │
+│Working 2                           │  Reading the test setup before switching runners.           │
+│◐ Upgrade the test runner   Building│✓ Edited vitest.config.ts  +14 −3                            │
+│◐ Rate-limit middleware     Planning│✓ Asked a helper: Check the CSV export edge cases            │
+│                                    │  ┌ Helper: Check the CSV export edge cases                  │
+│Done today 1                        │  │  Empty rows export as a header line only.                │
+│✓ Bump dependencies         Complete│  │· Read src/export.ts                                      │
+│                                    │  └ Helper finished                                          │
+│                                    │✓ Ran npm test  212 passed (3.1 s)                           │
+│                                    │  Tests pass on the new runner. Removing the old config next.│
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │Steps  Plan ✓ · Approval ✓ · Build ◐ 4m 12s · Checks · Ready │
+│                                                                                                  │
+│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  ? help  q quit     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+abbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbba
+acccccccccaadddddddddddddddddddddddddaeeeeaaaaaaaaaaaaaaaaaaaaaaaaaaddddddddddddddddddddddddddddddda
+accccccccccccccccccccccccddddaaaaaaaaacccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddda
+accccccccccccccccddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaddddda
+addddddddddddddddddddddddddddddddddddaaaaaaaaaaaddddddddddddddddddddddddddddddddddddddddddddddddddda
+acccccccaadddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+affffffffffffffffffffffffffffffffffffaggdddddddddddddddddddddddaaaaaaaadddddddddddddddddddddddddddda
+ahhddddddddddddddddddddddddddaaaaaaaaaggddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaaaaacccccccccccccccccccccccccccccccccccccccdddddddddddddddddda
+accccccccccaaddddddddddddddddddddddddaaaadddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+aggddddddddddddddddddddddddddaaaaaaaaaaaaaadddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaadddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaggddddddddddddaaaaaaaaaaaaaaaaaaaaddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaaaaaaaadddddgaaadddddddddgaaaddddddhaaaaaaaaaaaaaaaaaaaaaaaada
+adddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+acccaaaaaddcaaaaaddcaaaaaaddcaaaaaaddcaaaaaddcccaaaaaaaddcaaaaaaaddcaaaaaaaaaaddcaaaaaddcaaaaaddddda
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+a = fg terminal bg terminal dim
+b = fg terminal bg terminal bold dim
+c = fg terminal bg terminal bold
+d = fg terminal bg terminal
+e = fg terminal bg terminal bold underlined
+f = fg terminal bg terminal reversed
+g = fg Green bg terminal
+h = fg Blue bg terminal

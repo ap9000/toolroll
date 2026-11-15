@@ -522,7 +522,7 @@ fn one_notification_per_ask() {
         .collect();
     assert_eq!(
         notes,
-        vec!["Toolroll: Upgrade the test runner — result".to_string()]
+        vec!["Toolroll: Upgrade the test runner needs you".to_string()]
     );
     let fx = app.update(Msg::Work(Ok(parse(work))));
     assert!(!fx.iter().any(|e| matches!(e, Effect::Notify(_))));
