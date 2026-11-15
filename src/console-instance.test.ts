@@ -290,9 +290,10 @@ test("a database too deep for a socket: the console says why nothing can find it
   // The console's start: no socket, and the reason is the fix, not a bare path.
   const opened = await openInstanceSocket(file, { pid: process.pid, build: BUILD, database: file, port: 1 }, () => null);
   expect(opened).toEqual({ ok: false, problem: expect.stringMatching(words) });
-  // `toolroll` / `toolroll open` / the terminal workbench: refused with the same words, never "no console is running".
+  // `toolroll` / `toolroll open` / the terminal workbench: told the same words, never "no console is running" (the state
+  // stays "none": no console could ever have claimed a record here).
   const deepStore = openStore(":memory:");
   try {
-    expect(await proveLiveConsole(file, deepStore, BUILD)).toEqual({ ok: false, state: "refused", message: expect.stringMatching(words) });
+    expect(await proveLiveConsole(file, deepStore, BUILD)).toEqual({ ok: false, state: "none", message: expect.stringMatching(words) });
   } finally { deepStore.close(); }
 });
