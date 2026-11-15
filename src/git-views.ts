@@ -70,17 +70,22 @@ export async function lockCheckout(home: string, checkout: string, timeoutMs = 1
   };
 }
 
-/** The checkouts the current async call chain already holds (lockCheckout through withCheckoutLock). */
-const heldHere = new AsyncLocalStorage<ReadonlySet<string>>();
+/** The checkouts the current async call chain holds (lockCheckout through withCheckoutLock), each with its hold: a
+ * hold is marked released the moment its lock goes, so a callback that inherited this context (a timer, an exit or
+ * data handler registered inside the hold) and runs after it takes the lock again instead of skipping it. */
+const heldHere = new AsyncLocalStorage<ReadonlyMap<string, { released: boolean }>>();
 
 /**
- * Run `work` holding the checkout's lock (lockCheckout). Re-entrant along one call chain: a hardened git nested in
- * another on the same checkout (teardown's git run through the builder's hardened runner, a view within a view) runs
- * under the lock its caller already holds instead of waiting on itself.
+ * Run `work` holding the checkout's lock (lockCheckout). Re-entrant along one call chain, and only while the hold is
+ * live: a hardened git nested in another on the same checkout (teardown's git run through the builder's hardened
+ * runner, a view within a view) runs under the lock its caller already holds instead of waiting on itself; anything
+ * that runs after that hold ended locks again.
  */
 export async function withCheckoutLock<T>(home: string, checkout: string, work: () => Promise<T>, timeoutMs?: number): Promise<T> {
-  const held = heldHere.getStore() ?? new Set<string>();
-  if (held.has(checkout)) return work();
+  const held = heldHere.getStore();
+  const hold = held?.get(checkout);
+  if (hold !== undefined && !hold.released) return work();
   const release = await lockCheckout(home, checkout, timeoutMs);
-  try { return await heldHere.run(new Set([...held, checkout]), work); } finally { release(); }
+  const mine = { released: false };
+  try { return await heldHere.run(new Map([...(held ?? new Map()), [checkout, mine]]), work); } finally { mine.released = true; release(); }
 }

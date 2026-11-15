@@ -25,6 +25,8 @@ vi.mock("./agent-fence.js", async importOriginal => {
 const NOW = new Date("2026-11-14T12:00:00.000Z");
 const STORAGE = { names: [], denies: [] };
 const NETWORK = { proxyPort: 41_000, token: "run-token" };
+const LAUNCH = { provider: "claude", level: "full", turn: null, holder: "h1" } as const;
+const launches = () => Number(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread_launch").get()!["n"]);
 let world: ThreadWorld;
 beforeEach(() => { world = threadWorld(); fenceHere.off = false; });
 afterEach(() => { world.store.close(); rmSync(world.dir, { recursive: true, force: true }); });
@@ -317,20 +319,18 @@ describe("the thread fence's terms", () => {
     const { thread } = await made();
     world.store.setUnfencedAgentsAllowed(true, "alex", NOW);
     fenceHere.off = true;
-    let started = false;
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], () => { started = true; return 1; });
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
-    expect(started).toBe(false);
+    expect(launches()).toBe(0); // nothing was even recorded as spawning
     expect(flexibleThread(world.store, thread.id)!.livePid).toBeNull();
   });
 
   test("a launch whose sandbox can't be read as the platform's refuses", async () => {
     const { thread } = await made();
     const other = process.platform === "darwin" ? "linux" : "darwin";
-    let started = false;
-    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], () => { started = true; return 1; }, other);
+    const refused = await flexibleThreadSpawn(world.store, { id: thread.id, network: NETWORK, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"], other);
     expect(refused).toMatchObject({ ok: false, reason: "containment" });
-    expect(started).toBe(false);
+    expect(launches()).toBe(0);
   });
 });
 
