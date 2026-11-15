@@ -230,6 +230,64 @@ impl Client {
         &self.origin
     }
 
+    pub(crate) async fn get_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        what: &str,
+    ) -> Result<T, ApiError> {
+        self.get(path, what).await
+    }
+
+    /// The cookie pair and the mutation key, for the terminal socket's handshake (term.rs) only.
+    pub(crate) fn creds_for_socket(&self) -> (&str, &str) {
+        (self.creds.cookie.as_str(), self.creds.key.as_str())
+    }
+
+    /// A form POST like `act`, whose JSON answer the caller reads itself (any status but an ended session).
+    pub(crate) async fn post_form_json(
+        &self,
+        path: &str,
+        fields: &[(&str, &str)],
+    ) -> Result<String, ApiError> {
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
+        for (k, v) in fields {
+            body.push('&');
+            body.push_str(&encode(k));
+            body.push('=');
+            body.push_str(&encode(v));
+        }
+        let res = self
+            .http
+            .post(format!("{}{}", self.origin, path))
+            .header("cookie", self.creds.cookie.as_str())
+            .header("origin", &self.origin)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("accept", "application/json")
+            .header("x-toolroll-key", self.creds.key.as_str())
+            .header("x-toolroll-act", "in-place")
+            .header("x-toolroll-client", "terminal")
+            .timeout(Duration::from_secs(60))
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        let status = res.status().as_u16();
+        if session_gone(
+            status,
+            res.headers().get("location").and_then(|v| v.to_str().ok()),
+        ) {
+            return Err(ApiError::SessionEnded);
+        }
+        let text = res.text().await.unwrap_or_default();
+        // A refusal the console's admission made before the route ran (`{ ok: false, said, href }`): its words.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(said) = v["said"].as_str() {
+                return Err(ApiError::Refused(said.to_string()));
+            }
+        }
+        Ok(text)
+    }
+
     async fn get<T: DeserializeOwned>(&self, path: &str, what: &str) -> Result<T, ApiError> {
         let res = self
             .http

@@ -3,13 +3,15 @@
 //! every screen state can be built and snapshotted from fixtures.
 use crate::review::{self, Code, Kind, Note, NoteAt, Row, Side};
 use crate::syntax::Highlights;
+use crate::term::{Link, Pane};
 use crate::text::clean;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use toolroll_api::{
     ActOutcome, AgentsRead, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, NeedRow, Question,
-    ResultDiff, ResultDiffContext, ResultDiffFile, StepCards, Window, WorkRow, WorkRows,
+    ResultDiff, ResultDiffContext, ResultDiffFile, StepCards, TermEvent, TermSend, Window, WorkRow,
+    WorkRows,
 };
 
 /// How the screen ended (the launcher reads it: tui-launch.ts TUI_EXIT).
@@ -186,6 +188,27 @@ pub enum Mode {
     Quit,
     /// Nothing more can happen here: the words, and the exit code a key ends with.
     Fatal(String, i32),
+    /// Typing in the Terminal tab's terminal (T4, take over): every key, paste and mouse event in the pane goes to that
+    /// one terminal, Ctrl-C included; only Ctrl-] comes back to the workbench.
+    TakeOver,
+}
+
+/// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
+pub const TYPING: &str = "Typing in the terminal. It keeps running in Toolroll after you leave.";
+/// Said when Ctrl-] leaves the terminal.
+pub const BACK: &str = "Back to the workbench. The terminal keeps running in Toolroll.";
+/// Said when there is no saved build to take over yet.
+pub const STILL_BUILDING: &str =
+    "This build is still running. Stop it (x) or wait for its result, then press t to take over.";
+
+/// A take-over's socket, as the loop holds it: what the screen sends that one terminal. (Effects and messages name the
+/// terminal by id; the loop sends only to the one the pane shows.)
+#[derive(Clone)]
+pub struct TermLink(pub tokio::sync::mpsc::UnboundedSender<TermSend>);
+impl std::fmt::Debug for TermLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TermLink")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +279,19 @@ pub enum Effect {
     OpenBrowser,
     Notify(String),
     Exit(i32),
+    /// Take over (T4): find this session's terminal on that task's build (GET /term/state), else start one
+    /// (POST /term/start), then attach (GET /term/<id>/socket).
+    TermOpen {
+        task: String,
+        run: i64,
+    },
+    /// Typed input or a new size for terminal `id` (dropped unless it is the terminal the pane shows).
+    TermSend {
+        id: String,
+        send: TermSend,
+    },
+    /// Let go of terminal `id`'s socket (the program keeps running in the console).
+    TermDetach(String),
 }
 
 /// One read of a task's changes: which task, which build (None: the newest), and the request's generation. Its answer
@@ -328,6 +364,14 @@ pub enum Msg {
     /// The launcher's answer to an ask (descriptor 4): words to say.
     Said(String),
     Tick,
+    /// A take-over's terminal: attached (its id and socket) or why not.
+    TermOpened {
+        task: String,
+        run: i64,
+        result: Result<(String, TermLink), ApiError>,
+    },
+    /// What terminal `id` said.
+    Term(String, TermEvent),
 }
 
 /// Where things were drawn last frame (for the mouse).
@@ -424,6 +468,8 @@ pub struct App {
     pub line_cache: Option<LineCache>,
     /// Seconds since the epoch, for elapsed times (the loop sets it; tests fix it).
     pub now: i64,
+    /// The Terminal tab's terminal (T4): the selected task's take-over, when one is open.
+    pub term: Option<Pane>,
     ticks: u64,
     counter: u64,
 }
@@ -484,6 +530,7 @@ impl App {
             areas: Areas::default(),
             line_cache: None,
             now: 0,
+            term: None,
             ticks: 0,
             counter: 0,
         }
@@ -671,6 +718,8 @@ impl App {
                 vec![]
             }
             Msg::Tick => self.tick(),
+            Msg::TermOpened { task, run, result } => self.term_opened(task, run, result),
+            Msg::Term(id, event) => self.term_event(id, event),
         }
     }
 
@@ -918,6 +967,8 @@ impl App {
     }
 
     fn selection_changed(&mut self) -> Vec<Effect> {
+        // Another task: let go of this one's terminal (it keeps running in the console; t on it again reattaches).
+        let detached = self.drop_term();
         self.steps = None;
         self.transcript = Transcript::default();
         self.diff = None;
@@ -955,9 +1006,12 @@ impl App {
             .filter(|i| i.is_task)
             .map(|i| i.id.clone())
         else {
-            return vec![Effect::Watch(vec![])];
+            let mut fx = detached;
+            fx.push(Effect::Watch(vec![]));
+            return fx;
         };
-        let mut fx = vec![Effect::FetchSteps(id.clone()), Effect::Watch(vec![])];
+        let mut fx = detached;
+        fx.extend([Effect::FetchSteps(id.clone()), Effect::Watch(vec![])]);
         if self.tab == Tab::Diff {
             fx.push(self.ask_diff(id));
         }
@@ -987,6 +1041,10 @@ impl App {
     // ---- keys ---------------------------------------------------------------------------------------------------
 
     pub fn key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        // Typing in the terminal: every key is the terminal's (Ctrl-C too), but Ctrl-].
+        if self.mode == Mode::TakeOver {
+            return self.take_over_key(key);
+        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.quit();
         }
@@ -1260,6 +1318,7 @@ impl App {
                 )
             }
             Mode::Normal => self.normal_key(key),
+            Mode::TakeOver => vec![],
         }
     }
 
@@ -1299,8 +1358,20 @@ impl App {
         }
     }
 
-    /// Pasted text goes into the open text box (line breaks as spaces).
-    pub fn paste(&mut self, pasted: &str) {
+    /// Pasted text goes into the open text box (line breaks as spaces), or, while typing in the terminal, to it.
+    pub fn paste(&mut self, pasted: &str) -> Vec<Effect> {
+        if self.mode == Mode::TakeOver {
+            let Some(pane) = self.term.as_ref().filter(|p| p.live()) else {
+                return vec![];
+            };
+            return match pane.paste_bytes(pasted) {
+                Ok(bytes) => self.term_input(bytes),
+                Err(words) => {
+                    self.say(Tone::Refused, words);
+                    vec![]
+                }
+            };
+        }
         let add = clean(pasted);
         let grow = |t: &mut String| {
             for c in add.chars() {
@@ -1314,11 +1385,17 @@ impl App {
             Mode::Steer(t) | Mode::NewTask(t) | Mode::Note(_, t) | Mode::SendBack(_, t) => grow(t),
             _ => {}
         }
+        vec![]
     }
 
     fn normal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         if self.tab == Tab::Diff {
             if let Some(fx) = self.diff_key(key) {
+                return fx;
+            }
+        }
+        if self.tab == Tab::Terminal {
+            if let Some(fx) = self.terminal_tab_key(key) {
                 return fx;
             }
         }
@@ -1427,6 +1504,7 @@ impl App {
                 self.mode = Mode::NewTask(String::new());
                 vec![]
             }
+            KeyCode::Char('t') => self.take_over(),
             KeyCode::Char('w') => {
                 self.say(Tone::Said, "Opening Toolroll in your browser…");
                 vec![Effect::OpenBrowser]
@@ -2077,6 +2155,9 @@ impl App {
     pub fn mouse(&mut self, ev: MouseEvent) -> Vec<Effect> {
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        if let Some(fx) = self.terminal_mouse(&ev) {
+            return fx;
+        }
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if x.abs_diff(self.areas.split_x) <= 1
@@ -2743,5 +2824,287 @@ impl App {
         }
         self.mode = Mode::Copied;
         vec![Effect::Scrollback(lines)]
+    }
+}
+
+// ---- take over: the Terminal tab's terminal (T4) ----------------------------------------------------------------------
+
+impl App {
+    /// The selected task's terminal pane, when the Terminal tab shows one.
+    pub fn pane_here(&self) -> Option<&Pane> {
+        let id = self.selected_item().filter(|i| i.is_task)?.id.as_str();
+        self.term.as_ref().filter(|p| p.task == id)
+    }
+
+    /// Let go of the pane and its socket (the program runs on in the console).
+    fn drop_term(&mut self) -> Vec<Effect> {
+        if self.mode == Mode::TakeOver {
+            self.mode = Mode::Normal;
+        }
+        match self.term.take().and_then(|p| p.id) {
+            Some(id) => vec![Effect::TermDetach(id)],
+            None => vec![],
+        }
+    }
+
+    /// `t`: type in a terminal on this task's latest saved build. The one already open is typed in again; otherwise the
+    /// console's own terminal on that build is found (or started) and attached. The build named is the result waiting
+    /// for review, else the newest finished build; a build still running has nothing saved to open on.
+    fn take_over(&mut self) -> Vec<Effect> {
+        let Some(item) = self.selected_item().filter(|i| i.is_task).cloned() else {
+            self.say(Tone::Refused, "Choose a task to take over.");
+            return vec![];
+        };
+        self.tab = Tab::Terminal;
+        if let Some(pane) = self.pane_here() {
+            match pane.link {
+                Link::Live => {
+                    self.mode = Mode::TakeOver;
+                    self.say(Tone::Said, TYPING);
+                    return vec![];
+                }
+                Link::Opening | Link::Attaching => return vec![],
+                Link::Ended { .. } | Link::Closed(_) => {}
+            }
+        }
+        let Some(steps) = self.steps.as_ref() else {
+            self.say(Tone::Said, "Reading this task — press t again in a moment.");
+            return vec![];
+        };
+        let newest_build = steps
+            .cards
+            .iter()
+            .flatten()
+            .filter(|c| c.key == "build")
+            .flat_map(|c| c.runs.first().copied())
+            .next();
+        let run = steps.review.as_ref().map(|r| r.run).or(newest_build);
+        match run {
+            Some(run) if Some(run) != steps.live_run => {
+                let mut fx = self.drop_term();
+                self.term = Some(Pane::opening(item.id.clone(), run));
+                self.status = Some((Tone::Said, format!("Opening a terminal on build #{run}…")));
+                fx.push(Effect::TermOpen { task: item.id, run });
+                fx
+            }
+            _ if steps.live_run.is_some() => {
+                self.say(Tone::Refused, STILL_BUILDING);
+                vec![]
+            }
+            _ => {
+                self.say(
+                    Tone::Refused,
+                    "This task has no finished build to take over yet.",
+                );
+                vec![]
+            }
+        }
+    }
+
+    fn term_opened(
+        &mut self,
+        task: String,
+        run: i64,
+        result: Result<(String, TermLink), ApiError>,
+    ) -> Vec<Effect> {
+        let wanted = self
+            .term
+            .as_ref()
+            .is_some_and(|p| p.task == task && p.run == run && p.link == Link::Opening);
+        match result {
+            Ok((id, _link)) if wanted => {
+                if let Some(pane) = self.term.as_mut() {
+                    pane.attached(id);
+                }
+                // Straight to typing, when the person is still looking at it.
+                if self.tab == Tab::Terminal
+                    && self.pane_here().is_some()
+                    && matches!(self.mode, Mode::Normal)
+                {
+                    self.mode = Mode::TakeOver;
+                    self.say(Tone::Said, TYPING);
+                }
+                vec![]
+            }
+            // Opened for a pane no longer wanted (another task, another build): let go of it.
+            Ok((id, _)) => vec![Effect::TermDetach(id)],
+            Err(e) if wanted => {
+                let words = e.to_string();
+                if let Some(pane) = self.term.as_mut() {
+                    pane.link = Link::Closed(clean(&words));
+                }
+                if matches!(e, ApiError::SessionEnded) {
+                    return self.failed(e);
+                }
+                self.say(Tone::Refused, words);
+                vec![]
+            }
+            Err(_) => vec![],
+        }
+    }
+
+    fn term_event(&mut self, id: String, event: TermEvent) -> Vec<Effect> {
+        let Some(pane) = self
+            .term
+            .as_mut()
+            .filter(|p| p.id.as_deref() == Some(id.as_str()))
+        else {
+            return vec![];
+        };
+        let mut back = false;
+        let mut said: Option<(Tone, String)> = None;
+        match event {
+            TermEvent::Output(bytes) => {
+                pane.input_full = false;
+                pane.output(&bytes);
+            }
+            TermEvent::Hello { cols, rows, ended } => pane.hello(cols, rows, ended),
+            TermEvent::Exit { code, signal } => {
+                pane.link = Link::Ended { code, signal };
+                back = true;
+                said = Some((
+                    Tone::Said,
+                    "The terminal's program ended. Press t to open a new terminal.".into(),
+                ));
+            }
+            TermEvent::InputFull => {
+                pane.input_full = true;
+                said = Some((
+                    Tone::Said,
+                    "The program isn't reading input right now; what you type waits until it does."
+                        .into(),
+                ));
+            }
+            TermEvent::Closed { code } => {
+                if !matches!(pane.link, Link::Ended { .. }) {
+                    let words = match code {
+                        Some(4401) => "This terminal is no longer yours to type in (signed out, or someone else joined this Toolroll).",
+                        Some(4008) => "The terminal fell behind. Press t to attach again.",
+                        Some(1008) => "Typing went faster than the terminal reads. Press t to attach again.",
+                        Some(4429) => "This terminal is open in too many places. Close one, then press t.",
+                        _ => "The terminal's connection closed. It keeps running in Toolroll — press t to attach again.",
+                    };
+                    pane.link = Link::Closed(words.into());
+                    said = Some((Tone::Refused, words.into()));
+                }
+                back = true;
+            }
+        }
+        if back && self.mode == Mode::TakeOver {
+            self.mode = Mode::Normal;
+        }
+        if let Some((tone, words)) = said {
+            self.say(tone, words);
+        }
+        vec![]
+    }
+
+    /// Bytes for the terminal the pane shows (only while live).
+    fn term_input(&mut self, bytes: Vec<u8>) -> Vec<Effect> {
+        let Some(pane) = self.term.as_mut().filter(|p| p.live()) else {
+            return vec![];
+        };
+        let (Some(id), Ok(text)) = (pane.id.clone(), String::from_utf8(bytes)) else {
+            return vec![];
+        };
+        // Typing shows the live screen again.
+        if pane.scroll > 0 {
+            pane.scroll_by(-(pane.scroll as i64));
+        }
+        vec![Effect::TermSend {
+            id,
+            send: TermSend::Input(text),
+        }]
+    }
+
+    /// A key while typing in the terminal: Ctrl-] goes back; every other key is the terminal's.
+    fn take_over_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if crate::term::is_back_key(&key) {
+            self.mode = Mode::Normal;
+            self.say(Tone::Said, BACK);
+            return vec![];
+        }
+        let Some(pane) = self.term.as_ref().filter(|p| p.live()) else {
+            self.mode = Mode::Normal;
+            return vec![];
+        };
+        match pane.key_bytes(key) {
+            Some(bytes) => self.term_input(bytes),
+            None => vec![],
+        }
+    }
+
+    /// The Terminal tab's own keys while not typing: scroll its scrollback, copy it, follow the live screen again.
+    fn terminal_tab_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
+        let pane = self.term.as_mut()?;
+        match key.code {
+            KeyCode::PageUp | KeyCode::Char('u') => {
+                pane.scroll_by(i64::from(pane.area.height.max(2) - 1))
+            }
+            KeyCode::PageDown | KeyCode::Char('d') => {
+                pane.scroll_by(-i64::from(pane.area.height.max(2) - 1))
+            }
+            KeyCode::End | KeyCode::Char('G') => pane.scroll_by(-(pane.scroll as i64)),
+            KeyCode::Char('y') => {
+                // The terminal's scrollback and screen, as text, into the real terminal's own scrollback (no clipboard
+                // escape is ever written).
+                let lines = pane.text_lines();
+                if lines.is_empty() {
+                    self.say(Tone::Said, "Nothing in the terminal to copy yet.");
+                    return Some(vec![]);
+                }
+                self.mode = Mode::Copied;
+                return Some(vec![Effect::Scrollback(lines)]);
+            }
+            _ => return None,
+        }
+        Some(vec![])
+    }
+
+    /// The mouse over the terminal: to the program when it asked for the mouse (while typing), else the wheel scrolls
+    /// the scrollback here; a click in the pane starts typing; a click outside it while typing goes back first.
+    fn terminal_mouse(&mut self, ev: &MouseEvent) -> Option<Vec<Effect>> {
+        if self.tab != Tab::Terminal {
+            return None;
+        }
+        let pane = self.term.as_mut()?;
+        let a = pane.area;
+        let inside = ev.column >= a.x
+            && ev.row >= a.y
+            && ev.column < a.x + a.width
+            && ev.row < a.y + a.height;
+        if !inside {
+            if self.mode == Mode::TakeOver && matches!(ev.kind, MouseEventKind::Down(_)) {
+                self.mode = Mode::Normal;
+                self.say(Tone::Said, BACK);
+            }
+            return None;
+        }
+        if self.mode == Mode::TakeOver {
+            if let Some(bytes) = pane.mouse_bytes(ev) {
+                return Some(self.term_input(bytes));
+            }
+        }
+        match ev.kind {
+            MouseEventKind::ScrollUp => pane.scroll_by(3),
+            MouseEventKind::ScrollDown => pane.scroll_by(-3),
+            MouseEventKind::Down(MouseButton::Left) if self.mode == Mode::Normal && pane.live() => {
+                self.mode = Mode::TakeOver;
+                self.say(Tone::Said, TYPING);
+            }
+            _ => {}
+        }
+        Some(vec![])
+    }
+
+    /// After a frame: the pane's new size for its terminal, when it changed (resizing follows the pane).
+    pub fn term_resize(&mut self) -> Option<Effect> {
+        let pane = self.term.as_mut()?;
+        let id = pane.id.clone()?;
+        let (cols, rows) = pane.wanted_size()?;
+        Some(Effect::TermSend {
+            id,
+            send: TermSend::Resize { cols, rows },
+        })
     }
 }

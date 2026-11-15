@@ -1,8 +1,8 @@
 /**
  * Easy-start C1: a laptop's local owner (no password) acts only where it is marked to (the rule table over every route
  * is local-owner-routes.slow.test.ts). A refused act changes nothing; an allowed one runs; local mode turned off ends
- * the session. The adapters outside the table refuse it too: the team API, the OAuth consent, and a terminal's
- * WebSocket — a new one and one already open for the owner.
+ * the session. The adapters outside the table refuse it too: the team API and the OAuth consent. A terminal's
+ * WebSocket admits it only on a solo install, and only to terminals a local owner's session started (T4).
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
@@ -11,7 +11,12 @@ import { loadPtySpawn, TerminalHost } from "../../src/live-terminal.js";
 import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { enrollOwnerPassword } from "../../src/store.js";
 import { hashPassword } from "../../src/scope.js";
-import { networkInterfaces } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { acquire, release } from "../../src/claim.js";
+import { register } from "../../src/runner.js";
+import { presented } from "../serve-kit.js";
 import { request as httpRequest } from "node:http";
 import { LOCAL_OWNER_ELSEWHERE } from "../../src/local-owner.js";
 /** File for a plan (Plan first): a solo install offers Build on its own terms otherwise (fast-start.ts SOLO_START_RULE). */
@@ -194,30 +199,115 @@ describe("a local owner's session from anywhere but this computer", () => {
 });
 
 const spawn = loadPtySpawn();
+/**
+ * Solo-workbench T4 (take over): on a solo laptop install the local owner's session starts and attaches its own live
+ * terminal, opened on a build's saved commit that Toolroll recorded (the request names only the task and the build).
+ * It never reaches a full session's terminal; a second person joining closes its open socket and refuses the rest.
+ */
 describe.skipIf(spawn === null || process.platform === "win32")("terminals, as a local owner", () => {
-  let host: TerminalHost;
+  let host: TerminalHost, head: string, run: number;
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   beforeEach(async () => {
-    const dir = (await import("node:fs")).realpathSync((await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "so-local-term-")));
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-local-term-")));
     host = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live"), closeGraceMs: 300, programs: { claude: { file: "/bin/cat", args: [] }, shell: { file: "/bin/sh", args: [] } },
       env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
     world = await openLocalWorld({ terminalHost: host } as never);
-  });
+    // The build's own commit, on a branch of the project (the project's HEAD stays where it was).
+    const git = (...args: string[]) => execFileSync("git", ["-C", world.repo, "-c", "user.email=q@example.com", "-c", "user.name=q", ...args], { env: gitEnv, encoding: "utf8" }).trim();
+    git("checkout", "-q", "-b", "build-one");
+    writeFileSync(join(world.repo, "built.txt"), "made by the build\n");
+    git("add", "built.txt");
+    git("commit", "-qm", "the build's change");
+    head = git("rev-parse", "HEAD");
+    git("checkout", "-q", "-");
+    register(world.store, { name: "builder-1", host: "here", capacity: 4, repos: [world.repo], now: new Date(), newToken: () => "tok-builder-1" });
+    // A task of its own with no plan (its build runs without a route), placed in the project.
+    world.store.createTask({ id: "fix", title: "Fix the footer" }, LOCAL_T0);
+    const ref = world.store.refFor("built-in", "fix", "ours").id;
+    world.store.placeTask(ref, world.repo);
+    const taken = acquire(world.store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+    if (!taken.ok) throw new Error("claim failed");
+    run = world.store.startRun({ taskRef: ref, leaseId: taken.claim.leaseId, runner: "builder-1", branch: "build-one", worktree: world.repo, now: new Date(), ...presented(world.store, ref, "builder") });
+    world.store.recordOutcomeFacts(run, { headRevision: head });
+    world.store.finishRun(run, { outcome: "built", committed: true, now: new Date() } as never);
+    release(world.store, taken.claim.leaseId, new Date());
+  }, LOCAL_WORLD_SETUP_MS);
+  afterEach(async () => { await host.stop(); });
   const upgrade = (path: string, headers: Record<string, string>) => new Promise<number | "open">(resolve => {
     const ws = new WebSocket(`ws://127.0.0.1:${world.port}${path}`, { headers });
     ws.on("open", () => { ws.close(); resolve("open"); });
     ws.on("unexpected-response", (_request, response) => { resolve(response.statusCode ?? 0); response.resume(); });
     ws.on("error", () => resolve(0));
   });
+  const takeOver = async (cookie: string, csrf: string, fields: Record<string, string> = { task: "fix", run: String(run) }) => {
+    const answer = await world.post("/term/start", cookie, { csrf, program: "shell", ...fields }, "application/json");
+    return { status: answer.status, refused: answer.headers["x-toolroll-refused"], body: JSON.parse(answer.body) as { ok: boolean; id?: string; error?: string } };
+  };
 
-  test("starting one is refused, and one already open for the owner does not attach", async () => {
+  test("solo: a take-over opens on the build's saved commit, is listed with its build, and its shell answers typing", async () => {
     const { cookie, csrf } = await world.localSession();
-    const started = await world.post("/term/start", cookie, { csrf, repo: world.repo, program: "claude" }, "application/json");
-    expect(started.headers["x-toolroll-refused"]).toBe("local-owner");
-    // A terminal the owner's account already has open (as a full session would have made it): never this session's.
+    const started = await takeOver(cookie, csrf);
+    expect(started).toMatchObject({ status: 200, body: { ok: true } });
+    const id = started.body.id!;
+    const terminal = host.get(id)!;
+    // The worktree is at the build's commit (the project's HEAD never had built.txt), on a branch of its own.
+    expect(readFileSync(join(terminal.worktree, "built.txt"), "utf8")).toBe("made by the build\n");
+    expect(execFileSync("git", ["-C", terminal.worktree, "rev-parse", "HEAD"], { env: gitEnv, encoding: "utf8" }).trim()).toBe(head);
+    expect(terminal).toMatchObject({ task: "fix", run, localGeneration: expect.any(Number) });
+    const state = JSON.parse((await world.send("/term/state", "GET", { cookie })).body) as { sessions: { id: string; task: string | null; run: number | null }[] };
+    expect(state.sessions).toEqual([expect.objectContaining({ id, task: "fix", run })]);
+    // Attached with the session's own cookie from the console's own origin: typing reaches the shell, its output comes back.
+    const ws = new WebSocket(`ws://127.0.0.1:${world.port}/term/${id}/socket`, { headers: { cookie, origin: world.origin } });
+    let seen = "";
+    const echoed = new Promise<void>(resolve => ws.on("message", (data, binary) => { if (binary) { seen += String(data); if (seen.includes("took-over-42")) resolve(); } }));
+    await new Promise(resolve => ws.on("open", resolve));
+    ws.send(JSON.stringify({ t: "in", d: "echo took-over-$((40+2))\r" }));
+    await echoed;
+    ws.close();
+  });
+
+  test("it names a task and its build, nothing else: a project, half a pair or a build of no result is refused", async () => {
+    const { cookie, csrf } = await world.localSession();
+    expect((await takeOver(cookie, csrf, { task: "fix", run: String(run), repo: world.repo })).status).toBe(400);
+    expect((await takeOver(cookie, csrf, { task: "fix" })).status).toBe(400);
+    expect((await takeOver(cookie, csrf, { run: String(run) })).status).toBe(400);
+    expect((await takeOver(cookie, csrf, { task: "fix", run: String(run + 100) })).status).toBe(404);
+    expect((await takeOver(cookie, csrf, { task: "no-such-task", run: String(run) })).status).toBe(404);
+    expect(host.list("alex")).toEqual([]);
+  });
+
+  test("a second person joins: the open socket closes, and the list and a new start are refused", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const id = (await takeOver(cookie, csrf)).body.id!;
+    const ws = new WebSocket(`ws://127.0.0.1:${world.port}/term/${id}/socket`, { headers: { cookie, origin: world.origin } });
+    await new Promise(resolve => ws.on("open", resolve));
+    const closed = new Promise<number>(resolve => ws.on("close", code => resolve(code)));
+    world.store.saveApprover("robin", hashPassword("robin-password-1"), new Date());
+    expect(await closed).toBe(4401);
+    expect((await world.send("/term/state", "GET", { cookie })).status).toBe(403);
+    const again = await takeOver(cookie, csrf);
+    expect(again.status).toBe(403);
+    expect(again.body.error).toMatch(/only person using this Toolroll/);
+    expect(await upgrade(`/term/${id}/socket`, { cookie, origin: world.origin })).toBe(401);
+  });
+
+  test("a full session's terminal of the same account never attaches to the local owner's session", async () => {
+    const { cookie } = await world.localSession();
     const generation = world.store.accountOf("alex")!.generation;
     const open = await host.start({ name: "alex", generation }, world.repo, "claude");
-    expect(await upgrade(`/term/${open.id}/socket`, { cookie, origin: world.origin })).toBe(401);
+    expect(await upgrade(`/term/${open.id}/socket`, { cookie, origin: world.origin })).toBe(404);
     expect(host.viewerCount(open.id)).toBe(0);
-    await host.stop();
+    // And it isn't listed for the local owner either.
+    const state = JSON.parse((await world.send("/term/state", "GET", { cookie })).body) as { sessions: unknown[] };
+    expect(state.sessions).toEqual([]);
+  });
+
+  test("another origin, or a credential header, never upgrades", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const id = (await takeOver(cookie, csrf)).body.id!;
+    expect(await upgrade(`/term/${id}/socket`, { cookie, origin: "http://evil.example" })).toBe(403);
+    expect(await upgrade(`/term/${id}/socket`, { cookie })).toBe(403);
+    expect(await upgrade(`/term/${id}/socket`, { cookie, origin: world.origin, authorization: "Bearer so_x" })).toBe(403);
+    expect(host.viewerCount(id)).toBe(0);
   });
 });

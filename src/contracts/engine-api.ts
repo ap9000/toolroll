@@ -17,6 +17,9 @@
  *   POST /login/once                 a local-owner one-time link redeemed for a terminal client (linkRedemption)
  *   GET  /engine/hello               the handshake: this build and the contract's digest (hello)
  *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
+ *   GET  /term/state                 this session's live terminals (termState): the browser's Live page reads it too
+ *   POST /term/start                 start one (termStarted); a take-over names its task and build (solo-workbench T4)
+ *                                    and attaches through the console's one WebSocket, GET /term/<id>/socket
  *
  * test/fixtures/engine-api/schemas.json is every schema here as JSON Schema with their digest (engineJsonSchemas), the
  * file a client generates its models from; engine-api.test.ts keeps it current.
@@ -244,6 +247,27 @@ export const agentsReadSchema = z.object({
   lines: z.array(z.string()),
 });
 
+// ---- Live terminals (take over) -------------------------------------------------------------------------------------
+
+/** `GET /term/state`: this session's live terminals (server/terminals.ts; a local owner's session only on a solo install).
+ * `task` and `run`: the build a take-over opened on (Toolroll's record), null for a terminal started on a project. */
+export const termStateSchema = z.object({
+  available: z.boolean(),
+  problem: z.string().nullable(),
+  programs: z.array(z.enum(["claude", "codex", "shell"])),
+  projects: z.array(z.object({ path: z.string(), name: z.string() })),
+  sessions: z.array(z.object({
+    id: z.string().regex(/^[0-9a-f]{32}$/), repo: z.string(), project: z.string(), program: z.enum(["claude", "codex", "shell"]), branch: z.string(),
+    startedAt: iso, endedAt: iso.nullable(), exit: z.object({ code: z.number().int().nullable(), signal: z.number().int().nullable() }).nullable(),
+    cleanup: z.enum(["clean", "uncertain"]).nullable(), task: z.string().nullable(), run: z.number().int().nullable(),
+  })),
+});
+/** `POST /term/start`: the terminal started (attach at `/term/<id>/socket`), or why not, in words. */
+export const termStartedSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), id: z.string().regex(/^[0-9a-f]{32}$/) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
 /** `POST /login/once` (application/json `{ "code": "<the link's code>" }`): the local owner's session for a terminal
@@ -283,6 +307,8 @@ export const ENGINE_RESPONSES = {
   refusal: { route: "every engine route's refusal", schema: engineRefusalSchema },
   hello: { route: "GET /engine/hello", schema: helloSchema },
   agents: { route: "GET /engine/agents", schema: agentsReadSchema },
+  termState: { route: "GET /term/state", schema: termStateSchema },
+  termStarted: { route: "POST /term/start", schema: termStartedSchema },
 } as const;
 export type EngineResponseName = keyof typeof ENGINE_RESPONSES;
 export type LiveSessionWindow = z.infer<typeof liveSessionWindowSchema>;
@@ -294,6 +320,7 @@ export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
 export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
 export type AgentsRead = z.infer<typeof agentsReadSchema>;
+export type TermState = z.infer<typeof termStateSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;
 const toStderr: EngineReport = (route, issues) => process.stderr.write(`engine api: ${route} disagrees with its contract: ${issues.slice(0, 5).map(one => `${one.path} ${one.kind}`).join("; ")}\n`);

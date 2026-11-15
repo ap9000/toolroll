@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use toolroll_api::{ApiError, Client, LiveSignal};
+use toolroll_api::{ApiError, Client, LiveSignal, TermSend};
 
 const FRAME_MIN: Duration = Duration::from_micros(8_333);
 
@@ -109,6 +109,59 @@ struct Loop {
     tx: mpsc::UnboundedSender<Msg>,
     watch: Option<JoinHandle<()>>,
     watching: Vec<String>,
+    /// The one terminal socket held (T4): the terminal the pane shows, by id. Dropping it closes the socket; the
+    /// program keeps running in the console.
+    term: Option<(String, mpsc::UnboundedSender<TermSend>)>,
+}
+
+/// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one, then
+/// attached; its frames come back as messages until the socket closes.
+async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: String, run: i64) {
+    let fail = |e: ApiError| {
+        let _ = tx.send(Msg::TermOpened {
+            task: task.clone(),
+            run,
+            result: Err(e),
+        });
+    };
+    let listed = match client.term_state().await {
+        Ok(state) => state
+            .sessions
+            .into_iter()
+            .find(|one| {
+                one.task.as_deref() == Some(task.as_str())
+                    && one.run == Some(run)
+                    && one.ended_at.is_none()
+            })
+            .map(|one| one.id),
+        Err(e) => return fail(e),
+    };
+    let id = match listed {
+        Some(id) => id,
+        None => match client.term_start(&task, run, "shell").await {
+            Ok(id) => id,
+            Err(e) => return fail(e),
+        },
+    };
+    let (send, mut events) = match client.term_connect(&id).await {
+        Ok(pair) => pair,
+        Err(e) => return fail(e),
+    };
+    if tx
+        .send(Msg::TermOpened {
+            task: task.clone(),
+            run,
+            result: Ok((id.clone(), crate::app::TermLink(send))),
+        })
+        .is_err()
+    {
+        return;
+    }
+    while let Some(event) = events.recv().await {
+        if tx.send(Msg::Term(id.clone(), event)).is_err() {
+            return;
+        }
+    }
 }
 
 impl Loop {
@@ -259,6 +312,22 @@ impl Loop {
                 let _ = out.flush();
             }
             Effect::Exit(code) => return Some(code),
+            Effect::TermOpen { task, run } => {
+                drop(tokio::spawn(open_terminal(client, tx, task, run)));
+            }
+            Effect::TermSend { id, send } => {
+                // Only the terminal the pane shows: anything else is dropped.
+                if let Some((held, link)) = &self.term {
+                    if *held == id {
+                        let _ = link.send(send);
+                    }
+                }
+            }
+            Effect::TermDetach(id) => {
+                if self.term.as_ref().is_some_and(|(held, _)| *held == id) {
+                    self.term = None;
+                }
+            }
         }
         None
     }
@@ -311,6 +380,7 @@ async fn event_loop(
         tx: tx.clone(),
         watch: None,
         watching: vec![],
+        term: None,
     };
     // The launcher's answers on descriptor 4 (one JSON line each, capped): read on a thread of their own.
     if let Some(reader) = opts.control.as_ref().and_then(|c| c.try_clone().ok()) {
@@ -360,6 +430,7 @@ async fn event_loop(
     let mut frames = Samples::default();
     let mut echo = Samples::default();
     let mut last_frame: Option<Instant> = None;
+    let mut last_key: Option<Instant> = None;
     let mut dirty = true;
     let mut exit: Option<i32> = None;
 
@@ -415,11 +486,13 @@ async fn event_loop(
                         }
                         let done = draw(term, &mut app, &mut frames)?;
                         last_frame = Some(done);
+                        last_key = Some(received);
                         echo.push(done - received);
+                        pending.extend(app.term_resize());
                         // Colouring left for later frames: draw again at the next slot.
                         dirty = app.highlight_pending;
                     }
-                    Event::Paste(p) => { app.paste(&p); dirty = true; }
+                    Event::Paste(p) => { pending.extend(app.paste(&p)); dirty = true; }
                     Event::Mouse(m) => { pending.extend(app.mouse(m)); dirty = true; }
                     Event::Resize(_, _) => { dirty = true; last_frame = None; }
                     _ => {}
@@ -428,6 +501,7 @@ async fn event_loop(
             _ = tokio::time::sleep(wait), if dirty => {
                 last_frame = Some(draw(term, &mut app, &mut frames)?);
                 dirty = app.highlight_pending;
+                pending.extend(app.term_resize());
             }
             _ = tick.tick() => {
                 for k in late.flush(Instant::now()) {
@@ -439,8 +513,21 @@ async fn event_loop(
                 pending.extend(app.update(Msg::Tick));
             }
             Some(msg) = rx.recv() => {
+                // A take-over's socket: held here (the newest replaces the last, whose socket then closes).
+                if let Msg::TermOpened { result: Ok((id, link)), .. } = &msg {
+                    lp.term = Some((id.clone(), link.0.clone()));
+                }
+                // Typed input's echo: drawn at once while the person is typing (never waiting for the frame cap).
+                let echo_now = matches!(msg, Msg::Term(_, toolroll_api::TermEvent::Output(_)))
+                    && app.mode == crate::app::Mode::TakeOver
+                    && last_key.is_some_and(|k| k.elapsed() < Duration::from_millis(50));
                 pending.extend(app.update(msg));
                 dirty = true;
+                if echo_now {
+                    last_frame = Some(draw(term, &mut app, &mut frames)?);
+                    dirty = app.highlight_pending;
+                    pending.extend(app.term_resize());
+                }
                 // The window title: how many wait on you (our words and a number, nothing else).
                 if app.loaded && titled != Some(app.needs_count) {
                     titled = Some(app.needs_count);

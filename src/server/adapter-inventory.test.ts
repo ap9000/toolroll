@@ -35,7 +35,9 @@ test("every route row is marked for the local owner; an allow names one of its a
     "settings.models-not-now=dismiss-suggestion", "settings.models-stop=trial-stop", "settings.models-suggest-off=dismiss-suggestion", "settings.models-turn-off=routing-turn-off",
     "task.act.approve=approve-plan", "task.act.archive=archive-task", "task.act.cancel=stop-run", "task.act.complete=complete-task", "task.act.hold=pause-run", "task.act.keep-grown=approve-plan",
     "task.act.pause=pause-run", "task.act.plan=request-plan", "task.act.reply=answer-question", "task.act.requeue=retry-build", "task.act.restore=archive-task", "task.act.resume-arm=resume-run", "task.act.resume=resume-run",
-    "task.act.steer=lead-send", "task.act.stop=stop-run", "task.act.unhold=resume-run", "tasks.add=file-task", "tasks.fast=build-now", "welcome.sample=add-project",
+    "task.act.steer=lead-send", "task.act.stop=stop-run", "task.act.unhold=resume-run", "tasks.add=file-task", "tasks.fast=build-now",
+    // Solo-workbench T4: one's own live terminal; terminals.ts admits a local owner only while the install is solo.
+    "term.close=take-over", "term.remove=take-over", "term.start=take-over", "welcome.sample=add-project",
   ]);
   // Every console GET is a read.
   for (const row of ROUTES.filter(one => one.stage === "console" && one.method !== "POST")) expect([row.local, row.localAct], row.id).toEqual(["allow", "read"]);
@@ -49,7 +51,7 @@ test("every edge row is in the inventory map, and the map names only edge rows",
   for (const id of ["edge.team-read", "edge.team-send", "edge.oauth-authorize", "edge.oauth-consent", "edge.google-callback", "edge.connect-callback"]) expect(EDGE_LOCAL[id]?.local, id).toBe("deny");
 });
 
-test("exactly one WebSocket upgrade listener exists in the server's source (the terminals', which refuses a local owner)", () => {
+test("exactly one WebSocket upgrade listener exists in the server's source (the terminals', which admits a local owner only on a solo install)", () => {
   const found: string[] = [];
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {

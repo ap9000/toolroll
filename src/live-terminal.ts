@@ -141,6 +141,13 @@ export type TerminalSummary = {
   owner: string;
   /** The owner's account generation at start: a rotated credential or a re-sign-in elsewhere no longer reaches it. */
   generation: number;
+  /** Solo-workbench T4: the local-mode generation of the local owner's session that started it, or null for a full
+   * session's. Only a session of the same kind and generation reaches it (a local owner never reaches a full session's
+   * terminal, nor the reverse, and turning local mode off and on again leaves the old ones unreachable). */
+  localGeneration: number | null;
+  /** A take-over: the task and build whose saved result it opened on (Toolroll's own record of both), else null. */
+  task: string | null;
+  run: number | null;
   repo: string;
   program: TerminalProgram;
   branch: string;
@@ -266,8 +273,8 @@ export class TerminalHost {
   }
 
   private summary(session: Session): TerminalSummary {
-    const { id, owner, generation, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup } = session;
-    return { id, owner, generation, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup };
+    const { id, owner, generation, localGeneration, task, run, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup } = session;
+    return { id, owner, generation, localGeneration, task, run, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup };
   }
 
   /** This person's sessions, newest first. */
@@ -287,9 +294,15 @@ export class TerminalHost {
   /**
    * Make the worktree and start the program in it. `admit` is asked again right before the program starts (after the
    * slow git work): a person whose access or project went in between starts nothing.
+   *
+   * `from` (solo-workbench T4, a take-over): the worktree starts at that saved result's commit instead of the project's
+   * HEAD. The revision is Toolroll's own record of the build (never what a checkout says), and git must name exactly
+   * that commit in this project, read through the hardened git: the build's own worktree, its `.git` and its config are
+   * never used, so nothing the build wrote there decides what the person's shell runs.
    */
-  async start({ name: owner, generation }: { name: string; generation: number }, repoPath: string, program: TerminalProgram,
-    size: { cols: number; rows: number } = { cols: 100, rows: 30 }, admit: () => string | null = () => null): Promise<TerminalSummary> {
+  async start({ name: owner, generation, localGeneration = null }: { name: string; generation: number; localGeneration?: number | null }, repoPath: string, program: TerminalProgram,
+    size: { cols: number; rows: number } = { cols: 100, rows: 30 }, admit: () => string | null = () => null,
+    from: { revision: string; task: string; run: number } | null = null): Promise<TerminalSummary> {
     if (this.stopped) throw new TerminalError("The console is stopping.");
     if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex or a shell.");
     if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
@@ -313,7 +326,10 @@ export class TerminalHost {
         return result.stdout.trim();
       };
       if (realpathSync(await git(["rev-parse", "--show-toplevel"])) !== repo) throw new TerminalError("Choose the root of a Git project.");
-      const base = await git(["rev-parse", "--verify", "HEAD^{commit}"]);
+      if (from !== null && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(from.revision)) throw new TerminalError("This build has no saved commit to open a terminal on.");
+      const base = from === null ? await git(["rev-parse", "--verify", "HEAD^{commit}"])
+        : await git(["--no-replace-objects", "rev-parse", "--verify", "--end-of-options", `${from.revision}^{commit}`]).catch(() => "");
+      if (from !== null && base !== from.revision) throw new TerminalError("This build's saved commit isn't in the project any more, so there is nothing to open a terminal on.");
       const branch = `toolroll/live-${id.slice(0, 12)}`;
       const worktree = join(this.options.worktreeRoot, id);
       mkdirSync(this.options.worktreeRoot, { recursive: true, mode: 0o700 });
@@ -332,7 +348,7 @@ export class TerminalHost {
         throw error instanceof TerminalError ? error : new TerminalError(`The program couldn't start: ${error instanceof Error ? error.message : String(error)}`);
       }
       let resolveExited!: () => void;
-      const session: Session = { id, owner, generation, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
+      const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), viewers: new Set(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }) };
       this.sessions.set(id, session);

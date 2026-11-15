@@ -546,3 +546,88 @@ pub struct AgentsRead {
     pub first_task: Option<FirstTask>,
     pub lines: Vec<String>,
 }
+
+// ---- Live terminals (take over) -------------------------------------------------------------------------------------
+
+/// `GET /term/state`: this session's live terminals. `task` and `run`: the build a take-over opened on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TermState {
+    pub available: bool,
+    pub problem: Option<String>,
+    pub programs: Vec<String>,
+    pub projects: Vec<TermProject>,
+    pub sessions: Vec<TermSession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TermProject {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TermSession {
+    pub id: String,
+    pub repo: String,
+    pub project: String,
+    pub program: String,
+    pub branch: String,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    #[serde(rename = "endedAt")]
+    pub ended_at: Option<String>,
+    pub exit: Option<TermExit>,
+    pub cleanup: Option<String>,
+    pub task: Option<String>,
+    pub run: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TermExit {
+    pub code: Option<i64>,
+    pub signal: Option<i64>,
+}
+
+/// `POST /term/start`: the terminal started (`id`), or why not (`error`, in words).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TermStarted {
+    Started { ok: TrueOnly, id: String },
+    Refused { ok: FalseOnly, error: String },
+}
+
+/// `true` and nothing else (a discriminant the JSON carries).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "bool", into = "bool")]
+pub struct TrueOnly;
+impl TryFrom<bool> for TrueOnly {
+    type Error = &'static str;
+    fn try_from(b: bool) -> Result<Self, Self::Error> {
+        b.then_some(TrueOnly).ok_or("expected true")
+    }
+}
+impl From<TrueOnly> for bool {
+    fn from(_: TrueOnly) -> bool {
+        true
+    }
+}
+
+/// `false` and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "bool", into = "bool")]
+pub struct FalseOnly;
+impl TryFrom<bool> for FalseOnly {
+    type Error = &'static str;
+    fn try_from(b: bool) -> Result<Self, Self::Error> {
+        (!b).then_some(FalseOnly).ok_or("expected false")
+    }
+}
+impl From<FalseOnly> for bool {
+    fn from(_: FalseOnly) -> bool {
+        false
+    }
+}

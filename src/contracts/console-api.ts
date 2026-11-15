@@ -128,7 +128,8 @@ export const CONSOLE_FORMS = {
   releaseApproval: formContract("POST /settings/release-approval", ["repo", "action", "password"]),
   // Flexible projects (flexible.ts, slice F1): turn on (the shown terms' digest and a password), lower (max), turn off.
   projectFlexible: formContract("POST /settings/project/flexible", ["repo", "action", "max", "digest", "password"]),
-  term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password"]),
+  // T4: a take-over names its task and build (task, run) instead of a project (repo).
+  term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo", "password"]),
