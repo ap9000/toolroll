@@ -11,6 +11,8 @@ import { approvalSummaryFor, approvalSummaryOf, boundFieldsOf, describeScope, su
 import { approvalFormDigest, approvalSheetParts, revisionLineageWords, type ApprovalSheetInput } from "./server/render-tasks.js";
 import { planCardText } from "./chat-decide.js";
 import { htmlString } from "./html.js";
+import { stepCardsOf } from "./engine-reads.js";
+import { stepCardsSchema } from "./contracts/engine-api.js";
 
 const REPO = "/repo/main";
 let dir: string, db: string, store: Store, token: string;
@@ -210,6 +212,19 @@ describe("exact consent", () => {
     // A plan changed is stale too, as before; and with neither a plan nor a summary the form is the scope's own digest.
     expect(approvalFormDigest(scope.digest, "a".repeat(64), approvalSummaryFor(store, "t-form", at)!.key)).not.toBe(before);
     expect(approvalFormDigest(scope.digest, null)).toBe(scope.digest);
+  });
+});
+
+describe("the engine API's Approval step", () => {
+  test("carries the same summary and the key a yes pins, only while the approval waits", () => {
+    file("t-steps");
+    const steps = () => stepCardsOf({ store, family: store.taskFamilyOf("t-steps", null, true)!, now: at, access: { principal: "operator", repos: null }, evidenceRoot: dir });
+    const approveCard = steps().cards?.find(one => one.key === "approve");
+    expect(approveCard?.terms?.key).toBe(approvalSummaryFor(store, "t-steps", at)!.key);
+    expect(approveCard?.terms?.rows.map(one => one.label)).toEqual(["Goal", "Done when", "Agent", "May touch", "May cost"]);
+    expect(approveCard?.terms?.usualLabel).toBe("Your usual project settings");
+    expect(stepCardsSchema.parse(steps())).toEqual(steps());
+    expect(steps().cards?.filter(one => one.terms !== undefined).map(one => one.key)).toEqual(["approve"]);
   });
 });
 
