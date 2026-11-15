@@ -117,8 +117,11 @@ describe("a console hands pages only to the opener its own PATH finds", () => {
   });
 });
 
-describe("nothing in the product finds the person's home behind HOME's back", () => {
-  it("never reads the home folder from the password database or a fixed path", () => {
+// A narrow source scan, not a proof: it catches the known spellings of going around HOME (the password database's home
+// folder, an agent CLI by a fixed install path). The behaviour tests above, and the journeys' isolation checks, are what
+// show the product follows HOME and PATH.
+describe("a scan of the product's source for known ways around HOME and PATH", () => {
+  it("finds no userInfo().homedir, getpwuid, NFSHomeDirectory or fixed agent CLI path", () => {
     const root = join(import.meta.dirname);
     const files: string[] = [];
     const walk = (at: string): void => {

@@ -48,12 +48,13 @@
  *
  * Needs npm and the registry (reads only). A published release never changes, so
  * each is installed from npm once into a cache (TOOLROLL_UPGRADE_CACHE, or
- * ~/.cache/toolroll-upgrade-path) and copied into every home after. Exits 1
+ * toolroll-upgrade-path-cache in the run's temp folder) and copied into every home after. Exits 1
  * when any version fails, stopping other workers and queued versions.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { availableParallelism, homedir, hostname, tmpdir } from "node:os";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { availableParallelism, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -483,7 +484,7 @@ function toolsDir(work) {
 function envFor(home, prefix) {
   const work = dirname(home);
   const world = isolatedEnvironment({
-    root: join(work, `env-${basename(home)}`),
+    root: join(work, `env-${basename(home)}`), owner: work,
     outer: { ...process.env, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
     first: [join(prefix, "bin"), toolsDir(work)],
     set: { HOME: home, USERPROFILE: home, TOOLROLL_NO_UPDATE_CHECK: "1", npm_config_update_notifier: "false", npm_config_fund: "false", npm_config_audit: "false",
@@ -494,20 +495,81 @@ function envFor(home, prefix) {
 }
 
 /** Where each published release is installed once: `<cache>/<version>` is a whole npm global prefix. */
-const CACHE = process.env.TOOLROLL_UPGRADE_CACHE ?? join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "toolroll-upgrade-path");
-/** `toolroll@version` installed globally under `prefix`: from the cache, or from npm into the cache first. Says which. */
-export function installPublished(version, prefix, env, { cache = CACHE, install = (into) => must(sh("npm", ["install", "--global", "--prefix", into, `toolroll@${version}`, "--no-audit", "--no-fund", "--no-color"], { env }), `npm install -g toolroll@${version}`) } = {}) {
+// In this run's own temp storage (never the person's ~/.cache), named for this user: TOOLROLL_UPGRADE_CACHE names a
+// longer-lived one on purpose. Either is used only as ownedCacheDir allows.
+const CACHE = process.env.TOOLROLL_UPGRADE_CACHE ?? join(tmpdir(), `toolroll-upgrade-path-cache-${typeof process.getuid === "function" ? process.getuid() : "user"}`);
+
+/** The cache folder, made 0700 when absent, and used only when it is a real folder (never a link) this user owns with
+ * mode 0700: on a shared /tmp another user could otherwise plant or swap cached release code. Never chmods it. */
+export function ownedCacheDir(path) {
+  try { mkdirSync(dirname(path), { recursive: true }); mkdirSync(path, { mode: 0o700 }); } catch (error) { if (error?.code !== "EEXIST") throw error; }
+  const info = lstatSync(path);
+  if (info.isSymbolicLink() || !info.isDirectory()) throw Error(`the upgrade cache ${path} isn't a real folder (a link or a file): refused`);
+  if (typeof process.getuid === "function" && info.uid !== process.getuid()) throw Error(`the upgrade cache ${path} belongs to another user: refused`);
+  if ((info.mode & 0o777) !== 0o700) throw Error(`the upgrade cache ${path} has mode ${(info.mode & 0o777).toString(8)}, not 700: refused (it is left as it is)`);
+  return path;
+}
+
+/** npm's integrity string for a file's bytes. */
+const integrityOfFile = file => `sha512-${createHash("sha512").update(readFileSync(file)).digest("base64")}`;
+const TARBALL = ".tarball.tgz", RECORD = ".complete";
+/** One digest of an installed prefix: every path with its file bytes or link target, the cache's own two files left out. */
+export function treeDigest(folder) {
+  const hash = createHash("sha256");
+  const walk = relative => {
+    for (const name of readdirSync(join(folder, relative)).sort()) {
+      const path = relative === "" ? name : join(relative, name);
+      if (relative === "" && (name === TARBALL || name === RECORD)) continue;
+      const info = lstatSync(join(folder, path));
+      if (info.isSymbolicLink()) hash.update(`L ${path} ${readlinkSync(join(folder, path))}\n`);
+      else if (info.isDirectory()) { hash.update(`D ${path}\n`); walk(path); }
+      else hash.update(`F ${path} ${createHash("sha256").update(readFileSync(join(folder, path))).digest("hex")}\n`);
+    }
+  };
+  walk("");
+  return hash.digest("hex");
+}
+
+/** The registry's integrity for toolroll@version (npm view). */
+function registryIntegrity(version, env) {
+  return must(sh("npm", ["view", `toolroll@${version}`, "dist.integrity"], { env }), `npm view toolroll@${version}`).trim();
+}
+
+/**
+ * `toolroll@version` installed globally under `prefix`: from the cache, or from npm into the cache first. Says which.
+ * The cache keeps each release's tarball beside its installed prefix: a cached copy is used only when its tarball still
+ * matches the registry's integrity and its files still match what was installed; otherwise it is discarded and fetched
+ * again. A fetched tarball that doesn't match the registry's integrity is never installed.
+ */
+export function installPublished(version, prefix, env, {
+  cache = CACHE,
+  integrityOf = v => registryIntegrity(v, env),
+  fetch = into => { const out = must(sh("npm", ["pack", `toolroll@${version}`, "--json", "--pack-destination", into], { env }), `npm pack toolroll@${version}`); return join(into, JSON.parse(out)[0].filename); },
+  install = (into, tarball) => must(sh("npm", ["install", "--global", "--prefix", into, tarball, "--no-audit", "--no-fund", "--no-color"], { env }), `npm install -g toolroll@${version}`),
+} = {}) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error(`${version} is not a release version.`);
-  const kept = join(cache, version), whole = join(kept, ".complete");
-  const cached = existsSync(whole);
+  const root = ownedCacheDir(cache);
+  const kept = join(root, version), whole = join(kept, RECORD);
+  let cached = false;
+  if (existsSync(whole)) {
+    let record = null;
+    try { record = JSON.parse(readFileSync(whole, "utf8")); } catch { /* not a record: discarded below */ }
+    const expected = integrityOf(version);
+    cached = record !== null && record.version === version && record.integrity === expected && existsSync(join(kept, TARBALL))
+      && integrityOfFile(join(kept, TARBALL)) === expected && treeDigest(kept) === record.tree;
+    if (!cached) rmSync(kept, { recursive: true, force: true });
+  }
   if (!cached) {
-    mkdirSync(cache, { recursive: true });
     // Whole or not at all: installed aside, then renamed into place. An interrupted one is installed again.
-    if (existsSync(kept) && !existsSync(whole)) rmSync(kept, { recursive: true, force: true });
-    const part = mkdtempSync(join(cache, `${version}.part-`));
+    if (existsSync(kept)) rmSync(kept, { recursive: true, force: true });
+    const part = mkdtempSync(join(root, `${version}.part-`));
     try {
-      install(part);
-      writeFileSync(join(part, ".complete"), version);
+      const fetched = fetch(part);
+      const expected = integrityOf(version);
+      if (integrityOfFile(fetched) !== expected) throw Error(`toolroll@${version}'s tarball doesn't match the registry's integrity: not installed`);
+      renameSync(fetched, join(part, TARBALL));
+      install(part, join(part, TARBALL));
+      writeFileSync(whole.replace(kept, part), JSON.stringify({ version, integrity: expected, tree: treeDigest(part) }));
       try { renameSync(part, kept); } catch (error) { if (!existsSync(whole)) throw error; }
     } finally { rmSync(part, { recursive: true, force: true }); }
   }
@@ -515,7 +577,8 @@ export function installPublished(version, prefix, env, { cache = CACHE, install 
   if (existsSync(prefix)) throw Error(`${prefix} already exists.`);
   const cloned = process.platform === "darwin" && sh("cp", ["-cR", kept, prefix]).status === 0;
   if (!cloned) { rmSync(prefix, { recursive: true, force: true }); cpSync(kept, prefix, { recursive: true, verbatimSymlinks: true }); }
-  rmSync(join(prefix, ".complete"), { force: true });
+  rmSync(join(prefix, RECORD), { force: true });
+  rmSync(join(prefix, TARBALL), { force: true });
   return cached ? "cached" : "installed";
 }
 

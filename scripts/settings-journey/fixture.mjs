@@ -65,7 +65,7 @@ export function isolateEnvironment() {
     XDG_CONFIG_HOME: join(root, "config"), TOOLROLL_DB: join(root, "plane.db"), STANDING_ORDERS_DB: join(root, "plane.db"),
   } });
   writeFileSync(join(world.home, ".gitconfig"), "[user]\n\tuseConfigOnly = true\n");
-  assertIsolated(world.env, { root, allowed: [] });
+  assertIsolated(world.env, { root });
   for (const name of Object.keys(process.env)) delete process.env[name];
   Object.assign(process.env, world.env);
   assertFixtureSafe({ root, liveDb, paths: { home: process.env.HOME, config: process.env.XDG_CONFIG_HOME, db: process.env.TOOLROLL_DB } });

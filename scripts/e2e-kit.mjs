@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { countingProvider, scriptedProvider, turnsOf } from "./fixtures/scripted-provider.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
-import { assertIsolated, isolatedEnvironment, openedLines, personHomes, realHomeGuard } from "./isolated-env.mjs";
+import { assertIsolated, insideMacSandbox, isolatedEnvironment, openedLines, personHomes, residueCheck, validOverrides } from "./isolated-env.mjs";
 import { result as checkResult } from "./check-results.mjs";
 
 // Every Toolroll an end-to-end run starts keeps tool secrets as files in its own temporary state folder, never in the
@@ -71,8 +71,42 @@ export function processesIn(out) { ownedFile = join(out, PROCESSES_FILE); saveOw
 /** Own a process group (a child spawned detached leads its own). */
 export function own(group, label) { owned.set(group, label); saveOwned(); return group; }
 /** spawn(), in a process group of its own that this run owns. */
+// ------------------------------------------------------------------ every child's environment, checked
+
+/** The person's homes, read when this file loads, before any world replaced this process's environment. */
+const PERSON_HOMES = personHomes();
+/** The run-owned roots of this run's worlds (a world, a newcomer's computer, a fresh install): a child's HOME must be in one. */
+const worldRoots = new Set();
+/** A real-model world's own children keep the person's home on purpose (the real CLIs sign in from it). */
+let realModelHome = null;
+const insideRoot = (path, root) => { let at = path; try { at = realpathSync(path); } catch { /* not there yet */ } return at === root || at.startsWith(`${root}/`); };
+/** Registers a run-owned root whose processes `checkedEnv` accepts: their HOME, XDG folders and PATH inside it. */
+export function ownRoot(root) { worldRoots.add(realpathSync(root)); }
+/**
+ * The ONE check of a child's environment, right before it starts (spawnOwned, world.cli, world.start, the world's
+ * sqlite3 and git): `base` with `overrides` on top, where overrides of HOME, PATH or an XDG folder can never point
+ * outside the child's world, and the result must pass assertIsolated against the world its HOME is in. Before any
+ * world exists (the unit tests of this kit) the environment passes unchanged.
+ */
+export function checkedEnv(base = process.env, overrides = {}) {
+  const env = { ...base, ...overrides };
+  if (worldRoots.size === 0) return env;
+  if (realModelHome !== null && env.HOME === realModelHome) return env;
+  const root = [...worldRoots].find(one => env.HOME !== undefined && insideRoot(env.HOME, one));
+  if (root === undefined) throw new Error(`refused to start a child with HOME ${env.HOME ?? "unset"}: outside every world of this run`);
+  validOverrides(overrides, { root, tmp: base.TMPDIR ?? null });
+  assertIsolated(env, { root, homes: PERSON_HOMES });
+  return env;
+}
+/** A synthetic run never starts anything on 4180, the person's own console: refused outright. */
+export function refusePort4180(argv) {
+  const words = argv.map(String);
+  if (words.some((one, index) => (one === "--port" && words[index + 1] === "4180") || /(^|\s)--port[ =]4180\b/.test(one))) throw new Error("refused: port 4180 is the person's own console");
+  return argv;
+}
+
 export function spawnOwned(label, command, argv, options = {}) {
-  const child = spawn(command, argv, { ...options, detached: true });
+  const child = spawn(command, refusePort4180(argv), { ...options, env: checkedEnv(options.env ?? process.env), detached: true });
   if (child.pid !== undefined) own(child.pid, label);
   return child;
 }
@@ -100,7 +134,7 @@ export async function stopLeftovers(folder) {
   let listed = [];
   try { listed = JSON.parse(readFileSync(join(folder, PROCESSES_FILE), "utf8")).map(one => one.group).filter(one => Number.isInteger(one) && one > 1); } catch { return 0; }
   // A group id can be taken again once its group is gone: only a group still running this checkout's Toolroll is stopped.
-  const ours = group => { try { execFileSync("pgrep", ["-g", String(group), "-f", join(here, "dist/bin.js")], { stdio: "ignore" }); return true; } catch (error) { return error.status !== 1; } };
+  const ours = group => { try { execFileSync("pgrep", ["-g", String(group), "-f", join(here, "dist/bin.js")], { stdio: "ignore", env: checkedEnv() }); return true; } catch (error) { return error.status !== 1; } };
   const alive = listed.filter(groupAlive).filter(ours);
   await stopGroups(alive, { graceMs: 5_000 }).catch(() => undefined);
   try { writeFileSync(join(folder, PROCESSES_FILE), "[]\n"); } catch { /* a report folder that is gone */ }
@@ -204,7 +238,7 @@ export const SKIPPED_FADE = /Transition was aborted because of invalid state/;
 export const BROWSER_CHECK = "No browser errors on any page";
 /** The check a scripted run also ends with: every model call it made had a scripted answer. */
 export const PROVIDER_CHECK = "Every model call was scripted";
-export const ISOLATION_CHECK = "Nothing outside this run's own home was touched";
+export const ISOLATION_CHECK = "Residue check: no trace of this run in the person's home, no real model turn";
 
 /**
  * Every journey says what it tests. SCRIPTED: Toolroll's own behaviour (approvals, results, flows moving cards, chat
@@ -316,28 +350,29 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   // The models: a scripted run answers from the journeys' scripts; any other run uses the real CLIs, each call counted.
   // First on the PATH of everything this run starts: the CLI, the console, the worker, a demo, a fresh install.
   const provider = journeys === "scripted" ? scriptedProvider(join(root, "provider")) : countingProvider(join(root, "provider"));
-  // gh keeps its sign-in (a scripted journey checks a real repository with it).
-  const ghConfig = process.env.GH_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "gh");
   // A scripted run is a throwaway computer (isolated-env.mjs): this process's environment is replaced by one built from
   // nothing, so everything it starts — the CLI, the console, the worker, a demo, a fresh install, and the agents those
-  // start — has this world's HOME, XDG folders and PATH, finds no agent CLI but the scripted stand-ins, and hands any
-  // page to a recording browser opener. What a build that escaped would leave in the person's real home is listed now
-  // and again at the end (ISOLATION_CHECK). A real-model run keeps the person's home: the real CLIs sign in from it.
-  let isolation = null, homeGuard = null;
-  const person = personHomes();
+  // start — has this world's HOME, XDG folders and an allowlisted PATH (its stand-ins, approved tools), finds no agent
+  // CLI but the scripted stand-ins, no gh but a scripted one, and hands any page to a recording opener. Every child's
+  // environment is checked again right before it starts (checkedEnv). A residue check reads the person's home before
+  // and after (ISOLATION_CHECK). A real-model run keeps the person's home: the real CLIs sign in from it.
+  let isolation = null, residue = null;
+  ownRoot(root);
   if (provider.mode === "scripted") {
-    isolation = isolatedEnvironment({ root, first: [provider.bin], set: {
-      GH_CONFIG_DIR: ghConfig, XDG_CONFIG_HOME: join(root, "config"),
+    isolation = isolatedEnvironment({ root, first: [provider.bin], tools: group === null || group === "mail" ? ["docker"] : [], set: {
+      XDG_CONFIG_HOME: join(root, "config"),
       // The run's own temp folder (a suite's root: short, so the console's socket paths fit), else this world's.
       ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR, TMP: process.env.TMPDIR, TEMP: process.env.TMPDIR } : {}),
     } });
-    assertIsolated(isolation.env, { root, allowed: [provider.bin], homes: person });
-    homeGuard = realHomeGuard({ root, repos: [repo], homes: person });
+    assertIsolated(isolation.env, { root, homes: PERSON_HOMES });
+    residue = residueCheck({ root, repos: [repo], homes: PERSON_HOMES, deniedBySandbox: insideMacSandbox() });
     for (const name of Object.keys(process.env)) delete process.env[name];
     Object.assign(process.env, isolation.env);
   } else {
+    realModelHome = process.env.HOME;
     process.env.PATH = `${provider.bin}${delimiter}${process.env.PATH ?? ""}`;
-    process.env.GH_CONFIG_DIR = ghConfig;
+    // gh keeps its own sign-in in a real-model run (the person's own computer, on purpose).
+    process.env.GH_CONFIG_DIR ??= join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "gh");
     // Everything this run starts reads the world's own config folder, never the person's (their saved central profile
     // would send the CLI elsewhere, and inside a check's fence it can't even be looked at).
     process.env.XDG_CONFIG_HOME = join(root, "config");
@@ -345,14 +380,14 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
 
   const cli = (argv, { ok = [0], json = true, env = {} } = {}) => {
     try {
-      const stdout = execFileSync(process.execPath, [BIN, ...argv, "--db", db, ...(json ? ["--json"] : [])], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "", ...env }, stdio: ["ignore", "pipe", "pipe"], timeout: 180_000 });
+      const stdout = execFileSync(process.execPath, refusePort4180([BIN, ...argv, "--db", db, ...(json ? ["--json"] : [])]), { encoding: "utf8", env: checkedEnv(process.env, { NODE_OPTIONS: "", ...env }), stdio: ["ignore", "pipe", "pipe"], timeout: 180_000 });
       return json ? JSON.parse(stdout) : stdout;
     } catch (error) {
       if (ok.includes(error.status)) return json ? JSON.parse(error.stdout) : error.stdout;
       throw new Error(`standing-orders ${argv.join(" ")}: ${(error.stdout ?? "") + (error.stderr ?? "")}`.slice(0, 2000));
     }
   };
-  const sql = query => execFileSync("sqlite3", ["-json", "-cmd", ".timeout 15000", db, query], { encoding: "utf8" }).trim() || "[]";
+  const sql = query => execFileSync("sqlite3", ["-json", "-cmd", ".timeout 15000", db, query], { encoding: "utf8", env: checkedEnv() }).trim() || "[]";
   const rows = query => JSON.parse(sql(query));
 
   const results = [];
@@ -404,8 +439,8 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   const script = (...rules) => provider.add(current ?? "world", ...rules);
 
   say(`workspace ${root}`);
-  const git = (...rest) => execFileSync("git", ["-C", repo, ...rest], { encoding: "utf8" }).trim();
-  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  const git = (...rest) => execFileSync("git", ["-C", repo, ...rest], { encoding: "utf8", env: checkedEnv() }).trim();
+  execFileSync("git", ["init", "-q", "-b", "main", repo], { env: checkedEnv() });
   writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "shop", version: "1.0.0", type: "module", scripts: { test: "node --test" } }, null, 2) + "\n");
   mkdirSync(join(repo, "src")); mkdirSync(join(repo, "test"));
   writeFileSync(join(repo, "src/math.js"), "export const add = (a, b) => a + b;\n");
@@ -427,7 +462,7 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
     cli(["config", "unconfined-agents", "allow", ...auth]);
     say("inside the check's macOS sandbox: this world's agents run without a sandbox of their own (the check's still holds)");
   }
-  const setup = argv => new Promise((done, fail) => execFile(process.execPath, [BIN, ...argv, "--db", db, "--json"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, timeout: 180_000 },
+  const setup = argv => new Promise((done, fail) => execFile(process.execPath, refusePort4180([BIN, ...argv, "--db", db, "--json"]), { encoding: "utf8", env: checkedEnv(process.env, { NODE_OPTIONS: "" }), timeout: 180_000 },
     (error, stdout, stderr) => error ? fail(new Error(`standing-orders ${argv.join(" ")}: ${(stdout ?? "") + (stderr ?? "")}`.slice(0, 2000))) : done(JSON.parse(stdout))));
   const [runner] = await Promise.all([
     setup(["runner", "register", "worker", "--repo", repo, ...auth]),
@@ -537,18 +572,21 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
       const wrong = provider.journal().filter(one => one.turn && !one.ok && !one.intended);
       if (wrong.length > 0) throw new Error(wrong.slice(0, 3).map(one => `${one.provider} ${one.role}: ${one.error}`).join(" | "));
     }, { always: true });
-    // A scripted run's builds stayed in this world: its environment still is one (nothing put the person's HOME or PATH
-    // back), no real model turn was taken, and nothing named after this world appeared in the person's real home.
+    // A LIMITED residue check (isolated-env.mjs residueCheck): Claude transcript folders named after this world, its
+    // repository's build cache and Toolroll's git incident log in the person's home, read-only, before and after; a
+    // place that can't be read is unknown and fails the check (unless this run's own sandbox denies it). Plus: no real
+    // model turn in the provider journal, and this process's environment is still the world's.
     if (isolation !== null) await check(ISOLATION_CHECK, [], async () => {
       const wrong = [];
-      const left = homeGuard.check();
-      if (left.length > 0) wrong.push(`this run left ${left.length} folder${left.length === 1 ? "" : "s"} in the person's real home: ${left.slice(0, 5).join(", ")}`);
+      const { left, unknown, unknownFails } = residue.check();
+      if (left.length > 0) wrong.push(`residue in the person's home (${left.length}): ${left.slice(0, 5).join(", ")}`);
+      if (unknownFails) wrong.push(`the residue check couldn't read ${unknown.join(", ")}: unknown, not clean`);
       const real = turnsOf(provider.journal()).real;
       if (real > 0) wrong.push(`${real} real model turn${real === 1 ? "" : "s"} in a scripted run`);
-      try { assertIsolated(process.env, { root, allowed: [provider.bin], homes: person }); } catch (error) { wrong.push(error.message); }
+      try { assertIsolated(process.env, { root, homes: PERSON_HOMES }); } catch (error) { wrong.push(error.message); }
       if (wrong.length > 0) throw new Error(wrong.join(" | "));
       const opened = openedLines(isolation.opened);
-      return opened.length === 0 ? undefined : { browserOpenerHanded: opened.length };
+      return { checked: "transcripts named after this run, its build cache, git incidents", ...(unknown.length > 0 ? { deniedBySandbox: unknown } : {}), ...(opened.length === 0 ? {} : { browserOpenerHanded: opened.length }) };
     }, { always: true });
     const journal = provider.journal();
     writeFileSync(join(out, "model-calls.jsonl"), journal.map(one => JSON.stringify(one)).join("\n") + (journal.length > 0 ? "\n" : ""));
