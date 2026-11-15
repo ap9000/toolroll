@@ -246,3 +246,17 @@ test("the one Needs-you count moves when work does: read again from its list, th
   // Projects and Manage projects, always (even with no project yet).
   expect(host.querySelector(".so-rail [data-manage-projects]")?.getAttribute("href")).toBe("/projects");
 });
+
+test("a command to type reads as code, never with its backticks, in a row and in the setup step it opens", async () => {
+  const say = "No coding agent is signed in. Run `claude auth login`, then it starts by itself.";
+  await mount(view({ needs: [{ key: "unblock", label: "Unblock", count: 2, rows: [
+    row("setup:agent", { ask: "setup", group: "unblock", href: "/welcome", line: "Run `claude auth login` in a terminal.", action: { label: "Open", href: "/welcome" } }),
+    row("first", { ask: "wrong", group: "unblock", reason: null, line: say, action: { label: "Open", href: "/t/first" } })] }] }));
+  const desc = document.querySelector('[data-row="first"] .k-row-d')!;
+  expect(desc.textContent).toBe("No coding agent is signed in. Run claude auth login, then it starts by itself.");
+  expect(desc.querySelector("code")?.textContent).toBe("claude auth login");
+  // The setup step opens beside the list (a desk selects the first row): its line, the command as code.
+  expect(selectedRow()).toBe("setup:agent");
+  expect(pane().querySelector(".so-open-x")?.textContent).toBe("Run claude auth login in a terminal.");
+  expect(pane().querySelector(".so-open-x code")?.textContent).toBe("claude auth login");
+});

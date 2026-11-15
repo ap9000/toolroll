@@ -41,9 +41,10 @@ const PROJECTS_SHOWN = 3;
 const ADD_FOLDER = "/projects?return=%2Fwelcome";
 
 /** One step: its number and name, Done once it is, then its body. */
-function step(key: string, index: number, title: string, done: boolean, body: Html): Html {
+/** `filed`: done, but waiting on an earlier step (a first task filed before any agent is signed in): it reads Filed. */
+function step(key: string, index: number, title: string, done: boolean, body: Html, filed = false): Html {
   return html`<section class="k-sec welcome-step" id="welcome-${key}" data-step="${key}" data-done="${done ? "1" : "0"}" aria-labelledby="welcome-${key}-h">\
-<div class="k-secthead"><h3 id="welcome-${key}-h">${index}. ${title}</h3>${done ? chip("Done", "done") : ""}</div>${body}</section>`;
+<div class="k-secthead"><h3 id="welcome-${key}-h">${index}. ${title}</h3>${filed ? chip("Filed", "", { dot: false }) : done ? chip("Done", "done") : ""}</div>${body}</section>`;
 }
 
 /** "Use this one": Settings → Lead's own turn-on, for exactly this agent, back here. */
@@ -97,13 +98,15 @@ ${listed.length === 0 ? "" : html`<div class="welcome-rows">${listed}</div>`}${m
 
   const taskLeads = lead === "task";
   if (taskLeads) primary = btn("Write a task", { variant: "primary", href: "/tasks/new" });
-  const taskBody = model.task.done ? !model.agent.done && !model.agent.checking ? html`<p class="k-note">Filed. It starts by itself once an agent is signed in (step 1).</p>`
+  // Filed before any agent is signed in: it waits for step 1, so the step reads Filed, never Done.
+  const waitsForAgent = model.task.done && !model.agent.done && !model.agent.checking;
+  const taskBody = model.task.done ? waitsForAgent ? html`<p class="k-note">It starts by itself once an agent is signed in (step 1).</p>`
     : html`<p class="k-note">Filed. Its plan waits for your approval in <a class="k-link" href="/">Work</a>.</p>`
     : !model.task.open ? html`<p class="k-note">Add a project first.</p>`
       : html`<p class="k-note">Describe a change in a sentence or two. Nothing starts until you approve its plan.</p>\
 ${model.task.starters.length === 0 ? "" : html`<div class="k-ideas" aria-label="Ideas to start from" data-starters>${model.task.starters.map(one => html`<a class="k-btn k-btn-outline k-idea" href="${one.href}">${one.label}</a>`)}</div>`}\
 <div class="k-acts">${btn("Write a task", { sm: true, href: "/tasks/new", ...(taskLeads ? { variant: "primary" as const, docked: true } : {}) })}</div>`;
-  const task = step("task", 3, "First task", model.task.done, taskBody);
+  const task = step("task", 3, "First task", model.task.done, taskBody, waitsForAgent);
 
   const hello = html`<div class="k-hello"><h2>Get to your first result.</h2><p>${model.left === 0 ? "Setup is done." : `${plural(model.left, "step", "steps")} left.`}</p></div>`;
   return { body: html`${hello}${agent}${project}${task}`, primary };

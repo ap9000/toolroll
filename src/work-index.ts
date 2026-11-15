@@ -949,8 +949,10 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     ...(lead === null ? {} : { lead, ...(leadName === undefined ? {} : { leadName }) }) });
   label = shared.headline;
   detail = shared.sentence;
-  // Every Needs you action wears its need's own words.
-  if (shared.need != null && shared.need.key !== 'other' && shared.need.key !== 'review-result' && primaryAction !== null) { actionLabel = shared.need.action.label; primaryAction.label = actionLabel; }
+  // Every Needs you action wears its need's own words, except a first sign-in (no agent was ever signed in): it is
+  // Sign in, never "Sign in again" (the task page's own rule, task-view.tsx).
+  const firstSignIn = code === 'signed-out' && n(row, 'no_agent') > 0 && s(row, 'signed_out') === null;
+  if (shared.need != null && shared.need.key !== 'other' && shared.need.key !== 'review-result' && primaryAction !== null && !firstSignIn) { actionLabel = shared.need.action.label; primaryAction.label = actionLabel; }
   // A running agent's own question (agent-board.ts): its words, and Reply on the Agents board.
   if (actionCode === 'answer-agent' && primaryAction !== null) {
     actionLabel = 'Reply'; primaryAction.label = actionLabel;

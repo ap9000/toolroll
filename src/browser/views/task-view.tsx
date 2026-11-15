@@ -1093,8 +1093,9 @@ export const ResultStatusAct = createContext<HTMLElement | null>(null);
  * the status's one act, so nothing the result warns about is under the act that completes it. Null anywhere else. */
 export const ResultStatusWarnings = createContext<HTMLElement | null>(null);
 
-/** A sentence whose `backticked` parts are commands to type (a sign-in's `claude auth login`): those parts as code. */
-function WithCode({ text }: { text: string }) {
+/** A sentence whose `backticked` parts are commands to type (a sign-in's `claude auth login`): those parts as code.
+ * The Work screen's rows and panel use it too, so a command never shows its backticks. */
+export function WithCode({ text }: { text: string }) {
   const parts = text.split(/`([^`\n]+)`/);
   return <>{parts.map((part, index) => index % 2 === 1 ? <code key={index} className="k-mono">{part}</code> : part === "" ? null : <span key={index}>{part}</span>)}</>;
 }

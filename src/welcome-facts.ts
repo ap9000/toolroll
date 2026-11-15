@@ -75,9 +75,10 @@ export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey, sampl
     else if (model.project.projects.length === 0) lines.push(`   Add ${addOwn}`, ...offer === "command" ? ["   Or try the sample project: run `toolroll welcome sample`."] : []);
     else if (model.project.notTakingWork) lines.push("   Tasks can't start yet: nothing on this computer is taking work. Run `toolroll`.");
   } else {
-    lines.push(`3. First task · ${mark(model.task.done)}`);
-    // Filed with no agent signed in: it waits for step 1, never "waits for your approval".
-    if (model.task.done) lines.push(model.agent.done || model.agent.checking ? "   Filed. Its plan waits for your approval." : "   Filed. It starts by itself once an agent is signed in (step 1).");
+    // Filed with no agent signed in: it waits for step 1, so it reads Filed (never Done) and never "waits for your approval".
+    const waitsForAgent = model.task.done && !model.agent.done && !model.agent.checking;
+    lines.push(`3. First task · ${waitsForAgent ? "Filed" : mark(model.task.done)}`);
+    if (model.task.done) lines.push(waitsForAgent ? "   It starts by itself once an agent is signed in (step 1)." : "   Filed. Its plan waits for your approval.");
     else if (!model.task.open) lines.push("   Add a project first.");
     else for (const one of model.task.starters) lines.push(`   Idea: ${one.draft}`);
   }
