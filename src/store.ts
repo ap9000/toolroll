@@ -1239,7 +1239,8 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // process custody, and each thread's chosen level (flexible_thread_launch, flexible_relay_grant and flexible_thread_level, new tables;
 // flexible-launch-schema.ts). Nothing writes them while Flexible isn't available.
 // v166 adds, and changes no saved row (the Flexible plan v2, slice F2b): the calls Flexible threads' sign-in relay handled
-// (thread_relay_call, a new table; flexible-relay-schema.ts). Nothing writes it while Flexible isn't available.
+// and the ones it has reserved but not yet recorded (thread_relay_call and thread_relay_pending, new tables;
+// flexible-relay-schema.ts). Nothing writes them while Flexible isn't available.
 export const SCHEMA_VERSION = 166;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */

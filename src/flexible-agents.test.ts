@@ -18,13 +18,14 @@ import { spawnSync } from "node:child_process";
 import { flexibleAgentLaunch, lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, startFlexibleTurn } from "./flexible-agents.js";
 import { startFlexibleRelay } from "./flexible-relay.js";
 import { FLEXIBLE_PROVEN, threadLevelAllowed } from "./flexible-levels.js";
-import { flexibleLaunch, holdLaunch, onLaunchStopped, revokeLaunch, unsettledLaunch, watchLaunch } from "./flexible-launch.js";
+import { flexibleLaunch, freshProviderFolder, holdLaunch, onLaunchStopped, revokeLaunch, unsettledLaunch, watchLaunch } from "./flexible-launch.js";
 import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { realCustodyIO, startIdentityOf } from "./flexible-custody.js";
 import { deleteProject, projectRunning } from "./project-delete.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
+import { fakePid } from "../test/fake-pid.js";
 
 vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
 
@@ -226,6 +227,25 @@ describe("a turn start that refuses spawns nothing and leaves custody as it was"
     expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("keep\n");
     expect(launches()).toEqual([]);
     } finally { process.env["PATH"] = path; }
+  });
+});
+
+describe("the provider folder is emptied only while the thread is quiet", () => {
+  test("while an earlier launch of the thread is unsettled (custody not verified), nothing in its cache is touched", async () => {
+    const { id, paths } = await thread();
+    const provider = join(paths.cache, "provider");
+    mkdirSync(join(provider, "old"), { recursive: true });
+    writeFileSync(join(provider, "old", "keep.txt"), "keep\n");
+    for (const state of ["live", "stopping", "unresolved"]) {
+      const launch = live(id, fakePid(7), "t7", { state, held: false });
+      expect(freshProviderFolder(world.store, id, paths, join(provider, "next")), state).toBe("an earlier agent of the thread isn't proved stopped, so its folders weren't touched");
+      expect(readFileSync(join(provider, "old", "keep.txt"), "utf8")).toBe("keep\n");
+      world.store.handle.prepare("UPDATE flexible_thread_launch SET state = 'exited', ended_at = ? WHERE id = ?").run(NOW.toISOString(), launch);
+    }
+    // Quiet: emptied and made again.
+    expect(freshProviderFolder(world.store, id, paths, join(provider, "next"))).toBeNull();
+    expect(existsSync(join(provider, "old"))).toBe(false);
+    expect(existsSync(join(provider, "next"))).toBe(true);
   });
 });
 

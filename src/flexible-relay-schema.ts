@@ -10,6 +10,10 @@
  *   the service's answer (its streamed usage events included), never what the agent says; `cost_basis` is how sure the
  *   charge is (unknown when the answer's usage couldn't be read whole: F2e's unknown-cost hold). `detail` is redacted:
  *   no credential, token or header is ever kept.
+ * - `thread_relay_pending`: a call's reservation, written in the same transaction that re-checks its token and its turn,
+ *   before anything is sent, and cleared in the same transaction that records and charges the call. One still there is
+ *   a call whose charge was never recorded: the thread takes no new relay call while it is, and once its turn has ended
+ *   a keyed turn's cost counts as unknown (F2e's hold) until the relay reconciles it (charged as unknown).
  */
 export const V166_SCHEMA = `
 CREATE TABLE IF NOT EXISTS thread_relay_call (
@@ -43,12 +47,27 @@ CREATE TRIGGER IF NOT EXISTS thread_relay_call_written_once BEFORE UPDATE ON thr
 BEGIN
   SELECT RAISE(ABORT, 'a relay call is written once');
 END;
+CREATE TABLE IF NOT EXISTS thread_relay_pending (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread        TEXT NOT NULL CHECK (length(thread) = 32 AND thread NOT GLOB '*[^0-9a-f]*'),
+  turn          TEXT NOT NULL CHECK (length(turn) = 32 AND turn NOT GLOB '*[^0-9a-f]*'),
+  launch        TEXT NOT NULL CHECK (length(launch) = 32 AND launch NOT GLOB '*[^0-9a-f]*'),
+  holder        TEXT NOT NULL CHECK (length(holder) BETWEEN 1 AND 128),
+  reserved_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS thread_relay_pending_thread ON thread_relay_pending (thread);
+CREATE INDEX IF NOT EXISTS thread_relay_pending_turn ON thread_relay_pending (turn);
+CREATE TRIGGER IF NOT EXISTS thread_relay_pending_written_once BEFORE UPDATE ON thread_relay_pending
+BEGIN
+  SELECT RAISE(ABORT, 'a relay reservation is written once and only cleared');
+END;
 `;
 
-export const V166_TABLES = Object.freeze(["thread_relay_call"] as const);
+export const V166_TABLES = Object.freeze(["thread_relay_call", "thread_relay_pending"] as const);
 /** The v166 migration's steps, in order (a test seam may stop after each). */
 export const V166_STEPS = Object.freeze(["thread-relay-call"] as const);
 /** v166's named objects, as a current or resumed file must hold them exactly (store.ts checks each). */
 export const V166_OBJECTS = Object.freeze([
   ["table", "thread_relay_call"], ["index", "thread_relay_call_turn"], ["index", "thread_relay_call_thread"], ["trigger", "thread_relay_call_written_once"],
+  ["table", "thread_relay_pending"], ["index", "thread_relay_pending_thread"], ["index", "thread_relay_pending_turn"], ["trigger", "thread_relay_pending_written_once"],
 ] as const);

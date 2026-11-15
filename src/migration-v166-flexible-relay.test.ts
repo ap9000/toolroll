@@ -1,4 +1,4 @@
-/** v166: the calls a Flexible thread's sign-in relay handled (the Flexible plan v2, slice F2b). A new table only: no
+/** v166: the calls a Flexible thread's sign-in relay handled and reserved (the Flexible plan v2, slice F2b). New tables only: no
  * saved row changes, a crash resumes to the same shape, a call is written once, a refused one costs nothing and a
  * forwarded one always names its turn, and a table in a shape this build can't name refuses to open. */
 import { afterEach, describe, expect, test } from "vitest";
@@ -69,6 +69,12 @@ describe("v166", () => {
       expect(() => db.prepare(`UPDATE thread_relay_call SET ${column} = NULL WHERE id = 1`).run(), column).toThrow(/written once/);
     }
     expect(() => db.prepare("UPDATE thread_relay_call SET tokens_in = tokens_in + 1 WHERE id = 1").run()).toThrow(/written once/);
+    // A reservation: what it names, written once, only ever cleared.
+    expect(() => db.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, reserved_at) VALUES (?, NULL, ?, 'h1', ?)").run(THREAD, LAUNCH, T0)).toThrow();
+    expect(() => db.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, reserved_at) VALUES ('x', ?, ?, 'h1', ?)").run(TURN, LAUNCH, T0)).toThrow();
+    db.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, reserved_at) VALUES (?, ?, ?, 'h1', ?)").run(THREAD, TURN, LAUNCH, T0);
+    expect(() => db.prepare("UPDATE thread_relay_pending SET turn = ?").run("d".repeat(32))).toThrow(/only cleared/);
+    db.prepare("DELETE FROM thread_relay_pending").run();
     store.close();
   });
 
@@ -100,6 +106,7 @@ describe("v166", () => {
     ["the table", "DROP TABLE thread_relay_call; CREATE TABLE thread_relay_call (id INTEGER PRIMARY KEY, thread TEXT)", /thread_relay_call has an unknown shape|thread_relay_call_\w+ is missing/],
     ["the trigger", "DROP TRIGGER thread_relay_call_written_once", /trigger thread_relay_call_written_once is missing/],
     ["the turn index", "DROP INDEX thread_relay_call_turn; CREATE INDEX thread_relay_call_turn ON thread_relay_call (thread)", /index thread_relay_call_turn has an unknown shape/],
+    ["the reservations' trigger", "DROP TRIGGER thread_relay_pending_written_once", /trigger thread_relay_pending_written_once is missing/],
   ])("a current file whose %s isn't this build's refuses to open", (_what, damage, refusal) => {
     const dir = mkdtempSync(join(tmpdir(), "toolroll-v166-"));
     dirs.push(dir);

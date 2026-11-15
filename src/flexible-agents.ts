@@ -18,13 +18,12 @@
  *   be stopped and its whole tree's exit proved (flexible-launch.ts). Lowering stops a running agent above the new level
  *   at once; while any of its processes survive, the thread stays pending and no new turn starts.
  */
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { threadLevelAllowed, FLEXIBLE_PROVEN, type FlexibleProvenMatrix } from "./flexible-levels.js";
-import { defaultCustodyIO, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
+import { defaultCustodyIO, freshProviderFolder, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
 import { relayUrlInside, type FlexibleRelay, type FlexibleRelayEndpoint } from "./flexible-relay.js";
 import { startIdentityOf } from "./flexible-custody.js";
 import { flexibleFenceDigest, flexibleThread, flexibleThreadFence, flexibleThreadSpawn, stopFlexibleThreadAgent, withFlexibleThreadLock, type FlexibleThreadRefusal, type FlexibleThreadSpawnSeams } from "./flexible-thread.js";
@@ -180,7 +179,7 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   // A fresh configuration folder for every launch, made by Toolroll: nothing an earlier launch wrote there loads again.
   // The thread's cache is the agent's to write: everything on the way to it is proved Toolroll's real folders first, and
   // nothing is deleted through a link. A folder that isn't what Toolroll made refuses the turn; it is never repaired.
-  const providerProblem = freshProviderFolder(fenced.paths, configHome);
+  const providerProblem = freshProviderFolder(store, turn.thread, fenced.paths, configHome);
   if (providerProblem !== null) {
     endTurn(`the agent's configuration folder couldn't be made: ${providerProblem}`);
     store.recordAction({ at: (input.clock ?? (() => new Date()))().toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: "flexible turn refused",
@@ -217,48 +216,6 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   });
   return { ok: true, launched: "started", launchId: spawned.launchId, pid: spawned.pid, child: spawned.child, stopWatching };
 }
-
-/** A real folder of this user's, not a link: lstat, never followed. */
-function ownRealFolder(path: string): boolean {
-  try {
-    const held = lstatSync(path);
-    return held.isDirectory() && !held.isSymbolicLink() && (process.getuid === undefined || held.uid === process.getuid());
-  } catch { return false; }
-}
-
-/** Remove `path` and what is in it without ever following a link: a link (or any file) is unlinked as itself, and only
- * a real folder is entered. */
-function removeNoFollow(path: string): void {
-  const held = lstatSync(path);
-  if (!held.isDirectory() || held.isSymbolicLink()) { unlinkSync(path); return; }
-  for (const name of readdirSync(path)) removeNoFollow(join(path, name));
-  rmdirSync(path);
-}
-
-/**
- * Make the launch's provider configuration home (`configHome`, inside `<cache>/provider`) fresh, or say why it can't be.
- * The cache is writable by the thread's agent, so before anything is removed: every folder from the threads root down
- * to the cache is a real folder of this user's (lstat, never followed), the cache's real path is exactly the recorded
- * one, and `provider` is either absent or a real folder too. Then `provider` is removed without following any link
- * inside it and made again exclusively. Anything else refuses (null is success); nothing outside is ever touched.
- */
-function freshProviderFolder(paths: { root: string; folder: string; cache: string }, configHome: string): string | null {
-  const provider = join(paths.cache, "provider");
-  if (dirname(configHome) !== provider) return "its configuration folder isn't inside the thread's cache";
-  for (const folder of [paths.root, paths.folder, paths.cache]) if (!ownRealFolder(folder)) return `${basename(folder)} isn't a real folder of Toolroll's (a link or something else is there)`;
-  try { if (realpathSync(paths.cache) !== paths.cache) return "the thread's cache isn't where Toolroll put it"; } catch { return "the thread's cache can't be read"; }
-  try {
-    if (existsSync(provider) || isLink(provider)) {
-      if (!ownRealFolder(provider)) return "the cache's provider folder isn't a real folder (a link or something else is there)";
-      removeNoFollow(provider);
-    }
-    mkdirSync(provider, { mode: 0o700 });
-    if (!ownRealFolder(provider)) return "the cache's provider folder couldn't be made";
-    mkdirSync(configHome, { mode: 0o700 });
-    return null;
-  } catch { return "the cache's provider folder couldn't be made fresh"; }
-}
-const isLink = (path: string): boolean => { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } };
 
 // ---- lowering a thread's level -----------------------------------------------------------------------------------------------
 

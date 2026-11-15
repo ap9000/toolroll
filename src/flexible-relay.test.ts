@@ -376,6 +376,146 @@ describe("refusals: nothing is forwarded", () => {
   });
 });
 
+/** Read the relay's answer to one streamed call chunk by chunk (its own connection). */
+function streamCall(bearer = token): { chunks: string[]; first: Promise<void>; closed: Promise<void> } {
+  const chunks: string[] = [];
+  let gotFirst!: () => void, gotClosed!: () => void;
+  const first = new Promise<void>(done => { gotFirst = done; }), closed = new Promise<void>(done => { gotClosed = done; });
+  const raw = httpRequest({ host: "127.0.0.1", port: relay.port, method: "POST", path: "/v1/messages", agent: false, headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" } }, answer => {
+    answer.on("data", chunk => { chunks.push(String(chunk)); gotFirst(); });
+    answer.on("close", () => gotClosed());
+    answer.on("error", () => gotClosed());
+  });
+  raw.on("error", () => { gotFirst(); gotClosed(); });
+  raw.end(JSON.stringify({ ...BODY, stream: true }));
+  return { chunks, first, closed };
+}
+const START = `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 1 } } })}\n\n`;
+const AFTER = `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "AFTER-CUT" } })}\n\n`;
+
+describe("in-flight authority, settlement and usage", () => {
+  test("a revocation or a turn's end between the relay's own looks cuts the answer before its next chunk", async () => {
+    for (const end of ["revoke", "finish"] as const) {
+      const live = end === "revoke" ? relay.issue({ thread: id, turn, launch }) : null;
+      let held: ServerResponse | null = null;
+      script = (_request, response) => { held = response; response.writeHead(200, { "content-type": "text/event-stream" }); response.write(START); };
+      const stream = streamCall(live?.token ?? token);
+      await stream.first;
+      // The authority ends, and the service sends more at once: well inside one look of the relay's poll.
+      if (end === "revoke") live!.revoke();
+      else expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
+      (held as ServerResponse | null)?.write(AFTER);
+      await stream.closed;
+      expect(stream.chunks.join(""), end).not.toContain("AFTER-CUT");
+      await until(() => calls().length === (end === "revoke" ? 1 : 2));
+      expect(calls().at(-1), end).toMatchObject({ status: "aborted", detail: end === "revoke" ? "its relay token was revoked" : "the turn ended" });
+      seen = [];
+    }
+  });
+
+  test("another process's revocation, seen only on the record, stops the answer from completing even when it ends before the relay's next look", async () => {
+    let held: ServerResponse | null = null;
+    script = (_request, response) => { held = response; response.writeHead(200, { "content-type": "text/event-stream" }); response.write(START); };
+    const stream = streamCall();
+    await stream.first;
+    // Revoked in the database only (as another Toolroll process does): no in-process cancellation reaches this relay.
+    world.store.handle.prepare("UPDATE flexible_relay_grant SET revoked_at = ? WHERE launch = ?").run(NOW.toISOString(), launch);
+    (held as ServerResponse | null)?.end(`${AFTER}event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":4}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`);
+    await stream.closed;
+    expect(stream.chunks.join("")).not.toContain("message_stop");
+    await until(() => calls().length === 1);
+    expect(calls()[0]).toMatchObject({ status: "aborted" });
+  });
+
+  test("a failure to read the call's authority while it streams cuts it", async () => {
+    let held: ServerResponse | null = null;
+    script = (_request, response) => { held = response; response.writeHead(200, { "content-type": "text/event-stream" }); response.write(START); };
+    const stream = streamCall();
+    await stream.first;
+    const db = world.store.handle;
+    const prepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => { if (sql.includes("flexible_relay_grant g JOIN")) throw new Error("database is locked"); return prepare(sql); }) as typeof db.prepare;
+    try {
+      await stream.closed;
+    } finally { db.prepare = prepare as typeof db.prepare; }
+    (held as ServerResponse | null)?.write(AFTER);
+    expect(stream.chunks.join("")).not.toContain("AFTER-CUT");
+    await until(() => calls().length === 1);
+    expect(calls()[0]).toMatchObject({ status: "aborted", detail: "Toolroll couldn't check its authority", cost_basis: "unknown" });
+  });
+
+  test("a settlement that can't be written keeps its reservation: the thread takes no new call, the ended keyed turn holds the dollar limits, and the retry records it", async () => {
+    // A keyed turn on an API key.
+    expect(finishFlexibleTurn(world.store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
+    credential("api-key", API_KEY);
+    const keyed = admitAndBegin({ billing: "api-key" });
+    const db = world.store.handle;
+    const prepare = db.prepare.bind(db);
+    let failing = true;
+    db.prepare = ((sql: string) => { if (failing && sql.includes("INSERT INTO thread_relay_call")) throw new Error("disk I/O error"); return prepare(sql); }) as typeof db.prepare;
+    try {
+      const first = await call();
+      expect(first.status).toBe(200);
+      await first.text();
+      const pending = () => Number(prepare("SELECT COUNT(*) AS n FROM thread_relay_pending").get()!["n"]);
+      expect(pending()).toBe(1);
+      // The next call in that turn is refused while the reservation stands; nothing reaches the service.
+      const held = await call();
+      expect(held.status).toBe(503);
+      expect(((await held.json()) as { error: { message: string } }).error.message).toBe("An earlier model call in this turn couldn't be charged yet, so nothing more is sent until it is.");
+      expect(pending()).toBe(1);
+      expect(seen).toHaveLength(1);
+      // The turn ends with a measured cost of its own; its unrecorded call still leaves its cost unknown: an installation
+      // dollar limit can't be checked, so a new keyed turn waits.
+      expect(finishFlexibleTurn(world.store, { turn: keyed, holder: "h1", outcome: "finished", usage: { tokensIn: 1, tokensOut: 1, costUsd: 0.01 }, clock: () => NOW })).toMatchObject({ ok: true, turn: { costBasis: "measured" } });
+      prepare("INSERT INTO flexible_installation_caps (id, live_threads, turns_per_day, measured_microusd_per_day, updated_by, updated_at) VALUES (1, NULL, NULL, 1000000000, 'alex', ?)").run(NOW.toISOString());
+      const next = admitFlexibleTurn(world.store, { thread: id, starter: { name: "alex", generation: world.store.accountOf("alex")!.generation }, digest, level: "full", freshProof: false,
+        provider: "claude", model: "claude-sonnet-4-5", billing: "api-key", requestKey: "m-held", holder: "h1", clock: () => NOW });
+      expect(next).toMatchObject({ ok: false, reason: "spend-unknown", cap: "installation-dollars" });
+      // Writable again: the relay's retry records the call and clears its reservation.
+      failing = false;
+      await until(() => pending() === 0);
+      expect(calls().find(row => row["status"] === "completed")).toMatchObject({ turn: keyed, tokens_in: 12, tokens_out: 5 });
+    } finally { db.prepare = prepare as typeof db.prepare; }
+  });
+
+  test("usage that isn't there whole (empty, absent, no message_delta, counters that aren't whole numbers) is charged as unknown, never zero", async () => {
+    const scripts: ((response: ServerResponse) => void)[] = [
+      response => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ type: "message", content: [], usage: {} })),
+      response => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ type: "message", content: [] })),
+      response => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ type: "message", content: [], usage: { input_tokens: 1.5, output_tokens: 2 } })),
+      response => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ type: "message", content: [], usage: { input_tokens: "12", output_tokens: 2 } })),
+      response => { response.writeHead(200, { "content-type": "text/event-stream" }); response.end(`${START}event: message_stop\ndata: {"type":"message_stop"}\n\n`); },
+      response => { response.writeHead(200, { "content-type": "text/event-stream" }); response.end(`${START}event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":-3}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`); },
+    ];
+    for (const one of scripts) {
+      script = (_request, response) => one(response);
+      const answer = await call();
+      await answer.text();
+    }
+    expect(calls().map(row => [row["status"], row["cost_basis"]])).toEqual(Array(scripts.length).fill(["incomplete", "unknown"]));
+    expect(flexibleTurn(world.store, turn)!.costBasis).toBe("unknown");
+  });
+
+  test("an allowed answer header carrying the key, and a key spelled with JSON escapes in an error, never reach the agent", async () => {
+    script = (_request, response) => { response.writeHead(200, { "content-type": "application/json", "request-id": `req-${SETUP_TOKEN}`, "anthropic-ratelimit-tokens-remaining": SETUP_TOKEN }).end(MESSAGE({ input_tokens: 1, output_tokens: 1 })); };
+    const answer = await call();
+    expect(answer.headers.get("request-id")).toBe("req-[redacted]");
+    expect(answer.headers.get("anthropic-ratelimit-tokens-remaining")).toBe("[redacted]");
+    await answer.text();
+    const escaped = [...SETUP_TOKEN].map(char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    const halfEscaped = `\\u0073${SETUP_TOKEN.slice(1, 10)}\\/${SETUP_TOKEN.slice(10)}`;
+    for (const body of [`{"type":"error","error":{"type":"invalid_request_error","message":"bad key ${escaped}"}}`, `not json, key ${escaped}`, `{"type":"error","error":{"type":"x","message":"${halfEscaped}"}}`]) {
+      script = (_request, response) => { response.writeHead(400, { "content-type": "application/json" }).end(body); };
+      const failed = await call();
+      const text = await failed.text();
+      const plain = text.replace(/\\u([0-9a-fA-F]{4})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16))).replace(/\\\//g, "/");
+      expect(plain, body.slice(0, 60)).not.toContain(SETUP_TOKEN);
+      expect(plain).not.toContain(SETUP_TOKEN.slice(10));
+    }
+  });
+});
+
 describe("the body: one reading, inline content only", () => {
   test("a repeated key anywhere, a reserved key or a top level that isn't one object is refused; what is sent is exactly the checked object, written again", async () => {
     const bodies = [

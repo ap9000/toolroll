@@ -45,6 +45,7 @@ import { StringDecoder } from "node:string_decoder";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
 import { issueRelayGrant, revokeRelayGrant } from "./flexible-launch.js";
+import { onRelayCancel } from "./flexible-relay-cancel.js";
 import { FLEXIBLE_RELAY_UPSTREAMS, type RelayCredentialKind, type RelayUpstream } from "./flexible-relay-upstreams.js";
 import { chargeFlexibleTurn, flexibleTurn, type FlexibleCostBasis, type FlexibleTurnRow } from "./flexible-turns.js";
 import { readHeldSecret } from "./tool-secret-store.js";
@@ -84,8 +85,10 @@ export const FLEXIBLE_RELAY_CREDENTIAL = Object.freeze({ name: "flexible-claude-
 
 // ---- refusals the agent reads -----------------------------------------------------------------------------------------
 
-type CallReason = "credential-header" | "header" | "beta" | "route" | "too-many" | "no-turn" | "billing-mismatch" | "no-credential" | "body-too-large" | "body" | "model" | "max-tokens" | "server-tool" | "server-fetch";
+type CallReason = "unsettled" | "check-failed" | "credential-header" | "header" | "beta" | "route" | "too-many" | "no-turn" | "billing-mismatch" | "no-credential" | "body-too-large" | "body" | "model" | "max-tokens" | "server-tool" | "server-fetch";
 const CALL_WORDS: Readonly<Record<CallReason, { status: number; type: string; message: string }>> = Object.freeze({
+  unsettled: { status: 503, type: "api_error", message: "An earlier model call in this turn couldn't be charged yet, so nothing more is sent until it is." },
+  "check-failed": { status: 503, type: "api_error", message: "Toolroll couldn't check this call's authority, so nothing was sent." },
   "credential-header": { status: 400, type: "invalid_request_error", message: "Toolroll's sign-in relay chooses the credential itself: a call can't carry its own key, sign-in or service override." },
   header: { status: 400, type: "invalid_request_error", message: "A request header isn't in a form Toolroll's sign-in relay accepts." },
   beta: { status: 400, type: "invalid_request_error", message: "That anthropic-beta feature isn't one Toolroll's sign-in relay allows." },
@@ -153,6 +156,23 @@ function streamRedactor(secrets: readonly string[]): { push: (text: string) => s
   };
 }
 
+/** Every string inside a parsed JSON value, redacted. */
+function redactDeep(value: unknown, secrets: readonly string[]): unknown {
+  if (typeof value === "string") return redact(value, secrets);
+  if (Array.isArray(value)) return value.map(one => redactDeep(one, secrets));
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, one]) => [redact(key, secrets), redactDeep(one, secrets)]));
+  return value;
+}
+/** Whether text about to leave still carries a credential (or a long piece of one), in any JSON spelling of it (\u-escaped, slash-escaped). */
+function leaks(text: string, secrets: readonly string[]): boolean {
+  const plain = text.replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16))).replace(/\\\//g, "/");
+  if (redact(plain, secrets) !== plain || redact(text, secrets) !== text) return true;
+  // Any 16 characters in a row of a credential: one cut apart by an inserted character is still most of it.
+  return secrets.some(secret => { for (let at = 0; at + 16 <= secret.length; at++) if (plain.includes(secret.slice(at, at + 16))) return true; return false; });
+}
+/** An answer header's value, redacted. */
+const redactHeader = (value: string | string[], secrets: readonly string[]): string | string[] => Array.isArray(value) ? value.map(one => redact(one, secrets)) : redact(value, secrets);
+
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 const RELAY_TOKEN = /^tr-relay-[0-9a-f]{48}$/;
 type Grant = { digest: string; thread: string; launch: string; holder: string };
@@ -182,16 +202,25 @@ function currentTurn(store: Store, thread: string, grant: Grant, provider: strin
 // ---- usage, read from the answer --------------------------------------------------------------------------------------
 
 type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number };
-type Meter = { feed: (text: string) => void; finish: () => { complete: boolean; usage: Usage } };
+type Meter = { feed: (text: string) => void; finish: () => { complete: boolean; usage: Usage };
+  /** Whether the answer's terminal event has been read (a stream's message_stop). */
+  stopped: () => boolean };
 const count = (value: unknown): number | null => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 const PARSE_LIMIT = 16 * 1024 * 1024;
 
 /** Anthropic's Messages answers: a streamed one's message_start and message_delta usage (the largest seen of each
  * figure, as they are running totals) and its message_stop; a whole one's `usage`; a token count's `input_tokens`
- * (which costs nothing). Complete only when the answer was read to its end without an error event. */
+ * (which costs nothing). Complete only when the answer was read to its end without an error event AND every required
+ * counter was there as a whole non-negative number: input and output tokens in message_start's usage and output tokens
+ * in a message_delta's (streamed), or input and output tokens in `usage` (whole). A counter that is there but isn't one,
+ * or a missing one, makes the call's cost unknown, never zero. */
 function anthropicMeter(route: "messages" | "count-tokens", streamed: boolean): Meter {
   const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let broken = false, started = false, stopped = false, errored = false, buffer = "";
+  let startUsage = false, deltaUsage = false;
+  /** Whether `raw` is a usage object carrying each of `required` as a whole non-negative number. */
+  const has = (raw: unknown, required: readonly string[]): boolean => raw !== null && typeof raw === "object" && !Array.isArray(raw)
+    && required.every(key => count((raw as Record<string, unknown>)[key]) !== null);
   let read: { complete: boolean; usage: Usage } | null = null;
   const take = (raw: unknown) => {
     if (raw === null || typeof raw !== "object") return;
@@ -204,12 +233,20 @@ function anthropicMeter(route: "messages" | "count-tokens", streamed: boolean): 
     if (data === "") return;
     let parsed: Record<string, unknown>;
     try { parsed = JSON.parse(data) as Record<string, unknown>; } catch { broken = true; return; }
-    if (parsed["type"] === "message_start") { started = true; take((parsed["message"] as Record<string, unknown> | undefined)?.["usage"]); }
-    else if (parsed["type"] === "message_delta") take(parsed["usage"]);
+    if (parsed["type"] === "message_start") {
+      started = true;
+      const raw = (parsed["message"] as Record<string, unknown> | undefined)?.["usage"];
+      if (has(raw, ["input_tokens", "output_tokens"])) startUsage = true;
+      take(raw);
+    } else if (parsed["type"] === "message_delta") {
+      if (has(parsed["usage"], ["output_tokens"])) deltaUsage = true;
+      take(parsed["usage"]);
+    }
     else if (parsed["type"] === "message_stop") stopped = true;
     else if (parsed["type"] === "error") errored = true;
   };
   return {
+    stopped: () => stopped,
     feed(text) {
       if (broken) return;
       buffer += text;
@@ -226,14 +263,14 @@ function anthropicMeter(route: "messages" | "count-tokens", streamed: boolean): 
       read ??= (() => {
         if (streamed) {
           if (!broken && buffer.trim() !== "") event(buffer);
-          return { complete: !broken && started && stopped && !errored, usage };
+          return { complete: !broken && started && startUsage && deltaUsage && stopped && !errored, usage };
         }
         if (broken) return { complete: false, usage };
         try {
           const parsed = JSON.parse(buffer) as Record<string, unknown>;
           if (route === "count-tokens") return { complete: count(parsed["input_tokens"]) !== null, usage };
           take(parsed["usage"]);
-          return { complete: !broken && parsed["type"] === "message" && typeof parsed["usage"] === "object" && parsed["usage"] !== null, usage };
+          return { complete: !broken && parsed["type"] === "message" && has(parsed["usage"], ["input_tokens", "output_tokens"]), usage };
         } catch { return { complete: false, usage }; }
       })();
       return read;
@@ -365,15 +402,25 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
   try { if (file === null || file === "" || file === ":memory:") return refuse("no-state-folder"); state = dirname(realpathSync(file)); } catch { return refuse("no-state-folder"); }
   const log = (line: string) => { try { input.log?.(redact(line)); } catch { /* a listener's trouble is not the call's */ } };
 
-  type Live = { digest: string; turn: string; abort: (why: string) => void };
+  /** A call being forwarded: whose token, launch and turn it spends for. `cut` is set the moment its authority ends (a
+   * writer's cancellation, synchronously): no byte of its answer is forwarded after that. */
+  type Live = { digest: string; launch: string; turn: string; cut: boolean; abort: (why: string) => void };
   const calls = new Set<Live>();
   let pending = 0;
   let closing = false;
+  /** Reservations (thread_relay_pending) of this relay's calls still being forwarded. */
+  const ours = new Set<number>();
+  /** Settlements that couldn't be written, tried again on every watcher tick; meanwhile their reservations stay. */
+  const unsettled = new Map<number, () => boolean>();
 
-  /** Write the call's record, and charge it to its turn when it was forwarded, in one transaction. */
-  const settle = (grant: Grant, record: CallRecord, secrets: readonly string[]): void => {
+  /** Write the call's record, and charge it to its turn when it was forwarded, in one transaction that also clears its
+   * reservation (a reservation already cleared means it was settled or reconciled: nothing is charged twice). Whether
+   * the record is written. */
+  const settle = (grant: Grant, record: CallRecord, secrets: readonly string[], reservation: number | null = null): boolean => {
+    let written = false;
     try {
       store.transact(() => {
+        if (reservation !== null && Number(store.handle.prepare("DELETE FROM thread_relay_pending WHERE id = ?").run(reservation).changes) !== 1) { written = true; return; }
         let cost = 0, basis: FlexibleCostBasis | null = null, detail = record.detail;
         if (record.status !== "refused" && record.turn !== null) {
           const usage = record.usage;
@@ -391,11 +438,28 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           record.model !== null && record.model.length <= 200 ? record.model : null, record.streamed ? 1 : 0, record.status, record.reason, record.httpStatus,
           refused ? 0 : record.usage.input, refused ? 0 : record.usage.output, refused ? 0 : record.usage.cacheRead, refused ? 0 : record.usage.cacheWrite, cost, basis,
           detail === null ? null : redact(detail, secrets).slice(0, 500));
+        written = true;
       });
     } catch (error) {
-      log(`relay: a call's record couldn't be written: ${error instanceof Error ? error.message : String(error)}`);
+      log(redact(`relay: a call's record couldn't be written (its reservation holds the thread until it is): ${error instanceof Error ? error.message : String(error)}`, secrets));
+      return false;
     }
     log(redact(`relay call ${record.status}${record.reason === null ? "" : ` (${record.reason})`} · ${record.route} · ${record.model ?? "-"} · ${record.httpStatus ?? "-"}${record.detail === null ? "" : ` · ${record.detail}`}`, secrets));
+    return written;
+  };
+
+  /** A reservation no call of this relay is forwarding, whose turn has ended: its charge was never recorded (a failed
+   * write, a Toolroll process gone mid-call), so the turn takes it as unknown cost, and it is cleared. Inside the caller's
+   * transaction. */
+  const reconcile = (row: Record<string, unknown>): void => {
+    const id = Number(row["id"]), turnId = String(row["turn"]);
+    if (Number(store.handle.prepare("DELETE FROM thread_relay_pending WHERE id = ?").run(id).changes) !== 1) return;
+    const charged = chargeFlexibleTurn(store, { turn: turnId, usage: { tokensIn: 0, tokensOut: 0, costUsd: null }, incomplete: true });
+    const now = new Date().toISOString();
+    store.handle.prepare(`INSERT INTO thread_relay_call (thread, turn, launch, upstream, at, ended_at, route, model, streamed, status, reason, http_status, cost_microusd, cost_basis, detail)
+      VALUES (?, ?, ?, 'claude', ?, ?, 'other', NULL, 0, 'incomplete', NULL, NULL, 0, 'unknown', ?)`).run(thread, turnId, String(row["launch"]), String(row["reserved_at"]), now,
+      `its charge was never recorded, so it counts as unknown${charged.ok ? "" : ` (${charged.reason})`}`);
+    unsettled.delete(id);
   };
 
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -513,10 +577,29 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       if (auth.billing !== turn.billing) { refused("billing-mismatch"); return; }
       const secrets = [credential.value];
 
-      // At the moment of use: the token still live and the turn still this thread's running one.
-      if (!grantStillLive(store, authed.digest)) { release(); request.resume(); reply(401, "authentication_error", UNAUTHORIZED); return; }
-      const now = currentTurn(store, thread, authed, "claude");
-      if (now === null || now.id !== turn.id) { refused("no-turn"); return; }
+      // At the moment of use, in one transaction: the token still live, the turn still this thread's running one, no
+      // earlier call of this thread left uncharged (one whose turn has ended is reconciled as unknown cost; one in the
+      // running turn holds it), and this call's reservation written before anything is sent.
+      let reservation: number | null = null;
+      let blocked: "unauthorized" | "no-turn" | "unsettled" | null = null;
+      try {
+        store.transact(() => {
+          if (!grantStillLive(store, authed.digest)) { blocked = "unauthorized"; return; }
+          const now = currentTurn(store, thread, authed, "claude");
+          if (now === null || now.id !== turn!.id) { blocked = "no-turn"; return; }
+          for (const row of store.handle.prepare("SELECT id, turn, launch, reserved_at FROM thread_relay_pending WHERE thread = ? ORDER BY id").all(thread)) {
+            if (ours.has(Number(row["id"]))) continue;
+            if (flexibleTurn(store, String(row["turn"]))?.status === "running") { blocked = "unsettled"; return; }
+            reconcile(row);
+          }
+          reservation = Number(store.handle.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, reserved_at) VALUES (?, ?, ?, ?, ?)")
+            .run(thread, turn!.id, authed.launch, authed.holder, new Date().toISOString()).lastInsertRowid);
+        });
+      } catch { refused("check-failed"); return; }
+      if (blocked === "unauthorized") { release(); request.resume(); reply(401, "authentication_error", UNAUTHORIZED); return; }
+      if (blocked !== null) { refused(blocked); return; }
+      const reserved = reservation!;
+      ours.add(reserved);
 
       // Forward: the fixed origin, the exact route, headers built here, the credential added here, and exactly the object
       // that was checked (written again from it, never the agent's own bytes).
@@ -531,9 +614,14 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       const routeKind = route.kind;
       const turnId = turn.id;
       // The call is recorded and charged before the agent sees its answer end: its next call finds this one on the record.
-      const live = await forward(target, headers, sent, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed.digest, turnId,
-        result => settle(authed, { turn: turnId, at, route: routeKind, model, streamed: result.streamed, status: result.status, reason: null, httpStatus: result.httpStatus,
-          usage: result.usage, charge: result.charge, detail: result.detail }, secrets));
+      const live = await forward(target, headers, sent, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed, turnId,
+        result => {
+          const record: CallRecord = { turn: turnId, at, route: routeKind, model, streamed: result.streamed, status: result.status, reason: null, httpStatus: result.httpStatus,
+            usage: result.usage, charge: result.charge, detail: result.detail };
+          // A settlement that can't be written keeps its reservation (the thread is held) and is tried again.
+          if (!settle(authed, record, secrets, reserved)) unsettled.set(reserved, () => settle(authed, record, secrets, reserved));
+          ours.delete(reserved);
+        });
       calls.delete(live);
     } finally { release(); }
   };
@@ -542,7 +630,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
   /** One call to the service, and its answer back to the agent (redacted, metered). Never follows a redirect. `ended`
    * records the call; it runs before the agent's answer is finished. */
   const forward = (target: URL, headers: OutgoingHttpHeaders, body: Buffer, response: ServerResponse, route: "messages" | "count-tokens", streamedAsked: boolean,
-    upstream: RelayUpstream, secrets: readonly string[], started: (live: Live) => void, digest: string, turn: string, ended: (result: Forwarded) => void) =>
+    upstream: RelayUpstream, secrets: readonly string[], started: (live: Live) => void, grant: Grant, turn: string, ended: (result: Forwarded) => void) =>
     new Promise<Live>(resolve => {
       const free = route === "count-tokens";
       let sent = false, settled = false, streamed = streamedAsked;
@@ -563,7 +651,8 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           resolve(live);
         }
       };
-      const live: Live = { digest, turn, abort: why => {
+      const live: Live = { digest: grant.digest, launch: grant.launch, turn, cut: false, abort: why => {
+        live.cut = true;
         outgoing.destroy();
         finish("aborted", null, why, false, () => {
           if (!response.headersSent) response.writeHead(409, { "content-type": "application/json", "cache-control": "no-store" }).end(errorBody("invalid_request_error", `Stopped: ${why}.`));
@@ -596,11 +685,17 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
           let size = 0;
           answer.on("data", (chunk: Buffer) => { if (size < ERROR_BODY_LIMIT) { parts.push(chunk); size += chunk.length; } });
           answer.on("end", () => {
-            const text = redact(Buffer.concat(parts).toString("utf8").slice(0, ERROR_BODY_LIMIT), secrets);
-            let out: string;
-            try { const value = JSON.parse(text) as unknown; out = value !== null && typeof value === "object" ? JSON.stringify(value) : errorBody("api_error", text.slice(0, 2000)); } catch { out = errorBody("api_error", text.slice(0, 2000)); }
+            // Parsed first, every string in it redacted (an escaped spelling is a plain one by then), written again; text
+            // that isn't JSON is redacted as it is. Then the exact bytes about to leave are checked once more, in every
+            // JSON spelling: anything still carrying a credential is withheld whole.
+            const raw = Buffer.concat(parts).toString("utf8").slice(0, ERROR_BODY_LIMIT);
+            let parsed: unknown = undefined;
+            try { parsed = JSON.parse(raw) as unknown; } catch { parsed = undefined; }
+            let out = parsed !== null && typeof parsed === "object" ? JSON.stringify(redactDeep(parsed, secrets)) : errorBody("api_error", redact(raw, secrets).slice(0, 2000));
+            if (leaks(out, secrets)) out = errorBody("api_error", "The model service's error was withheld: it carried a credential.");
+            const text = out;
             const pass: OutgoingHttpHeaders = { "content-type": "application/json", "cache-control": "no-store" };
-            for (const [name, value] of Object.entries(answer.headers)) if (PASS_BACK.test(name) && name !== "content-type" && value !== undefined) pass[name] = value;
+            for (const [name, value] of Object.entries(answer.headers)) if (PASS_BACK.test(name) && name !== "content-type" && value !== undefined) pass[name] = redactHeader(value, secrets);
             let kind = "error";
             try { const value = JSON.parse(text) as { error?: { type?: unknown } }; if (typeof value.error?.type === "string" && /^[a-z_]{1,60}$/.test(value.error.type)) kind = value.error.type; } catch { /* not JSON */ }
             finish("upstream-error", status, `the model service said ${kind}`, false, () => { if (!response.headersSent) response.writeHead(status, pass).end(out); });
@@ -611,23 +706,37 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
         streamed = /^text\/event-stream/i.test(String(answer.headers["content-type"] ?? ""));
         meter = USAGE_READERS[upstream.usage](route, streamed);
         const pass: OutgoingHttpHeaders = { "cache-control": "no-store" };
-        for (const [name, value] of Object.entries(answer.headers)) if (PASS_BACK.test(name) && value !== undefined) pass[name] = value;
+        for (const [name, value] of Object.entries(answer.headers)) if (PASS_BACK.test(name) && value !== undefined) pass[name] = redactHeader(value, secrets);
         response.writeHead(status, pass);
         const decoder = new StringDecoder("utf8");
         const redactor = streamRedactor(secrets);
+        /** Its token and its turn, re-read from the record (any process's revocation); unreadable is no. */
+        const stillAuthorized = (): boolean => { try { return grantStillLive(store, grant.digest) && flexibleTurn(store, turn)?.status === "running"; } catch { return false; } };
+        const lapsed = () => finish("aborted", status, "its authority ended before its answer did", meter!.finish().complete, () => response.destroy());
+        // A whole answer is held until its end is checked; a streamed one goes out as it comes, its terminal event only
+        // after a check made once it has arrived.
+        let held = "";
         answer.on("data", (chunk: Buffer) => {
-          if (settled) return;
+          // Re-checked before every chunk: a call whose authority ended (cut, synchronously, by the writer that ended it)
+          // forwards nothing more.
+          if (settled || live.cut) return;
           const text = decoder.write(chunk);
+          const wasStopped = meter!.stopped();
           meter!.feed(text);
           const out = redactor.push(text);
+          if (!streamed) { held += out; return; }
+          if (!wasStopped && meter!.stopped() && !stillAuthorized()) { lapsed(); return; }
           if (out !== "") response.write(out);
         });
         answer.on("end", () => {
-          if (settled) return;
+          if (settled || live.cut) return;
           const rest = decoder.end();
           if (rest !== "") meter!.feed(rest);
-          const out = redactor.push(rest) + redactor.flush();
+          const out = held + redactor.push(rest) + redactor.flush();
           const read = meter!.finish();
+          // Before the answer completes: its token and its turn are re-read from the record (any process's revocation);
+          // one that lapsed, or can't be read, ends the answer cut off, still charged for what it used.
+          if (!stillAuthorized()) { lapsed(); return; }
           finish(read.complete ? "completed" : "incomplete", status, read.complete ? null : "the answer's usage couldn't be read whole", read.complete, () => response.end(out));
         });
         const cutOff = () => { if (!settled) finish("incomplete", status, "the model service's answer was cut off", false, () => response.destroy()); };
@@ -638,16 +747,29 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       outgoing.end(body);
     });
 
-  // A call still running when its token is revoked (the thread stopped, custody unresolved) or its turn ends is cut.
+  // A call whose authority ends is cut at once: the writer that ended it (a turn finished or interrupted, a token or a
+  // launch's tokens revoked) tells every relay here, which stops forwarding that call's answer before its next byte; the
+  // call's record is written right after the writer's own transaction.
+  const cut = (call: Live, why: string) => { if (call.cut) return; call.cut = true; calls.delete(call); queueMicrotask(() => call.abort(why)); };
+  const stopListening = onRelayCancel(cancel => {
+    for (const call of [...calls]) {
+      if (cancel.turn !== undefined && cancel.turn === call.turn) cut(call, "the turn ended");
+      else if (cancel.launch !== undefined && cancel.launch === call.launch) cut(call, "this thread's agent was stopped");
+      else if (cancel.digest !== undefined && cancel.digest === call.digest) cut(call, "its relay token was revoked");
+    }
+  });
+  // And from the record, for another Toolroll process's revocation: a call whose token or turn lapsed, or whose
+  // authority can't be read, is cut. Settlements that couldn't be written are tried again here.
   const watcher = setInterval(() => {
     for (const call of [...calls]) {
       let why: string | null = null;
       try {
         if (!grantStillLive(store, call.digest)) why = "this thread's agent was stopped";
         else if (flexibleTurn(store, call.turn)?.status !== "running") why = "the turn ended";
-      } catch { why = null; }
-      if (why !== null) { calls.delete(call); call.abort(why); }
+      } catch { why = "Toolroll couldn't check its authority"; }
+      if (why !== null) cut(call, why);
     }
+    for (const [id, retry] of [...unsettled]) if (retry()) unsettled.delete(id);
   }, WATCH_MS);
   watcher.unref();
 
@@ -683,7 +805,8 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
     close: () => new Promise<void>(done => {
       closing = true;
       clearInterval(watcher);
-      for (const call of [...calls]) { calls.delete(call); call.abort("the relay closed"); }
+      stopListening();
+      for (const call of [...calls]) { calls.delete(call); call.cut = true; call.abort("the relay closed"); }
       server.closeAllConnections();
       server.close(() => done());
     }),

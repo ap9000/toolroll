@@ -41,6 +41,7 @@ import { threadLevelAllowed } from "./flexible-levels.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel, type FlexibleRefusalReason, type FlexibleTerms } from "./flexible.js";
 import { budgetHoldWords, budgetLabel, budgetStates, canPrice, countsToward, monthOf, priceWork, spendItems, type Billing, type SpendItem } from "./spend.js";
 import type { Store } from "./store.js";
+import { relayCancel } from "./flexible-relay-cancel.js";
 
 // ---- records ----------------------------------------------------------------------------------------------------------
 
@@ -163,7 +164,7 @@ function usageOf(store: Store, day: string, repo: string | null): { threads: num
   const where = repo === null ? "" : " AND repo = ?";
   const params = repo === null ? [day] : [day, repo];
   const today = store.handle.prepare(`SELECT COUNT(*) AS turns, COALESCE(SUM(cost_microusd), 0) AS spent,
-      COALESCE(SUM(CASE WHEN billing = 'api-key' AND status IN ('finished', 'interrupted', 'unknown') AND cost_basis = 'unknown' THEN 1 ELSE 0 END), 0) AS blind
+      COALESCE(SUM(CASE WHEN billing = 'api-key' AND status IN ('finished', 'interrupted', 'unknown') AND (cost_basis = 'unknown' OR id IN (SELECT turn FROM thread_relay_pending)) THEN 1 ELSE 0 END), 0) AS blind
     FROM thread_turn WHERE utc_day = ? AND status <> 'withdrawn'${where}`).get(...params)!;
   const live = store.handle.prepare(`SELECT COUNT(DISTINCT thread) AS n FROM thread_turn WHERE status IN ('admitted', 'running')${where}`).get(...(repo === null ? [] : [repo]))!;
   return { threads: Number(live["n"]), turns: Number(today["turns"]), spent: Number(today["spent"]), blind: Number(today["blind"]) };
@@ -508,6 +509,8 @@ export function finishFlexibleTurn(store: Store, input: { turn: string; holder: 
     } else {
       store.handle.prepare("UPDATE thread_turn SET status = ?, ended_at = ?, end_detail = ?, cost_basis = 'unknown' WHERE id = ?").run(input.outcome, at, detail, turn.id);
     }
+    // Its relay calls lose their authority now, not at the relay's next look.
+    relayCancel({ turn: turn.id });
     return { ok: true as const, turn: flexibleTurn(store, turn.id)! };
   });
 }
@@ -533,6 +536,7 @@ export function interruptFlexibleTurnsOf(store: Store, input: { holder: string; 
       } else {
         const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";
         store.handle.prepare("UPDATE thread_turn SET status = 'interrupted', ended_at = ?, end_detail = 'interrupted when Toolroll restarted', cost_basis = ? WHERE id = ?").run(at, basis, turn.id);
+        relayCancel({ turn: turn.id });
         interrupted++;
       }
     }
@@ -608,6 +612,7 @@ export function interruptFlexibleThreadTurns(store: Store, input: { thread: stri
       if (turn.status === "admitted") { withdrawTurn(store, turn, input.detail, at); withdrawn++; continue; }
       const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";
       store.handle.prepare("UPDATE thread_turn SET status = 'interrupted', ended_at = ?, end_detail = ?, cost_basis = ? WHERE id = ? AND status = 'running'").run(at, input.detail.slice(0, 2000), basis, turn.id);
+      relayCancel({ turn: turn.id });
       interrupted++;
     }
     return { ok: true as const, withdrawn, interrupted };

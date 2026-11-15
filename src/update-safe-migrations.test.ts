@@ -81,7 +81,7 @@ describe("update-safe migrations", () => {
     // v163 only adds which notes a signed-in person typed (a table): no saved row changes.
     // v164 only adds Flexible threads' turns and the installation's Flexible limits (tables): no saved row changes.
     // v165 only adds Flexible threads' agent launches and levels (tables): no saved row changes.
-    // v166 only adds the calls Flexible threads' sign-in relay handled (a table): no saved row changes.
+    // v166 only adds the calls Flexible threads' sign-in relay handled and reserved (tables): no saved row changes.
     expect([...UPDATE_SAFE_MIGRATIONS]).toEqual([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166]);
     expect(UPDATE_SAFE_MIGRATIONS.every(version => version > 1 && version <= SCHEMA_VERSION)).toBe(true);
   });
