@@ -65,6 +65,13 @@ export function safeWords(subject?: OutboundSubject | null): string {
   return name === null ? "An update is ready. Open it in Toolroll." : `An update is ready in ${name}. Open it in Toolroll.`;
 }
 
+/** One message cut into chunks (parts, sections, activities), checked whole before it is cut: a key or a folder a
+ * chunk boundary would cut in two ("/Use" | "rs/me/…") is still seen. Then the whole message goes as one chunk, its
+ * safe version; otherwise the chunks go as cut. Each chunk is checked again by its transport's guard on the way out. */
+export function checkedChunks(whole: string, chunks: readonly string[], subject?: OutboundSubject | null): string[] {
+  return privateValue(whole) ? [safeWords(subject)] : [...chunks];
+}
+
 /** The safe version's button. */
 export const OPEN_IN_TOOLROLL = "Open in Toolroll";
 

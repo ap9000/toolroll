@@ -45,7 +45,7 @@ import {
 import { type Store } from "./store.js";
 import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
-import { guardSlack, taskSubject } from "./outbound-privacy.js";
+import { checkedChunks, guardSlack, taskSubject } from "./outbound-privacy.js";
 
 export type SlackChatOptions = {
   store: Store;
@@ -217,7 +217,8 @@ export function slackBlocks(
     });
     text = lines.slice(1).join("\n").trim();
   }
-  for (const part of split(text))
+  // Checked whole before the cut (outbound-privacy.ts), then the call again at the client.
+  for (const part of checkedChunks(text, split(text)))
     blocks.push({
       type: "section",
       text: { type: "plain_text", text: part, emoji: true },
@@ -230,7 +231,7 @@ export function slackVoiceBlocks(
   mrkdwn: string,
   buttons: Record<string, unknown>[] = [],
 ): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = split(mrkdwn).map((part) => ({
+  const blocks: Record<string, unknown>[] = checkedChunks(mrkdwn, split(mrkdwn)).map((part) => ({
     type: "section",
     // verbatim: Slack never turns words of the reply into a mention, a channel or a link (renderReply escapes the rest).
     text: { type: "mrkdwn", text: part, verbatim: true },

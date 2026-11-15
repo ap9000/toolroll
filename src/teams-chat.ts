@@ -16,7 +16,7 @@ import { chatResultHref } from "./chat-controls.js";
 import { TeamsError, type TeamsApi } from "./teams-api.js";
 import { readTeamsSubmit } from "./contracts/teams-callback.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
-import { guardTeams, taskSubject } from "./outbound-privacy.js";
+import { checkedChunks, guardTeams, taskSubject } from "./outbound-privacy.js";
 const TEAMS_GONE = "Teams refused the request (404)";
 const TEAMS_SLOW = "Teams asked to slow down";
 
@@ -147,7 +147,8 @@ export function teamsCard(text: string, actions: Record<string, unknown>[]): Rec
 /** Text longer than one Teams message, as several, never cut: the leading parts as plain messages, and the last as
  * `last` makes it (a card with the buttons, or a message), so the buttons come after all of the text. */
 export function teamsMessages(text: string, markdown: boolean, last: (text: string) => Record<string, unknown>): Record<string, unknown>[] {
-  const parts = text.length <= PLATFORM_LIMITS.teams ? [text] : splitChatText(text, PLATFORM_LIMITS.teams);
+  // Checked whole before the cut (outbound-privacy.ts), then each activity again at the client.
+  const parts = checkedChunks(text, text.length <= PLATFORM_LIMITS.teams ? [text] : splitChatText(text, PLATFORM_LIMITS.teams));
   return parts.map((part, at) => at === parts.length - 1 ? last(part) : { type: "message", text: part, textFormat: markdown ? "markdown" : "plain" });
 }
 

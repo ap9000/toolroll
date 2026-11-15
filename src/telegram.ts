@@ -22,7 +22,7 @@
 import { recordTypedStart, typedStartCard, typedYes } from "./typed-start.js";
 import { telegramCardMessage } from "./card-render.js";
 import { flowDoneCard } from "./flow-result-card.js";
-import { guardTelegram, outboundPrivate, taskSubject, type OutboundSubject } from "./outbound-privacy.js";
+import { guardTelegram, outboundPrivate, privateValue, safeWords, taskSubject, type OutboundSubject } from "./outbound-privacy.js";
 import { applyTelegramQuestionReply, applyTelegramQuestionTap, openQuestionOf, telegramQuestionButtons } from "./subagent-question.js";
 import { acceptanceEvidenceText } from "./chat-acceptance.js";
 import { verifyApproverStanding } from "./principal.js";
@@ -1271,6 +1271,12 @@ async function deliverDigest(
   rows: readonly TelegramDelivery[], since: string | null, clock: () => Date, titleOf?: (taskId: string) => string,
 ): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> {
   const text = digestText(rows, since, clock(), titleOf);
+  // Checked whole before the cut (outbound-privacy.ts): a folder a part boundary would cut in two is still seen, and
+  // the digest goes as one message, its safe version, for every row. Each part is checked again at the client.
+  if (privateValue(text)) {
+    const sent = await sender(safeWords({ project: new Set(rows.map(row => row.project)).size === 1 ? rows[0]!.project : null }), undefined, rows);
+    return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
+  }
   // Track the exact rows represented by each text part. A split row may bind
   // several messages; a digest message may bind several rows.
   let offset = text.indexOf("\n\n") + 2;

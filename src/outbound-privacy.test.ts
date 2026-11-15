@@ -11,7 +11,7 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { ChatState, chatHash } from "./chat-delivery-state.js";
 import { bridgePass, createTransport, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type TelegramTransport } from "./telegram.js";
-import { deliverSlackPart, planSlackNotifications, type SlackChatOptions } from "./slack-chat.js";
+import { deliverSlackPart, planSlackNotifications, processSlackEvent, receiveSlack, type SlackChatOptions } from "./slack-chat.js";
 import { deliverDiscordPart, planDiscordNotifications, type DiscordChatOptions } from "./discord-chat.js";
 import { deliverTeamsPart, planTeamsNotifications, type TeamsChatOptions } from "./teams-chat.js";
 import { slackApi, type SlackApi } from "./slack-api.js";
@@ -21,7 +21,14 @@ import { postWebhook } from "./webhooks.js";
 import { buildPushPayload, privacySafeLine } from "./push.js";
 import { saveEmailSettings, sendEmail, type Mail } from "./flow-actions.js";
 import { notificationCommandEnv } from "./notification-delivery.js";
-import { privateWords, projectName, safeLink, safeWords } from "./outbound-privacy.js";
+import { checkedChunks, privateWords, projectName, safeLink, safeWords } from "./outbound-privacy.js";
+import { splitChatText } from "./chat-delivery.js";
+import { shapeReplyParts } from "./reply-shape.js";
+import { PLATFORM_LIMITS } from "./text-limits.js";
+import { PART_CAP as LEAD_PART_CAP } from "./telegram-lead.js";
+import { slackBlocks } from "./slack-chat.js";
+import { liveText } from "./chat-live.js";
+import { telegramDraftOf } from "./telegram-live.js";
 
 const PRIVATE_TITLES = ["Rotate ~/.ssh/id_rsa", "Read /Users/me/secret before the build"] as const;
 const SECRETS = ["~/.ssh/id_rsa", "/Users/me/secret"] as const;
@@ -30,6 +37,11 @@ const ORIGIN = "https://console.example";
 const SAFE = "An update is ready in shop. Open it in Toolroll.";
 
 /** Which private words appear in any call — as sent, or once a chat app's escapes ("\~", "\_") are taken off. */
+/** A message whose private path sits exactly across a chunk boundary at `size`: ":/Use" ends one chunk, "rs/me/secret"
+ * starts the next, so neither chunk alone names it. No spaces, so every splitter cuts at the size itself. */
+const straddling = (size: number): string => `${"x".repeat(size - 5)}:${SECRETS[1]}${"y".repeat(size)}`;
+const cleanEach = (chunks: readonly string[]): boolean => chunks.length > 1 && chunks.every(one => !privateWords(one));
+
 const leaks = (calls: unknown): string[] => SECRETS.filter(one => JSON.stringify(calls).replaceAll("\\\\", "").includes(one));
 
 describe("the rule", () => {
@@ -52,6 +64,27 @@ describe("the rule", () => {
     expect(safeLink(`${ORIGIN}/open?path=/Users/me/secret`)).toBeNull();
     expect(safeLink(`${ORIGIN}/open?path=%2FUsers%2Fme`)).toBeNull();
     expect(safeLink("vscode://file/x")).toBeNull();
+  });
+
+  test("a message is checked whole before it is cut: a path a chunk boundary cuts in two still sends the safe version", () => {
+    const text = straddling(2800);
+    const chunks = splitChatText(text, 2800);
+    expect(cleanEach(chunks)).toBe(true);
+    expect(chunks[0]!.endsWith(":/Use")).toBe(true);
+    expect(checkedChunks(text, chunks, { project: "/srv/shop" })).toEqual([SAFE]);
+    // Slack's sections and every app's live window are cut the same way, and checked whole the same way.
+    expect(JSON.stringify(slackBlocks(`Title\n${text}`))).not.toContain(":/Use");
+    expect(JSON.stringify(slackBlocks(`Title\n${text}`))).toContain("An update is ready. Open it in Toolroll.");
+    for (const platform of ["slack", "discord", "teams"] as const) {
+      const live = liveText({ phase: "writing", status: "Writing…", text: straddling(1000) }, platform, 1000)!;
+      expect(live, platform).not.toContain(":/Use");
+      expect(live, platform).toContain("An update is ready. Open it in Toolroll.");
+    }
+    const draft = telegramDraftOf({ phase: "writing", status: "Writing…", text: straddling(4000) })!;
+    expect(draft.text).not.toContain(":/Use");
+    expect(draft.text).toContain("An update is ready. Open it in Toolroll.");
+    const plain = `${"x".repeat(2795)}${"y".repeat(2800)}`;
+    expect(checkedChunks(plain, splitChatText(plain, 2800))).toEqual(splitChatText(plain, 2800));
   });
 });
 
@@ -85,10 +118,10 @@ describe("every transport sends the safe version", () => {
 
   describe("Telegram", () => {
     const BOT = "777000", CHAT = 4242;
-    let calls: Array<{ method: string; params: Record<string, unknown> }>;
+    let calls: Array<{ method: string; params: Record<string, unknown> }>, updates: unknown[][] = [];
     const transport: TelegramTransport = async (method, params) => {
       calls.push({ method, params });
-      if (method === "getUpdates") return { ok: true, result: [] };
+      if (method === "getUpdates") return { ok: true, result: updates.shift() ?? [] };
       return { ok: true, result: method === "sendMessage" ? { message_id: 100 + calls.length } : true };
     };
     beforeEach(() => {
@@ -113,6 +146,21 @@ describe("every transport sends the safe version", () => {
       await pass();
       expect(JSON.stringify(sent())).toContain(ORDINARY);
       expect(JSON.stringify(calls)).not.toContain("Open it in Toolroll");
+    });
+
+    test("the lead's reply with a path exactly across a part boundary goes as the safe version, never in pieces", async () => {
+      const reply = straddling(LEAD_PART_CAP);
+      expect(cleanEach(shapeReplyParts(reply, LEAD_PART_CAP, {}))).toBe(true);
+      for (const phase of ["build", "plan", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", now);
+      store.setChatConfig({ provider: "claude-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", now);
+      updates = [[{ update_id: 2, message: { message_id: 1002, chat: { id: CHAT, type: "private" }, from: { id: CHAT }, text: "Where are the notes?" } }]];
+      await bridgePass(store, { botId: BOT, transport, clock: () => now, deliver: false, readProjects: async () => [repo],
+        conversation: { evidenceRoot: join(dir, "evidence"), phoneOrigin: () => ORIGIN, liveTiming: { ackGapMs: 0, draftSpacingMs: 0 },
+          subscriptionRunner: async () => ({ ok: true, answer: { text: reply, calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } }) } });
+      const said = sent().map(one => String(one.params["text"]));
+      expect(said).toContain("An update is ready. Open it in Toolroll.");
+      expect(leaks(calls)).toEqual([]);
+      expect(JSON.stringify(calls)).not.toContain(":/Use");
     });
 
     test("the real client guards every call, whatever sent it: the private words never reach the network", async () => {
@@ -172,6 +220,24 @@ describe("every transport sends the safe version", () => {
       await deliver();
       expect(JSON.stringify(sent())).toContain(ORDINARY);
       expect(JSON.stringify(calls)).not.toContain("Open it in Toolroll");
+    });
+
+    test("the lead's reply with a path exactly across a part boundary goes as the safe version, never in pieces", async () => {
+      const reply = straddling(2800);
+      // The parts the reply is cut into: neither names the path on its own.
+      expect(cleanEach(shapeReplyParts(reply, 2800, { appOrigin: ORIGIN }))).toBe(true);
+      for (const phase of ["build", "plan", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", now);
+      store.setChatConfig({ provider: "claude-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, "alex", now);
+      options = { ...options, subscriptionRunner: async () => ({ ok: true, answer: { text: reply, calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } }) };
+      expect(receiveSlack(state, ID, "events_api", { api_app_id: ID.app, team_id: ID.team, event_id: "Ev1",
+        event: { type: "message", channel_type: "im", user: MEMBER, channel: CHANNEL, ts: "1789700000.000001", text: "Where are the notes?" } }, now)).toBe(true);
+      await processSlackEvent(options);
+      for (let i = 0; i < 20 && (await deliverSlackPart(options)); i++);
+      const said = sent().map(one => String(one.args["text"]));
+      expect(said.length).toBeGreaterThan(0);
+      expect(leaks(calls)).toEqual([]);
+      expect(JSON.stringify(calls)).not.toContain(":/Use");
+      expect(said.some(one => one.startsWith("An update is ready. Open it in Toolroll."))).toBe(true);
     });
 
     test("the real client guards every call, and refuses one it can't make safe", async () => {
@@ -283,6 +349,19 @@ describe("every transport sends the safe version", () => {
       await deliver();
       expect(JSON.stringify(sent())).toContain(ORDINARY);
       expect(JSON.stringify(calls)).not.toContain("Open it in Toolroll");
+    });
+
+    test("a message with a path exactly across the boundary of two Teams messages goes as the safe version, never in pieces", async () => {
+      const text = straddling(PLATFORM_LIMITS.teams);
+      expect(cleanEach(splitChatText(text, PLATFORM_LIMITS.teams))).toBe(true);
+      const binding = state.bindingFor(credentials.installation, ALEX)!;
+      state.enqueue({ id: "long-part", installation: credentials.installation, binding: binding.id, kind: "notice", channel: DM, member: ALEX, ts: "x", thread: "x", payload: "{}", created: now.toISOString() });
+      state.plan("long-part", [{ text, link: { label: "Open", path: "/flows/1?card=2" } }], now);
+      for (let i = 0; i < 20 && (await deliverTeamsPart(options)); i++);
+      expect(sent()).toHaveLength(1);
+      expect(leaks(calls)).toEqual([]);
+      expect(JSON.stringify(calls)).not.toContain(":/Use");
+      expect(JSON.stringify(sent()[0]!.body)).toContain("An update is ready. Open it in Toolroll.");
     });
 
     test("the real client guards every call", async () => {
