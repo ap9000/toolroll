@@ -341,7 +341,7 @@ describe("decisions finish in the chat app", () => {
       "Refuse over-limit payouts.", "Keep the public API unchanged.", "A third line the card once left out.", "",
       "Done when:", "• Over-limit payouts are refused. (runs automatically)", "",
       "Agent: Claude Sonnet plans, builds, fixes and reviews",
-      "May touch: only src/guard.ts · network: the agent's provider · tools: file edits and routine commands; anything risky stops",
+      "Files: only src/guard.ts", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops",
       "May cost: up to $2.00 per attempt; the agent is stopped there",
       "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed",
     ].join("\n")}\n\nApprove and start "Refuse over-limit payouts"? This approves exactly this plan.`);
@@ -387,7 +387,7 @@ describe("decisions finish in the chat app", () => {
     // Every word (scopeTermsText), then the summary's other rows: who builds, what it may touch, the usual settings.
     expect(armed.text).toContain("Goal:\nRefuse over-limit payouts.");
     expect(armed.text).toMatch(/\nAgent: Claude [^\n]+ builds/);
-    expect(armed.text).toContain("\nMay touch: only src/guard.ts · network:");
+    expect(armed.text).toContain("\nFiles: only src/guard.ts\nNetwork: ");
     expect(armed.text).toContain("Your usual project settings: checks Default");
     expect(armed.labels).toContain("Approve & start");
     // Between the card and the yes, the project's usual writes widen: the card no longer says what is usual.
@@ -652,10 +652,10 @@ describe("decisions finish in the chat app", () => {
         "1. Calmer button", "Goal:", "From youiyoux request r-0000000001 on /flows.", "", "Make calmer button on /flows.", "", "Not this:", "- New dependencies", "",
         "Files: src/button.tsx", "", "Done when:", "• Calmer button is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`, "",
         // Then the approval summary's other rows, bound with the words (approval-summary.ts).
-        agent, "May touch: only src/button.tsx · network: the agent's provider · tools: file edits and routine commands; anything risky stops", "May cost: no cap", "", usual, "",
+        agent, "Files: only src/button.tsx", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: no cap: an attempt runs until it finishes or reaches its time limit", "", usual, "",
         "2. Wider page", "Goal:", "From youiyoux request r-0000000002 on /flows.", "", "Make wider page on /flows.", "", "Not this:", "- New dependencies", "",
         "Files: any file (no file list)", "", "Done when:", "• Wider page is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`, "",
-        agent, "May touch: any file · network: the agent's provider · tools: file edits and routine commands; anything risky stops", "May cost: no cap", "", usual,
+        agent, "Files: any file in the project", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: no cap: an attempt runs until it finishes or reaches its time limit", "", usual,
       ].join("\n"));
       expect(card.labels).toEqual(["Approve all (2)", "Approve 1", "Open 1 ↗", "Approve 2", "Open 2 ↗"]);
       // A plain plan card never approves a change request: only its own card, which shows every word.

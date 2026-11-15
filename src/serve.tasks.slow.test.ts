@@ -1226,7 +1226,8 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     // approval form the person signs sits in the Approval row.
     const native = new Window();
     native.document.body.innerHTML = draftHtml;
-    expect([...native.document.querySelectorAll(".k-steprows > .k-steprow")].map(one => one.getAttribute("data-step-row"))).toEqual(["plan", "approve", "build", "checks", "ready"]);
+    // While the approval waits its card holds the plan: there is no Plan row of its own (the terms diet).
+    expect([...native.document.querySelectorAll(".k-steprows > .k-steprow")].map(one => one.getAttribute("data-step-row"))).toEqual(["approve", "build", "checks", "ready"]);
     expect(native.document.querySelector(".k-steprow-body[hidden]")).toBeNull();
     expect(native.document.querySelector('[data-step-row="approve"] form.approval-sheet')).not.toBeNull();
     expect(native.document.querySelectorAll("form.approval-sheet")).toHaveLength(1);

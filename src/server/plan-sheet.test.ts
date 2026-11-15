@@ -92,16 +92,28 @@ function termsOf(markup: string): string[] {
   return out;
 }
 
-/** The sheet's only fold: the usual project settings (approval-summary.ts), the same rows on both. */
-function onlyUsualFolded(sheet: string, old: string): void {
+/** The sheet's folds: the usual project settings (approval-summary.ts), the same rows on both; and a revision's one
+ * "Full plan" (the plan's own lead and steps: the signed goal and requirements stay in the open beside it). */
+function onlyUsualFolded(sheet: string, old: string, revision: boolean): void {
   const host = document.createElement("div");
   host.innerHTML = sheet;
   const folds = [...host.querySelectorAll("details")];
-  expect(folds.every(one => one.hasAttribute("data-terms-usual"))).toBe(true);
-  expect(folds.length).toBeLessThanOrEqual(1);
+  expect(folds.every(one => one.hasAttribute("data-terms-usual") || revision && one.hasAttribute("data-plan-full"))).toBe(true);
+  const usual = folds.filter(one => one.hasAttribute("data-terms-usual"));
+  expect(usual.length).toBeLessThanOrEqual(1);
   const was = document.createElement("div");
   was.innerHTML = old;
-  expect(folds[0]?.textContent ?? "").toBe(was.querySelector("[data-terms-usual]")?.textContent ?? "");
+  expect(usual[0]?.textContent ?? "").toBe(was.querySelector("[data-terms-usual]")?.textContent ?? "");
+  // The full plan holds none of the signed goal or requirements, and no risk.
+  const full = host.querySelector("[data-plan-full]");
+  if (full !== null) expect(full.querySelector(".approval-goal, .plan-sheet-done, [data-terms-warning], [data-terms-risky]")).toBeNull();
+}
+
+/** A revision's Full plan, read when a term is looked for there (the plan's advisory lead and steps). */
+function fullPlanText(markup: string): string {
+  const host = document.createElement("div");
+  host.innerHTML = markup;
+  return (host.querySelector("[data-plan-full]")?.textContent ?? "").replace(/\s+/g, " ");
 }
 
 /** The new sheet's text a person can see: nothing folded, nothing hidden. */
@@ -113,13 +125,17 @@ function visibleText(markup: string): string {
 }
 
 for (const [name, input] of Object.entries(CASES)) {
-  test(`plan sheet parity, ${name}: every term the approval sheet shows is in the plan sheet, nothing folded`, () => {
+  test(`plan sheet parity, ${name}: every term the approval sheet shows is in the plan sheet, folded only as the usual settings or a revision's full plan`, () => {
     const parts = withFormToken("c", () => approvalSheetParts(input));
     const old = htmlString(parts.lead) + htmlString(parts.rows) + htmlString(parts.details);
     const sheet = withFormToken("c", () => htmlString(planSheetHtml(input)));
-    onlyUsualFolded(sheet, old);
-    const shown = visibleText(sheet);
-    const terms = termsOf(old);
+    const revision = input.revision !== null || /— repair exactly/.test(input.scope.goal);
+    onlyUsualFolded(sheet, old, revision);
+    // Said differently on purpose (the terms diet): a repair's lead is one "Revises build #N: fixes …" line, and its brief
+    // stands on its own line with each requirement it names said beside its id. Every signed word is still there.
+    const shown = `${visibleText(sheet)} ${fullPlanText(sheet)}`.replace(/ \(“[^”]*”\)/g, "");
+    const lower = (text: string) => /^[A-Z][a-z]/.test(text) ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text;
+    const terms = termsOf(old).map(term => term.replace(/^Fixes what (.+?) missed: (.*)$/s, (_all, build: string, what: string) => `Revises ${build}: fixes ${lower(what)}`).replace(/ — (repair exactly)/, " $1"));
     expect(terms.length).toBeGreaterThan(5);
     expect(terms.filter(term => !said(shown, term)), `missing from the ${name} plan sheet`).toEqual([]);
     // Each requirement says how it is proven, in the sheet's words, and no internal id shows.
@@ -135,10 +151,10 @@ for (const [name, input] of Object.entries(CASES)) {
 test("the fixtures carry what they are named for", () => {
   expect(chainTermsLines(CASES["fallback"]!.scope).length).toBeGreaterThan(1);
   const fallback = visibleText(withFormToken("c", () => htmlString(planSheetHtml(CASES["fallback"]!))));
-  // The paid fallback and an earlier running version are warnings: said under Worth knowing.
-  expect(fallback).toMatch(/Worth knowing.*which spends money/);
-  expect(visibleText(htmlString(planSheetHtml(CASES["repair"]!)))).toMatch(/Worth knowing.*An earlier version is still running/);
-  expect(visibleText(htmlString(planSheetHtml(CASES["amended"]!)))).toMatch(/Worth knowing.*The plan makes 2 changes to what you filed/);
+  // The paid fallback and an earlier running version are warnings: said under Before you approve.
+  expect(fallback).toMatch(/Before you approve.*which spends money/);
+  expect(visibleText(htmlString(planSheetHtml(CASES["repair"]!)))).toMatch(/Before you approve.*An earlier version is still running/);
+  expect(visibleText(htmlString(planSheetHtml(CASES["amended"]!)))).toMatch(/Before you approve.*The plan makes 2 changes to what you filed/);
   // The lead is the approach's first sentence; the rest of the approach follows; the goal shows because it differs.
   const plain = visibleText(htmlString(planSheetHtml(CASES["plain"]!)));
   expect(plain).toContain("Add subtract right under add.");

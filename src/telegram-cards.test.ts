@@ -264,7 +264,7 @@ describe("decide-in-chat cards", () => {
       "Refuse over-limit payouts.", "Keep the public API unchanged.", "A third line the card once left out.", "",
       "Done when:", "• Over-limit payouts are refused. (runs automatically)", "• Refusals are logged with the payout id. (runs automatically)", "",
       "Agent: Claude Sonnet plans, builds, fixes and reviews",
-      "May touch: only src/guard.ts · network: the agent's provider · tools: file edits and routine commands; anything risky stops",
+      "Files: only src/guard.ts", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops",
       "May cost: up to $2.00 per attempt; the agent is stopped there",
       "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed",
     ].join("\n");

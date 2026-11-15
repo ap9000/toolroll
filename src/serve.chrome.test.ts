@@ -585,7 +585,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     const before = store.getScope("t-edit")!;
     const page = await (await fetch(url("/t/t-edit"), { headers: { cookie } })).text();
     // The plain terms (what it may touch and cost), the password's reason, and the in-place editor.
-    expect(page).toContain("tools: file edits and routine commands; anything risky stops</p>");
+    expect(page).toContain("<dt>Tools</dt><dd><p>file edits and routine commands; anything risky stops</p>");
     expect(page).toContain("<dt>May cost</dt><dd><p>up to $1.50 per attempt; the agent is stopped there</p>");
     expect(page).not.toContain("data-approval-you-check");
     // Submit exactly what the editor's form carries, with the fields edited.
@@ -673,7 +673,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
 
     // No limit stays no limit; an odd cap comes back to the millionth.
     const open = await editorOf();
-    expect(open.page).toContain("<dt>May cost</dt><dd><p>no cap</p>");
+    expect(open.page).toContain("<dt>May cost</dt><dd><p>no cap: an attempt runs until it finishes or reaches its time limit</p>");
     expect(Object.fromEntries(open.hidden)["budget-microusd"]).toBe("none");
     expect((await save(open.hidden, "guard the payout path, plainly")).status).toBe(303);
     expect(store.getScope("t-keep")?.budgetMicrousd).toBeNull();
@@ -706,7 +706,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     const legacy = store.getScope("t-keep")!;
     expect(legacy.profile).toMatchObject({ permissionArgv: "acceptEdits" });
     const kept = await editorOf();
-    expect(kept.page).toContain("tools: file edits only; commands are refused (not the project’s usual)");
+    expect(kept.page).toContain("<dt>Tools</dt><dd><p>file edits only; commands are refused (not the project’s usual)</p>");
     const raised = await save(kept.hidden, "guard the payout path, edited");
     expect(raised.status).toBe(409);
     expect(await raised.text()).toContain("Not saved: this would change what the agent may do.");

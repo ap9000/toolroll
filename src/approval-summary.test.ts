@@ -71,8 +71,10 @@ describe("the summary, short and plain", () => {
         Done when    Two settlements can't both pass the limiter. (you review it)
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans, builds, fixes and reviews
-        May touch    any file · network: the agent's provider · tools: file edits and routine commands; anything risky stops
-        May cost     no cap
+        Files        any file in the project
+        Network      the agent's provider
+        Tools        file edits and routine commands; anything risky stops
+        May cost     no cap: an attempt runs until it finishes or reaches its time limit
         Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
     `);
     expect(shown["revision"]).toMatchInlineSnapshot(`
@@ -81,8 +83,10 @@ describe("the summary, short and plain", () => {
         Done when    Two settlements can't both pass the limiter. (you review it)
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans, builds, fixes and reviews
-        May touch    any file · network: the agent's provider · tools: file edits and routine commands; anything risky stops
-        May cost     no cap
+        Files        any file in the project
+        Network      the agent's provider
+        Tools        file edits and routine commands; anything risky stops
+        May cost     no cap: an attempt runs until it finishes or reaches its time limit
         Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
     `);
     expect(shown["custom model"]).toMatchInlineSnapshot(`
@@ -90,8 +94,10 @@ describe("the summary, short and plain", () => {
         Done when    Two settlements can't both pass the limiter. (you review it)
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans and reviews; Codex · gpt-5-codex builds and fixes
-        May touch    any file · network: the agent's provider · tools: file edits and commands inside the project only
-        May cost     no cap
+        Files        any file in the project
+        Network      the agent's provider
+        Tools        file edits and commands inside the project only
+        May cost     no cap: an attempt runs until it finishes or reaches its time limit
         Your pick    builder Codex · gpt-5-codex, not the project’s usual pick
         Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 20 min without progress · fixes on the same model, up to 5 min · project checks sandboxed"
     `);
@@ -101,8 +107,10 @@ describe("the summary, short and plain", () => {
         Done when    Two settlements can't both pass the limiter. (you review it)
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans, builds, fixes and reviews
-        May touch    only src/payout-limiter.ts, src/settle.ts · network: the agent's provider · tools: file edits and routine commands; anything risky stops
-        May cost     no cap
+        Files        only src/payout-limiter.ts, src/settle.ts
+        Network      the agent's provider
+        Tools        file edits and routine commands; anything risky stops
+        May cost     no cap: an attempt runs until it finishes or reaches its time limit
         Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
     `);
     expect(shown["budget"]).toMatchInlineSnapshot(`
@@ -110,7 +118,9 @@ describe("the summary, short and plain", () => {
         Done when    Two settlements can't both pass the limiter. (you review it)
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans, builds, fixes and reviews
-        May touch    any file · network: the agent's provider · tools: file edits and routine commands; anything risky stops
+        Files        any file in the project
+        Network      the agent's provider
+        Tools        file edits and routine commands; anything risky stops
         May cost     up to $2.50 per attempt; the agent is stopped there
         Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
     `);
@@ -119,8 +129,10 @@ describe("the summary, short and plain", () => {
         Done when    Two settlements can't both pass the limiter. (you review it)
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans, builds, fixes and reviews
-        May touch    any file · network: open — any host · tools: file edits and routine commands; anything risky stops
-        May cost     no cap
+        Files        any file in the project
+        Network      open — any host
+        Tools        file edits and routine commands; anything risky stops
+        May cost     no cap: an attempt runs until it finishes or reaches its time limit
         Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
     `);
     expect(shown["team rule"]).toMatchInlineSnapshot(`
@@ -128,8 +140,10 @@ describe("the summary, short and plain", () => {
         Done when    Two settlements can't both pass the limiter. (you review it)
                      The limiter tests pass. (runs automatically)
         Agent        Claude Sonnet plans, builds, fixes and reviews
-        May touch    any file · network: the agent's provider · tools: file edits and routine commands; anything risky stops
-        May cost     no cap
+        Files        any file in the project
+        Network      the agent's provider
+        Tools        file edits and routine commands; anything risky stops
+        May cost     no cap: an attempt runs until it finishes or reaches its time limit
         Note         This project protects this work: two people must approve it.
         Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
     `);
@@ -196,8 +210,10 @@ describe("exact consent", () => {
     const scope = file("t-hosts");
     const hosts = [...scope.profile!.network!.hosts, "api.openai.com", "files.pythonhosted.org"];
     const wider = { ...scope, profile: { ...scope.profile!, network: { ...scope.profile!.network!, hosts } } } as Scope;
-    const touch = approvalSummaryOf(wider, contextOf(scope)).decisions.find(row => row.label === "May touch")!.words;
-    expect(touch).toContain("network: the agent's provider, and api.openai.com, files.pythonhosted.org");
+    const network = approvalSummaryOf(wider, contextOf(scope)).decisions.find(row => row.label === "Network")!;
+    expect(network.words).toBe("the agent's provider, and api.openai.com, files.pythonhosted.org");
+    // A host beyond this agent's own provider is risky access: said in the open, never folded.
+    expect(network.risky).toBe(true);
   });
 
   test("a release's repository, branch, grant and check access are said whether or not it carries", () => {
@@ -249,7 +265,7 @@ describe("exact consent", () => {
     expect(code).toBe(3);
     expect(lines.join("\n")).toContain("Name the terms you read. Nothing was approved.");
     expect(lines.join("\n")).toContain(`--terms ${key}`);
-    expect(lines.join("\n")).toMatch(/^ {2}May touch/m);
+    expect(lines.join("\n")).toMatch(/^ {2}Files {8}any file in the project$/m);
     expect(store.getScope("t-script")!.approvedAt).toBeNull();
   });
 
@@ -297,7 +313,7 @@ describe("the engine API's Approval step", () => {
     const steps = () => stepCardsOf({ store, family: store.taskFamilyOf("t-steps", null, true)!, now: at, access: { principal: "operator", repos: null }, evidenceRoot: dir });
     const approveCard = steps().cards?.find(one => one.key === "approve");
     expect(approveCard?.terms?.key).toBe(approvalSummaryFor(store, "t-steps", at)!.key);
-    expect(approveCard?.terms?.rows.map(one => one.label)).toEqual(["Goal", "Done when", "Agent", "May touch", "May cost"]);
+    expect(approveCard?.terms?.rows.map(one => one.label)).toEqual(["Goal", "Done when", "Agent", "Files", "Network", "Tools", "May cost"]);
     expect(approveCard?.terms?.usualLabel).toBe("Your usual project settings");
     expect(stepCardsSchema.parse(steps())).toEqual(steps());
     expect(steps().cards?.filter(one => one.terms !== undefined).map(one => one.key)).toEqual(["approve"]);

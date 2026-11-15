@@ -16,9 +16,9 @@
 import { createHash } from "node:crypto";
 import { resolveScopeProfile } from "./agentconfig.js";
 import { isProtectedWork, type ApprovalRules } from "./approval-policy.js";
-import { permissionPlainWords } from "./chat-terms.js";
+import { permissionPlainWords, scopeFullAccess } from "./chat-terms.js";
 import { checkAccessWords } from "./check-access.js";
-import { networkWords } from "./egress.js";
+import { networkWords, unaccountedHosts } from "./egress.js";
 import { agentModelName } from "./model-names.js";
 import { makesNoPlan, NO_READINESS, projectRoute, routeFromJson, sizeWords, type PhaseRoute, type ReadinessLookup } from "./phase-routing.js";
 import { sandboxTermsWords } from "./project-sandbox.js";
@@ -33,7 +33,9 @@ export type BoundField =
   | "route" | `route.${string}` | "chain" | `profile.${string}`;
 
 /** One row of the summary: a label, its words, any further lines, and the bound fields it states. */
-export type SummaryRow = { label: string; words: string; lines?: string[]; fields: BoundField[] };
+/** `risky`: access a person must see before the yes whatever the project usually allows (writes anywhere, any host, full
+ * access, no cost cap): never folded, and the web sheet says it under "Before you approve". */
+export type SummaryRow = { label: string; words: string; lines?: string[]; fields: BoundField[]; risky?: boolean };
 export type SummaryNote = { words: string; fields: BoundField[] };
 
 export type ApprovalSummary = {
@@ -226,19 +228,26 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   const agent = agentWords(route, profile);
   if (agent !== null) decisions.push({ label: "Agent", words: agent, fields: [...(route === null ? [] : ["route" as BoundField, ...route.legs.map(leg => `route.${leg.phase}` as BoundField)]), ...(profile === null ? [] : ["profile.provider", "profile.model"] as BoundField[])] });
 
-  // What it may touch: files, network and tools, in one line.
+  // What it may touch: the files, the network and the tools, a row each. Risky access (any host or a host beyond this
+  // agent's own provider and whole registries, every local service, tools with full access) is marked `risky`: the web
+  // sheet says it under "Before you approve", never folded.
   const permissionKey = profile === null ? null : PERMISSION_KEYS.find(key => key in profile) ?? null;
   const tools = permissionPlainWords(profile);
   const usualTools = usualProfile === null ? null : permissionPlainWords(usualProfile);
-  const touch = [
-    scope.touches.length === 0 ? "any file" : `only ${scope.touches.join(", ")}`,
-    ...(profile === null ? [] : [`network: ${lowerFirst(networkWords(profile.network ?? null, profile.provider).replace(/^Network: /, ""))}`]),
-    ...(tools === null ? [] : [`tools: ${tools}${usualTools !== null && usualTools !== tools ? " (not the project’s usual)" : ""}`]),
-  ];
-  decisions.push({ label: "May touch", words: touch.join(" · "), fields: ["touches", ...(profile === null ? [] : ["profile.network"] as BoundField[]), ...(permissionKey === null ? [] : [`profile.${permissionKey}` as BoundField])] });
+  decisions.push({ label: "Files", words: scope.touches.length === 0 ? "any file in the project" : `only ${scope.touches.join(", ")}`, fields: ["touches"] });
+  if (profile !== null) {
+    const network = profile.network ?? null;
+    const wide = network !== null && (network.mode === "open" || network.loopback === "any" || unaccountedHosts(network, profile.provider).length > 0);
+    decisions.push({ label: "Network", words: lowerFirst(networkWords(network, profile.provider).replace(/^Network: /, "")), fields: ["profile.network"], ...(wide ? { risky: true } : {}) });
+  }
+  if (tools !== null) {
+    decisions.push({ label: "Tools", words: `${tools}${usualTools !== null && usualTools !== tools ? " (not the project’s usual)" : ""}`,
+      fields: permissionKey === null ? [] : [`profile.${permissionKey}` as BoundField], ...(scopeFullAccess(profile) ? { risky: true } : {}) });
+  }
 
-  // What it may cost.
-  decisions.push({ label: "May cost", words: scope.budgetMicrousd === null ? "no cap" : `up to ${money(scope.budgetMicrousd)} per attempt; the agent is stopped there`, fields: ["budget"] });
+  // What it may cost: with no cap an attempt runs until it finishes or its time limit (risky, so said in the open).
+  decisions.push({ label: "May cost", words: scope.budgetMicrousd === null ? "no cap: an attempt runs until it finishes or reaches its time limit" : `up to ${money(scope.budgetMicrousd)} per attempt; the agent is stopped there`,
+    fields: ["budget"], ...(scope.budgetMicrousd === null ? { risky: true } : {}) });
 
   // A release is said whole: what asks again is part of the yes.
   // Its repository, branch, check grant and check access are said whatever it carries (the carry rules' last line names
@@ -263,8 +272,8 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   if (profile !== null) {
     for (const setting of SETTINGS) {
       const row: SummaryRow = { label: setting.label, words: setting.words(profile), fields: setting.fields.filter(key => key in profile).map(key => `profile.${key}` as BoundField) };
-      if (usualProfile !== null && valueOf(profile, setting.fields) !== valueOf(usualProfile, setting.fields)) differs.push({ ...row, words: `${row.words} (usually ${setting.words(usualProfile)})` });
-      else if (!setting.routine(profile)) differs.push(row);
+      if (usualProfile !== null && valueOf(profile, setting.fields) !== valueOf(usualProfile, setting.fields)) differs.push({ ...row, words: `${row.words} (usually ${setting.words(usualProfile)})`, ...(setting.routine(profile) ? {} : { risky: true }) });
+      else if (!setting.routine(profile)) differs.push({ ...row, risky: true });
       else usual.push(row);
     }
     // Checks past the sandbox and extra services are risks, said in the open (chat-terms.ts cardShowsScope reads these words).

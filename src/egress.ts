@@ -209,6 +209,14 @@ export function projectNetworkFromValue(value: unknown): ProjectNetwork | null {
 }
 
 /** The network in plain words, for an approval card and a run's record. */
+/** The hosts a network names beyond this agent's own provider hosts and whole registries: each said exactly. */
+export function unaccountedHosts(network: NetworkProfile, provider: string): string[] {
+  const full = Object.values(REGISTRY_HOSTS).filter(hosts => hosts.every(one => network.hosts.includes(one)));
+  const own = PROVIDER_HOSTS[provider] ?? [];
+  const known = new Set([...(own.length > 0 && own.every(one => network.hosts.includes(one)) ? own : []), ...full.flat()]);
+  return network.hosts.filter(one => !known.has(one));
+}
+
 export function networkWords(network: NetworkProfile | null, provider: string): string {
   if (network === null) return "Network: approved before network rules (provider and package registries only)";
   if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}`;

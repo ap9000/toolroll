@@ -532,10 +532,28 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 
 /* The task page's step rows (views/task-view.tsx, docs/plans/task-page-steps.md). The waiting Approval step: the act,
  * then the plan it signs under a hairline, inside the row's one outline. */
-.so-approval-step { display: grid; gap: 18px; min-width: 0; }
+.so-approval-step { display: grid; gap: var(--so-space-lg); min-width: 0; }
+/* The Approval card (the terms diet): its Headline and one line, the plan it signs, then the acts after the evidence —
+ * sticky at the card's foot on a desk while reading (the [data-sticky] .approval-act pattern), the password note under. */
+.so-approval-step .k-slots .k-slot-status h2 { font: var(--so-typography-headline); color: var(--so-ink); }
+.so-approval-step .k-slots .k-slot-text { color: var(--so-ink); font-size: var(--so-typography-body-font-size); }
+.so-approval-step .k-slot-body { min-width: 0; padding-top: var(--so-space-lg); border-top: 1px solid var(--so-line); }
+@media (min-width: 901px) {
+  .so-approval-step .k-slots .k-slot-acts { position: sticky; bottom: 0; z-index: 2; margin: 0; padding: var(--so-space-md) 0; border-top: 1px solid var(--so-line); background: var(--so-paper); }
+}
+@media (max-width: 900px) {
+  /* Approve is docked: Request changes and Reject sit side by side at the sheet's foot, 44px each. */
+  .so-approval-step .k-slots .k-slot-acts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--so-space-sm); }
+  .so-approval-step .k-slots .k-slot-acts .k-btn { min-width: 0; min-height: 44px; }
+  /* The Needs-you chip beside "Approval", not under it. */
+  .k-steprow.needs .k-steprow-label { flex: 0 0 auto; }
+  .k-steprow.needs .k-steprow-say:not(:has(> span:not(.k-chip))) { flex: 0 1 auto; order: 1; }
+  /* The task id breaks only within itself. */
+  .so-task-id { display: inline-block; max-width: 100%; overflow-wrap: anywhere; vertical-align: bottom; }
+}
 .so-approval-sheet { min-width: 0; padding-top: var(--so-space-xl); border-top: 1px solid var(--so-line); }
 /* The box's own Request changes opens the plan's editor; its fold's summary shows only as the editor's Cancel. */
-.so-approval-sheet .approval-edit:not([open]) > summary { display: none; }
+.so-approval-sheet .approval-edit:not([open]) > summary, .so-approval-editor .approval-edit:not([open]) > summary { display: none; }
 .so-task-plan { min-width: 0; }
 /* A row waiting on the viewer already carries the Needs-you chip: the task's status box in it doesn't say it again. */
 .k-steprow.needs > .k-steprow-main > .k-steprow-body > [data-task-status] > .k-slots .k-slot-status > .k-chip { display: none; }

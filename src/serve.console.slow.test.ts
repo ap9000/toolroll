@@ -295,8 +295,9 @@ describe("the operations console", () => {
     expect(page).toMatch(/<dt>Checks<\/dt><dd><p>Strict \/ release/);
     expect(page).toContain("<dt>Won’t touch</dt><dd><p>authentication</p>");
     expect(page).toContain("<dt>May cost</dt><dd><p>up to $2.00 per attempt; the agent is stopped there</p>");
-    expect(page).toContain("only src/payments/ · network:");
-    expect(page).toContain("tools: file edits and routine commands; anything risky stops");
+    expect(page).toContain('<dt>Files</dt><dd><p>Only <code class="approval-path">src/payments/</code></p>');
+    // The installation's default moved since: the child's own tools are said as not the project's usual.
+    expect(page).toContain("<dt>Tools</dt><dd><p>file edits and routine commands; anything risky stops (not the project’s usual)</p>");
     expect(page).not.toMatch(/inherited|re-resolved|repair chain|attempt cap/);
     expect(page).not.toContain("runaway breaker");
     expect(page).toContain("also refuse zero");
