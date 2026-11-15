@@ -770,12 +770,13 @@ describe("lifecycle facts through the Telegram transport", () => {
     expect(text).not.toContain("ghp_");
     expect(text).not.toContain(botShape);
     expect(text).not.toContain("123456:");
-    expect(text.match(/\[sensitive text hidden\]/g)!.length).toBeGreaterThanOrEqual(4);
     // A chat names a task by its short title, never its id.
     expect(text).not.toMatch(/short-secret|long-secret|bot-secret/);
-    expect(text).toContain("alpha · New task:");
+    // A task whose own title names a key goes as the safe version (outbound-privacy.ts): its project and the link only.
+    for (const one of script.texts()) expect(one).toMatch(/^An update is ready(?: in (?:alpha|beta))?\. Open it in Toolroll\.$/);
     if (mode === "single") {
-      expect(script.buttons(script.sends()[0]!)).toEqual([{ text: "Open task", url: `${ORIGIN}/chat?task=short-secret` }]);
+      expect(script.texts()[0]).toBe("An update is ready in alpha. Open it in Toolroll.");
+      expect(script.buttons(script.sends()[0]!)).toEqual([{ text: "Open in Toolroll", url: `${ORIGIN}/chat?task=short-secret` }]);
     }
   });
 

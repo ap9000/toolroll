@@ -33,6 +33,7 @@ import { CONFIRM_TTL_MS, LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type S
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { phoneText } from "./telegram-status.js";
 import { shapeReplyParts, telegramReply } from "./reply-shape.js";
+import { checkedChunks } from "./outbound-privacy.js";
 import { createTelegramLiveDraft, forgetWaitingDraft, telegramAck, telegramWaitingDraft, type TelegramLiveTiming } from "./telegram-live.js";
 import { TeamLeads } from "./team-leads.js";
 import { chatResultHref } from "./chat-controls.js";
@@ -693,7 +694,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     try {
       return store.transact(() => {
         const now = clock();
-        const parts: Parameters<Store["planTelegramConversationParts"]>[3][number][] = shapeReplyParts(reply, PART_CAP, { asked: row.text, appOrigin: options.phoneOrigin?.() ?? null }, shaped => telegramReply(shaped).text.length).map((text, index) => ({ kind: "reply", text, replyTo: index === 0 ? row.messageId : null }));
+        const parts: Parameters<Store["planTelegramConversationParts"]>[3][number][] = checkedChunks(reply, shapeReplyParts(reply, PART_CAP, { asked: row.text, appOrigin: options.phoneOrigin?.() ?? null }, shaped => telegramReply(shaped).text.length)).map((text, index) => ({ kind: "reply", text, replyTo: index === 0 ? row.messageId : null }));
         // The lead's question to its owner: one tap per option, then "Something else".
         const ask = store.leadAsk(turn);
         if (ask !== null) parts.push({ kind: "reply", text: phoneText(ask.question, 1_000), keyboard: askKeyboard(ask) });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,6 +69,19 @@ describe("isolatedEnvironment", () => {
     const bare = isolatedEnvironment({ root: join(dir, "bare"), outer });
     for (const shell of ["zsh", "bash"].filter(one => onPath(one, bare.env["PATH"]) !== null)) {
       expect(execFileSync(shell, ["-l", "-c", "command -v claude || echo none"], { env: bare.env, encoding: "utf8" }).trim(), shell).toBe("none");
+    }
+  });
+
+  it("shell wrappers drop the login flag from a flag cluster and keep the rest, without starting any process of their own", () => {
+    const world = isolatedEnvironment({ root: join(dir, "world"), outer });
+    if (onPath("bash", world.env["PATH"]) === null) return;
+    const ran = spawnSync("bash", ["-lxc", "shopt -q login_shell && echo login || echo plain"], { env: world.env, encoding: "utf8" });
+    expect(ran.stdout.trim()).toBe("plain");
+    expect(ran.stderr).toContain("+ shopt -q login_shell");
+    // Pure shell before its exec: no command substitution, pipe or external tool that would fork a child first.
+    for (const shell of ["sh", "bash", "zsh"].filter(one => existsSync(join(world.tools, one)))) {
+      const text = readFileSync(join(world.tools, shell), "utf8");
+      expect(text, shell).not.toMatch(/\$\((?!\()|`|\|\s*tr\b|\btr -d/);
     }
   });
 

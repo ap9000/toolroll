@@ -3,9 +3,11 @@
 pub mod app;
 pub mod guard;
 pub mod notify;
+pub mod review;
 pub mod run;
 pub mod settings;
 pub mod stats;
+pub mod syntax;
 pub mod text;
 pub mod theme;
 pub mod transcript;

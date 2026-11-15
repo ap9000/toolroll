@@ -3,7 +3,9 @@
 //! DESIGN.md: plain words in sentence case; ink for what needs you, never amber; blue only for running, green only for
 //! passed, red only for failed. Every style is a theme role (theme.rs), every mark the glyph set's.
 use crate::app::{App, Item, Mode, NoteKind, Section, Tab, Tone};
+use crate::review::{self, Checks, Kind, Note, Row};
 use crate::settings::{Column, Density};
+use crate::syntax::{Highlights, Source, Token};
 use crate::text::{clean, fit, width, wrap};
 use crate::theme::{base, dim, failed, ink, line, marks, needs_you, passed, running, selected};
 use crate::transcript;
@@ -253,7 +255,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     draw_right(f, app, right);
     draw_status(f, app, status);
     if app.prefs.settings.key_bar {
-        draw_keys(f, keys);
+        draw_keys(f, app.tab, keys);
     }
     draw_overlay(f, app, area);
 }
@@ -536,9 +538,21 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         );
     }
     if input {
+        let note_label: String;
         let (label, text) = match &app.mode {
             Mode::Steer(t) => ("Steer: ", t),
-            Mode::Note(NoteKind::SendBack(_), t) => ("Send back, saying what to change: ", t),
+            Mode::Note(NoteKind::Line(target), t) => {
+                let place = Note {
+                    file: target.file,
+                    path: target.path.clone(),
+                    at: target.at.clone(),
+                    order: target.order,
+                    text: String::new(),
+                }
+                .place();
+                note_label = format!("Note on {}: ", fit(&place, 48));
+                (note_label.as_str(), t)
+            }
             Mode::NewTask(t) => ("New task: ", t),
             _ => unreachable!(),
         };
@@ -718,8 +732,75 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_diff(f: &mut Frame, app: &App, area: Rect) {
-    let Some(diff) = &app.diff else {
+/// What accepting the result on screen means, from the facts the engine already gave (the diff's totals, the step
+/// cards' checks and cost) and the review's own accept facts: said before the dialog, and whole in it.
+pub struct Facts {
+    pub totals: Option<(i64, i64, i64)>,
+    pub checks: Checks,
+    pub cost: Option<f64>,
+    pub owed: Option<String>,
+    pub blockers: Vec<String>,
+    pub needs: Option<String>,
+}
+
+pub fn facts_of(app: &App) -> Facts {
+    let steps = app.steps.as_ref();
+    let cards: Vec<&StepCard> = steps.map(chain_cards).unwrap_or_default();
+    let checks = Checks::of(
+        cards
+            .iter()
+            .find(|c| c.key == "checks")
+            .map(|c| c.mark.as_str()),
+    );
+    let costs: Vec<f64> = cards.iter().filter_map(|c| c.cost_usd).collect();
+    let accept = steps.and_then(|s| s.review.as_ref()).map(|r| &r.accept);
+    Facts {
+        // The saved stat's totals, else the file list's own counts (the same patch).
+        totals: app.diff.as_ref().and_then(|d| {
+            d.totals
+                .as_ref()
+                .map(|t| (t.files, t.additions, t.deletions))
+                .or_else(|| {
+                    (!d.files.is_empty()).then(|| {
+                        (
+                            d.files.len() as i64,
+                            d.files.iter().map(|f| f.additions).sum(),
+                            d.files.iter().map(|f| f.deletions).sum(),
+                        )
+                    })
+                })
+        }),
+        checks,
+        cost: (!costs.is_empty()).then(|| costs.iter().sum()),
+        owed: accept.and_then(|a| a.owed.clone()),
+        blockers: accept
+            .map(|a| a.blockers.iter().map(|b| clean(b)).collect())
+            .unwrap_or_default(),
+        needs: accept.and_then(|a| a.needs.as_deref().map(clean)),
+    }
+}
+
+fn checks_style(c: Checks) -> Style {
+    match c {
+        Checks::Passed => passed(),
+        Checks::Failed => failed(),
+        Checks::Running => running(),
+        _ => dim(),
+    }
+}
+
+/// What an owed acceptance means, in a few words.
+fn owed_words(owed: &str) -> &'static str {
+    match owed {
+        "person-check" => "Accepting records that you checked this work yourself.",
+        _ => "It needs a reason to be accepted: accept it in the browser (w).",
+    }
+}
+
+/// The Diff tab: what accepting means, the files, then the file on screen as rows (unified or side by side), each note
+/// under its line, the cursor's row marked, and colours added a few milliseconds a frame.
+fn draw_diff(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(diff) = app.diff.clone() else {
         f.render_widget(Paragraph::new("Reading the changes…"), area);
         return;
     };
@@ -736,17 +817,57 @@ fn draw_diff(f: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    let mut lines = vec![];
-    if let Some(t) = &diff.totals {
-        lines.push(Line::from(vec![
-            Span::raw(format!("{} files  ", t.files)),
-            Span::styled(format!("+{}", t.additions), passed()),
-            Span::raw(" "),
-            Span::styled(format!("−{}", t.deletions), failed()),
-            Span::styled("   [ ] another file", dim()),
-        ]));
+    app.set_diff_width(area.width);
+    let facts = facts_of(app);
+    let mut head: Vec<Line<'static>> = vec![];
+    // What accepting means: files and lines, checks, cost, notes kept.
+    let mut spans = vec![];
+    if let Some((files, add, del)) = facts.totals {
+        spans.push(Span::raw(format!("{files} files  ")));
+        spans.push(Span::styled(format!("+{add}"), passed()));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!("−{del}"), failed()));
+        spans.push(Span::styled(" · ", dim()));
     }
-    for (i, file) in diff.files.iter().enumerate() {
+    spans.push(Span::styled(
+        facts.checks.word(),
+        checks_style(facts.checks),
+    ));
+    if let Some(cost) = facts.cost {
+        spans.push(Span::styled(format!(" · ${cost:.2}"), dim()));
+    }
+    let kept = diff
+        .run
+        .map(|run| app.notes_of(&diff.task, run).len())
+        .unwrap_or(0);
+    if kept > 0 {
+        spans.push(Span::styled(
+            format!(
+                " · {kept} {} kept",
+                if kept == 1 { "note" } else { "notes" }
+            ),
+            ink(),
+        ));
+    }
+    head.push(fit_line(Line::from(spans), w));
+    if let Some(needs) = &facts.needs {
+        head.push(Line::from(Span::styled(fit(needs, w), ink())));
+    } else if let Some(b) = facts.blockers.first() {
+        head.push(Line::from(Span::styled(
+            fit(&format!("Can't complete yet: {b}"), w),
+            failed(),
+        )));
+    } else if let Some(owed) = &facts.owed {
+        head.push(Line::from(Span::styled(fit(owed_words(owed), w), dim())));
+    }
+    // The files: a window of at most five around the one on screen.
+    let n = diff.files.len();
+    let shown_files = 5.min(n);
+    let first = app
+        .diff_index
+        .saturating_sub(shown_files / 2)
+        .min(n.saturating_sub(shown_files));
+    for (i, file) in diff.files.iter().enumerate().skip(first).take(shown_files) {
         let here = i == app.diff_index;
         let style = if here {
             selected().add_modifier(Modifier::BOLD)
@@ -754,7 +875,7 @@ fn draw_diff(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
         let name = fit(&clean(&file.path), w.saturating_sub(16));
-        lines.push(Line::from(vec![
+        head.push(Line::from(vec![
             Span::styled(format!("{} {name}", if here { "›" } else { " " }), style),
             Span::raw("  "),
             Span::styled(format!("+{}", file.additions), passed()),
@@ -763,52 +884,254 @@ fn draw_diff(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(if file.binary { "  binary" } else { "" }, dim()),
         ]));
     }
+    if n > shown_files {
+        head.push(Line::from(Span::styled(
+            format!("  {} more files · {{ }} another file", n - shown_files),
+            dim(),
+        )));
+    }
+    let body_h = (area.height as usize).saturating_sub(head.len() + 1);
+    let mut lines = head;
     lines.push(Line::raw(""));
-    match &app.diff_file {
-        None => lines.push(Line::from(Span::styled("Reading the file…", dim()))),
-        Some(file) => {
-            for hunk in &file.file.hunks {
-                lines.push(Line::from(Span::styled(
-                    fit(&clean(&hunk.header), w),
-                    dim(),
-                )));
-                for line in &hunk.lines {
-                    let (sign, style) = match line.kind.as_str() {
-                        "addition" => ("+", passed()),
-                        "deletion" => ("−", failed()),
-                        "meta" => (" ", dim()),
-                        _ => (" ", Style::default()),
-                    };
-                    let num = line
-                        .new_line
-                        .or(line.old_line)
-                        .map(|n| format!("{n:>5} "))
-                        .unwrap_or_else(|| "      ".into());
-                    lines.push(Line::from(vec![
-                        Span::styled(num, dim()),
-                        Span::styled(
-                            fit(
-                                &format!("{sign} {}", clean(&line.text)),
-                                w.saturating_sub(6),
-                            ),
-                            style,
-                        ),
-                    ]));
+    if app.diff_file.is_none() || app.code.is_none() {
+        lines.push(Line::from(Span::styled("Reading the file…", dim())));
+        f.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+    // Keep the cursor in sight.
+    let total = app.rows.len();
+    if app.diff_cursor < app.diff_scroll {
+        app.diff_scroll = app.diff_cursor;
+    }
+    if body_h > 0 && app.diff_cursor >= app.diff_scroll + body_h {
+        app.diff_scroll = app.diff_cursor + 1 - body_h;
+    }
+    app.diff_scroll = app.diff_scroll.min(total.saturating_sub(1));
+    colour_code(app);
+    let file = app.diff_file.as_ref().unwrap();
+    let code = app.code.as_ref().unwrap();
+    let notes = app.notes_here();
+    let split = app.split_on();
+    let hl = app.highlights.as_ref();
+    let end = (app.diff_scroll + body_h).min(total);
+    for r in app.diff_scroll..end {
+        let here = r == app.diff_cursor;
+        let mark = Span::styled(if here { "›" } else { " " }, ink());
+        let line = match &app.rows[r] {
+            Row::Hunk(h) => {
+                let header = clean(&file.file.hunks[*h].header);
+                Line::from(vec![
+                    mark,
+                    Span::styled(
+                        header,
+                        if here {
+                            dim().add_modifier(Modifier::REVERSED)
+                        } else {
+                            dim()
+                        },
+                    ),
+                ])
+            }
+            Row::Gap { hidden, .. } => {
+                let words = match hidden {
+                    Some(1) => "⋯ 1 hidden line · e shows it".to_string(),
+                    Some(k) => format!("⋯ {k} hidden lines · e/E show more"),
+                    None => "⋯ more lines below · E shows them".to_string(),
+                };
+                Line::from(vec![mark, Span::styled(words, dim())])
+            }
+            Row::Code(c) => {
+                let mut spans = vec![mark];
+                let pieces = hl.and_then(|h| h.line(*c));
+                spans.extend(code_spans(&code.lines[*c], pieces.as_ref(), w >= 60));
+                Line::from(spans)
+            }
+            Row::Pair(l, rgt) => {
+                let half = (w.saturating_sub(3)) / 2;
+                let side = |c: Option<usize>, old: bool| -> Line<'static> {
+                    match c {
+                        None => Line::raw(""),
+                        Some(c) => {
+                            let line = &code.lines[c];
+                            let pieces = hl.and_then(|h| h.line(c));
+                            Line::from(half_spans(line, pieces.as_ref(), old))
+                        }
+                    }
+                };
+                let left = fit_line(side(*l, true), half);
+                let right = fit_line(side(*rgt, false), half);
+                let pad = half.saturating_sub(left.width());
+                let mut spans = vec![mark];
+                spans.extend(left.spans);
+                spans.push(Span::raw(" ".repeat(pad)));
+                spans.push(Span::styled("│", dim()));
+                spans.extend(right.spans);
+                Line::from(spans)
+            }
+            Row::Note(k) => {
+                let text = notes.get(*k).map(|n| n.text.clone()).unwrap_or_default();
+                Line::from(vec![
+                    mark,
+                    Span::styled(
+                        if split {
+                            "  Note: "
+                        } else {
+                            "            Note: "
+                        },
+                        dim(),
+                    ),
+                    Span::styled(
+                        text,
+                        if here {
+                            Style::default().add_modifier(Modifier::REVERSED)
+                        } else {
+                            Style::default().add_modifier(Modifier::ITALIC)
+                        },
+                    ),
+                ])
+            }
+        };
+        lines.push(fit_line(line, w));
+    }
+    if end >= total && file.lines_truncated && lines.len() < area.height as usize {
+        lines.push(Line::from(Span::styled(
+            "The rest of this file is in the browser (w).",
+            dim(),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Start colouring the file on screen (keyed to its layout, so a new file or reveal starts over), and say whether more
+/// is coming (the loop draws again while it is).
+fn colour_code(app: &mut App) {
+    let (Some((task, run, file, path)), Some(code), true) =
+        (app.file_shown(), app.code.as_ref(), app.syntax_on)
+    else {
+        app.highlight_pending = false;
+        app.highlights = None;
+        return;
+    };
+    let key = (task, run, file, app.code_version);
+    if app.highlights.as_ref().map(|h| &h.key) != Some(&key) {
+        let sources = code
+            .lines
+            .iter()
+            .map(|l| Source {
+                text: l.text.clone(),
+                fresh: l.fresh,
+            })
+            .collect();
+        app.highlights = Some(Highlights::new(key, &path, sources));
+    }
+    app.highlight_pending = !app.highlights.as_ref().unwrap().done();
+}
+
+/// A code line's text as spans: its colours (when coloured), the words that changed marked, the whole line red when
+/// removed (and green when added with no colours to show).
+fn text_spans(
+    line: &review::CodeLine,
+    pieces: Option<&Vec<(Token, String)>>,
+) -> Vec<Span<'static>> {
+    let base = match line.kind {
+        Kind::Deletion => failed(),
+        Kind::Addition if pieces.is_none_or(|p| p.iter().all(|(t, _)| *t == Token::Plain)) => {
+            passed()
+        }
+        Kind::Revealed | Kind::Meta => dim(),
+        _ => Style::default(),
+    };
+    let coloured = line.kind != Kind::Deletion && line.kind != Kind::Meta;
+    let owned;
+    let pieces: &[(Token, String)] = match pieces {
+        Some(p) if coloured => p,
+        _ => {
+            owned = vec![(Token::Plain, line.text.clone())];
+            &owned
+        }
+    };
+    let mut out = vec![];
+    let mut at = 0usize;
+    for (token, text) in pieces {
+        let style = if *token == Token::Plain {
+            base
+        } else {
+            base.patch(crate::theme::code(*token))
+        };
+        // Split this piece where a changed range starts or ends.
+        let end = at + text.len();
+        let mut cut = vec![at, end];
+        for r in &line.changed {
+            for p in [r.start, r.end] {
+                if p > at && p < end && text.is_char_boundary(p - at) {
+                    cut.push(p);
                 }
             }
-            if file.lines_truncated {
-                lines.push(Line::from(Span::styled(
-                    "The rest of this file is in the browser (w).",
-                    dim(),
-                )));
-            }
         }
+        cut.sort_unstable();
+        cut.dedup();
+        for pair in cut.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let changed = line.changed.iter().any(|r| r.start <= a && b <= r.end);
+            let s = if changed {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            };
+            out.push(Span::styled(text[a - at..b - at].to_string(), s));
+        }
+        at = end;
     }
-    let skip = app.diff_scroll.min(lines.len().saturating_sub(1));
-    f.render_widget(
-        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
-        area,
-    );
+    out
+}
+
+fn sign_of(kind: Kind) -> (&'static str, Style) {
+    match kind {
+        Kind::Addition => ("+", passed()),
+        Kind::Deletion => ("−", failed()),
+        _ => (" ", dim()),
+    }
+}
+
+fn num(n: Option<i64>) -> String {
+    n.map(|n| format!("{n:>4}"))
+        .unwrap_or_else(|| "    ".into())
+}
+
+/// Unified: old and new numbers (one column when narrow), the sign, the code.
+fn code_spans(
+    line: &review::CodeLine,
+    pieces: Option<&Vec<(Token, String)>>,
+    both: bool,
+) -> Vec<Span<'static>> {
+    let (sign, sign_style) = sign_of(line.kind);
+    let numbers = if both {
+        format!("{} {} ", num(line.old), num(line.new))
+    } else {
+        format!("{} ", num(line.new.or(line.old)))
+    };
+    let mut spans = vec![
+        Span::styled(numbers, dim()),
+        Span::styled(format!("{sign} "), sign_style),
+    ];
+    spans.extend(text_spans(line, pieces));
+    spans
+}
+
+/// Side by side: one side's number, sign and code (a context line shows on both sides).
+fn half_spans(
+    line: &review::CodeLine,
+    pieces: Option<&Vec<(Token, String)>>,
+    old: bool,
+) -> Vec<Span<'static>> {
+    let (sign, sign_style) = sign_of(line.kind);
+    let n = if old { line.old } else { line.new };
+    let mut spans = vec![
+        Span::styled(format!("{} ", num(n)), dim()),
+        Span::styled(format!("{sign} "), sign_style),
+    ];
+    spans.extend(text_spans(line, pieces));
+    spans
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -838,7 +1161,25 @@ const KEYS: &[(&str, &str)] = &[
     ("q", "quit"),
 ];
 
-fn draw_keys(f: &mut Frame, area: Rect) {
+/// The Diff tab's keys: moving through the changes, notes, more lines, the view, copy, and the acts.
+const DIFF_KEYS: &[(&str, &str)] = &[
+    ("j/k", "line"),
+    ("[ ]", "hunk"),
+    ("{ }", "file"),
+    ("c", "note"),
+    ("a", "accept"),
+    ("r", "send back"),
+    ("e/E", "more lines"),
+    ("v", "side by side"),
+    ("y", "copy"),
+    ("n/N", "notes"),
+    ("w", "browser"),
+    ("?", "help"),
+    ("q", "quit"),
+];
+
+fn draw_keys(f: &mut Frame, tab: Tab, area: Rect) {
+    let keys = if tab == Tab::Diff { DIFF_KEYS } else { KEYS };
     // Everything that fits, always ending with help and quit.
     let render = |set: &[(&str, &str)]| -> (Vec<Span<'static>>, usize) {
         let mut spans = vec![];
@@ -854,13 +1195,13 @@ fn draw_keys(f: &mut Frame, area: Rect) {
         }
         (spans, w)
     };
-    let mut keep = KEYS.len();
+    let mut keep = keys.len();
     loop {
-        let mut set: Vec<(&str, &str)> = KEYS[..keep.min(KEYS.len() - 2)]
+        let mut set: Vec<(&str, &str)> = keys[..keep.min(keys.len() - 2)]
             .iter()
             .map(|&(k, what)| (if k == "Enter" { marks().enter } else { k }, what))
             .collect();
-        set.extend_from_slice(&KEYS[KEYS.len() - 2..]);
+        set.extend_from_slice(&keys[keys.len() - 2..]);
         let (spans, w) = render(&set);
         if w <= area.width as usize || keep == 0 {
             f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -895,8 +1236,14 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 "1-9          answer the agent's question",
                 "a            accept the result",
                 "r            send the result back, with a note",
-                "[ ]          another file, in Diff",
                 "PgUp PgDn    scroll; End follows the newest",
+                "",
+                "In Diff: j/k a line  [ ] a hunk  { } a file  n/N a note",
+                "  c          a note on the line or hunk (kept here until you send)",
+                "  e / E      more lines above / below the hunk",
+                "  v          side by side (on a wide window)",
+                "  y          copy the hunk to your terminal's scrollback",
+                "  r          send back with your notes;  a  accept (t attaches them)",
                 "n            new task",
                 "w            open Toolroll in your browser",
                 "q            quit",
@@ -990,27 +1337,196 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Mode::Build { .. } => return draw_build(f, app, area),
         Mode::ConfirmAccept(pin) => {
-            // What is shown is the pinned result: the same facts the act posts.
-            let files = pin
-                .totals
-                .map(|(f, a, d)| format!(" ({f} files, +{a} −{d})"))
-                .unwrap_or_default();
+            // What is shown is the pinned result: the same facts the act posts, and what accepting means.
+            let pin = pin.clone();
+            let facts = facts_of(app);
+            let w = (area.width as usize).saturating_sub(8).min(84);
+            let notes = app.notes_of(&pin.task, pin.run);
+            let label = |l: &str| Span::styled(format!("{l:<10}"), dim());
             let run = pin.run;
-            (
-                " Accept ",
-                vec![
-                    Line::raw(""),
-                    Line::from(Span::styled(
-                        format!("Accept the result of build #{run}{files}?"),
+            // (scripts/tui-e2e.mjs waits for exactly this heading; src/tui-e2e-env.test.ts holds the two together.)
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled(
+                    format!("Accept the result of build #{run}?"),
+                    ink(),
+                )),
+                Line::raw(""),
+            ];
+            if let Some((files, add, del)) = pin.totals.or(facts.totals) {
+                lines.push(Line::from(vec![
+                    label("Changes"),
+                    Span::raw(format!("{files} files, ")),
+                    Span::styled(format!("+{add}"), passed()),
+                    Span::raw(" "),
+                    Span::styled(format!("−{del}"), failed()),
+                ]));
+            }
+            lines.push(Line::from(vec![
+                label("Checks"),
+                Span::styled(facts.checks.short(), checks_style(facts.checks)),
+            ]));
+            lines.push(Line::from(vec![
+                label("Cost"),
+                Span::raw(
+                    facts
+                        .cost
+                        .map_or("not recorded".to_string(), |c| format!("${c:.2}")),
+                ),
+            ]));
+            let wrapped = |lines: &mut Vec<Line<'static>>, l: &str, words: &str, style: Style| {
+                for (i, piece) in wrap(words, w.saturating_sub(10).max(16))
+                    .into_iter()
+                    .enumerate()
+                {
+                    lines.push(Line::from(vec![
+                        if i == 0 {
+                            label(l)
+                        } else {
+                            Span::raw(" ".repeat(10))
+                        },
+                        Span::styled(piece, style),
+                    ]));
+                }
+            };
+            if let Some(needs) = &facts.needs {
+                wrapped(&mut lines, "Who", needs, ink());
+            }
+            for b in &facts.blockers {
+                wrapped(&mut lines, "Blocked", b, failed());
+            }
+            if let Some(owed) = &facts.owed {
+                wrapped(&mut lines, "Means", owed_words(owed), Style::default());
+            }
+            if !notes.is_empty() {
+                if app.accept_attach {
+                    lines.push(Line::raw(""));
+                    lines.push(Line::from(Span::styled(
+                        "These notes go with it (saved on the result):",
                         ink(),
-                    )),
-                    Line::raw("It completes the task."),
-                    Line::raw(""),
-                    Line::from(vec![Span::styled("Enter  ", ink()), Span::raw("Accept")]),
-                    Line::from(Span::styled("Any other key cancels.", dim())),
-                ],
-            )
+                    )));
+                    for part in review::batch_text(&notes, "").split('\n') {
+                        lines.extend(wrap(part, w).into_iter().map(Line::raw));
+                    }
+                } else {
+                    wrapped(
+                        &mut lines,
+                        "Notes",
+                        &format!("{} kept · t attaches them", notes.len()),
+                        Style::default(),
+                    );
+                }
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::raw("It completes the task."));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled("Enter  ", ink()),
+                Span::raw(if app.accept_attach {
+                    "Accept with the notes"
+                } else {
+                    "Accept"
+                }),
+            ]));
+            if !notes.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("t      ", ink()),
+                    Span::raw(if app.accept_attach {
+                        "Don't attach the notes"
+                    } else {
+                        "Attach the notes"
+                    }),
+                ]));
+            }
+            lines.push(Line::from(Span::styled("Any other key cancels.", dim())));
+            let fits = lines.len() + 2 <= area.height as usize;
+            app.batch_shown = fits;
+            if fits || !app.accept_attach {
+                (" Accept ", lines)
+            } else {
+                (
+                    " Accept ",
+                    wrap(crate::app::NOTES_TOO_LONG, w.max(16))
+                        .into_iter()
+                        .map(|l| Line::from(Span::styled(l, ink())))
+                        .collect(),
+                )
+            }
         }
+        Mode::SendBack(pin, typed) => {
+            // The notes going back, and the words for the whole change being typed. Not yet a send: Enter shows the
+            // whole text to read to its end (SendReview), and only that text is posted.
+            let pin = pin.clone();
+            let typed = typed.clone();
+            let w = (area.width as usize).saturating_sub(8).min(84);
+            let notes = app.notes_of(&pin.task, pin.run);
+            let room_lines = (area.height as usize).saturating_sub(12).max(1);
+            let head = if notes.is_empty() {
+                format!("Send back build #{}, saying what to change:", pin.run)
+            } else {
+                format!("Send back build #{} with:", pin.run)
+            };
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled(head, ink())),
+                Line::raw(""),
+            ];
+            let mut body: Vec<Line<'static>> = vec![];
+            if !notes.is_empty() {
+                for part in review::batch_text(&notes, "").split('\n') {
+                    body.extend(wrap(part, w).into_iter().map(Line::raw));
+                }
+                body.push(Line::raw(""));
+            }
+            if body.len() > room_lines {
+                let more = body.len() - room_lines + 1;
+                body.truncate(room_lines - 1);
+                body.push(Line::from(Span::styled(
+                    format!("… {more} more lines: you read them all before it's sent"),
+                    dim(),
+                )));
+            }
+            lines.extend(body);
+            let label = if notes.is_empty() {
+                "What to change: "
+            } else {
+                "For the whole change: "
+            };
+            let room = w.saturating_sub(width(label) + 1);
+            let shown: String = {
+                let chars: Vec<char> = typed.chars().collect();
+                let mut used = 0;
+                let mut start = chars.len();
+                while start > 0 && used + width(&chars[start - 1].to_string()) <= room {
+                    start -= 1;
+                    used += width(&chars[start].to_string());
+                }
+                chars[start..].iter().collect()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(label, dim()),
+                Span::raw(shown),
+                Span::styled("▏", ink()),
+            ]));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled("Enter  ", ink()),
+                Span::raw("Read it all, then send"),
+                Span::styled("   Esc  ", ink()),
+                Span::raw("Keep the notes"),
+            ]));
+            (" Send back ", lines)
+        }
+        Mode::SendReview { .. } => return draw_send_review(f, app, area),
+        Mode::Sending(words) => (
+            " Saving ",
+            vec![
+                Line::raw(""),
+                Line::from(Span::styled(words.clone(), ink())),
+                Line::raw(""),
+                Line::from(Span::styled("Wait for Toolroll's answer.", dim())),
+            ],
+        ),
         Mode::Fatal(words, _) => {
             let mut lines = vec![Line::raw("")];
             lines.extend(
@@ -1158,5 +1674,88 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw("Review in the browser"),
     ]));
     lines.push(Line::from(Span::styled("Esc files nothing.", dim())));
+    f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// Send back's whole text, exactly as it will be posted: every line wrapped (never cut), scrolled with j/k or Space.
+/// Drawing its end is what lets Enter send (app.rs Mode::SendReview `seen_end`), as with Build's terms.
+fn draw_send_review(f: &mut Frame, app: &mut App, area: Rect) {
+    let Mode::SendReview {
+        pin,
+        text,
+        scroll,
+        seen_end,
+        ..
+    } = &mut app.mode
+    else {
+        return;
+    };
+    let w = area.width.saturating_sub(6).min(96);
+    let h = area.height.saturating_sub(2);
+    let inner_w = w.saturating_sub(2) as usize;
+    let visible = (h as usize).saturating_sub(2 + 6);
+    let r = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + 1,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" Send back ", ink()));
+    if inner_w < 16 || visible < 3 {
+        *seen_end = false;
+        let lines: Vec<Line<'static>> = wrap(crate::app::NOTES_TOO_LONG, inner_w.max(8))
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, ink())))
+            .collect();
+        f.render_widget(Paragraph::new(lines).block(block), r);
+        return;
+    }
+    let mut body: Vec<Line<'static>> = vec![];
+    for part in text.split('\n') {
+        body.extend(wrap(part, inner_w).into_iter().map(Line::raw));
+    }
+    let max_scroll = body.len().saturating_sub(visible);
+    if *scroll > max_scroll {
+        *scroll = max_scroll;
+    }
+    let end = (*scroll + visible).min(body.len());
+    if end >= body.len() {
+        *seen_end = true;
+    }
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("Build #{} goes back with exactly this:", pin.run),
+            ink(),
+        )),
+        Line::raw(""),
+    ];
+    lines.extend(body[*scroll..end].iter().cloned());
+    lines.push(Line::raw(""));
+    if end < body.len() {
+        lines.push(Line::from(Span::styled(
+            format!("↓ {} more lines: j or Space reads on", body.len() - end),
+            ink(),
+        )));
+    } else {
+        lines.push(Line::raw(""));
+    }
+    if *seen_end {
+        lines.push(Line::from(vec![
+            Span::styled("Enter  ", ink()),
+            Span::raw("Send back"),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Enter sends once you've read to the end.",
+            dim(),
+        )));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Esc  ", ink()),
+        Span::raw("Back to your words (nothing is sent)"),
+    ]));
     f.render_widget(Paragraph::new(lines).block(block), r);
 }

@@ -8,6 +8,7 @@
  */
 import type { Store, TelegramBinding, TelegramTeamChat } from "./store.js";
 import { renderReply, shapeReplyParts } from "./reply-shape.js";
+import { checkedChunks } from "./outbound-privacy.js";
 import { TeamLeads } from "./team-leads.js";
 import type { TeamActor, TeamConversation } from "./team-contract.js";
 import { proposalPreview, tooLongText } from "./chat-channel.js";
@@ -254,7 +255,8 @@ export async function deliverTeamChats(
       if (!skip) {
         // The lead's reply is split as written, then each part shaped and measured as Telegram shows it, so no cut lands
         // inside a link and no rendered part passes Telegram's ceiling.
-        const text = role === "assistant" ? shapeReplyParts(String(message["text"]), PART_CAP, { appOrigin: phoneOrigin?.() ?? null }, shaped => renderReply(shaped, "telegram").length).map(part => renderReply(part, "telegram")) : `${phoneText(String(message["author"]), 40)}: ${String(message["text"])}`;
+        // Checked whole before the cut (outbound-privacy.ts), then each part again at the client.
+        const text = role === "assistant" ? checkedChunks(String(message["text"]), shapeReplyParts(String(message["text"]), PART_CAP, { appOrigin: phoneOrigin?.() ?? null }, shaped => renderReply(shaped, "telegram").length)).map(part => renderReply(part, "telegram")) : `${phoneText(String(message["author"]), 40)}: ${String(message["text"])}`;
         const sent = await sendParts(store, transport, chat.chatId, text, `${prefix}message:${id}`, clock, access, report);
         if (sent !== null) { report.problems.push(`team chat ${chat.chatId}: ${sent}`); break; }
       }

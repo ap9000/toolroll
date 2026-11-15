@@ -4,7 +4,7 @@ import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./
 import { inspectAcpAgent } from "./acp-inspect.js";
 import { runAcpChecks } from "./acp-check.js";
 import { verifyLaunch } from "./acp-attest.js";
-import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
+import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationCommandEnv, notificationDestination } from "./notification-delivery.js";
 import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
 import { checkPublicCommand } from "./public-check.js";
@@ -143,7 +143,7 @@ import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, upd
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
-import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, taskBranches } from "./names.js";
+import { BRANCH_PREFIX, envValue, existingOrFirst, taskBranches } from "./names.js";
 import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
 import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
@@ -9064,12 +9064,7 @@ async function outboxCommand(
       if (!notificationClaimHeld(store, one, owner, clock())) { failed++; continue; }
       const sent = await run("sh", ["-lc", command], {
         timeoutMs: 30_000,
-        env: {
-          ...envTwins("KIND", one.kind),
-          ...envTwins("SUBJECT", one.subject),
-          ...envTwins("BODY", one.body),
-          ...envTwins("DEDUPE_KEY", one.dedupeKey),
-        },
+        env: notificationCommandEnv(one),
       });
       if (sent.code === 0) {
         const receipt = sent.stdout.split("\n")[0]?.trim() ?? "";

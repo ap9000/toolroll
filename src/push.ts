@@ -23,6 +23,7 @@ import { createCipheriv, createECDH, createPrivateKey, hkdfSync, randomBytes, cr
 import type { Notification, Store } from "./store.js";
 import { isCheckProgressLine } from "./check-progress.js";
 import { RELEASE_PUSH_WORDS, releasePushOf, releaseReadyObsolete } from "./release-approval.js";
+import { privateValue } from "./outbound-privacy.js";
 
 export const VAPID_FILE = "vapid-keys.json";
 /** RFC 8291 §4: rs 4096 leaves room for the record's delimiter and tag. */
@@ -280,10 +281,17 @@ export function pushLineOf(notification: Pick<Notification, "kind" | "pushClass"
   return { body: PUSH_WORDS[pushClass].body, url: safePushLink(pushClass, notification.link) };
 }
 
+/** The last check on a ping, the one rule every outbound message shares (outbound-privacy.ts): a line or link that
+ * names a key or a folder on this computer is never sent; its class's fixed words and link go instead. */
+export function privacySafeLine(line: { body: string; url: string }, pushClass: PushClass): { body: string; url: string } {
+  return privateValue(line) ? { body: PUSH_WORDS[pushClass].body, url: CLASS_FALLBACK[pushClass] } : line;
+}
+
 /** `release`: the class and link the plane derived for this row at send time (releasePushOf): fixed words and a release's
  * own link, never the task line. Absent or null, the row's own line. */
 export function buildPushPayload(notification: Notification, waiting: number | null = null, release: { link: string } | null = null): string {
-  const line = release !== null ? { body: PUSH_WORDS.release.body, url: safePushLink("release", release.link) } : pushLineOf(notification);
+  const line = privacySafeLine(release !== null ? { body: PUSH_WORDS.release.body, url: safePushLink("release", release.link) } : pushLineOf(notification),
+    release !== null ? "release" : notification.pushClass ?? "attention");
   return JSON.stringify({
     title: "Toolroll",
     body: line.body,

@@ -195,7 +195,7 @@ export async function runFlowSteps(store: Store, repo: string, now: Date, io: St
         : stage.kind === "sort" ? await sortCard(known.definition!, stage, card, key!, io)
         : stage.kind === "draft" ? await draftCard(store, known.definition!, stage, card, io, repo, now)
         : stage.kind === "request" ? await runRequest(stage, card, repo, io)
-        : stage.kind === "email" ? await sendEmail(stage, card, io, threadOf(store, card))
+        : stage.kind === "email" ? await sendEmail(stage, card, io, threadOf(store, card), repo)
         : stage.kind === "tool" ? await useTool(store, stage, card, repo, io)
         : await updateSource(store, stage, card, io, now);
     } catch (error) {

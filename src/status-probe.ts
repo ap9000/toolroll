@@ -38,6 +38,13 @@ import { boundedAcl, trustedBinary, trustedFolders, type AclReader } from "./tru
 
 /** How long a status command may take, every check before it included. */
 export const STATUS_TIMEOUT_MS = 800;
+/**
+ * The console's sign-in checks (serve.ts), which no page waits on: the same steps, a wider deadline. The ACL reads are
+ * synchronous `ls` runs and the Claude Code and Codex checks share one event loop, so on a busy computer those reads
+ * alone took about 700 ms of the 800 (measured under CPU load, 2026-11-15): both status commands were ended at the
+ * deadline, the sign-in read "unverified", and the first task was filed for a plan.
+ */
+export const BACKGROUND_STATUS_TIMEOUT_MS = 3_000;
 /** After SIGTERM, how long the group has before SIGKILL. */
 const KILL_GRACE_MS = 250;
 const STATUS_MAX_BUFFER = 32 * 1024;
