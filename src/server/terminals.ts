@@ -13,6 +13,14 @@
  *
  * While open, the same proof runs before every input frame, before output once it is a second old, every 5 s, and at
  * once on every database change (the live bus); a failure closes the socket with 4401.
+ *
+ * Solo-workbench T4 (take over): a local owner's session — the terminal workbench's, or the laptop owner's browser —
+ * is an operator here only while the install is solo and its local sign-in still stands (local mode on at the session's
+ * generation, its owner and account unchanged, its saved session held), read again at every proof above. It reaches
+ * only terminals a local owner's session of the same local generation started, never a full session's. Its start is the
+ * route table's `take-over` act, proved by the local owner's own prover (scope.ts); right before the program starts,
+ * solo and the local sign-in are read again. A take-over names a task and a build, never a project or a folder: the
+ * project and the commit come from Toolroll's own record of that build.
  */
 import { randomBytes } from "node:crypto";
 import { STATUS_CODES, type IncomingMessage, type Server } from "node:http";
@@ -26,7 +34,10 @@ import { openTerminalLedger } from "../terminal-catalog.js";
 import { loadPtySpawn, MAX_FRAME_BYTES, TerminalHost, MAX_VIEWERS, parseTerminalFrame, TERMINAL_PROGRAMS, TerminalError, type TerminalProgram, type TerminalSummary, type TerminalViewer } from "../live-terminal.js";
 import type { LiveBus } from "../live-bus.js";
 import { logEvent } from "../log.js";
-import { sessionStandsIn } from "../install-mode.js";
+import { sessionStandsIn, soloNow } from "../install-mode.js";
+import { localOwnerStandsNow } from "../local-owner.js";
+import { resultRunsOf } from "../engine-reads.js";
+import { checkEngineResponse, type EngineResponseName } from "../contracts/engine-api.js";
 import { projectName, rowVisible } from "../project.js";
 import { transportOf, type Transport } from "../public-access.js";
 import type { Store } from "../store.js";
@@ -68,7 +79,11 @@ export function terminalHostFor(store: Store, options: Pick<ServeOptions, "termi
   const spawn = loadPtySpawn();
   if (spawn === null) return { host: null, problem: "This install has no terminal support (the optional @lydell/node-pty package didn't load). Reinstall Toolroll to add it." };
   const ledger = openTerminalLedger(store.raw());
-  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees"), ...(ledger === null ? {} : { ledger }) }), problem: null };
+  // A take-over's PATH leaves out every folder a build may write: the projects Toolroll knows and its own state folder
+  // (build worktrees, live copies, evidence); the console's own projects are added once its runtime exists
+  // (createTerminalHandlers).
+  const buildWritable = () => [dirname(database), ...store.knownRepos()];
+  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees"), buildWritable, ...(ledger === null ? {} : { ledger }) }), problem: null };
 }
 
 type Operator = Who & { via: "cookie" };
@@ -83,21 +98,39 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES, perMessageDeflate: false,
     handleProtocols: protocols => protocols.has(KEY_PROTOCOL) ? KEY_PROTOCOL : false });
 
-  /** An operator signed in with a browser, of the generation they signed in with; else null. */
-  const operatorOf = (who: Who | null): Operator | null =>
-    // Easy-start C1: never a local owner's session (a laptop's passwordless owner), for a new terminal or an existing one.
-    who?.via === "cookie" && who.authority === "full" && who.role === "approver" && !store.isDemo() && codingActorAllowed({ name: who.name, generation: who.session.generation }) ? who : null;
+  /** A local owner's session that still stands now (local mode on at its generation, its owner and account unchanged,
+   * its saved session held) on an install that is solo now; both read at every call. */
+  const localOwnerNow = (who: Operator): boolean => {
+    const hash = runtime.sessions.hashOf(who.session);
+    return who.session.localGeneration !== null && hash !== null && soloNow(store)
+      && localOwnerStandsNow(store, { account: who.name, localGeneration: who.session.localGeneration, accountGeneration: who.session.generation,
+        transport: "browser", act: "take-over", sessionHash: hash, request: null });
+  };
+  /** An operator signed in with a browser, of the generation they signed in with; else null. Easy-start C1 kept a local
+   * owner's session out entirely; T4 admits one only while the install is solo and its local sign-in stands. */
+  const operatorOf = (who: Who | null): Operator | null => {
+    if (who?.via !== "cookie" || who.role !== "approver" || store.isDemo() || !codingActorAllowed({ name: who.name, generation: who.session.generation })) return null;
+    if (who.authority === "full") return who;
+    return who.authority === "local-owner" && localOwnerNow(who) ? who : null;
+  };
   /** The project a terminal works in is one the coding workspace admits for this person, now. */
   const projectAllowed = (name: string, repo: string): boolean =>
     rowVisible(liveCeiling(), repo) && store.accountCanAccess(name, repo) && codingProjectAllowed(repo);
+  /** The terminal is this session's kind of owner's: the same account and generation, and the same local generation (a
+   * full session's terminal has none), so a local owner and a full session never reach each other's. */
   const owned = (who: Operator, terminal: TerminalSummary | null): terminal is TerminalSummary =>
-    terminal !== null && terminal.owner === who.name && terminal.generation === who.session.generation;
+    terminal !== null && terminal.owner === who.name && terminal.generation === who.session.generation
+    && terminal.localGeneration === (who.authority === "full" ? null : who.session.localGeneration);
   const record = (event: string, who: string, terminal: { id: string; repo: string; program: TerminalProgram }) =>
     logEvent("info", `terminal.${event}`, { actor: who, terminal: terminal.id, repo: terminal.repo, program: terminal.program });
 
   const json = (ctx: HandlerContext, status: number, value: unknown) => respond(ctx.response, status, "application/json", JSON.stringify(value));
+  /** The answers a terminal client reads (engine-api.ts termState, termStarted, refusal), checked as they are sent. */
+  const checked = (ctx: HandlerContext, status: number, name: EngineResponseName, value: unknown) => json(ctx, status, checkEngineResponse(name, value));
+  /** Said to a local owner's session on an install that isn't solo (or whose local sign-in lapsed). */
+  const LOCAL_TEAM = "Taking over works while you're the only person using this Toolroll. Set a password (run `toolroll password set`) and sign in with it.";
   const refusal = (ctx: HandlerContext): string | null => {
-    if (operatorOf(ctx.who) === null) return "Terminals are for installation-wide operators signed in with a browser.";
+    if (operatorOf(ctx.who) === null) return ctx.who?.via === "cookie" && ctx.who.authority === "local-owner" ? LOCAL_TEAM : "Terminals are for installation-wide operators signed in with a browser.";
     if (deps.host === null) return deps.problem ?? "Terminals aren't available on this install.";
     return null;
   };
@@ -109,7 +142,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const id = TERMINAL_ID.exec(url.pathname)?.[1] ?? "";
     const nonce = randomBytes(16).toString("base64");
     const host = request.headers.host ?? "";
-    const document = html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#0C0E12"><meta name="apple-mobile-web-app-capable" content="yes"><title>Terminals — Toolroll</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/assets/terminal.css"></head><body><div id="so-term"></div><div id="so-term-boot" hidden data-csrf="${(who as Operator).session.csrf}" data-session="${id}" data-passwordless="${sessionStandsIn(store) ? "1" : ""}"></div><script type="module" src="/assets/terminal.js" nonce="${nonce}"></script></body></html>`;
+    const document = html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#0C0E12"><meta name="apple-mobile-web-app-capable" content="yes"><title>Terminals — Toolroll</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/assets/terminal.css"></head><body><div id="so-term"></div><div id="so-term-boot" hidden data-csrf="${(who as Operator).session.csrf}" data-session="${id}" data-passwordless="${sessionStandsIn(store) || (who as Operator).authority === "local-owner" ? "1" : ""}"></div><script type="module" src="/assets/terminal.js" nonce="${nonce}"></script></body></html>`;
     response.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
       // The socket is this page's own host: named outright, since older WebKit doesn't read 'self' as ws:/wss:.
@@ -120,32 +153,64 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
 
   async function state(ctx: HandlerContext): Promise<void> {
     const who = operatorOf(ctx.who);
-    if (who === null) return json(ctx, 403, { error: "operator" });
+    if (who === null) return checked(ctx, 403, "refusal", { error: "operator" });
     const sessions = deps.host === null ? [] : deps.host.list(who.name).filter(one => owned(who, one) && projectAllowed(who.name, one.repo));
-    return json(ctx, 200, {
+    return checked(ctx, 200, "termState", {
       available: deps.host !== null, problem: deps.host === null ? deps.problem ?? "Terminals aren't available on this install." : null,
-      programs: TERMINAL_PROGRAMS,
+      programs: [...TERMINAL_PROGRAMS],
       projects: runtime.consoleProjects().filter(repo => projectAllowed(who.name, repo)).map(path => ({ path, name: projectName(path) })),
-      sessions: sessions.map(one => ({ id: one.id, repo: one.repo, project: projectName(one.repo), program: one.program, branch: one.branch, startedAt: one.startedAt, endedAt: one.endedAt, exit: one.exit, cleanup: one.cleanup })),
+      sessions: sessions.map(one => ({ id: one.id, repo: one.repo, project: projectName(one.repo), program: one.program, branch: one.branch, startedAt: one.startedAt, endedAt: one.endedAt,
+        exit: one.exit, cleanup: one.cleanup, task: one.task, run: one.run })),
     });
   }
 
+  /**
+   * A take-over's build (T4): a saved result of this task, still in view, with the commit Toolroll recorded for it, and
+   * the project Toolroll records for its task. Read from the store only; the caller named only the task and the build.
+   */
+  const takeOverOf = (taskId: string, runId: number): { repo: string; revision: string } | string => {
+    const family = runtime.familyOf(taskId);
+    if (family === null || family.problem !== null) return "No such task.";
+    const run = resultRunsOf(store, family).filter(one => runtime.runVisible(one)).find(one => one.id === runId) ?? null;
+    if (run === null) return "This build has no saved result yet. Wait for it to finish (or stop it), then take over.";
+    const revision = run.headRevision;
+    if (revision === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(revision)) return "This build has no saved commit to open a terminal on.";
+    const repo = runtime.taskRepoOf(run.taskRef);
+    if (repo === null) return "This build's project isn't known here.";
+    return { repo, revision };
+  };
+
   async function start(ctx: HandlerContext): Promise<void> {
+    const answer = (status: number, value: { ok: true; id: string } | { ok: false; error: string }) => checked(ctx, status, "termStarted", value);
     const refused = refusal(ctx);
-    if (refused !== null) return json(ctx, 403, { ok: false, error: refused });
+    if (refused !== null) return answer(403, { ok: false, error: refused });
     const who = ctx.who as Operator;
     const body = readForm(ctx.posted, CONSOLE_FORMS.term);
-    if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return json(ctx, 400, { ok: false, error: "Submit one value for each field." });
-    const repo = body.get("repo") ?? "", program = body.get("program") ?? "";
-    if (!(TERMINAL_PROGRAMS as readonly string[]).includes(program)) return json(ctx, 400, { ok: false, error: "Choose Claude Code, Codex or a shell." });
-    if (!runtime.consoleProjects().includes(repo) || !projectAllowed(who.name, repo)) return json(ctx, 403, { ok: false, error: "Choose a project available to your account." });
+    if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return answer(400, { ok: false, error: "Submit one value for each field." });
+    const program = body.get("program") ?? "";
+    if (!(TERMINAL_PROGRAMS as readonly string[]).includes(program)) return answer(400, { ok: false, error: "Choose Claude Code, Codex or a shell." });
+    // A take-over names its task and build, and nothing else: no project, no folder. Either both, or neither.
+    const taskField = body.get("task"), runField = body.get("run");
+    if ((taskField === null) !== (runField === null)) return answer(400, { ok: false, error: "Name the task and its build." });
+    let from: { revision: string; task: string; run: number } | null = null, repo: string;
+    if (taskField !== null && runField !== null) {
+      if (body.get("repo") !== null || !/^[1-9][0-9]{0,14}$/.test(runField) || taskField === "" || taskField.length > 200) return answer(400, { ok: false, error: "Name the task and its build." });
+      const found = takeOverOf(taskField, Number(runField));
+      if (typeof found === "string") return answer(404, { ok: false, error: found });
+      from = { revision: found.revision, task: taskField, run: Number(runField) };
+      repo = found.repo;
+    } else repo = body.get("repo") ?? "";
+    if (!runtime.consoleProjects().includes(repo) || !projectAllowed(who.name, repo)) return answer(403, { ok: false, error: "Choose a project available to your account." });
     // The organisation's policy decides whether this provider may run in a person's own session.
     if (program !== "shell") {
       const stopped = store.sessionPolicyRefusal(program, null, "live terminals");
-      if (stopped !== null) return json(ctx, 403, { ok: false, error: stopped });
+      if (stopped !== null) return answer(403, { ok: false, error: stopped });
     }
     const proved = runtime.authenticateApprover(who, body.get("password") ?? "");
-    if (!proved.ok) return json(ctx, 403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
+    if (!proved.ok) return answer(403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
+    // A local owner's start is proved only by its own prover (never a typed password or Passwordless), and a full
+    // session's never by that one.
+    if ((proved.method === "local-owner") !== (who.authority !== "full")) return answer(403, { ok: false, error: "Your access changed. Sign in again." });
     // The same session, still an operator of the same generation, and the project still theirs: asked right before the
     // program starts (after the slow worktree work) and again once it has. A start the session alone proved (solo or
     // Passwordless, install-mode.ts) also needs the session to stand in still: a person who joined, or Passwordless
@@ -154,21 +219,30 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       const again = rereadBrowser(runtime, ctx.request, who);
       if (again === null || operatorOf(again) === null) return "Your access changed. Sign in again.";
       if (proved.method === "session" && !sessionStandsIn(store)) return "This install's sign-in rules changed. Enter your Toolroll password to start a terminal.";
-      return projectAllowed(who.name, repo) && runtime.consoleProjects().includes(repo) ? null : "That project is no longer available to your account.";
+      // A local owner's (operatorOf above read solo and the local sign-in again): its own proof, still standing.
+      if (proved.method === "local-owner" && (again.authority !== "local-owner" || again.session.localGeneration !== who.session.localGeneration)) return "Your access changed. Sign in again.";
+      if (!projectAllowed(who.name, repo) || !runtime.consoleProjects().includes(repo)) return "That project is no longer available to your account.";
+      // A take-over's build: still a result of the task, in view, at the same commit, in the same project.
+      if (from !== null) {
+        const now = takeOverOf(from.task, from.run);
+        if (typeof now === "string" || now.repo !== repo || now.revision !== from.revision) return "This build changed. Look again.";
+      }
+      return null;
     };
     try {
-      const terminal = await deps.host!.start({ name: who.name, generation: who.session.generation }, repo, program as TerminalProgram, undefined, stillAllowed);
+      const owner = { name: who.name, generation: who.session.generation, localGeneration: who.authority === "full" ? null : who.session.localGeneration };
+      const terminal = await deps.host!.start(owner, repo, program as TerminalProgram, undefined, stillAllowed, from);
       const after = stillAllowed();
       if (after !== null) {
         // Nothing of it stays: the program is swept, then its worktree removed (a sweep that can't prove itself keeps it).
         await deps.host!.close(terminal.id);
         await deps.host!.remove(terminal.id).catch(() => {});
-        return json(ctx, 403, { ok: false, error: after });
+        return answer(403, { ok: false, error: after });
       }
       record("start", who.name, terminal);
-      return json(ctx, 200, { ok: true, id: terminal.id });
+      return answer(200, { ok: true, id: terminal.id });
     } catch (error) {
-      return json(ctx, 409, { ok: false, error: error instanceof TerminalError ? error.message : "The terminal didn't start." });
+      return answer(409, { ok: false, error: error instanceof TerminalError ? error.message : "The terminal didn't start." });
     }
   }
 
@@ -276,6 +350,10 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
         if (!stillProved()) return shut(4401, "signed out");
         ws.send(JSON.stringify(message));
       },
+      // T4 review: the host pauses the program while this socket is backed up, and closes it plainly (the same 4008
+      // a client says as "Too much output") when it can't be kept whole.
+      backlog: () => closed ? 0 : ws.bufferedAmount,
+      overflow: () => shut(4008, "fell behind"),
     };
     ws.on("message", (data, isBinary) => {
       if (closed) return;
@@ -303,6 +381,9 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     record("attach", who.name, terminal);
   }
 
+  // The console's projects are build-writable too: kept out of a take-over's PATH (live-terminal.ts trustedPath).
+  // (A stand-in host in a test may not have it.)
+  deps.host?.alsoBuildWritable?.(runtime.consoleProjects);
   deps.server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (!upgrade(request, socket, head)) socket.destroy();
   });

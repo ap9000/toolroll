@@ -7,7 +7,7 @@ publish.workspace = true
 
 # A stand-in console for tests and the PTY harness: the engine API's fixtures over real HTTP. Never shipped.
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query", "form"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query", "form", "ws"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "net"] }
 serde_json.workspace = true
 futures-util.workspace = true

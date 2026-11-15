@@ -183,6 +183,10 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "run.act.revise": "request-revision",
   "run.act.note": "request-revision",
   "run.act.comment": "request-revision",
+  // Solo-workbench T4: a live terminal of one's own (terminals.ts admits a local owner only while the install is solo).
+  "term.start": "take-over",
+  "term.close": "take-over",
+  "term.remove": "take-over",
   "task.act.archive": "archive-task",
   "task.act.restore": "archive-task",
   "projects.open": "add-project",

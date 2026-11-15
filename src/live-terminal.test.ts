@@ -4,13 +4,13 @@
  */
 import { describe, test, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import { execFileSync, spawn as spawnChild } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
-import { CLOSE_GRACE_MS, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { CLOSE_GRACE_MS, MIRROR_PAUSE_CHARS, trustedPath, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const ALEX = { name: "alex", generation: 1 };
@@ -165,6 +165,55 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(Date.now() - at).toBeGreaterThanOrEqual(250);
     expect(host.get(started.id)).toMatchObject({ cleanup: "clean" });
     expect(host.get(started.id)!.exit).not.toBeNull();
+  });
+
+  test("a sustained stream keeps both sides bounded: the program pauses while a page is backed up or attaching, resumes once drained", async () => {
+    const flowHost = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live-flow"), closeGraceMs: 300, processes: ownProcesses,
+      programs: { shell: { file: "/usr/bin/yes", args: ["a sustained stream of output, line after line"] } }, env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
+    try {
+      const started = await flowHost.start(ALEX, repo, "shell");
+      let received = 0, backlog = 0, overflowed = 0;
+      // A page whose connection takes nothing while `backlog` says so (a socket's buffered amount).
+      flowHost.attach(started.id, { output: data => { received += data.byteLength; backlog += data.byteLength; }, control: () => {}, backlog: () => backlog, overflow: () => { overflowed += 1; } });
+      await until(() => flowHost.paused(started.id));
+      // Paused: nothing more arrives, and the mirror's unparsed output stays under its mark.
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const held = received;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(received - held).toBeLessThan(256 * 1024);
+      expect(flowHost.mirrorPending(started.id)).toBeLessThanOrEqual(MIRROR_PAUSE_CHARS + 1024 * 1024);
+      // Drained: it resumes, and with a page that keeps up the stream flows while the mirror stays bounded.
+      backlog = 0;
+      await until(() => !flowHost.paused(started.id));
+      let peak = 0;
+      const drain = setInterval(() => { backlog = 0; peak = Math.max(peak, flowHost.mirrorPending(started.id)); }, 5);
+      const before = received;
+      await new Promise(resolve => setTimeout(resolve, 400));
+      clearInterval(drain);
+      expect(received).toBeGreaterThan(before);
+      expect(peak).toBeLessThanOrEqual(MIRROR_PAUSE_CHARS + 1024 * 1024);
+      expect(overflowed).toBe(0);
+    } finally {
+      await flowHost.stop();
+    }
+  });
+
+  test("a page attaching is never held without bound: past the hold, it is closed plainly", async () => {
+    const loud = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live-hold"), closeGraceMs: 300, processes: ownProcesses,
+      programs: { shell: { file: "/usr/bin/yes", args: ["output while a page attaches"] } }, env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
+    try {
+      const started = await loud.start(ALEX, repo, "shell");
+      // A page whose screen is never ready, on a pty that ignores pause (one that wrote it all before the pause took).
+      const session = (loud as unknown as { sessions: Map<string, { pty: { pause?: () => void } | null; screen: { snapshot: (done: (s: string) => void) => void } }> }).sessions.get(started.id)!;
+      session.screen.snapshot = () => { /* never ready */ };
+      session.pty!.pause = () => { /* ignored */ };
+      let overflowed = 0;
+      loud.attach(started.id, { output: () => {}, control: () => {}, overflow: () => { overflowed += 1; } });
+      await until(() => overflowed === 1, 8000);
+      expect(loud.viewerCount(started.id)).toBe(0);
+    } finally {
+      await loud.stop();
+    }
   });
 
   test("at most four pages attach to one terminal", async () => {
@@ -413,5 +462,19 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
       execFileSync("mkdir", ["-p", join(repo, "sub")]);
       await expect(host.start(ALEX, join(repo, "sub"), "shell")).rejects.toThrow(/root of a Git project/);
     } finally { await small.stop(); }
+  });
+});
+
+describe("a take-over's PATH", () => {
+  test("keeps only absolute folders outside every build-writable root, as written and as real paths", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-path-")));
+    try {
+      const project = join(dir, "shop"), state = join(dir, "state");
+      for (const one of [join(project, "node_modules", ".bin"), join(state, "live-worktrees", "abc", "bin"), join(dir, "tools")]) mkdirSync(one, { recursive: true });
+      // A link elsewhere that resolves into a project is build-writable too.
+      symlinkSync(join(project, "node_modules", ".bin"), join(dir, "sneaky"));
+      const path = ["/usr/bin", join(project, "node_modules", ".bin"), "", ".", "bin", join(state, "live-worktrees", "abc", "bin"), join(dir, "sneaky"), join(dir, "tools"), `${dir}/tools/../shop`, "/bin"].join(":");
+      expect(trustedPath(path, [project, state])).toBe(["/usr/bin", join(dir, "tools"), "/bin"].join(":"));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

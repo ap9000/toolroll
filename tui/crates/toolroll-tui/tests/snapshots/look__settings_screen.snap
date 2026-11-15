@@ -36,5 +36,5 @@ expression: "text(&draw(&mut app, 110, 36))"
 │                                    │                                                                       │
 │                                    │Steps  Plan ✓ · Approval ✓ · Build ◐ 4m 12s · Checks · Ready           │
 │                                                                                                            │
-│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  n new  ? help  q quit        │
+│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  t take over  ? help  q quit  │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

@@ -86,10 +86,42 @@ pub struct State {
     pub redeemed: bool,
     /// Reads of each path (for "re-read on change" assertions).
     pub reads: HashMap<String, usize>,
+    /// Live terminals (GET /term/state's sessions; a take-over adds one, T4).
+    pub terms: Vec<Value>,
+    /// What a terminal shows when attached, before `hello` (the screen as it was), in chunks.
+    pub term_screen: Vec<Vec<u8>>,
+    /// The scripted PTY stream after `hello`: each chunk, then this many microseconds.
+    pub term_stream: Vec<Vec<u8>>,
+    pub term_stream_gap_us: u64,
+    /// The stream is sent this many times over (a sustained stream without holding it all in memory).
+    pub term_stream_repeat: usize,
+    /// Typed input comes back as output (a shell with echo on: Enter as CR LF).
+    pub term_echo: bool,
+    /// A full-screen program instead (the harness's busy terminal): typed input is redrawn on the terminal's fixed top
+    /// line as `⌁ <everything typed>`, and each stream chunk scrolls only the rows under it (a scroll region kept at the
+    /// terminal's current size).
+    pub term_full_screen: bool,
+    /// Every text frame a terminal client sent, and how many attaches were accepted.
+    pub term_frames: Vec<String>,
+    pub term_attaches: usize,
+    /// The socket upgrades refused, with their status.
+    pub term_refusals: Vec<u16>,
     /// The person's Flexible threads (GET /agents/live/threads); None: Flexible isn't available, as in this build.
     pub threads: Option<Value>,
     /// Each thread's LiveSession window (GET /agents/live/thread/<id>).
     pub thread_windows: HashMap<String, Value>,
+}
+
+/// The terminal a take-over of the result waiting starts (32 hex, as the console's ids are).
+pub const TERM_ID: &str = "0123456789abcdef0123456789abcdef";
+
+/// The terminal session a take-over of (task, run) is listed as.
+pub fn term_session(task: &str, run: i64) -> Value {
+    let mut one = fixture("term-state.json")["sessions"][0].clone();
+    one["id"] = json!(TERM_ID);
+    one["task"] = json!(task);
+    one["run"] = json!(run);
+    one
 }
 
 impl State {
@@ -427,6 +459,16 @@ pub fn scenario() -> State {
         session_ended: false,
         redeemed: false,
         reads: HashMap::new(),
+        terms: Vec::new(),
+        term_screen: vec![b"\x1b[1mbuild #2\x1b[0m ready in its worktree\r\n$ ".to_vec()],
+        term_stream: Vec::new(),
+        term_stream_gap_us: 0,
+        term_stream_repeat: 1,
+        term_echo: true,
+        term_full_screen: false,
+        term_frames: Vec::new(),
+        term_attaches: 0,
+        term_refusals: Vec::new(),
         threads: None,
         thread_windows: HashMap::new(),
     }
@@ -477,6 +519,8 @@ impl FakeEngine {
             .route("/agents/live/threads", get(threads))
             .route("/agents/live/thread/{thread}", get(thread_window))
             .route("/live", get(live_stream))
+            .route("/term/state", get(term_state))
+            .route("/term/{id}/socket", get(term_socket))
             .fallback(post(act))
             .with_state(shared);
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -823,6 +867,30 @@ async fn act(
     if path == "/tasks/add" {
         return (StatusCode::SEE_OTHER, [("location", "/t/t-new")]).into_response();
     }
+    if path == "/term/start" {
+        // A take-over names its task and build only (the console finds the project and commit in its records).
+        let last = st.acts.last().cloned().unwrap();
+        if last.field("repo").is_some() || last.field("password").is_some() {
+            return json_answer(
+                400,
+                json!({ "ok": false, "error": "Name the task and its build." }),
+            );
+        }
+        let (task, run) = (
+            last.field("task").unwrap_or(""),
+            last.field("run").and_then(|r| r.parse::<i64>().ok()),
+        );
+        if task != "t-done" || run != Some(RESULT_RUN) {
+            return json_answer(
+                404,
+                json!({ "ok": false, "error": "This build has no saved result yet. Wait for it to finish (or stop it), then take over." }),
+            );
+        }
+        let session = term_session(task, RESULT_RUN);
+        st.terms.retain(|t| t["id"] != json!(TERM_ID));
+        st.terms.push(session);
+        return json_answer(200, json!({ "ok": true, "id": TERM_ID }));
+    }
     if path.ends_with("/complete") {
         return json_answer(
             200,
@@ -916,4 +984,158 @@ fn decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+async fn term_state(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = admitted(&s, &headers, "/term/state") {
+        return r;
+    }
+    let mut state = fixture("term-state.json");
+    state["sessions"] = json!(s.state.lock().unwrap().terms.clone());
+    json_answer(200, state)
+}
+
+/// The console's terminal socket, as strict as the real one: the session's cookie, exactly this console's own Origin,
+/// the mutation key offered as a subprotocol, no Authorization, and a terminal this session has.
+async fn term_socket(
+    AxState(s): AxState<Shared>,
+    Path(id): Path<String>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Response {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    };
+    let refuse = |status: u16, words: &str| {
+        s.state.lock().unwrap().term_refusals.push(status);
+        (StatusCode::from_u16(status).unwrap(), words.to_string()).into_response()
+    };
+    if uri.query().is_some() {
+        return refuse(
+            400,
+            "This address takes no query; credentials never travel in URLs.",
+        );
+    }
+    if format!("http://{}", header("host")) != header("origin") {
+        return refuse(403, "A terminal opens only from this console's own page.");
+    }
+    if headers.get("authorization").is_some() {
+        return refuse(403, "Terminals open with a browser sign-in only.");
+    }
+    if !cookie_ok(&headers) || s.state.lock().unwrap().session_ended {
+        return refuse(401, "Sign in as an installation-wide operator.");
+    }
+    let protocols = header("sec-websocket-protocol");
+    if !protocols
+        .split(',')
+        .map(str::trim)
+        .any(|p| p == format!("toolroll.key.{KEY}"))
+    {
+        return refuse(403, "This terminal isn't connected to Toolroll.");
+    }
+    if !s
+        .state
+        .lock()
+        .unwrap()
+        .terms
+        .iter()
+        .any(|t| t["id"] == json!(id) && t["endedAt"].is_null())
+    {
+        return refuse(404, "No such terminal.");
+    }
+    ws.protocols(["toolroll"])
+        .on_upgrade(move |socket| term_session_loop(s, socket))
+}
+
+async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
+    use axum::extract::ws::Message;
+    use futures_util::SinkExt;
+    let (mut sink, mut source) = socket.split();
+    // Bounded: a client that stops reading holds the stream back here too (the fake never buffers without limit).
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(64);
+    let writer = tokio::spawn(async move {
+        while let Some(m) = out_rx.recv().await {
+            if sink.send(m).await.is_err() {
+                break;
+            }
+        }
+    });
+    let (screen, stream, gap, echo, full, repeat) = {
+        let mut st = s.state.lock().unwrap();
+        st.term_attaches += 1;
+        (
+            st.term_screen.clone(),
+            st.term_stream.clone(),
+            st.term_stream_gap_us,
+            st.term_echo,
+            st.term_full_screen,
+            st.term_stream_repeat,
+        )
+    };
+    let rows = Arc::new(std::sync::atomic::AtomicU16::new(30));
+    let mut typed = String::new();
+    for chunk in screen {
+        let _ = out_tx.send(Message::Binary(chunk.into())).await;
+    }
+    let _ = out_tx
+        .send(Message::Text(
+            r#"{"t":"hello","cols":100,"rows":30,"program":"shell","ended":false}"#.into(),
+        ))
+        .await;
+    let streamer = {
+        let out_tx = out_tx.clone();
+        let rows = rows.clone();
+        tokio::spawn(async move {
+            for chunk in std::iter::repeat_n(stream, repeat).flatten() {
+                let chunk = if full {
+                    let r = rows.load(std::sync::atomic::Ordering::Relaxed);
+                    let mut c = format!("\x1b[2;{r}r\x1b[{r};1H").into_bytes();
+                    c.extend_from_slice(&chunk);
+                    c
+                } else {
+                    chunk
+                };
+                if out_tx.send(Message::Binary(chunk.into())).await.is_err() {
+                    break;
+                }
+                if gap > 0 {
+                    tokio::time::sleep(std::time::Duration::from_micros(gap)).await;
+                }
+            }
+        })
+    };
+    while let Some(Ok(frame)) = source.next().await {
+        match frame {
+            Message::Text(text) => {
+                let text = text.to_string();
+                s.state.lock().unwrap().term_frames.push(text.clone());
+                let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                if v["t"] == "resize" {
+                    if let Some(r) = v["rows"].as_u64() {
+                        rows.store(r as u16, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                if v["t"] == "in" && full {
+                    typed.push_str(v["d"].as_str().unwrap_or(""));
+                    let line = format!("\x1b7\x1b[1;1H\x1b[2K\u{2301} {typed}\x1b8");
+                    let _ = out_tx.send(Message::Binary(line.into_bytes().into())).await;
+                } else if v["t"] == "in" && echo {
+                    let typed = v["d"].as_str().unwrap_or("").replace('\r', "\r\n");
+                    let _ = out_tx
+                        .send(Message::Binary(typed.into_bytes().into()))
+                        .await;
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+    streamer.abort();
+    drop(out_tx);
+    let _ = writer.await;
 }

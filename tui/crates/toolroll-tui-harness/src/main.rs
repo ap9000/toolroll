@@ -5,6 +5,14 @@
 //!   toolroll-tui-harness bench-diff [--width 200] [--height 60] [--lines 2000] [--frames 600]
 //!       the Diff tab on a file of --lines changed lines (Rust, syntax colours on), scrolled a page a frame and back:
 //!       frame time (colouring runs on its own thread meanwhile), grammar load time, and how long the colouring took.
+//!   toolroll-tui-harness bench-term [--width 200] [--height 60] [--frames 3000] [--chunk-kb 16]
+//!       the Terminal tab (T4) on TestBackend with a busy program's output (`yes | head`, then a coloured build log)
+//!       arriving every frame: the emulator's parse time and the frame time.
+//!   toolroll-tui-harness drive-term --bin <toolroll-tui> [--cols 200] [--rows 60] [--keys 300] [--interval-ms 40]
+//!       [--chunk-kb 16] [--gap-us 1000] [--stats-out F]
+//!       the real binary in a real PTY taking over the fake console's terminal (its scripted stream over the console's
+//!       socket protocol, a full-screen program redrawing a fixed input line under a busy scroll region): key written →
+//!       echoed on the parsed screen, the binary's own frame times, and every DEC 2026 frame checked for tearing.
 //!   toolroll-tui-harness drive --bin <toolroll-tui> [--cols 200] [--rows 60] [--keys 300] [--interval-ms 40]
 //!       [--resizes N] [--records 20000] [--rate 200] [--stats-out F] [--screen-out F]
 //!       the real binary in a real PTY against the fake console (records streaming into the live build at --rate per
@@ -35,6 +43,8 @@ fn main() -> Result<()> {
         Some("bench") => bench(&args[1..]),
         Some("bench-diff") => bench_diff(&args[1..]),
         Some("drive") => drive(&args[1..]),
+        Some("bench-term") => bench_term(&args[1..]),
+        Some("drive-term") => drive_term(&args[1..]),
         _ => bail!("usage: bench | drive --bin <toolroll-tui>"),
     }
 }
@@ -227,6 +237,8 @@ struct Screen {
     frames_old_size: u64,
     torn: Vec<String>,
     expect: Option<(String, Instant)>,
+    /// The echo is looked for anywhere on screen (a terminal's), not in the steer box.
+    expect_anywhere: bool,
     echo_ms: Vec<f64>,
     tail: Vec<u8>,
 }
@@ -274,13 +286,12 @@ impl Screen {
             cell(rows - 1, cols - 1),
         ];
         let keys = s.contents_between(rows - 2, 0, rows - 2, cols);
-        let ok = corners == ["┌", "┐", "└", "┘"] && keys.contains("q quit");
+        // The key bar ends with quit, or (typing in a terminal) says the one way back.
+        let keys_ok = keys.contains("q quit") || keys.contains("Ctrl-] back");
+        let ok = corners == ["┌", "┐", "└", "┘"] && keys_ok;
         if !ok {
             let example = if self.torn.len() < 5 {
-                format!(
-                    "{cols}x{rows} corners={corners:?} keys_ok={}",
-                    keys.contains("q quit")
-                )
+                format!("{cols}x{rows} corners={corners:?} keys_ok={keys_ok}")
             } else {
                 String::new()
             };
@@ -313,7 +324,12 @@ impl Screen {
         }
         self.tail = buf[process_to..].to_vec();
         if let Some((want, at)) = &self.expect {
-            if self.steer_text().as_deref() == Some(want.as_str()) {
+            let seen = if self.expect_anywhere {
+                self.contains(want)
+            } else {
+                self.steer_text().as_deref() == Some(want.as_str())
+            };
+            if seen {
                 self.echo_ms.push(at.elapsed().as_secs_f64() * 1000.0);
                 self.expect = None;
             }
@@ -419,6 +435,7 @@ fn drive(args: &[String]) -> Result<()> {
         frames_old_size: 0,
         torn: vec![],
         expect: None,
+        expect_anywhere: false,
         echo_ms: vec![],
         tail: vec![],
     }));
@@ -541,6 +558,283 @@ fn drive(args: &[String]) -> Result<()> {
             "torn_frames": s.torn.len(), "torn_examples": s.torn.iter().filter(|t| !t.is_empty()).collect::<Vec<_>>(),
             "resizes": resizes, "output_mb_per_s": ((s.bytes as f64 / elapsed / 1e6) * 100.0).round() / 100.0, "child": status,
             "acts_sent": acts.len(),
+        }))?
+    );
+    Ok(())
+}
+
+/// A busy program's output in chunks of about `chunk` bytes: `yes | head` (short lines as fast as they come), then a
+/// coloured build log (long lines with SGR colours), alternating, `total` bytes in all.
+fn busy_terminal(total: usize, chunk: usize) -> Vec<Vec<u8>> {
+    let mut out = vec![];
+    let mut made = 0;
+    let mut i = 0usize;
+    while made < total {
+        let mut c = Vec::with_capacity(chunk + 256);
+        if (i / 8).is_multiple_of(2) {
+            while c.len() < chunk {
+                c.extend_from_slice(b"y\r\n");
+            }
+        } else {
+            let mut n = i * 1000;
+            while c.len() < chunk {
+                n += 1;
+                let line = match n % 4 {
+                    0 => format!("\x1b[1m\x1b[32m   Compiling\x1b[0m toolroll-{n} v0.1.0 (/home/me/shop/crates/toolroll-{n}) \x1b[2m[{n} of 9000]\x1b[0m\r\n"),
+                    1 => format!("\x1b[33mwarning\x1b[0m\x1b[1m: unused variable: `total_{n}`\x1b[0m --> src/checkout_{n}.rs:{n}:13 ── \x1b[36mhelp\x1b[0m: prefix it with an underscore\r\n"),
+                    2 => format!("  \x1b[38;5;245m{n:>6}\x1b[0m │ let subtotal = items.iter().map(|x| x.price * {n}).sum::<u64>(); \x1b[48;2;40;40;40m// ✓ 日本\x1b[0m\r\n"),
+                    _ => format!("\x1b[31m✗\x1b[0m test checkout::totals_{n} ... \x1b[1;31mFAILED\x1b[0m (expected {n}, got {})\r\n", n + 1),
+                };
+                c.extend_from_slice(line.as_bytes());
+            }
+        }
+        made += c.len();
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+fn bench_term(args: &[String]) -> Result<()> {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use toolroll_api::TermEvent;
+    use toolroll_tui::app::{App, Msg, TermLink};
+    let (w, h): (u16, u16) = (num(args, "--width", 200), num(args, "--height", 60));
+    let frames: usize = num(args, "--frames", 3000);
+    let chunk: usize = num::<usize>(args, "--chunk-kb", 16) * 1024;
+    let state = toolroll_fake_engine::scenario();
+    let mut app = App::new(false, None);
+    app.update(Msg::Work(Ok(serde_json::from_value(
+        toolroll_fake_engine::scenario_work(),
+    )?)));
+    app.key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('j'),
+    ));
+    app.update(Msg::Steps(
+        "t-done".into(),
+        Ok(serde_json::from_value(state.steps["t-done"].clone())?),
+    ));
+    app.key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('t'),
+    ));
+    // Again, past the scope dialog.
+    app.key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('t'),
+    ));
+    let id = toolroll_fake_engine::TERM_ID.to_string();
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run: toolroll_fake_engine::RESULT_RUN,
+        result: Ok((
+            id.clone(),
+            "toolroll/live-0123456789ab".to_string(),
+            TermLink(tokio::sync::mpsc::unbounded_channel().0),
+        )),
+    });
+    app.update(Msg::Term(
+        id.clone(),
+        TermEvent::Hello {
+            cols: 100,
+            rows: 30,
+            ended: false,
+        },
+    ));
+    let mut term = Terminal::new(TestBackend::new(w, h))?;
+    term.draw(|f| toolroll_tui::view::draw(f, &mut app))?;
+    let _ = app.term_resize();
+    let stream = busy_terminal(chunk * frames, chunk);
+    let (mut draw_ms, mut parse_ms, mut both_ms) = (vec![], vec![], vec![]);
+    let mut bytes = 0usize;
+    let started = Instant::now();
+    for c in stream.into_iter().take(frames) {
+        bytes += c.len();
+        let t = Instant::now();
+        app.update(Msg::Term(id.clone(), TermEvent::Output(c.into())));
+        let parsed = t.elapsed();
+        let t2 = Instant::now();
+        term.draw(|f| toolroll_tui::view::draw(f, &mut app))?;
+        let drawn = t2.elapsed();
+        parse_ms.push(parsed.as_secs_f64() * 1000.0);
+        draw_ms.push(drawn.as_secs_f64() * 1000.0);
+        both_ms.push((parsed + drawn).as_secs_f64() * 1000.0);
+    }
+    let secs = started.elapsed().as_secs_f64();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &json!({ "size": format!("{w}x{h}"), "chunk_bytes": chunk, "frames": frames,
+            "frame_time": summary(draw_ms), "parse_time": summary(parse_ms), "parse_and_frame": summary(both_ms),
+            "throughput_mb_per_s": ((bytes as f64 / secs / 1e6) * 10.0).round() / 10.0 })
+        )?
+    );
+    Ok(())
+}
+
+fn drive_term(args: &[String]) -> Result<()> {
+    let bin = arg(args, "--bin").context("--bin")?;
+    let cols: u16 = num(args, "--cols", 200);
+    let rows: u16 = num(args, "--rows", 60);
+    let keys: usize = num(args, "--keys", 300);
+    let interval: u64 = num(args, "--interval-ms", 40);
+    let chunk: usize = num::<usize>(args, "--chunk-kb", 16) * 1024;
+    let gap: u64 = num(args, "--gap-us", 1000);
+    let scratch =
+        std::env::temp_dir().join(format!("toolroll-harness-term-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch)?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let mut state = toolroll_fake_engine::scenario();
+    // Enough of the busy stream to outlast the typing (keys × interval), at about chunk / gap.
+    let seconds = (keys as u64 * (interval + 20)) / 1000 + 10;
+    let total = (chunk as u64 * 1_000_000 / gap.max(1) * seconds) as usize;
+    state.term_full_screen = true;
+    state.term_echo = false;
+    state.term_stream = busy_terminal(total.min(2 << 30), chunk);
+    state.term_stream_gap_us = gap;
+    let engine = rt.block_on(toolroll_fake_engine::FakeEngine::start(state, 0));
+    let link_file = scratch.join("link");
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&link_file)?;
+        writeln!(f, "{}", engine.link())?;
+    }
+    let pty = native_pty_system().openpty(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut c = CommandBuilder::new("/bin/sh");
+    c.args(["-c", "exec \"$0\" \"$@\" 3<\"$TR_LINK_FILE\""]);
+    c.arg(&bin);
+    let stats = arg(args, "--stats-out")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| scratch.join("stats.json"));
+    c.args(["--stats-out", &stats.to_string_lossy()]);
+    c.env("TERM", "xterm-256color");
+    c.env("TR_LINK_FILE", &link_file);
+    std::fs::create_dir_all(scratch.join("home"))?;
+    c.env("HOME", scratch.join("home"));
+    c.env("XDG_CONFIG_HOME", scratch.join("home").join(".config"));
+    let mut child = pty.slave.spawn_command(c)?;
+    drop(pty.slave);
+    let mut reader = pty.master.try_clone_reader()?;
+    let mut writer = pty.master.take_writer()?;
+    let screen = Arc::new(Mutex::new(Screen {
+        parser: vt100::Parser::new(rows, cols, 0),
+        size: (rows, cols),
+        bsu: 0,
+        esu: 0,
+        bytes: 0,
+        frames_checked: 0,
+        frames_old_size: 0,
+        torn: vec![],
+        expect: None,
+        expect_anywhere: true,
+        echo_ms: vec![],
+        tail: vec![],
+    }));
+    let s2 = screen.clone();
+    let t = std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => s2.lock().unwrap().feed(&buf[..n]),
+            }
+        }
+    });
+    let start = Instant::now();
+    wait_for(&screen, "Add CSV export", 15)?;
+    std::fs::remove_file(&link_file)?;
+    // The result waiting (second row): take over, and wait for the busy program to be on screen.
+    writer.write_all(b"j")?;
+    writer.flush()?;
+    wait_for(&screen, "build #2", 10)?;
+    writer.write_all(b"t")?;
+    writer.flush()?;
+    wait_for(&screen, "Opens your shell", 10)?;
+    writer.write_all(b"t")?;
+    writer.flush()?;
+    wait_for(&screen, "Typing", 10)?;
+    wait_for(&screen, "Compiling", 15)?;
+    let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut typed = String::new();
+    let mut missed = 0;
+    for i in 0..keys {
+        let ch = alphabet[i % alphabet.len()] as char;
+        typed.push(ch);
+        if typed.len() > 80 {
+            typed.drain(..1);
+        }
+        {
+            let mut s = screen.lock().unwrap();
+            // The program redraws everything typed so far; the newest 80 characters are what is looked for.
+            s.expect = Some((typed.clone(), Instant::now()));
+            writer.write_all(&[ch as u8])?;
+            writer.flush()?;
+        }
+        let until = Instant::now() + Duration::from_secs(1);
+        while screen.lock().unwrap().expect.is_some() {
+            if Instant::now() > until {
+                missed += 1;
+                screen.lock().unwrap().expect = None;
+                break;
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        std::thread::sleep(Duration::from_millis(interval));
+    }
+    // Ctrl-] back, then q quits (its frame times are written on the way out).
+    writer.write_all(b"\x1d")?;
+    writer.flush()?;
+    std::thread::sleep(Duration::from_millis(150));
+    writer.write_all(b"q")?;
+    writer.flush()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break format!("{st:?}");
+        }
+        if Instant::now() > deadline {
+            child.kill()?;
+            break "killed".into();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(writer);
+    drop(pty.master);
+    let _ = t.join();
+    let elapsed = start.elapsed().as_secs_f64();
+    let own: serde_json::Value = std::fs::read_to_string(&stats)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(json!(null));
+    let s = screen.lock().unwrap();
+    let st = engine.state.lock().unwrap();
+    let typed_frames = st
+        .term_frames
+        .iter()
+        .filter(|f| f.contains("\"in\""))
+        .count();
+    let _ = std::fs::remove_dir_all(&scratch);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "pty": format!("{cols}x{rows}"), "elapsed_s": (elapsed * 100.0).round() / 100.0,
+            "stream_chunk_bytes": chunk, "stream_gap_us": gap, "keys": keys, "missed_echo": missed, "typed_frames_sent": typed_frames,
+            "key_write_to_echo_on_screen": summary(s.echo_ms.clone()),
+            "binary_frame_time": own["frame_time"], "binary_key_to_flush": own["key_to_flush"],
+            "frames_checked": s.frames_checked, "torn_frames": s.torn.len(), "torn_examples": s.torn.iter().filter(|t| !t.is_empty()).collect::<Vec<_>>(),
+            "output_mb_per_s": ((s.bytes as f64 / elapsed / 1e6) * 100.0).round() / 100.0, "child": status,
         }))?
     );
     Ok(())

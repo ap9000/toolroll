@@ -88,7 +88,7 @@ fn step_line_with(app: &App, steps: &StepCards, times: bool) -> Line<'static> {
             spans.push(Span::styled(" · ", dim()));
         }
         let (mark, style) = mark_of(card);
-        let label = clean(&card.label);
+        let label = step_label(card);
         if card.mark == "todo" || card.mark == "wait" {
             spans.push(Span::styled(label, dim()));
             continue;
@@ -168,7 +168,23 @@ fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
+    // On screen this frame only if draw_terminal draws it, and no dialog is drawn over it.
+    if let Some(pane) = app.term.as_mut() {
+        pane.drawn = false;
+    }
     draw_frame(f, app);
+    let dialog = !matches!(
+        app.mode,
+        Mode::Normal | Mode::TakeOver | Mode::Steer(_) | Mode::NewTask(_) | Mode::Note(..)
+    );
+    if let Some(pane) = app.term.as_mut().filter(|_| dialog) {
+        pane.drawn = false;
+    }
+    // Typing stops when its terminal isn't on screen; t starts it again once it is.
+    if app.mode == Mode::TakeOver && !app.term.as_ref().is_some_and(|p| p.drawn) {
+        app.mode = Mode::Normal;
+        app.status = Some((Tone::Said, crate::app::OFF_SCREEN.into()));
+    }
     if app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii {
         // Every symbol drawn, borders included, as its ASCII stand-in.
         for cell in f.buffer_mut().content.iter_mut() {
@@ -255,7 +271,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     draw_right(f, app, right);
     draw_status(f, app, status);
     if app.prefs.settings.key_bar {
-        draw_keys(f, app.tab, keys);
+        draw_keys(f, app, keys);
     }
     draw_overlay(f, app, area);
 }
@@ -505,17 +521,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Live => draw_live(f, app, &item, content),
         Tab::Steps => draw_steps(f, app, content),
         Tab::Diff => draw_diff(f, app, content),
-        Tab::Terminal => {
-            let lines = vec![
-                Line::raw(""),
-                Line::from(Span::styled("Take over arrives in week 6.", ink())),
-                Line::from(Span::styled(
-                    "Press w to open this task in the browser.",
-                    dim(),
-                )),
-            ];
-            f.render_widget(Paragraph::new(lines).centered(), content);
-        }
+        Tab::Terminal => draw_terminal(f, app, &item, content),
     }
     if let Some(q) = question {
         let mut lines = vec![Line::from(vec![
@@ -671,14 +677,41 @@ fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     f.render_widget(Paragraph::new(shown), area);
 }
 
+/// A step's name as the cards say it: the engine's label, with the reviewing agent when one reviewed ("Review (codex)").
+fn step_label(card: &StepCard) -> String {
+    let label = clean(&card.label);
+    match (&card.agent, card.key.as_str()) {
+        (Some(agent), "review") => format!("{label} ({})", clean(&agent.provider)),
+        _ => label,
+    }
+}
+
+/// A step's outcome in a word, in its theme role (DESIGN.md: blue running, green passed, red failed, ink needs you).
+fn outcome_of(card: &StepCard) -> (&'static str, Style) {
+    match card.mark.as_str() {
+        "done" => ("done", passed()),
+        "live" => ("running", running()),
+        "needs" => ("needs you", needs_you()),
+        "stuck" => ("stuck", failed()),
+        "skipped" => ("skipped", dim()),
+        _ => ("waiting", dim()),
+    }
+}
+
+/// The Steps tab (T4): one card per step of the task's chain, from the engine's step cards: its mark and name, its
+/// outcome, how long it has taken (live while it runs), what it cost, then its sentence and who ran it. The Ready card
+/// carries what the result waiting asks (the review facts Accept and Send back are pinned to).
 fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
     let Some(steps) = &app.steps else {
         f.render_widget(Paragraph::new("Reading…"), area);
         return;
     };
+    let w = area.width as usize;
     let mut lines = vec![];
     if let Some(headline) = &steps.headline {
-        lines.push(Line::from(Span::styled(clean(headline), ink())));
+        for l in wrap(&clean(headline), w) {
+            lines.push(Line::from(Span::styled(l, ink())));
+        }
         lines.push(Line::raw(""));
     }
     let cards = chain_cards(steps);
@@ -688,23 +721,44 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
             dim(),
         )));
     }
-    for card in cards {
-        let (mark, style) = mark_of(card);
-        let mut spans = vec![
-            Span::styled(format!("{mark} "), style),
-            Span::styled(
-                clean(&card.label),
-                if card.needs_you {
-                    ink()
-                } else {
-                    Style::default()
-                },
-            ),
-        ];
-        if !card.sentence.is_empty() {
-            spans.push(Span::raw(format!("  {}", clean(&card.sentence))));
+    for (i, card) in cards.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
         }
-        lines.push(Line::from(spans));
+        let (mark, mark_style) = mark_of(card);
+        let (outcome, outcome_style) = outcome_of(card);
+        let mut right = vec![Span::styled(outcome, outcome_style)];
+        if let Some(start) = card.started_at.as_deref().and_then(epoch) {
+            let end = card
+                .finished_at
+                .as_deref()
+                .and_then(epoch)
+                .unwrap_or(app.now);
+            right.push(Span::styled(format!(" · {}", duration(end - start)), dim()));
+        }
+        if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
+            right.push(Span::styled(format!(" · ${cost:.2}"), dim()));
+        }
+        let right_w: usize = right.iter().map(|s| width(&s.content)).sum();
+        let name_style = if card.needs_you {
+            ink().add_modifier(Modifier::BOLD)
+        } else {
+            ink()
+        };
+        let name = fit(&step_label(card), w.saturating_sub(right_w + 4).max(4));
+        let gap = w.saturating_sub(2 + width(&name) + right_w).max(1);
+        let mut head = vec![
+            Span::styled(format!("{mark} "), mark_style),
+            Span::styled(name, name_style),
+            Span::raw(" ".repeat(gap)),
+        ];
+        head.extend(right);
+        lines.push(fit_line(Line::from(head), w));
+        if !card.sentence.is_empty() {
+            for l in wrap(&clean(&card.sentence), w.saturating_sub(2)) {
+                lines.push(Line::raw(format!("  {l}")));
+            }
+        }
         let mut facts = vec![];
         if let Some(agent) = &card.agent {
             facts.push(
@@ -717,23 +771,40 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
                 .to_string(),
             );
         }
-        if let (Some(s), Some(e)) = (
-            card.started_at.as_deref().and_then(epoch),
-            card.finished_at
-                .as_deref()
-                .and_then(epoch)
-                .or(Some(app.now)),
-        ) {
-            facts.push(duration(e - s));
-        }
-        if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
-            facts.push(format!("${cost:.2}"));
+        match card.runs.as_slice() {
+            [] => {}
+            [one] => facts.push(format!("build #{one}")),
+            [newest, rest @ ..] => {
+                facts.push(format!("build #{newest} (and {} before)", rest.len()))
+            }
         }
         if !facts.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", facts.join(" · ")),
-                dim(),
-            )));
+            lines.push(fit_line(
+                Line::from(Span::styled(format!("  {}", facts.join(" · ")), dim())),
+                w,
+            ));
+        }
+        // The result waiting for you: what Accept and Send back act on, said on the Ready card.
+        if card.key == "ready" {
+            if let Some(review) = &steps.review {
+                lines.push(fit_line(
+                    Line::from(vec![
+                        Span::styled(format!("  Build #{} waits for you: ", review.run), ink()),
+                        Span::styled("a accepts · r sends back · t takes over", dim()),
+                    ]),
+                    w,
+                ));
+                for blocker in &review.accept.blockers {
+                    for l in wrap(&clean(blocker), w.saturating_sub(4)) {
+                        lines.push(Line::from(Span::styled(format!("  {l}"), failed())));
+                    }
+                }
+                if let Some(needs) = &review.accept.needs {
+                    for l in wrap(&clean(needs), w.saturating_sub(4)) {
+                        lines.push(Line::from(Span::styled(format!("  {l}"), dim())));
+                    }
+                }
+            }
         }
     }
     if steps.chain == "just-code" {
@@ -1169,11 +1240,27 @@ const KEYS: &[(&str, &str)] = &[
     ("1-9", "answer"),
     ("a", "accept"),
     ("r", "send back"),
+    ("t", "take over"),
     ("n", "new"),
     ("w", "browser"),
     ("?", "help"),
     ("q", "quit"),
 ];
+
+/// The Terminal tab's keys while not typing in it.
+const TERMINAL_KEYS: &[(&str, &str)] = &[
+    ("t", "type in it"),
+    ("PgUp/PgDn", "scroll"),
+    ("y", "copy"),
+    ("j/k", "task"),
+    ("Tab", "next tab"),
+    ("w", "browser"),
+    ("?", "help"),
+    ("q", "quit"),
+];
+
+/// While typing in the terminal: one way back.
+const TYPING_KEY: (&str, &str) = ("Ctrl-]", "back to the workbench");
 
 /// The Diff tab's keys: moving through the changes, notes, more lines, the view, copy, and the acts.
 const DIFF_KEYS: &[(&str, &str)] = &[
@@ -1192,8 +1279,20 @@ const DIFF_KEYS: &[(&str, &str)] = &[
     ("q", "quit"),
 ];
 
-fn draw_keys(f: &mut Frame, tab: Tab, area: Rect) {
-    let keys = if tab == Tab::Diff { DIFF_KEYS } else { KEYS };
+fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
+    if app.mode == Mode::TakeOver {
+        let line = Line::from(vec![
+            Span::styled(TYPING_KEY.0, ink()),
+            Span::styled(format!(" {}", TYPING_KEY.1), dim()),
+        ]);
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
+    let keys = match app.tab {
+        Tab::Diff => DIFF_KEYS,
+        Tab::Terminal if app.pane_here().is_some() => TERMINAL_KEYS,
+        _ => KEYS,
+    };
     // Everything that fits, always ending with help and quit.
     let render = |set: &[(&str, &str)]| -> (Vec<Span<'static>>, usize) {
         let mut spans = vec![];
@@ -1250,6 +1349,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 "1-9          answer the agent's question",
                 "a            accept the result",
                 "r            send the result back, with a note",
+                "t            take over: type in a terminal on the latest build (Ctrl-] back)",
                 "PgUp PgDn    scroll; End follows the newest",
                 "",
                 "In Diff: j/k a line  [ ] a hunk  { } a file  n/N a note",
@@ -1258,6 +1358,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 "  v          side by side (on a wide window)",
                 "  y          copy the hunk to your terminal's scrollback",
                 "  r          send back with your notes;  a  accept (t attaches them)",
+                "In Terminal: t types in it  PgUp/PgDn scroll back  y copy",
                 "n            new task",
                 "w            open Toolroll in your browser",
                 "q            quit",
@@ -1289,6 +1390,23 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(vec![Span::styled("Esc  ", ink()), Span::raw("Back")]),
             ],
         ),
+        Mode::ConfirmTakeOver { run, .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
+            let mut lines = vec![Line::raw("")];
+            lines.extend(
+                wrap(&crate::app::take_over_scope(*run), w)
+                    .into_iter()
+                    .map(|l| Line::from(Span::styled(l, ink()))),
+            );
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled("t  ", ink()),
+                Span::raw("to open,  "),
+                Span::styled("Esc  ", ink()),
+                Span::raw("to cancel"),
+            ]));
+            (" Take over ", lines)
+        }
         Mode::ConfirmStop(run) => (
             " Stop ",
             vec![
@@ -1776,4 +1894,77 @@ fn draw_send_review(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw("Back to your words (nothing is sent)"),
     ]));
     f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// The Terminal tab (T4, take over): the task's terminal drawn from its emulator's cells (term.rs), under one line that
+/// says which build it is on and what the keys do; or, before one is open, how to open it.
+fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
+    let w = area.width as usize;
+    let typing = app.mode == Mode::TakeOver;
+    let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
+        let words = if item.is_task {
+            "Take over: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
+        } else {
+            "This isn't a task. Press w to open it in the browser."
+        };
+        let lines: Vec<Line> = wrap(words, w)
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, dim())))
+            .collect();
+        f.render_widget(Paragraph::new(lines), area);
+        return;
+    };
+    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    let (state, style) = match &pane.link {
+        crate::term::Link::Opening => ("Opening…".to_string(), dim()),
+        crate::term::Link::Attaching => ("Attaching…".to_string(), dim()),
+        // The way back is on the key bar; said here only when the key bar is off.
+        crate::term::Link::Live if typing && app.prefs.settings.key_bar => {
+            ("Typing".to_string(), ink())
+        }
+        crate::term::Link::Live if typing => ("Typing · Ctrl-] goes back".to_string(), ink()),
+        crate::term::Link::Live if app.prefs.settings.key_bar => ("Running".to_string(), running()),
+        crate::term::Link::Live => ("Running · t to type".to_string(), running()),
+        crate::term::Link::Ended { code, signal } => (
+            match (code, signal) {
+                (Some(c), _) => format!("Ended (exit {c}) · t opens a new one"),
+                (None, Some(s)) => format!("Ended (signal {s}) · t opens a new one"),
+                _ => "Ended · t opens a new one".to_string(),
+            },
+            dim(),
+        ),
+        crate::term::Link::Closed(words) => (clean(words), dim()),
+    };
+    // Said plainly: a separate copy at that build, on its own branch.
+    let place = if pane.branch.is_empty() {
+        format!("separate copy at build #{}", pane.run)
+    } else {
+        format!("separate copy at build #{} on {}", pane.run, pane.branch)
+    };
+    // What it's doing first (and how far back it's scrolled); where it is after, cut first when the pane is narrow.
+    let mut spans = vec![Span::styled(state, style)];
+    if pane.scroll > 0 {
+        spans.push(Span::styled(
+            format!(" · {} lines back, End returns", pane.scroll),
+            dim(),
+        ));
+    }
+    if !matches!(
+        pane.link,
+        crate::term::Link::Closed(_) | crate::term::Link::Opening
+    ) {
+        spans.push(Span::styled(format!(" · {place}"), dim()));
+    }
+    f.render_widget(Paragraph::new(fit_line(Line::from(spans), w)), head);
+    pane.area = body;
+    if matches!(pane.link, crate::term::Link::Opening) {
+        return;
+    }
+    crate::term::draw(f.buffer_mut(), body, pane.parser.screen(), base());
+    pane.drawn = body.width > 0 && body.height > 0;
+    if typing {
+        if let Some((x, y)) = pane.cursor() {
+            f.set_cursor_position((x, y));
+        }
+    }
 }

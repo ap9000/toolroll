@@ -12,6 +12,9 @@ serde_json.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
 zeroize = "1"
+# The console's one terminal socket (GET /term/<id>/socket, a take-over): the client handshake and frames only, over the
+# loopback TCP stream this crate opens itself (no TLS, no proxy, no connector).
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "net", "io-util", "rt-multi-thread"] }
