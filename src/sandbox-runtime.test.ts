@@ -7,10 +7,11 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { checkLinuxDependencies } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { LINUX_SANDBOX_TOOLS, SANDBOX_LAUNCH_SPEC, linuxSandboxInstallLine, missingLinuxSandboxTools, sandboxRuntimeProblem, srtSpawn, type SandboxLaunchSpec, type SrtTerms } from "./sandbox-runtime.js";
-import { resolveLinuxSandboxTools, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
+import { checkSeccompHelper, resolveLinuxSandboxTools, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
+import { toolrollInstall } from "./agent-fence.js";
 import { outsideTempDir } from "../test/short-temp.js";
 
 const root = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
@@ -189,5 +190,61 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
       expect(ran.status, ran.stderr).toBe(126);
       expect(ran.stderr).toContain(`toolroll sandbox: nothing was started: ${said}`);
     }
+  });
+
+  describe("a seccomp helper Toolroll's user owns is write-protected exactly as Toolroll's code is", () => {
+    /** Only real root counts as root here: the stand-in package is this user's, as a user's npm install is. */
+    const usersOwn: ToolTrust = { root: [0], codeOwner: me };
+    /** A stand-in package: its JavaScript in dist/, its vendor folder a link to `elsewhere`, where the helper is. */
+    const pkg = () => {
+      const root = folder("pkg", SYSTEM);
+      mkdirSync(join(root, "dist"), { mode: 0o755 });
+      const elsewhere = join(world, "elsewhere");
+      mkdirSync(join(elsewhere, "seccomp", "x64"), { recursive: true, mode: 0o755 });
+      for (const dir of [elsewhere, join(elsewhere, "seccomp"), join(elsewhere, "seccomp", "x64")]) chmodSync(dir, 0o755);
+      helper(join(elsewhere, "seccomp", "x64"));
+      symlinkSync(elsewhere, join(root, "vendor"));
+      return { root, helper: join(root, "vendor", "seccomp", "x64", "apply-seccomp"), target: join(realpathSync(elsewhere), "seccomp", "x64", "apply-seccomp") };
+    };
+    const writes = (allowOnly: string[], denyWithinAllow: string[], literalAllowOnly?: string[]): SrtTerms =>
+      ({ readConfig: { denyOnly: [] }, writeConfig: { allowOnly, denyWithinAllow, ...(literalAllowOnly === undefined ? {} : { literalAllowOnly }) }, allowMachLookup: [], network: { kind: "open" } });
+
+    test("the code write-denied but the helper's target, through a vendor link, writable by the launch: refused", () => {
+      const { root, helper: path, target } = pkg();
+      const work = folder("work", SYSTEM);
+      const attack = checkSeccompHelper(path, sandboxToolExclusions(writes([work, join(world, "elsewhere")], [root]), work), usersOwn);
+      expect(attack).toEqual({ ok: false, why: expect.stringContaining(`the launch may write ${target}`) });
+      // The literal write roots count the same.
+      const literal = checkSeccompHelper(path, sandboxToolExclusions(writes([work], [root], [join(world, "elsewhere")]), work), usersOwn);
+      expect(literal).toEqual({ ok: false, why: expect.stringContaining(`the launch may write ${target}`) });
+      // The install tree's denies covering the code only, not the target the link leads to: refused.
+      expect(checkSeccompHelper(path, sandboxToolExclusions(writes([work], [root]), work), usersOwn)).toEqual({ ok: false, why: `the fence's install-tree write denies don't cover ${target}` });
+      // Covered where it really is, and nothing above it writable: served (the positive control).
+      expect(checkSeccompHelper(path, sandboxToolExclusions(writes([work], [root, dirname(target)]), work), usersOwn)).toMatchObject({ ok: true, tool: { real: target } });
+    });
+
+    test("a launch that may write anywhere (`/`) gets a root-owned helper or none", () => {
+      const { root, helper: path, target } = pkg();
+      const work = folder("work", SYSTEM);
+      const anywhere = sandboxToolExclusions(writes(["/", work], [root, dirname(target)]), work);
+      expect(anywhere.writes?.allow).toContain("/");
+      expect(checkSeccompHelper(path, anywhere, usersOwn)).toEqual({ ok: false, why: expect.stringContaining("needs a root-owned helper") });
+      // Root's own throughout (this test's uid standing in for root), the same helper serves it.
+      expect(checkSeccompHelper(path, anywhere, { root: [0, me], codeOwner: me })).toMatchObject({ ok: true });
+    });
+
+    test("no sticky pass: a helper below a sticky, world-writable folder is refused", () => {
+      const sticky = join(world, "sticky");
+      mkdirSync(join(sticky, "inner"), { recursive: true });
+      chmodSync(sticky, 0o1777);
+      chmodSync(join(sticky, "inner"), 0o755);
+      const path = helper(join(sticky, "inner"));
+      expect(checkSeccompHelper(path, { all: [] }, usersOwn)).toEqual({ ok: false, why: `others can change ${realpathSync(sticky)} (group- or world-writable)` });
+    });
+
+    test("the fence's install-tree write denies cover the real helper's canonical target", () => {
+      const target = realpathSync(seccompHelperPath()!);
+      expect(toolrollInstall(null, join(world, "home")).some(root => target === root || target.startsWith(`${root}/`))).toBe(true);
+    });
   });
 });

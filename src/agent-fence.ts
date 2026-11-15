@@ -38,6 +38,7 @@ import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.j
 import type { LoopbackMode } from "./egress.js";
 import type { ExecutionProfile } from "./scope.js";
 import { SEATBELT_PROBE, sandboxRuntimeProblem, srtSpawn, type SrtTerms } from "./sandbox-runtime.js";
+import { seccompHelperPath } from "./sandbox-tools.js";
 import { protectedStorageDenies, protectedStorageNames, type ProtectedStorage } from "./protected-storage.js";
 import { ensureSecretsDir, legacyLoginFileOf, SECRETS_DIR, secretsDirOf } from "./login-secrets.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
@@ -1199,7 +1200,8 @@ export function sealedScratch(poolRoots: readonly (string | null)[], named: read
 
 /**
  * Toolroll's own install as no launch may write it: this package's folder (its compiled code, the sandbox launch
- * helper among it), the sandbox runtime's package wherever it was installed, and the Node running them with the
+ * helper among it), the sandbox runtime's package wherever it was installed and the folder its seccomp helper's
+ * canonical target is in, and the Node running them with the
  * folder it lives in (its npm and global packages beside it), as the real folders they are. Never a folder that holds
  * the launch's own checkout or its repository (a build of Toolroll's own source, run from it: that repository's other
  * files are the primary checkout's, write-denied already), the home folder or one above it, and nothing the user
@@ -1212,6 +1214,10 @@ export function toolrollInstall(worktree: string | null, home: string, repositor
   const ours = (path: string) => { try { return uid === undefined || statSync(path).uid === uid; } catch { return false; } };
   let runtime: string[] = [];
   try { runtime = [dirname(dirname(createRequire(import.meta.url).resolve("@anthropic-ai/sandbox-runtime")))]; } catch { runtime = []; }
+  // The seccomp helper the Linux sandbox runs, as the folder its canonical target is in: a vendor folder that is a link
+  // elsewhere leaves that target outside the package's folder, and it is denied as the code is (sandbox-tools.ts).
+  const helper = seccompHelperPath();
+  if (helper !== null) { try { runtime.push(dirname(realpathSync(helper))); } catch { /* not installed: nothing runs it */ } }
   const candidates = [resolve(dirname(fileURLToPath(import.meta.url)), ".."), ...runtime, dirname(dirname(real(process.execPath))), real(process.execPath)].map(real);
   const homeReal = real(home);
   return [...new Set(candidates)].filter(path => path !== dirname(path) && path !== homeReal && !inside(homeReal, path)
