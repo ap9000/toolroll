@@ -379,7 +379,7 @@ describe("decisions finish in the chat app", () => {
     await tapIn(BOB, next.token(/^Review plan$/), next.messageId);
     const nextTerms = script.current(BOB, next.messageId).text.replace(/\n\nApprove and start .*$/, "");
     await tapIn(BOB, script.current(BOB, next.messageId).token(/^Not now$/), next.messageId);
-    expect(script.current(BOB, next.messageId).text).toBe(`${nextTerms}\n\nNot now. It waits for you in Tasks.`);
+    expect(script.current(BOB, next.messageId).text).toBe(`${nextTerms}\n\nNot now. It waits for you in Work.`);
     expect(script.current(BOB, next.messageId).labels).toEqual(["Edit ↗"]);
     expect(store.getScope("plan-7")!.approvedDigest).toBeNull();
   });

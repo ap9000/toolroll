@@ -1033,7 +1033,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           <input type="hidden" name="return" value={view.archived.restore.returnTo} />
           <KButton type="submit" variant="primary" label="Restore" data-restore="" />
         </PostForm> : null}
-        terms={view.archived.restore !== null ? "Restoring puts it back in Tasks. Its history and results were kept." : "An approver can restore it."} />}
+        terms={view.archived.restore !== null ? "Restoring puts it back in Work. Its history and results were kept." : "An approver can restore it."} />}
       {outcomeFirst && <div className="k-sec so-task-outcome" data-task-outcome="">
         {statusBox("ready", true)}
         {resultBody}

@@ -116,7 +116,7 @@ export function refuse(
   const generic = /^there'?s no page at this address\.?$/i.test(message.replace("\u2019", "'"));
   // The words are the caller's exactly (older callers wrote lower-case fragments; k-refusal capitalises the first letter).
   const body = html`<div class="k-refusal">${status === 404
-    ? kitNotFound(path, generic ? {} : { title: message, text: "Home has what needs you; Tasks has every task." })
+    ? kitNotFound(path, generic ? {} : { title: message, text: "Work has every task and what needs you." })
     : kitDoc(kitDocHeader({ title: "Request refused", back: [backHref, "Back"] }), kitNotice(message), kitActs(act === undefined ? kitBtn("Go back", { href: backHref }) : kitBtn(act.label, { href: act.href, variant: "primary" })))}</div>`;
   // A signed-in browser keeps the workspace around it: the same navigation as every page.
   const framed = requestContext.getStore()?.refusal;
@@ -124,7 +124,7 @@ export function refuse(
   return page(response, status, shell(status === 404 ? "Not found" : "Request refused", outPage({
     brand: BRAND_HTML, title: status === 404 ? "Not found" : "Request refused",
     body: html`<div class="k-refusal">${kitNotice(status === 404 && generic ? `There\u2019s no page at ${path}.` : message)}</div>`,
-    foot: act === undefined ? html`<a class="k-link" href="${status === 404 ? "/" : backHref}">${status === 404 ? "Go to Home" : "Go back"}</a>` : html`<a class="k-link" href="${act.href}">${act.label}</a>`,
+    foot: act === undefined ? html`<a class="k-link" href="${status === 404 ? "/" : backHref}">${status === 404 ? "Go to Work" : "Go back"}</a>` : html`<a class="k-link" href="${act.href}">${act.label}</a>`,
   })));
 }
 
