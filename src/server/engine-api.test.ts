@@ -195,8 +195,19 @@ describe("every answer is its contract's shape", () => {
     sealVerificationReceipt(store, evidenceRoot, run, head, store.liveVerifyCommand(repoA)!, { configured: true, ran: true, exitCode: 0 }, new Date());
     release(store, taken.claim.leaseId, new Date());
     store.setTaskState("t-ready", "done", T0);
-    const steps = stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body);
+    // Protected work on a one-person approval: the person who approved can't be the one to complete it, said as the
+    // completion would say it (approval policy §1.7a), before the dialog.
+    const rules = store.approvalRules(repoA);
+    store.setApprovalRules(repoA, { notRequester: rules.notRequester, protectProject: true, protectedPaths: rules.protectedPaths }, "alex", T0);
+    try {
+      const guarded = stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body);
+      expect(guarded.review?.accept.needs).toMatch(/^This result changed .*protect/);
+      expect(guarded.review?.accept).toMatchObject({ owed: null, blockers: [] });
+    } finally {
+      store.setApprovalRules(repoA, { notRequester: rules.notRequester, protectProject: rules.protectProject, protectedPaths: rules.protectedPaths }, "alex", T0);
+    }
     // Nothing owed, nothing blocking, and nobody else needed: Accept is this person's plain completion (said before the dialog).
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body);
     expect(steps.review).toEqual({ run, receipt: expect.stringMatching(/^[0-9a-f]{64}$/), source: store.getScope("t-ready")!.digest,
       accept: { owed: null, blockers: [], needs: null } });
   });
@@ -337,7 +348,9 @@ describe("T2 context expand: lines a hunk hides, read at the result's own commit
     git("add", "."); git("commit", "-q", "-m", "base");
     const base = git("rev-parse", "HEAD");
     writeFileSync(join(repoA, "src/total.ts"), lines("  return sum(items) + tax(items);"));
-    git("commit", "-q", "-am", "head");
+    // A file at the head that a later result doesn't change (so its stat doesn't list it).
+    writeFileSync(join(repoA, "unlisted.txt"), "not this result's file\n");
+    git("add", "."); git("commit", "-q", "-m", "head");
     head = git("rev-parse", "HEAD");
     run = started("t-ctx", repoA, true);
     storeEvidence(store, evidenceRoot, run, "terminal-diff", "diff.patch", Buffer.from(git("diff", "-U1", base, head) + "\n"), "git diff (exit 0)", T0, { captureStatus: "ok" });
@@ -376,6 +389,64 @@ describe("T2 context expand: lines a hunk hides, read at the result's own commit
       expect(moved).toMatchObject({ lines: [], lineCount: null });
       expect(moved.problem).toMatch(/can't be read here/);
     } finally { store.handle.prepare("UPDATE run SET head_revision = ? WHERE id = ?").run(head, run); }
+  });
+
+  describe("a later result: long lines, a key block, and patches written to point elsewhere", () => {
+    const key = `${"gh" + "p_"}${"A1b2".repeat(9)}`;
+    const pem = [`-----BEGIN ${"RSA PRIVATE"} KEY-----`, "MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu", "KUpRKfFLfRYC9AIKjbJTWit+CqvjWYzvQwECAwEAAQ==", `-----END ${"RSA PRIVATE"} KEY-----`];
+    let more: number, craft: number;
+    beforeAll(() => {
+      writeFileSync(join(repoA, "src/total.ts"), `${execFileSync("cat", [join(repoA, "src/total.ts")], { encoding: "utf8" })}// more\n`);
+      writeFileSync(join(repoA, "secret.txt"), "TOP SECRET contents\n");
+      // A key that crosses the 2,000-character cut, one that starts just before it, and a plain long line.
+      writeFileSync(join(repoA, "src/long.ts"), ["// long lines", `${"x".repeat(1990)} ${key}`, `${"y".repeat(1998)} ${key}`, "z".repeat(2500), ""].join("\n"));
+      writeFileSync(join(repoA, "src/key.ts"), ["// key", "const pem = `", ...pem, "`;", ""].join("\n"));
+      git("add", "."); git("commit", "-q", "-m", "more");
+      const head2 = git("rev-parse", "HEAD");
+      const stat = budgetedStatJson(parseNumstat(execFileSync("git", ["diff", "--numstat", "-z", head, head2], { cwd: repoA, encoding: "utf8" }), head, head2));
+      const result = (id: string, patch: string) => {
+        const one = started(id, repoA, true);
+        storeEvidence(store, evidenceRoot, one, "terminal-diff", "diff.patch", Buffer.from(patch), "git diff (exit 0)", T0, { captureStatus: "ok" });
+        storeEvidence(store, evidenceRoot, one, "diff-stat", "stat.json", stat, "git diff --numstat (exit 0)", T0, { captureStatus: "ok" });
+        store.recordOutcomeFacts(one, { headRevision: head2 });
+        store.finishRun(one, { outcome: "built", committed: true, now: new Date() } as never);
+        return one;
+      };
+      more = result("t-more", `${git("diff", "-U1", head, head2)}\n`);
+      // Written to point elsewhere: an added line in src/total.ts's hunk that reads like another file's header, and a
+      // file git didn't list as changed (it exists at the head, unchanged).
+      craft = result("t-craft", ["diff --git a/src/total.ts b/src/total.ts", "--- a/src/total.ts", "+++ b/src/total.ts", "@@ -9,0 +10,2 @@", "+// more", "+++ b/secret.txt",
+        "diff --git a/unlisted.txt b/unlisted.txt", "--- a/unlisted.txt", "+++ b/unlisted.txt", "@@ -1 +1 @@", "-x", "+y", ""].join("\n"));
+    });
+    const fileOf = async (task: string, run: number, path: string) => resultDiffSchema.parse((await read("operator", `/t/${task}/diff?run=${run}`)).body).files.findIndex(one => one.path === path);
+    const lines = async (task: string, run: number, file: number, query: string) => resultDiffContextSchema.parse((await read("operator", `/t/${task}/diff?run=${run}&file=${file}&${query}`)).body);
+
+    test("a key is found on the whole line before a long line is cut (across the cut, or starting just before it)", async () => {
+      const read2 = await lines("t-more", more, await fileOf("t-more", more, "src/long.ts"), "from=2&count=3");
+      expect(read2.lines.map(one => one.text.slice(0, 40))).toEqual(["[redacted: github-token detected on this", "[redacted: github-token detected on this", "z".repeat(40)]);
+      expect(read2.lines[2]!.text).toHaveLength(2_000);
+      expect(JSON.stringify(read2)).not.toMatch(/A1b2|gh[p]_/);
+    });
+
+    test("a file holding a private key block shows none of its hidden lines, wherever the window starts", async () => {
+      const file = await fileOf("t-more", more, "src/key.ts");
+      for (const from of [1, 4, 5, 7]) {
+        const shown = await lines("t-more", more, file, `from=${from}&count=2`);
+        expect(shown).toMatchObject({ lines: [], problem: expect.stringMatching(/private key/) });
+      }
+      expect(JSON.stringify(await lines("t-more", more, file, "from=4&count=1"))).not.toContain("MIIBOg");
+    });
+
+    test("the file read is the one git listed as changed, never one the patch text names", async () => {
+      // An added line that looks like "+++ b/secret.txt" inside src/total.ts's hunk: still src/total.ts.
+      const total = await lines("t-craft", craft, 0, "from=1&count=2");
+      expect(total.lines.map(one => one.text)).toEqual(["export function total(items) {", "  return sum(items) + tax(items);"]);
+      expect(JSON.stringify(total)).not.toContain("TOP SECRET");
+      // A file git didn't list as changed by this result: nothing is read.
+      const unlisted = await lines("t-craft", craft, 1, "from=1&count=1");
+      expect(unlisted).toMatchObject({ lines: [], problem: expect.stringMatching(/can't be read here/) });
+      expect(JSON.stringify(unlisted)).not.toContain("not this result's file");
+    });
   });
 
   test("a repository config naming a command (written by a build) runs nothing and reads nothing", async () => {

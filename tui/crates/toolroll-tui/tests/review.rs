@@ -418,8 +418,12 @@ fn send_back_posts_exactly_the_notes_shown() {
     app.key(key('r'));
     assert!(matches!(app.mode, Mode::SendBack(..)));
     type_words(&mut app, "Otherwise good.");
+    insta::assert_snapshot!("notes_panel", screen(&mut app, 120, 34));
+    // Enter shows the whole text to be sent; Enter there sends exactly it.
+    assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
+    assert!(matches!(app.mode, Mode::SendReview { .. }));
     let shown = screen(&mut app, 120, 34);
-    insta::assert_snapshot!("notes_panel", shown);
+    insta::assert_snapshot!("send_review", shown);
     let fx = app.key(code(KeyCode::Enter));
     let [Effect::Send { acts, task, run }] = fx.as_slice() else {
         panic!("{fx:?}")
@@ -445,9 +449,14 @@ fn send_back_posts_exactly_the_notes_shown() {
         (field("intent"), field("source")),
         ("revise".into(), "b".repeat(64))
     );
-    // Every line posted is on the dialog drawn.
+    // Every line posted is on the review drawn, the words for the whole change included.
     for line in note.lines().filter(|l| !l.is_empty()) {
         assert!(shown.contains(line), "posted but not shown: {line}");
+    }
+    // While it is on its way, nothing else starts (a second Enter, a or r).
+    assert!(matches!(app.mode, Mode::Sending(_)));
+    for k in [code(KeyCode::Enter), key('a'), key('r')] {
+        assert_eq!(app.key(k), vec![]);
     }
     // Kept: the draft is cleared.
     app.update(Msg::Sent {
@@ -496,15 +505,42 @@ fn notes_are_pinned_to_the_result_shown() {
     // The diff on screen isn't the pinned build's: nothing is sent.
     let mut app = with_note();
     app.key(key('r'));
+    app.key(code(KeyCode::Enter));
     screen(&mut app, 120, 34);
     app.diff.as_mut().unwrap().run = Some(3);
     let fx = app.key(code(KeyCode::Enter));
     assert!(!sends(&fx), "{fx:?}");
-    // Too long to show whole: Enter sends nothing.
+    // Too small to show it at all: Enter sends nothing.
     let mut app = with_note();
     app.key(key('r'));
+    app.key(code(KeyCode::Enter));
     screen(&mut app, 120, 8);
     assert!(!sends(&app.key(code(KeyCode::Enter))));
+    // The review pinned to another receipt than the one waiting never posts (rechecked at Enter).
+    let mut app = with_note();
+    app.key(key('r'));
+    app.key(code(KeyCode::Enter));
+    screen(&mut app, 120, 34);
+    let Mode::SendReview {
+        mut pin,
+        typed,
+        text,
+        scroll,
+        seen_end,
+    } = app.mode.clone()
+    else {
+        panic!()
+    };
+    pin.receipt = "c".repeat(64);
+    app.mode = Mode::SendReview {
+        pin,
+        typed,
+        text,
+        scroll,
+        seen_end,
+    };
+    assert!(!sends(&app.key(code(KeyCode::Enter))));
+    assert_eq!(app.status.as_ref().unwrap().1, RESULT_CHANGED);
     // A dialog pinned to another receipt than the one waiting never posts (rechecked at Enter, not only on refresh).
     let mut app = with_note();
     app.key(key('r'));
@@ -526,6 +562,19 @@ fn notes_are_pinned_to_the_result_shown() {
     app.mode = Mode::ConfirmAccept(pin);
     assert!(!sends(&app.key(code(KeyCode::Enter))));
     assert_eq!(app.status.as_ref().unwrap().1, RESULT_CHANGED);
+    // The notes behind the review changed after it was made: what was shown is no longer what would go, so nothing goes.
+    let mut app = with_note();
+    app.key(key('r'));
+    app.key(code(KeyCode::Enter));
+    screen(&mut app, 120, 34);
+    app.drafts.get_mut(&("t-done".to_string(), 2)).unwrap()[0].text = "something else".into();
+    assert!(!sends(&app.key(code(KeyCode::Enter))));
+    assert!(app
+        .status
+        .as_ref()
+        .unwrap()
+        .1
+        .starts_with("Your notes changed"));
     // Accept with the notes attached while the diff on screen is another build's: nothing is saved or completed.
     let mut app = with_note();
     app.key(key('a'));
@@ -611,4 +660,135 @@ fn copy_hunk_goes_to_the_scrollback() {
     assert_eq!(app.mode, Mode::Copied);
     assert_eq!(app.key(key('x')), vec![Effect::ResumeScreen]);
     assert_eq!(app.mode, Mode::Normal);
+}
+
+/// A long "whole change" note and many notes: the review wraps every line and scrolls; Enter sends nothing until the
+/// end has been drawn, then posts exactly the text drawn.
+#[test]
+fn send_back_review_is_read_to_the_end_and_posts_what_was_drawn() {
+    let mut app = review_app(no_accept_facts());
+    for n in [1, 2, 3, 4, 5, 6, 7] {
+        to_line(&mut app, n);
+        app.key(key('c'));
+        type_words(
+            &mut app,
+            &format!("note {n}: {}", "please look again at this part ".repeat(4)),
+        );
+        app.key(code(KeyCode::Enter));
+    }
+    app.key(key('r'));
+    let general = format!(
+        "{} THE END",
+        "This whole change needs another pass. ".repeat(20)
+    );
+    type_words(&mut app, &general);
+    app.key(code(KeyCode::Enter));
+    let Mode::SendReview { text, .. } = app.mode.clone() else {
+        panic!("{:?}", app.mode)
+    };
+    // Drawn a screen at a time: Enter is refused before the end, and every wrapped line is drawn on the way.
+    let mut drawn = String::new();
+    drawn.push_str(&screen(&mut app, 100, 24));
+    assert!(
+        !sends(&app.key(code(KeyCode::Enter))),
+        "sent before the end was shown"
+    );
+    assert!(app
+        .status
+        .as_ref()
+        .unwrap()
+        .1
+        .starts_with("Read it to the end first"));
+    for _ in 0..40 {
+        if matches!(app.mode, Mode::SendReview { seen_end: true, .. }) {
+            break;
+        }
+        app.key(key(' '));
+        drawn.push_str(&screen(&mut app, 100, 24));
+    }
+    assert!(matches!(app.mode, Mode::SendReview { seen_end: true, .. }));
+    assert!(drawn.contains("THE END"));
+    for part in text.split('\n') {
+        for piece in toolroll_tui::text::wrap(part, 92) {
+            assert!(drawn.contains(piece.trim_end()), "never drawn: {piece}");
+        }
+    }
+    let fx = app.key(code(KeyCode::Enter));
+    let [Effect::Send { acts, .. }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    let posted = &acts[0].fields.iter().find(|(k, _)| k == "note").unwrap().1;
+    assert_eq!(posted, &text);
+    assert!(posted.ends_with(&general));
+}
+
+/// One request identity per batch: a lost answer is retried under the same identity (the console saves it once); a
+/// note saved before a refused completion is never posted again; a second press while saving does nothing.
+#[test]
+fn accept_with_notes_keeps_one_identity_and_never_saves_twice() {
+    let mut app = review_app(no_accept_facts());
+    to_line(&mut app, 3);
+    app.key(key('c'));
+    type_words(&mut app, "subtotal reads better");
+    app.key(code(KeyCode::Enter));
+    let submit = |app: &mut App| -> Vec<SendAct> {
+        app.key(key('a'));
+        app.key(key('t'));
+        screen(app, 120, 34);
+        let fx = app.key(code(KeyCode::Enter));
+        let [Effect::Send { acts, .. }] = fx.as_slice() else {
+            panic!("{fx:?} {:?}", app.status)
+        };
+        acts.clone()
+    };
+    let request = |acts: &[SendAct]| {
+        acts[0]
+            .fields
+            .iter()
+            .find(|(k, _)| k == "request")
+            .map(|(_, v)| v.clone())
+    };
+    let first = submit(&mut app);
+    assert_eq!(first.len(), 2);
+    // Pressed twice: nothing more.
+    assert!(matches!(app.mode, Mode::Sending(_)));
+    assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
+    assert_eq!(app.key(key('a')), vec![]);
+    // The note's answer was lost: the notes stay, and the retry carries the same identity.
+    app.update(Msg::Sent {
+        task: "t-done".into(),
+        run: 2,
+        kept: 0,
+        result: Err(ApiError::Unreachable("reset".into())),
+    });
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.notes_of("t-done", 2).len(), 1);
+    let second = submit(&mut app);
+    assert_eq!(second.len(), 2);
+    assert_eq!(request(&second), request(&first));
+    // The note saved, the completion refused: a retry only completes.
+    app.update(Msg::Sent {
+        task: "t-done".into(),
+        run: 2,
+        kept: 1,
+        result: Ok(ActOutcome::Refused("Not yet.".into())),
+    });
+    assert!(app
+        .status
+        .as_ref()
+        .unwrap()
+        .1
+        .starts_with("Your notes are saved on the result"));
+    let third = submit(&mut app);
+    assert_eq!(
+        third.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(),
+        vec!["/t/t-done/complete"]
+    );
+    app.update(Msg::Sent {
+        task: "t-done".into(),
+        run: 2,
+        kept: 0,
+        result: Ok(ActOutcome::Done("Accepted.".into())),
+    });
+    assert!(app.notes_of("t-done", 2).is_empty() && app.pending.is_none());
 }

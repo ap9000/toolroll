@@ -119,7 +119,10 @@ fn review_in_a_real_terminal() {
     press("r");
     wait_for(&screen, "Send back build #2 with:", 5);
     press("Thanks.");
-    let shown = wait_for(&screen, "For the whole change: Thanks.", 5);
+    wait_for(&screen, "For the whole change: Thanks.", 5);
+    // The whole text, read to its end, then Enter sends exactly it.
+    press("\r");
+    let shown = wait_for(&screen, "goes back with exactly this:", 5);
     press("\r");
     let until = Instant::now() + Duration::from_secs(10);
     while engine.acts().is_empty() {
@@ -136,7 +139,7 @@ fn review_in_a_real_terminal() {
         posted,
         "Notes on the changes:\n- src/total.ts line 2 — round to cents\n\nThanks."
     );
-    for line in posted.lines().filter(|l| !l.is_empty() && *l != "Thanks.") {
+    for line in posted.lines().filter(|l| !l.is_empty()) {
         assert!(
             shown.contains(line),
             "posted but not shown: {line}\n{shown}"

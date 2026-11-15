@@ -142,6 +142,7 @@ async fn notes_stay_here_until_sent_and_go_back_exactly_as_shown() {
     for c in "Thanks.".chars() {
         app.key(key(c));
     }
+    assert_eq!(app.key(enter()), vec![]);
     let shown = screen(&mut app, 120, 34);
     let fx = app.key(enter());
     pump(&mut app, &client, fx).await;
@@ -162,7 +163,6 @@ async fn notes_stay_here_until_sent_and_go_back_exactly_as_shown() {
             "posted but not on screen: {line}\n{shown}"
         );
     }
-    assert!(shown.contains("For the whole change: Thanks."));
     assert!(
         app.notes_of("t-done", 2).is_empty(),
         "a sent draft is cleared"
@@ -245,4 +245,79 @@ async fn a_context_answer_for_a_file_no_longer_shown_is_dropped() {
     assert_eq!(app.revealed.len(), 20);
     assert!(screen(&mut app, 120, 40).contains("// line 8"));
     assert!(engine.acts().is_empty());
+}
+
+/// The note's answer is lost on the way back (the console saved it): the retry carries the same identity, the console
+/// saves nothing more, and the completion follows. A completion refused after the note saved: the retry only completes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_or_refused_answer_never_saves_the_notes_twice() {
+    let (engine, client, mut app) = open_review().await;
+    to_new_line(&mut app, 2);
+    note(&mut app, &client, "round to cents").await;
+    let submit = |app: &mut App| {
+        app.key(key('a'));
+        app.key(key('t'));
+        screen(app, 120, 34);
+        app.key(enter())
+    };
+    // The first try reaches the console (the note is saved), but its answer never comes back.
+    let fx = submit(&mut app);
+    let [Effect::Send { acts, task, run }] = fx.as_slice() else {
+        panic!("{fx:?}")
+    };
+    let first_try = vec![acts[0].clone()];
+    let _lost = toolroll_tui::run::send_batch(&client, first_try, task.clone(), *run).await;
+    app.update(Msg::Sent {
+        task: task.clone(),
+        run: *run,
+        kept: 0,
+        result: Err(toolroll_api::ApiError::Unreachable(
+            "connection reset".into(),
+        )),
+    });
+    assert_eq!(engine.state.lock().unwrap().notes_saved.len(), 1);
+    // The retry: same identity, nothing saved twice, then the completion.
+    let fx = submit(&mut app);
+    pump(&mut app, &client, fx).await;
+    let acts = engine.acts();
+    assert_eq!(
+        acts.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(),
+        vec!["/r/2/comment", "/r/2/comment", "/t/t-done/complete"]
+    );
+    assert_eq!(acts[0].field("request"), acts[1].field("request"));
+    assert_eq!(
+        engine.state.lock().unwrap().notes_saved.len(),
+        1,
+        "the notes were saved twice"
+    );
+    assert!(app.notes_of("t-done", 2).is_empty());
+
+    // The note saves, the completion is refused; once it is allowed, the retry posts only the completion.
+    let (engine, client, mut app) = open_review().await;
+    engine.state.lock().unwrap().refuse_complete = Some((409, "Not yet.".into()));
+    to_new_line(&mut app, 2);
+    note(&mut app, &client, "round to cents").await;
+    let fx = submit(&mut app);
+    pump(&mut app, &client, fx).await;
+    assert_eq!(
+        app.notes_of("t-done", 2).len(),
+        1,
+        "kept for the retry: {:?} {:?}",
+        engine
+            .acts()
+            .iter()
+            .map(|a| a.path.clone())
+            .collect::<Vec<_>>(),
+        app.status
+    );
+    engine.state.lock().unwrap().refuse_complete = None;
+    let fx = submit(&mut app);
+    pump(&mut app, &client, fx).await;
+    let acts = engine.acts();
+    assert_eq!(
+        acts.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(),
+        vec!["/r/2/comment", "/t/t-done/complete", "/t/t-done/complete"]
+    );
+    assert_eq!(engine.state.lock().unwrap().notes_saved.len(), 1);
+    assert!(app.notes_of("t-done", 2).is_empty());
 }

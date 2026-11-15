@@ -200,6 +200,8 @@ function acceptFactsOf(store: Store, assignment: AssignmentSnapshot, viewer: str
 /** The largest file a context read loads (its head blob), and the longest line it sends. */
 const CONTEXT_FILE_BYTES = 2 * 1024 * 1024;
 const CONTEXT_LINE_CHARS = 2_000;
+/** A PEM private key's first line (evidence.ts SECRET_PATTERNS private-key, anywhere in a text). */
+const PRIVATE_KEY_OPENER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/;
 
 /**
  * Lines `from`..`from + count - 1` of one file of a result as its build left it, to show context its hunks hide
@@ -223,11 +225,13 @@ export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: 
   const unread = "The rest of this file can't be read here. Press w to see it in the browser.";
   if (!Number.isSafeInteger(from) || from < 1 || !Number.isSafeInteger(count) || count < 1 || count > DIFF_CONTEXT_MAX) return answer([], null, unread);
   if (/^deleted file mode /m.test(text) || /^\+\+\+ \/dev\/null$/m.test(text)) return answer([], 0, "This file was removed by the change.");
-  const path = one.path;
   const stat = source.stat?.stat;
   const head = run.headRevision;
-  if (repo === null || head === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(head) || stat == null || "problem" in stat || stat.head !== head
-    || path === "" || path === "changed file" || path.startsWith("/") || path.split("/").some(part => part === ".." || part === "." || part === "")
+  if (repo === null || head === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(head) || stat == null || "problem" in stat || stat.head !== head) return answer([], null, unread);
+  // Which file: the one git itself listed as changed for this run (the saved stat, its names NUL-delimited from git),
+  // matched exactly by the patch file's name. Text inside the patch never chooses another file to read.
+  const path = stat.files.map(changed => changed.path).find(changed => changed === one.path) ?? null;
+  if (path === null || path === "" || path.startsWith("/") || path.split("/").some(part => part === ".." || part === "." || part === "")
     || /[\u0000-\u001f\u007f]/.test(path)) return answer([], null, unread);
   let bytes: Buffer;
   try {
@@ -253,15 +257,19 @@ export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: 
   } catch {
     return answer([], null, "This file isn't text.");
   }
+  // A private key spans lines, and any window could start or end inside one: a file holding a key block shows none of
+  // its hidden lines here (anywhere in the file, not only in the lines asked for).
+  if (PRIVATE_KEY_OPENER.test(content)) return answer([], null, "This file holds what looks like a private key, so its hidden lines aren't shown here.");
   const all = content.split("\n");
   if (all.at(-1) === "") all.pop();
   const lineCount = all.length;
-  const shown = all.slice(from - 1, from - 1 + count).map(line => line.replace(/\r$/, "").slice(0, CONTEXT_LINE_CHARS));
-  // The saved diff's rule for keys (evidence.ts): checked as lines the change adds, each hit replaced by its marker.
-  const hits = new Map(scanPatchForSecrets(["diff --git a/f b/f", `@@ -0,0 +1,${shown.length} @@`, ...shown.map(line => `+${line}`)].join("\n")).map(hit => [hit.line - 3, hit.name] as const));
-  const lines = shown.map((line, index) => {
+  const whole = all.slice(from - 1, from - 1 + count).map(line => line.replace(/\r$/, ""));
+  // The saved diff's rule for keys (evidence.ts), on each line WHOLE (before any cut, so a key across the cut is found):
+  // checked as lines the change adds, each hit replaced by its marker; only then is a long line shortened.
+  const hits = new Map(scanPatchForSecrets(["diff --git a/f b/f", `@@ -0,0 +1,${whole.length} @@`, ...whole.map(line => `+${line}`)].join("\n")).map(hit => [hit.line - 3, hit.name] as const));
+  const lines = whole.map((line, index) => {
     const name = hits.get(index);
-    return { newLine: from + index, text: name === undefined ? line : `[redacted: ${name} detected on this line]` };
+    return { newLine: from + index, text: name === undefined ? line.slice(0, CONTEXT_LINE_CHARS) : `[redacted: ${name} detected on this line]` };
   });
   return answer(lines, lineCount, null);
 }

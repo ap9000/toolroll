@@ -1364,11 +1364,13 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::SendBack(pin, typed) => {
-            // Every note that goes, whole, then the words for the whole change being typed: exactly what is posted.
+            // The notes going back, and the words for the whole change being typed. Not yet a send: Enter shows the
+            // whole text to read to its end (SendReview), and only that text is posted.
             let pin = pin.clone();
             let typed = typed.clone();
             let w = (area.width as usize).saturating_sub(8).min(84);
             let notes = app.notes_of(&pin.task, pin.run);
+            let room_lines = (area.height as usize).saturating_sub(12).max(1);
             let mut lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
@@ -1377,9 +1379,19 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 )),
                 Line::raw(""),
             ];
+            let mut body: Vec<Line<'static>> = vec![];
             for part in review::batch_text(&notes, "").split('\n') {
-                lines.extend(wrap(part, w).into_iter().map(Line::raw));
+                body.extend(wrap(part, w).into_iter().map(Line::raw));
             }
+            if body.len() > room_lines {
+                let more = body.len() - room_lines + 1;
+                body.truncate(room_lines - 1);
+                body.push(Line::from(Span::styled(
+                    format!("… {more} more lines: you read them all before it's sent"),
+                    dim(),
+                )));
+            }
+            lines.extend(body);
             lines.push(Line::raw(""));
             let label = "For the whole change: ";
             let room = w.saturating_sub(width(label) + 1);
@@ -1401,24 +1413,22 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::raw(""));
             lines.push(Line::from(vec![
                 Span::styled("Enter  ", ink()),
-                Span::raw("Send back"),
+                Span::raw("Read it all, then send"),
                 Span::styled("   Esc  ", ink()),
                 Span::raw("Keep the notes"),
             ]));
-            let fits = lines.len() + 2 <= area.height as usize;
-            app.batch_shown = fits;
-            if fits {
-                (" Send back ", lines)
-            } else {
-                (
-                    " Send back ",
-                    wrap(crate::app::NOTES_TOO_LONG, w.max(16))
-                        .into_iter()
-                        .map(|l| Line::from(Span::styled(l, ink())))
-                        .collect(),
-                )
-            }
+            (" Send back ", lines)
         }
+        Mode::SendReview { .. } => return draw_send_review(f, app, area),
+        Mode::Sending(words) => (
+            " Saving ",
+            vec![
+                Line::raw(""),
+                Line::from(Span::styled(words.clone(), ink())),
+                Line::raw(""),
+                Line::from(Span::styled("Wait for Toolroll's answer.", dim())),
+            ],
+        ),
         Mode::Fatal(words, _) => {
             let mut lines = vec![Line::raw("")];
             lines.extend(
@@ -1562,5 +1572,88 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw("Review in the browser"),
     ]));
     lines.push(Line::from(Span::styled("Esc files nothing.", dim())));
+    f.render_widget(Paragraph::new(lines).block(block), r);
+}
+
+/// Send back's whole text, exactly as it will be posted: every line wrapped (never cut), scrolled with j/k or Space.
+/// Drawing its end is what lets Enter send (app.rs Mode::SendReview `seen_end`), as with Build's terms.
+fn draw_send_review(f: &mut Frame, app: &mut App, area: Rect) {
+    let Mode::SendReview {
+        pin,
+        text,
+        scroll,
+        seen_end,
+        ..
+    } = &mut app.mode
+    else {
+        return;
+    };
+    let w = area.width.saturating_sub(6).min(96);
+    let h = area.height.saturating_sub(2);
+    let inner_w = w.saturating_sub(2) as usize;
+    let visible = (h as usize).saturating_sub(2 + 6);
+    let r = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + 1,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" Send back ", ink()));
+    if inner_w < 16 || visible < 3 {
+        *seen_end = false;
+        let lines: Vec<Line<'static>> = wrap(crate::app::NOTES_TOO_LONG, inner_w.max(8))
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, ink())))
+            .collect();
+        f.render_widget(Paragraph::new(lines).block(block), r);
+        return;
+    }
+    let mut body: Vec<Line<'static>> = vec![];
+    for part in text.split('\n') {
+        body.extend(wrap(part, inner_w).into_iter().map(Line::raw));
+    }
+    let max_scroll = body.len().saturating_sub(visible);
+    if *scroll > max_scroll {
+        *scroll = max_scroll;
+    }
+    let end = (*scroll + visible).min(body.len());
+    if end >= body.len() {
+        *seen_end = true;
+    }
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("Build #{} goes back with exactly this:", pin.run),
+            ink(),
+        )),
+        Line::raw(""),
+    ];
+    lines.extend(body[*scroll..end].iter().cloned());
+    lines.push(Line::raw(""));
+    if end < body.len() {
+        lines.push(Line::from(Span::styled(
+            format!("↓ {} more lines: j or Space reads on", body.len() - end),
+            ink(),
+        )));
+    } else {
+        lines.push(Line::raw(""));
+    }
+    if *seen_end {
+        lines.push(Line::from(vec![
+            Span::styled("Enter  ", ink()),
+            Span::raw("Send back"),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Enter sends once you've read to the end.",
+            dim(),
+        )));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Esc  ", ink()),
+        Span::raw("Back to your words (nothing is sent)"),
+    ]));
     f.render_widget(Paragraph::new(lines).block(block), r);
 }

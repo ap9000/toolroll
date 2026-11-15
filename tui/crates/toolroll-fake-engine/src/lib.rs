@@ -74,6 +74,11 @@ pub struct State {
     pub acts: Vec<Act>,
     /// Every act refused with this status and these words (None: kept).
     pub refuse_acts: Option<(u16, String)>,
+    /// Only completions refused so (a note saved, then Accept refused).
+    pub refuse_complete: Option<(u16, String)>,
+    /// Notes the console saved, by the request identity they came with (an unchanged retry saves nothing more, as the
+    /// real console's sourceKey replay does): (request, note, a revision).
+    pub notes_saved: Vec<(String, String, bool)>,
     /// Every read and act answers 401 (the console no longer holds the session).
     pub session_ended: bool,
     pub redeemed: bool,
@@ -410,6 +415,8 @@ pub fn scenario() -> State {
         contract: contract_digest(),
         acts: Vec::new(),
         refuse_acts: None,
+        refuse_complete: None,
+        notes_saved: Vec::new(),
         session_ended: false,
         redeemed: false,
         reads: HashMap::new(),
@@ -748,6 +755,11 @@ async fn act(
     if let Some((status, words)) = st.refuse_acts.clone() {
         return json_answer(status, json!({ "outcome": "refused", "words": words }));
     }
+    if path.ends_with("/complete") {
+        if let Some((status, words)) = st.refuse_complete.clone() {
+            return json_answer(status, json!({ "outcome": "refused", "words": words }));
+        }
+    }
     if path == "/tasks/add" {
         return (StatusCode::SEE_OTHER, [("location", "/t/t-new")]).into_response();
     }
@@ -756,6 +768,24 @@ async fn act(
             200,
             json!({ "outcome": "done", "words": "Accepted. The task is complete." }),
         );
+    }
+    if path.ends_with("/comment") {
+        let last = st.acts.last().cloned().unwrap();
+        let (request, note) = (
+            last.field("request").unwrap_or("").to_string(),
+            last.field("note").unwrap_or("").to_string(),
+        );
+        let revise = last.field("intent") == Some("revise");
+        match st.notes_saved.iter().find(|(r, _, _)| *r == request) {
+            Some((_, earlier, _)) if *earlier != note => {
+                return json_answer(
+                    409,
+                    json!({ "outcome": "refused", "words": "This request identity already recorded a different note." }),
+                );
+            }
+            Some(_) => {}
+            None => st.notes_saved.push((request, note, revise)),
+        }
     }
     if path.ends_with("/comment") && record_intent(&st) != Some("revise") {
         // A saved note (no intent): the real console lands back on the result (303).
