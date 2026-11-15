@@ -37,7 +37,7 @@
  *   it could read history beyond its base (flexible-ship.ts HISTORY_WORDS).
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
@@ -188,7 +188,12 @@ type Source = { thread: FlexibleThreadRow; project: string; objects: string; pat
  * `.git` folder, no commondir, no reftable), its objects folder a real folder whose alternates name exactly the
  * project's objects and nothing over HTTP, and nothing in it a link or anything but a file or folder (a link would lead
  * the quarantine to another project's objects). */
-function threadObjectsProblem(paths: FlexibleThreadPaths, recorded: string, objects: string, limits: FlexibleImportLimits): string | null {
+/** The largest alternates file Toolroll reads (the one it writes is a single path): anything bigger isn't its own. */
+const ALTERNATES_MAX = 4096;
+/** threadObjectsProblem's answer when the import's deadline passed while it walked. */
+const WALK_TIMED_OUT = "the import's time ran out while its objects were walked";
+
+function threadObjectsProblem(paths: FlexibleThreadPaths, recorded: string, objects: string, limits: FlexibleImportLimits, deadline: number): string | null {
   if (recorded !== paths.folder) return "its record names another folder";
   if (!ownFolder(paths.root) || !ownFolder(paths.folder)) return "its folder isn't a private folder of yours";
   const gitdir = join(paths.repo, ".git");
@@ -196,10 +201,21 @@ function threadObjectsProblem(paths: FlexibleThreadPaths, recorded: string, obje
   if (!plainDir(paths.repo) || !plainDir(gitdir) || !plainDir(threadObjects)) return "its repository isn't a plain one";
   if (existsSync(join(gitdir, "commondir")) || existsSync(join(gitdir, "reftable"))) return "its repository isn't a plain one";
   try { if (realpathSync(threadObjects) !== join(realpathSync(paths.folder), "repo", ".git", "objects")) return "its objects folder isn't its own"; } catch { return "its objects folder can't be read"; }
+  // The alternates file read with a bound and without following a link: never read whole when it's bigger than the
+  // one path Toolroll wrote.
   try {
     const alternates = join(threadObjects, "info", "alternates");
     const held = lstatSync(alternates);
-    if (!held.isFile() || held.isSymbolicLink() || readFileSync(alternates, "utf8") !== `${objects}\n`) return "its alternates changed";
+    if (!held.isFile() || held.isSymbolicLink()) return "its alternates changed";
+    if (held.size > ALTERNATES_MAX) return "its alternates file is too large to be the one Toolroll wrote";
+    const fd = openSync(alternates, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile() || opened.size > ALTERNATES_MAX) return "its alternates file is too large to be the one Toolroll wrote";
+      const bytes = Buffer.alloc(ALTERNATES_MAX + 1);
+      const read = readSync(fd, bytes, 0, bytes.length, 0);
+      if (read > ALTERNATES_MAX || bytes.subarray(0, read).toString("utf8") !== `${objects}\n`) return "its alternates changed";
+    } finally { closeSync(fd); }
   } catch { return "its alternates can't be read"; }
   if (existsSync(join(threadObjects, "info", "http-alternates"))) return "it borrows objects over the network";
   // Walked one entry at a time, counting as it goes: a folder too big to list is refused before it is listed whole.
@@ -212,6 +228,8 @@ function threadObjectsProblem(paths: FlexibleThreadPaths, recorded: string, obje
     try {
       for (let one = handle.readSync(); one !== null; one = handle.readSync()) {
         if (++seen > limits.objectEntries) return "it holds too many object files";
+        // The import's one deadline holds here too: a walk that runs past it stops.
+        if (Date.now() >= deadline) return WALK_TIMED_OUT;
         if (one.isDirectory()) folders.push(join(folder, one.name));
         else if (!one.isFile()) return `its objects folder has a link or special file (${join(folder, one.name).slice(threadObjects.length + 1)})`;
       }
@@ -260,7 +278,7 @@ function threadBranchTip(paths: FlexibleThreadPaths, id: string): string | null 
 
 /** The thread and its project, from Toolroll's records, proven: ready, its project registered and a plain repository,
  * the thread's folder and objects the ones Toolroll made. */
-function sourceOf(store: Store, id: string, limits: FlexibleImportLimits): Source | FlexibleImportRefusal {
+function sourceOf(store: Store, id: string, limits: FlexibleImportLimits, deadline: number): Source | FlexibleImportRefusal {
   const thread = flexibleThread(store, id);
   if (thread === null) return pre("thread-unknown");
   if (thread.state !== "ready") return pre("thread-not-ready");
@@ -276,7 +294,8 @@ function sourceOf(store: Store, id: string, limits: FlexibleImportLimits): Sourc
     objects = realpathSync(join(common, "objects"));
   } catch { return pre("repository-unusable"); }
   const paths = flexibleThreadPaths(state, thread.id);
-  const problem = threadObjectsProblem(paths, thread.folder, objects, limits);
+  const problem = threadObjectsProblem(paths, thread.folder, objects, limits, deadline);
+  if (problem === WALK_TIMED_OUT) return refused("timed-out");
   if (problem !== null) return pre("thread-folder-changed", problem);
   return { thread, project, objects, paths, threadObjects: realpathSync(join(paths.repo, ".git", "objects")), format: thread.baseSha.length === 64 ? "sha256" : "sha1" };
 }
@@ -347,12 +366,13 @@ export async function readFlexibleCandidate(store: Store, input: { thread: strin
   Promise<{ ok: true; candidate: string; base: string; changedPaths: string[] } | FlexibleImportRefusal> {
   if (!FLEXIBLE_AVAILABLE) return pre("not-available");
   const limits = limitsOf(input.limits);
-  const source = sourceOf(store, input.thread, limits);
+  const deadline = Date.now() + limits.importMs;
+  const source = sourceOf(store, input.thread, limits, deadline);
   if ("ok" in source) return source;
   const candidate = threadBranchTip(source.paths, source.thread.id);
   if (candidate === null || candidate.length !== source.thread.baseSha.length) return refused("candidate-unreadable");
   if (candidate === source.thread.baseSha) return refused("nothing-to-send");
-  const read = gitIn(input.runner ?? run, "read", Date.now() + limits.importMs);
+  const read = gitIn(input.runner ?? run, "read", deadline);
   return guarded(() => withQuarantine(source, async repo => {
     const lineage = await descends(read, repo, source.thread.baseSha, candidate);
     if (lineage !== null) return lineage;
@@ -615,7 +635,7 @@ async function importLocked(store: Store, input: { thread: string; seq: number; 
   // One deadline for the whole import: every check in the quarantine and the fetch.
   const deadline = Date.now() + limits.importMs;
   if (!Number.isSafeInteger(input.seq) || input.seq < 1 || !SHA.test(input.expected) || (input.branchBefore !== null && !SHA.test(input.branchBefore))) return refused("unreadable", "the import's own terms aren't valid");
-  const source = sourceOf(store, input.thread, limits);
+  const source = sourceOf(store, input.thread, limits, deadline);
   if ("ok" in source) return source;
   const inner = input.runner ?? run;
   const read = gitIn(inner, "read", deadline), build = gitIn(inner, "build", deadline);

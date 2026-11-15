@@ -433,8 +433,9 @@ export async function mergePullRequest(
     method?: MergeMethod;
     /** Only a person merging by hand may skip waiting for the full check. */
     anyway?: boolean;
-    /** An automatic pass's standing, read in the write that reserves the merge: false refuses ("halted") and merges nothing. */
-    proceed?: () => boolean;
+    /** An automatic pass's standing, read in the write that reserves the merge: false refuses ("halted") and merges nothing.
+     * It is told what GitHub said of the pull request just before (its base branch and its address). */
+    proceed?: (seen: { base: string | null; url: string | null; head: string | null }) => boolean;
     /** The Flexible Ship whose armed merge this is (flexible-ship.ts mergeArmedFlexible, the only caller that passes it,
      * after re-proving that authority). A Flexible result merges by no other road. */
     flexibleShip?: string;
@@ -472,12 +473,13 @@ export async function mergePullRequest(
   const method: MergeMethod = input.method ?? grant.mergeMethod ?? "squash";
   const pr = String(publication.prNumber);
   const view = async () => {
-    const viewed = await exec("gh", ["pr", "view", pr, "--repo", publication.githubRepo, "--json", "state,isDraft,headRefOid,statusCheckRollup,mergeCommit"], { timeoutMs: EXEC_TIMEOUT_MS });
+    const viewed = await exec("gh", ["pr", "view", pr, "--repo", publication.githubRepo, "--json", "state,isDraft,headRefOid,statusCheckRollup,mergeCommit,baseRefName,url"], { timeoutMs: EXEC_TIMEOUT_MS });
     if (viewed.code !== 0) return null;
     try {
-      const payload = JSON.parse(viewed.stdout) as { state?: unknown; isDraft?: unknown; headRefOid?: unknown; statusCheckRollup?: unknown; mergeCommit?: { oid?: unknown } | null };
+      const payload = JSON.parse(viewed.stdout) as { state?: unknown; isDraft?: unknown; headRefOid?: unknown; statusCheckRollup?: unknown; mergeCommit?: { oid?: unknown } | null; baseRefName?: unknown; url?: unknown };
       return { state: String(payload.state ?? "").toUpperCase(), draft: payload.isDraft === true, head: typeof payload.headRefOid === "string" ? payload.headRefOid : null,
-        checks: summarizeChecks(payload.statusCheckRollup), commit: typeof payload.mergeCommit?.oid === "string" ? payload.mergeCommit.oid : null };
+        checks: summarizeChecks(payload.statusCheckRollup), commit: typeof payload.mergeCommit?.oid === "string" ? payload.mergeCommit.oid : null,
+        base: typeof payload.baseRefName === "string" ? payload.baseRefName : null, url: typeof payload.url === "string" ? payload.url : null };
     } catch { return null; }
   };
   const record = (commit: string | null, by: string) => {
@@ -517,7 +519,7 @@ export async function mergePullRequest(
   // One merge at a time, each owning its reservation by its token: a second caller is refused, and each releases only its own.
   const token = randomUUID();
   const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" | "halted" => {
-    if (input.proceed?.() === false) return "halted";
+    if (input.proceed?.({ base: before.base, url: before.url, head: before.head }) === false) return "halted";
     // A Flexible result: its Ship reserved (merging) under exactly this token, in this same transaction (the armed
     // merge's `proceed` takes the reservation); a cancel or revocation that landed first leaves nothing to merge.
     if (flexibleMergeRefusal(store, mergedTask, "pull-request", flexibleAuthority, "reserve") !== null) return "halted";

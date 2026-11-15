@@ -33,3 +33,31 @@ export function flexibleMergeRefusal(store: Store, taskId: string | null, road: 
   if (moment === "start") return row["state"] === "completed" || (row["state"] === "merging" && row["merge_token"] === authority.token) ? null : FLEXIBLE_MERGE_WORDS;
   return row["state"] === "merging" && row["merge_token"] === authority.token ? null : FLEXIBLE_MERGE_WORDS;
 }
+
+/** Said when a Flexible Ship's task would have its prepared commit replaced. */
+export const FLEXIBLE_CANDIDATE_FIXED = "A Flexible Ship's task checks exactly the commit its Ship imported, so its prepared commit can't be replaced. Ship again from the thread instead.";
+
+/** Why a scope write may not change a task's prepared commit from `previous` to `next`, or null: a Flexible-filed task's
+ * prepared commit, once set (by its Ship, to the commit it imported), never changes. */
+export function flexibleCandidateChangeRefusal(store: Store, taskId: string, previous: string | null | undefined, next: string | null | undefined): string | null {
+  if (previous == null || (next ?? null) === previous) return null;
+  return store.filedViaOf(taskId)?.startsWith(FLEXIBLE_FILED_PREFIX) === true ? FLEXIBLE_CANDIDATE_FIXED : null;
+}
+
+/**
+ * How a build of task `taskId` may take its prepared commit (builder.ts): null for a task not filed from a Flexible
+ * thread; for one that is, either the Ship's own import ref to adopt the commit itself from (only when the task is
+ * exactly its Ship's, armed or completed, the prepared commit is the Ship's imported candidate and the scope is the one
+ * the Ship sealed), or why the build must not commit at all. A Flexible task never falls back to an ordinary commit.
+ */
+export function flexibleAdoption(store: Store, taskId: string, prepared: string | null, scopeDigest: string | null): { adopt: { importRef: string; candidate: string } } | { refuse: string } | null {
+  const via = store.filedViaOf(taskId);
+  if (via === null || !via.startsWith(FLEXIBLE_FILED_PREFIX)) return null;
+  const refusal = { refuse: "This task came from a Flexible thread, and its prepared commit isn't exactly the commit its Ship imported and sealed, so nothing was committed. Ship again from the thread." };
+  let row: Record<string, unknown> | undefined;
+  try { row = store.handle.prepare("SELECT id, candidate, import_ref, scope_digest, state FROM flexible_ship WHERE task_id = ?").get(taskId) as Record<string, unknown> | undefined; }
+  catch { return refusal; }
+  if (row === undefined || via !== `${FLEXIBLE_FILED_PREFIX}${String(row["id"])}` || !["armed", "completed"].includes(String(row["state"]))) return refusal;
+  if (prepared === null || prepared !== row["candidate"] || scopeDigest === null || scopeDigest !== row["scope_digest"]) return refusal;
+  return { adopt: { importRef: String(row["import_ref"]), candidate: prepared } };
+}

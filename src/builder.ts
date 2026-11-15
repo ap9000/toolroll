@@ -1,4 +1,5 @@
 import { legacyNetwork, repositoryEcosystems, type NetworkProfile } from "./egress.js";
+import { flexibleAdoption } from "./flexible-merge-guard.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, localModeCap, type CheckAccess } from "./check-access.js";
 import { localModeOn } from "./local-owner.js";
 import { checkoutGit, refusal as gitRefusal } from "./teardown-git.js";
@@ -2246,12 +2247,18 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
     return { ok: false, reason: "stopped", message: await stoppedWords(captured) };
   }
   store.setRunPhase(request.runId, "committing");
+  // A Flexible Ship's check task (flexible-merge-guard.ts flexibleAdoption): it takes exactly the commit its Ship
+  // imported and sealed, from the Ship's import ref, or commits nothing; never an ordinary commit, never kept work.
+  const flexibleAdopt = flexibleAdoption(store, taskId, scope?.candidate ?? null, scope?.digest ?? null);
+  if (flexibleAdopt !== null && ("refuse" in flexibleAdopt || finishesKeptWork)) {
+    return { ok: false, reason: "commit-failure", message: "refuse" in flexibleAdopt ? flexibleAdopt.refuse : "This task came from a Flexible thread; it takes only its Ship's imported commit. Nothing was committed." };
+  }
   // Kept work that is already complete is already committed: the attempt's
   // result is that commit, sealed below against the task's original base.
   const made = finishesKeptWork
     ? await keptWorkResult(captured, baseRevision, handoff.conclusion)
     : await commit(git, worktree, branch, taskId, scope as Scope, handoff.conclusion, scope?.candidate ?? null,
-      words => store.addRunNote(request.runId, "Toolroll", words, clock()), store.filedViaOf(taskId)?.startsWith("flexible:") === true);
+      words => store.addRunNote(request.runId, "Toolroll", words, clock()), flexibleAdopt === null ? null : flexibleAdopt.adopt);
   if (made.ok && made.parked === undefined && made.committed) {
     const newHead = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
     if (newHead.code === 0) {
@@ -4148,8 +4155,9 @@ async function commit(
   summary: string,
   preparedCandidate: string | null = null,
   notice?: (words: string) => void,
-  /** A Flexible Ship's check task (flexible-ship.ts): its result is the shipped commit itself, never a new one. */
-  adoptCandidate = false,
+  /** A Flexible Ship's check task (flexible-merge-guard.ts flexibleAdoption): its result is the Ship's imported commit
+   * itself, read from the Ship's import ref, never a new one. */
+  adopt: { importRef: string; candidate: string } | null = null,
 ): Promise<BuildResult> {
   const status = await git(GIT, ["--no-optional-locks", "status", "--porcelain"], { cwd: worktree });
   if (status.code !== 0) {
@@ -4220,8 +4228,9 @@ async function commit(
 
   // A Flexible Ship's check runs on, and later merges, exactly the commit the person shipped (flexible-ship.ts): after
   // every check above, the branch moves to that commit itself instead of a new one carrying its files.
-  if (adoptCandidate && preparedCandidate !== null) {
-    const adopted = await adoptPreparedCommit(git, worktree, preparedCandidate);
+  if (adopt !== null) {
+    if (preparedCandidate !== adopt.candidate) return { ok: false, reason: "commit-failure", message: "The prepared commit isn't the Ship's imported commit. Nothing was committed." };
+    const adopted = await adoptPreparedCommit(git, worktree, adopt.candidate, adopt.importRef);
     return adopted.ok ? { ok: true, committed: true, branch, summary } : { ok: false, reason: "commit-failure", message: adopted.message };
   }
 
@@ -4313,8 +4322,12 @@ function firstSentence(goal: string, limit: number): string {
  * descends from the branch's current commit, and only when its files are exactly what is staged; afterwards HEAD is the
  * candidate and nothing is left staged or changed. Never a new commit, never a rewrite of the branch's history.
  */
-export async function adoptPreparedCommit(git: Runner, worktree: string, candidate: string): Promise<{ ok: true } | { ok: false; message: string }> {
+export async function adoptPreparedCommit(git: Runner, worktree: string, candidate: string, importRef: string): Promise<{ ok: true } | { ok: false; message: string }> {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(candidate)) return { ok: false, message: "The shipped commit isn't an exact commit id. Nothing was committed." };
+  // The commit the import checked, read from the import's own ref (refs/toolroll/import/<thread>/<n>), and nothing else.
+  if (!/^refs\/toolroll\/import\/[0-9a-f]{32}\/[1-9]\d{0,6}$/.test(importRef)) return { ok: false, message: "The Ship's import isn't one Toolroll made. Nothing was committed." };
+  const imported = await git(GIT, ["--no-optional-locks", "rev-parse", "--verify", "--quiet", "--end-of-options", `${importRef}^{commit}`], { cwd: worktree });
+  if (imported.code !== 0 || imported.stdout.trim() !== candidate) return { ok: false, message: "The prepared commit isn't the one the Ship's import checked. The checkout is preserved; nothing was committed." };
   const descends = await git(GIT, ["--no-optional-locks", "merge-base", "--is-ancestor", "HEAD", candidate], { cwd: worktree });
   if (descends.code !== 0) return { ok: false, message: "The shipped commit doesn't build on this branch's commit. The checkout is preserved; nothing was committed." };
   const staged = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--quiet", candidate, "--"], { cwd: worktree });

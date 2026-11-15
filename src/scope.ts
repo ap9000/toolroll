@@ -1,5 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
+import { flexibleCandidateChangeRefusal } from "./flexible-merge-guard.js";
 import { cardShowsScope, cardTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { sessionStandsIn } from "./install-mode.js";
@@ -1002,6 +1003,10 @@ function proposeLocked(store: Store, input: ScopeInput): Scope {
 
   const draft = { goal, outOfScope, touches: [...touches], budgetMicrousd, acceptance: [...acceptance], qualityMode, candidate: input.candidate ?? null };
   const previous = store.getScope(taskId);
+  // A Flexible Ship's task checks exactly the commit its Ship imported (flexible-merge-guard.ts): never replaced, by
+  // any road that writes a scope.
+  const fixed = flexibleCandidateChangeRefusal(store, taskId, previous?.candidate, draft.candidate);
+  if (fixed !== null) throw new Error(fixed);
 
   const scope: Scope = {
     taskId,

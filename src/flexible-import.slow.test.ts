@@ -295,6 +295,21 @@ describe("limits hold while listing, and the import has one deadline", () => {
     expect(await importNow(1, null, tip(), limits)).toMatchObject({ ok: false, reason: "import-refused", check });
     expect(projectRefs()).toBe(before);
   });
+  test("a walk of the thread's objects that runs past the import's deadline stops there, before any git runs", async () => {
+    commit(many());
+    calls = [];
+    expect(await importNow(1, null, tip(), { importMs: 0 })).toMatchObject({ ok: false, reason: "import-refused", check: "timed-out" });
+    expect(calls).toEqual([]);
+    // Stopped in the walk itself: no quarantine was ever made.
+    expect(existsSync(join(paths.root, FLEXIBLE_IMPORTS_DIR))).toBe(false);
+  });
+  test("a huge alternates file is refused without being read whole", async () => {
+    const candidate = commit({ "a.txt": "one\n" });
+    const alternates = join(paths.repo, ".git", "objects", "info", "alternates");
+    chmodSync(alternates, 0o644);
+    writeFileSync(alternates, `${world.objects}\n${"x".repeat(1024 * 1024)}\n`);
+    expect(await importNow(1, null, candidate)).toMatchObject({ ok: false, reason: "thread-folder-changed", message: expect.stringContaining("too large") });
+  });
   test("a thread objects folder with more entries than allowed is refused as it is walked", async () => {
     commit(many());
     expect(await importNow(1, null, tip(), { objectEntries: 3 })).toMatchObject({ ok: false, reason: "thread-folder-changed", message: expect.stringContaining("too many object files") });

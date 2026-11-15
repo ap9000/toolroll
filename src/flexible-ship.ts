@@ -542,12 +542,13 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
   if (publication.githubRepo !== found.terms.github.repo || publication.base !== found.terms.github.base) return stop("its pull request goes somewhere other than the signed destination");
   if (check === null || check !== found.checkReceipt) return { ok: true, state: "waiting", why: "the check no longer stands on this exact commit" };
   if (publication.prNumber === null) return { ok: true, state: "waiting", why: "its pull request isn't open yet" };
+  const prNumber = publication.prNumber;
   const token = randomBytes(16).toString("hex");
   inFlight.add(token);
   let merged: Awaited<ReturnType<typeof mergePullRequest>>;
   try {
     merged = await mergePullRequest(store, { runId: newest.id, by: found.approvedBy, flexibleShip: found.id, flexibleToken: token, clock, ...(input.exec === undefined ? {} : { exec: input.exec }),
-      proceed: () => reserveMerge(store, { ship: found.id, token, runId: newest.id, root: input.root, now: clock() }) });
+      proceed: seen => reserveMerge(store, { ship: found.id, token, runId: newest.id, root: input.root, now: clock(), seen, prNumber }) });
   } finally { inFlight.delete(token); }
   const after = rowOfTask(store, input.taskId);
   if (merged.ok) {
@@ -570,10 +571,13 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
  * newest result still the shipped commit and the checked head, the signed check's receipt the one bound at
  * completion. A lapsed authority cancels the Ship in this same transaction; anything else waits. True when reserved.
  */
-function reserveMerge(store: Store, input: { ship: string; token: string; runId: number; root: string; now: Date }): boolean {
+function reserveMerge(store: Store, input: { ship: string; token: string; runId: number; root: string; now: Date; seen: { base: string | null; url: string | null; head: string | null }; prNumber: number }): boolean {
   const ship = readRow(store.handle.prepare("SELECT * FROM flexible_ship WHERE id = ?").get(input.ship) as Record<string, unknown> | undefined);
   if (ship === null || ship.state !== "completed" || ship.taskId === null) return false;
-  const problem = authorityProblem(store, ship);
+  // Where GitHub would actually merge it, read just before this: the pull request's own base branch and repository must
+  // be the signed ones. A pull request retargeted elsewhere (same head, same green checks) ends the Ship.
+  const elsewhere = pullRequestElsewhere(ship, input.seen, input.prNumber);
+  const problem = elsewhere ?? authorityProblem(store, ship);
   if (problem !== null) { cancelArmed(store, ship, problem, input.now); return false; }
   const newest = newestRun(store, ship.taskId);
   if (newest === null || newest.id !== input.runId || newest.headRevision !== ship.candidate || ship.mergeHead !== ship.candidate) return false;
@@ -594,27 +598,43 @@ async function settleMerging(store: Store, ship: FlexibleShipRow, exec: PublishE
   const newest = ship.taskId === null ? null : newestRun(store, ship.taskId);
   const publication = newest === null ? null : store.publicationForRun(newest.id);
   if (publication === null || publication.prNumber === null) return { ok: true, state: "waiting", why: "its merge's outcome can't be read yet" };
-  const viewed = await (exec ?? run)("gh", ["pr", "view", String(publication.prNumber), "--repo", ship.terms.github.repo, "--json", "state,headRefOid,mergeCommit"], { timeoutMs: 60_000 });
-  let state = "", headOid: string | null = null, commit: string | null = null;
+  const viewed = await (exec ?? run)("gh", ["pr", "view", String(publication.prNumber), "--repo", ship.terms.github.repo, "--json", "state,headRefOid,mergeCommit,baseRefName,url"], { timeoutMs: 60_000 });
+  let state = "", headOid: string | null = null, commit: string | null = null, base: string | null = null, url: string | null = null;
   try {
-    const payload = JSON.parse(viewed.stdout) as { state?: unknown; headRefOid?: unknown; mergeCommit?: { oid?: unknown } | null };
+    const payload = JSON.parse(viewed.stdout) as { state?: unknown; headRefOid?: unknown; mergeCommit?: { oid?: unknown } | null; baseRefName?: unknown; url?: unknown };
     state = String(payload.state ?? "").toUpperCase();
     headOid = typeof payload.headRefOid === "string" ? payload.headRefOid : null;
     commit = typeof payload.mergeCommit?.oid === "string" ? payload.mergeCommit.oid : null;
+    base = typeof payload.baseRefName === "string" ? payload.baseRefName : null;
+    url = typeof payload.url === "string" ? payload.url : null;
   } catch { state = ""; }
   if (viewed.code !== 0 || state === "") return { ok: true, state: "waiting", why: "GitHub couldn't be read to settle the merge" };
   const at = clock().toISOString();
-  const outcome: "merged" | "completed" | "cancelled" = state === "MERGED" ? "merged" : state === "OPEN" && headOid === ship.mergeHead ? "completed" : "cancelled";
+  // The same destination check as the reservation: a pull request GitHub shows targeting anything but the signed base
+  // and repository is never released or counted as this Ship's merge; it ends cancelled, said as it is.
+  const elsewhere = pullRequestElsewhere(ship, { base, url }, publication.prNumber);
+  const outcome: "merged" | "completed" | "cancelled" = elsewhere !== null ? "cancelled" : state === "MERGED" ? "merged" : state === "OPEN" && headOid === ship.mergeHead ? "completed" : "cancelled";
+  const why = elsewhere !== null ? `${elsewhere}${state === "MERGED" ? " (GitHub merged it there)" : ""}` : `its pull request is ${state.toLowerCase()} on GitHub${headOid !== ship.mergeHead ? " on another commit" : ""}`;
   store.transact(() => {
     const moved = store.handle.prepare(`UPDATE flexible_ship SET state = ?, merge_token = NULL, merge_reserved_at = NULL, state_at = ?${outcome === "cancelled" ? ", detail = ?" : ""} WHERE id = ? AND state = 'merging' AND merge_token = ?`)
-      .run(...(outcome === "cancelled" ? [outcome, at, `its pull request is ${state.toLowerCase()} on GitHub${headOid !== ship.mergeHead ? " on another commit" : ""}`, ship.id, ship.mergeToken] : [outcome, at, ship.id, ship.mergeToken]));
+      .run(...(outcome === "cancelled" ? [outcome, at, why.slice(0, 2000), ship.id, ship.mergeToken] : [outcome, at, ship.id, ship.mergeToken]));
     if (Number(moved.changes) !== 1) return;
     store.recordAction({ at, actor: "toolroll", repo: ship.repo, taskId: ship.taskId, runId: newest?.id ?? null, source: "policy", action: outcome === "merged" ? "flexible merged" : outcome === "completed" ? "flexible merge released" : "flexible merge cancelled",
       outcome: outcome === "merged" ? commit ?? "merged" : outcome, detail: `ship ${ship.id} · read back from GitHub: ${state.toLowerCase()}` });
   });
   if (outcome === "merged") return { ok: true, state: "merged" };
   if (outcome === "completed") return { ok: true, state: "waiting", why: "the merge didn't happen; it will be tried again once everything still holds" };
-  return refuse("cancelled", `its pull request is ${state.toLowerCase()} on GitHub`);
+  return refuse("cancelled", why);
+}
+
+/** Why GitHub's view of the pull request isn't the signed destination (its base branch, its repository, its number), or
+ * null when it is. */
+function pullRequestElsewhere(ship: FlexibleShipRow, seen: { base: string | null; url: string | null }, prNumber: number): string | null {
+  const address = `https://github.com/${ship.terms.github.repo}/pull/${prNumber}`;
+  if (seen.base !== ship.terms.github.base || seen.url === null || seen.url.toLowerCase() !== address.toLowerCase()) {
+    return `its pull request on GitHub targets ${seen.base ?? "an unknown branch"}${seen.url !== null && seen.url.toLowerCase() !== address.toLowerCase() ? ` at ${seen.url}` : ""}, not the signed ${ship.terms.github.repo} ${ship.terms.github.base}`;
+  }
+  return null;
 }
 
 /** Reserved merges whose outcome is uncertain (held by no merge running here, past the window), settled from GitHub. */

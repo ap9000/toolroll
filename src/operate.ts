@@ -1,4 +1,4 @@
-import { flexibleMergeRefusal } from "./flexible-merge-guard.js";
+import { FLEXIBLE_CANDIDATE_FIXED, FLEXIBLE_FILED_PREFIX, flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { flexibleArmedPass } from "./flexible-ship.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
@@ -10836,6 +10836,8 @@ async function scopeTask(
   const goal = text(flags, "goal");
   if (id === undefined || goal === undefined) return fail(write, json, "task scope", "usage", "`toolroll task scope <id> --goal <what success is> --acceptance <rubric> [--not <text>] [--touches a,b] [--candidate <commit>] [--budget-usd <n>]`", EXIT.usage);
   if (store.getTask(id) === null) return fail(write, json, "task scope", "unknown-task", `no task \`${id}\``, EXIT.refused);
+  // A Flexible Ship's task keeps exactly the scope its Ship sealed (flexible-merge-guard.ts): never rewritten here.
+  if (store.filedViaOf(id)?.startsWith(FLEXIBLE_FILED_PREFIX) === true) return fail(write, json, "task scope", "flexible", FLEXIBLE_CANDIDATE_FIXED, EXIT.refused);
   // v39: this road bypasses proposeGuarded (a trusted local operator, not a
   // web form re-authenticating staleness) but not the rubric requirement —
   // every scope-producing road signs one, this one included.
