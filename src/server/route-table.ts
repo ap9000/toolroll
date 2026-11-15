@@ -164,6 +164,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.approve": "approve-plan",
   "task.act.keep-grown": "approve-plan",
   "decision.answer": "answer-question",
+  // A thread's owner answers their own agent's request (F3; refused while Flexible isn't available). Starting a thread
+  // is no local-owner act yet: its terms card for a laptop owner comes with the enable gates.
+  "agents.live.thread.answer": "answer-question",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
   "task.act.cancel": "stop-run",
@@ -418,6 +421,11 @@ get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unsco
 // A run now; a Flexible thread on the same road, refused while Flexible isn't available.
 get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/run/1" });
 get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
+// Flexible threads (F3), all refused while Flexible isn't available: the person's own threads as the work list shows them,
+// one answer to a thread agent's request (the thread's owner, the card digest they were shown), and a new thread.
+get("pages", "agents.live.threads", "/agents/live/threads", { limited: "unscoped", callers: ["cookie"], ...free });
+post("pages", "agents.live.thread.answer", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}\\/answer$", { limited: "unscoped", callers: ["cookie"], project: "none", sample: `/agents/live/thread/${"a".repeat(32)}/answer` });
+post("pages", "agents.live.thread.start", "/agents/live/thread", { limited: "unscoped", callers: ["cookie"], project: "none", ...approver("An approver starts threads.") });
 // Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
 get("pages", "agents.terminals", "/agents/terminals", TERM);
 // Fleet is Settings → Computers now (settings plan F2) and System is part of Agents: GET aliases to

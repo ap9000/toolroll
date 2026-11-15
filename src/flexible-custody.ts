@@ -351,26 +351,34 @@ function macTable(): ProcRow[] | null {
   return rows;
 }
 
-function linuxRow(name: string): ProcRow | null | "gone" {
+/** The /proc reads a Linux table makes (the real ones by default; a test's stand-in). */
+export type ProcFs = { readdir: (path: string) => string[]; readFile: (path: string) => string; statUid: (path: string) => number };
+const REAL_PROC_FS: ProcFs = { readdir: path => readdirSync(path), readFile: path => readFileSync(path, "utf8"), statUid: path => statSync(path).uid };
+/** Only these say a process is gone; any other error (EACCES, EIO, …) says nothing about it: unknown. */
+const goneCode = (error: unknown): boolean => { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ESRCH"; };
+
+function linuxRow(name: string, fs: ProcFs = REAL_PROC_FS): ProcRow | null | "gone" {
   let stat: string;
-  try { stat = readFileSync(`/proc/${name}/stat`, "utf8"); }
-  catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ESRCH" ? "gone" : null; }
+  try { stat = fs.readFile(`/proc/${name}/stat`); }
+  catch (error) { return goneCode(error) ? "gone" : null; }
   const close = stat.lastIndexOf(")");
   const fields = stat.slice(close + 2).trim().split(/\s+/);
   // After "(comm) ": state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt utime stime cutime cstime
   // priority nice num_threads itrealvalue starttime …
   if (close < 0 || fields.length < 20) return null;
   let uid: number;
-  try { uid = statSync(`/proc/${name}`).uid; } catch { return "gone"; }
+  try { uid = fs.statUid(`/proc/${name}`); } catch (error) { return goneCode(error) ? "gone" : null; }
   return { pid: Number(name), ppid: Number(fields[1]), pgid: Number(fields[2]), uid, zombie: fields[0] === "Z" || fields[0] === "X", start: /^\d+$/.test(fields[19]!) ? `t${fields[19]}` : null };
 }
 
-function linuxTable(): ProcRow[] | null {
+/** Every process from /proc, or null when it can't be read whole (a process that can't be read, for any reason but its
+ * being gone, makes the whole table unreadable). */
+export function linuxTable(fs: ProcFs = REAL_PROC_FS): ProcRow[] | null {
   let names: string[];
-  try { names = readdirSync("/proc").filter(name => /^\d+$/.test(name)); } catch { return null; }
+  try { names = fs.readdir("/proc").filter(name => /^\d+$/.test(name)); } catch { return null; }
   const rows: ProcRow[] = [];
   for (const name of names) {
-    const row = linuxRow(name);
+    const row = linuxRow(name, fs);
     if (row === "gone") continue;
     if (row === null) return null;
     rows.push(row);

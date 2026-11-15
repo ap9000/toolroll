@@ -57,6 +57,7 @@
     "agents.live.read": {"kind":"data","path":"/agents/live/1","what":"one agent's live output (JSON)"},
     "agents.live.run": {"kind":"data","path":"/agents/live/run/1","what":"one run's LiveSession window (JSON, the engine API)"},
     "agents.live.thread": {"kind":"data","path":"/agents/live/thread/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","what":"a Flexible thread's LiveSession window (JSON; refused while Flexible isn't available)"},
+    "agents.live.threads": {"kind":"data","path":"/agents/live/threads","what":"the person's own Flexible threads (JSON; refused while Flexible isn't available)"},
     "agents.terminals": {"kind":"alias","path":"/agents/terminals","to":"/term"},
     "fleet": {"kind":"alias","path":"/fleet","to":"/settings/computers"},
     "tasks.new": {"kind":"page","path":"/tasks/new"},

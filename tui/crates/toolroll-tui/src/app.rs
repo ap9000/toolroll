@@ -8,8 +8,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use toolroll_api::{
-    ActOutcome, AgentsRead, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, NeedRow, Question,
-    ResultDiff, ResultDiffContext, ResultDiffFile, StepCards, Window, WorkRow, WorkRows,
+    ActOutcome, AgentsRead, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, LiveThreads,
+    NeedRow, Question, ResultDiff, ResultDiffContext, ResultDiffFile, StepCards, Window, WorkRow,
+    WorkRows,
 };
 
 /// How the screen ended (the launcher reads it: tui-launch.ts TUI_EXIT).
@@ -80,8 +81,10 @@ pub struct Item {
     pub age: String,
     pub project: Option<String>,
     pub need: Option<NeedRow>,
-    /// A task row (false: an ask that is no task, opened in the browser).
+    /// A task row (false: an ask that is no task, opened in the browser, or a thread).
     pub is_task: bool,
+    /// A Flexible thread (thread.rs): one more live session, its panel the thread's own.
+    pub thread: bool,
 }
 
 impl Item {
@@ -150,6 +153,10 @@ pub enum Mode {
     NewTask(String),
     ConfirmStop(i64),
     ConfirmAnswer(AnswerPin),
+    /// A thread's question and the answer picked, pinned (thread.rs): Enter posts exactly them.
+    ConfirmThread(crate::thread::ThreadPin),
+    /// A new thread's first message (refused by the engine while Flexible isn't available).
+    NewThread(String),
     /// A small task's exact terms: Enter builds (POST /tasks/fast), p files it to plan first, Esc files nothing.
     /// Build is a person's yes to exactly these terms, so every term is shown whole (wrapped, scrolled with j/k), and
     /// Enter builds only once the view has drawn the end of them (`seen_end`, set by view.rs, never by a key). The
@@ -232,6 +239,14 @@ pub enum Effect {
     },
     FetchDiff(DiffAsk),
     FetchDiffFile(FileAsk),
+    /// The person's Flexible threads (GET /agents/live/threads).
+    FetchThreads,
+    /// One window of a thread's live session from `cursor`, with its facts unless they are still `known`.
+    FetchThread {
+        thread: String,
+        cursor: Option<String>,
+        known: Option<String>,
+    },
     FetchContext(ContextAsk),
     Act {
         path: String,
@@ -314,6 +329,8 @@ pub enum Msg {
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
+    Threads(Result<LiveThreads, ApiError>),
+    Thread(String, Result<LiveSessionWindow, ApiError>),
     Context(ContextAsk, Result<ResultDiffContext, ApiError>),
     /// A batch's outcome: the last act's answer (or the first refusal), and how many acts were kept before it.
     Sent {
@@ -411,6 +428,12 @@ pub struct App {
     pub facts: crate::settings::RowFacts,
     /// The question, the chosen answer and its consequence were all drawn whole (view.rs): Enter may send it.
     pub answer_shown: bool,
+    /// The person's Flexible threads and the one watched (thread.rs).
+    pub threads: crate::thread::Threads,
+    /// A thread's question and the answer picked were drawn to their end (thread.rs): Enter may send it.
+    pub thread_shown: bool,
+    /// How far the thread's answer dialog is read on (j/k).
+    pub thread_scroll: usize,
     /// The title of the task New task is filing (kept for Build's "plan it first").
     pub filing: String,
     pub fetching_live: bool,
@@ -476,6 +499,9 @@ impl App {
             facts: crate::settings::RowFacts::default(),
             filing: String::new(),
             answer_shown: false,
+            threads: crate::thread::Threads::default(),
+            thread_shown: false,
+            thread_scroll: 0,
             fetching_live: false,
             fetching_work: false,
             agents: None,
@@ -624,6 +650,8 @@ impl App {
                 self.failed(e)
             }
             Msg::DiffFile(ask, Ok(file)) => self.got_diff_file(ask, file),
+            Msg::Threads(read) => self.got_threads(read),
+            Msg::Thread(id, read) => self.got_thread(id, read),
             Msg::Context(ask, Ok(ctx)) => self.got_context(ask, ctx),
             Msg::Context(ask, Err(e)) => {
                 if self.context_wanted.as_ref() != Some(&ask) && !fatal(&e) {
@@ -641,10 +669,12 @@ impl App {
             } => self.sent(task, run, text, kept, result),
             Msg::Acted(Ok(ActOutcome::Done(words))) => {
                 self.say(Tone::Said, words);
+                self.sent_thread();
                 self.refresh()
             }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
                 self.say(Tone::Refused, words);
+                self.sent_thread();
                 self.refresh()
             }
             Msg::Acted(Ok(ActOutcome::Terms {
@@ -664,7 +694,10 @@ impl App {
                 };
                 vec![]
             }
-            Msg::Acted(Err(e)) => self.failed(e),
+            Msg::Acted(Err(e)) => {
+                self.sent_thread();
+                self.failed(e)
+            }
             Msg::Signal(signal) => self.signal(signal),
             Msg::Said(words) => {
                 self.say(Tone::Said, words);
@@ -698,6 +731,7 @@ impl App {
     /// Re-read what's on screen after an act.
     fn refresh(&mut self) -> Vec<Effect> {
         let mut fx = self.fetch_work();
+        fx.extend(self.poll_thread());
         if let Some(id) = self
             .selected_item()
             .filter(|i| i.is_task)
@@ -726,6 +760,8 @@ impl App {
         self.project_name = clean(&rows.project_name);
         self.needs_count = rows.needs_count;
         self.items = items_of(&rows);
+        self.items.extend(self.threads.items());
+        sort_sections(&mut self.items);
         self.check_pins();
         let mut fx = vec![];
         // Each change once (a task starts waiting on you, finishes or fails), in our own words (notify.rs).
@@ -758,7 +794,179 @@ impl App {
         }
         // No tasks yet: the first run's lines about this computer's agents (who the first task goes to, or how to sign in).
         fx.extend(self.fetch_agents());
+        // The person's Flexible threads, read with the work (never again once the console said they aren't available).
+        if !self.threads.off && !self.threads.fetching {
+            self.threads.fetching = true;
+            fx.push(Effect::FetchThreads);
+        }
         fx
+    }
+
+    /// The threads list: merged into the left column (the selection kept); a refusal means Flexible is off here, said
+    /// by nothing (threads are simply not listed) and never asked again.
+    fn got_threads(&mut self, read: Result<LiveThreads, ApiError>) -> Vec<Effect> {
+        self.threads.fetching = false;
+        match read {
+            Ok(list) => self.threads.listed(list),
+            Err(e) if fatal(&e) => return self.failed(e),
+            Err(_) => {
+                self.threads.off = true;
+                self.threads.rows.clear();
+            }
+        }
+        let before = self.selected_id();
+        self.items.retain(|i| !i.thread);
+        self.items.extend(self.threads.items());
+        sort_sections(&mut self.items);
+        self.selected = before
+            .as_ref()
+            .and_then(|id| self.items.iter().position(|i| &i.id == id))
+            .unwrap_or(self.selected)
+            .min(self.items.len().saturating_sub(1));
+        if self.selected_id() != before {
+            return self.selection_changed();
+        }
+        self.poll_thread()
+    }
+
+    /// The selected thread being watched, if it is one.
+    fn thread_selected(&self) -> Option<String> {
+        self.selected_item()
+            .filter(|i| i.thread)
+            .map(|i| i.id.clone())
+    }
+
+    /// Read on in the watched thread (one read at a time), now: a selection, a refresh, an act's answer.
+    fn poll_thread(&mut self) -> Vec<Effect> {
+        let Some(id) = self.thread_selected() else {
+            return vec![];
+        };
+        let view = self
+            .threads
+            .view
+            .get_or_insert_with(|| crate::thread::ThreadView {
+                id: id.clone(),
+                ..Default::default()
+            });
+        if view.id != id || view.fetching {
+            return vec![];
+        }
+        view.fetching = true;
+        view.due = 0;
+        vec![Effect::FetchThread {
+            thread: id,
+            cursor: view.transcript.cursor_main.clone(),
+            known: view.facts.as_ref().map(|f| f.version.clone()),
+        }]
+    }
+
+    /// The tick's read of the watched thread: every tick (250 ms) while a question waits on you or the thread is
+    /// changing, backing off to every eighth (2 s) while nothing changes.
+    fn tick_thread(&mut self) -> Vec<Effect> {
+        let Some(view) = self.threads.view.as_mut() else {
+            return self.poll_thread();
+        };
+        if view.due > 0 {
+            view.due -= 1;
+            return vec![];
+        }
+        self.poll_thread()
+    }
+
+    /// A thread's window: its records appended (a restart clears them first), its facts replaced when they changed (a
+    /// window without them says they didn't); a dialog whose question no longer stands closes. The next tick's read is
+    /// sooner while something changes or a question waits, later while nothing does.
+    fn got_thread(&mut self, id: String, read: Result<LiveSessionWindow, ApiError>) -> Vec<Effect> {
+        let Some(view) = self.threads.view.as_mut().filter(|v| v.id == id) else {
+            return vec![];
+        };
+        view.fetching = false;
+        let window = match read {
+            Ok(w) => w,
+            Err(e) => return self.failed(e),
+        };
+        let mut changed = view.transcript.live != window.live;
+        view.transcript.live = window.live;
+        if let Some(facts) = window.thread {
+            if view.facts.as_ref().map(|f| &f.version) != Some(&facts.version) {
+                view.facts = Some(facts);
+                changed = true;
+            }
+        }
+        let mut more = None;
+        if let Window::Read(read) = window.window {
+            if read.restarted {
+                view.transcript.main.clear();
+            }
+            if read.restarted || !read.records.is_empty() {
+                view.transcript.main.extend(read.records);
+                if view.transcript.main.len() > RECORDS_KEPT {
+                    let drop = view.transcript.main.len() - RECORDS_KEPT;
+                    view.transcript.main.drain(..drop);
+                }
+                view.transcript.version += 1;
+                changed = true;
+            }
+            view.transcript.cursor_main = Some(read.cursor.clone());
+            if read.more {
+                more = Some(read.cursor);
+            }
+        }
+        let waiting = view
+            .facts
+            .as_ref()
+            .and_then(crate::thread::shown_question)
+            .is_some();
+        view.quiet = if changed || waiting {
+            0
+        } else {
+            (view.quiet + 1).min(3)
+        };
+        view.due = (1u32 << view.quiet) - 1;
+        crate::thread::check_pin(self);
+        match more {
+            Some(cursor) => {
+                let view = self.threads.view.as_mut().unwrap();
+                view.fetching = true;
+                vec![Effect::FetchThread {
+                    thread: id,
+                    cursor: Some(cursor),
+                    known: view.facts.as_ref().map(|f| f.version.clone()),
+                }]
+            }
+            None => vec![],
+        }
+    }
+
+    /// An act came back: the answer it carried (if any) is no longer on its way here; the read says where it stands.
+    fn sent_thread(&mut self) {
+        if let Some(view) = self.threads.view.as_mut() {
+            view.sending = None;
+        }
+    }
+
+    /// Enter on a thread's answer dialog: posted only while the pinned question still stands and was drawn whole.
+    fn answer_thread(&mut self, pin: crate::thread::ThreadPin) -> Vec<Effect> {
+        if !crate::thread::stands(self.threads.view.as_ref(), &pin) {
+            self.say(Tone::Refused, crate::thread::THREAD_QUESTION_CHANGED);
+            return vec![];
+        }
+        if !self.thread_shown {
+            self.say(Tone::Refused, crate::thread::READ_TO_THE_END);
+            return vec![];
+        }
+        if let Some(view) = self.threads.view.as_mut() {
+            view.sending = Some(pin.request.clone());
+        }
+        let fields = crate::thread::answer_fields(&pin);
+        self.act(
+            format!(
+                "/agents/live/thread/{}/answer",
+                toolroll_api::client::encode(&pin.thread)
+            ),
+            fields,
+            format!("Sent: {}.", clean(&pin.label)),
+        )
     }
 
     fn got_live(
@@ -898,7 +1106,9 @@ impl App {
                 return fx;
             }
         }
-        if self.tab == Tab::Live || self.ticks.is_multiple_of(4) {
+        if self.thread_selected().is_some() {
+            fx = self.tick_thread();
+        } else if self.tab == Tab::Live || self.ticks.is_multiple_of(4) {
             fx = self.poll_live(self.ticks.is_multiple_of(8));
         }
         fx.extend(gathered);
@@ -938,9 +1148,13 @@ impl App {
         ) {
             self.say(Tone::Refused, RESULT_CHANGED);
         }
+        if matches!(self.mode, Mode::ConfirmThread(_)) {
+            self.say(Tone::Refused, crate::thread::THREAD_QUESTION_CHANGED);
+        }
         if matches!(
             self.mode,
             Mode::ConfirmAnswer(_)
+                | Mode::ConfirmThread(_)
                 | Mode::ConfirmAccept(_)
                 | Mode::ConfirmStop(_)
                 | Mode::Note(..)
@@ -949,6 +1163,12 @@ impl App {
                 | Mode::Steer(_)
         ) {
             self.mode = Mode::Normal;
+        }
+        self.threads.view = None;
+        if self.thread_selected().is_some() {
+            let mut fx = self.poll_thread();
+            fx.push(Effect::Watch(vec![]));
+            return fx;
         }
         let Some(id) = self
             .selected_item()
@@ -1238,6 +1458,34 @@ impl App {
                     }
                 }
             }
+            Mode::ConfirmThread(pin) => {
+                // Reading on through what would be allowed: the view says when its end has been drawn.
+                let by: i64 = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => 1,
+                    KeyCode::Char(' ') | KeyCode::PageDown => 10,
+                    KeyCode::Char('k') | KeyCode::Up => -1,
+                    KeyCode::PageUp => -10,
+                    _ => 0,
+                };
+                if by != 0 {
+                    self.thread_scroll = (self.thread_scroll as i64 + by).max(0) as usize;
+                    return vec![];
+                }
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.answer_thread(pin),
+                    _ => {
+                        self.say(Tone::Said, "Not answered.");
+                        vec![]
+                    }
+                }
+            }
+            Mode::NewThread(text) => self.typing(
+                key,
+                text,
+                |app, text| app.mode = Mode::NewThread(text),
+                |app, text| app.new_thread(text),
+            ),
             Mode::Steer(text) => self.typing(
                 key,
                 text,
@@ -1311,13 +1559,18 @@ impl App {
             }
         };
         match &mut self.mode {
-            Mode::Steer(t) | Mode::NewTask(t) | Mode::Note(_, t) | Mode::SendBack(_, t) => grow(t),
+            Mode::Steer(t)
+            | Mode::NewTask(t)
+            | Mode::NewThread(t)
+            | Mode::Note(_, t)
+            | Mode::SendBack(_, t) => grow(t),
             _ => {}
         }
     }
 
     fn normal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        if self.tab == Tab::Diff {
+        // The Diff tab's keys are a task result's; a thread's panel has no Diff (its own keys come below).
+        if self.tab == Tab::Diff && self.thread_selected().is_none() {
             if let Some(fx) = self.diff_key(key) {
                 return fx;
             }
@@ -1366,6 +1619,27 @@ impl App {
                     vec![]
                 }
             },
+            KeyCode::Char(c @ '1'..='9') if item.as_ref().is_some_and(|i| i.thread) => {
+                let n = (c as u8 - b'1') as usize;
+                let picked = match self.threads.view.as_ref() {
+                    Some(view) => crate::thread::pin(view, n),
+                    None => Err("Reading this thread…".to_string()),
+                };
+                match picked {
+                    Ok(pin) => {
+                        self.status = None;
+                        self.mode = Mode::ConfirmThread(pin);
+                        self.thread_shown = false;
+                        self.thread_scroll = 0;
+                    }
+                    Err(why) => self.say(Tone::Refused, why),
+                }
+                vec![]
+            }
+            KeyCode::Char('T') => {
+                self.mode = Mode::NewThread(String::new());
+                vec![]
+            }
             KeyCode::Char(c @ '1'..='9') => {
                 let n = (c as u8 - b'1') as usize;
                 match item.as_ref().and_then(|i| i.question()) {
@@ -1802,6 +2076,7 @@ impl App {
             self.mode = Mode::Normal;
             self.say(Tone::Refused, words);
         }
+        crate::thread::check_pin(self);
     }
 
     fn note(&mut self, kind: NoteKind, text: String) -> Vec<Effect> {
@@ -2072,6 +2347,24 @@ impl App {
         )
     }
 
+    /// A new thread with its first message, in this terminal's project. The engine refuses it while Flexible isn't
+    /// available, and says so in its own words.
+    fn new_thread(&mut self, text: String) -> Vec<Effect> {
+        let message = text.trim().to_string();
+        if message.is_empty() {
+            return vec![];
+        }
+        let mut fields = vec![("message", message)];
+        if let Some(project) = &self.project {
+            fields.push(("repo", project.clone()));
+        }
+        self.act(
+            "/agents/live/thread".into(),
+            fields,
+            "The thread started.".into(),
+        )
+    }
+
     // ---- mouse -----------------------------------------------------------------------------------------------------
 
     pub fn mouse(&mut self, ev: MouseEvent) -> Vec<Effect> {
@@ -2176,6 +2469,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         project: r.project.as_deref().map(clean),
         need: r.need.clone(),
         is_task: true,
+        thread: false,
     };
     for r in &rows.rows {
         let waits = r.need.is_some()
@@ -2219,6 +2513,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 project: n.project.as_deref().map(clean),
                 need: Some(n.clone()),
                 is_task: false,
+                thread: false,
             });
         }
     }
@@ -2228,6 +2523,17 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
 /// Errors that end the screen whichever read they came from (a stale read's other errors are dropped).
 fn fatal(e: &ApiError) -> bool {
     matches!(e, ApiError::SessionEnded | ApiError::Contract(_))
+}
+
+/// The left column's order by section (Needs you, Working, Done today), each section's rows in the order given: a
+/// thread joins its section after the tasks there.
+fn sort_sections(items: &mut [Item]) {
+    let rank = |s: Section| match s {
+        Section::NeedsYou => 0,
+        Section::Working => 1,
+        Section::DoneToday => 2,
+    };
+    items.sort_by_key(|i| rank(i.section));
 }
 
 /// Said when a batch is over the engine's note limit.

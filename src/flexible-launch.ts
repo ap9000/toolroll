@@ -245,7 +245,7 @@ export function revokeLaunchGrants(store: Store, launch: string, clock: Flexible
 // ---- settling a launch ---------------------------------------------------------------------------------------------------
 
 export type SettleResult =
-  | { ok: true; launch: string | null; how: "nothing-running" | "never-started" | "boot-changed" | "none-left" | "best-effort"; interrupted: number }
+  | { ok: true; launch: string | null; how: "nothing-running" | "never-started" | "boot-changed" | "none-left" | "best-effort" | "replaced"; interrupted: number }
   | { ok: false; launch: string; survivors: number[]; blockers: CustodyBlocker[]; why: string };
 
 /**
@@ -258,10 +258,14 @@ export async function settleLaunch(store: Store, input: { thread: string; folder
   /** A turn the caller is about to start on a fresh launch: left as it is when the old launch's turns end. */
   keepTurn?: string;
   /** The caller proved the launch's holder process is gone (its proxy and relay handles died with it). */
-  holderGone?: boolean }): Promise<SettleResult> {
+  holderGone?: boolean;
+  /** The launch (and its holder) the caller means: read before the lock, rechecked here under it. When the thread's
+   * unsettled launch is another one now (a replacement started meanwhile), nothing is revoked or signalled. */
+  expect?: { launch: string; holder: string } }): Promise<SettleResult> {
   const clock = input.clock ?? (() => new Date());
   const launch = unsettledLaunch(store, input.thread);
   if (launch === null) return { ok: true, launch: null, how: "nothing-running", interrupted: 0 };
+  if (input.expect !== undefined && (launch.id !== input.expect.launch || launch.holder !== input.expect.holder)) return { ok: true, launch: null, how: "replaced", interrupted: 0 };
   const io = input.io ?? defaultCustodyIO();
   if (launch.state === "spawning" && launch.leaderPid === null) {
     // Only another holder's launch can be here mid-spawn; this process's own spawns finish under the lock it holds.

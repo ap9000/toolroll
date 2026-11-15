@@ -694,7 +694,9 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
  * cleared and its running turn interrupted. When the exit can't be verified, the launch stays unresolved: no new turn,
  * relaunch or removal until a later stop proves it.
  */
-export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO; keepTurn?: string; holderGone?: boolean }): Promise<SettleResult | FlexibleThreadRefusal> {
+export async function stopFlexibleThreadAgent(store: Store, input: { id: string; reason: string; clock?: FlexibleClock; io?: CustodyIO; keepTurn?: string; holderGone?: boolean;
+  /** Only this launch of this holder (rechecked under the thread's lock; another one there is left alone). */
+  expect?: { launch: string; holder: string } }): Promise<SettleResult | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(input.id)) return refuse("thread-unknown");
   return withThreadLock(input.id, async () => {
@@ -703,7 +705,7 @@ export async function stopFlexibleThreadAgent(store: Store, input: { id: string;
     const thread = flexibleThread(store, input.id);
     if (thread === null) return refuse("thread-unknown");
     return settleLaunch(store, { thread: thread.id, folder: flexibleThreadPaths(state, thread.id).folder, reason: input.reason, stop: true, ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }),
-      ...(input.keepTurn === undefined ? {} : { keepTurn: input.keepTurn }), ...(input.holderGone === true ? { holderGone: true } : {}) });
+      ...(input.keepTurn === undefined ? {} : { keepTurn: input.keepTurn }), ...(input.holderGone === true ? { holderGone: true } : {}), ...(input.expect === undefined ? {} : { expect: input.expect }) });
   });
 }
 

@@ -13,6 +13,8 @@ const DIR = new URL("../../test/fixtures/engine-api/", import.meta.url);
 const FIXTURES: Record<string, EngineResponseName> = {
   "live-session-window.json": "liveSessionWindow",
   "live-session-window-sub-missing.json": "liveSessionWindow",
+  "live-session-window-thread.json": "liveSessionWindow",
+  "live-threads.json": "liveThreads",
   "work-rows.json": "workRows",
   "step-cards-just-code.json": "stepCards",
   "step-cards-plan-first.json": "stepCards",

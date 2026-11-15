@@ -95,7 +95,7 @@ const exited = (id: string) => store.handle.prepare("UPDATE flexible_thread_laun
 let refs = 0;
 function ask(over: Partial<FlexibleRequestInput> = {}) {
   const made = recordFlexibleRequest(store, catalog, { thread: T1, turn, connection: L1, holder: "h1", requestRef: `r-${++refs}`, kind: "permission",
-    card: { title: "Allow this command?", detail: "npm test" }, clock: () => NOW, ...over });
+    card: { title: "Allow this command?", detail: "npm test", tool: "Bash", input: "c".repeat(64), complete: true }, clock: () => NOW, ...over });
   if (!made.ok) throw new Error(`${made.reason}: ${made.message}`);
   return made;
 }
@@ -336,11 +336,30 @@ describe("each binding, at the decision and at the write", () => {
   });
 
   test("a request is recorded only while its turn runs on that very launch, held by that holder", () => {
-    const base = { thread: T1, turn, connection: L1, holder: "h1", requestRef: "x", kind: "permission" as const, card: { title: "Allow?" }, clock: () => NOW };
+    const base = { thread: T1, turn, connection: L1, holder: "h1", requestRef: "x", kind: "permission" as const, card: { title: "Allow?", tool: "Bash", input: "c".repeat(64), complete: true }, clock: () => NOW };
     expect(recordFlexibleRequest(store, catalog, { ...base, holder: "h2" })).toMatchObject({ ok: false, reason: "turn-changed" });
     expect(recordFlexibleRequest(store, catalog, { ...base, connection: L2 })).toMatchObject({ ok: false, reason: "connection-changed" });
     expect(recordFlexibleRequest(store, catalog, { ...base, kind: "question" })).toMatchObject({ ok: false, reason: "invalid-request" });
     expect(raw.prepare("SELECT COUNT(*) AS n FROM thread_request").get()!["n"]).toBe(0);
+  });
+});
+
+describe("an allow covers only a request shown whole (F3, Codex round 1)", () => {
+  test("decide refuses an accept on a card that says it isn't whole, or doesn't say it is; a decline still goes", () => {
+    for (const complete of [false, undefined]) {
+      const asked = ask({ card: { title: "Allow this command?", detail: "echo 0 …", tool: "Bash", input: "c".repeat(64), ...(complete === undefined ? {} : { complete }) } });
+      expect(decideFlexibleAnswer(store, catalog, { request: asked.request, token: asked.token, shownDigest: asked.requestDigest, by: pat(), decision: "accept", clock: () => NOW }))
+        .toMatchObject({ ok: false, reason: "scope-unshown" });
+      expect(decideFlexibleAnswer(store, catalog, { request: asked.request, token: asked.token, shownDigest: asked.requestDigest, by: pat(), decision: "decline", clock: () => NOW }))
+        .toMatchObject({ ok: true, state: "decided" });
+    }
+  });
+
+  test("a permission card must name its tool and its whole input's digest", () => {
+    const base = { thread: T1, turn, connection: L1, holder: "h1", requestRef: "s", kind: "permission" as const, clock: () => NOW };
+    for (const card of [{ title: "Allow?" }, { title: "Allow?", tool: "Bash" }, { title: "Allow?", input: "c".repeat(64) }, { title: "Allow?", tool: "Bash", input: "short" }]) {
+      expect(recordFlexibleRequest(store, catalog, { ...base, card }), JSON.stringify(card)).toMatchObject({ ok: false, reason: "invalid-request" });
+    }
   });
 });
 
