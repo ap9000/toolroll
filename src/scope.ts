@@ -3,6 +3,7 @@ export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contract
 import { cardShowsScope, cardTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
 import { sessionStandsIn } from "./install-mode.js";
+import { passwordlessOn } from "./passwordless.js";
 import { routeChangeProblem } from "./route-change-check.js";
 import { issueImported } from "./task-source.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
@@ -1383,7 +1384,10 @@ export function proveAccountNow(store: Store, by: string, token: string, options
   if (activeRemote() !== null) return { ok: true, method: "remote-token", at: now };
   if (currentActor()?.lead === true && parseLeadToken(token) !== null) return { ok: true, method: "lead-token", at: now };
   const remembered = rememberedLogin.getStore()?.login;
-  if (remembered != null && remembered.name === by && remembered.token === token && sessionStandsIn(store)) return { ok: true, method: "cli-login", at: now };
+  // The CLI's remembered login is the password itself: only Passwordless turns it into the weaker "cli-login" (the
+  // installation's own choice that signing in is enough). A solo install leaves it a password typed for this command,
+  // so a credential act the remembered login answered before (runner register, after `up`) still answers.
+  if (remembered != null && remembered.name === by && remembered.token === token && passwordlessOn(store)) return { ok: true, method: "cli-login", at: now };
   if (facts != null && facts.actor === by) facts.stamp(now);
   return { ok: true, method: "password-now", at: now };
 }

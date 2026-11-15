@@ -20,7 +20,7 @@
  *
  * Fail closed: anything unreadable is team.
  */
-import { passwordlessSetting } from "./passwordless.js";
+import { PASSWORDLESS_ACTION } from "./passwordless.js";
 import type { Store } from "./store.js";
 
 export type InstallMode = "solo" | "team";
@@ -154,9 +154,21 @@ export function soloNow(store: Pick<Store, "handle">): boolean {
  * proveCredential). Read at the act, inside its transaction.
  */
 export function sessionStandsIn(store: Store): boolean {
-  const setting = passwordlessSetting(store);
-  if (setting.on) return true;
-  if (setting.at !== null) return false;
+  // Read on every signed-in request: the newest Passwordless entry and the newest mode declaration in one statement, so
+  // a team install (no solo declaration) costs what Passwordless alone did. Only a declared install derives its facts.
+  let rows: Record<string, unknown>[];
+  try {
+    rows = store.handle.prepare(`SELECT 'passwordless' AS kind, outcome FROM (SELECT outcome FROM action_ledger WHERE repo IS NULL AND task_id IS NULL AND action = ? ORDER BY id DESC LIMIT 1)
+      UNION ALL SELECT 'mode' AS kind, outcome FROM (SELECT outcome FROM action_ledger WHERE action = ? AND source = 'access' AND repo IS NULL AND task_id IS NULL AND run_id IS NULL ORDER BY id DESC LIMIT 1)`)
+      .all(PASSWORDLESS_ACTION, INSTALL_MODE_ACTION);
+  } catch {
+    return false;
+  }
+  const passwordless = rows.find(row => row["kind"] === "passwordless")?.["outcome"];
+  if (passwordless === "on") return true;
+  // Any other entry is an explicit off (or one that can't be read): a password, solo or not.
+  if (passwordless !== undefined) return false;
+  if (rows.find(row => row["kind"] === "mode")?.["outcome"] !== "solo") return false;
   return soloNow(store);
 }
 
