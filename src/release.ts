@@ -102,6 +102,9 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   "install smoke · macos-latest": ".github/workflows/install-smoke.yml",
   // The wire budgets (test/perf/wire.wire.test.ts): bytes and queries per page, measured; never a release's question.
   "wire budgets": ".github/workflows/wire-budgets.yml",
+  // The terminal workbench's Rust checks (tui/): advisory until the workbench ships in the package.
+  "rust · ubuntu-latest": ".github/workflows/rust.yml",
+  "rust · macos-latest": ".github/workflows/rust.yml",
 };
 
 /**

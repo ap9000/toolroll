@@ -21,6 +21,8 @@ export type HandoffOptions = {
   env?: NodeJS.ProcessEnv;
   /** Its standard input, output and error (default: the launcher's own, for a terminal program). */
   stdio?: readonly [Stdio, Stdio, Stdio];
+  /** Also a pipe on descriptor 4 for the binary's asks to the launcher (tui-launch.ts): it carries no credential. */
+  control?: boolean;
 };
 
 /**
@@ -35,7 +37,7 @@ export function spawnWithLink(command: string, args: readonly string[], link: st
     throw new Error("the sign-in link goes only over the pipe, never in arguments or the environment");
   }
   const [stdin, stdout, stderr] = options.stdio ?? ["inherit", "inherit", "inherit"];
-  const child = spawn(command, [...args], { cwd: options.cwd, env, stdio: [stdin, stdout, stderr, "pipe"] });
+  const child = spawn(command, [...args], { cwd: options.cwd, env, stdio: options.control === true ? [stdin, stdout, stderr, "pipe", "pipe"] : [stdin, stdout, stderr, "pipe"] });
   const pipe = child.stdio[LINK_FD];
   if (pipe === null || pipe === undefined || !("write" in pipe)) { child.kill(); throw new Error("no pipe for the sign-in link"); }
   // A binary that exits before reading it: the write fails quietly (the link is single-use and expires anyway).

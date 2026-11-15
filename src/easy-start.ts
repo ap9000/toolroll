@@ -344,6 +344,8 @@ export function defaultEasyStartSeams(options: {
   cwd?: string;
   operate?: import("./operate.js").OperateOptions;
   admit: (repo: string) => Promise<number>;
+  /** --screen-reader: the classic screen. */
+  screenReader?: boolean;
 }): EasyStartSeams {
   const file = options.databaseFile;
   const cwd = options.cwd ?? process.cwd();
@@ -382,6 +384,25 @@ export function defaultEasyStartSeams(options: {
     openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
     openSignedIn: () => openLocalSignIn(file, options.build),
     openTui: async session => {
+      // The terminal workbench (tui-launch.ts), signed in over descriptor 3; else the classic screen, with one line why.
+      const { chooseTuiBinary, runTuiBinary } = await import("./tui-launch.js");
+      const { engineContractDigest } = await import("./contracts/engine-api.js");
+      const choice = chooseTuiBinary({ env: process.env, screenReader: options.screenReader === true, platform: process.platform, arch: process.arch, contract: engineContractDigest() });
+      let why: string | null = choice.ok ? null : choice.why;
+      if (choice.ok) {
+        const reader = openStoreReadOnly(file);
+        const link = reader === null ? { ok: false as const, message: "Toolroll's database can't be read" }
+          : await requestLocalLink(file, reader, options.build).finally(() => reader.close());
+        if (!link.ok) why = `the terminal workbench couldn't sign in (${link.message})`;
+        else {
+          const { checkoutTop } = await import("./teardown-git.js");
+          const end = await runTuiBinary({ binary: choice.binary, link: link.url, session, project: checkoutTop(cwd), cwd });
+          if (end !== "classic") return end;
+          // The workbench said why on its own way out.
+          why = null;
+        }
+      }
+      if (why !== null) options.write(`Opening the classic screen: ${why}.`);
       const { createTuiSource } = await import("./tui-source.js");
       const { runAsLocalOwner } = await import("./local-owner.js");
       const source = createTuiSource({ databaseFile: file, ...(options.operate === undefined ? {} : { operate: options.operate }) });

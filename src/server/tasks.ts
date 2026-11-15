@@ -110,7 +110,7 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime,type Screen } from "./chrome.js";
 import { retiredHandler, retiredRedirect, TASK_VIEW_REDIRECTS } from "./retired-routes.js";
-import { answersInPlace,chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
+import { answersInPlace,refusedInPlace,chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
 import { taskLinkOf } from "../task-link.js";
 import { putAwayPage,boardBody,boardWorkers,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
@@ -922,6 +922,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
       && (qualityMode === null || qualityMode === "default") && (permissionMode === null || permissionMode === "auto")) {
       const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who) }, now);
+      // The terminal workbench's New task asks for the same offer as data (http.ts refusedInPlace's terminal act).
+      if (fast.eligible && requestContext.getStore()?.terminalAct === true) return answerTermsInPlace(response, { preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) });
       if (fast.eligible) return sendScreen(response, 200, fastStartPage(chromeFor(project ?? null, "tasks"), { title: typed.trim(), repo, preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) }));
     }
     let chainProblem: string | null = null;
@@ -3032,6 +3034,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
    * filing's own words and status (the draft keeps the project revision it was written against). */
   function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null, text: string | null = null): Promise<void> | void {
     const { who, response, project } = ctx;
+    // A terminal client's act: the refusal's own words, in place (http.ts refusedInPlace).
+    if (problem !== null && refusedInPlace(response, status, problem)) return;
     const chainable = store
       .listTasksScoped(project, undefined, 100, null)
       .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
@@ -3385,3 +3389,13 @@ export function withContext(context: string | null, typed: string): string {
 
 /** The most "You said" quotes a result reads (one-workspace S5): the newest; the page folds all but a few. */
 export const YOU_SAID_CAP = 8;
+
+/**
+ * Build's offer to a terminal client (the terminal workbench's New task, solo-workbench plan T1): the exact terms a
+ * small task would be approved on, and the preview and digest its Build posts to POST /tasks/fast, as
+ * `{ outcome: "terms", preview, digest, terms: [{ label, words }] }` — the offer the page shows, as data. Nothing is
+ * filed or approved here; Build re-proves the preview and digest as it does for the page.
+ */
+export function answerTermsInPlace(response: ServerResponse, offer: { preview: string; digest: string; terms: ReadonlyArray<readonly [string, string]> }): void {
+  respond(response, 200, "application/json; charset=utf-8", JSON.stringify({ outcome: "terms", preview: offer.preview, digest: offer.digest, terms: offer.terms.map(([label, words]) => ({ label, words })) }));
+}

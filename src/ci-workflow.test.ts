@@ -115,6 +115,8 @@ const ADVISORY = ["youiyoux · UI drift", "journeys · app (scripted)", "journey
 const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-latest"];
 /** wire-budgets.yml: advisory too, on pull requests that touch the server, the browser app, the work index or the store. */
 const WIRE = ["wire budgets"];
+/** rust.yml: advisory too, on pull requests that touch the terminal workbench or its contract. */
+const RUST = ["rust · macos-latest", "rust · ubuntu-latest"];
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
@@ -243,7 +245,7 @@ describe("the CI workflows", () => {
     // The release verdict leaves out exactly this job, from exactly this workflow (release.ts ADVISORY_PR_CHECKS;
     // release.slow.test.ts proves a failed or pending run of it neither fails nor holds a release).
     expect(ADVISORY_PR_CHECKS[ui.name!]).toBe(".github/workflows/youiyoux.yml");
-    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY, ...INSTALL_SMOKE, ...WIRE].sort());
+    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY, ...INSTALL_SMOKE, ...WIRE, ...RUST].sort());
   });
 
   test("W7: the install smoke runs on Linux and macOS for a pull request that changes what gets packed or installed, by hand, never on a tag, and never holds or fails a release", () => {
@@ -1099,6 +1101,22 @@ globalThis.fetch = async (url, options) => {
     expect(proofProblem(w)).toBeNull();
     w.runs[0]!.path = `${CI}${suffix}`;
     expect(proofProblem(w)).not.toBeNull();
+  });
+});
+
+describe("the terminal workbench's Rust checks (.github/workflows/rust.yml)", () => {
+  test("they run fmt, clippy -D warnings and the tests on Linux and macOS for pull requests that touch tui/ or its contract, and never hold a release", () => {
+    const rust = workflow("rust.yml");
+    for (const paths of [["tui/crates/toolroll-tui/src/app.rs"], ["test/fixtures/engine-api/schemas.json"], ["src/contracts/engine-api.ts"], [".github/workflows/rust.yml"]]) {
+      expect(executed(pr(paths)).filter(name => RUST.includes(name)), paths[0]).toEqual(RUST);
+    }
+    for (const paths of [["src/release.ts"], ["docs/a.md"], ["package.json"]]) expect(names(pr(paths)).filter(name => RUST.includes(name)), paths[0]).toEqual([]);
+    const runs = runsOf(rust.jobs["rust"]!).join("\n");
+    for (const command of ["cargo fmt --all --check", "cargo clippy --locked --workspace --all-targets -- -D warnings", "cargo test --locked --workspace"]) expect(runs).toContain(command);
+    expect(RUST.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
+    for (const name of RUST) expect(ADVISORY_PR_CHECKS[name]).toBe(".github/workflows/rust.yml");
+    expect(rust.permissions).toEqual({ contents: "read" });
+    expect(readFileSync(join(folder, "rust.yml"), "utf8")).not.toMatch(/secrets\./);
   });
 });
 

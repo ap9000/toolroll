@@ -1,5 +1,5 @@
 {
-  "digest": "cd17d6d49d900ef5f14b3165c9e1d1a6c585db0b9faab551c3a8c7cd8fd65b85",
+  "digest": "18fcd2f3216a83fb815abed88ce8c25d2698c624d62624a82bf7d32adb8d7a7d",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1197,6 +1197,36 @@
             }
           ]
         },
+        "review": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "receipt": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "receipt",
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "room": {
           "type": "string"
         }
@@ -1208,6 +1238,7 @@
         "headline",
         "liveRun",
         "cards",
+        "review",
         "room"
       ],
       "additionalProperties": false
