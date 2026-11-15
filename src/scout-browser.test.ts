@@ -11,12 +11,12 @@ import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readReportImage, scoutBrowserLaunch, scoutProxyEnv } from "./scout.js";
 import { startScoutProxy, type ScoutProxy } from "./scout-net.js";
-import { linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn } from "./agent-fence.js";
+import { installDenied, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn } from "./agent-fence.js";
 import { SCOUT_BROWSER_ENV, scoutBrowserTool, startContractedBrowser, startScoutBrowser, type BrowserLaunch, type ScoutBrowserServer } from "./scout-browser.js";
 
 describe("a browser that can't start", () => {
@@ -113,7 +113,7 @@ describe.skipIf(why !== null)(`the scout's real browser${why === null ? "" : ` (
     // fence (the sandbox runtime's seccomp filter) refuses.
     const loader = pathToFileURL(resolve("node_modules/tsx/dist/loader.mjs")).href;
     let { file, args, env: added } = { file: process.execPath, args: ["--import", loader, client, server.url, secret], env: {} as Record<string, string> };
-    if (macosFenceAvailable() || linuxFenceAvailable()) ({ file, args, env: added } = sandboxedSpawn(file, args, [secret], NO_GRANTS));
+    if (macosFenceAvailable() || linuxFenceAvailable()) ({ file, args, env: added } = sandboxedSpawn(file, args, [secret], installDenied(NO_GRANTS, process.cwd(), homedir())));
     const env = { ...process.env, ...scoutProxyEnv(proxy.url, server.url), ...added };
     const output = await new Promise<string>((done, fail) => {
       const child = spawn(file, args, { env, stdio: ["ignore", "pipe", "pipe"] });

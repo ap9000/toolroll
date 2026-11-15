@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { claudeProjectFolder, NO_GRANTS, sandboxedSpawn, writeAllowlist, type FenceGrants } from "../../src/agent-fence.js";
-import { codexSandbox, git, GIT_ENV, lines, needs, osFence, repository, seatbelt, underCodex, underSandbox, underSandboxAsync, useScratch } from "./harness.js";
+import { asLaunched, codexSandbox, git, GIT_ENV, lines, needs, osFence, repository, seatbelt, underCodex, underSandbox, underSandboxAsync, useScratch } from "./harness.js";
 import { outsideTempDir } from "../short-temp.js";
 
 type World = { home: string; main: string; worktree: string; launch: string; cache: string; fence: string[]; grants: FenceGrants; transcript: string };
@@ -122,7 +122,7 @@ describe("attack: writing outside the workspace (macOS)", () => {
       await new Promise<void>((done, fail) => { mine.once("error", fail); mine.listen(own, done); });
       const run = (path: string) => `python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.connect('${path}'); print(s.recv(10).decode().strip())" 2>/dev/null || echo refused`;
       const result = await new Promise<{ stdout: string; stderr: string }>(done => {
-        const { file, args, env } = sandboxedSpawn("/bin/sh", ["-c", [run(socket), run(own)].join("\n")], w.fence, { ...w.grants, network: { mode: "allowlist", proxyPort: 1, brokerPorts: [], loopback: "proxy-only", socketRoots: [join(w.launch, "tmp")] } }, w.worktree);
+        const { file, args, env } = sandboxedSpawn("/bin/sh", ["-c", [run(socket), run(own)].join("\n")], w.fence, { ...asLaunched(w.grants, w.worktree), network: { mode: "allowlist", proxyPort: 1, brokerPorts: [], loopback: "proxy-only", socketRoots: [join(w.launch, "tmp")] } }, w.worktree);
         const child = spawn(file, args, { cwd: w.worktree, env: { ...process.env, ...env } });
         let stdout = "", stderr = "";
         child.stdout.on("data", chunk => { stdout += String(chunk); });

@@ -83,6 +83,8 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
   };
   const helper = (dir: string): string => { writeFileSync(join(dir, "apply-seccomp"), "#!/bin/sh\nexit 0\n"); chmodSync(join(dir, "apply-seccomp"), 0o755); return join(dir, "apply-seccomp"); };
   const terms = (cwd: string): SrtTerms => ({ readConfig: { denyOnly: [] }, writeConfig: { allowOnly: ["/", cwd], denyWithinAllow: [] }, allowMachLookup: [], network: { kind: "open" } });
+  /** Long enough for the kernel's coarse clock to move on, so a file made now has a later change time. */
+  const pause = (): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30); };
   const found = (verdict: ReturnType<typeof resolveLinuxSandboxTools>): LinuxSandboxTools => { if (!verdict.ok) throw new Error(verdict.why); return verdict.tools; };
 
   test("an untrusted bwrap earlier on PATH, or listed first, is never used: the launch gets root's by exact path", () => {
@@ -122,8 +124,10 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
     const seccomp = helper(system);
     const tools = found(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp }));
     expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp })).toBeNull();
-    // Another file in its place (same name, same owner, same mode): not the program that was checked.
+    // Another file in its place (same name, same owner, same mode): not the program that was checked, even where the
+    // system hands the freed inode straight to it (Linux does): its change time is the kernel's, not the old one.
     unlinkSync(join(system, "bwrap"));
+    pause();
     writeFileSync(join(system, "bwrap"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp })).toBe(`bwrap (${join(system, "bwrap")}) changed since it was checked`);
     const work = folder("work", SYSTEM);
@@ -244,6 +248,7 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
       // Gone from where it was: the path no longer resolves.
       expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp: path })).toMatch(/^seccomp .*isn't there/);
       // Another install at the same path: the same canonical path, another file.
+      pause();
       mkdirSync(join(install, "x64"), { recursive: true, mode: 0o755 });
       for (const dir of [install, join(install, "x64")]) chmodSync(dir, 0o755);
       helper(join(install, "x64"));

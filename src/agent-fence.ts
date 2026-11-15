@@ -1160,7 +1160,7 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   const found = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
   // Toolroll's own install, the sandbox runtime's package and the Node running them, never written by anything it
   // launches: rewriting the code that fences a build would switch the fence off.
-  const made = { ...found, readOnly: [...new Set([...found.readOnly, ...toolrollInstall(ctx.worktree, ctx.home ?? homedir(), ctx.binding?.main ?? null)])].sort() };
+  const made = installDenied(found, ctx.worktree, ctx.home ?? homedir(), ctx.binding?.main ?? null);
   const written = ctx.writes ?? null;
   const exact = ctx.exactFile ?? null;
   const grants: FenceGrants = {
@@ -1197,6 +1197,12 @@ export function sealedScratch(poolRoots: readonly (string | null)[], named: read
   return [...out].sort();
 }
 
+
+/** `grants` with Toolroll's own install (toolrollInstall) write-denied, as every launch fenceFor makes has it: the one
+ * place that adds them, so anything that builds a launch's grants another way adds them exactly the same. */
+export function installDenied(grants: FenceGrants, worktree: string | null, home: string, repository: string | null = null): FenceGrants {
+  return { ...grants, readOnly: [...new Set([...grants.readOnly, ...toolrollInstall(worktree, home, repository)])].sort() };
+}
 
 /**
  * Toolroll's own install as no launch may write it: this package's folder (its compiled code, the sandbox launch

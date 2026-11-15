@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, runFolders, sandboxedSpawn, srtTermsOf, taskBoundary, type FenceGrants } from "./agent-fence.js";
+import { agentFence, checkoutPool, codexPool, trustedWorktreeBinding, HARDENED_GIT_ARGS, checkoutGitEnv, claudeFenceSettings, codexFenceArgv, fenceGrants, fencedGitEnv, flattened, installDenied, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, runFolders, sandboxedSpawn, srtTermsOf, taskBoundary, type FenceGrants } from "./agent-fence.js";
 
 /** The spawn a fenced launch makes (the sandbox runtime's, agent-fence.ts sandboxedSpawn), for the macOS-only checks
  * here: on a Mac it needs no environment of its own. */
@@ -999,7 +999,8 @@ describe("another project's checkouts are out of reach", () => {
     const databaseFile = join(state, "orders.db");
     return {
       fence: agentFence({ databaseFile, worktree: active, home, boundary, binding, runFolders: folders }),
-      grants: fenceGrants({ databaseFile, worktree: active, boundary, runFolders: folders, linked: LINKED, binding, home, poolRoots: [pool, poolRootOf(active, main)] }),
+      // As fenceFor makes them: Toolroll's own install write-denied (installDenied).
+      grants: installDenied(fenceGrants({ databaseFile, worktree: active, boundary, runFolders: folders, linked: LINKED, binding, home, poolRoots: [pool, poolRootOf(active, main)] }), active, home, main),
     };
   };
   /** Made after the sandbox policy was built: a new project's worktree, which no launch-time listing could name. */

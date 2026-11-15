@@ -21,7 +21,7 @@
  *   discovery would take the new one. Use a root-owned install for write-anywhere builds.
  *
  * No system program may lie inside the launch's projects, worktrees or Toolroll's state. Discovery is cached; before each launch every path is canonicalized again and the whole check re-run, and its file must still be
- * the one discovered (device and inode): any change refuses that launch, and the next one discovers afresh.
+ * the one discovered (device, inode and change time): any change refuses that launch, and the next one discovers afresh.
  */
 import { accessSync, constants as fsConstants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -42,7 +42,8 @@ const SYSTEM_TOOLS = [
 type SystemKey = typeof SYSTEM_TOOLS[number]["key"];
 const KEYS = [...SYSTEM_TOOLS.map(tool => tool.key), "seccomp"] as const;
 
-/** One program: its canonical path and the file it was (device:inode) when it was checked. */
+/** One program: its canonical path and the file it was when it was checked (device:inode:ctime in ns; Linux hands a
+ * freed inode straight to the next new file, and only the kernel sets ctime, so a file put in its place differs). */
 export type SandboxTool = { real: string; id: string };
 /** Every program, and for `which` the root-owned folder the runtime's PATH lookup goes through. */
 export type LinuxSandboxTools = Record<SystemKey | "seccomp", SandboxTool> & { whichFolder: string };
@@ -101,8 +102,8 @@ type Checked = { ok: true; tool: SandboxTool } | { ok: false; why: string };
 function identify(real: string): Checked {
   try {
     accessSync(real, fsConstants.X_OK);
-    const file = statSync(real);
-    return { ok: true, tool: { real, id: `${file.dev}:${file.ino}` } };
+    const file = statSync(real, { bigint: true });
+    return { ok: true, tool: { real, id: `${file.dev}:${file.ino}:${file.ctimeNs}` } };
   } catch { return { ok: false, why: `${real} can't be run` }; }
 }
 
@@ -203,7 +204,7 @@ export function isLinuxSandboxTools(value: unknown): value is LinuxSandboxTools 
   if (!path(record["whichFolder"])) return false;
   return KEYS.every(key => {
     const tool = record[key] as Record<string, unknown> | null | undefined;
-    return tool !== null && typeof tool === "object" && path(tool["real"]) && typeof tool["id"] === "string" && /^\d+:\d+$/.test(tool["id"]);
+    return tool !== null && typeof tool === "object" && path(tool["real"]) && typeof tool["id"] === "string" && /^\d+:\d+:\d+$/.test(tool["id"]);
   });
 }
 
