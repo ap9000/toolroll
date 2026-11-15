@@ -28,13 +28,14 @@ import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,passwordSetNext,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
 import { joinDeadPage,joinFormPage,loginPage,passwordAlreadySetPage,passwordSetPage,reconnectPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage,type PasswordSetProblem } from "./render-people.js";
-import { enrollOwnerPassword, liveInviteTerms, localOwnerBinding } from "../store.js";
+import { enrollOwnerPassword, liveInviteTerms } from "../store.js";
 import { KEY_FILL_SCRIPT } from "./mutation-key.js";
 import { LOCAL_OWNER_LAPSED } from "../local-owner.js";
 import { withFormToken } from "./request-context.js";
 import { loginHelpOf } from "./login-help.js";
 import type { Store } from "../store.js";
 import { FULL_SESSION,SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
+import { admitLink, saveLinkSession, spendLink } from "./link-redemption.js";
 import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
 
 /** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
@@ -268,48 +269,24 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
   // the first visit whatever happens; the ledger notes the sign-in, never the link.
   async function signInLink(ctx: EdgeContext): Promise<void> {
     const { url, request, response } = ctx;
-    const code = url.pathname.slice(SIGN_IN_LINK_PATH.length);
-    const held = /^[A-Za-z0-9_-]{43}$/.test(code) ? signInLinks.get(linkKey(code)) : undefined;
-    if (held !== undefined) signInLinks.delete(linkKey(code));
+    // The one admission both link roads share (link-redemption.ts): spent now, then this computer, unexpired, an active
+    // approver allowed a password sign-in, and the session saved with its credential read again in one transaction.
+    const held = spendLink(runtime, url.pathname.slice(SIGN_IN_LINK_PATH.length));
     response.setHeader("Referrer-Policy", "no-referrer");
-    if (!fromThisComputer(request)) {
-      recordSignIn(held?.account ?? "unknown account", "sign-in refused", "one-time link", "opened from another device");
-      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "That sign-in link works only in a browser on the computer running Toolroll. Sign in with your password.", "/chat", ssoOffer()));
+    const admitted = admitLink(runtime, request, held, "browser");
+    if (!admitted.ok) {
+      const why = admitted.refusal.why;
+      if (why === "elsewhere") return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "That sign-in link works only in a browser on the computer running Toolroll. Sign in with your password.", "/chat", ssoOffer()));
+      if (why === "used") return page(response, 410, loginWith(store, fromThisComputer(ctx.request), html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
+      if (why === "provider") return page(response, 403, loginWith(store, fromThisComputer(ctx.request), `Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
+      return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "That account can't sign in here any more.", "/chat", ssoOffer()));
     }
-    if (held === undefined || held.expires < Date.now()) {
-      return page(response, 410, loginWith(store, fromThisComputer(ctx.request), html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
-    }
-    const account = store.accountOf(held.account);
-    if (account === null || account.role !== "approver" || account.revokedAt !== null) return page(response, 403, loginWith(store, fromThisComputer(ctx.request), "That account can't sign in here any more.", "/chat", ssoOffer()));
-    if (!passwordAllowed(held.account)) return page(response, 403, loginWith(store, fromThisComputer(ctx.request), `Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
     const id = randomBytes(32).toString("hex");
     const keyed = keyFor(request);
-    const base = { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: runtime.defaultProject, projectRevision: 1 };
-    if (held.kind === "local-owner") {
-      // Easy-start C4: a local owner's link becomes only a local-owner session, and only if local mode, read again in
-      // the same transaction as the session is saved, is still on at the link's generation for the same owner, and the
-      // owner's account generation hasn't moved (a password set since ended this road).
-      const made = store.transact(() => {
-        const now = localOwnerBinding(store);
-        if (now === null || now.account !== held.account || now.localGeneration !== held.localGeneration || now.accountGeneration !== held.accountGeneration) return false;
-        sessions.set(id, { ...base, generation: now.accountGeneration, authority: "local-owner", localGeneration: now.localGeneration, ...keyed.fields });
-        return true;
-      });
-      if (!made) return page(response, 410, loginWith(store, fromThisComputer(ctx.request), html`That sign-in link has been used or has expired. Run <code>toolroll</code> again to open Toolroll.`, "/chat", ssoOffer()));
-      recordSignIn(held.account, "signed in", "local link");
-    } else {
-      // A full link stands only on the credential it was minted under: in the same transaction as the session is saved,
-      // the account is read again and its generation must still be the link's (a password changed or reset since — or a
-      // removal, a role or access change — ends it).
-      const made = store.transact(() => {
-        const now = store.accountOf(held.account);
-        if (now === null || now.role !== "approver" || now.revokedAt !== null || !now.passwordSet || now.generation !== held.accountGeneration) return false;
-        sessions.set(id, { ...base, generation: held.accountGeneration, ...FULL_SESSION, ...keyed.fields });
-        return true;
-      });
-      if (!made) return page(response, 410, loginWith(store, fromThisComputer(ctx.request), html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
-      recordSignIn(held.account, "signed in", "one-time link");
+    if (!saveLinkSession(runtime, request, admitted.held, "browser", { id, csrf: randomBytes(32).toString("hex"), keys: keyed.fields })) {
+      return page(response, 410, loginWith(store, fromThisComputer(ctx.request), admitted.held.kind === "local-owner"
+        ? html`That sign-in link has been used or has expired. Run <code>toolroll</code> again to open Toolroll.`
+        : html`That sign-in link has been used or has expired. Sign in with your password, or run <code>toolroll</code> again.`, "/chat", ssoOffer()));
     }
     return signedInTo(response, keyed.key, "/chat", [`${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
   }

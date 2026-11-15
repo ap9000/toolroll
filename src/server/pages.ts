@@ -35,7 +35,7 @@ import { readChildWindow } from "../live-children-read.js";
 import { leadFiledLinks } from "./agents-live-filed.js";
 import { readMainWindow } from "../live-main-read.js";
 import { runLiveCommands } from "../store.js";
-import type { BrowserAgentDetail,BrowserAgentsView,BrowserWorkView } from "../browser-workspace.js";
+import type { BrowserAgentDetail,BrowserAgentsView,BrowserHomeRow,BrowserWorkView } from "../browser-workspace.js";
 import { prometheusMetrics } from "../metrics.js";
 import { readMonitoring } from "../monitoring-settings.js";
 import { targetOf } from "../monitoring.js";
@@ -94,6 +94,8 @@ import { workNeeds } from "./home.js";
 import type { WorkList } from "./tasks.js";
 import { flowAsks, NO_HOME_ASKS, releaseAsks, setupAsks, type HomeAsks } from "./home-asks.js";
 import { workIndexPage } from "../work-index.js";
+import { checkEngineResponse, ENGINE_API_VERSION, type WorkRows } from "../contracts/engine-api.js";
+import { readRunLive } from "./engine-api.js";
 /** What Work borrows from the tasks handlers (tasks.ts): its list for an address, and the queue's order page. */
 export type WorkListDeps = { listFor: (ctx: HandlerContext) => Promise<WorkList | null>; showOrder: (ctx: HandlerContext) => Promise<void> };
 
@@ -229,34 +231,9 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     if (url.searchParams.get("view") === "order") return work.showOrder(ctx);
     // Only Work itself: an address that names a view, a project or a task is that list, even before the first task.
     if (who.via === "cookie" && url.search === "" && firstRunStepsNow(now) !== null && !store.hasAnyWork()) return redirect(response, "/chat");
-    const found = await work.listFor(ctx);
-    if (found === null) return;
-    const listed = found.screen;
-    const list = listed.workspace?.view;
-    if (list?.kind !== "tasks") throw new Error("Work's list is not the Tasks list");
-    const chrome = listed.chrome ?? chromeFor(project, "work");
-    const access = workAccess(), approver = who.via === "cookie" && who.role === "approver";
-    const closedDoor = (taskId: string) => {
-      const scope = store.getScope(taskId);
-      const door = consentDoorOf(scope, runtime.routeViewOf(taskId, store.lookupRef(taskId), scope, now, who));
-      return door.open ? null : door;
-    };
-    // What waits on this person, from the very list page shown (its view, filters and cursor); the asks that aren't tasks
-    // ride the first unfiltered page.
-    const needs = workNeeds({ store, now, access, evidenceRoot, project, projects: chrome.projects ?? [], chat: false, canAnswer: approver, approver, closedDoor,
-      asks: who.via === "cookie" && !found.filtered ? homeAsksFor(who, access, now, project) : NO_HOME_ASKS }, found.work, found.filtered);
-    // Needs you is the page's own rows: each waiting task's row carries what it asks; the groups keep their counts and the
-    // asks that are no task's row (one copy of every row, S2a review round 2).
-    const asked = new Map(needs.groups.flatMap(group => group.rows).map(row => [row.id, row] as const));
-    const rows = list.rows.map(row => { const need = asked.get(row.id); return need === undefined ? row : { ...row, need }; });
-    const onRows = new Set(rows.flatMap(row => row.need === undefined ? [] : [row.id]));
-    const view: BrowserWorkView = {
-      kind: "work", list: { ...list, rows }, needs: needs.groups.map(group => ({ ...group, rows: group.rows.filter(row => !onRows.has(row.id)) })), needsCount: needs.total, project,
-      projectName: project === null ? "All projects" : (chrome.projects ?? []).find(one => one.path === project)?.name ?? projectName(project),
-      // Until the first result: the welcome's three steps stay one link away.
-      setup: firstRunStepsNow(now) !== null ? "/welcome" : null,
-      empty: needs.any || needs.total > 0 ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
-    };
+    const built = await workViewOf(ctx);
+    if (built === null) return;
+    const { view, needs, listed, chrome } = built;
     // Work renders with React only (PRODUCT.md); without JavaScript the document is a stub of links: what else waits on
     // this person (a held release, a flow card, a setup step), then the list's own (render-pages.ts workPage).
     const asks = needs.groups.flatMap(group => group.rows).filter(row => row.id.includes(":"));
@@ -1230,22 +1207,12 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     if ((file !== "main" && file !== "sub") || [...url.searchParams.keys()].some(key => key !== "file" && key !== "cursor")) {
       return respond(response, 400, "application/json", JSON.stringify({ error: "request" }));
     }
-    const browser = who as typeof who & { via: "cookie" };
-    // The saved session still held (not just the cookie), and the run still in view from its current row.
-    const allowed = (): boolean => {
-      if (rereadBrowser(runtime, ctx.request, browser) === null) return false;
-      const run = store.getRun(runId);
-      const repo = run === null ? null : taskRepoOf(run.taskRef);
-      return run !== null && repo !== null && runVisible(run) && store.accountCanAccess(who.name, repo);
-    };
-    if (!allowed()) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
-    if (options.localRunner === undefined || store.getRun(runId)?.runner !== options.localRunner) {
-      return allowed() ? respond(response, 200, "application/json", JSON.stringify({ error: "off" })) : respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
-    }
-    const read = { key: liveCursorKey, commands: runLiveCommands(store, runId) };
-    const window = file === "sub" ? readChildWindow(evidenceRoot, runId, cursor, read) : readMainWindow(evidenceRoot, runId, cursor, read);
-    // Re-proved after the read: a narrowed account or a run gone from view gets nothing it read.
-    if (!allowed() || store.getRun(runId)?.runner !== options.localRunner) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    // The same admission and read as the engine API's LiveSession (engine-api.ts readRunLive): proved before the read
+    // and again after it; another computer's run is "off".
+    const read = readRunLive(runtime, ctx.request, who, runId, file, cursor, liveCursorKey);
+    if (!read.ok) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    if (read.window === null) return respond(response, 200, "application/json", JSON.stringify({ error: "off" }));
+    const window = read.window;
     return respond(response, 200, "application/json", JSON.stringify(window.ok ? window : { error: window.reason }));
   }
 
@@ -1270,6 +1237,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     "agents": agentsPage,
     "agents.live": agentsLive,
     "agents.live.read": agentsLiveRead,
+    "work.rows": workRows,
     "agents.terminals": agentsTerminals,
     "fleet": fleetPage,
     "ledger.export": ledgerExport,
@@ -1439,6 +1407,62 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
   async function projectsPick(ctx: HandlerContext): Promise<void> {
     if (ctx.who.via !== "cookie") return refuse(ctx.response, ctx.who, 403, "Choosing a repository is a browser session's act.", "/projects");
     return pickerScreen(ctx);
+  }
+
+  // The engine API (solo-workbench plan A0), kept after every other handler: Work's view, read once for its page and for
+  // its rows as data.
+  /** Work's view for this address (homeRedirect's, and GET /work/rows'): the list page shown, what waits on this person
+   * from that very page, each waiting task's row carrying its ask. Null: the list answered the request itself. */
+  async function workViewOf(ctx: HandlerContext): Promise<{ view: BrowserWorkView; needs: ReturnType<typeof workNeeds>; listed: NonNullable<Awaited<ReturnType<WorkListDeps["listFor"]>>>["screen"]; chrome: ReturnType<typeof chromeFor> } | null> {
+    const { who, now, project } = ctx;
+    const found = await work.listFor(ctx);
+    if (found === null) return null;
+    const listed = found.screen;
+    const list = listed.workspace?.view;
+    if (list?.kind !== "tasks") throw new Error("Work's list is not the Tasks list");
+    const chrome = listed.chrome ?? chromeFor(project, "work");
+    const access = workAccess(), approver = who.via === "cookie" && who.role === "approver";
+    const closedDoor = (taskId: string) => {
+      const scope = store.getScope(taskId);
+      const door = consentDoorOf(scope, runtime.routeViewOf(taskId, store.lookupRef(taskId), scope, now, who));
+      return door.open ? null : door;
+    };
+    // What waits on this person, from the very list page shown (its view, filters and cursor); the asks that aren't tasks
+    // ride the first unfiltered page.
+    const needs = workNeeds({ store, now, access, evidenceRoot, project, projects: chrome.projects ?? [], chat: false, canAnswer: approver, approver, closedDoor,
+      asks: who.via === "cookie" && !found.filtered ? homeAsksFor(who, access, now, project) : NO_HOME_ASKS }, found.work, found.filtered);
+    // Needs you is the page's own rows: each waiting task's row carries what it asks; the groups keep their counts and the
+    // asks that are no task's row (one copy of every row, S2a review round 2).
+    const asked = new Map(needs.groups.flatMap(group => group.rows).map(row => [row.id, row] as const));
+    const rows = list.rows.map(row => { const need = asked.get(row.id); return need === undefined ? row : { ...row, need }; });
+    const onRows = new Set(rows.flatMap(row => row.need === undefined ? [] : [row.id]));
+    const view: BrowserWorkView = {
+      kind: "work", list: { ...list, rows }, needs: needs.groups.map(group => ({ ...group, rows: group.rows.filter(row => !onRows.has(row.id)) })), needsCount: needs.total, project,
+      projectName: project === null ? "All projects" : (chrome.projects ?? []).find(one => one.path === project)?.name ?? projectName(project),
+      // Until the first result: the welcome's three steps stay one link away.
+      setup: firstRunStepsNow(now) !== null ? "/welcome" : null,
+      empty: needs.any || needs.total > 0 ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
+    };
+    return { view, needs, listed, chrome };
+  }
+
+  /** GET /work/rows: Work's list as data (contracts/engine-api.ts workRows), the same address keys, grouping and
+   * Needs-you facts as the page, admitted as Work is; the room to follow is the workspace's. */
+  async function workRows(ctx: HandlerContext): Promise<void> {
+    const { response } = ctx;
+    const built = await workViewOf(ctx);
+    if (built === null) return;
+    const { view } = built, list = view.list;
+    const needOf = (row: BrowserHomeRow) => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, state: row.state, ask: row.ask,
+      ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
+    const body: WorkRows = {
+      version: ENGINE_API_VERSION, project: view.project, projectName: view.projectName, needsCount: view.needsCount, groups: list.groups,
+      rows: list.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, status: row.status, word: row.word, ask: row.ask,
+        chip: row.chip, group: row.group, rank: row.rank, detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need) })),
+      needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
+      next: list.pages.next, room: "workspace",
+    };
+    return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("workRows", body)));
   }
 
   return { registrations, projectsScreen };
