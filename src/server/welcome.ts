@@ -78,11 +78,15 @@ function otherRow(agent: WelcomeOtherAgent): Html {
 /** The page body for one model, and the screen's one primary (for the phone dock). `problem`: why the sample project
  * wasn't added, from the address. `canAdd`: this person may add projects here. */
 export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean; inventory?: AgentInventory }): { body: Html; primary: Html | null } {
-  const lead = model.next;
   let primary: Html | null = null;
   // Which agents this computer has is the installation's: an instance operator's session sees each one; another
-  // person's sees only who the first task goes to; a token sees neither (agentInventoryOf).
+  // person's sees only who the first task goes to; a token sees neither (agentInventoryOf), and nothing on its page
+  // depends on a sign-in: the agent step never reads Done, the count of steps left and the leading step ignore it.
   const inventory = options.inventory ?? "full";
+  const blind = inventory === "none";
+  const agentDone = blind ? false : model.agent.done;
+  const lead = !blind || model.next !== "agent" ? model.next : !model.project.done ? "project" : !model.task.done ? "task" : null;
+  const left = blind ? [false, model.project.done, model.task.done].filter(done => !done).length : model.left;
 
   const agentLead = lead === "agent" && inventory === "full" ? model.agent.agents.find(one => one.canUse) ?? null : null;
   if (agentLead !== null) primary = useForm(agentLead.id, btn(`Use ${agentLead.name}`, { variant: "primary", type: "submit" }));
@@ -94,7 +98,7 @@ export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProb
       : model.agent.buildsWith !== null ? note(html`Tasks are built with ${model.agent.buildsWith}. <a class="k-link" href="/settings/models">Change</a>`)
         : firstTaskNote;
   const rows = inventory !== "full" ? "" : html`<div class="welcome-rows">${model.agent.agents.map(one => agentRow(one, agentLead?.id === one.id))}${model.agent.others.map(otherRow)}</div>`;
-  const agent = step("agent", 1, "Agent", model.agent.done, html`<p class="k-note">The AI coding agent that plans and builds your tasks.</p>${rows}${agentNote}`);
+  const agent = step("agent", 1, "Agent", agentDone, html`<p class="k-note">The AI coding agent that plans and builds your tasks.</p>${rows}${agentNote}`);
 
   const projects = model.project.projects;
   const listed = projects.slice(0, PROJECTS_SHOWN).map(one => settingsRecord({ title: one.name, sub: html`<span class="k-mono">${one.path}</span>`, attrs: { "data-project": "" } }));
@@ -122,7 +126,7 @@ ${listed.length === 0 ? "" : html`<div class="welcome-rows">${listed}</div>`}${m
   const taskLeads = lead === "task";
   if (taskLeads) primary = btn("Write a task", { variant: "primary", href: "/tasks/new" });
   // Filed before any agent is signed in: it waits for step 1, so the step reads Filed, never Done.
-  const waitsForAgent = model.task.done && !model.agent.done && !model.agent.checking;
+  const waitsForAgent = !blind && model.task.done && !model.agent.done && !model.agent.checking;
   const taskBody = model.task.done ? waitsForAgent ? html`<p class="k-note">It starts by itself once an agent is signed in (step 1).</p>`
     : html`<p class="k-note">Filed. Its plan waits for your approval in <a class="k-link" href="/">Work</a>.</p>`
     : !model.task.open ? html`<p class="k-note">Add a project first.</p>`
@@ -131,7 +135,7 @@ ${model.task.starters.length === 0 ? "" : html`<div class="k-ideas" aria-label="
 <div class="k-acts">${btn("Write a task", { sm: true, href: "/tasks/new", ...(taskLeads ? { variant: "primary" as const, docked: true } : {}) })}</div>`;
   const task = step("task", 3, "First task", model.task.done, taskBody, waitsForAgent);
 
-  const hello = html`<div class="k-hello"><h2>Get to your first result.</h2><p>${model.left === 0 ? "Setup is done." : `${plural(model.left, "step", "steps")} left.`}</p></div>`;
+  const hello = html`<div class="k-hello"><h2>Get to your first result.</h2><p>${left === 0 ? "Setup is done." : `${plural(left, "step", "steps")} left.`}</p></div>`;
   return { body: html`${hello}${agent}${project}${task}`, primary };
 }
 

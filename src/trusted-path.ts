@@ -28,11 +28,23 @@ type Verdict = { ok: true } | { ok: false; why: string };
 /** This platform's ACL reader: macOS's `ls -lde`; none elsewhere (the mode bits carry a POSIX ACL's write). */
 export const platformAcl = (): AclReader | null => (process.platform === "darwin" ? macAcl : null);
 
-/** The same reader, asking each path once (one detection's many checks share their ancestors). */
-export function rememberedAcl(acl: AclReader | null = platformAcl()): AclReader | null {
-  if (acl === null) return null;
+/**
+ * A fresh ACL reader for one resolution, asking each path once and never past `deadline` (epoch ms): each read is capped
+ * at the time left, and once none is left every answer refuses ("can't be read in time"). On macOS the read is a
+ * synchronous `ls`, so the cap is what keeps a whole check inside its deadline. Never shared between two resolutions.
+ */
+export function boundedAcl(deadline: number, read: ((path: string, ms: number) => AclVerdict) | null = process.platform === "darwin" ? macAclWithin : null): AclReader | null {
+  if (read === null) return null;
   const seen = new Map<string, AclVerdict>();
-  return path => { let verdict = seen.get(path); if (verdict === undefined) { verdict = acl(path); seen.set(path, verdict); } return verdict; };
+  return path => {
+    let verdict = seen.get(path);
+    if (verdict === undefined) {
+      const left = deadline - Date.now();
+      verdict = left <= 0 ? { ok: false, why: "can't be read in time" } : read(path, Math.min(left, ACL_READ_MS));
+      seen.set(path, verdict);
+    }
+    return verdict;
+  };
 }
 
 /**
@@ -105,9 +117,12 @@ export function aclVerdictOf(output: string): AclVerdict {
 
 /** The ACL of `path` on macOS: `/bin/ls -lde` by its absolute path (no PATH lookup), C locale; unreadable refuses. */
 function macAcl(path: string): AclVerdict {
+  return macAclWithin(path, ACL_READ_MS);
+}
+function macAclWithin(path: string, ms: number): AclVerdict {
   // A name with a control character could forge an entry line: refused before asking.
   if (/[\u0000-\u001f\u007f]/.test(path)) return { ok: false, why: "can't be read (a control character in the path)" };
-  const ran = spawnSync("/bin/ls", ["-lde", "--", path], { encoding: "utf8", timeout: ACL_READ_MS, env: { LC_ALL: "C", PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "ignore"] });
+  const ran = spawnSync("/bin/ls", ["-lde", "--", path], { encoding: "utf8", timeout: Math.max(1, Math.floor(ms)), env: { LC_ALL: "C", PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "ignore"] });
   if (ran.status !== 0 || typeof ran.stdout !== "string") return { ok: false, why: "can't be read" };
   return aclVerdictOf(ran.stdout);
 }

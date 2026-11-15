@@ -12,6 +12,9 @@ import { DETECT_TIMEOUT_MS, detectAgents, detectionLines, detectionReport, first
 import { agentsReadOf } from "./engine-reads.js";
 import { agentsReadSchema } from "./contracts/engine-api.js";
 import { createConnectionChecker } from "./provider-connection.js";
+import { openStore } from "./store.js";
+import { statusProbe } from "./status-probe.js";
+import { boundedAcl } from "./trusted-path.js";
 
 const TOKEN = "sk-ant-oat01-DETECTION-MUST-NEVER-ECHO-THIS";
 const CODEX_TOKEN = "sk-proj-ALSO-NEVER-ECHOED-0123456789";
@@ -265,6 +268,7 @@ describe("a status command runs only from a trusted install, with nothing of thi
     };
     const dump = join(dir, "env.txt");
     stub("claude", `export -p > '${dump}'\n${CLAUDE_SIGNED_IN}`);
+    mkdirSync(join(home, ".claude"));
     const saved = { ...process.env };
     Object.assign(process.env, canaries);
     try {
@@ -293,5 +297,95 @@ describe("a status command runs only from a trusted install, with nothing of thi
     const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
     for (let i = 0; i < 100 && pids.some(alive); i++) await new Promise(done => setTimeout(done, 20));
     expect(pids.filter(alive)).toEqual([]);
+  });
+});
+
+describe("where a status command may never run, what it may be handed, and its deadline", () => {
+  const marking = (folder: string, body = CLAUDE_SIGNED_IN): void => {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "claude"), `#!/bin/sh\n: > '${join(dir, "executed")}'\n${body}\n`);
+    chmodSync(join(folder, "claude"), 0o755);
+  };
+  const ranIt = (): boolean => existsSync(join(dir, "executed"));
+
+  test("an executable in another registered project, first on PATH, is refused by every checker, the store read by the probe itself", async () => {
+    // This worker's own database (test/setup-state.ts: TOOLROLL_DB, a throwaway): two projects registered.
+    const store = openStore(process.env["TOOLROLL_DB"]!);
+    const shop = join(dir, "shop"), blog = join(dir, "blog");
+    mkdirSync(shop); mkdirSync(blog);
+    try { store.upsertProject(shop, "shop", new Date()); store.upsertProject(blog, "blog", new Date()); } finally { store.close(); }
+    marking(join(blog, "bin"));
+    const env = { PATH: `${join(blog, "bin")}${delimiter}${bin}`, HOME: home };
+    // The default checker names no store or database: the probe reads the one this environment names.
+    expect((await createConnectionChecker({ home, env })("claude", true)).state).toBe("unverified");
+    // Detection with the store in hand, and the database file only: the same.
+    const again = openStore(process.env["TOOLROLL_DB"]!);
+    try {
+      expect((await detectAgents({ env, home, timeoutMs: SLACK_MS, store: again })).agents.find(one => one.id === "claude")!.state).toBe("unknown");
+    } finally { again.close(); }
+    expect((await detectAgents({ env, home, timeoutMs: SLACK_MS, databaseFile: process.env["TOOLROLL_DB"]! })).agents.find(one => one.id === "claude")!.state).toBe("unknown");
+    expect(ranIt()).toBe(false);
+  });
+
+  test("a trusted launcher whose package folder others can change, or that sits in a project, is refused", async () => {
+    // The package (nearest package.json) is a shared sticky folder: the folders above the launcher pass, the package doesn't.
+    const pack = join(dir, "pack");
+    mkdirSync(pack);
+    writeFileSync(join(pack, "package.json"), "{}");
+    marking(join(pack, "bin"));
+    chmodSync(pack, 0o1777);
+    expect((await detectAgents({ env: { PATH: join(pack, "bin"), HOME: home }, home, timeoutMs: SLACK_MS })).agents.find(one => one.id === "claude")!.state).toBe("unknown");
+    chmodSync(pack, 0o755);
+    expect((await detectAgents({ env: { PATH: join(pack, "bin"), HOME: home }, home, timeoutMs: SLACK_MS, untrusted: () => [pack] })).agents.find(one => one.id === "claude")!.state).toBe("unknown");
+    expect(ranIt()).toBe(false);
+    // The control: the same launcher, its package trusted and outside every project, runs.
+    expect((await detectAgents({ env: { PATH: join(pack, "bin"), HOME: home }, home, timeoutMs: SLACK_MS })).agents.find(one => one.id === "claude")!.state).toBe("signed-in");
+  });
+
+  test("a location variable pointing into a project is left out, and the command runs in a fresh, empty folder of its own", async () => {
+    const project = join(dir, "shop");
+    mkdirSync(join(project, ".claude"), { recursive: true });
+    const shared = join(dir, "shared-codex");
+    mkdirSync(shared);
+    chmodSync(shared, 0o777);
+    const dump = join(dir, "seen.txt");
+    stub("claude", `{ export -p; echo "PWD=$PWD"; for f in * .[!.]* ..?*; do [ -e "$f" ] && echo "NOT EMPTY: $f"; done; } > '${dump}'\n${CLAUDE_SIGNED_IN}`);
+    const detection = await detectAgents({ env: { PATH: bin, HOME: home, CLAUDE_CONFIG_DIR: join(project, ".claude"), CODEX_HOME: shared, TMPDIR: tmpdir() }, home, timeoutMs: SLACK_MS, untrusted: () => [project] });
+    expect(detection.agents.find(one => one.id === "claude")!.state).toBe("signed-in");
+    const seen = readFileSync(dump, "utf8");
+    expect(seen).not.toContain("CLAUDE_CONFIG_DIR");
+    expect(seen).not.toContain("CODEX_HOME");
+    expect(seen).not.toContain("NOT EMPTY");
+    const cwd = /^PWD=(.*)$/m.exec(seen)![1]!;
+    expect(cwd.split("/").at(-1)).toMatch(/^toolroll-status-/);
+    expect(cwd).not.toBe(realpathSync(home));
+    // Gone after the check.
+    expect(existsSync(cwd)).toBe(false);
+  });
+
+  test("the final check before the start reads ACLs afresh: an ACL granted between the two checks refuses", async () => {
+    marking(bin);
+    let resolutions = 0;
+    const probe = statusProbe({ env: { PATH: bin, HOME: home }, timeoutMs: SLACK_MS, aclFor: () => {
+      resolutions += 1;
+      const now = resolutions;
+      // The first resolution's reader says no ACL anywhere; by the second, someone was granted write on the binary.
+      return path => now === 1 || !path.endsWith("/claude") ? { ok: true } : { ok: false, why: "allows group:staff to change it (write)" };
+    } });
+    const result = await probe("claude", ["auth", "status", "--json"]);
+    expect(result).toMatchObject({ code: 126, notFound: false });
+    expect(resolutions).toBe(2);
+    expect(ranIt()).toBe(false);
+  });
+
+  test("slow ACL reads stay inside the deadline: the whole check answers by then, and nothing runs", async () => {
+    marking(bin);
+    const block = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    const probe = statusProbe({ env: { PATH: bin, HOME: home }, timeoutMs: 300, aclFor: deadline => boundedAcl(deadline, (_path, ms) => { block(ms); return { ok: true }; }) });
+    const started = Date.now();
+    const result = await probe("claude", ["auth", "status", "--json"]);
+    expect(Date.now() - started).toBeLessThan(300 + 400);
+    expect(result.code === 126 || result.timedOut).toBe(true);
+    expect(ranIt()).toBe(false);
   });
 });

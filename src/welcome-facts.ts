@@ -33,7 +33,7 @@ export async function welcomeHere(store: Store, databaseFile: string, now: Date,
   const build = resolvePhaseAgent(store, "build", repo, {});
   const routed = firstTaskRouted(store, repo);
   const detection = await detectAgents({ ...(options.check === undefined ? {} : { check: options.check }), routed, clock: () => now, acpChecked: acpCheckedHere(store),
-    untrusted: () => agentWritableFolders(store, repos) });
+    store, untrusted: () => repos });
   const stateOf = (id: WelcomeAgentId) => CONNECTION_OF[detection.agents.find(one => one.id === id)?.state ?? "unknown"];
   const model = welcomeModel({
     agents: { claude: stateOf("claude"), codex: stateOf("codex") },
@@ -62,23 +62,6 @@ export function firstTaskRouted(store: Store, repo: string | null = null): strin
   const build = resolvePhaseAgent(store, "build", repo, {});
   if (build.ok && build.source !== "default") return build.spec.provider;
   return modelsEverChosen(store) ? "claude" : null;
-}
-
-/**
- * Folders an agent can write, where no sign-in check may start a program (status-probe.ts): every project Toolroll
- * knows, every worktree, and Toolroll's own state folder (worktrees, evidence). Read at each check, so a project added
- * later counts.
- */
-export function agentWritableFolders(store: Store, extra: readonly string[] = []): string[] {
-  const file = store.databaseFile();
-  return [...new Set([...extra, ...store.knownRepos(), ...store.listProjects().map(one => one.path), ...store.listWorktrees().map(one => one.path),
-    ...(file === null || file === ":memory:" ? [] : [dirname(file)])])];
-}
-
-/** The console's folders an agent can write, read at each check: agentWritableFolders and the projects the console
- * was given (its own options, so no closure of the console's is needed). */
-export function writableFoldersOf(store: Store, given: { repo?: string | undefined; repos?: readonly string[] | undefined; currentRepos?: (() => readonly string[]) | undefined }): () => string[] {
-  return () => agentWritableFolders(store, [...(given.repo === undefined ? [] : [given.repo]), ...(given.repos ?? []), ...(given.currentRepos?.() ?? [])]);
 }
 
 /** Whether an ACP agent passed its one-time check on a runner of this installation (store.acpAttestationFor). */

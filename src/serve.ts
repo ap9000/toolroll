@@ -156,8 +156,8 @@ rowVisible
 import { noteSignInProbe,signInNotices } from "./provider-auth.js";
 import { createConnectionChecker,type ProviderConnection } from "./provider-connection.js";
 import { detectAgents,type AgentDetection } from "./agent-detect.js";
-import { acpCheckedHere,firstTaskRouted,writableFoldersOf } from "./welcome-facts.js";
-import { statusProbe } from "./status-probe.js";
+import { acpCheckedHere,firstTaskRouted } from "./welcome-facts.js";
+import { givenRepos,statusProbe } from "./status-probe.js";
 import { ALL_CREDENTIAL_ENV,type ProviderId } from "./provider.js";
 import { hstsFor,LOOPBACK_PEERS,plainHttpRefusal,requestFromThisComputer,transportOf } from "./public-access.js";
 import { attachReadExecutor,defaultReadWorkers,ReadExecutor } from "./read-executor.js";
@@ -321,7 +321,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // Sign-in status commands only from a trusted install outside every project and worktree, bounded, with their own
   // environment (status-probe.ts); tests pass their own probe.
   const checkConnection = createConnectionChecker({ home: providerHome, clock,
-    probe: options.connectionProbe ?? statusProbe({ home: providerHome, untrusted: writableFoldersOf(store, options) }) });
+    probe: options.connectionProbe ?? statusProbe({ store, untrusted: givenRepos(options) }) });
   // Every sign-in check the console makes also answers a sign-in pause.
   // Whether this computer can fence agents: asked once as the console starts (a sandbox running /usr/bin/true), so
   // Settings → Project never starts a process (docs/plans/get-side-effects.md).

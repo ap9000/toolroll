@@ -86,6 +86,15 @@ describe("the welcome page", () => {
     expect(token.body).not.toMatch(/data-agent=|Claude Code|Codex/);
   });
 
+  test("a token's page doesn't depend on any sign-in: byte for byte the same whether an agent is signed in or not", () => {
+    for (const [hasTask, projects] of [[false, []], [true, [{ name: "shop", path: "/Users/sam/Projects/shop" }]], [false, [{ name: "shop", path: "/Users/sam/Projects/shop" }]]] as const) {
+      const pages = (["connected", "signed-out", "not-installed", null] as const).map(state =>
+        render({ agents: { claude: state, codex: state === "connected" ? "connected" : "not-installed" }, inUse: null, hasTask, projects: [...projects] }, { inventory: "none" }));
+      for (const page of pages.slice(1)) { expect(page.body).toBe(pages[0]!.body); expect(page.primary).toBe(pages[0]!.primary); }
+      expect(pages[0]!.body).not.toMatch(/data-done="1"[^>]*data-step="agent"|data-step="agent" data-done="1"/);
+    }
+  });
+
   test("the agent in use reads In use with no button; only the other signed-in one offers Use this one, as a secondary act", () => {
     const { body, primary } = render({ agents: { claude: "connected", codex: "connected" }, inUse: "claude" });
     const claude = /data-agent="claude"[\s\S]*?(?=data-agent="codex")/.exec(body)![0];

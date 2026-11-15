@@ -1,7 +1,7 @@
 /** Non-spending account checks. Only normalized facts leave this module. */
 import { homedir } from "node:os";
 import { type ExecResult, type run } from "./exec.js";
-import { statusProbe } from "./status-probe.js";
+import { statusProbe, type StatusProbeOptions } from "./status-probe.js";
 import { ALL_CREDENTIAL_ENV, inspectionOf, type ProviderId } from "./provider.js";
 import { isAcpProvider, type KeyedProviderId } from "./acp-agents.js";
 import { keyStatus, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, verifyProviderKey, type AuthMode, type KeyVerdict } from "./keys.js";
@@ -44,10 +44,15 @@ export function signInFacts(provider: ProviderId, result: ExecResult, now = new 
   return { ...base, state: "unverified" };
 }
 
-export function createConnectionChecker(options: { probe?: typeof run; home?: string; clock?: () => Date; env?: NodeJS.ProcessEnv; verify?: (provider: KeyedProviderId, key: string) => Promise<KeyVerdict> } = {}): ConnectionChecker {
+export function createConnectionChecker(options: { probe?: typeof run; home?: string; clock?: () => Date; env?: NodeJS.ProcessEnv; verify?: (provider: KeyedProviderId, key: string) => Promise<KeyVerdict>;
+  /** Toolroll's records the status probe excludes folders by (status-probe.ts): the store in hand, or its database file;
+   * by default the database this environment names. */
+  store?: StatusProbeOptions["store"]; databaseFile?: string } = {}): ConnectionChecker {
   const home = options.home ?? homedir();
-  // The status command runs only from a trusted install, bounded, with an environment built from nothing (status-probe.ts).
-  const probe = options.probe ?? statusProbe({ home, ...(options.env === undefined ? {} : { env: options.env }) });
+  // The status command runs only from a trusted install outside every project, worktree and Toolroll's own folder,
+  // bounded, with an environment built from nothing (status-probe.ts).
+  const probe = options.probe ?? statusProbe({ ...(options.env === undefined ? {} : { env: options.env }), ...(options.store === undefined ? {} : { store: options.store }),
+    ...(options.databaseFile === undefined ? {} : { databaseFile: options.databaseFile }) });
   const verify = options.verify ?? ((provider: KeyedProviderId, key: string) => verifyProviderKey(provider, key));
   const clock = options.clock ?? (() => new Date());
   const cache = new Map<ProviderId, { key: string; until: number; value: ProviderConnection }>();

@@ -34,7 +34,7 @@ import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, type AcpProviderId } from 
 import { inspectAcpAgent } from "./acp-inspect.js";
 import { resolveExecutable } from "./attest.js";
 import type { ProviderId } from "./contracts/provider.js";
-import { statusProbe, STATUS_TIMEOUT_MS } from "./status-probe.js";
+import { statusProbe, STATUS_TIMEOUT_MS, type StatusProbeOptions } from "./status-probe.js";
 import { keyStatus, OWN_KEY_ENV, readAuthMode } from "./keys.js";
 import { createConnectionChecker, type ConnectionChecker, type ProviderConnection } from "./provider-connection.js";
 
@@ -134,8 +134,11 @@ export type DetectOptions = {
   routed?: string | null;
   /** Whether an ACP agent passed its one-time check on this computer (store.acpAttestationFor). */
   acpChecked?: (provider: AcpProviderId) => boolean;
-  /** Folders an agent can write (welcome-facts.ts agentWritableFolders): no status command there is run. */
+  /** More folders an agent can write, besides those status-probe.ts always derives from Toolroll's records. */
   untrusted?: () => readonly string[];
+  /** Toolroll's records those folders come from: the store in hand, or its database file. */
+  store?: StatusProbeOptions["store"];
+  databaseFile?: string;
   clock?: () => Date;
 };
 
@@ -161,7 +164,8 @@ export async function detectAgents(options: DetectOptions = {}): Promise<AgentDe
   // environment built from nothing (status-probe.ts).
   const check = options.check ?? createConnectionChecker({
     home, env: env as NodeJS.ProcessEnv, clock,
-    probe: statusProbe({ env, home, timeoutMs, ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }) }),
+    probe: statusProbe({ env, timeoutMs, ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }),
+      ...(options.store === undefined ? {} : { store: options.store }), ...(options.databaseFile === undefined ? {} : { databaseFile: options.databaseFile }) }),
   });
   const routed = options.routed ?? null;
 

@@ -4631,7 +4631,7 @@ async function startConsole(options: {
     // v111: API tokens: 7- and 1-day expiry notices to their person, and the end of each rotated token, a pass a minute.
     startTokenNotices(context.store),
     // A paused provider's sign-in is checked every two minutes (no model, nothing spent); the pause lifts when it works.
-    startSignInProbes(context.store, createConnectionChecker()),
+    startSignInProbes(context.store, createConnectionChecker({ store: context.store })),
     // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
     startBackups(context.store, context.databaseFile),
     startCodexLimits(context.store),
@@ -5198,8 +5198,8 @@ async function agentsCommand(positional: readonly string[], flags: Map<string, s
     // first task goes to — the same lines the first-run screens show. Nothing here makes a model call or prints a token.
     const { detectAgents, detectionReport } = await import("./agent-detect.js");
     const { agentsReadOf } = await import("./engine-reads.js");
-    const { acpCheckedHere, agentWritableFolders, firstTaskRouted } = await import("./welcome-facts.js");
-    const detection = await detectAgents({ routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store), untrusted: () => agentWritableFolders(store),
+    const { acpCheckedHere, firstTaskRouted } = await import("./welcome-facts.js");
+    const detection = await detectAgents({ routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store), store,
       ...(context.easySeams?.check === undefined ? {} : { check: context.easySeams.check }) });
     const { version: _version, ...detected } = agentsReadOf(detection);
     if (json) { write(envelopeJson({ ok: true, command: "agents", detected: { ...detected, tookMs: detection.tookMs }, agents: rows })); return EXIT.ok; }
@@ -7806,7 +7806,7 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
   const loginFile = savedLoginFile(dirname(context.databaseFile));
   const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
   const registryPath = registryPathOf(context);
-  const checker = createConnectionChecker({ home, env });
+  const checker = createConnectionChecker({ home, env, store: context.store });
   const code = await runOnboard({
     write,
     json,
@@ -9364,7 +9364,7 @@ async function integrationIoFor(context: Context): Promise<IntegrationIo> {
     env: process.env,
     repos,
     gh: (file, args, options) => run(file, [...args], options),
-    checkConnection: createConnectionChecker(),
+    checkConnection: createConnectionChecker({ store: context.store }),
     clock: context.clock,
     ...seams,
   };
