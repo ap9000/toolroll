@@ -19,6 +19,7 @@ const FIXTURES: Record<string, EngineResponseName> = {
   "result-diff.json": "resultDiff",
   "result-diff-no-result.json": "resultDiff",
   "result-diff-file.json": "resultDiffFile",
+  "result-diff-context.json": "resultDiffContext",
   "link-redemption.json": "linkRedemption",
   "refusal.json": "refusal",
   "hello.json": "hello",
