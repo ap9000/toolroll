@@ -237,3 +237,30 @@ describe("a session that ends is refused at admission, during the read, and betw
     expect(liveSessionWindowSchema.parse((await read("pat", THREAD)).body).thread!.questions.find(one => one.request === shown.request)).toMatchObject({ state: "not-sent" });
   });
 });
+
+describe("the send compares the whole saved session (Codex round 2)", () => {
+  const settledAgent = () => new Promise(resolve => setImmediate(resolve));
+  let n = 20;
+  async function pending(): Promise<{ request: string; digest: string }> {
+    n++;
+    say({ type: "control_request", request_id: `s${n}`, request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: `echo ${n}` }, tool_use_id: `toolu-s${n}` } });
+    await settledAgent();
+    return liveSessionWindowSchema.parse((await read("pat", THREAD)).body).thread!.questions.find(one => one.state === "pending" && one.detail === `echo ${n}`)!;
+  }
+  const hashOf = (cookie: string) => world.store.handle.prepare("SELECT id_hash FROM web_session WHERE account = 'pat' ORDER BY created_at DESC LIMIT 1").get()!["id_hash"] as string;
+  test.each([
+    ["expired by its lifetime but not deleted", (hash: string) => world.store.handle.prepare("UPDATE web_session SET last_seen = ? WHERE id_hash = ?").run(Date.now() - 13 * 3_600_000, hash)],
+    ["the same row now another account's", (hash: string) => world.store.handle.prepare("UPDATE web_session SET account = 'ines' WHERE id_hash = ?").run(hash)],
+    ["another generation", (hash: string) => world.store.handle.prepare("UPDATE web_session SET generation = generation + 1 WHERE id_hash = ?").run(hash)],
+  ])("refused when, between the decision and the send, the saved session is %s", async (_name, change) => {
+    const session = await secondSession("pat", tokenOf["pat"]!);
+    const hash = hashOf(session.cookie);
+    const shown = await pending();
+    const sentBefore = agent.sent.length;
+    held.afterDecide = () => { change(hash); };
+    try {
+      expect(await answerAs(session, { request: shown.request, card: shown.digest, decision: "accept" })).toMatchObject({ status: 409, body: { outcome: "refused" } });
+    } finally { held.afterDecide = null; session.end(); }
+    expect(agent.sent.length).toBe(sentBefore);
+  });
+});

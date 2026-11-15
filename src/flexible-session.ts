@@ -232,6 +232,9 @@ function flexibleInputDigest(tool: string, input: Record<string, unknown>): stri
   return createHash("sha256").update(canonical({ tool, input }), "utf8").digest("hex");
 }
 
+/** How a tab is drawn on a card: a visible mark and padding (never a bare space, which would read as a space). */
+const TAB_MARK = "→";
+const TAB_SHOWN = `${TAB_MARK}   `;
 /** How much of a request a card shows whole; past either, it can't be allowed from a card. */
 export const FLEXIBLE_SCOPE_LINES = 200;
 export const FLEXIBLE_SCOPE_CHARS = 16_000;
@@ -262,11 +265,15 @@ function scopeOf(tool: string, input: Record<string, unknown>): { lines: string[
   } else {
     raw.push(...JSON.stringify(input, null, 2).split("\n"));
   }
+  // A tab is drawn as a visible mark (TAB_SHOWN), so the text read maps one to one onto the bytes sent; text that already
+  // holds that mark beside a tab would be ambiguous, and any other character display would change is unshowable.
+  const shown = raw.map(line => line.replace(/\t/g, TAB_SHOWN));
   const why = raw.length > FLEXIBLE_SCOPE_LINES || raw.reduce((sum, line) => sum + line.length + 1, 0) > FLEXIBLE_SCOPE_CHARS ? "it is too long to show here"
     : raw.some(line => liveSecretHit(line)) ? "part of it is shaped like a secret, so it isn't shown"
-    : raw.some(line => cleanLiveText(line) !== line.replace(/\t/g, " ")) ? "it holds characters a terminal can't show"
+    : raw.some(line => line.includes("\t")) && raw.some(line => line.includes(TAB_MARK)) ? "its tabs couldn't be told apart from its own text"
+    : shown.some(line => cleanLiveText(line) !== line) ? "it holds characters a terminal can't show"
     : null;
-  if (why === null) return { lines: raw.map(line => line.replace(/\t/g, " ")), complete: true, why: null };
+  if (why === null) return { lines: shown, complete: true, why: null };
   const preview = raw.slice(0, 10).map(line => cardText(line, 300));
   return { lines: [...preview, ...(raw.length > 10 ? [`… and ${raw.length - 10} more lines`] : []), `This can't be allowed from here: ${why}. You can deny it.`], complete: false, why };
 }
@@ -276,12 +283,14 @@ function scopeOf(tool: string, input: Record<string, unknown>): { lines: string[
  * request Toolroll can show. */
 function cardOf(tool: string, input: Record<string, unknown>): { kind: FlexibleRequestKind; card: FlexibleRequestCard; questions: string[]; inputDigest: string } | null {
   const inputDigest = flexibleInputDigest(tool, input);
-  const bound = { tool: cardText(tool, 100) || "unknown", input: inputDigest };
+  // The tool's name exactly as the agent gave it, or the card isn't whole: a name too long, or one display would change.
+  const toolShown = /^[\x21-\x7e]{1,100}$/.test(tool);
+  const bound = { tool: toolShown ? tool : "unnamed", input: inputDigest };
   if (tool === "AskUserQuestion") {
     const given = Array.isArray(input["questions"]) ? (input["questions"] as unknown[]).slice(0, 9) : [];
     const questions: { id: string; question: string; options?: { label: string }[] }[] = [];
     const texts: string[] = [];
-    let complete = (input["questions"] as unknown[] | undefined)?.length === given.length;
+    let complete = toolShown && (input["questions"] as unknown[] | undefined)?.length === given.length;
     for (const [index, one] of given.entries()) {
       if (typeof one !== "object" || one === null) return null;
       const q = one as Record<string, unknown>;
@@ -300,7 +309,8 @@ function cardOf(tool: string, input: Record<string, unknown>): { kind: FlexibleR
   const scope = scopeOf(tool, input);
   const title = tool === "Bash" ? "Allow this command?" : FILE_TOOLS.includes(tool) ? "Allow this change to a file?"
     : tool === "WebFetch" || tool === "WebSearch" ? "Allow this lookup?" : `Allow the agent's ${bound.tool} step?`;
-  return { kind: "permission", card: { title, detail: scope.lines.join("\n").slice(0, 32_000), ...bound, complete: scope.complete }, questions: [], inputDigest };
+  const lines = toolShown ? scope.lines : [...scope.lines, "This can't be allowed from here: the agent's name for this step can't be shown as it is. You can deny it."];
+  return { kind: "permission", card: { title, detail: lines.join("\n").slice(0, 32_000), ...bound, complete: scope.complete && toolShown }, questions: [], inputDigest };
 }
 
 /** An answer in Claude's stdio control form for the request it answers (`frame`: pure, run inside F2d's attempt). */

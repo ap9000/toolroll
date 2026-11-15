@@ -35,7 +35,7 @@ import { rereadBrowser } from "./live.js";
 import { admitLink, saveLinkSession, spendLink } from "./link-redemption.js";
 import { agentInventoryOf } from "./welcome.js";
 import type { ServerRuntime } from "./runtime.js";
-import { SESSION_COOKIE, type Who } from "./session.js";
+import { SESSION_COOKIE, sessionWithinLifetime, type Who } from "./session.js";
 
 type JsonResponse = Parameters<typeof respond>[0];
 const json = (response: JsonResponse, status: number, value: unknown): void => respond(response, status, "application/json", JSON.stringify(value));
@@ -203,11 +203,20 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (choice === null) return acted(response, 400, "refused", "That answer isn't one Toolroll can read. Nothing was sent.");
     // This very session, bound to the decision: its saved authority (the session row, the account's standing at the
     // session's generation, the thread's project) is read again inside F2d's decision and its final attempt.
+    // The saved row as it stands now, compared whole with the one admitted here: the same row (its id hash), account,
+    // generation and role, the same immutable bindings (authority, local-mode generation, key epoch and key hash,
+    // creation), still held in memory, within its lifetime (an expired row that wasn't deleted yet refuses), and the
+    // account's standing and the thread's project unchanged.
     const sessionHash = runtime.sessions.hashOf(who.session);
+    const admitted = sessionHash === null ? null : store.webSession(sessionHash);
+    if (admitted === null || admitted.account !== who.name) return acted(response, 403, "refused", "Only a person signed in here can answer an agent.");
     const held = (): boolean => {
-      const saved = sessionHash === null ? null : store.webSession(sessionHash), account = store.accountOf(who.name);
-      return saved !== null && account !== null && account.revokedAt === null && account.generation === who.session.generation && saved.generation === account.generation
-        && saved.role === account.role && admitFlexibleThreadOwner(store, flexible, { thread: id, viewer: { name: who.name }, canAccess: repo => store.accountCanAccess(who.name, repo) }).ok;
+      const saved = store.webSession(admitted.idHash), account = store.accountOf(who.name);
+      return saved !== null && saved.idHash === admitted.idHash && saved.account === admitted.account && saved.generation === admitted.generation && saved.role === admitted.role
+        && saved.authority === admitted.authority && saved.localGeneration === admitted.localGeneration && saved.keyEpoch === admitted.keyEpoch && saved.keyHash === admitted.keyHash
+        && saved.createdAt === admitted.createdAt && sessionWithinLifetime(saved, Date.now()) && runtime.sessions.holds(who.session)
+        && account !== null && account.revokedAt === null && account.generation === saved.generation && account.generation === who.session.generation && account.role === saved.role
+        && admitFlexibleThreadOwner(store, flexible, { thread: id, viewer: { name: who.name }, canAccess: repo => store.accountCanAccess(who.name, repo) }).ok;
     };
     const done = await answerFlexibleRequest(store, flexible, { thread: id, request: body.get("request") ?? "", shownDigest: body.get("card") ?? "",
       by: { kind: "person", name: who.name, generation: who.session.generation }, choice, held });

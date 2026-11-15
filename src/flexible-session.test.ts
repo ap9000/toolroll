@@ -460,3 +460,62 @@ describe("Codex round 1: an allow covers only what was shown; recovery only on p
     }
   });
 });
+
+describe("Codex round 2: what is shown is what is sent", () => {
+  const tool = (id: string, name: string, input: Record<string, unknown>) => ({ type: "control_request", request_id: id, request: { subtype: "can_use_tool", tool_name: name, input, tool_use_id: `toolu-${id}` } });
+
+  test("a Makefile's tabs are drawn as a visible mark, one to one with the bytes sent; a tab beside the mark itself isn't whole", async () => {
+    const agent = await attached();
+    agent.say(tool("r1", "Write", { file_path: "Makefile", content: "test:\n\tnpm test\n\t\tnpm run lint" }), tool("r2", "Write", { file_path: "notes.txt", content: "a → b\n\tc" }));
+    await settled();
+    const questions = read().facts.questions;
+    const makefile = questions.find(one => one.detail?.includes("Makefile"))!, ambiguous = questions.find(one => one.detail?.includes("notes.txt"))!;
+    expect(makefile).toMatchObject({ complete: true, detail: "file: Makefile\ncontent (30 bytes):\n+ test:\n+ →   npm test\n+ →   →   npm run lint" });
+    expect(ambiguous.complete).toBe(false);
+    expect(await answerFlexibleRequest(world.store, sessions, { held: () => true, thread: T1, request: ambiguous.request, shownDigest: ambiguous.digest, by: pat(), choice: { decision: "accept" }, clock: () => NOW }))
+      .toMatchObject({ ok: false, reason: "scope-unshown" });
+    expect(await answerFlexibleRequest(world.store, sessions, { held: () => true, thread: T1, request: makefile.request, shownDigest: makefile.digest, by: pat(), choice: { decision: "accept" }, clock: () => NOW }))
+      .toEqual({ ok: true, state: "sent" });
+    // The bytes sent are the agent's own, tabs and all.
+    expect(JSON.parse(agent.sent[0]!).response.response.updatedInput.content).toBe("test:\n\tnpm test\n\t\tnpm run lint");
+  });
+
+  test("a tool name too long, or one display would change, makes the card deny-only", async () => {
+    const agent = await attached();
+    agent.say(tool("r1", "x".repeat(101), { a: 1 }), tool("r2", "deploy‮now", { a: 1 }), tool("r3", "mcp tool", { a: 1 }));
+    await settled();
+    const questions = read().facts.questions;
+    expect(questions).toHaveLength(3);
+    for (const one of questions) {
+      expect(one, one.request).toMatchObject({ complete: false, tool: "unnamed" });
+      expect(await answerFlexibleRequest(world.store, sessions, { held: () => true, thread: T1, request: one.request, shownDigest: one.digest, by: pat(), choice: { decision: "accept" }, clock: () => NOW }))
+        .toMatchObject({ ok: false, reason: "scope-unshown" });
+    }
+    expect(agent.sent).toEqual([]);
+  });
+
+  test("a /proc entry that can't be read for any reason but its being gone leaves the holder unknown, and nothing is recovered", async () => {
+    const { linuxTable } = await import("./flexible-custody.js");
+    const gone = `console:${fakePid(13)}:${"0".repeat(16)}`, T2 = tid(2);
+    world.store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'ready')`)
+      .run(T2, world.project, world.second, `refs/toolroll/threads/${T2}/base`, join(world.state, "threads", T2), NOW.toISOString());
+    world.store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
+      VALUES (?, ?, 'claude', 'full', ?, ?, 'here', ?, ?, 't1', 'live', ?)`).run(tid(0xc3), T2, "f".repeat(32), gone, "9".repeat(32), fakePid(13), NOW.toISOString());
+    const errno = (code: string) => Object.assign(new Error(code), { code });
+    const stat = (pid: number) => `${pid} (node) S 1 ${pid} ${pid} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 12345 0 0`;
+    const fsWith = (fail: { stat?: string; read?: string }) => ({
+      readdir: () => ["1", String(fakePid(13))],
+      readFile: (path: string) => { if (path.includes(String(fakePid(13))) && fail.read !== undefined) throw errno(fail.read); return stat(Number(path.split("/")[2])); },
+      statUid: (path: string) => { if (path.includes(String(fakePid(13))) && fail.stat !== undefined) throw errno(fail.stat); return 0; },
+    });
+    // Unreadable (EACCES on stat, EIO on the stat file): the whole table is unknown.
+    for (const fail of [{ stat: "EACCES" }, { read: "EIO" }, { stat: "EPERM" }]) {
+      expect(linuxTable(fsWith(fail)), JSON.stringify(fail)).toBeNull();
+      const blind = { ...sessions, io: { ...sessions.io, table: () => linuxTable(fsWith(fail)) } };
+      expect(await recoverFlexibleHolders(world.store, blind, { clock: () => NOW })).toMatchObject({ ok: true, recovered: [], unknown: [gone] });
+    }
+    // Gone (ENOENT, ESRCH): the process is left out of a table that is otherwise whole.
+    for (const fail of [{ stat: "ENOENT" }, { read: "ESRCH" }]) expect(linuxTable(fsWith(fail))?.map(row => row.pid), JSON.stringify(fail)).toEqual([1]);
+    expect(world.store.handle.prepare("SELECT state FROM flexible_thread_launch WHERE id = ?").get(tid(0xc3))!["state"]).toBe("live");
+  });
+});
