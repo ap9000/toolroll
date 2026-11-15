@@ -27,8 +27,10 @@ import { shortTempDir } from "../test/short-temp.js";
 import { SOCKETS_TOO_DEEP } from "../test/inside-fence.js";
 import type { SignInOpener } from "./sign-in-page.js";
 import { termsArgs } from "../test/approval-terms.js";
+import { freePort, freePorts } from "../test/free-port.js";
 
-const PORT = 41000 + (process.pid % 2000);
+/** This test's own port, chosen at run time (test/free-port.ts); a test needing more asks freePorts for its own. */
+let PORT: number;
 
 let base: string;
 let repo: string;
@@ -39,7 +41,8 @@ const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYST
 const git = (args: string[], cwd: string) =>
   execFileSync("git", args, { cwd, env: { ...gitEnv, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
 
-beforeEach(() => {
+beforeEach(async () => {
+  PORT = await freePort();
   base = mkdtempSync(join(tmpdir(), "so-up-"));
   repo = join(base, "project");
   db = join(base, "orders.db");
@@ -132,18 +135,19 @@ describe("toolroll up", () => {
 
   // Inside an older plane's macOS check fence every folder a check may write was too deep for this test's unix socket path (about 104 bytes); CI (Linux, and the tag's macOS jobs) runs it unfenced.
   test.skipIf(SOCKETS_TOO_DEEP)("a running up proves itself live to this installation's CLI (cockpit B1); stopping forgets the record and the socket", async () => {
+    const [p21] = await freePorts(1);
     // A short state folder: a Unix socket path has to fit the platform's limit (~104 bytes on macOS).
     const short = shortTempDir("so-ui-");
     db = join(short, "orders.db");
     try {
     let proof: Promise<unknown> | null = null;
-    const code = await up([], PORT + 21, () => {
+    const code = await up([], p21, () => {
       const store = openStore(db);
       proof = proveLiveConsole(db, store, packageVersion()).finally(() => store.close());
     });
     expect(code).toBe(0);
     // The console is its own process (isolated-checks.md, stage 1): the record names it, not the `up` that started it.
-    expect(await proof).toEqual({ ok: true, url: `http://127.0.0.1:${PORT + 21}`, port: PORT + 21, pid: expect.any(Number), build: packageVersion() });
+    expect(await proof).toEqual({ ok: true, url: `http://127.0.0.1:${p21}`, port: p21, pid: expect.any(Number), build: packageVersion() });
     expect((await proof as { pid: number }).pid).not.toBe(process.pid);
     const store = openStore(db);
     try { expect(readInstance(store)).toBeNull(); } finally { store.close(); }
@@ -182,7 +186,8 @@ describe("toolroll up", () => {
   });
 
   test.each([0, 3])("--capacity is recorded and a built-in worker restart keeps saved capacity %s", async savedCapacity => {
-    expect(await up(["--capacity", "3"], PORT + 11, line => {
+    const [p11, p12] = await freePorts(2);
+    expect(await up(["--capacity", "3"], p11, line => {
       if (savedCapacity !== 0) return;
       // Drain while the worker is alive; shutdown retires it before up() returns.
       const started = JSON.parse(line);
@@ -202,7 +207,7 @@ describe("toolroll up", () => {
       store.close();
     }
     lines = [];
-    expect(await up([], PORT + 12)).toBe(0);
+    expect(await up([], p12)).toBe(0);
     store = openStore(db);
     try {
       expect(store.getRunner(runner)?.runner.capacity).toBe(savedCapacity);
@@ -212,16 +217,18 @@ describe("toolroll up", () => {
   });
 
   test("--capacity must be a whole number from 1 to 64, refused before anything starts", async () => {
+    const [p13] = await freePorts(1);
     for (const bad of ["0", "65", "1.5", "two"]) {
       lines = [];
-      expect(await up(["--capacity", bad], PORT + 13)).toBe(2);
+      expect(await up(["--capacity", bad], p13)).toBe(2);
       expect(envelope()).toMatchObject({ ok: false, reason: "usage" });
     }
     expect(existsSync(join(base, ".toolroll-secrets", "up-login.txt"))).toBe(false);
   });
 
   test("the saved projects folder reconnects projects when started outside a repository", async () => {
-    expect(await up(["--project-root", base], PORT + 7)).toBe(0);
+    const [p7, p8] = await freePorts(2);
+    expect(await up(["--project-root", base], p7)).toBe(0);
     lines = [];
     const previous = process.cwd();
     let code: number;
@@ -229,7 +236,7 @@ describe("toolroll up", () => {
       process.chdir(base);
       code = await runOperate(
         "up",
-        ["--port", String(PORT + 8), "--for", "900", "--json"],
+        ["--port", String(p8), "--for", "900", "--json"],
         line => lines.push(line),
         { databaseFile: db },
       );
@@ -243,10 +250,11 @@ describe("toolroll up", () => {
   });
 
   test("a busy port refuses BEFORE anything mints — the world stays untouched", async () => {
+    const [p1] = await freePorts(1);
     const squatter = createServer();
-    await new Promise<void>(ready => squatter.listen(PORT + 1, "127.0.0.1", ready));
+    await new Promise<void>(ready => squatter.listen(p1, "127.0.0.1", ready));
     try {
-      const code = await up([], PORT + 1);
+      const code = await up([], p1);
       expect(code).toBe(3);
       expect(envelope()).toMatchObject({ ok: false, reason: "port-busy" });
       const store = openStore(db);
@@ -263,10 +271,11 @@ describe("toolroll up", () => {
   });
 
   test("a refused start with --project-root says the folder wasn't saved, and where to choose it (a service already runs)", async () => {
+    const [p22] = await freePorts(1);
     const squatter = createServer();
-    await new Promise<void>(ready => squatter.listen(PORT + 22, "127.0.0.1", ready));
+    await new Promise<void>(ready => squatter.listen(p22, "127.0.0.1", ready));
     try {
-      expect(await up(["--project-root", base], PORT + 22)).toBe(3);
+      expect(await up(["--project-root", base], p22)).toBe(3);
       expect(envelope()).toMatchObject({ ok: false, reason: "port-busy" });
       expect(String(envelope()["message"] ?? JSON.stringify(envelope()))).toContain("The projects folder wasn't saved, because this Toolroll didn't start");
       expect(existsSync(join(base, "repos.json"))).toBe(false);
@@ -276,7 +285,8 @@ describe("toolroll up", () => {
   });
 
   test("a directory outside git refuses with both roads", async () => {
-    const code = await runOperate("up", ["--repo", base, "--port", String(PORT + 2), "--json"], line => lines.push(line), {
+    const [p2] = await freePorts(1);
+    const code = await runOperate("up", ["--repo", base, "--port", String(p2), "--json"], line => lines.push(line), {
       databaseFile: db,
     });
     expect(code).toBe(3);
@@ -286,23 +296,25 @@ describe("toolroll up", () => {
   });
 
   test("an explicitly named live worker refuses instead of taking its work", async () => {
+    const [p3] = await freePorts(1);
     const store = openStore(db);
     try {
       register(store, { name: "busy-worker", host: "elsewhere", now: new Date() });
     } finally {
       store.close();
     }
-    const code = await up(["--runner", "busy-worker"], PORT + 3);
+    const code = await up(["--runner", "busy-worker"], p3);
     expect(code).toBe(3);
     expect(envelope()).toMatchObject({ ok: false, reason: "runner-alive" });
   });
 
   test("without a terminal it prints the handoff, points at onboard, and opens no browser", async ({ onTestFinished }) => {
+    const [p14, p15, p18, p19, p17, p20] = await freePorts(6);
     // A credential never goes to TOOLROLL_BROWSER_COMMAND: only the platform's own opener, handed a page (eight k1).
     vi.stubEnv("TOOLROLL_BROWSER_COMMAND", join(base, "logs-every-argument"));
     onTestFinished(() => { vi.unstubAllEnvs(); });
     const opened: string[] = [];
-    const code = await runOperate("up", ["--repo", repo, "--port", String(PORT + 14), "--for", "1200"], line => lines.push(line), {
+    const code = await runOperate("up", ["--repo", repo, "--port", String(p14), "--for", "1200"], line => lines.push(line), {
       databaseFile: db,
       upSeams: { terminal: false, signInOpener: signInOpener(opened) },
     });
@@ -315,14 +327,14 @@ describe("toolroll up", () => {
     expect(text).toContain("watch: containment: ");
 
     lines = [];
-    expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 15), "--for", "1200"], line => lines.push(line), {
+    expect(await runOperate("up", ["--repo", repo, "--port", String(p15), "--for", "1200"], line => lines.push(line), {
       databaseFile: db,
       upSeams: { terminal: true, env: {}, signInOpener: signInOpener(opened) },
     })).toBe(0);
     // Three lines (onboarding): where it is, that it opens signed in, and what to do if it doesn't. The browser gets a
     // one-time sign-in link that is never printed; neither is the password.
     expect(opened).toHaveLength(1);
-    expect(opened[0]).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${PORT + 15}/login/once/[A-Za-z0-9_-]{43}$`));
+    expect(opened[0]).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:${p15}/login/once/[A-Za-z0-9_-]{43}$`));
     const greeting = lines.join("\n");
     const [, secret = ""] = readFileSync(join(base, ".toolroll-secrets", "up-login.txt"), "utf8").trim().split(" ");
     expect(greeting).not.toContain(secret);
@@ -337,9 +349,9 @@ describe("toolroll up", () => {
     expect(lines.join("\n")).not.toContain("watch: containment: ");
     expect(lines.filter(line => line.startsWith("Agents run without Linux process containment")).length).toBeLessThanOrEqual(1);
     // onboard names the console where up last served it.
-    expect(JSON.parse(readFileSync(join(base, "up-console.json"), "utf8"))).toMatchObject({ url: `http://127.0.0.1:${PORT + 15}/` });
+    expect(JSON.parse(readFileSync(join(base, "up-console.json"), "utf8"))).toMatchObject({ url: `http://127.0.0.1:${p15}/` });
     lines = [];
-    expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 18), "--for", "1200", "--no-open"], line => lines.push(line), {
+    expect(await runOperate("up", ["--repo", repo, "--port", String(p18), "--for", "1200", "--no-open"], line => lines.push(line), {
       databaseFile: db,
       upSeams: { terminal: true, env: {}, signInOpener: signInOpener(opened) },
     })).toBe(0);
@@ -356,7 +368,7 @@ describe("toolroll up", () => {
       for (const [index, relative] of (["-state/orders.db", "~root/state/orders.db"] as const).entries()) {
         mkdirSync(join(base, dirname(relative)), { recursive: true });
         lines = [];
-        expect(await runOperate("up", [`--db=${relative}`, "--repo", repo, "--port", String(PORT + 19 + index), "--for", "1200", "--no-open"], line => lines.push(line), {
+        expect(await runOperate("up", [`--db=${relative}`, "--repo", repo, "--port", String([p19, p20][index]!), "--for", "1200", "--no-open"], line => lines.push(line), {
           upSeams: { terminal: true, env: {} },
         })).toBe(0);
         const file = join(realpathSync(base), dirname(relative), ".toolroll-secrets", "up-login.txt");
@@ -367,7 +379,7 @@ describe("toolroll up", () => {
       }
     } finally { process.chdir(cwd); }
     lines = [];
-    expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 17), "--for", "1200", "--verbose"], line => lines.push(line), {
+    expect(await runOperate("up", ["--repo", repo, "--port", String(p17), "--for", "1200", "--verbose"], line => lines.push(line), {
       databaseFile: db,
       upSeams: { terminal: true, env: {}, signInOpener: signInOpener([]) },
     })).toBe(0);
@@ -389,12 +401,13 @@ describe("toolroll up", () => {
   });
 
   test("under a coding agent, even at a terminal, it prints the handoff and never the password", async () => {
+    const [p16] = await freePorts(1);
     for (const env of [{ CLAUDECODE: "1" }, { CODEX_SANDBOX: "seatbelt" }]) {
       rmSync(join(base, ".toolroll-secrets", "up-login.txt"), { force: true });
       for (const file of [db, `${db}-wal`, `${db}-shm`]) rmSync(file, { force: true });
       lines = [];
       const opened: string[] = [];
-      expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 16), "--for", "1200"], line => lines.push(line), {
+      expect(await runOperate("up", ["--repo", repo, "--port", String(p16), "--for", "1200"], line => lines.push(line), {
         databaseFile: db,
         upSeams: { terminal: true, env, signInOpener: signInOpener(opened) },
       })).toBe(0);
@@ -410,6 +423,7 @@ describe("toolroll up", () => {
 
 
   test("a project added while up is running connects without a restart", async ({ onTestFinished }) => {
+    const [p6] = await freePorts(1);
     const secondPath = join(base, "second-project");
     execFileSync("mkdir", ["-p", secondPath]);
     const second = realpathSync(secondPath);
@@ -425,7 +439,7 @@ describe("toolroll up", () => {
     let finished = false;
     const running = runOperate(
       "up",
-      ["--repo", repo, "--project-root", base, "--port", String(PORT + 6), "--json"],
+      ["--repo", repo, "--project-root", base, "--port", String(p6), "--json"],
       line => { lines.push(line); ready(); },
       {
         databaseFile: db,
@@ -527,7 +541,8 @@ describe("toolroll up", () => {
     const runnerRepos = (name: string) => { const store = openStore(db); try { return store.getRunner(name)?.runner.repos ?? []; } finally { store.close(); } };
 
     test("with nothing else to serve it still starts, then connects the project once it's back", async ({ onTestFinished }) => {
-      const up = startUp(PORT + 9);
+      const [p9] = await freePorts(1);
+      const up = startUp(p9);
       onTestFinished(async () => { await up.stop(); });
       await up.said(line => line.startsWith("{"));
       expect(envelope()).toMatchObject({ ok: true, repos: [] });
@@ -539,10 +554,11 @@ describe("toolroll up", () => {
     });
 
     test("a saved folder that comes back inside another checkout never connects that checkout", async ({ onTestFinished }) => {
+      const [p10] = await freePorts(1);
       // Saved: outer/inner. It comes back as a plain folder, so git finds the checkout around it.
       const outer = join(elsewhere, "outer"), inner = join(outer, "inner");
       expect(await updateRepos(registry(), current => addRepos(current, [inner]))).toMatchObject({ ok: true });
-      const up = startUp(PORT + 10);
+      const up = startUp(p10);
       onTestFinished(async () => { await up.stop(); });
       await up.said(line => line.startsWith("{"));
       makeRepo(outer);
@@ -554,6 +570,7 @@ describe("toolroll up", () => {
     });
 
     test("removed and saved again while its proof is under way, it never connects on the start's authority", async ({ onTestFinished }) => {
+      const [p11] = await freePorts(1);
       let release: () => void = () => {};
       const held = new Promise<void>(done => { release = done; });
       let proving: () => void = () => {};
@@ -563,7 +580,7 @@ describe("toolroll up", () => {
         if (armed && options?.cwd === later) { proving(); await held; }
         return execRun(file, [...args], { ...(options?.cwd === undefined ? {} : { cwd: options.cwd }), timeoutMs: 10_000 });
       };
-      const up = startUp(PORT + 11, { gitRunner });
+      const up = startUp(p11, { gitRunner });
       onTestFinished(async () => { release(); await up.stop(); });
       await up.said(line => line.startsWith("{"));
       makeRepo(later);
@@ -582,8 +599,9 @@ describe("toolroll up", () => {
     });
 
     test("a saved folder that comes back leading somewhere else never connects where it leads", async ({ onTestFinished }) => {
+      const [p12] = await freePorts(1);
       const other = join(elsewhere, "other");
-      const up = startUp(PORT + 12);
+      const up = startUp(p12);
       onTestFinished(async () => { await up.stop(); });
       await up.said(line => line.startsWith("{"));
       makeRepo(other);
@@ -595,10 +613,11 @@ describe("toolroll up", () => {
     });
 
     test("a removed project is let go while another saved project is away", async ({ onTestFinished }) => {
+      const [p13] = await freePorts(1);
       const kept = join(elsewhere, "kept");
       makeRepo(kept);
       expect(await updateRepos(registry(), current => addRepos(current, [kept]))).toMatchObject({ ok: true });
-      const up = startUp(PORT + 13);
+      const up = startUp(p13);
       onTestFinished(async () => { await up.stop(); });
       await up.said(line => line.startsWith("{"));
       expect(envelope()).toMatchObject({ ok: true, repos: [kept] });
@@ -626,6 +645,7 @@ describe("toolroll up", () => {
   });
 
   test("a project added from the command line or by the lead is in every console list at once, and removing it hides it", async ({ onTestFinished }) => {
+    const [p7] = await freePorts(1);
     const made = (name: string): string => {
       const path = join(base, name);
       execFileSync("mkdir", ["-p", path]);
@@ -642,7 +662,7 @@ describe("toolroll up", () => {
     const when = (map: Map<string, () => void>, path: string) => new Promise<void>(resolve => map.set(path, resolve));
     const marketAdopted = when(adopted, market), leadAdopted = when(adopted, leadAdded), marketReleased = when(released, market);
     let finished = false;
-    const running = runOperate("up", ["--repo", repo, "--port", String(PORT + 7), "--json"], line => { lines.push(line); ready(); }, {
+    const running = runOperate("up", ["--repo", repo, "--port", String(p7), "--json"], line => { lines.push(line); ready(); }, {
       databaseFile: db,
       openDatabase: file => {
         const store = openStore(file);
@@ -823,9 +843,10 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   const loginFile = () => join(base, ".toolroll-secrets", "up-login.txt");
 
   test("a computer with no opener Toolroll can hand a page to (Windows): no link is minted or opened, and the greeting says what to do instead", async () => {
+    const [p90] = await freePorts(1);
     const started: string[] = [];
     lines = [];
-    const code = await runOperate("up", ["--laptop", "--repo", repo, "--port", String(PORT + 90), "--for", "1500"], line => lines.push(line), {
+    const code = await runOperate("up", ["--laptop", "--repo", repo, "--port", String(p90), "--for", "1500"], line => lines.push(line), {
       databaseFile: db, inferProjectFromCwd: false,
       upSeams: { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true, signInPlatform: "win32",
         signInOpener: (command, args) => { started.push([command, ...args].join(" ")); return spawn(process.execPath, ["-e", ""], { stdio: "ignore" }); } },
@@ -840,7 +861,8 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("a new laptop install opens signed in as its owner with no password, before and after a password is set", async () => {
-    const first = await interactive(["--laptop", "--repo", repo], PORT + 40);
+    const [p40, p41, p42, p43] = await freePorts(4);
+    const first = await interactive(["--laptop", "--repo", repo], p40);
     expect(first.code, lines.join("\n")).toBe(0);
     expect(first.opened).toHaveLength(1);
     expect(first.sessions).toEqual([{ authority: "local-owner", localGeneration: 1 }]);
@@ -854,7 +876,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     } finally { store.close(); }
 
     // The next start: local again, nothing asked or written.
-    const second = await interactive(["--laptop", "--repo", repo], PORT + 41);
+    const second = await interactive(["--laptop", "--repo", repo], p41);
     expect(second.code).toBe(0);
     expect(second.sessions.filter(one => one.authority === "local-owner")).toHaveLength(2);
     expect(existsSync(loginFile())).toBe(false);
@@ -866,22 +888,23 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       const owner = enrolled.listApprovers()[0]!.name;
       expect(enrollOwnerPassword(enrolled, owner, hashPassword("set-later"), 1, new Date()).ok).toBe(true);
     } finally { enrolled.close(); }
-    const third = await interactive(["--repo", repo], PORT + 42);
+    const third = await interactive(["--repo", repo], p42);
     expect(third.code).toBe(0);
     expect(third.opened).toHaveLength(1);
     expect(third.sessions).toEqual([{ authority: "local-owner", localGeneration: 1 }]);
     expect(existsSync(loginFile())).toBe(false);
 
     // --no-open: no link at all.
-    const quiet = await interactive(["--laptop", "--repo", repo, "--no-open"], PORT + 43);
+    const quiet = await interactive(["--laptop", "--repo", repo, "--no-open"], p43);
     expect(quiet.code).toBe(0);
     expect(quiet.opened).toEqual([]);
   });
 
   test("an existing install with a saved login keeps the full link; --laptop changes nothing there", async () => {
-    expect(await up([], PORT + 44)).toBe(0);
+    const [p44, p45] = await freePorts(2);
+    expect(await up([], p44)).toBe(0);
     expect(existsSync(loginFile())).toBe(true);
-    const again = await interactive(["--laptop", "--repo", repo], PORT + 45);
+    const again = await interactive(["--laptop", "--repo", repo], p45);
     expect(again.code).toBe(0);
     expect(again.opened).toHaveLength(1);
     expect(again.sessions).toEqual([{ authority: "full", localGeneration: null }]);
@@ -890,23 +913,25 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("a laptop start with no projects folder uses ~/Projects; it serves this computer only", async () => {
+    const [p46, p47] = await freePorts(2);
     const home = join(base, "home");
     mkdirSync(home);
-    const started = await interactive(["--laptop", "--no-open"], PORT + 46, { home });
+    const started = await interactive(["--laptop", "--no-open"], p46, { home });
     expect(started.code, lines.join("\n")).toBe(0);
     expect(statSync(join(home, "Projects")).isDirectory()).toBe(true);
     expect((await loadProjectRegistry(join(base, "repos.json")) as { roots: string[] }).roots).toEqual([realpathSync(join(home, "Projects"))]);
     lines = [];
-    expect(await runOperate("up", ["--laptop", "--host", "0.0.0.0", "--port", String(PORT + 47), "--json"], line => lines.push(line), { databaseFile: db })).not.toBe(0);
+    expect(await runOperate("up", ["--laptop", "--host", "0.0.0.0", "--port", String(p47), "--json"], line => lines.push(line), { databaseFile: db })).not.toBe(0);
     expect(envelope()).toMatchObject({ ok: false, reason: "usage" });
   });
 
   test("a NEW laptop install steps past a port another program holds, saves it, and keeps it; other installs never move", async () => {
+    const [p48, p49, p50] = await freePorts(3);
     // Something that isn't this database's console holds the first port (another Toolroll, the desktop app's).
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(PORT + 48, "127.0.0.1", () => resolve()));
+    await new Promise<void>(resolve => foreign.listen(p48, "127.0.0.1", () => resolve()));
     try {
-      const ports = [PORT + 48, PORT + 49, PORT + 50];
+      const ports = [p48, p49, p50];
       const start = async (extra: string[] = []): Promise<number> => {
         lines = [];
         return runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1500", "--json", ...extra], line => lines.push(line), {
@@ -915,35 +940,36 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
         });
       };
       expect(await start(), lines.join("\n")).toBe(0);
-      expect(String(envelope()["url"])).toContain(`:${PORT + 49}`);
+      expect(String(envelope()["url"])).toContain(`:${p49}`);
       const saved = openStore(db);
       try {
-        expect(laptopPortOf(saved)).toBe(PORT + 49);
+        expect(laptopPortOf(saved)).toBe(p49);
         // The background service's unit (and its show) name the saved port when nothing is running.
         const shown = await backgroundShow(saved, db, null, { platform: "linux", home: join(base, "home"), node: process.execPath, dist: base, proveConsole: async () => ({ ok: false, state: "none", message: "no console is running" }), supervisor: async () => ({ code: 1, stdout: "", stderr: "" }) as never });
-        expect(shown.ok && shown.show.port).toBe(PORT + 49);
+        expect(shown.ok && shown.show.port).toBe(p49);
       } finally { saved.close(); }
       // The next start keeps the saved port, even with the first one free again.
       foreign.close();
       expect(await start(), lines.join("\n")).toBe(0);
-      expect(String(envelope()["url"])).toContain(`:${PORT + 49}`);
+      expect(String(envelope()["url"])).toContain(`:${p49}`);
       // --port still wins, and saves nothing new.
-      expect(await start(["--port", String(PORT + 50)]), lines.join("\n")).toBe(0);
-      expect(String(envelope()["url"])).toContain(`:${PORT + 50}`);
+      expect(await start(["--port", String(p50)]), lines.join("\n")).toBe(0);
+      expect(String(envelope()["url"])).toContain(`:${p50}`);
       const after = openStore(db);
-      try { expect(laptopPortOf(after)).toBe(PORT + 49); } finally { after.close(); }
+      try { expect(laptopPortOf(after)).toBe(p49); } finally { after.close(); }
     } finally { foreign.close(); }
   });
 
   test("an install not made by `up --laptop` keeps up's default port: a held port refuses, as before", async () => {
-    expect(await up([], PORT + 51)).toBe(0);
+    const [p51, p52, p53] = await freePorts(3);
+    expect(await up([], p51)).toBe(0);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(PORT + 52, "127.0.0.1", () => resolve()));
+    await new Promise<void>(resolve => foreign.listen(p52, "127.0.0.1", () => resolve()));
     try {
       lines = [];
       const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1500", "--json"], line => lines.push(line), {
         databaseFile: db, inferProjectFromCwd: false,
-        upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: [PORT + 52, PORT + 53] },
+        upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: [p52, p53] },
       });
       expect(code).not.toBe(0);
       expect(envelope()).toMatchObject({ ok: false, reason: "port-busy" });
@@ -953,6 +979,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("eight W2: a database made first by `status` becomes password-free under a direct `up --laptop` only for a person at its terminal", async () => {
+    const [p64, p60, p63, p61, p62] = await freePorts(5);
     /** A fresh database as `status` makes it before any start: no creator fact, no account. */
     const madeByStatus = async (file: string): Promise<void> => {
       expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
@@ -977,18 +1004,18 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     // And a brand-new database `up --laptop` makes itself, started with no terminal: never password-free either.
     lines = [];
     const fresh = join(base, "fresh-not-person.db");
-    expect(await laptopUp(fresh, PORT + 64, { terminal: false, env: {}, json: true }), lines.join("\n")).toBe(0);
+    expect(await laptopUp(fresh, p64, { terminal: false, env: {}, json: true }), lines.join("\n")).toBe(0);
     expect(localRows(fresh)).toBe(0);
     for (const [index, seams] of notPeople.entries()) {
       const file = join(base, `not-person-${index}.db`);
       await madeByStatus(file);
-      expect(await laptopUp(file, PORT + 60 + index, seams), lines.join("\n")).toBe(0);
+      expect(await laptopUp(file, [p60, p61, p62][index]!, seams), lines.join("\n")).toBe(0);
       expect(localRows(file), JSON.stringify(seams)).toBe(0);
     }
     // A person at its terminal: password-free, provenance untouched, no login minted.
     const file = join(base, "person.db");
     await madeByStatus(file);
-    expect(await laptopUp(file, PORT + 63, { terminal: true, env: {} }), lines.join("\n")).toBe(0);
+    expect(await laptopUp(file, p63, { terminal: true, env: {} }), lines.join("\n")).toBe(0);
     expect(lines.join("\n")).toContain("local mode is on");
     const store = openStore(file);
     try {
@@ -1000,8 +1027,9 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("eight W2: a password-free install not made by `up --laptop` steps past a port another program holds, never past its own running console", async () => {
+    const [p70, p71] = await freePorts(2);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(PORT + 70, "127.0.0.1", () => resolve()));
+    await new Promise<void>(resolve => foreign.listen(p70, "127.0.0.1", () => resolve()));
     const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
     try {
       // A database `status` made first, started by a person at its terminal with no --port: the next free port.
@@ -1009,18 +1037,19 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       expect(await runOperate("status", ["--json"], () => {}, { databaseFile: first })).toBe(0);
       lines = [];
       const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
-        databaseFile: first, inferProjectFromCwd: false, upSeams: { ...person, laptopPorts: [PORT + 70, PORT + 71] },
+        databaseFile: first, inferProjectFromCwd: false, upSeams: { ...person, laptopPorts: [p70, p71] },
       });
       expect(code, lines.join("\n")).toBe(0);
-      expect(lines.join("\n")).toContain(`port ${PORT + 70} is in use by another program, so Toolroll uses ${PORT + 71}`);
+      expect(lines.join("\n")).toContain(`port ${p70} is in use by another program, so Toolroll uses ${p71}`);
       const saved = openStore(first);
-      try { expect(laptopPortOf(saved)).toBe(PORT + 71); } finally { saved.close(); }
+      try { expect(laptopPortOf(saved)).toBe(p71); } finally { saved.close(); }
     } finally { foreign.close(); }
   });
 
   test.skipIf(SOCKETS_TOO_DEEP)("eight W2: a laptop start never steps past a busy port while this database's own console runs", async () => {
+    const [p70, p72, p73] = await freePorts(3);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(PORT + 70, "127.0.0.1", () => resolve()));
+    await new Promise<void>(resolve => foreign.listen(p70, "127.0.0.1", () => resolve()));
     const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
     // The console's socket sits beside its database: a short folder keeps it within the OS limit.
     const short = shortTempDir("so-w2-");
@@ -1029,7 +1058,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       // port to start another console beside it. It says where Toolroll runs, and nothing else is bound or written.
       const second = join(short, "second.db");
       const ownLines: string[] = [];
-      const running = runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--port", String(PORT + 72), "--for", "10000"], line => ownLines.push(line), {
+      const running = runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--port", String(p72), "--for", "10000"], line => ownLines.push(line), {
         databaseFile: second, inferProjectFromCwd: false, upSeams: person,
       });
       for (const deadline = Date.now() + 60_000; ;) {
@@ -1042,12 +1071,12 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       }
       lines = [];
       const again = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200", "--json"], line => lines.push(line), {
-        databaseFile: second, inferProjectFromCwd: false, upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: [PORT + 70, PORT + 73] },
+        databaseFile: second, inferProjectFromCwd: false, upSeams: { terminal: false, env: {}, home: join(base, "home"), fenceAvailable: () => true, laptopPorts: [p70, p73] },
       });
       expect(again).not.toBe(0);
-      expect(envelope()).toMatchObject({ ok: false, reason: "already-running", message: `Toolroll is already running at http://127.0.0.1:${PORT + 72}` });
+      expect(envelope()).toMatchObject({ ok: false, reason: "already-running", message: `Toolroll is already running at http://127.0.0.1:${p72}` });
       const probe = createServer();
-      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 73, "127.0.0.1", () => resolve()); });
+      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(p73, "127.0.0.1", () => resolve()); });
       probe.close();
       const store = openStore(second);
       try { expect(laptopPortOf(store)).toBeNull(); } finally { store.close(); }
@@ -1057,12 +1086,13 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("eight W2 (Codex #377 finding 2): a standalone `serve` running on an accountless database is never stepped past or made password-free", async () => {
+    const [p74, p75, p76, p77] = await freePorts(4);
     const file = join(base, "served.db");
     expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
     const home = join(base, "home");
     mkdirSync(home, { recursive: true });
     // `serve` as a person runs it: its own process (it stops on a signal), from source.
-    const served = spawn(process.execPath, ["--import", "tsx", "src/bin.ts", "serve", "--db", file, "--port", String(PORT + 74), "--json"], {
+    const served = spawn(process.execPath, ["--import", "tsx", "src/bin.ts", "serve", "--db", file, "--port", String(p74), "--json"], {
       cwd: process.cwd(), env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") }, stdio: ["ignore", "pipe", "pipe"],
     });
     let said = "";
@@ -1078,25 +1108,25 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       // A person's laptop start with no --port, the served port first in line: refused, nothing bound or made.
       lines = [];
       const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
-        databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 74, PORT + 75] },
+        databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [p74, p75] },
       });
       expect(code, lines.join("\n")).not.toBe(0);
       // The served port carries this database's console lifecycle row: never stepped past (the ordinary port-taken words).
-      expect(lines.join("\n")).toContain(`port ${PORT + 74} is taken`);
+      expect(lines.join("\n")).toContain(`port ${p74} is taken`);
       expect(localRows()).toBe(0);
       const probe = createServer();
-      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 75, "127.0.0.1", () => resolve()); });
+      await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(p75, "127.0.0.1", () => resolve()); });
       probe.close();
       // `serve` on a port not in line, another program holding the first one: still never stepped past to a second console.
       const foreign = createServer();
-      await new Promise<void>(resolve => foreign.listen(PORT + 76, "127.0.0.1", () => resolve()));
+      await new Promise<void>(resolve => foreign.listen(p76, "127.0.0.1", () => resolve()));
       try {
         lines = [];
         const beside = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
-          databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 76, PORT + 77] },
+          databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [p76, p77] },
         });
         expect(beside, lines.join("\n")).not.toBe(0);
-        expect(lines.join("\n")).toContain(`Toolroll is already running at http://127.0.0.1:${PORT + 74}`);
+        expect(lines.join("\n")).toContain(`Toolroll is already running at http://127.0.0.1:${p74}`);
         expect(localRows()).toBe(0);
       } finally { foreign.close(); }
       // Bare `toolroll`'s initialisation at the terminal refuses too, while `serve` runs.
@@ -1113,16 +1143,17 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("eight W2 (Codex #377 round 2, finding A): a stale console row blocks stepping while its port still listens, not once nothing does", async () => {
+    const [p80, p81, p82, p83] = await freePorts(4);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(PORT + 80, "127.0.0.1", () => resolve()));
+    await new Promise<void>(resolve => foreign.listen(p80, "127.0.0.1", () => resolve()));
     // A console of this database that is paused: its row is old (no heartbeat), its port still answers.
     const paused = createServer();
-    await new Promise<void>(resolve => paused.listen(PORT + 81, "127.0.0.1", () => resolve()));
+    await new Promise<void>(resolve => paused.listen(p81, "127.0.0.1", () => resolve()));
     const home = join(base, "home");
     const start = async (file: string): Promise<number> => {
       lines = [];
       return runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
-        databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [PORT + 80, PORT + 82] },
+        databaseFile: file, inferProjectFromCwd: false, upSeams: { terminal: true, env: {}, home, fenceAvailable: () => true, laptopPorts: [p80, p82] },
       });
     };
     const staleRow = (file: string, port: number): void => {
@@ -1132,26 +1163,27 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     try {
       const pausedDb = join(base, "paused.db");
       expect(await runOperate("status", ["--json"], () => {}, { databaseFile: pausedDb })).toBe(0);
-      staleRow(pausedDb, PORT + 81);
+      staleRow(pausedDb, p81);
       expect(await start(pausedDb), lines.join("\n")).not.toBe(0);
-      expect(lines.join("\n")).toContain(`Toolroll is already running at http://127.0.0.1:${PORT + 81}`);
+      expect(lines.join("\n")).toContain(`Toolroll is already running at http://127.0.0.1:${p81}`);
       // A row left by a console that crashed (nothing listens on its port any more): the start steps past the busy port.
       const crashedDb = join(base, "crashed.db");
       expect(await runOperate("status", ["--json"], () => {}, { databaseFile: crashedDb })).toBe(0);
-      staleRow(crashedDb, PORT + 83);
+      staleRow(crashedDb, p83);
       expect(await start(crashedDb), lines.join("\n")).toBe(0);
-      expect(lines.join("\n")).toContain(`port ${PORT + 80} is in use by another program, so Toolroll uses ${PORT + 82}`);
+      expect(lines.join("\n")).toContain(`port ${p80} is in use by another program, so Toolroll uses ${p82}`);
     } finally { foreign.close(); paused.close(); }
   });
 
   test("eight W2 (Codex #377 round 2, finding A): `serve` that can't record its console's lifecycle refuses to serve", async () => {
+    const [p84] = await freePorts(1);
     const file = join(base, "unrecordable.db");
     expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
     const store = openStore(file);
     try { store.handle.exec("CREATE TRIGGER no_console_rows BEFORE INSERT ON service_lifecycle WHEN NEW.component LIKE 'console:%' BEGIN SELECT RAISE(ABORT, 'refused'); END"); } finally { store.close(); }
     lines = [];
     let settled = false;
-    const serving = runOperate("serve", ["--port", String(PORT + 84), "--json"], line => lines.push(line), { databaseFile: file }).finally(() => { settled = true; });
+    const serving = runOperate("serve", ["--port", String(p84), "--json"], line => lines.push(line), { databaseFile: file }).finally(() => { settled = true; });
     for (const deadline = Date.now() + 10_000; !settled && Date.now() < deadline;) await new Promise(resolve => setTimeout(resolve, 50));
     // Before the fix it serves on (until a signal): stop it so the test can say so.
     if (!settled) process.emit("SIGINT");
@@ -1159,18 +1191,19 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
     expect(await serving).not.toBe(0);
     expect(envelope()).toMatchObject({ ok: false, command: "serve", reason: "lifecycle" });
     const probe = createServer();
-    await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(PORT + 84, "127.0.0.1", () => resolve()); });
+    await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(p84, "127.0.0.1", () => resolve()); });
     probe.close();
   });
 
   test("eight W2 (Codex #377 round 2, finding B): two consoles of one database on one port at different addresses keep their own rows", async () => {
+    const [p85] = await freePorts(1);
     const file = join(base, "two.db");
     expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
     const home = join(base, "home");
     mkdirSync(home, { recursive: true });
     const children: ReturnType<typeof spawn>[] = [];
     const serveOn = async (host: string): Promise<void> => {
-      const child = spawn(process.execPath, ["--import", "tsx", "src/bin.ts", "serve", "--db", file, "--host", host, "--port", String(PORT + 85), "--json"], {
+      const child = spawn(process.execPath, ["--import", "tsx", "src/bin.ts", "serve", "--db", file, "--host", host, "--port", String(p85), "--json"], {
         cwd: process.cwd(), env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config") }, stdio: ["ignore", "pipe", "pipe"],
       });
       children.push(child);
@@ -1188,7 +1221,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       const store = openStore(file);
       try {
         const rows = store.handle.prepare("SELECT component, state FROM service_lifecycle WHERE component LIKE 'console:%' ORDER BY component").all().map(row => ({ ...row }));
-        expect(rows).toEqual([{ component: `console:127.0.0.1:${PORT + 85}`, state: "started" }, { component: `console:::1:${PORT + 85}`, state: "started" }].sort((a, b) => a.component < b.component ? -1 : 1));
+        expect(rows).toEqual([{ component: `console:127.0.0.1:${p85}`, state: "started" }, { component: `console:::1:${p85}`, state: "started" }].sort((a, b) => a.component < b.component ? -1 : 1));
       } finally { store.close(); }
     } finally {
       for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
