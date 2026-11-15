@@ -21,10 +21,16 @@
  * - Turn limits are hard (reserved before the provider is asked) and dollar limits soft (no new turn once the day's
  *   measured spend reaches one; a running turn may go past it). A turn limit doesn't bound what one turn costs.
  * - Unknown cost: a turn whose usage can't be read still counts toward every turn limit. A keyed turn whose cost is
- *   unknown is never counted as $0: while a dollar limit applies to it, the day's spend can't be checked, so no new
- *   turn starts under that limit until the next day (UTC). A plan's turn costs $0 (spend.ts), whatever its usage.
+ *   unknown is never counted as $0: while a daily dollar limit applies to it, the day's spend can't be checked, so no
+ *   new turn starts under that limit until the next day (UTC); and a monthly hard budget it counts toward holds the
+ *   keyed turns it covers until the month ends (nothing settles an unknown cost later). A plan's turn costs $0
+ *   (spend.ts), whatever its usage.
+ * - An admission is for exactly that request under exactly those terms, on its own UTC day. Its start re-checks the
+ *   terms (the same terms row, not just the same words), the thread, and every spend limit (spend can move while it
+ *   waits); a start on a later day, or one that fails a check, withdraws it.
  * - A repeated request (the same request key on the same thread) never takes a second turn: while its turn waits to
- *   start it gets the same id back; once it started, it is refused. A turn that never started when its process went
+ *   start, the exact same request (person, generation, terms, level, agent, model, billing, holder) gets the same id
+ *   back and anything different is refused; once it started, it is refused. A turn that never started when its process went
  *   away is withdrawn (the provider was never asked: it counts toward nothing, and an active mode's start is given
  *   back), so the same request sent again after a restart takes exactly one turn. A turn that had started is
  *   interrupted and still counts.
@@ -32,7 +38,7 @@
 import { randomBytes } from "node:crypto";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel, type FlexibleRefusalReason, type FlexibleTerms } from "./flexible.js";
-import { budgetHoldWords, budgetStates, canPrice, countsToward, monthOf, priceWork, spendItems, type Billing, type SpendItem } from "./spend.js";
+import { budgetHoldWords, budgetLabel, budgetStates, canPrice, countsToward, monthOf, priceWork, spendItems, type Billing, type SpendItem } from "./spend.js";
 import type { Store } from "./store.js";
 
 // ---- records ----------------------------------------------------------------------------------------------------------
@@ -81,7 +87,8 @@ export function flexibleInstallationCaps(store: Store): FlexibleInstallationCaps
 export type FlexibleCap = "project-threads" | "project-turns" | "person-turns" | "project-dollars" | "installation-threads" | "installation-turns" | "installation-dollars"
   | "mode-runs" | "mode-dollars" | "plan" | "budget";
 export type FlexibleTurnRefusalReason = "not-available" | "invalid-request" | "thread-unknown" | "thread-not-ready" | "not-owner" | "already-sent" | "turn-in-progress"
-  | "level-pending" | "cap-reached" | "spend-unknown" | "turn-unknown" | "turn-not-admitted" | "turn-not-running" | "held-elsewhere" | "not-an-operator";
+  | "level-pending" | "cap-reached" | "spend-unknown" | "turn-unknown" | "turn-not-admitted" | "turn-not-running" | "held-elsewhere" | "not-an-operator"
+  | "request-changed" | "turn-expired";
 export type FlexibleTurnRefusal = { ok: false; reason: FlexibleTurnRefusalReason | FlexibleRefusalReason; message: string;
   /** For `cap-reached` and `spend-unknown`: the limit, and when it has room again (null: when a running turn ends). */
   cap?: FlexibleCap; resetsAt?: string | null };
@@ -99,6 +106,8 @@ const WORDS: Readonly<Record<Exclude<FlexibleTurnRefusalReason, "cap-reached" | 
   "turn-not-running": "This turn isn't running, so nothing was charged to it.",
   "held-elsewhere": "Another Toolroll process holds this turn, so this one didn't touch it.",
   "not-an-operator": "Only an instance operator can change the installation's Flexible limits. Nothing changed.",
+  "request-changed": "That message is already waiting to start with different settings (level, agent, billing or session). Send it again as a new message.",
+  "turn-expired": "This turn waited past midnight UTC, so it didn't start. Send the message again.",
 });
 const refuse = (reason: keyof typeof WORDS): FlexibleTurnRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
@@ -190,6 +199,48 @@ function releaseRail(store: Store, turn: FlexibleTurnRow): void {
   store.handle.prepare("UPDATE mode_rail SET reserved_starts = reserved_starts - 1 WHERE repo = ? AND utc_day = ? AND reserved_starts > 0").run(turn.repo, turn.utcDay);
 }
 
+/** Withdraw a turn that never started: it counts toward nothing, and gives back an active mode's start it took. */
+function withdrawTurn(store: Store, turn: FlexibleTurnRow, detail: string, at: string): void {
+  releaseRail(store, turn);
+  store.handle.prepare("UPDATE thread_turn SET status = 'withdrawn', ended_at = ?, end_detail = ? WHERE id = ? AND status = 'admitted'").run(at, detail.slice(0, 2000), turn.id);
+}
+
+/** What one month's monthly hard budgets say about a keyed turn toward `repo` and `person`: used up, unpriceable, or not
+ * checkable because a keyed Flexible turn this month toward one of them has an unknown cost. Read uncached, in the
+ * caller's transaction. An unknown cost holds the budgets it counts toward until the month ends (budgets are monthly;
+ * nothing settles an unknown cost later), never read as $0. */
+function budgetRefusal(store: Store, repo: string, person: string, provider: FlexibleTurnProvider, now: Date): FlexibleTurnRefusal | null {
+  const hard = store.budgets().filter(one => one.hardStop);
+  if (hard.length === 0) return null;
+  const month = monthOf(now);
+  const items = spendItems(store.handle, month.from, month.to);
+  const mine = budgetStates(hard, items).filter(one => countsToward({ project: repo, person, subagent: null } as SpendItem, one));
+  if (mine.length === 0) return null;
+  const over = mine.find(one => one.spentMicrousd >= one.limitMicrousd) ?? null;
+  if (over !== null) {
+    const hold = { over, why: "used-up" as const, unpricedProvider: null, remainingMicrousd: null };
+    return capReached("budget", `${budgetHoldWords(hold, month.name)}. Turns on an API key wait for next month or a higher budget.`, month.to);
+  }
+  const blind = mine.find(budget => items.some(item => item.kind === "flexible" && item.microusd === null && countsToward(item, budget))) ?? null;
+  if (blind !== null) {
+    return { ok: false, reason: "spend-unknown", cap: "budget", resetsAt: month.to,
+      message: `A turn this month on an API key ended without a cost Toolroll could measure, so ${budgetLabel(blind).replace(/^The /, "the ")} budget can't be checked. Turns on an API key it covers wait for next month.` };
+  }
+  if (!canPrice(store.handle, provider)) {
+    const hold = { over: mine[0]!, why: "unpriced" as const, unpricedProvider: provider, remainingMicrousd: null };
+    return capReached("budget", `${budgetHoldWords(hold, month.name)}.`, null);
+  }
+  return null;
+}
+
+/** An active mode's measured spend today in the project, as reserveModeRail counts it: runs and thread turns. */
+function modeSpentToday(store: Store, repo: string, day: string): number {
+  const runs = store.handle.prepare(`SELECT COALESCE(SUM(CAST(ROUND(run.cost_usd * 1000000) AS INTEGER)), 0) AS total FROM run JOIN task_ref ON task_ref.id = run.task_ref
+    WHERE task_ref.repo = ? AND run.cost_usd IS NOT NULL AND run.provider_started_at >= ? AND run.provider_started_at < ?`).get(repo, `${day}T00:00:00.000Z`, `${day}T23:59:59.999Z`);
+  const threads = store.handle.prepare("SELECT COALESCE(SUM(cost_microusd), 0) AS total FROM thread_turn WHERE repo = ? AND utc_day = ? AND status <> 'withdrawn'").get(repo, day);
+  return Number(runs?.["total"] ?? 0) + Number(threads?.["total"] ?? 0);
+}
+
 function validRequest(input: FlexibleTurnRequest): boolean {
   return typeof input === "object" && input !== null && TURN_ID.test(input.thread) && typeof input.starter?.name === "string" && Number.isSafeInteger(input.starter.generation)
     && typeof input.digest === "string" && isFlexibleLevel(input.level) && typeof input.freshProof === "boolean" && (input.provider === "claude" || input.provider === "codex")
@@ -218,7 +269,19 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
     if (!delegation.ok) return delegation;
 
     const same = readTurn(store.handle.prepare("SELECT * FROM thread_turn WHERE thread = ? AND request_key = ? AND status <> 'withdrawn'").get(input.thread, input.requestKey) as Record<string, unknown> | undefined);
-    if (same !== null) return same.status === "admitted" ? { ok: true as const, turn: same.id, seq: same.seq, replayed: true } : refuse("already-sent");
+    if (same !== null) {
+      if (same.status !== "admitted") return refuse("already-sent");
+      if (same.termsId !== delegation.termsId) {
+        // Admitted under terms that have since ended (off and on again, even with the same words): it can never start.
+        // It is withdrawn, and this request is admitted afresh under the live terms, every limit checked again.
+        withdrawTurn(store, same, "admitted under terms that have since ended", input.now.toISOString());
+      } else {
+        // The same request, exactly: the waiting turn back. Anything else about it differing is refused, never merged.
+        const exact = same.owner === input.starter.name && same.ownerGeneration === input.starter.generation && same.termsDigest === delegation.digest && same.level === input.level
+          && same.provider === input.provider && same.model === input.model && same.billing === input.billing && same.holder === input.holder;
+        return exact ? { ok: true as const, turn: same.id, seq: same.seq, replayed: true } : refuse("request-changed");
+      }
+    }
     if (store.handle.prepare("SELECT 1 AS hit FROM thread_turn WHERE thread = ? AND status IN ('admitted', 'running')").get(input.thread) !== undefined) return refuse("turn-in-progress");
     // The thread's agent was started for its last turn's level: another level waits for the restart (F2c's boundary).
     const last = store.handle.prepare("SELECT level FROM thread_turn WHERE thread = ? AND status <> 'withdrawn' ORDER BY seq DESC LIMIT 1").get(input.thread);
@@ -227,7 +290,7 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
       return { ok: false as const, reason: "level-pending" as const, message: `This thread's agent is still running at ${was}. Stop it, and its next turn starts at ${FLEXIBLE_LEVEL_WORDS[input.level]}.` };
     }
 
-    const limits = limitsRefusal(store, repo, input, delegation.terms);
+    const limits = countsRefusal(store, repo, input, delegation.terms) ?? spendRefusal(store, repo, input.starter.name, input.provider, input.billing, delegation.terms, input.now, false);
     if (limits !== null) return limits;
     const day = input.now.toISOString().slice(0, 10);
     const before = reservedStarts(store, repo, day);
@@ -247,8 +310,9 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
   });
 }
 
-/** The first limit with no room for this turn, or null. Read inside the admission's transaction. */
-function limitsRefusal(store: Store, repo: string, input: FlexibleTurnRequest, terms: FlexibleTerms): FlexibleTurnRefusal | null {
+/** The first count limit (threads at once, turns today) with no room for this turn, or null. Read inside the admission's
+ * transaction; the turn's own place is reserved by the row it writes. */
+function countsRefusal(store: Store, repo: string, input: FlexibleTurnRequest, terms: FlexibleTerms): FlexibleTurnRefusal | null {
   const { now } = input;
   const day = now.toISOString().slice(0, 10);
   const tomorrow = nextUtcDay(now);
@@ -261,49 +325,57 @@ function limitsRefusal(store: Store, repo: string, input: FlexibleTurnRequest, t
   const person = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE owner = ? AND utc_day = ? AND status <> 'withdrawn'").get(input.starter.name, day)!["n"]);
   if (person >= caps.turnsPerDayPerson) return capReached("person-turns", `You used your ${plural(caps.turnsPerDayPerson, "agent turn")} for today across Flexible projects. ${TOMORROW}`, tomorrow);
   const own = flexibleInstallationCaps(store);
-  if (own.liveThreads !== null || own.turnsPerDay !== null || own.measuredMicrousdPerDay !== null) {
+  if (own.liveThreads !== null || own.turnsPerDay !== null) {
     const all = usageOf(store, day, null);
     if (own.liveThreads !== null && all.threads >= own.liveThreads) {
       return capReached("installation-threads", `Toolroll already has ${plural(all.threads, "thread")} working, the most this installation allows. Try again when one finishes.`, null);
     }
     if (own.turnsPerDay !== null && all.turns >= own.turnsPerDay) return capReached("installation-turns", `This installation used its ${plural(own.turnsPerDay, "agent turn")} for today. ${TOMORROW}`, tomorrow);
-    const installation = dollarsRefusal("installation-dollars", "the installation's", own.measuredMicrousdPerDay, all, now);
-    if (installation !== null) return installation;
-  }
-  const projectDollars = dollarsRefusal("project-dollars", "this project's", caps.measuredMicrousdPerDay, project, now);
-  if (projectDollars !== null) return projectDollars;
-  // An active mode's measured rail counts thread turns' dollars (reserveModeRail); an unknown one can't be checked.
-  const modeCap = modeDollarCap(store, repo, now);
-  if (modeCap !== null && project.blind > 0) return dollarsRefusal("mode-dollars", "this project's mode", modeCap, project, now);
-  if (input.billing === "subscription") {
-    const spent = planSpent(store, input.provider, now);
-    if (spent !== null) {
-      const when = spent.until === null ? "when it resets" : `after it resets at ${spent.until.slice(11, 16)} UTC on ${spent.until.slice(0, 10)}`;
-      return capReached("plan", `Your ${PROVIDER_WORDS[input.provider]} plan's usage limit is reached. New turns can start ${when}.`, spent.until);
-    }
-  } else {
-    // The monthly budgets, as store.ts budgetGate reads them but uncached: this month's spend read in this transaction.
-    const hard = store.budgets().filter(one => one.hardStop);
-    if (hard.length > 0) {
-      const month = monthOf(now);
-      const mine = budgetStates(hard, spendItems(store.handle, month.from, month.to)).filter(one => countsToward({ project: repo, person: input.starter.name, subagent: null } as SpendItem, one));
-      const over = mine.find(one => one.spentMicrousd >= one.limitMicrousd) ?? null;
-      const blind = over === null && mine.length > 0 && !canPrice(store.handle, input.provider);
-      if (over !== null || blind) {
-        const hold = { over: over ?? mine[0]!, why: over !== null ? "used-up" as const : "unpriced" as const, unpricedProvider: input.provider, remainingMicrousd: null };
-        return capReached("budget", `${budgetHoldWords(hold, month.name)}.${over !== null ? " Turns on an API key wait for next month or a higher budget." : ""}`, null);
-      }
-    }
   }
   return null;
+}
+
+/**
+ * The first spend limit with no room for a turn now, or null: the installation's and the project's measured dollars a
+ * day (reached, or not checkable for an unknown keyed cost), an active mode's measured budget, the provider's plan window
+ * for a plan turn, and the monthly budgets for a keyed turn. Checked at admission and again at the turn's start, since
+ * spend can move while a turn waits; it reserves nothing. `modeReached`: also check the mode's budget is not yet spent
+ * (at admission reserveModeRail does that, and takes the day's start with it).
+ */
+function spendRefusal(store: Store, repo: string, owner: string, provider: FlexibleTurnProvider, billing: Billing, terms: FlexibleTerms, now: Date, modeReached: boolean): FlexibleTurnRefusal | null {
+  const day = now.toISOString().slice(0, 10);
+  const own = flexibleInstallationCaps(store);
+  if (own.measuredMicrousdPerDay !== null) {
+    const installation = dollarsRefusal("installation-dollars", "the installation's", own.measuredMicrousdPerDay, usageOf(store, day, null), now);
+    if (installation !== null) return installation;
+  }
+  const project = usageOf(store, day, repo);
+  const projectDollars = dollarsRefusal("project-dollars", "this project's", terms.caps.measuredMicrousdPerDay, project, now);
+  if (projectDollars !== null) return projectDollars;
+  // An active mode's measured budget counts thread turns' dollars (reserveModeRail); an unknown one can't be checked.
+  const modeCap = modeDollarCap(store, repo, now);
+  if (modeCap !== null && (project.blind > 0 || modeReached)) {
+    const mode = dollarsRefusal("mode-dollars", "this project's mode", modeCap, { spent: modeReached ? modeSpentToday(store, repo, day) : 0, blind: project.blind }, now);
+    if (mode !== null) return mode;
+  }
+  if (billing === "subscription") {
+    const spent = planSpent(store, provider, now);
+    if (spent !== null) {
+      const when = spent.until === null ? "when it resets" : `after it resets at ${spent.until.slice(11, 16)} UTC on ${spent.until.slice(0, 10)}`;
+      return capReached("plan", `Your ${PROVIDER_WORDS[provider]} plan's usage limit is reached. New turns can start ${when}.`, spent.until);
+    }
+    return null;
+  }
+  return budgetRefusal(store, repo, owner, provider, now);
 }
 
 // ---- the turn's life: start, charge, finish, and when its process is gone ----------------------------------------------
 
 /**
  * Start an admitted turn (F2c calls this, and commits it, before it asks the provider anything). The terms are checked
- * again from the turn's own record (the digest and generation it was admitted under): if they lapsed, changed or the
- * thread is no longer ready since admission, the turn is withdrawn (it counts toward nothing) and refused.
+ * again from the turn's own record (the terms row, digest and generation it was admitted under), and so is every spend
+ * limit: if the terms lapsed or changed, the thread is no longer ready, a spend limit has no room now, or the UTC day
+ * it was admitted in has passed, the turn is withdrawn (it counts toward nothing) and refused. It reserves nothing more.
  */
 export function beginFlexibleTurn(store: Store, input: { turn: string; holder: string; now: Date }): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
@@ -313,17 +385,22 @@ export function beginFlexibleTurn(store: Store, input: { turn: string; holder: s
     if (turn.status !== "admitted") return refuse("turn-not-admitted");
     if (turn.holder !== input.holder) return refuse("held-elsewhere");
     const at = input.now.toISOString();
-    const withdraw = (refusal: FlexibleTurnRefusal): FlexibleTurnRefusal => {
-      releaseRail(store, turn);
-      store.handle.prepare("UPDATE thread_turn SET status = 'withdrawn', ended_at = ?, end_detail = ? WHERE id = ? AND status = 'admitted'").run(at, refusal.message.slice(0, 2000), turn.id);
-      return refusal;
-    };
+    const withdraw = (refusal: FlexibleTurnRefusal): FlexibleTurnRefusal => { withdrawTurn(store, turn, refusal.message, at); return refusal; };
+    // An admission lasts its own UTC day: its place was counted in that day, so a later start would spend outside it.
+    if (at.slice(0, 10) !== turn.utcDay) return withdraw(refuse("turn-expired"));
     const thread = store.handle.prepare("SELECT state, created_by FROM flexible_thread WHERE id = ?").get(turn.thread);
     if (thread === undefined || thread["state"] !== "ready") return withdraw(refuse("thread-not-ready"));
     if (thread["created_by"] !== turn.owner) return withdraw(refuse("not-owner"));
     // The admission already required a fresh proof where this level needs one, for exactly this turn.
     const delegation = flexibleDelegationAtUse(store, { repo: turn.repo, starter: { name: turn.owner, generation: turn.ownerGeneration }, digest: turn.termsDigest, level: turn.level, freshProof: true });
     if (!delegation.ok) return withdraw(delegation);
+    // The exact terms row it was admitted under: terms turned off and on again (even with the same words) are new terms.
+    if (delegation.termsId !== turn.termsId) {
+      return withdraw({ ok: false, reason: "terms-changed", message: "This project's Flexible terms changed since this turn was admitted, so it didn't start. Send the message again." });
+    }
+    // Spend may have moved while it waited: a dollar limit reached, a plan window used up, a budget spent.
+    const spend = spendRefusal(store, turn.repo, turn.owner, turn.provider, turn.billing, delegation.terms, input.now, true);
+    if (spend !== null) return withdraw(spend);
     store.handle.prepare("UPDATE thread_turn SET status = 'running', started_at = ? WHERE id = ? AND status = 'admitted'").run(at, turn.id);
     return { ok: true as const, turn: flexibleTurn(store, turn.id)! };
   });
@@ -410,8 +487,7 @@ export function interruptFlexibleTurnsOf(store: Store, input: { holder: string; 
     for (const row of store.handle.prepare("SELECT * FROM thread_turn WHERE holder = ? AND status IN ('admitted', 'running') ORDER BY admitted_at, id").all(input.holder)) {
       const turn = readTurn(row as Record<string, unknown>)!;
       if (turn.status === "admitted") {
-        releaseRail(store, turn);
-        store.handle.prepare("UPDATE thread_turn SET status = 'withdrawn', ended_at = ?, end_detail = 'not started before Toolroll restarted' WHERE id = ?").run(at, turn.id);
+        withdrawTurn(store, turn, "not started before Toolroll restarted", at);
         withdrawn++;
       } else {
         const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";

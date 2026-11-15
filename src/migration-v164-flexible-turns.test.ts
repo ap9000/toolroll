@@ -29,6 +29,14 @@ function v163File(): string {
   raw.close();
   return file;
 }
+/** Every row of every table in a file (or of the named tables), in rowid order, except the schema version. */
+function savedRows(file: string, tables?: string[]): Record<string, unknown[]> {
+  const raw = new DatabaseSync(file);
+  const names = tables ?? raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'schema_version' ORDER BY name").all().map(row => String(row["name"]));
+  const rows = Object.fromEntries(names.map(name => [name, raw.prepare(`SELECT * FROM "${name}"`).all().map(row => ({ ...row }))]));
+  raw.close();
+  return rows;
+}
 const insert = (db: { prepare: DatabaseSync["prepare"] }, over: Record<string, unknown> = {}) => {
   const row = { id: ID, thread: THREAD, seq: 1, repo: "/work/app", owner: "alex", owner_generation: 1, terms_id: 1, terms_digest: "d".repeat(32), level: "full", provider: "claude",
     model: "claude-sonnet-4-5", billing: "subscription", request_key: "m-1", holder: "h1", admitted_at: T0, utc_day: T0.slice(0, 10), status: "admitted", ...over };
@@ -82,6 +90,8 @@ describe("v164", () => {
 
   test("an upgrade adds the tables and changes no saved row", () => {
     const file = v163File();
+    const before = savedRows(file);
+    expect(Object.values(before).some(rows => rows.length > 0)).toBe(true);
     const steps: string[] = [];
     const upgraded = openStore(file, { migrationStep: one => steps.push(one) });
     expect(steps).toEqual(expect.arrayContaining([...V164_STEPS]));
@@ -89,6 +99,9 @@ describe("v164", () => {
     for (const table of V164_TABLES) expect(upgraded.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
     expect(upgraded.accountOf("alex")).not.toBeNull();
     upgraded.close();
+    // Every row of every table the v163 file had reads exactly as it did (only the version moved).
+    const after = savedRows(file, Object.keys(before));
+    expect(after).toEqual(before);
   });
 
   test.each([["typed-by-person"], ["thread-turn"]])("a crash after %s resumes to the same shape", step => {

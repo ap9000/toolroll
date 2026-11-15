@@ -347,6 +347,68 @@ describe("the turn's life", () => {
   });
 });
 
+/** Turn the project's terms off and on again with exactly the same words: a new terms row under the same digest. */
+function offAndOn(repo: string): void {
+  const row = store.handle.prepare("SELECT terms_json, digest FROM flexible_terms WHERE repo = ? AND ended_at IS NULL").get(repo)!;
+  store.handle.prepare("UPDATE flexible_terms SET ended_at = ?, ended_by = 'alex', end_reason = 'off' WHERE repo = ? AND ended_at IS NULL").run(NOW.toISOString(), repo);
+  store.handle.prepare(`INSERT INTO flexible_terms (repo, terms_json, digest, signed_terms_json, signed_digest, signed_by, signed_at, proof, changed_by, changed_at)
+    VALUES (?, ?, ?, ?, ?, 'alex', ?, 'password-now', 'alex', ?)`).run(repo, row["terms_json"], row["digest"], row["terms_json"], row["digest"], NOW.toISOString(), NOW.toISOString());
+}
+
+describe("an admission is for exactly that request, under exactly those terms, on its own day", () => {
+  test("a repeated request with anything changed is refused, and the start runs what was admitted", () => {
+    const first = admitted({ requestKey: "msg-1", level: "full" });
+    for (const change of [{ level: "supervised" }, { provider: "codex" }, { model: "claude-opus-4-1" }, { billing: "api-key" }, { holder: "h9" }] as Partial<FlexibleTurnRequest>[]) {
+      expect(admit({ requestKey: "msg-1", ...change }), JSON.stringify(change)).toMatchObject({ ok: false, reason: "request-changed" });
+    }
+    expect(admit({ requestKey: "msg-1", level: "full" })).toEqual({ ok: true, turn: first, seq: 1, replayed: true });
+    expect(beginFlexibleTurn(store, { turn: first, holder: "h1", now: NOW })).toMatchObject({ ok: true, turn: { level: "full", provider: "claude", billing: "subscription" } });
+  });
+
+  test("terms turned off and on again with the same words don't revive a turn admitted under the old ones", () => {
+    const waiting = admitted({ requestKey: "msg-1" });
+    offAndOn(REPO);
+    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "terms-changed" });
+    expect(statusOf(waiting)).toBe("withdrawn");
+    // The same request again: admitted afresh under the live terms.
+    const again = admit({ requestKey: "msg-1" });
+    expect(again).toMatchObject({ ok: true, replayed: false });
+    // And a waiting turn the same request finds under ended terms is withdrawn, never handed back.
+    if (!again.ok) return;
+    offAndOn(REPO);
+    const third = admit({ requestKey: "msg-1" });
+    expect(third).toMatchObject({ ok: true, replayed: false });
+    if (third.ok) expect(third.turn).not.toBe(again.turn);
+    expect(statusOf(again.turn)).toBe("withdrawn");
+  });
+
+  test("a waiting turn doesn't start once a dollar limit is reached while it waited", () => {
+    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: null, turnsPerDay: null, measuredMicrousdPerDay: 1_000_000 }, now: NOW })).toMatchObject({ ok: true });
+    thread(T2);
+    const a = admitted({ thread: T1, billing: "api-key" });
+    const b = admitted({ thread: T2, billing: "api-key" });
+    expect(beginFlexibleTurn(store, { turn: b, holder: "h1", now: NOW })).toMatchObject({ ok: true });
+    expect(chargeFlexibleTurn(store, { turn: b, usage: { tokensIn: 1, tokensOut: 1, costUsd: 2 } })).toMatchObject({ ok: true });
+    expect(finishFlexibleTurn(store, { turn: b, holder: "h1", outcome: "finished", usage: null, now: NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: a, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "cap-reached", cap: "installation-dollars", resetsAt: MIDNIGHT });
+    expect(statusOf(a)).toBe("withdrawn");
+  });
+
+  test("a waiting turn doesn't start on a later day: its place was counted in the day it was admitted", () => {
+    const waiting = admitted({ now: LATER });
+    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", now: TOMORROW })).toMatchObject({ ok: false, reason: "turn-expired", message: "This turn waited past midnight UTC, so it didn't start. Send the message again." });
+    expect(statusOf(waiting)).toBe("withdrawn");
+  });
+
+  test("a keyed turn of unknown cost holds the monthly hard budgets it counts toward until the month ends", () => {
+    turn({ billing: "api-key" }, null, "unknown");
+    store.setBudget({ scope: "project", key: REPO, limitMicrousd: 50_000_000, hardStop: true }, "alex", NOW);
+    expect(admit({ billing: "api-key" })).toMatchObject({ ok: false, reason: "spend-unknown", cap: "budget", resetsAt: "2026-12-01T00:00:00.000Z",
+      message: expect.stringContaining("so the app project's budget can't be checked") });
+    expect(admit({ billing: "subscription" })).toMatchObject({ ok: true });
+  });
+});
+
 /** One process's admission, with its own database handle: the build's constant replaced by a module hook (as vi.mock
  * does here), started together with the others. */
 const RACE = `
