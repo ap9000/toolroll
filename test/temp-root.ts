@@ -2,6 +2,7 @@ import { accessSync, constants, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname } from "node:path";
 import { makeTempRoot, removeOnExit, removeRoot } from "../scripts/suite-lifecycle.mjs";
+import { realHomeGuard } from "../scripts/isolated-env.mjs";
 
 /**
  * Tests leave no temp folders. Every test run gets one temp root of its own, before any worker starts: the workers
@@ -12,7 +13,13 @@ import { makeTempRoot, removeOnExit, removeRoot } from "../scripts/suite-lifecyc
  * module cache (a random name in the temp folder, made before this runs), which only a clean finish removes. A short
  * name keeps the socket paths tests make under it within the OS limit.
  */
-export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }): () => void {
+/**
+ * The run also proves it left nothing in the person's real home (scripts/isolated-env.mjs realHomeGuard, read-only):
+ * no Claude transcript folder named after this run's temp root and no line in ~/.toolroll/git-incidents.jsonl naming
+ * it. Anything there fails the run at teardown, naming what was left (the person decides about removing it). `homes`:
+ * where to look (tests of this guard), else the account's own home and the HOME this run started with.
+ */
+export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, options: { homes?: string[] } = {}): () => void {
   const own = project?.vitest?._tmpDir;
   if (typeof own === "string" && dirname(own) === tmpdir() && /^[\w-]{21}$/.test(basename(own))) removeOnExit(own);
   const before = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
@@ -20,12 +27,15 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }): 
   process.env.TMPDIR = root;
   process.env.TMP = root;
   process.env.TEMP = root;
+  const guard = realHomeGuard({ root, ...(options.homes === undefined ? {} : { homes: options.homes }) });
   return () => {
     for (const [name, value] of Object.entries(before)) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    const left: string[] = guard.check();
     removeRoot(root);
+    if (left.length > 0) throw new Error(`These tests wrote into the person's real home (${left.length}): ${left.slice(0, 10).join(", ")}. A test's HOME is its own (test/setup-state.ts); find what ignored it.`);
   };
 }
 

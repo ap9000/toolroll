@@ -59,6 +59,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { limiter } from "./provider-gate.mjs";
 import { runSuite, removeOnExit, writeNow } from "./suite-lifecycle.mjs";
+import { assertIsolated, isolatedEnvironment } from "./isolated-env.mjs";
 import { result } from "./check-results.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -476,9 +477,20 @@ function toolsDir(work) {
   symlinkSync(realpathSync(npm), join(tools, "npm"));
   return tools;
 }
+/** A release's home as its own computer (isolated-env.mjs): built from nothing (no copy of this process's environment,
+ * so no agent CLI, credential or browser of the person's), HOME the release's home, PATH its prefix, node and npm and
+ * the system's own folders. Its XDG folders and temp sit beside it in the work folder. */
 function envFor(home, prefix) {
-  return { ...process.env, HOME: home, PATH: [join(prefix, "bin"), toolsDir(dirname(home)), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
-    TOOLROLL_NO_UPDATE_CHECK: "1", npm_config_update_notifier: "false", npm_config_fund: "false", npm_config_audit: "false" };
+  const work = dirname(home);
+  const world = isolatedEnvironment({
+    root: join(work, `env-${basename(home)}`),
+    outer: { ...process.env, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+    first: [join(prefix, "bin"), toolsDir(work)],
+    set: { HOME: home, USERPROFILE: home, TOOLROLL_NO_UPDATE_CHECK: "1", npm_config_update_notifier: "false", npm_config_fund: "false", npm_config_audit: "false",
+      ...(process.env.npm_config_registry ? { npm_config_registry: process.env.npm_config_registry } : {}) },
+  });
+  assertIsolated(world.env, { root: work, allowed: [] });
+  return world.env;
 }
 
 /** Where each published release is installed once: `<cache>/<version>` is a whole npm global prefix. */

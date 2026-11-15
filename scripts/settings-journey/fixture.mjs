@@ -12,6 +12,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
+import { assertIsolated, isolatedEnvironment } from "../isolated-env.mjs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -52,29 +53,25 @@ export function assertFixtureSafe({ root, paths, port, home: given = realHome(),
   if (port !== undefined && (port === LIVE_PORT || !Number.isInteger(port) || port <= 0)) throw new Error(`fixture port ${port} isn't a free random port`);
 }
 
-const ENV_KEYS = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "TOOLROLL_DB", "STANDING_ORDERS_DB", "TOOLROLL_NO_UPDATE_CHECK", "TOOLROLL_STORAGE_SWEEP", "TOOLROLL_SECRET_STORE", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
-
-/** Points this process at a fresh temp root (as test/setup-state.ts does for the suite) and returns it with a
- * restore function. The live database names are remembered so the guard can refuse them by path. */
+/** Points this process at a fresh temp root, its environment replaced by one built from nothing (isolated-env.mjs: its
+ * own HOME and XDG folders, no agent CLI on its PATH, recording browser openers), and returns it with a restore
+ * function. The in-process console reads this environment, so it can find no agent of the person's. The live database
+ * names are remembered so the guard can refuse them by path. */
 export function isolateEnvironment() {
   const liveDb = [process.env.TOOLROLL_DB, process.env.STANDING_ORDERS_DB, join(realHome(), ".config", "standing-orders", "orders.db")];
-  const before = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
+  const before = { ...process.env };
   const root = realpathSync(mkdtempSync(join(tmpdir(), "so-settings-journey-")));
-  mkdirSync(join(root, "home"));
-  writeFileSync(join(root, "home", ".gitconfig"), "[user]\n\tuseConfigOnly = true\n");
-  process.env.HOME = join(root, "home");
-  process.env.USERPROFILE = join(root, "home");
-  process.env.XDG_CONFIG_HOME = join(root, "config");
-  process.env.TOOLROLL_DB = join(root, "plane.db");
-  process.env.STANDING_ORDERS_DB = join(root, "plane.db");
-  process.env.TOOLROLL_NO_UPDATE_CHECK = "1";
-  process.env.TOOLROLL_STORAGE_SWEEP = "off";
-  process.env.TOOLROLL_SECRET_STORE = "files";
-  delete process.env.CODEX_HOME;
-  delete process.env.CLAUDE_CONFIG_DIR;
+  const world = isolatedEnvironment({ root, set: {
+    XDG_CONFIG_HOME: join(root, "config"), TOOLROLL_DB: join(root, "plane.db"), STANDING_ORDERS_DB: join(root, "plane.db"),
+  } });
+  writeFileSync(join(world.home, ".gitconfig"), "[user]\n\tuseConfigOnly = true\n");
+  assertIsolated(world.env, { root, allowed: [] });
+  for (const name of Object.keys(process.env)) delete process.env[name];
+  Object.assign(process.env, world.env);
   assertFixtureSafe({ root, liveDb, paths: { home: process.env.HOME, config: process.env.XDG_CONFIG_HOME, db: process.env.TOOLROLL_DB } });
   const restore = () => {
-    for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    for (const name of Object.keys(process.env)) delete process.env[name];
+    Object.assign(process.env, before);
     rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   };
   return { root, liveDb, restore };

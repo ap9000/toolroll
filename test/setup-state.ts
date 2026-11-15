@@ -1,6 +1,6 @@
 import { afterAll, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { freshStoreOpener } from "./fresh-store.js";
 import { NO_GUESSED_IDENTITY } from "./git-identity.js";
@@ -9,18 +9,6 @@ import { memoryAnchor, registerSecretFolder } from "../src/tool-secret-store.js"
 // Runs before each test file's imports. A reporting command, subprocess, or
 // failed fixture must never fall back to the developer's control-plane state.
 const state = mkdtempSync(join(tmpdir(), "toolroll-tests-"));
-const before = {
-  TOOLROLL_DB: process.env.TOOLROLL_DB,
-  STANDING_ORDERS_DB: process.env.STANDING_ORDERS_DB,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  TOOLROLL_NO_UPDATE_CHECK: process.env.TOOLROLL_NO_UPDATE_CHECK,
-  TOOLROLL_STORAGE_SWEEP: process.env.TOOLROLL_STORAGE_SWEEP,
-  TOOLROLL_SECRET_STORE: process.env.TOOLROLL_SECRET_STORE,
-  HOME: process.env.HOME,
-  USERPROFILE: process.env.USERPROFILE,
-  CODEX_HOME: process.env.CODEX_HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-};
 // Both names: the new one is read first, and neither may name the live store.
 process.env.TOOLROLL_DB = join(state, "orders.db");
 process.env.STANDING_ORDERS_DB = join(state, "orders.db");
@@ -38,6 +26,9 @@ process.env.TOOLROLL_TEST_OUTER_HOME ??= process.env.HOME ?? "";
 mkdirSync(join(state, "home"));
 process.env.HOME = join(state, "home");
 process.env.USERPROFILE = join(state, "home");
+// Fail closed: a test file never starts with the person's own home as its HOME (os.homedir(), and so every default
+// rooted in it: ~/.toolroll, ~/.claude, the build caches, follows HOME).
+assertNotPersonHome(process.env.HOME);
 // Git in this home never guesses an identity from the host name (macOS does, Linux CI can't): a test that commits
 // sets one (test/git-identity.ts withGitIdentity), so a missing one fails here as it would in CI.
 writeFileSync(join(state, "home", ".gitconfig"), NO_GUESSED_IDENTITY);
@@ -53,9 +44,16 @@ vi.mock("../src/store.js", async importOriginal => {
   return { ...real, openStore: freshStoreOpener(real.openStore, mkdtempSync(join(state, "fresh-"))) };
 });
 afterAll(() => {
-  for (const [name, value] of Object.entries(before)) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
+  // Nothing of the person's comes back after the tests: work a test left running (a timed-out git command, a late
+  // incident record) still finishes in this file's own throwaway home and database, never in ~/.toolroll or the real
+  // database. 2026-11-14: a Flexible thread test's incident landed in the real ~/.toolroll/git-incidents.jsonl, as a
+  // HOME put back here would send it. The worker process ends with the file; nothing after it reads these.
   rmSync(state, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 });
+
+/** Throws when `home` is the person's own home folder (the password database's, or the HOME this run started with). */
+function assertNotPersonHome(home: string | undefined): void {
+  const real = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
+  const person = [userInfo().homedir, process.env.TOOLROLL_TEST_OUTER_HOME].filter((one): one is string => typeof one === "string" && one !== "").map(real);
+  if (home === undefined || home === "" || person.includes(real(home))) throw new Error(`test/setup-state.ts: a test's HOME must be its own throwaway folder, not ${home ?? "unset"}`);
+}
