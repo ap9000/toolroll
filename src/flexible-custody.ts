@@ -300,11 +300,11 @@ export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options
       return unresolved(scan);
     }
     full = false;
-    const fresh = scan.members.filter(row => frozen.get(row.pid) !== row.start);
-    if (fresh.length > 0) {
+    const notYetFrozen = scan.members.filter(row => frozen.get(row.pid) !== row.start);
+    if (notYetFrozen.length > 0) {
       // Freeze what is new, then look again: a process born during this look is caught by the next one.
-      const results = send(fresh, "SIGSTOP");
-      for (const row of fresh) if (results.get(row.pid) === "sent") frozen.set(row.pid, row.start);
+      const results = send(notYetFrozen, "SIGSTOP");
+      for (const row of notYetFrozen) if (results.get(row.pid) === "sent") frozen.set(row.pid, row.start);
     } else {
       // Nothing new while everything is frozen: nothing can fork now. Kill all of it, each by its identity.
       send(scan.members, "SIGKILL");
@@ -317,7 +317,7 @@ export async function stopCustody(custody: LaunchCustody, io: CustodyIO, options
       if (problem === null && last.members.length === 0 && last.blockers.length === 0 && last.incomplete === null) return { verified: true, how: bare ? "best-effort" : "none-left", namespaces: seenNamespaces, witnesses: seenWitnesses };
       return unresolved(last);
     }
-    await io.sleep(fresh.length > 0 ? 20 : 100);
+    await io.sleep(notYetFrozen.length > 0 ? 20 : 100);
   }
 }
 

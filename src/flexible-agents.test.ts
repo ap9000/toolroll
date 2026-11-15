@@ -125,6 +125,14 @@ describe("the relay's stand-in", () => {
       socket.on("close", () => done(said));
     });
     expect(tunnel).toMatch(/^HTTP\/1\.1 403/);
+    // An upgrade (a WebSocket) is refused as a call, never switched.
+    const upgrade = await new Promise<string>(done => {
+      const socket = connect(Number(new URL(stub.url).port), "127.0.0.1", () => socket.write(`GET /v1/messages HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nAuthorization: Bearer ${endpoint.token}\r\n\r\n`));
+      let said = "";
+      socket.on("data", chunk => { said += chunk; socket.destroy(); });
+      socket.on("close", () => done(said));
+    });
+    expect(upgrade).toMatch(/^HTTP\/1\.1 401/);
     expect(stub.authorized()).toBe(tries.length);
   }, 30_000);
 

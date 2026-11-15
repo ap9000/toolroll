@@ -566,6 +566,20 @@ export function flexibleFenceDigest(launch: LaunchFence): string {
   return createHash("sha256").update(`standing-orders:flexible-fence:${JSON.stringify({ fence: launch.fence, grants: launch.fenceGrants })}`, "utf8").digest("hex").slice(0, 32);
 }
 
+/**
+ * Stop a launch whose start gate never opened: its whole process group, not just the leader. On Linux the leader is the
+ * launch helper (sandbox-launch.ts), and the network relays it started (and bubblewrap) share its group; killing the
+ * leader alone leaves them running, since only the helper stops them. The group is signalled by number only while the
+ * leader is Toolroll's own child and not yet reaped (checked in the same synchronous step, before any reaping can run):
+ * the group's number is then provably this launch's. Once the leader has been reaped, nothing is signalled by number;
+ * whatever is left is the custody scan's to find.
+ */
+function stopUnopenedLaunch(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1 || child.exitCode !== null || child.signalCode !== null) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+}
+
 /** Test seams (a parameter, never a setting): what to do right after the spawn, before the registration (a test
  * throws here to prove a spawned-then-failed launch leaves nothing running), and the OS custody reads. */
 export type FlexibleThreadSpawnSeams = { afterSpawn?: (pid: number) => void; io?: CustodyIO };
@@ -653,9 +667,7 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
     holdLaunch(record.id, child);
   } catch (error) {
     try { child.stdin?.destroy(); } catch { /* already closed */ }
-    // Through the handle Toolroll holds (its own child: the pid can't be reused until it is reaped). The rest of the
-    // wrapper exits on its own: the gate's input is closed.
-    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    stopUnopenedLaunch(child);
     try { recordNeverStarted(store, record.id, `stopped before it ran: ${error instanceof Error ? error.message : String(error)}`); } catch { /* left spawning: settleLaunch ends it */ }
     return refuse("containment", "the agent's process couldn't be registered, so it was stopped before it ran");
   }
@@ -664,7 +676,7 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
   try { shut = input.beforeOpen?.() ?? null; } catch (error) { shut = error instanceof Error ? error.message : "the start couldn't be re-checked"; }
   if (shut !== null) {
     try { child.stdin?.destroy(); } catch { /* already closed */ }
-    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    stopUnopenedLaunch(child);
     recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: `stopped before it ran: ${shut}` });
     return refuse("thread-not-ready", shut);
   }

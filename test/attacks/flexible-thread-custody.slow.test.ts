@@ -125,9 +125,13 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     needs(ctx, osFence());
     const { id, paths } = await thread();
     const ran = join(paths.tmp, "gate-ran");
+    let pid = 0;
     const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH,
-      beforeOpen: () => "the thread was lowered to Supervised" }, "/bin/sh", ["-c", `echo ran > ${q(ran)}; sleep 30`]);
+      beforeOpen: () => "the thread was lowered to Supervised" }, "/bin/sh", ["-c", `echo ran > ${q(ran)}; sleep 30`], process.platform, { afterSpawn: spawned => { pid = spawned; } });
     expect(refused).toMatchObject({ ok: false, message: expect.stringContaining("the thread was lowered to Supervised") });
+    // The whole launch is gone, its group included (on Linux the helper's network relays share it).
+    expect(pid).toBeGreaterThan(1);
+    await until(() => { try { process.kill(-pid, 0); return false; } catch { return true; } });
     await sleep(1_000);
     expect(existsSync(ran)).toBe(false);
     expect(world.store.handle.prepare("SELECT state, end_detail FROM flexible_thread_launch").all().map(row => ({ ...row }))).toEqual([{ state: "exited", end_detail: "stopped before it ran: the thread was lowered to Supervised" }]);

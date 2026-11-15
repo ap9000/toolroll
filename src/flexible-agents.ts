@@ -76,9 +76,9 @@ export async function startFlexibleRelayStub(store: Store): Promise<FlexibleRela
     response.writeHead(live ? 503 : 401, { "content-type": "application/json", "cache-control": "no-store" })
       .end(live ? said("relay_unavailable", RELAY_STUB_REFUSAL) : said("authentication_error", RELAY_NOT_AUTHORIZED));
   });
-  // A tunnel or an upgrade gets nothing either.
+  // A tunnel gets nothing either. An upgrade request has no listener of its own (the console's terminals keep the one
+  // upgrade listener in the server): Node hands it to the request handler above, which refuses it like any call.
   server.on("connect", (_request, socket) => { refused++; socket.on("error", () => {}); socket.end("HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n"); });
-  server.on("upgrade", (_request, socket) => { refused++; socket.on("error", () => {}); socket.destroy(); });
   await new Promise<void>((done, failed) => { server.once("error", failed); server.listen(0, "127.0.0.1", () => done()); });
   const address = server.address();
   const port = typeof address === "object" && address !== null ? address.port : 0;
