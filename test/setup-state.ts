@@ -1,7 +1,7 @@
-import { afterAll, vi } from "vitest";
+import { afterAll, expect, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 // @ts-expect-error plain ESM script without declarations
 import { approvedTools, passes } from "../scripts/isolated-env.mjs";
 
@@ -21,7 +21,8 @@ const personHomes = [userInfo().homedir, process.env.HOME].filter((one): one is 
 const WORKER_PASS = ["VITEST", "VITEST_MODE", "VITEST_POOL_ID", "VITEST_WORKER_ID", "TEST", "NODE_ENV", "MODE", "DEV", "PROD", "SSR", "BASE_URL",
   "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "CI", "GITHUB_ACTIONS", "RUNNER_OS", "TMPDIR", "TMP", "TEMP", "USER", "LOGNAME",
   "TOOLROLL_TEST_OUTER_HOME", "TOOLROLL_REQUIRE_NATIVE", "TOOLROLL_ATTACK_SKIPS", "SO_EXPECT_NATIVE_CONTAINMENT", "TOOLROLL_RELEASE_BUILD",
-  "TOOLROLL_CHECK_RESULTS_FD", "TOOLROLL_CHECK_GATE", "PLAIN_WORDS_DUMP", "PLAIN_WORDS_OUT", "FAST_READS_OUT", "TELEGRAM_CARDS_OUT", "SANDBOX_RUNTIME"];
+  "TOOLROLL_CHECK_RESULTS_FD", "TOOLROLL_CHECK_GATE", "PLAIN_WORDS_DUMP", "PLAIN_WORDS_OUT", "FAST_READS_OUT", "TELEGRAM_CARDS_OUT", "SANDBOX_RUNTIME",
+  "TOOLROLL_TEST_INCIDENTS"];
 /**
  * Windows: no rebuild at all, exactly as before the POSIX isolation — the worker keeps the environment it was started
  * with and only these names change. A stated Windows residual: Windows CI runs only the Job Object containment tests,
@@ -95,7 +96,14 @@ vi.mock("../src/store.js", async importOriginal => {
   const { freshStoreOpener } = await import("./fresh-store.js");
   return { ...real, openStore: freshStoreOpener(real.openStore, mkdtempSync(join(state, "fresh-"))) };
 });
-afterAll(() => {
+afterAll(async () => {
+  // On CI, this file's git incident records (its home's ~/.toolroll/git-incidents.jsonl, and any home a test made in
+  // this folder) are kept for a failed run's artifact before the folder goes (test/incident-evidence.ts).
+  const evidence = process.env["TOOLROLL_TEST_INCIDENTS"];
+  if (evidence !== undefined && evidence !== "") {
+    const { keepIncidentRecordsUnder } = await import("./incident-evidence.js");
+    keepIncidentRecordsUnder(state, evidence, basename(expect.getState().testPath ?? "worker"));
+  }
   // Nothing of the person's comes back after the tests: work a test left running (a timed-out git command, a late
   // incident record) still finishes in this file's own throwaway home and database, never in ~/.toolroll or the real
   // database. 2026-11-14: a Flexible thread test's incident landed in the real ~/.toolroll/git-incidents.jsonl, as a

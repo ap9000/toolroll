@@ -4,12 +4,12 @@
  * rules it stands on, each with what would get around it.
  */
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
-import { allowedEnv, CANARY_ROUTES, canaryProblems, candidateEnv, convertReport, killAll, launch, newestAttempts, processesOf } from "../scripts/ci-candidate.mjs";
+import { allowedEnv, CANARY_ROUTES, canaryProblems, candidateEnv, collectIncidents, convertReport, INCIDENTS, killAll, launch, newestAttempts, processesOf } from "../scripts/ci-candidate.mjs";
 
 const { attacks } = createRequire(import.meta.url)("../scripts/ci-candidate-probe.cjs") as { attacks: (config: Record<string, unknown>, env?: Record<string, string>, identity?: Record<string, unknown>) => { name: string; refused: boolean; detail: string }[] };
 const folder = mkdtempSync(join(tmpdir(), "ci-candidate-"));
@@ -116,5 +116,29 @@ describe("the canary", () => {
     const config = { out: folder, uid: 5, gid: 6, runner: 1, harness: "/nonexistent/h", state: "/nonexistent/s", workspace: "/nonexistent/w", temp: "/nonexistent/t" };
     const found = attacks(config, { PATH: "/usr/bin", CANDIDATE_CANARY: "{}" }, { uid: 5, gid: 6, groups: [6] });
     expect(found.filter(one => ["runs as the candidate's user", "holds no other group", "no credential in its environment", "can't change the harness"].includes(one.name)).every(one => one.refused)).toBe(true);
+  });
+});
+
+describe("a failed run's git incident records", () => {
+  test("only the candidate's own plain *.jsonl files come out, bounded, never through a link", () => {
+    const own = mkdtempSync(join(folder, "incidents-"));
+    const uid = process.getuid?.() ?? 0;
+    const at = { ...state, uid, tmp: join(own, "tmp"), temp: join(own, "runner-temp") };
+    const records = join(at.tmp, INCIDENTS.folder);
+    mkdirSync(records, { recursive: true });
+    mkdirSync(at.temp);
+    const line = `${JSON.stringify({ at: "2026-11-15T00:00:00.000Z", checkout: "/c", repository: "/r", swapped: [] })}\n`;
+    writeFileSync(join(records, "worker-1.jsonl"), line);
+    writeFileSync(join(records, "too-big.jsonl"), "x".repeat(INCIDENTS.bytes + 1));
+    writeFileSync(join(records, "notes.txt"), line);
+    writeFileSync(join(own, "runner-secret"), "token\n");
+    symlinkSync(join(own, "runner-secret"), join(records, "linked.jsonl"));
+    expect(collectIncidents(at)).toBe(1);
+    const out = join(at.temp, INCIDENTS.out);
+    expect(readdirSync(out)).toEqual(["worker-1.jsonl"]);
+    expect(readFileSync(join(out, "worker-1.jsonl"), "utf8")).toBe(line);
+    // Someone else's folder, or none: nothing comes out.
+    expect(collectIncidents({ ...at, uid: uid + 1 })).toBe(0);
+    expect(collectIncidents({ ...at, tmp: join(own, "nothing") })).toBe(0);
   });
 });

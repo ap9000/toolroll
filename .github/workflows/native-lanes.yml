@@ -85,6 +85,8 @@ jobs:
     timeout-minutes: 25
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Where a run keeps its git incident records (test/incident-evidence.ts), for a failed run's artifact.
+      TOOLROLL_TEST_INCIDENTS: ${{ runner.temp }}/git-incidents
     steps:
       - uses: actions/checkout@v5
         with:
@@ -114,6 +116,14 @@ jobs:
         env:
           CI: "true"
           SO_EXPECT_NATIVE_CONTAINMENT: "1"
+      # A failed run's git incident records (why a Flexible git check refused): none written is no artifact.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: git-incidents-linux-native-containment-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/git-incidents
+          if-no-files-found: ignore
+          retention-days: 3
 
   # The windows-baseline matrix (node 22/24 over the service, scheduler,
   # builder and recipe suites) is parked: shared Windows hosts kept timing
@@ -133,6 +143,8 @@ jobs:
     timeout-minutes: 25
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Where a run keeps its git incident records (test/incident-evidence.ts), for a failed run's artifact.
+      TOOLROLL_TEST_INCIDENTS: ${{ runner.temp }}/git-incidents
     steps:
       - uses: actions/checkout@v5
         with:
@@ -195,6 +207,14 @@ jobs:
         env:
           CI: "true"
           TOOLROLL_REQUIRE_NATIVE: linux
+      # A failed run's git incident records (why a Flexible git check refused): none written is no artifact.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: git-incidents-linux-fence-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/git-incidents
+          if-no-files-found: ignore
+          retention-days: 3
 
   native-windows:
     name: native · windows job object

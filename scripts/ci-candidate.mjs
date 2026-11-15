@@ -26,7 +26,7 @@
  * R1 still stands (the plan says so): isolation protects how results travel, never what the candidate's own tests say.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, closeSync, constants as fsConstants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -132,6 +132,45 @@ export function launch(state, command, { env, report = null, settle = async () =
       }, failed);
     });
   });
+}
+
+/** Where a run's git incident records are (test/incident-evidence.ts keeps them in the candidate's temp folder on CI)
+ * and where the trusted side puts them for a failed run's artifact (<RUNNER_TEMP>/git-incidents), with its bounds. */
+export const INCIDENTS = { folder: "toolroll-git-incidents", out: "git-incidents", files: 100, bytes: 256 * 1024 };
+
+/**
+ * The candidate's git incident records, copied out for a failed run's artifact (why a Flexible git check refused). Run
+ * only after every process of the user has ended, so nothing swaps a file meanwhile; only plain files of the candidate's
+ * own (never through a link, never a FIFO's open), named *.jsonl, each at most INCIDENTS.bytes, at most INCIDENTS.files
+ * in all. A record holds paths of the tests' throwaway repositories (src/git-incident.ts), no secret. Anything else is
+ * left behind, and nothing here fails the step. `owner`: who gets the copies (the runner, from sudo). How many it copied.
+ */
+export function collectIncidents(state, owner = null) {
+  const from = join(state.tmp, INCIDENTS.folder), to = join(state.temp, INCIDENTS.out);
+  let names;
+  try {
+    const dir = lstatSync(from);
+    if (!dir.isDirectory() || dir.uid !== state.uid) return 0;
+    names = readdirSync(from).filter(name => /^[\w.-]{1,160}\.jsonl$/.test(name)).sort();
+  } catch { return 0; }
+  let copied = 0;
+  for (const name of names) {
+    let fd = null;
+    try {
+      if (existsSync(to) && readdirSync(to).length >= INCIDENTS.files) break;
+      fd = openSync(join(from, name), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      const file = fstatSync(fd);
+      if (!file.isFile() || file.uid !== state.uid || file.size > INCIDENTS.bytes) continue;
+      const body = Buffer.alloc(file.size);
+      let read = 0;
+      while (read < file.size) { const got = readSync(fd, body, read, file.size - read, read); if (got === 0) break; read += got; }
+      if (!existsSync(to)) { mkdirSync(to, { mode: 0o755 }); if (owner !== null) chownSync(to, owner.uid, owner.gid); }
+      writeFileSync(join(to, name), body.subarray(0, read), { mode: 0o644, flag: "wx" });
+      if (owner !== null) chownSync(join(to, name), owner.uid, owner.gid);
+      copied++;
+    } catch { /* left behind */ } finally { if (fd !== null) closeSync(fd); }
+  }
+  return copied;
 }
 
 /** A helper as the user itself: `kill(-1)` reaches exactly what that uid may signal, which is all of its processes. */
@@ -242,6 +281,9 @@ async function runCommand(flags) {
   let ended;
   try { ended = await launch(state, argv, { env, report: trusted === undefined ? null : inside, settle: settled(state) }); }
   catch (error) { console.error(error instanceof Error ? error.message : String(error)); return EXIT.cleanup; }
+  // Every process of the user has ended (the settle above): its git incident records, if any, come out for the artifact.
+  const copied = collectIncidents(state, process.env["SUDO_UID"] === undefined ? null : { uid: Number(process.env["SUDO_UID"]), gid: Number(process.env["SUDO_GID"] ?? 0) });
+  if (copied > 0) console.log(`candidate: ${copied} git incident record(s) copied to ${join(state.temp, INCIDENTS.out)}`);
   if (trusted === undefined) return ended.code;
   try {
     const converted = convertReport(ended.report?.toString("utf8") ?? "", { from: state.checkout, to: state.workspace });
