@@ -133,6 +133,8 @@ export interface ServerRuntime {
   chatCatalogKnown: () => import("../converse.js").CatalogModel[] | null;
   leadRecheckedAt: number;
   checkLocalAgents: (fresh?: boolean) => Promise<void>;
+  /** The sign-in check under way, if one is, waited for at most `maxMs` (the first task's filing). */
+  localAgentsSettled: (maxMs: number) => Promise<void>;
   localSignIn: { at: number; signedIn: boolean; states: Record<"claude" | "codex", ProviderConnection["state"] | "unverified">; } | null;
   /** Every supported agent on this computer, as the last detection saw them (agent-detect.ts); null until it answers. */
   localAgents: import("../agent-detect.js").AgentDetection | null;
