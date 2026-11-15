@@ -32,6 +32,18 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# Syntax colours run on their own thread (toolroll-tui syntax.rs), so their grammar and regex code is built for size.
+[profile.release.package.syntect]
+opt-level = "z"
+[profile.release.package.fancy-regex]
+opt-level = "z"
+[profile.release.package.regex-automata]
+opt-level = "z"
+[profile.release.package.regex-syntax]
+opt-level = "z"
+[profile.release.package.bincode]
+opt-level = "z"
+
 [profile.release-s]
 inherits = "release"
 opt-level = "s"

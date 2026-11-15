@@ -348,3 +348,17 @@ fn an_idle_thread_is_read_less_often_and_an_unchanged_poll_rebuilds_nothing() {
         .iter()
         .any(|e| matches!(e, Effect::FetchThread { .. })));
 }
+
+#[test]
+fn a_thread_on_the_diff_tab_keeps_its_own_keys() {
+    // The Diff tab's keys (j/k move its cursor, 1-9 nothing) are a task result's; on a thread the list still moves and
+    // the numbers still pick the question's answer.
+    let mut app = thread_app(window());
+    app.tab = toolroll_tui::app::Tab::Diff;
+    app.key(key('1'));
+    assert!(matches!(app.mode, Mode::ConfirmThread(_)), "{:?}", app.mode);
+    app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let at = app.selected;
+    app.key(key('k'));
+    assert_eq!(app.selected, at - 1);
+}

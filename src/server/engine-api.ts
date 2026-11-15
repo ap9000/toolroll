@@ -16,7 +16,7 @@
 import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
-import { checkEngineResponse, ENGINE_API_VERSION, ENGINE_RESPONSES, engineContractDigest, linkRedemptionRequestSchema, type EngineResponseName, type LinkRedemption, type LiveSessionWindow, type LiveThreads } from "../contracts/engine-api.js";
+import { checkEngineResponse, DIFF_CONTEXT_MAX, ENGINE_API_VERSION, ENGINE_RESPONSES, engineContractDigest, linkRedemptionRequestSchema, type EngineResponseName, type LinkRedemption, type LiveSessionWindow, type LiveThreads } from "../contracts/engine-api.js";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { FLEXIBLE_AVAILABLE } from "../flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
@@ -27,7 +27,7 @@ import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
 import { runLiveCommands, type Run } from "../store.js";
-import { agentsReadOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
+import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
 import type { EdgeContext, HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
 import { matchTaskPath, respond } from "./http.js";
@@ -246,20 +246,26 @@ export function createEngineHandlers(runtime: ServerRuntime) {
 
   /** GET /t/<task>/steps: the task's step cards. */
   async function taskSteps(ctx: HandlerContext): Promise<void> {
-    const { url, response } = ctx;
+    const { url, response, who } = ctx;
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
     const family = familyAt(url, "steps");
     if (family === null) return refusal(response, 404, "task");
-    return sendChecked(response, 200, "stepCards", stepCardsOf({ store, family, now: clock(), access: runtime.workAccess(), evidenceRoot }));
+    return sendChecked(response, 200, "stepCards", stepCardsOf({ store, family, now: clock(), access: runtime.workAccess(), evidenceRoot, viewer: who.name }));
   }
 
-  /** GET /t/<task>/diff[?run=<id>[&file=<n>]]: the result's files, or one file's hunks (which needs the run it is of). */
+  /** GET /t/<task>/diff[?run=<id>[&file=<n>[&from=<line>&count=<n>]]]: the result's files, one file's hunks (which needs
+   * the run it is of), or at most DIFF_CONTEXT_MAX lines of that file around them (which need the file). */
   async function taskDiff(ctx: HandlerContext): Promise<void> {
     const { url, response } = ctx;
-    const params = url.searchParams, runParam = params.get("run"), fileParam = params.get("file");
-    if ([...params.keys()].some(key => key !== "run" && key !== "file") || params.getAll("run").length > 1 || params.getAll("file").length > 1
+    const params = url.searchParams, runParam = params.get("run"), fileParam = params.get("file"), fromParam = params.get("from"), countParam = params.get("count");
+    if ([...params.keys()].some(key => key !== "run" && key !== "file" && key !== "from" && key !== "count")
+      || ["run", "file", "from", "count"].some(key => params.getAll(key).length > 1)
       || (runParam !== null && !/^[1-9][0-9]{0,14}$/.test(runParam)) || (fileParam !== null && !/^(0|[1-9][0-9]{0,5})$/.test(fileParam))
-      || (fileParam !== null && runParam === null)) return refusal(response, 400, "request");
+      || (fileParam !== null && runParam === null)
+      || (fromParam === null) !== (countParam === null) || (fromParam !== null && fileParam === null)
+      || (fromParam !== null && !/^[1-9][0-9]{0,6}$/.test(fromParam)) || (countParam !== null && (!/^[1-9][0-9]{0,2}$/.test(countParam) || Number(countParam) > DIFF_CONTEXT_MAX))) {
+      return refusal(response, 400, "request");
+    }
     const family = familyAt(url, "diff");
     if (family === null) return refusal(response, 404, "task");
     // Only the family's own results, each still in view from its current row.
@@ -267,6 +273,11 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const run = runParam === null ? results[0] ?? null : results.find(one => one.id === Number(runParam)) ?? null;
     if (runParam !== null && run === null) return refusal(response, 404, "run");
     if (fileParam === null) return sendChecked(response, 200, "resultDiff", resultDiffOf(store, evidenceRoot, family.root.id, run));
+    if (fromParam !== null && countParam !== null) {
+      // The project's repository as Toolroll records it for this run (never a path the checkout names).
+      const context = resultDiffContextOf(store, evidenceRoot, family.root.id, run!, Number(fileParam), Number(fromParam), Number(countParam), runtime.taskRepoOf(run!.taskRef));
+      return context === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffContext", context);
+    }
     const one = resultDiffFileOf(store, evidenceRoot, family.root.id, run!, Number(fileParam));
     return one === null ? refusal(response, 404, "file") : sendChecked(response, 200, "resultDiffFile", one);
   }

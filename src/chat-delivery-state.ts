@@ -5,6 +5,7 @@ import { ChatCore, chatHash, type ChatBinding, type ChatProvider, type ChatRoom 
 import { ChatMessages } from "./chat-messages.js";
 import { unsentPart } from "./chat-message-states.js";
 import { readChatPart, savedChatEventBody, savedChatPart, type ChatContent, type ChatEventBody } from "./contracts/chat-content.js";
+import { WITHHELD } from "./outbound-privacy.js";
 
 export { savedChatPart, chatHash, type ChatContent, type ChatEventBody, type ChatBinding, type ChatProvider, type ChatRoom };
 
@@ -281,3 +282,7 @@ export class ChatDeliveryError extends Error {
     super(code);
   }
 }
+
+/** A chat call whose words name a key or a folder on this computer and can't be made safe (outbound-privacy.ts): the
+ * part will never be sent, so it is dropped with why, never retried. */
+export const withheldPart = (): ChatDeliveryError => new ChatDeliveryError(WITHHELD, 0, false, true);

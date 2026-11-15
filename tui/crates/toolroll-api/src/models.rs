@@ -394,13 +394,25 @@ pub struct StepTask {
     pub project: Option<String>,
 }
 
-/// The result waiting for Accept or Send back: what the task page's own forms carry.
+/// The result waiting for Accept or Send back: what the task page's own forms carry, and what accepting it means for
+/// the person reading (said before they press Accept).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Review {
     pub run: i64,
     pub receipt: String,
     pub source: String,
+    pub accept: ReviewAccept,
+}
+
+/// What Accept owes (`person-check`, `exception`), what refuses a completion now, and who else has to complete it, in
+/// the engine's words. Display only: the completion decides again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewAccept {
+    pub owed: Option<String>,
+    pub blockers: Vec<String>,
+    pub needs: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -486,6 +498,28 @@ pub struct ResultDiffFile {
     pub run: i64,
     pub file: FileHunks,
     pub lines_truncated: bool,
+}
+
+/// One line of a result's file at its head, shown as context a hunk hides.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ContextLine {
+    pub new_line: i64,
+    pub text: String,
+}
+
+/// `GET /t/<task>/diff?run=&file=&from=&count=`: lines of one file around its hunks (at most 100 a read).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResultDiffContext {
+    pub version: u32,
+    pub task: String,
+    pub run: i64,
+    pub file: i64,
+    pub from: i64,
+    pub lines: Vec<ContextLine>,
+    pub line_count: Option<i64>,
+    pub problem: Option<String>,
 }
 
 // ---- Sign-in, refusals, the handshake ------------------------------------------------------------------------

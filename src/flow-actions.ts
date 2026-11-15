@@ -29,6 +29,7 @@ export { readEmailSettings, saveEmailSettings, type EmailSettings } from "./emai
 import { callProjectTool, projectToolsOf, readToolSecrets, toolServerFor, type ToolCall, type ToolSpec } from "./project-tools.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { FlowCardRow, Store } from "./store.js";
+import { safeMail } from "./outbound-privacy.js";
 
 /** `output` is the answer whole: the step passes it on whole up to TEXT_LIMITS.stageOutput, and attaches longer to the card, linked (flow-steps settle). */
 export type ActionOutcome = { state: "passed" | "failed" | "retry"; said: string; log?: string; output?: string;
@@ -149,7 +150,8 @@ export const sendThroughServer: MailSender = async (settings, mail) => {
 /** The thread a card's conversation is in (v91): the latest message, the chain, and everyone in it. */
 export type MailThread = { inReplyTo: string; references: string[]; people: Set<string> };
 
-export async function sendEmail(stage: FlowStage, card: FlowCardRow, io: { dir: string | null; mail?: MailSender; fetch?: typeof fetch }, thread: MailThread | null = null): Promise<ActionOutcome> {
+/** `repo`: the flow's project, which an email's safe version names (never its path). */
+export async function sendEmail(stage: FlowStage, card: FlowCardRow, io: { dir: string | null; mail?: MailSender; fetch?: typeof fetch }, thread: MailThread | null = null, repo: string | null = null): Promise<ActionOutcome> {
   const account = await sendingAccount(io.dir, io.fetch ?? fetch);
   if (!account.ok) return { state: account.permanent ? "failed" : "retry", said: account.said };
   const settings = account.settings;
@@ -164,10 +166,13 @@ export async function sendEmail(stage: FlowStage, card: FlowCardRow, io: { dir: 
   const source = card.source?.mail;
   const known = thread ?? (source?.id ? { inReplyTo: source.id, references: [...source.references, source.id].slice(-20), people: new Set([source.from]) } : null);
   const threaded = known !== null && to.some(one => known.people.has(one.toLowerCase())) ? { inReplyTo: known.inReplyTo, references: known.references } : {};
-  const sent = await (io.mail ?? sendThroughServer)(settings, { from: settings.from, to, subject, text: body, ...threaded });
-  const log = `From ${settings.from} to ${to.join(", ")}\nSubject: ${subject}\n\n${blank(body)}`;
+  // The rule every outbound message shares (outbound-privacy.ts): an email whose words name a key or a folder on this
+  // computer goes as its safe version, which names the project and says to open Toolroll.
+  const mail = safeMail({ from: settings.from, to, subject, text: body, ...threaded }, { project: repo });
+  const sent = await (io.mail ?? sendThroughServer)(settings, mail);
+  const log = `From ${settings.from} to ${to.join(", ")}\nSubject: ${mail.subject}\n\n${blank(mail.text)}`;
   if (!sent.ok) return { state: sent.permanent ? "failed" : "retry", said: sent.said, log };
-  return { state: "passed", said: `Emailed ${to.join(", ")}.`, log, output: `Sent to ${to.join(", ")}: “${subject}”`, mail: { id: sent.id, to } };
+  return { state: "passed", said: `Emailed ${to.join(", ")}.`, log, output: `Sent to ${to.join(", ")}: “${mail.subject}”`, mail: { id: sent.id, to } };
 }
 
 // ---- tools ----------------------------------------------------------------------

@@ -24,7 +24,7 @@ import {
 } from "./chat-channel.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { renderReply } from "./reply-shape.js";
-import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, type ChatBinding, type ChatContent, type ChatEvent } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, withheldPart, type ChatBinding, type ChatContent, type ChatEvent } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readSlackBlockActions, readSlackButton, SLACK_LINK_ACTION } from "./contracts/slack-callback.js";
 import {
@@ -45,6 +45,7 @@ import {
 import { type Store } from "./store.js";
 import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
+import { checkedChunks, guardSlack, taskSubject } from "./outbound-privacy.js";
 
 export type SlackChatOptions = {
   store: Store;
@@ -216,7 +217,8 @@ export function slackBlocks(
     });
     text = lines.slice(1).join("\n").trim();
   }
-  for (const part of split(text))
+  // Checked whole before the cut (outbound-privacy.ts), then the call again at the client.
+  for (const part of checkedChunks(text, split(text)))
     blocks.push({
       type: "section",
       text: { type: "plain_text", text: part, emoji: true },
@@ -229,7 +231,7 @@ export function slackVoiceBlocks(
   mrkdwn: string,
   buttons: Record<string, unknown>[] = [],
 ): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = split(mrkdwn).map((part) => ({
+  const blocks: Record<string, unknown>[] = checkedChunks(mrkdwn, split(mrkdwn)).map((part) => ({
     type: "section",
     // verbatim: Slack never turns words of the reply into a mention, a channel or a link (renderReply escapes the rest).
     text: { type: "mrkdwn", text: part, verbatim: true },
@@ -301,6 +303,8 @@ export async function deliverSlackPart(
     if (event.kind === "notice" && options.canNotify?.() === false)
       return false;
     const content = partContent(row.payload);
+    // Past here every call names this part's project if its words have to go as their safe version (outbound-privacy.ts).
+    options = { ...options, api: guardSlack(options.api, withheldPart, taskSubject(store, content.task ?? content.image?.taskId)) };
     const destination = content.channel ?? binding.channel;
     let text = content.text,
       buttons: Record<string, unknown>[] = [];

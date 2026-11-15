@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "task": "t-done",
+  "run": 2,
+  "file": 0,
+  "from": 4,
+  "lines": [
+    {
+      "newLine": 4,
+      "text": ""
+    },
+    {
+      "newLine": 5,
+      "text": "export function tax(items) {"
+    },
+    {
+      "newLine": 6,
+      "text": "  return sum(items) * 0.2;"
+    },
+    {
+      "newLine": 7,
+      "text": "}"
+    }
+  ],
+  "lineCount": 7,
+  "problem": null
+}

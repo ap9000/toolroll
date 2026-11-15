@@ -15,7 +15,8 @@
  *                                    while Flexible isn't available
  *   GET  /work/rows                  the Work list's rows and Needs-you groups (workRows)
  *   GET  /t/<task>/steps             a task's step cards (stepCards)
- *   GET  /t/<task>/diff              a result's changed files, or one file's hunks with ?run=&file= (resultDiff, resultDiffFile)
+ *   GET  /t/<task>/diff              a result's changed files, or one file's hunks with ?run=&file= (resultDiff, resultDiffFile),
+ *                                    or lines of that file around its hunks with ?run=&file=&from=&count= (resultDiffContext)
  *   POST /login/once                 a local-owner one-time link redeemed for a terminal client (linkRedemption)
  *   GET  /engine/hello               the handshake: this build and the contract's digest (hello)
  *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
@@ -213,7 +214,14 @@ export const stepCardsSchema = z.object({
    * `receipt` digest it was read at (POST /t/<task>/complete), and the `source` its revision is bound to
    * (POST /r/<run>/comment intent=revise). Null when no result waits to be checked. Read facts only, never permission:
    * every act re-proves them. */
-  review: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string() }).nullable(),
+  review: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string(),
+    /** What accepting this result means for the person reading it, said before they press Accept (T2's owed facts), in
+     * the words the completion itself would use. `owed`: an acceptance Accept records besides completing (the person's
+     * own check, or an exception that needs a reason); `blockers`: why completing is refused now (a failed required
+     * check, an open requirement); `needs`: who else has to complete it, or why this person can't (protected work on a
+     * one-person approval, a fast start that grew). Display only: the completion decides again. */
+    accept: z.object({ owed: z.enum(["person-check", "exception"]).nullable(), blockers: z.array(z.string()), needs: z.string().nullable() }),
+  }).nullable(),
   room: z.string(),
 });
 
@@ -243,6 +251,24 @@ export const resultDiffFileSchema = z.object({
   file: z.object({ file: z.number().int(), path: z.string(), oldPath: z.string().nullable(), meta: z.array(z.string()),
     hunks: z.array(z.object({ header: z.string(), lines: z.array(diffLineSchema) })) }),
   linesTruncated: z.boolean(),
+});
+
+/** Lines one expand asks for at most (`count`): a terminal never reads a whole file through this road. */
+export const DIFF_CONTEXT_MAX = 100;
+/** `GET /t/<task>/diff?run=<id>&file=<n>&from=<line>&count=<n>`: lines `from`..`from+count-1` of that file as the result
+ * left it (its head commit, read by Toolroll from its own record of the project and the run, never from the checkout),
+ * to show context a hunk hides. `lineCount` is the file's length there; `lines` stop at its end. `problem` says why there
+ * are none (the file was removed, isn't text, or the result's commit can't be read); lines that look like a key are
+ * replaced with a marker, as the saved diff does. */
+export const resultDiffContextSchema = z.object({
+  version,
+  task: z.string(),
+  run: z.number().int(),
+  file: z.number().int(),
+  from: z.number().int(),
+  lines: z.array(z.object({ newLine: z.number().int(), text: z.string() })),
+  lineCount: z.number().int().nullable(),
+  problem: z.string().nullable(),
 });
 
 // ---- Agents on this computer ---------------------------------------------------------------------------------------
@@ -305,6 +331,7 @@ export const ENGINE_RESPONSES = {
   stepCards: { route: "GET /t/<task>/steps", schema: stepCardsSchema },
   resultDiff: { route: "GET /t/<task>/diff", schema: resultDiffSchema },
   resultDiffFile: { route: "GET /t/<task>/diff?run=&file=", schema: resultDiffFileSchema },
+  resultDiffContext: { route: "GET /t/<task>/diff?run=&file=&from=&count=", schema: resultDiffContextSchema },
   linkRedemption: { route: "POST /login/once", schema: linkRedemptionSchema },
   refusal: { route: "every engine route's refusal", schema: engineRefusalSchema },
   hello: { route: "GET /engine/hello", schema: helloSchema },
@@ -319,6 +346,7 @@ export type StepCards = z.infer<typeof stepCardsSchema>;
 export type StepCard = z.infer<typeof stepCardSchema>;
 export type ResultDiff = z.infer<typeof resultDiffSchema>;
 export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
+export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
 export type AgentsRead = z.infer<typeof agentsReadSchema>;
 

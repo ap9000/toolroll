@@ -1512,12 +1512,14 @@ export function parseReviewDiff(text: string): ReviewDiff {
       continue;
     }
     if (file === null) continue;
-    if (raw.startsWith("--- ")) {
+    // A file's `---`/`+++` headers come before its first hunk; inside a hunk they are its own lines (a removed "-- x",
+    // an added "++ b/other"), never another file's name.
+    if (hunk === null && raw.startsWith("--- ")) {
       file.oldPath = pathOf(raw.slice(4));
       file.meta.push(raw);
       continue;
     }
-    if (raw.startsWith("+++ ")) {
+    if (hunk === null && raw.startsWith("+++ ")) {
       const nextPath = pathOf(raw.slice(4));
       if (nextPath !== "/dev/null") file.path = nextPath;
       file.meta.push(raw);
@@ -1540,10 +1542,10 @@ export function parseReviewDiff(text: string): ReviewDiff {
       continue;
     }
     rendered += 1;
-    if (raw.startsWith("+") && !raw.startsWith("+++")) {
+    if (raw.startsWith("+")) {
       hunk.lines.push({ kind: "addition", text: raw.slice(1), oldLine: null, newLine });
       newLine += 1;
-    } else if (raw.startsWith("-") && !raw.startsWith("---")) {
+    } else if (raw.startsWith("-")) {
       hunk.lines.push({ kind: "deletion", text: raw.slice(1), oldLine, newLine: null });
       oldLine += 1;
     } else if (raw.startsWith(" ")) {
