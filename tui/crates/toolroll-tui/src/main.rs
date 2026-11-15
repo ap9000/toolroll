@@ -1,67 +1,106 @@
-//! Toolroll terminal workbench — DE-RISK SPIKE binary (not the product).
+//! `toolroll-tui`: started by `toolroll` (src/tui-launch.ts), never by hand.
 //!
-//! Subcommands:
-//!   --version                         self-check line for the npm launcher
-//!   bench   [--frames N] [--width W] [--height H] [--recording F] [--rate L]   TestBackend + escape-encoding bench
-//!   run     [--recording F] [--rate L] [--auto-quit-secs S] [--stats-out F] [--trace-out F]
-//!           [--term-url ws://..] [--term-origin O] [--engine-base http://127.0.0.1:PORT --link-stdin]
-//!   engine  --base http://127.0.0.1:PORT [--secs S] [--term-id HEX]   (one-time link read from stdin)
-//!   term-probe --url ws://.. --origin O [--input TEXT]
+//!   toolroll-tui --version                      this build and its engine contract (the launcher's self-check)
+//!   toolroll-tui [--control-fd 4] [--owned] [--project <path>] [--stats-out <file>]
 //!
-//! Credentials (session cookie, CSRF, mutation key) live only in memory and are never printed.
+//! The one-time sign-in link arrives on file descriptor 3 (one line, then end of file); it is redeemed at once and the
+//! session kept in memory only. Exit codes: 0 leave, 40 stop the agents, 41 keep them in the background, 42 open the
+//! classic screen instead, 1 the session ended, 2 started wrongly.
+use std::io::Read;
+use std::os::fd::FromRawFd;
+use toolroll_tui::app::{EXIT_CLASSIC, EXIT_ENDED};
 
-mod app;
-mod bench;
-mod engine;
-mod recording;
-mod ring;
-mod run;
-mod stats;
-
-use anyhow::{bail, Result};
-
-pub const VERSION: &str = concat!("toolroll-tui ", env!("CARGO_PKG_VERSION"));
-
-pub struct Args {
-    rest: Vec<String>,
+fn arg(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
-impl Args {
-    pub fn value(&self, name: &str) -> Option<String> {
-        let mut it = self.rest.iter();
-        while let Some(a) = it.next() {
-            if a == name {
-                return it.next().cloned();
+/// The link on descriptor 3: at most 1 KiB, one line.
+fn read_link() -> Option<String> {
+    // SAFETY: descriptor 3 is the launcher's pipe (or nothing: fstat says so and nothing is taken over).
+    let open = unsafe { libc_fstat_ok(3) };
+    if !open {
+        return None;
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(3) };
+    let mut buf = Vec::new();
+    let _ = (&mut file).take(1024).read_to_end(&mut buf);
+    drop(file);
+    let text = String::from_utf8(buf).ok()?;
+    let line = text.lines().next()?.trim().to_string();
+    (!line.is_empty()).then_some(line)
+}
+
+/// Whether a descriptor is open (fcntl F_GETFD), without taking it over.
+unsafe fn libc_fstat_ok(fd: i32) -> bool {
+    extern "C" {
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+    const F_GETFD: i32 = 1;
+    fcntl(fd, F_GETFD) != -1
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("{}", toolroll_tui::version_line());
+        return;
+    }
+    let Some(link) = read_link() else {
+        eprintln!("Start the terminal workbench with `toolroll`.");
+        std::process::exit(2);
+    };
+    let control = arg(&args, "--control-fd")
+        .and_then(|n| n.parse::<i32>().ok())
+        .filter(|n| *n > 2 && unsafe { libc_fstat_ok(*n) })
+        .map(|n| unsafe { std::fs::File::from_raw_fd(n) });
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let code = rt.block_on(async move {
+        let client = match toolroll_api::redeem(&link).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("The terminal workbench couldn't sign in: {e}.");
+                return EXIT_CLASSIC;
+            }
+        };
+        drop(link);
+        let fatal = match client.hello().await {
+            Ok(hello) => toolroll_api::check_hello(&hello).err().map(|words| {
+                (
+                    format!("{words} Opening the classic screen instead."),
+                    EXIT_CLASSIC,
+                )
+            }),
+            Err(toolroll_api::ApiError::SessionEnded) => {
+                Some(("Session ended: run toolroll again.".to_string(), EXIT_ENDED))
+            }
+            Err(e) => Some((
+                format!("{e} Opening the classic screen instead."),
+                EXIT_CLASSIC,
+            )),
+        };
+        let opts = toolroll_tui::run::Options {
+            owned: args.iter().any(|a| a == "--owned"),
+            project: arg(&args, "--project"),
+            control,
+            stats_out: arg(&args, "--stats-out"),
+            fatal,
+        };
+        match toolroll_tui::run::run(client, opts).await {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("The terminal workbench stopped: {e}.");
+                EXIT_CLASSIC
             }
         }
-        None
+    });
+    if code == EXIT_ENDED {
+        eprintln!("Session ended: run toolroll again.");
     }
-    pub fn flag(&self, name: &str) -> bool {
-        self.rest.iter().any(|a| a == name)
-    }
-    pub fn num<T: std::str::FromStr>(&self, name: &str, default: T) -> T {
-        self.value(name)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default)
-    }
-}
-
-fn main() -> Result<()> {
-    let mut argv: Vec<String> = std::env::args().skip(1).collect();
-    if argv.is_empty() {
-        argv.push("run".into());
-    }
-    let cmd = argv.remove(0);
-    let args = Args { rest: argv };
-    match cmd.as_str() {
-        "--version" | "-V" | "version" => {
-            println!("{VERSION}");
-            Ok(())
-        }
-        "bench" => bench::main(&args),
-        "run" => run::main(&args),
-        "engine" => engine::main(&args),
-        "term-probe" => engine::term_probe_main(&args),
-        other => bail!("unknown command {other:?}"),
-    }
+    std::process::exit(code);
 }

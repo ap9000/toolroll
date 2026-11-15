@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
- * Terminal workbench packaging SKETCH (solo-workbench plan, week-1 de-risk spike). Not wired into the release yet.
+ * Terminal workbench packaging (solo-workbench plan; the spike's sketch, kept current with T1). Not wired into the
+ * release yet: publish.yml doesn't call it. The real launcher is src/tui-launch.ts (the smoke launcher below mirrors its
+ * self-check: `toolroll-tui <version> contract <engine contract digest>`).
  *
  * Builds the Rust binary (tui/) per target and packs one npm package per platform, the esbuild/Codex pattern:
  * `@toolroll/tui-<platform>` with os/cpu fields, the binary in bin/, and NO install scripts (works with
@@ -37,8 +39,7 @@ export const PLATFORMS = {
 };
 
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-const tuiVersion = "0.0.0-spike"; // the binary's own --version (tui/Cargo.toml); the real build stamps the package version
-const profile = opt("--profile", "release-s");
+const profile = opt("--profile", "release");
 const targets = opt("--targets", "darwin-arm64,darwin-x64,linux-x64,linux-arm64").split(",").filter(Boolean);
 const out = resolve(opt("--out", join(tui, "npm")));
 const smoke = opt("--smoke", null);
@@ -99,7 +100,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 const require = createRequire(import.meta.url);
 const PACKAGES = ${JSON.stringify(Object.fromEntries(Object.keys(PLATFORMS).map(name => [name, `@toolroll/tui-${name}`])))};
-const EXPECTED = ${JSON.stringify(`toolroll-tui ${tuiVersion}`)};
+const EXPECTED = /^toolroll-tui \\S+ contract [0-9a-f]{64}$/;
 function resolveTui() {
   if (process.env.TOOLROLL_SCREEN === "classic") return { ok: false, why: "TOOLROLL_SCREEN=classic" };
   const pkg = PACKAGES[\`\${process.platform}-\${process.arch}\`];
@@ -108,7 +109,7 @@ function resolveTui() {
   try { manifest = require.resolve(\`\${pkg}/package.json\`); } catch { return { ok: false, why: "the terminal workbench package isn't installed (optional dependencies were skipped)" }; }
   const bin = join(dirname(manifest), "bin", "toolroll-tui");
   const check = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 3000 });
-  if (check.status !== 0 || check.stdout.trim() !== EXPECTED) return { ok: false, why: \`the terminal workbench didn't start (\${check.error?.code ?? check.status ?? check.signal})\` };
+  if (check.status !== 0 || !EXPECTED.test(check.stdout.trim())) return { ok: false, why: \`the terminal workbench didn't start (\${check.error?.code ?? check.status ?? check.signal})\` };
   return { ok: true, bin };
 }
 const found = resolveTui();
