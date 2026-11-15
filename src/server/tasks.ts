@@ -124,6 +124,12 @@ import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskO
 import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow } from "./kit.js";
 import { localOwnerRefusal } from "../local-owner.js";
+import { firstTaskRouted } from "../welcome-facts.js";
+
+/** How long the first task's filing waits for this computer's sign-in check when one is under way: two of the
+ * console's check deadlines (status-probe.ts BACKGROUND_STATUS_TIMEOUT_MS: the check asks once more when it can't
+ * conclude) and a margin. */
+export const FIRST_TASK_DETECT_WAIT_MS = 8_000;
 export function createTasksHandlers(runtime: ServerRuntime) {
   const { identities, store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, authenticateCredential, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
@@ -924,6 +930,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // Anything else, or any doubt, is the ordinary filing below. `plain` is "Plan it first" from that form.
     if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
       && (qualityMode === null || qualityMode === "default") && (permissionMode === null || permissionMode === "auto")) {
+      // Instant start: a first task filed while this computer's sign-in check is still answering (a console just started
+      // on a busy computer) waits for that answer, bounded, so it goes to the agent the check finds (serve.ts
+      // checkLocalAgents fills its models) and not to a plan for want of them. Only while models were never chosen here.
+      if (firstTaskRouted(store) === null) await runtime.localAgentsSettled(FIRST_TASK_DETECT_WAIT_MS);
       // "Read code before planning" on is the person choosing Plan first: never solo's Just code.
       const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who),
         planFirst: body.get("plan-first") === "1" }, now);
