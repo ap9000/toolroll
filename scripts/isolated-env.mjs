@@ -109,7 +109,8 @@ export function personHomes(env = process.env) {
 }
 
 /** A wrapper for a shell: drops every login flag (-l, --login, `l` in a flag cluster) before the command, and starts
- * the real shell without the system profiles (zsh -d, bash --noprofile), so a login shell can't rebuild PATH. */
+ * the real shell without the system profiles (zsh -d, bash --noprofile), so a login shell can't rebuild PATH. Pure
+ * shell before its `exec` (no subshell, no `tr`): it adds no process to the tree a test may watch. */
 function shellWrapper(name, target) {
   const extra = name === "zsh" ? " -d" : name === "bash" ? " --noprofile" : "";
   return `#!/bin/sh
@@ -121,7 +122,7 @@ while [ "$n" -gt 0 ]; do
     case $a in
       -l|--login) continue ;;
       --*) ;;
-      -*) a=$(printf '%s' "$a" | tr -d l); [ "$a" = "-" ] && continue ;;
+      -*) while case $a in *l*) true ;; *) false ;; esac; do a=\${a%%l*}\${a#*l}; done; [ "$a" = "-" ] && continue ;;
       *) stop=1 ;;
     esac
     case $a in -*c*) stop=1 ;; esac
