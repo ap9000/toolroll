@@ -2,33 +2,45 @@
  * Launching the terminal workbench (solo-workbench plan T1): the Rust binary bare `toolroll` opens in solo/local mode,
  * with the classic (Ink) screen as the fallback.
  *
- * - Which binary: `TOOLROLL_SCREEN=classic` or `--screen-reader` choose the classic screen; otherwise this machine's
- *   platform package (`@toolroll/tui-<platform>-<arch>`, an optional dependency), else a source checkout's own build
- *   (`tui/target/release/toolroll-tui`). `TOOLROLL_TUI_BINARY` names another build (a developer's own; anyone who can
- *   set this person's environment can already run programs as them).
- * - Self-check before anything is minted: `<binary> --version` must answer `toolroll-tui <v> contract <digest>` with
+ * - Which binary. The trust anchor is WHERE the binary lives, never what it prints and never what the environment says:
+ *   - `TOOLROLL_SCREEN=classic` or `--screen-reader` choose the classic screen;
+ *   - else this machine's platform package (`@toolroll/tui-<platform>-<arch>`, an optional dependency), looked for only
+ *     in Toolroll's own install tree (this package's own node_modules, or the node_modules folder this package itself
+ *     sits in): never through Node's upward module search, never through PATH;
+ *   - else a source checkout's own build (`tui/target/release/toolroll-tui`), only when Toolroll itself runs from that
+ *     same checkout (this package's root has `.git` and `tui/Cargo.toml`);
+ *   - a developer's own build only by an explicit trust decision on the command line: `--tui-binary <absolute path>`,
+ *     said in one line when used. `TOOLROLL_TUI_BINARY` is not read (a variable set in an environment is no decision).
+ *   Whichever it is, its real path (symlinks resolved) must be a regular file owned by this user or root and not
+ *   writable by group or others, in folders that are all owned by this user or root and not writable by group or others
+ *   (an ancestor may be a sticky shared folder such as /tmp: nobody else can rename what is in it). Then nobody but this
+ *   user (or root) can replace it between the check and the start. Anyone able to write Toolroll's own install tree
+ *   already controls Toolroll's JavaScript, so that tree is as trusted as this file.
+ * - Self-check, a compatibility test only: `<binary> --version` must answer `toolroll-tui <v> contract <digest>` with
  *   this build's engine contract digest (contracts/engine-api.ts); a binary from another build, one that doesn't start
- *   (ENOEXEC, a crash) or doesn't answer in time is never handed a sign-in.
- * - Then the console's socket mints the local owner's one-time link (console-instance.ts requestLocalLink) and the
- *   binary gets it on file descriptor 3 only (engine-handoff.ts spawnWithLink): never its arguments or environment.
- * - Descriptor 4 is the binary's one way to ask this process for something only it can do: one JSON line per ask, read
- *   capped; the only ask is `{"want":"browser"}` (open this computer's browser signed in, TuiSession.openBrowser),
+ *   (ENOEXEC, a crash), can't turn crash dumps off (exit 43) or doesn't answer in time is never handed a sign-in.
+ * - Then the console's socket mints the local owner's one-time link (console-instance.ts requestLocalLink), and the
+ *   exact path that was checked is started with descriptor 3 open but empty. The binary turns crash dumps off and says
+ *   `{"ready":"protected"}` on descriptor 4; only then is the link written on descriptor 3 (engine-handoff.ts
+ *   spawnHoldingLink): never its arguments or environment, and never to a binary that didn't say it was protected.
+ * - Descriptor 4 is also the binary's one way to ask this process for something only it can do: one JSON line per ask,
+ *   read capped; the only ask is `{"want":"browser"}` (open this computer's browser signed in, TuiSession.openBrowser),
  *   answered on the same descriptor with one line `{"said":"<words>"}`. It never carries a credential.
  * - How it ended is its exit code: 0 leave, 40 stop the agents this terminal started, 41 keep them running in the
- *   background, 42 "open the classic screen instead" (it said why on its own error output, after restoring the terminal).
+ *   background, 42 "open the classic screen instead" (it said why on its own error output, after restoring the terminal),
+ *   43 it couldn't turn crash dumps off (said why; nothing was sent).
  *
  * Every failure before the screen opens falls back to the classic screen with one line saying why.
  */
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnWithLink } from "./engine-handoff.js";
+import { spawnHoldingLink } from "./engine-handoff.js";
 import type { TuiExit, TuiSession } from "./tui-contract.js";
 
-/** The exit codes the binary ends with (tui/crates/toolroll-tui/src/lib.rs EXIT_*). */
-export const TUI_EXIT = { leave: 0, stop: 40, keep: 41, classic: 42 } as const;
+/** The exit codes the binary ends with (tui/crates/toolroll-tui/src/app.rs EXIT_*). */
+export const TUI_EXIT = { leave: 0, stop: 40, keep: 41, classic: 42, unprotected: 43 } as const;
 /** Platforms with a terminal workbench package (scripts/tui-build.mjs PLATFORMS). */
 export const TUI_PACKAGES: Readonly<Record<string, string>> = Object.freeze({
   "darwin-arm64": "@toolroll/tui-darwin-arm64", "darwin-x64": "@toolroll/tui-darwin-x64",
@@ -37,8 +49,12 @@ export const TUI_PACKAGES: Readonly<Record<string, string>> = Object.freeze({
 /** The longest ask line read from descriptor 4; anything longer is dropped whole. */
 const ASK_CAP = 1024;
 const SELF_CHECK_MS = 3_000;
+/** How long the binary has to say it is protected before it is stopped (and the link never sent). */
+const READY_MS = 5_000;
+/** The line the binary says on descriptor 4 once crash dumps are off (tui/crates/toolroll-tui/src/guard.rs READY_LINE). */
+const READY = "protected";
 
-export type TuiChoice = { ok: true; binary: string } | { ok: false; why: string };
+export type TuiChoice = { ok: true; binary: string; notice?: string } | { ok: false; why: string; notice?: string };
 
 export type TuiChoiceInput = {
   env: NodeJS.ProcessEnv;
@@ -47,45 +63,115 @@ export type TuiChoiceInput = {
   arch: string;
   /** The engine contract this build speaks (engineContractDigest). */
   contract: string;
-  /** A package's manifest path, or null when it isn't installed (tests pass their own). */
-  resolvePackage?: (name: string) => string | null;
-  /** This package's own root (a source checkout has tui/ in it). */
+  /** `--tui-binary <path>`: a developer's own build, chosen on the command line (it must be absolute). */
+  devBinary?: string | null;
+  /** This package's own root, where Toolroll's JavaScript runs from (tests pass their own). */
   packageRoot?: string;
+  /** The user files must be owned by, besides root (default: this process's). */
+  uid?: number;
   /** Run `<binary> --version` (tests pass their own). */
   selfCheck?: (binary: string) => { status: number | null; stdout: string; error?: string };
 };
 
-const own = createRequire(import.meta.url);
-const defaultResolve = (name: string): string | null => { try { return own.resolve(`${name}/package.json`); } catch { return null; } };
 const defaultRoot = (): string => join(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultSelfCheck = (binary: string) => {
   const ran = spawnSync(binary, ["--version"], { encoding: "utf8", timeout: SELF_CHECK_MS, stdio: ["ignore", "pipe", "ignore"] });
   return { status: ran.status, stdout: ran.stdout ?? "", ...(ran.error === undefined ? {} : { error: (ran.error as NodeJS.ErrnoException).code ?? ran.error.message }) };
 };
 
+/**
+ * Whether `path` may be started: its real path is a regular file owned by `uid` or root and not group- or
+ * world-writable, and so is every folder above it (an ancestor may instead be a sticky folder). The real path, or why not.
+ */
+export function trustedBinary(path: string, uid: number | undefined): { ok: true; real: string } | { ok: false; why: string } {
+  if (!isAbsolute(path)) return { ok: false, why: "it isn't an absolute path" };
+  if (uid === undefined) return { ok: false, why: "who owns it can't be checked on this system" };
+  let real: string;
+  try { real = realpathSync(path); } catch (error) { return { ok: false, why: `it isn't there (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` }; }
+  const owned = (owner: number) => owner === uid || owner === 0;
+  try {
+    const file = lstatSync(real);
+    if (!file.isFile()) return { ok: false, why: "it isn't a file" };
+    if (!owned(file.uid)) return { ok: false, why: "it is owned by another user" };
+    if ((file.mode & 0o022) !== 0) return { ok: false, why: "others can change it (group- or world-writable)" };
+    let folder = dirname(real);
+    for (let first = true; ; first = false) {
+      const dir = lstatSync(folder);
+      if (!dir.isDirectory()) return { ok: false, why: `${folder} isn't a folder` };
+      if (!owned(dir.uid)) return { ok: false, why: `${folder} is owned by another user` };
+      const sticky = (dir.mode & 0o1000) !== 0;
+      if ((dir.mode & 0o022) !== 0 && (first || !sticky)) return { ok: false, why: `others can change ${folder} (group- or world-writable)` };
+      const up = dirname(folder);
+      if (up === folder) break;
+      folder = up;
+    }
+  } catch (error) {
+    return { ok: false, why: `it can't be checked (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` };
+  }
+  return { ok: true, real };
+}
+
+/** Where the platform package may be: only inside Toolroll's own install tree (see the header), never an upward search. */
+function packageCandidates(root: string, name: string): string[] {
+  const parts = name.split("/");
+  const places = [join(root, "node_modules", ...parts)];
+  // Hoisted beside Toolroll itself, in the node_modules folder Toolroll is installed in.
+  if (basename(dirname(root)) === "node_modules") places.push(join(dirname(root), ...parts));
+  return places;
+}
+
+/** The installed platform package's binary path, or null (a folder whose package.json names another package is none). */
+function installedPackageBinary(root: string, name: string): string | null {
+  for (const place of packageCandidates(root, name)) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(place, "package.json"), "utf8")) as { name?: unknown };
+      if (manifest.name === name) return join(place, "bin", "toolroll-tui");
+    } catch { /* not here */ }
+  }
+  return null;
+}
+
 /** Which screen to open, and when it's the classic one, why (one line). Reads nothing secret and mints nothing. */
 export function chooseTuiBinary(input: TuiChoiceInput): TuiChoice {
-  if (input.env["TOOLROLL_SCREEN"] === "classic") return { ok: false, why: "TOOLROLL_SCREEN=classic asks for it" };
-  if (input.screenReader) return { ok: false, why: "it works with screen readers" };
-  let binary: string | null = null;
-  const named = input.env["TOOLROLL_TUI_BINARY"];
-  if (named !== undefined && named !== "") binary = named;
-  else {
-    const name = TUI_PACKAGES[`${input.platform}-${input.arch}`];
-    const manifest = name === undefined ? null : (input.resolvePackage ?? defaultResolve)(name);
-    if (manifest !== null) binary = join(dirname(manifest), "bin", "toolroll-tui");
-    else {
-      const built = join(input.packageRoot ?? defaultRoot(), "tui", "target", "release", "toolroll-tui");
-      if (existsSync(built)) binary = built;
-      else if (name === undefined) return { ok: false, why: `the terminal workbench isn't built for ${input.platform}-${input.arch} yet` };
-      else return { ok: false, why: "the terminal workbench isn't installed on this computer" };
+  const ignored = (input.env["TOOLROLL_TUI_BINARY"] ?? "") === "" ? undefined
+    : "TOOLROLL_TUI_BINARY is ignored: pass --tui-binary <absolute path> to use your own build";
+  const note = (choice: TuiChoice, more?: string): TuiChoice => {
+    const notice = [more, ignored].filter(one => one !== undefined).join(". ");
+    return notice === "" ? choice : { ...choice, notice };
+  };
+  if (input.env["TOOLROLL_SCREEN"] === "classic") return note({ ok: false, why: "TOOLROLL_SCREEN=classic asks for it" });
+  if (input.screenReader) return note({ ok: false, why: "it works with screen readers" });
+  const root = input.packageRoot ?? defaultRoot();
+  const uid = input.uid ?? process.getuid?.();
+  const name = TUI_PACKAGES[`${input.platform}-${input.arch}`];
+  let binary: string;
+  let notice: string | undefined;
+  if (input.devBinary !== undefined && input.devBinary !== null) {
+    if (!isAbsolute(input.devBinary)) return note({ ok: false, why: "--tui-binary needs an absolute path" });
+    const trusted = trustedBinary(input.devBinary, uid);
+    if (!trusted.ok) return note({ ok: false, why: `--tui-binary ${input.devBinary} can't be trusted: ${trusted.why}` });
+    binary = trusted.real;
+    notice = `Using your own terminal workbench build at ${binary} (--tui-binary)`;
+  } else {
+    const fromPackage = name === undefined ? null : installedPackageBinary(root, name);
+    const checkout = existsSync(join(root, ".git")) && existsSync(join(root, "tui", "Cargo.toml"));
+    const built = join(root, "tui", "target", "release", "toolroll-tui");
+    const found = fromPackage ?? (checkout && existsSync(built) ? built : null);
+    if (found === null) {
+      if (name === undefined) return note({ ok: false, why: `the terminal workbench isn't built for ${input.platform}-${input.arch} yet` });
+      return note({ ok: false, why: "the terminal workbench isn't installed on this computer" });
     }
+    const trusted = trustedBinary(found, uid);
+    if (!trusted.ok) return note({ ok: false, why: `the terminal workbench at ${found} can't be trusted: ${trusted.why}` });
+    binary = trusted.real;
   }
+  // From here on only `binary` (the real path just checked) is run: the self-check, then the screen itself.
   const check = (input.selfCheck ?? defaultSelfCheck)(binary);
-  if (check.status !== 0) return { ok: false, why: `the terminal workbench didn't start (${check.error ?? (check.status === null ? "no answer" : `exit ${check.status}`)})` };
+  if (check.status === TUI_EXIT.unprotected) return note({ ok: false, why: "the terminal workbench couldn't turn off crash dumps on this computer" }, notice);
+  if (check.status !== 0) return note({ ok: false, why: `the terminal workbench didn't start (${check.error ?? (check.status === null ? "no answer" : `exit ${check.status}`)})` }, notice);
   const said = /^toolroll-tui \S+ contract ([0-9a-f]{64})$/.exec(check.stdout.trim());
-  if (said === null || said[1] !== input.contract) return { ok: false, why: "the terminal workbench is from another Toolroll version" };
-  return { ok: true, binary };
+  if (said === null || said[1] !== input.contract) return note({ ok: false, why: "the terminal workbench is from another Toolroll version" }, notice);
+  return note({ ok: true, binary }, notice);
 }
 
 export type TuiRunInput = {
@@ -101,6 +187,8 @@ export type TuiRunInput = {
   stdio?: readonly ["inherit" | "ignore" | "pipe", "inherit" | "ignore" | "pipe", "inherit" | "ignore" | "pipe"];
   /** Tests: told when the child starts. */
   started?: (child: ChildProcess) => void;
+  /** Tests: how long the binary has to say it is protected (default 5 s). */
+  readyMs?: number;
 };
 
 /** How the binary ended: a screen exit, or "classic" (open the classic screen; it said why). */
@@ -109,11 +197,16 @@ export type TuiRunEnd = TuiExit | "classic";
 /** Run the binary until it ends, signals forwarded, its asks answered. */
 export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
   const args = ["--control-fd", "4", ...(input.session.owned() ? ["--owned"] : []), ...(input.project === null ? [] : ["--project", input.project])];
-  const child = spawnWithLink(input.binary, args, input.link, {
+  // The exact path chooseTuiBinary checked (absolute): never a name looked up on PATH.
+  if (!isAbsolute(input.binary)) throw new Error("the terminal workbench is started only by its checked, absolute path");
+  const { child, send } = spawnHoldingLink(input.binary, args, input.link, {
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.stdio === undefined ? {} : { stdio: input.stdio }), control: true,
   });
   input.started?.(child);
+  // The link is written only once the binary says crash dumps are off; one that doesn't say so in time is stopped.
+  let sentLink = false;
+  const readyTimer = setTimeout(() => { if (!sentLink && child.exitCode === null) child.kill("SIGTERM"); }, input.readyMs ?? READY_MS);
   const asks = child.stdio[4];
   if (asks !== null && asks !== undefined && "on" in asks) {
     let pending = "";
@@ -129,6 +222,10 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
         if (line.startsWith("\u0000") || line.length > ASK_CAP) continue;
         let ask: unknown = null;
         try { ask = JSON.parse(line); } catch { ask = null; }
+        if (ask !== null && typeof ask === "object" && (ask as Record<string, unknown>)["ready"] === READY) {
+          if (!sentLink) { sentLink = send(); clearTimeout(readyTimer); }
+          continue;
+        }
         // The answer goes back on the same descriptor, one line: what to say ({"said": "..."}).
         if (ask !== null && typeof ask === "object" && (ask as Record<string, unknown>)["want"] === "browser") {
           void input.session.openBrowser().catch(() => "The browser couldn't be opened.").then(said => {
@@ -148,8 +245,11 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
     child.once("exit", (exit, signal) => resolve(signal === null ? exit : null));
   });
   for (const [signal, handler] of handlers) process.off(signal, handler);
+  clearTimeout(readyTimer);
+  // It never said it was protected (so it never had the link): the screen never opened.
+  if (!sentLink) return "classic";
   if (code === TUI_EXIT.stop) return "stop";
   if (code === TUI_EXIT.keep) return "keep";
-  if (code === TUI_EXIT.classic || code === -1) return "classic";
+  if (code === TUI_EXIT.classic || code === TUI_EXIT.unprotected || code === -1) return "classic";
   return "leave";
 }

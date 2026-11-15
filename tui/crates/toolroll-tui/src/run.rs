@@ -150,13 +150,13 @@ impl Loop {
                 let r = client.live_window(run, file, cursor.as_deref()).await;
                 let _ = tx.send(Msg::Live(run, file, r));
             })),
-            Effect::FetchDiff(task, run) => drop(tokio::spawn(async move {
-                let r = client.diff(&task, run).await;
-                let _ = tx.send(Msg::Diff(task, r));
+            Effect::FetchDiff(ask) => drop(tokio::spawn(async move {
+                let r = client.diff(&ask.task, ask.run).await;
+                let _ = tx.send(Msg::Diff(ask, r));
             })),
-            Effect::FetchDiffFile(task, run, file) => drop(tokio::spawn(async move {
-                let r = client.diff_file(&task, run, file).await;
-                let _ = tx.send(Msg::DiffFile(task, r));
+            Effect::FetchDiffFile(ask) => drop(tokio::spawn(async move {
+                let r = client.diff_file(&ask.task, ask.run, ask.file).await;
+                let _ = tx.send(Msg::DiffFile(ask, r));
             })),
             Effect::Act { path, fields, done } => drop(tokio::spawn(async move {
                 let pairs: Vec<(&str, &str)> = fields

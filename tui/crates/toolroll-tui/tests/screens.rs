@@ -7,7 +7,9 @@ use ratatui::Terminal;
 use serde_json::Value;
 use toolroll_api::*;
 use toolroll_fake_engine as fake;
-use toolroll_tui::app::{App, Effect, Mode, Msg, Tab, EXIT_CLASSIC, EXIT_KEEP, EXIT_STOP};
+use toolroll_tui::app::{
+    App, DiffAsk, Effect, FileAsk, Mode, Msg, Tab, EXIT_CLASSIC, EXIT_KEEP, EXIT_STOP,
+};
 
 /// 4 min 12 s after the fixtures' builds started.
 const NOW: i64 = 1_794_657_852;
@@ -61,6 +63,55 @@ fn app_with(work: Value, select: &str) -> App {
 
 fn scenario_app(select: &str) -> App {
     app_with(fake::scenario_work(), select)
+}
+
+/// The one diff read an update asked for.
+fn diff_ask(fx: &[Effect]) -> DiffAsk {
+    match fx.iter().find_map(|e| match e {
+        Effect::FetchDiff(ask) => Some(ask.clone()),
+        _ => None,
+    }) {
+        Some(ask) => ask,
+        None => panic!("no diff read in {fx:?}"),
+    }
+}
+
+/// The one file read an update asked for.
+fn file_ask(fx: &[Effect]) -> FileAsk {
+    match fx.iter().find_map(|e| match e {
+        Effect::FetchDiffFile(ask) => Some(ask.clone()),
+        _ => None,
+    }) {
+        Some(ask) => ask,
+        None => panic!("no file read in {fx:?}"),
+    }
+}
+
+/// Answer the diff read `fx` asked for with `diff`, and its file read with the scenario's first file.
+fn answer_diff(app: &mut App, fx: &[Effect], diff: Value) {
+    let state = fake::scenario();
+    let fx = app.update(Msg::Diff(diff_ask(fx), Ok(parse(diff))));
+    let ask = file_ask(&fx);
+    let mut file = state.diff_files[&format!("t-done:{}", ask.file)].clone();
+    file["run"] = ask.run.into();
+    app.update(Msg::DiffFile(ask, Ok(parse(file))));
+}
+
+/// `a` on t-done: its changes shown first, then `a` again opens the Accept dialog.
+fn open_accept(app: &mut App) {
+    let fx = app.key(key('a'));
+    assert_eq!(
+        app.status.as_ref().unwrap().1,
+        toolroll_tui::app::SHOW_CHANGES_FIRST
+    );
+    assert_eq!(app.tab, Tab::Diff);
+    answer_diff(app, &fx, fake::scenario().diffs["t-done"].clone());
+    assert_eq!(app.key(key('a')), vec![]);
+    assert!(
+        matches!(app.mode, Mode::ConfirmAccept(_)),
+        "{:?}",
+        app.status
+    );
 }
 
 fn screen(app: &mut App, w: u16, h: u16) -> String {
@@ -229,21 +280,19 @@ fn diff_tab() {
     // Enter on a result opens its changes.
     let fx = app.key(code(KeyCode::Enter));
     assert_eq!(app.tab, Tab::Diff);
-    assert_eq!(fx, vec![Effect::FetchDiff("t-done".into(), None)]);
-    let fx = app.update(Msg::Diff(
-        "t-done".into(),
-        Ok(parse(state.diffs["t-done"].clone())),
-    ));
-    assert_eq!(fx, vec![Effect::FetchDiffFile("t-done".into(), 2, 0)]);
+    // The build waiting for review is the one read.
+    let ask = diff_ask(&fx);
+    assert_eq!((ask.task.as_str(), ask.run), ("t-done", Some(2)));
+    let fx = app.update(Msg::Diff(ask, Ok(parse(state.diffs["t-done"].clone()))));
+    let file = file_ask(&fx);
+    assert_eq!((file.task.as_str(), file.run, file.file), ("t-done", 2, 0));
     app.update(Msg::DiffFile(
-        "t-done".into(),
+        file,
         Ok(parse(state.diff_files["t-done:0"].clone())),
     ));
     insta::assert_snapshot!(screen(&mut app, 120, 30));
-    assert_eq!(
-        app.key(key(']')),
-        vec![Effect::FetchDiffFile("t-done".into(), 2, 1)]
-    );
+    let next = file_ask(&app.key(key(']')));
+    assert_eq!((next.task.as_str(), next.run, next.file), ("t-done", 2, 1));
 }
 
 #[test]
@@ -267,9 +316,10 @@ fn terminal_tab_and_help_and_quit() {
 #[test]
 fn accept_and_send_back_post_the_review_facts() {
     let mut app = scenario_app("t-done");
-    // a asks first; Enter posts the plain completion of the receipt read: never an acceptance (accept=1) of terms the
-    // terminal didn't show (a result that owes one is refused in words and accepted in the browser).
-    assert_eq!(app.key(key('a')), vec![]);
+    // a shows the changes first, then asks; Enter posts the plain completion of the receipt read: never an acceptance
+    // (accept=1) of terms the terminal didn't show (a result that owes one is refused in words and accepted in the
+    // browser).
+    open_accept(&mut app);
     assert!(
         matches!(&app.mode, Mode::ConfirmAccept(pin) if pin.run == 2 && pin.receipt == "a".repeat(64))
     );
@@ -671,7 +721,7 @@ fn dialogs_post_the_facts_they_showed_and_close_when_those_change() {
     };
     // Accept: a newer result arrives while the dialog is open.
     let mut app = scenario_app("t-done");
-    app.key(key('a'));
+    open_accept(&mut app);
     app.update(Msg::Steps(
         "t-done".into(),
         Ok(steps_with(3, &"c".repeat(64))),
@@ -681,7 +731,7 @@ fn dialogs_post_the_facts_they_showed_and_close_when_those_change() {
     assert!(no_act(app.key(code(KeyCode::Enter))));
     // Unchanged (the same steps read again): exactly the pinned run and receipt.
     let mut app = scenario_app("t-done");
-    app.key(key('a'));
+    open_accept(&mut app);
     app.update(Msg::Steps(
         "t-done".into(),
         Ok(steps_with(2, &"a".repeat(64))),
@@ -731,4 +781,131 @@ fn dialogs_post_the_facts_they_showed_and_close_when_those_change() {
 
 fn no_act(fx: Vec<Effect>) -> bool {
     !fx.iter().any(|e| matches!(e, Effect::Act { .. }))
+}
+
+/// Accept approves only the diff on screen: every read is keyed to task, build, file and generation, a late answer for
+/// another build is dropped (never drawn under this build's facts), a new index drops the old hunks, and the dialog
+/// opens and posts only while the diff shown, the pin and the steps' receipt agree; on any disagreement it closes and
+/// says why.
+#[test]
+fn accept_never_approves_a_diff_other_than_the_one_shown() {
+    use toolroll_tui::app::{ReviewPin, DIFF_DISAGREES};
+    let state = fake::scenario();
+    let steps_with = |run: i64, receipt: &str| {
+        let mut v = state.steps["t-done"].clone();
+        v["review"] =
+            serde_json::json!({ "run": run, "receipt": receipt, "source": "b".repeat(64) });
+        parse::<StepCards>(v)
+    };
+    let diff_of = |run: i64| {
+        let mut d = state.diffs["t-done"].clone();
+        d["run"] = run.into();
+        d
+    };
+    let file_of = |run: i64, file: i64| {
+        let mut f = state.diff_files[&format!("t-done:{file}")].clone();
+        f["run"] = run.into();
+        parse::<ResultDiffFile>(f)
+    };
+
+    // 1. Build 2's changes are asked; build 3 becomes the result waiting before they arrive.
+    let mut app = scenario_app("t-done");
+    let first = diff_ask(&app.key(code(KeyCode::Enter)));
+    assert_eq!(first.run, Some(2));
+    let second = diff_ask(&app.update(Msg::Steps(
+        "t-done".into(),
+        Ok(steps_with(3, &"c".repeat(64))),
+    )));
+    assert_eq!(second.run, Some(3));
+    // Build 2's late answer is dropped: nothing is drawn, nothing more is asked.
+    assert_eq!(
+        app.update(Msg::Diff(first.clone(), Ok(parse(diff_of(2))))),
+        vec![]
+    );
+    assert!(app.diff.is_none());
+    // Nor does an answer that claims another build than the one its read asked for get in.
+    assert_eq!(
+        app.update(Msg::Diff(second.clone(), Ok(parse(diff_of(2))))),
+        vec![]
+    );
+    assert!(app.diff.is_none());
+    // Accept with no diff of build 3 on screen: it shows the changes first and opens nothing.
+    let fx = app.key(key('a'));
+    assert!(matches!(app.mode, Mode::Normal));
+    let third = diff_ask(&fx);
+    assert_eq!(third.run, Some(3));
+    // The superseded read for build 3 is stale too (generation): only the newest read is taken.
+    assert_eq!(app.update(Msg::Diff(second, Ok(parse(diff_of(3))))), vec![]);
+    let fx = app.update(Msg::Diff(third, Ok(parse(diff_of(3)))));
+    let file = file_ask(&fx);
+    assert_eq!((file.run, file.file), (3, 0));
+    // A file answer for another build, or another file, or an older read, is dropped.
+    let stale = FileAsk {
+        run: 2,
+        ..file.clone()
+    };
+    app.update(Msg::DiffFile(stale.clone(), Ok(file_of(2, 0))));
+    app.update(Msg::DiffFile(file.clone(), Ok(file_of(2, 0))));
+    app.update(Msg::DiffFile(file.clone(), Ok(file_of(3, 1))));
+    assert!(app.diff_file.is_none());
+    app.update(Msg::DiffFile(file, Ok(file_of(3, 0))));
+    assert_eq!(
+        app.diff_file.as_ref().map(|f| (f.run, f.file.file)),
+        Some((3, 0))
+    );
+    // Now the diff, the pin and the receipt agree: Accept posts build 3's receipt.
+    assert_eq!(app.key(key('a')), vec![]);
+    assert!(matches!(&app.mode, Mode::ConfirmAccept(pin) if pin.run == 3));
+    assert_eq!(
+        app.key(code(KeyCode::Enter)),
+        vec![Effect::Act {
+            path: "/t/t-done/complete".into(),
+            fields: vec![
+                ("receipt".into(), "c".repeat(64)),
+                ("run".into(), "3".into())
+            ],
+            done: "Accepted. The task is complete.".into()
+        }]
+    );
+
+    // 2. A new index drops the hunks drawn for the old one.
+    let mut app = scenario_app("t-done");
+    let fx = app.key(code(KeyCode::Enter));
+    answer_diff(&mut app, &fx, diff_of(2));
+    assert!(app.diff_file.is_some());
+    let again = diff_ask(&app.update(Msg::Acted(Ok(ActOutcome::Done("ok".into())))));
+    let mut changed = diff_of(2);
+    changed["files"].as_array_mut().unwrap().remove(0);
+    let fx = app.update(Msg::Diff(again, Ok(parse(changed))));
+    assert!(app.diff_file.is_none(), "old hunks kept under a new index");
+    assert_eq!(file_ask(&fx).file, 1);
+
+    // 3. The dialog is open and a refreshed diff of the same build no longer matches what it showed: it closes, says
+    // why, and Enter sends nothing.
+    let mut app = scenario_app("t-done");
+    open_accept(&mut app);
+    let again = diff_ask(&app.update(Msg::Acted(Ok(ActOutcome::Refused("no".into())))));
+    let mut grown = diff_of(2);
+    grown["totals"] = serde_json::json!({ "files": 3, "additions": 9, "deletions": 1, "binary": 0, "filesTruncated": false });
+    app.update(Msg::Diff(again, Ok(parse(grown))));
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.as_ref().unwrap().1, DIFF_DISAGREES);
+    assert!(no_act(app.key(code(KeyCode::Enter))));
+
+    // 4. A dialog pinned to build 2 while build 3's diff is on screen never posts (Accept rechecks at Enter).
+    let mut app = scenario_app("t-done");
+    let fx = app.key(code(KeyCode::Enter));
+    answer_diff(&mut app, &fx, diff_of(2));
+    let mut shown = app.diff.clone().unwrap();
+    shown.run = Some(3);
+    app.diff = Some(shown);
+    app.mode = Mode::ConfirmAccept(ReviewPin {
+        task: "t-done".into(),
+        run: 2,
+        receipt: "a".repeat(64),
+        source: "b".repeat(64),
+        totals: None,
+    });
+    assert!(no_act(app.key(code(KeyCode::Enter))));
+    assert_eq!(app.status.as_ref().unwrap().1, DIFF_DISAGREES);
 }

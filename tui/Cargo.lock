@@ -2156,6 +2156,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "toolroll-fake-engine",
+ "zeroize",
 ]
 
 [[package]]
@@ -2176,6 +2177,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "insta",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",
@@ -2183,6 +2185,7 @@ dependencies = [
  "toolroll-api",
  "toolroll-fake-engine",
  "unicode-width",
+ "zeroize",
 ]
 
 [[package]]
@@ -2667,6 +2670,12 @@ dependencies = [
  "syn 3.0.10",
  "synstructure",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zerotrie"

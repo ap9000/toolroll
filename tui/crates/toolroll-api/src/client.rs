@@ -1,7 +1,10 @@
 //! The typed client: one local-owner session, redeemed from a one-time link, held in memory only.
 //!
 //! - Loopback only: the link must name `http://127.0.0.1:<port>` (or `[::1]`), and every request goes to that origin.
-//! - The cookie, the form token and the mutation key are never printed (Debug shows lengths) and never written anywhere.
+//! - The cookie, the form token and the mutation key are never printed (Debug shows lengths) and never written anywhere;
+//!   they are held in zeroizing memory (cleared when dropped), as are the sign-in answer and the link's code. Copies the
+//!   HTTP stack makes of them on the way out (header values, request bodies) are its own and aren't cleared: the binary
+//!   turns crash dumps off before any of this exists (toolroll-tui guard.rs).
 //! - Reads are the engine API's JSON routes; every act is the browser's own form POST, with the form token in the body,
 //!   the key in `x-toolroll-key`, the console's own Origin, and `x-toolroll-act: in-place` + `x-toolroll-client: terminal`
 //!   so a refusal comes back as its words (`{ outcome, words }`) instead of a page.
@@ -14,6 +17,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use zeroize::Zeroizing;
 
 /// Why a call didn't give its answer.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,9 +58,9 @@ pub enum ActOutcome {
 }
 
 struct Creds {
-    cookie: String,
-    csrf: String,
-    key: String,
+    cookie: Zeroizing<String>,
+    csrf: Zeroizing<String>,
+    key: Zeroizing<String>,
 }
 
 impl fmt::Debug for Creds {
@@ -79,7 +83,7 @@ pub struct Client {
 
 /// The console's origin and the link's code, from a local owner's one-time link; refused unless it is exactly
 /// `http://127.0.0.1:<port>/login/once/<43 url-safe characters>` (or `[::1]`).
-pub fn parse_link(link: &str) -> Result<(String, String), ApiError> {
+pub fn parse_link(link: &str) -> Result<(String, Zeroizing<String>), ApiError> {
     let bad = || ApiError::Refused("That isn't a local sign-in link.".into());
     let rest = link.trim().strip_prefix("http://").ok_or_else(bad)?;
     let (host, path) = rest.split_at(rest.find('/').ok_or_else(bad)?);
@@ -102,7 +106,7 @@ pub fn parse_link(link: &str) -> Result<(String, String), ApiError> {
     {
         return Err(bad());
     }
-    Ok((format!("http://{host}"), code.to_string()))
+    Ok((format!("http://{host}"), Zeroizing::new(code.to_string())))
 }
 
 fn http_client() -> Result<reqwest::Client, ApiError> {
@@ -140,15 +144,17 @@ pub async fn redeem(link: &str) -> Result<Client, ApiError> {
         .header("content-type", "application/json")
         .header("x-toolroll-client", "terminal")
         .header("accept", "application/json")
+        // (The body is the HTTP stack's once handed over; the code is spent on this first use anyway.)
         .body(format!("{{\"code\":{}}}", json_escape(&code)))
         .send()
         .await
         .map_err(|e| ApiError::Unreachable(e.to_string()))?;
     let status = res.status().as_u16();
-    let text = res
-        .text()
-        .await
-        .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+    let text = Zeroizing::new(
+        res.text()
+            .await
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?,
+    );
     if status != 200 {
         let word = serde_json::from_str::<Refusal>(&text)
             .map(|r| r.error)
@@ -160,18 +166,22 @@ pub async fn redeem(link: &str) -> Result<Client, ApiError> {
             other => format!("the console refused it ({other})"),
         }));
     }
-    let r: LinkRedemption = serde_json::from_str(&text).map_err(|_| {
+    let mut r: LinkRedemption = serde_json::from_str(&text).map_err(|_| {
         ApiError::Contract("The sign-in answer isn't what this version expects.".into())
     })?;
+    // The secrets move into zeroizing memory at once (the answer's own strings are left empty).
+    let value = Zeroizing::new(std::mem::take(&mut r.cookie.value));
+    let csrf = Zeroizing::new(std::mem::take(&mut r.csrf));
+    let key = Zeroizing::new(std::mem::take(&mut r.key));
     if r.version != API_VERSION {
         return Err(ApiError::Contract(
             "The sign-in answer is from another Toolroll version.".into(),
         ));
     }
     let hex64 = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
-    if !hex64(&r.cookie.value)
-        || !hex64(&r.csrf)
-        || !hex64(&r.key)
+    if !hex64(&value)
+        || !hex64(&csrf)
+        || !hex64(&key)
         || r.cookie.name.is_empty()
         || !r
             .cookie
@@ -187,9 +197,9 @@ pub async fn redeem(link: &str) -> Result<Client, ApiError> {
         origin,
         http,
         creds: Arc::new(Creds {
-            cookie: format!("{}={}", r.cookie.name, r.cookie.value),
-            csrf: r.csrf,
-            key: r.key,
+            cookie: Zeroizing::new(format!("{}={}", r.cookie.name, value.as_str())),
+            csrf,
+            key,
         }),
         account: r.account,
     })
@@ -224,7 +234,7 @@ impl Client {
         let res = self
             .http
             .get(format!("{}{}", self.origin, path))
-            .header("cookie", &self.creds.cookie)
+            .header("cookie", self.creds.cookie.as_str())
             .header("accept", "application/json")
             .timeout(Duration::from_secs(30))
             .send()
@@ -328,7 +338,7 @@ impl Client {
         fields: &[(&str, &str)],
         done: &str,
     ) -> Result<ActOutcome, ApiError> {
-        let mut body = format!("csrf={}", encode(&self.creds.csrf));
+        let mut body = Zeroizing::new(format!("csrf={}", encode(&self.creds.csrf)));
         for (k, v) in fields {
             body.push('&');
             body.push_str(&encode(k));
@@ -338,15 +348,15 @@ impl Client {
         let res = self
             .http
             .post(format!("{}{}", self.origin, path))
-            .header("cookie", &self.creds.cookie)
+            .header("cookie", self.creds.cookie.as_str())
             .header("origin", &self.origin)
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json")
-            .header("x-toolroll-key", &self.creds.key)
+            .header("x-toolroll-key", self.creds.key.as_str())
             .header("x-toolroll-act", "in-place")
             .header("x-toolroll-client", "terminal")
             .timeout(Duration::from_secs(30))
-            .body(body)
+            .body(body.to_string())
             .send()
             .await
             .map_err(|e| ApiError::Unreachable(e.to_string()))?;
@@ -426,7 +436,7 @@ impl Client {
         let res = self
             .http
             .get(format!("{}/live?{}", self.origin, query.join("&")))
-            .header("cookie", &self.creds.cookie)
+            .header("cookie", self.creds.cookie.as_str())
             .header("accept", "text/event-stream")
             .header("x-toolroll-live", "1")
             .send()
@@ -506,7 +516,7 @@ mod tests {
         let code = "A".repeat(43);
         assert_eq!(
             parse_link(&format!("http://127.0.0.1:4801/login/once/{code}")).unwrap(),
-            ("http://127.0.0.1:4801".into(), code.clone())
+            ("http://127.0.0.1:4801".into(), Zeroizing::new(code.clone()))
         );
         assert!(parse_link(&format!("http://[::1]:4801/login/once/{code}")).is_ok());
         for bad in [
@@ -524,12 +534,14 @@ mod tests {
         }
     }
 
+    /// Debug formatting only: what a log line or a panic message could show. (Memory and crash dumps are covered by
+    /// the zeroizing types here and the binary's dump protection, toolroll-tui guard.rs and its tests.)
     #[test]
     fn credentials_never_print() {
         let creds = Creds {
-            cookie: "standing-orders_session=".to_string() + &"a".repeat(64),
-            csrf: "b".repeat(64),
-            key: "c".repeat(64),
+            cookie: Zeroizing::new("standing-orders_session=".to_string() + &"a".repeat(64)),
+            csrf: Zeroizing::new("b".repeat(64)),
+            key: Zeroizing::new("c".repeat(64)),
         };
         let shown = format!("{creds:?}");
         assert!(
@@ -537,6 +549,26 @@ mod tests {
                 && !shown.contains(&"b".repeat(64))
                 && !shown.contains(&"c".repeat(64))
         );
+    }
+
+    #[test]
+    fn credentials_are_held_in_zeroizing_memory() {
+        // A type check: each secret is a Zeroizing<String> (cleared when dropped), not a plain String.
+        fn zeroizing(_: &Zeroizing<String>) {}
+        let creds = Creds {
+            cookie: Zeroizing::new("n=".to_string() + &"a".repeat(64)),
+            csrf: Zeroizing::new("b".repeat(64)),
+            key: Zeroizing::new("c".repeat(64)),
+        };
+        zeroizing(&creds.cookie);
+        zeroizing(&creds.csrf);
+        zeroizing(&creds.key);
+        let (_, code) = parse_link(&format!(
+            "http://127.0.0.1:4801/login/once/{}",
+            "A".repeat(43)
+        ))
+        .unwrap();
+        zeroizing(&code);
     }
 
     #[test]

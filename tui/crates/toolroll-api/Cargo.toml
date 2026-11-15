@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 futures-util.workspace = true
+zeroize = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "net", "io-util", "rt-multi-thread"] }

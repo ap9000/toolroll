@@ -16,6 +16,8 @@ pub const EXIT_ENDED: i32 = 1;
 pub const EXIT_STOP: i32 = 40;
 pub const EXIT_KEEP: i32 = 41;
 pub const EXIT_CLASSIC: i32 = 42;
+/// Crash dumps couldn't be turned off (guard.rs): nothing was read, and the classic screen opens instead.
+pub const EXIT_UNPROTECTED: i32 = 43;
 
 /// Said when a question and its answer can't be shown whole here.
 pub const ANSWER_TOO_LONG: &str =
@@ -113,6 +115,11 @@ pub enum NoteKind {
 
 /// Said when a dialog closes because what it showed changed.
 pub const RESULT_CHANGED: &str = "This result changed — look again.";
+/// Said when Accept would approve something other than the changes on screen (another build, another file, or none).
+pub const DIFF_DISAGREES: &str =
+    "The changes on screen aren't the result waiting — look at them again, then press a.";
+/// Said when `a` opens the changes first: Accept is a yes to the diff on screen, so it is shown before it is asked.
+pub const SHOW_CHANGES_FIRST: &str = "Here are its changes — press a again to accept them.";
 pub const QUESTION_CHANGED: &str = "This question changed — look again.";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,8 +190,8 @@ pub enum Effect {
         file: &'static str,
         cursor: Option<String>,
     },
-    FetchDiff(String, Option<i64>),
-    FetchDiffFile(String, i64, i64),
+    FetchDiff(DiffAsk),
+    FetchDiffFile(FileAsk),
     Act {
         path: String,
         fields: Vec<(String, String)>,
@@ -197,14 +204,33 @@ pub enum Effect {
     Exit(i32),
 }
 
+/// One read of a task's changes: which task, which build (None: the newest), and the request's generation. Its answer
+/// is taken only while it is still the read wanted (same generation, task and build), so a late answer for another
+/// build is dropped instead of drawn under this one's facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffAsk {
+    pub task: String,
+    pub run: Option<i64>,
+    pub gen: u64,
+}
+
+/// One read of a file's hunks: task, build, file and generation, all matched against its answer and the index shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileAsk {
+    pub task: String,
+    pub run: i64,
+    pub file: i64,
+    pub gen: u64,
+}
+
 /// An engine answer or signal, as the loop hands it over.
 #[derive(Debug, Clone)]
 pub enum Msg {
     Work(Result<WorkRows, ApiError>),
     Steps(String, Result<StepCards, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
-    Diff(String, Result<ResultDiff, ApiError>),
-    DiffFile(String, Result<ResultDiffFile, ApiError>),
+    Diff(DiffAsk, Result<ResultDiff, ApiError>),
+    DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
     Acted(Result<ActOutcome, ApiError>),
     Signal(LiveSignal),
     /// The launcher's answer to an ask (descriptor 4): words to say.
@@ -241,6 +267,10 @@ pub struct App {
     pub diff_index: usize,
     pub diff_file: Option<ResultDiffFile>,
     pub diff_scroll: usize,
+    /// The diff read whose answer is wanted (the newest asked), and the file read's; anything else is stale.
+    diff_wanted: Option<DiffAsk>,
+    file_wanted: Option<FileAsk>,
+    diff_gen: u64,
     pub status: Option<(Tone, String)>,
     /// The left column's width in cells (dragged with the mouse).
     pub split: u16,
@@ -284,6 +314,9 @@ impl App {
             diff_index: 0,
             diff_file: None,
             diff_scroll: 0,
+            diff_wanted: None,
+            file_wanted: None,
+            diff_gen: 0,
             status: None,
             split: 36,
             dragging: false,
@@ -393,31 +426,40 @@ impl App {
                         self.fetching_live = true;
                     }
                 }
+                // The Diff tab follows the result waiting: another build's changes are read again for this one.
+                let waiting = self
+                    .steps
+                    .as_ref()
+                    .and_then(|s| s.review.as_ref())
+                    .map(|r| r.run);
+                if self.tab == Tab::Diff
+                    && waiting.is_some()
+                    && self.diff.as_ref().map(|d| d.run) != Some(waiting)
+                    && self.diff_wanted.as_ref().map(|a| a.run) != Some(waiting)
+                {
+                    fx.push(self.ask_diff(task));
+                }
                 fx.push(Effect::Watch(self.rooms()));
                 fx
             }
             Msg::Steps(_, Err(e)) => self.failed(e),
             Msg::Live(run, file, result) => self.got_live(run, file, result),
-            Msg::Diff(task, Ok(diff)) => {
-                if self.selected_id().as_deref() != Some(task.as_str()) {
+            Msg::Diff(ask, Ok(diff)) => self.got_diff(ask, diff),
+            Msg::Diff(ask, Err(e)) => {
+                if self.diff_wanted.as_ref() != Some(&ask) && !fatal(&e) {
                     return vec![];
                 }
-                self.diff_index = self.diff_index.min(diff.files.len().saturating_sub(1));
-                let fx = match (diff.run, diff.files.get(self.diff_index)) {
-                    (Some(run), Some(f)) => vec![Effect::FetchDiffFile(task, run, f.file)],
-                    _ => vec![],
-                };
-                self.diff = Some(diff);
-                fx
+                self.diff_wanted = None;
+                self.failed(e)
             }
-            Msg::Diff(_, Err(e)) | Msg::DiffFile(_, Err(e)) => self.failed(e),
-            Msg::DiffFile(task, Ok(file)) => {
-                if self.selected_id().as_deref() == Some(task.as_str()) {
-                    self.diff_file = Some(file);
-                    self.diff_scroll = 0;
+            Msg::DiffFile(ask, Err(e)) => {
+                if self.file_wanted.as_ref() != Some(&ask) && !fatal(&e) {
+                    return vec![];
                 }
-                vec![]
+                self.file_wanted = None;
+                self.failed(e)
             }
+            Msg::DiffFile(ask, Ok(file)) => self.got_diff_file(ask, file),
             Msg::Acted(Ok(ActOutcome::Done(words))) => {
                 self.say(Tone::Said, words);
                 self.refresh()
@@ -454,6 +496,7 @@ impl App {
     }
 
     fn failed(&mut self, e: ApiError) -> Vec<Effect> {
+        // (A stale read's error is dropped by its caller unless it ends the session: see `fatal`.)
         match e {
             ApiError::SessionEnded => {
                 self.mode = Mode::Fatal("Session ended: run toolroll again.".into(), EXIT_ENDED);
@@ -483,7 +526,7 @@ impl App {
         {
             fx.push(Effect::FetchSteps(id.clone()));
             if self.tab == Tab::Diff {
-                fx.push(Effect::FetchDiff(id, None));
+                fx.push(self.ask_diff(id));
             }
         }
         fx
@@ -684,6 +727,8 @@ impl App {
         self.diff = None;
         self.diff_file = None;
         self.diff_index = 0;
+        self.diff_wanted = None;
+        self.file_wanted = None;
         self.follow = true;
         self.scroll = 0;
         self.fetching_live = false;
@@ -712,7 +757,7 @@ impl App {
         };
         let mut fx = vec![Effect::FetchSteps(id.clone()), Effect::Watch(vec![])];
         if self.tab == Tab::Diff {
-            fx.push(Effect::FetchDiff(id, None));
+            fx.push(self.ask_diff(id));
         }
         fx
     }
@@ -732,7 +777,7 @@ impl App {
     fn set_tab(&mut self, tab: Tab) -> Vec<Effect> {
         self.tab = tab;
         match (tab, self.selected_id()) {
-            (Tab::Diff, Some(id)) if self.diff.is_none() => vec![Effect::FetchDiff(id, None)],
+            (Tab::Diff, Some(id)) if self.diff.is_none() => vec![self.ask_diff(id)],
             _ => vec![],
         }
     }
@@ -1045,9 +1090,25 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                if let Some(pin) = self.pin_review() {
-                    self.mode = Mode::ConfirmAccept(pin);
+                let Some(pin) = self.pin_review() else {
+                    return vec![];
+                };
+                // Accept is a yes to the changes on screen: with no diff of this build shown, show it first.
+                if self
+                    .diff
+                    .as_ref()
+                    .is_none_or(|d| d.run != Some(pin.run) || d.task != pin.task)
+                {
+                    self.say(Tone::Said, SHOW_CHANGES_FIRST);
+                    self.tab = Tab::Diff;
+                    return vec![self.ask_diff(pin.task)];
                 }
+                if let Err(why) = self.diff_agrees(&pin) {
+                    self.say(Tone::Refused, why);
+                    return vec![];
+                }
+                self.status = None;
+                self.mode = Mode::ConfirmAccept(pin);
                 vec![]
             }
             KeyCode::Char('r') => {
@@ -1121,12 +1182,133 @@ impl App {
             return vec![];
         }
         let next = (self.diff_index as i64 + by).rem_euclid(diff.files.len() as i64) as usize;
+        let ask = match (self.selected_id(), diff.run) {
+            (Some(id), Some(run)) => Some((id, run, diff.files[next].file)),
+            _ => None,
+        };
         self.diff_index = next;
         self.diff_file = None;
-        match (self.selected_id(), diff.run) {
-            (Some(id), Some(run)) => vec![Effect::FetchDiffFile(id, run, diff.files[next].file)],
-            _ => vec![],
+        self.diff_scroll = 0;
+        self.file_wanted = None;
+        // The dialog that pinned another file's view no longer shows what it asks about.
+        self.check_pins();
+        match ask {
+            Some((id, run, file)) => vec![self.ask_file(id, run, file)],
+            None => vec![],
         }
+    }
+
+    // ---- the changes: asked, matched, and agreed with the result waiting -------------------------------------------
+
+    /// Read the task's changes: the build waiting for review when the steps name one, else the newest.
+    fn ask_diff(&mut self, task: String) -> Effect {
+        self.diff_gen += 1;
+        let run = self
+            .steps
+            .as_ref()
+            .filter(|s| s.task.id == task || s.task.root == task)
+            .and_then(|s| s.review.as_ref())
+            .map(|r| r.run);
+        let ask = DiffAsk {
+            task,
+            run,
+            gen: self.diff_gen,
+        };
+        self.diff_wanted = Some(ask.clone());
+        Effect::FetchDiff(ask)
+    }
+
+    fn ask_file(&mut self, task: String, run: i64, file: i64) -> Effect {
+        self.diff_gen += 1;
+        let ask = FileAsk {
+            task,
+            run,
+            file,
+            gen: self.diff_gen,
+        };
+        self.file_wanted = Some(ask.clone());
+        Effect::FetchDiffFile(ask)
+    }
+
+    /// A diff index answer: taken only when it is the read wanted, for the task selected and the build asked. A new
+    /// index drops the hunks shown (they were another index's), and the file read is asked again.
+    fn got_diff(&mut self, ask: DiffAsk, diff: ResultDiff) -> Vec<Effect> {
+        if self.diff_wanted.as_ref() != Some(&ask)
+            || self.selected_id().as_deref() != Some(ask.task.as_str())
+            || diff.task != ask.task
+            || ask.run.is_some_and(|run| diff.run != Some(run))
+        {
+            return vec![];
+        }
+        self.diff_wanted = None;
+        if self.diff.as_ref() != Some(&diff) {
+            if self.diff.as_ref().map(|d| d.run) != Some(diff.run) {
+                self.diff_index = 0;
+            }
+            self.diff_file = None;
+            self.diff_scroll = 0;
+            self.file_wanted = None;
+        }
+        self.diff_index = self.diff_index.min(diff.files.len().saturating_sub(1));
+        let next = match (diff.run, diff.files.get(self.diff_index)) {
+            (Some(run), Some(f)) => Some((run, f.file)),
+            _ => None,
+        };
+        self.diff = Some(diff);
+        self.check_pins();
+        match next {
+            Some((run, file)) => vec![self.ask_file(ask.task, run, file)],
+            None => vec![],
+        }
+    }
+
+    /// A file's hunks: taken only when they are the read wanted and still the file the index on screen points at.
+    fn got_diff_file(&mut self, ask: FileAsk, file: ResultDiffFile) -> Vec<Effect> {
+        let shown = self
+            .diff
+            .as_ref()
+            .filter(|d| d.task == ask.task && d.run == Some(ask.run))
+            .and_then(|d| d.files.get(self.diff_index))
+            .map(|f| f.file);
+        if self.file_wanted.as_ref() != Some(&ask)
+            || self.selected_id().as_deref() != Some(ask.task.as_str())
+            || file.task != ask.task
+            || file.run != ask.run
+            || file.file.file != ask.file
+            || shown != Some(ask.file)
+        {
+            return vec![];
+        }
+        self.file_wanted = None;
+        self.diff_file = Some(file);
+        self.diff_scroll = 0;
+        self.check_pins();
+        vec![]
+    }
+
+    /// Whether the changes on screen are the pinned result's: the diff index is this task's and this build's, its
+    /// totals are the ones the dialog showed, and the hunks drawn (if any) are this build's, for the file the index
+    /// points at. Accept is enabled only when this, the pin and the steps' receipt all agree.
+    fn diff_agrees(&self, pin: &ReviewPin) -> Result<(), &'static str> {
+        let diff = self
+            .diff
+            .as_ref()
+            .filter(|d| d.task == pin.task && d.run == Some(pin.run))
+            .ok_or(DIFF_DISAGREES)?;
+        let totals = diff
+            .totals
+            .as_ref()
+            .map(|t| (t.files, t.additions, t.deletions));
+        if totals != pin.totals {
+            return Err(DIFF_DISAGREES);
+        }
+        if let Some(file) = &self.diff_file {
+            let pointed = diff.files.get(self.diff_index).map(|f| f.file);
+            if file.task != pin.task || file.run != pin.run || Some(file.file.file) != pointed {
+                return Err(DIFF_DISAGREES);
+            }
+        }
+        Ok(())
     }
 
     // ---- acts -----------------------------------------------------------------------------------------------------
@@ -1288,6 +1470,7 @@ impl App {
     /// After a refresh: a dialog whose pinned facts no longer stand closes, saying so (nothing is sent).
     fn check_pins(&mut self) {
         let changed = match &self.mode {
+            Mode::ConfirmAccept(pin) if self.review_pin_stands(pin) => self.diff_agrees(pin).err(),
             Mode::ConfirmAccept(pin) | Mode::Note(NoteKind::SendBack(pin), _) => {
                 (!self.review_pin_stands(pin)).then_some(RESULT_CHANGED)
             }
@@ -1338,6 +1521,10 @@ impl App {
     fn accept(&mut self, pin: ReviewPin) -> Vec<Effect> {
         if !self.review_pin_stands(&pin) {
             self.say(Tone::Refused, RESULT_CHANGED);
+            return vec![];
+        }
+        if let Err(why) = self.diff_agrees(&pin) {
+            self.say(Tone::Refused, why);
             return vec![];
         }
         self.act(
@@ -1512,4 +1699,9 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         }
     }
     needs.into_iter().chain(working).chain(done).collect()
+}
+
+/// Errors that end the screen whichever read they came from (a stale read's other errors are dropped).
+fn fatal(e: &ApiError) -> bool {
+    matches!(e, ApiError::SessionEnded | ApiError::Contract(_))
 }

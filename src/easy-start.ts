@@ -346,6 +346,8 @@ export function defaultEasyStartSeams(options: {
   admit: (repo: string) => Promise<number>;
   /** --screen-reader: the classic screen. */
   screenReader?: boolean;
+  /** --tui-binary <absolute path>: a developer's own terminal workbench build (tui-launch.ts checks it like any other). */
+  tuiBinary?: string;
 }): EasyStartSeams {
   const file = options.databaseFile;
   const cwd = options.cwd ?? process.cwd();
@@ -387,7 +389,8 @@ export function defaultEasyStartSeams(options: {
       // The terminal workbench (tui-launch.ts), signed in over descriptor 3; else the classic screen, with one line why.
       const { chooseTuiBinary, runTuiBinary } = await import("./tui-launch.js");
       const { engineContractDigest } = await import("./contracts/engine-api.js");
-      const choice = chooseTuiBinary({ env: process.env, screenReader: options.screenReader === true, platform: process.platform, arch: process.arch, contract: engineContractDigest() });
+      const choice = chooseTuiBinary({ env: process.env, screenReader: options.screenReader === true, platform: process.platform, arch: process.arch, contract: engineContractDigest(), devBinary: options.tuiBinary ?? null });
+      if (choice.notice !== undefined) options.write(`${choice.notice}.`);
       let why: string | null = choice.ok ? null : choice.why;
       if (choice.ok) {
         const reader = openStoreReadOnly(file);
