@@ -2,13 +2,15 @@
  * Flexible threads, slice F2d (flexible-answers.ts, v167): the answer state machine across the main database and the
  * coding catalog. Every transition and every illegal one; the single-use token; each binding (generation, owner,
  * connection, turn, card) refused when it changed, at the decision and at the write; a cancel racing a send (exactly
- * one wins); the ack timeout; an ambiguous tool event; a crash mid-send (a real process killed inside the write) that
+ * one wins); no I/O inside a database transaction (a real pipe nobody reads hits its deadline while another writer
+ * goes on); a database failure injected after each commit of a send; the ack timeout; an ambiguous tool event; a
+ * question id that names object machinery; the catalog's path; a crash mid-send (a real process killed inside the send) that
  * recovers to uncertain and is never sent again; one decision id in both stores. Scripted connections only: no agent
  * process, no model.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { execFile } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,11 +19,15 @@ import { openStore, type Store } from "./store.js";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "./flexible.js";
 import { admitFlexibleTurn, beginFlexibleTurn, finishFlexibleTurn } from "./flexible-turns.js";
 import {
-  ackFlexibleAnswer, cancelFlexibleAnswer, decideFlexibleAnswer, decideFlexibleAnswerByPolicy, expireFlexibleAnswers, FLEXIBLE_ANSWER_ACK_MS, noteFlexibleToolActivity,
-  openFlexibleAnswerCatalog, recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer,
+  ackFlexibleAnswer, cancelFlexibleAnswer, decideFlexibleAnswer, decideFlexibleAnswerByPolicy, expireFlexibleAnswers, FLEXIBLE_ANSWER_ACK_MS, FLEXIBLE_ANSWER_WRITE_MS, noteFlexibleToolActivity,
+  openFlexibleAnswerCatalog, recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer, streamAnswerSender,
   type FlexibleAnswerCatalog, type FlexibleAnswerConnection, type FlexibleAnswerPayload, type FlexibleRequestInput,
 } from "./flexible-answers.js";
 import { fakePid } from "../test/fake-pid.js";
+// @ts-expect-error plain ESM script without declarations
+import { checkedEnv, ownRoot } from "../scripts/e2e-kit.mjs";
+// @ts-expect-error plain ESM script without declarations
+import { isolatedEnvironment } from "../scripts/isolated-env.mjs";
 
 vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
 
@@ -53,12 +59,17 @@ beforeEach(() => {
     .run(T1, REPO, "a".repeat(40), `refs/toolroll/threads/${T1}/base`, `/home/me/state/threads/${T1}`, NOW.toISOString());
   turn = running();
   launch(L1, 1);
-  const opened = openFlexibleAnswerCatalog(catalogFile);
+  const opened = openFlexibleAnswerCatalog(store);
   if (!opened.ok) throw new Error(opened.message);
   catalog = opened.catalog;
   raw = new DatabaseSync(catalogFile);
 });
-afterEach(() => { raw.close(); catalog.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
+const children: ChildProcess[] = [];
+afterEach(() => {
+  // Only what this file started, by its exact pid.
+  for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) { try { process.kill(child.pid, "SIGKILL"); } catch { /* gone */ } }
+  raw.close(); catalog.close(); store.close(); rmSync(dir, { recursive: true, force: true });
+});
 
 /** pat's turn on T1, admitted and running (held by h1). */
 function running(): string {
@@ -90,13 +101,19 @@ function decided(over: Partial<Parameters<typeof decideFlexibleAnswer>[2]> = {})
   if (!made.ok) throw new Error(`${made.reason}: ${made.message}`);
   return { ...asked, decisionId: made.decisionId };
 }
-/** A scripted connection standing in for the agent launch: records what it was handed. */
+const frame = (ref: string, answer: FlexibleAnswerPayload) => Buffer.from(JSON.stringify({ ref, answer }));
+/** A scripted connection standing in for the agent launch: the receiver keeps every byte it was handed. */
 function scripted(id = L1, over: Partial<FlexibleAnswerConnection> = {}) {
-  const writes: { ref: string; answer: FlexibleAnswerPayload }[] = [];
-  const connection: FlexibleAnswerConnection = { id, write: (ref, answer) => { writes.push({ ref, answer }); return "written"; }, ...over };
-  return { connection, writes };
+  const received: Buffer[] = [], writes: { ref: string; answer: FlexibleAnswerPayload }[] = [];
+  const connection: FlexibleAnswerConnection = { id, frame, send: async bytes => {
+    received.push(Buffer.from(bytes));
+    writes.push(JSON.parse(Buffer.from(bytes).toString("utf8")) as { ref: string; answer: FlexibleAnswerPayload });
+    return { written: bytes.length, complete: true };
+  }, ...over };
+  return { connection, received, writes };
 }
-const send = (request: string, connection: FlexibleAnswerConnection, clock = () => NOW) => sendFlexibleAnswer(store, catalog, { request, connection, holder: "h1", clock });
+const send = (request: string, connection: FlexibleAnswerConnection, clock = () => NOW, writeMs?: number) =>
+  sendFlexibleAnswer(store, catalog, { request, connection, holder: "h1", clock, ...(writeMs === undefined ? {} : { writeMs }) });
 const catalogState = (request: string) => String(raw.prepare("SELECT state FROM thread_request WHERE id = ?").get(request)?.["state"]);
 const mainState = (request: string) => store.handle.prepare("SELECT state FROM thread_decision WHERE request = ?").get(request)?.["state"];
 const states = (request: string) => ({ catalog: catalogState(request), main: mainState(request) });
@@ -122,7 +139,12 @@ describe("the answer's road", () => {
     expect(states(asked.request)).toEqual({ catalog: "sent", main: "sent" });
     expect(ackFlexibleAnswer(store, catalog, { connection: L1, requestRef: "rpc-7", clock: () => NOW })).toEqual({ ok: true, delivered: true });
     expect(states(asked.request)).toEqual({ catalog: "delivered", main: "delivered" });
-    expect(ledger()).toEqual([{ outcome: "intended", actor: "pat", source: "work" }, { outcome: "sent", actor: "pat", source: "work" }, { outcome: "delivered", actor: "toolroll", source: "work" }]);
+    expect(ledger()).toEqual([{ outcome: "intended", actor: "pat", source: "work" }, { outcome: "attempt", actor: "pat", source: "work" }, { outcome: "sent", actor: "pat", source: "work" },
+      { outcome: "delivered", actor: "toolroll", source: "work" }]);
+    // The attempt was committed in both stores, the same one, before the bytes left.
+    const marks = [raw.prepare("SELECT attempt_id, write_started_at FROM thread_request WHERE id = ?").get(asked.request), store.handle.prepare("SELECT attempt_id, write_started_at FROM thread_decision WHERE request = ?").get(asked.request)];
+    expect(marks[0]!["attempt_id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect({ ...marks[1] }).toEqual({ ...marks[0] });
     expect(writes).toHaveLength(1);
   });
 
@@ -139,48 +161,75 @@ describe("the answer's road", () => {
     expect(catalogState(permission.request)).toBe("pending");
   });
 
-  test("every illegal transition is refused by both stores", () => {
-    const allowed: Record<string, string[]> = { pending: ["decided", "withdrawn"], decided: ["sending", "not-sent", "uncertain"], sending: ["sent", "not-sent", "uncertain"], sent: ["delivered", "uncertain"],
-      delivered: [], "not-sent": [], uncertain: [], withdrawn: [] };
-    const all = Object.keys(allowed);
-    const final = (state: string) => !["pending", "decided", "sending", "sent"].includes(state);
-    const fields = (state: string) => ({
-      decision_id: state === "pending" || state === "withdrawn" ? null : tid(++refs), ended_at: final(state) ? NOW.toISOString() : null,
-      sent_at: state === "sent" || state === "delivered" ? NOW.toISOString() : null,
-    });
-    for (const from of all) {
-      for (const to of all.filter(one => one !== from)) {
+  test("a question id that names object machinery is refused; an answer takes only its own keys, never inherited ones", () => {
+    for (const id of ["__proto__", "constructor", "prototype"]) {
+      expect(recordFlexibleRequest(store, catalog, { thread: T1, turn, connection: L1, holder: "h1", requestRef: `p-${id}`, kind: "question",
+        card: JSON.parse(`{"title":"Which?","questions":[{"id":"${id}","question":"Which branch?"}]}`), clock: () => NOW })).toMatchObject({ ok: false, reason: "invalid-request" });
+    }
+    const question = ask({ kind: "question", card: { title: "The agent needs your answer", questions: [{ id: "q1", question: "Which branch?" }] } });
+    const base = { request: question.request, token: question.token, shownDigest: question.requestDigest, by: pat(), decision: "answer" as const, clock: () => NOW };
+    for (const answers of [
+      JSON.parse('{"__proto__":{"answers":["x"]},"q1":{"answers":["main"]}}'), // an own __proto__ key
+      Object.create({ q1: { answers: ["main"] } }), // the answer inherited
+      { q1: Object.create({ answers: ["main"] }) }, // its list inherited
+    ]) expect(decideFlexibleAnswer(store, catalog, { ...base, answers })).toMatchObject({ ok: false, reason: "invalid-request" });
+    // Even with Object.prototype polluted, an answer missing from the input itself is missing.
+    Object.defineProperty(Object.prototype, "q1", { value: { answers: ["polluted"] }, configurable: true, enumerable: false });
+    try { expect(decideFlexibleAnswer(store, catalog, { ...base, answers: {} })).toMatchObject({ ok: false, reason: "invalid-request" }); }
+    finally { delete (Object.prototype as Record<string, unknown>)["q1"]; }
+    expect(catalogState(question.request)).toBe("pending");
+    // A null-prototype dictionary of exactly its answers is fine, and is stored as plain JSON.
+    const dictionary = Object.assign(Object.create(null) as Record<string, unknown>, { q1: { answers: ["main"] } });
+    expect(decideFlexibleAnswer(store, catalog, { ...base, answers: dictionary })).toMatchObject({ ok: true });
+    expect(JSON.parse(String(raw.prepare("SELECT answer FROM thread_request WHERE id = ?").get(question.request)!["answer"]))).toEqual({ answers: { q1: { answers: ["main"] } } });
+  });
+
+  test("every illegal transition is refused by both stores; an answer with an attempt is never not-sent", () => {
+    // "sending*" is sending with a committed attempt: from there only sent or uncertain.
+    const allowed: Record<string, string[]> = { pending: ["decided", "withdrawn"], decided: ["sending", "not-sent", "uncertain"], sending: ["not-sent", "uncertain"], "sending*": ["sent", "uncertain"],
+      sent: ["delivered", "uncertain"], delivered: [], "not-sent": [], uncertain: [], withdrawn: [] };
+    const targets = ["pending", "decided", "sending", "sent", "delivered", "not-sent", "uncertain", "withdrawn"];
+    const final = (state: string) => !["pending", "decided", "sending", "sending*", "sent"].includes(state);
+    const attempted = (state: string) => ["sending*", "sent", "delivered"].includes(state);
+    for (const from of Object.keys(allowed)) {
+      for (const to of targets.filter(one => one !== from.replace("*", ""))) {
         const id = tid(0x5000 + ++refs);
-        const f = fields(from);
-        const decided = f.decision_id === null ? [null, null, null, null, null, null, null] : [f.decision_id, "person", "accept", '{"decision":"accept"}', "2".repeat(64), "pat", NOW.toISOString()];
+        const state = from.replace("*", "");
+        const decision = state === "pending" || state === "withdrawn" ? null : tid(0x6000 + refs);
         raw.prepare(`INSERT INTO thread_request (id, thread, turn, connection_id, holder, owner, owner_generation, request_ref, kind, card, request_digest, token_digest, state,
-          decision_id, source, decision, answer, payload_digest, decided_by, decided_at, created_at, sent_at, ended_at) VALUES (?, ?, ?, ?, 'h1', 'pat', 1, ?, 'permission', '{"title":"x"}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(id, T1, turn, L1, `m-${id}`, "1".repeat(64), id.padEnd(64, "0"), from, ...decided, NOW.toISOString(), f.sent_at, f.ended_at);
-        const t = fields(to);
+          decision_id, source, decision, answer, payload_digest, decided_by, decided_at, attempt_id, write_started_at, created_at, sent_at, ended_at)
+          VALUES (?, ?, ?, ?, 'h1', 'pat', 1, ?, 'permission', '{"title":"x"}', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, T1, turn, L1, `m-${id}`, "1".repeat(64), id.padEnd(64, "0"), state, ...(decision === null ? [null, null, null, null, null, null, null] : [decision, "person", "accept", '{"decision":"accept"}', "2".repeat(64), "pat", NOW.toISOString()]),
+            attempted(from) ? tid(0x7000 + refs) : null, attempted(from) ? NOW.toISOString() : null, NOW.toISOString(), state === "sent" || state === "delivered" ? NOW.toISOString() : null, final(state) ? NOW.toISOString() : null);
         const move = () => to === "decided"
           ? raw.prepare(`UPDATE thread_request SET state = 'decided', decision_id = ?, source = 'person', decision = 'accept', answer = '{"decision":"accept"}', payload_digest = ?, decided_by = 'pat', decided_at = ? WHERE id = ?`)
-            .run(f.decision_id ?? tid(0x6000 + refs), "2".repeat(64), NOW.toISOString(), id)
-          : raw.prepare("UPDATE thread_request SET state = ?, ended_at = ?, sent_at = COALESCE(sent_at, ?) WHERE id = ?").run(to, t.ended_at, t.sent_at, id);
+            .run(decision ?? tid(0x8000 + refs), "2".repeat(64), NOW.toISOString(), id)
+          : raw.prepare("UPDATE thread_request SET state = ?, ended_at = ?, sent_at = COALESCE(sent_at, ?) WHERE id = ?").run(to, final(to) ? NOW.toISOString() : null, to === "sent" || to === "delivered" ? NOW.toISOString() : null, id);
         if (allowed[from]!.includes(to)) expect(move, `${from} → ${to}`).not.toThrow();
         else expect(move, `${from} → ${to}`).toThrow();
       }
     }
     // The main store has no pending or withdrawn: a decision is born decided.
-    for (const from of all.filter(one => one !== "pending" && one !== "withdrawn")) {
-      for (const to of all.filter(one => one !== from && one !== "pending" && one !== "withdrawn")) {
-        const request = tid(0x7000 + ++refs);
+    const mainFrom = Object.keys(allowed).filter(one => one !== "pending" && one !== "withdrawn");
+    for (const from of mainFrom) {
+      for (const to of targets.filter(one => one !== from.replace("*", "") && one !== "pending" && one !== "withdrawn")) {
+        const request = tid(0x9000 + ++refs);
         store.handle.prepare(`INSERT INTO thread_decision (decision_id, thread, turn, request, request_ref, source, decision, request_digest, payload_digest, connection_id, state, at, by, by_generation, state_at)
           VALUES (?, ?, ?, ?, 'r', 'person', 'accept', ?, ?, ?, 'decided', ?, 'pat', 1, ?)`).run(request, T1, turn, request, "1".repeat(64), "2".repeat(64), L1, NOW.toISOString(), NOW.toISOString());
-        const road: Record<string, string[]> = { decided: [], sending: ["sending"], sent: ["sending", "!", "sent"], delivered: ["sending", "!", "sent", "delivered"], "not-sent": ["not-sent"], uncertain: ["uncertain"] };
+        const road: Record<string, string[]> = { decided: [], sending: ["sending"], "sending*": ["sending", "!"], sent: ["sending", "!", "sent"], delivered: ["sending", "!", "sent", "delivered"], "not-sent": ["not-sent"], uncertain: ["uncertain"] };
         for (const step of road[from]!) {
-          if (step === "!") store.handle.prepare("UPDATE thread_decision SET write_started_at = ? WHERE request = ?").run(NOW.toISOString(), request);
+          if (step === "!") store.handle.prepare("UPDATE thread_decision SET attempt_id = ?, write_started_at = ? WHERE request = ?").run(tid(0xa000 + refs), NOW.toISOString(), request);
           else store.handle.prepare("UPDATE thread_decision SET state = ? WHERE request = ?").run(step, request);
         }
-        const move = () => store.handle.prepare(`UPDATE thread_decision SET state = ?${to === "sent" ? ", write_started_at = COALESCE(write_started_at, 't')" : ""} WHERE request = ?`).run(to, request);
+        const move = () => store.handle.prepare("UPDATE thread_decision SET state = ? WHERE request = ?").run(to, request);
         if (allowed[from]!.includes(to)) expect(move, `main ${from} → ${to}`).not.toThrow();
         else expect(move, `main ${from} → ${to}`).toThrow();
       }
     }
+    // An attempt is marked once, only while sending, in both stores.
+    const asked = decided();
+    expect(() => raw.prepare("UPDATE thread_request SET attempt_id = ?, write_started_at = ? WHERE id = ?").run(tid(0xb001), NOW.toISOString(), asked.request)).toThrow(/only moves forward/);
+    expect(() => store.handle.prepare("UPDATE thread_decision SET attempt_id = ?, write_started_at = ? WHERE request = ?").run(tid(0xb001), NOW.toISOString(), asked.request)).toThrow(/only moves forward/);
   });
 });
 
@@ -305,14 +354,19 @@ describe("cancelling", () => {
     expect(states(asked.request)).toEqual({ catalog: "not-sent", main: "not-sent" });
   });
 
-  test("a cancel racing a send whose write has begun loses: the answer was written once and the state says sent", async () => {
+  test("a cancel racing a send once its attempt is committed loses: the bytes left once and the state says sent", async () => {
     const asked = decided();
     let cancelled: unknown;
-    const writes: unknown[] = [];
-    const connection: FlexibleAnswerConnection = { id: L1, write: (_ref, answer) => { cancelled = cancelFlexibleAnswer(store, catalog, { request: asked.request, by: pat(), clock: () => NOW }); writes.push(answer); return "written"; } };
+    const { connection, writes } = scripted(L1, { send: async bytes => {
+      cancelled = cancelFlexibleAnswer(store, catalog, { request: asked.request, by: pat(), clock: () => NOW });
+      received.push(Buffer.from(bytes));
+      return { written: bytes.length, complete: true };
+    } });
+    const received: Buffer[] = [];
     expect(await send(asked.request, connection)).toMatchObject({ ok: true, state: "sent" });
     expect(cancelled).toMatchObject({ ok: false, reason: "too-late", state: "sending" });
-    expect(writes).toHaveLength(1);
+    expect(received).toHaveLength(1);
+    expect(writes).toEqual([]);
     expect(states(asked.request)).toEqual({ catalog: "sent", main: "sent" });
     expect(cancelFlexibleAnswer(store, catalog, { request: asked.request, by: pat(), clock: () => NOW })).toMatchObject({ ok: false, reason: "too-late", state: "sent" });
   });
@@ -408,36 +462,153 @@ describe("crashes and restarts", () => {
     const again = scripted();
     expect(await send(asked.request, again.connection)).toMatchObject({ ok: false, state: "uncertain" });
     expect([...writes, ...again.writes]).toEqual([]);
+    expect(ledger().map(one => one["outcome"])).not.toContain("attempt");
   });
 
-  test("a process killed inside the write recovers to uncertain, and the answer is never written again", async () => {
+  test.each([
+    ["after its bytes reached the receiver", "after-bytes", 1],
+    ["after its attempt was committed, before any byte left", "before-bytes", 0],
+  ])("a process killed %s recovers to uncertain, and the answer is never sent again", async (_when, mode, bytes) => {
     const asked = decided();
-    const env = { file, catalogFile, request: asked.request, connection: L1, now: NOW.toISOString(),
+    const receiver = join(dir, "receiver.bin");
+    const root = join(dir, "world");
+    mkdirSync(root);
+    const world = isolatedEnvironment({ root, outer: process.env });
+    ownRoot(root);
+    const job = { file, request: asked.request, connection: L1, now: NOW.toISOString(), receiver, mode,
       modules: { store: new URL("./store.ts", import.meta.url).href, answers: new URL("./flexible-answers.ts", import.meta.url).href } };
     const code = await new Promise<number | null>((resolve, reject) => {
-      execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", CRASH], { cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: { ...process.env, FLEXIBLE_CRASH: JSON.stringify(env) }, timeout: 60_000 },
+      execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", CRASH, JSON.stringify(job)], { cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: checkedEnv(world.env), timeout: 60_000 },
       (error, _stdout, stderr) => error === null ? reject(new Error(`the process wasn't killed: ${stderr}`)) : resolve(typeof error.code === "number" ? error.code : null));
     });
     expect(code).toBe(9);
-    // The write had begun when the process died: both stores still say sending (the final transaction never committed).
+    // What the receiver got before the process died.
+    expect(existsSync(receiver) ? JSON.parse(readFileSync(receiver, "utf8")) : null).toEqual(bytes === 1 ? { ref: expect.any(String), answer: { decision: "accept" } } : null);
+    // The attempt was committed in both stores before any byte left; its outcome never was.
     expect(states(asked.request)).toEqual({ catalog: "sending", main: "sending" });
+    expect(store.handle.prepare("SELECT attempt_id FROM thread_decision WHERE request = ?").get(asked.request)!["attempt_id"]).toMatch(/^[0-9a-f]{32}$/);
+    expect(cancelFlexibleAnswer(store, catalog, { request: asked.request, by: pat(), clock: () => NOW })).toMatchObject({ ok: false, reason: "too-late" });
     expect(recoverFlexibleAnswersOf(store, catalog, { holder: "h1", clock: at(5) })).toMatchObject({ ok: true, uncertain: 1 });
     expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
-    const { connection, writes } = scripted();
+    const { connection, received } = scripted();
     expect(await send(asked.request, connection)).toMatchObject({ ok: false, state: "uncertain" });
-    expect(cancelFlexibleAnswer(store, catalog, { request: asked.request, by: pat(), clock: () => NOW })).toMatchObject({ ok: false, reason: "too-late", state: "uncertain" });
-    expect(writes).toEqual([]);
-    expect(ledger().map(one => one["outcome"])).toEqual(["intended", "uncertain"]);
+    expect(received).toEqual([]);
+    expect(ledger().map(one => one["outcome"])).toEqual(["intended", "attempt", "uncertain"]);
   }, 90_000);
 
-  test("a write that fails partway is uncertain; a connection that provably took nothing is not-sent", async () => {
-    const failing = decided();
-    expect(await send(failing.request, { id: L1, write: () => { throw new Error("EPIPE"); } })).toMatchObject({ ok: false, state: "uncertain" });
-    expect(states(failing.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
-    const refused = decided();
-    expect(await send(refused.request, { id: L1, write: () => "not-written" })).toMatchObject({ ok: false, state: "not-sent" });
-    expect(states(refused.request)).toEqual({ catalog: "not-sent", main: "not-sent" });
+  test("a send that fails partway is uncertain (the receiver holds part of it), and never retried", async () => {
+    const asked = decided();
+    const receiver: Buffer[] = [];
+    const connection: FlexibleAnswerConnection = { id: L1, frame, send: async bytes => { receiver.push(Buffer.from(bytes.subarray(0, 5))); throw new Error("EPIPE"); } };
+    expect(await send(asked.request, connection)).toMatchObject({ ok: false, reason: "uncertain", state: "uncertain" });
+    expect(Buffer.concat(receiver).length).toBe(5);
+    expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+    expect(await send(asked.request, connection)).toMatchObject({ ok: false, state: "uncertain" });
+    expect(Buffer.concat(receiver).length).toBe(5);
+    // Part reported by the send itself: uncertain too.
+    const half = decided();
+    expect(await send(half.request, { id: L1, frame, send: async bytes => ({ written: Math.floor(bytes.length / 2), complete: false }) })).toMatchObject({ ok: false, state: "uncertain" });
+    expect(mainState(half.request)).toBe("uncertain");
+  });
+
+  test("once its attempt is committed an answer is never not-sent, even when the send says it took nothing; framing that fails beforehand is not-sent", async () => {
+    const nothing = decided();
+    expect(await send(nothing.request, { id: L1, frame, send: async () => ({ written: 0, complete: false }) })).toMatchObject({ ok: false, state: "uncertain" });
+    expect(states(nothing.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+    const unframed = decided();
+    const sent: unknown[] = [];
+    expect(await send(unframed.request, { id: L1, frame: () => { throw new Error("no form"); }, send: async bytes => { sent.push(bytes); return { written: bytes.length, complete: true }; } })).toMatchObject({ ok: false, state: "not-sent" });
+    expect(states(unframed.request)).toEqual({ catalog: "not-sent", main: "not-sent" });
+    expect(sent).toEqual([]);
+  });
+
+  test("a send that never settles is stopped at its deadline and is uncertain", async () => {
+    const asked = decided();
+    let aborted = false;
+    const connection: FlexibleAnswerConnection = { id: L1, frame, send: (_bytes, { signal }) => { signal.addEventListener("abort", () => { aborted = true; }); return new Promise(() => { /* never */ }); } };
+    expect(await send(asked.request, connection, () => NOW, 200)).toMatchObject({ ok: false, reason: "uncertain", state: "uncertain" });
+    expect(aborted).toBe(true);
+    expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+  });
+
+  test("an attempt only the catalog holds (a process died between the two commits) can't be cancelled or revoked, and reconciles to uncertain", async () => {
+    const asked = decided();
+    void send(asked.request, scripted(L1, { ready: () => new Promise<void>(() => { /* that process is gone */ }) }).connection);
+    expect(states(asked.request)).toEqual({ catalog: "sending", main: "sending" });
+    raw.prepare("UPDATE thread_request SET attempt_id = ?, write_started_at = ? WHERE id = ?").run(tid(0xfeed), NOW.toISOString(), asked.request);
+    expect(cancelFlexibleAnswer(store, catalog, { request: asked.request, by: pat(), clock: () => NOW })).toMatchObject({ ok: false, reason: "too-late" });
+    expect(revokeFlexibleAnswers(store, catalog, { thread: T1, reason: "the turn ended", clock: () => NOW })).toEqual({ ok: true, withdrawn: 0, notSent: 0 });
+    expect(expireFlexibleAnswers(store, catalog, { clock: at(FLEXIBLE_ANSWER_WRITE_MS - 1) })).toEqual({ ok: true, uncertain: 0 });
+    expect(expireFlexibleAnswers(store, catalog, { clock: at(FLEXIBLE_ANSWER_WRITE_MS) })).toEqual({ ok: true, uncertain: 1 });
+    expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+  });
+
+  test("a real pipe nobody reads: the send stops at its deadline as uncertain, and another database writer is never blocked meanwhile", async () => {
+    const reader = spawn("/bin/sleep", ["30"], { stdio: ["pipe", "ignore", "ignore"], env: {} });
+    children.push(reader);
+    reader.stdin!.on("error", () => { /* the reader is killed at the end */ });
+    const asked = decided(), other = ask();
+    const sender = streamAnswerSender(reader.stdin!);
+    if (typeof sender !== "function") throw new Error(sender.message);
+    const connection: FlexibleAnswerConnection = { id: L1, frame: () => Buffer.alloc(1_000_000, 0x61), send: sender };
+    const began = Date.now();
+    let settled = false;
+    const sending = send(asked.request, connection, () => NOW, 1500).finally(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(settled).toBe(false);
+    expect(states(asked.request)).toEqual({ catalog: "sending", main: "sending" });
+    // A second connection to the database, as another Toolroll process would be: its write goes straight through.
+    const second = openStore(file);
+    const secondCatalog = openFlexibleAnswerCatalog(second);
+    if (!secondCatalog.ok) throw new Error(secondCatalog.message);
+    try {
+      const writeBegan = Date.now();
+      expect(revokeFlexibleAnswers(second, secondCatalog.catalog, { thread: T1, turn, reason: "the turn ended", clock: () => NOW })).toEqual({ ok: true, withdrawn: 1, notSent: 0 });
+      expect(Date.now() - writeBegan).toBeLessThan(1000);
+      expect(catalogState(other.request)).toBe("withdrawn");
+      // The answer on the wire is past cancelling.
+      expect(cancelFlexibleAnswer(second, secondCatalog.catalog, { request: asked.request, by: pat(), clock: () => NOW })).toMatchObject({ ok: false, reason: "too-late" });
+      expect(settled).toBe(false);
+    } finally { secondCatalog.catalog.close(); second.close(); }
+    expect(await sending).toMatchObject({ ok: false, reason: "uncertain", state: "uncertain" });
+    expect(Date.now() - began).toBeGreaterThanOrEqual(1400);
+    expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+  }, 30_000);
+
+  test.each([
+    ["after the catalog's attempt commit, before this store's", "frame", "UPDATE thread_decision SET attempt_id", 1, 0],
+    ["after the catalog's attempt commit, with every later write here failing too", "frame", "UPDATE thread_decision", Infinity, 0],
+    ["after the bytes left, before any outcome is recorded", "send", "UPDATE thread_request SET state = 'sent'", 1, 1],
+    ["after the bytes left, with every later write to the catalog failing too", "send", "UPDATE thread_request", Infinity, 1],
+    ["between the catalog's outcome commit and this store's", "send", "UPDATE thread_decision SET state = ?, state_at = ?, detail = ? WHERE id = ? AND attempt_id", 1, 1],
+    ["between the catalog's outcome commit and this store's, with every later write here failing too", "send", "UPDATE thread_decision", Infinity, 1],
+  ])("a database failure %s ends uncertain, never not-sent, and nothing is sent again", async (_where, armAt, match, times, bytes) => {
+    const asked = decided();
+    const real = DatabaseSync.prototype.prepare;
+    let armed = false, left = times;
+    const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (armed && left > 0 && sql.includes(match)) { left--; throw new Error("injected database failure"); }
+      return real.call(this, sql);
+    } as never);
+    const received: Buffer[] = [];
+    const connection: FlexibleAnswerConnection = {
+      id: L1,
+      frame: (ref, answer) => { if (armAt === "frame") armed = true; return frame(ref, answer); },
+      send: async sent => { received.push(Buffer.from(sent)); if (armAt === "send") armed = true; return { written: sent.length, complete: true }; },
+    };
+    let result: unknown;
+    try { result = await send(asked.request, connection); } finally { spy.mockRestore(); }
+    expect(result).toMatchObject({ ok: false, state: "uncertain" });
+    expect(received).toHaveLength(bytes);
+    // The reconciler, once the send's deadline has passed.
+    expireFlexibleAnswers(store, catalog, { clock: at(FLEXIBLE_ANSWER_WRITE_MS + 1) });
+    expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+    expect(cancelFlexibleAnswer(store, catalog, { request: asked.request, by: pat(), clock: () => NOW })).toMatchObject({ ok: false, reason: "too-late" });
+    const again = scripted();
+    expect(await send(asked.request, again.connection)).toMatchObject({ ok: false });
+    expect(again.received).toEqual([]);
+    expect(ledger().map(one => one["outcome"])).not.toContain("not-sent");
   });
 
   test("records that disagree (the catalog's answer bytes changed under it) send nothing", async () => {
@@ -451,6 +622,56 @@ describe("crashes and restarts", () => {
   });
 });
 
+describe("the catalog's path", () => {
+  /** A fresh store in its own folder, and where its catalog goes. */
+  function another(): { store: Store; catalogFile: string; folder: string } {
+    const folder = join(dir, `other-${++refs}`);
+    mkdirSync(folder);
+    const other = openStore(join(folder, "orders.db"));
+    return { store: other, catalogFile: join(folder, "orders.db.coding.sqlite"), folder };
+  }
+
+  test("it is always beside the store's own file, made private; an in-memory store has none", () => {
+    expect(catalog.file).toBe(catalogFile);
+    const memory = openStore(":memory:");
+    expect(openFlexibleAnswerCatalog(memory)).toMatchObject({ ok: false, reason: "catalog-unsafe" });
+    memory.close();
+    const fresh = another();
+    const opened = openFlexibleAnswerCatalog(fresh.store);
+    expect(opened).toMatchObject({ ok: true });
+    if (opened.ok) opened.catalog.close();
+    expect(readFileSync(fresh.catalogFile).length).toBeGreaterThan(0);
+    expect((realpathSync(fresh.catalogFile) === fresh.catalogFile)).toBe(true);
+    fresh.store.close();
+  });
+
+  test.each([
+    ["a link at the catalog's own path", (at: { catalogFile: string; folder: string }) => { symlinkSync(join(at.folder, "elsewhere.sqlite"), at.catalogFile); }, "elsewhere.sqlite"],
+    ["a link at its journal", (at: { catalogFile: string; folder: string }) => { symlinkSync(join(at.folder, "elsewhere-wal"), `${at.catalogFile}-wal`); }, "elsewhere-wal"],
+    ["a second name for it (a hard link)", (at: { catalogFile: string; folder: string }) => { writeFileSync(join(at.folder, "twin"), "", { mode: 0o600 }); linkSync(join(at.folder, "twin"), at.catalogFile); }, null],
+    ["a file others can read", (at: { catalogFile: string; folder: string }) => { writeFileSync(at.catalogFile, ""); chmodSync(at.catalogFile, 0o644); }, null],
+  ])("%s is refused, and nothing is made or followed", (_what, plant, target) => {
+    const fresh = another();
+    plant(fresh);
+    expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe" });
+    if (target !== null) expect(existsSync(join(fresh.folder, target))).toBe(false);
+    fresh.store.close();
+  });
+
+  test("a store reached through a linked folder is refused", () => {
+    const folder = join(dir, "real-state");
+    mkdirSync(folder);
+    symlinkSync(folder, join(dir, "linked-state"));
+    const linked = openStore(join(dir, "linked-state", "orders.db"));
+    const opened = openFlexibleAnswerCatalog(linked);
+    // SQLite may name the database by its real path; then the catalog is made there, never through the link.
+    if (linked.databaseFile() === join(dir, "linked-state", "orders.db")) expect(opened).toMatchObject({ ok: false, reason: "catalog-unsafe" });
+    else expect(opened.ok && opened.catalog.file).toBe(join(folder, "orders.db.coding.sqlite"));
+    if (opened.ok) opened.catalog.close();
+    linked.close();
+  });
+});
+
 describe("policy and the agent's own decisions", () => {
   test("a recorded policy only declines or cancels, is sent like an answer, and never reads as a person's", async () => {
     const asked = ask();
@@ -461,7 +682,7 @@ describe("policy and the agent's own decisions", () => {
     const { connection, writes } = scripted();
     expect(await send(asked.request, connection)).toMatchObject({ ok: true });
     expect(writes.map(one => one.answer)).toEqual([{ decision: "decline" }]);
-    expect(ledger()).toEqual([{ outcome: "intended", actor: "toolroll", source: "policy" }, { outcome: "sent", actor: "toolroll", source: "policy" }]);
+    expect(ledger()).toEqual([{ outcome: "intended", actor: "toolroll", source: "policy" }, { outcome: "attempt", actor: "toolroll", source: "policy" }, { outcome: "sent", actor: "toolroll", source: "policy" }]);
   });
 
   test("the agent's own allow is recorded as the provider's, delivered, with nothing sent and no request", () => {
@@ -472,15 +693,18 @@ describe("policy and the agent's own decisions", () => {
 });
 
 /** One holder process's send, with its own database handles: the build's constant replaced by a module hook (as
- * vi.mock does here). Its connection's write kills the process, mid-write. */
+ * vi.mock does here). Its connection's send dies mid-send: after handing its bytes to the receiver (a file), or before. */
 const CRASH = `
-const env = JSON.parse(process.env.FLEXIBLE_CRASH);
+const job = JSON.parse(process.argv.at(-1));
 const { register } = await import("node:module");
 register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
-const { openStore } = await import(env.modules.store);
-const { openFlexibleAnswerCatalog, sendFlexibleAnswer } = await import(env.modules.answers);
-const store = openStore(env.file);
-const opened = openFlexibleAnswerCatalog(env.catalogFile);
-await sendFlexibleAnswer(store, opened.catalog, { request: env.request, holder: "h1", clock: () => new Date(env.now), connection: { id: env.connection, write: () => process.exit(9) } });
+const { writeFileSync } = await import("node:fs");
+const { openStore } = await import(job.modules.store);
+const { openFlexibleAnswerCatalog, sendFlexibleAnswer } = await import(job.modules.answers);
+const store = openStore(job.file);
+const opened = openFlexibleAnswerCatalog(store);
+await sendFlexibleAnswer(store, opened.catalog, { request: job.request, holder: "h1", clock: () => new Date(job.now), connection: { id: job.connection,
+  frame: (ref, answer) => Buffer.from(JSON.stringify({ ref, answer })),
+  send: async bytes => { if (job.mode === "after-bytes") writeFileSync(job.receiver, bytes); process.exit(9); } } });
 process.stdout.write("not killed");
 `;

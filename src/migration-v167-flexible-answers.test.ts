@@ -63,6 +63,7 @@ describe("v167", () => {
     expect(() => insert(db, { source: "provider", request: null, by_generation: null, request_digest: null, payload_digest: null })).toThrow(/born decided/); // a provider's is observed
     expect(() => insert(db, { request_digest: null })).toThrow();
     expect(() => insert(db, { write_started_at: T0 })).toThrow();
+    expect(() => insert(db, { attempt_id: "a".repeat(32), write_started_at: T0 })).toThrow(/born decided/);
     insert(db, { decision_id: "f".repeat(32), request: "e".repeat(32) });
     expect(() => insert(db, { request: "e".repeat(32) })).toThrow(/UNIQUE/); // one decision per request
     expect(() => insert(db, { decision_id: "f".repeat(32) })).toThrow(/UNIQUE/); // one id per decision
@@ -75,12 +76,16 @@ describe("v167", () => {
     const move = (to: string, extra = "") => db.prepare(`UPDATE thread_decision SET state = ?${extra} WHERE id = ?`).run(to, id);
     expect(() => move("sent")).toThrow(); // decided never skips sending
     expect(() => move("delivered")).toThrow(/only moves forward/);
-    expect(() => db.prepare("UPDATE thread_decision SET write_started_at = ? WHERE id = ?").run(T0, id)).toThrow(/only moves forward/); // only while sending
+    const mark = (attempt: string, time: string) => db.prepare("UPDATE thread_decision SET attempt_id = ?, write_started_at = ? WHERE id = ?").run(attempt, time, id);
+    expect(() => mark("a".repeat(32), T0)).toThrow(/only moves forward/); // an attempt only while sending
     move("sending");
     expect(() => move("decided")).toThrow(/only moves forward/);
     expect(() => move("sent")).toThrow(); // a sent answer's write began
-    db.prepare("UPDATE thread_decision SET write_started_at = ? WHERE id = ?").run(T0, id);
-    expect(() => db.prepare("UPDATE thread_decision SET write_started_at = ? WHERE id = ?").run("2026-11-15T00:00:01.000Z", id)).toThrow(/only moves forward/);
+    expect(() => db.prepare("UPDATE thread_decision SET write_started_at = ? WHERE id = ?").run(T0, id)).toThrow(); // its id and time together
+    mark("a".repeat(32), T0);
+    expect(() => mark("b".repeat(32), T0)).toThrow(/only moves forward/); // written once
+    expect(() => mark("a".repeat(32), "2026-11-15T00:00:01.000Z")).toThrow(/only moves forward/);
+    expect(() => move("not-sent")).toThrow(); // an answer with an attempt is never not-sent
     move("sent");
     expect(() => move("not-sent")).toThrow(/only moves forward/); // what was sent was sent
     move("uncertain");

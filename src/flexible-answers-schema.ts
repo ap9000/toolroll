@@ -16,8 +16,10 @@
  *   written to, and no other. Everything but `state`, `write_started_at`, `state_at` and `detail` is written once.
  *   `state` only moves forward: decided → sending | not-sent | uncertain; sending → sent | not-sent | uncertain; sent →
  *   delivered | uncertain; delivered, not-sent and uncertain are final (an uncertain answer is never sent again).
- *   A person's or policy's row is born `decided`, a provider's `delivered`. `write_started_at` is set once, only while
- *   `sending`, in the transaction that makes the final authority check and writes to the agent; a `sent` row has it.
+ *   A person's or policy's row is born `decided`, a provider's `delivered`. `attempt_id` and `write_started_at` (the
+ *   write attempt) are set once, together, only while `sending`, in the transaction that makes the final authority
+ *   check, and committed before any byte goes to the agent (the coding catalog's row is marked first, this one
+ *   second); a `sent` row has them, and a row with them is never `not-sent`: only sent, delivered or uncertain.
  *   At most one decision per catalog request.
  *   The intent and each outcome are also in action_ledger (action "flexible answer": intended, then sent, delivered,
  *   not-sent or uncertain), which is append-only.
@@ -40,6 +42,7 @@ CREATE TABLE IF NOT EXISTS thread_decision (
   at               TEXT NOT NULL,
   by               TEXT NOT NULL CHECK (length(by) BETWEEN 1 AND 200),
   by_generation    INTEGER,
+  attempt_id       TEXT CHECK (attempt_id IS NULL OR (length(attempt_id) = 32 AND attempt_id NOT GLOB '*[^0-9a-f]*')),
   write_started_at TEXT,
   state_at         TEXT NOT NULL,
   detail           TEXT CHECK (detail IS NULL OR length(detail) <= 500),
@@ -50,13 +53,14 @@ CREATE TABLE IF NOT EXISTS thread_decision (
   CHECK (source = 'provider' OR (request_digest IS NOT NULL AND payload_digest IS NOT NULL)),
   CHECK (source <> 'provider' OR (state = 'delivered' AND decision IN ('accept', 'decline') AND write_started_at IS NULL)),
   CHECK (state <> 'sent' OR write_started_at IS NOT NULL),
-  CHECK (write_started_at IS NULL OR state IN ('sending', 'sent', 'delivered', 'not-sent', 'uncertain'))
+  CHECK ((attempt_id IS NULL) = (write_started_at IS NULL)),
+  CHECK (write_started_at IS NULL OR state IN ('sending', 'sent', 'delivered', 'uncertain'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS thread_decision_request ON thread_decision (request) WHERE request IS NOT NULL;
 CREATE INDEX IF NOT EXISTS thread_decision_turn ON thread_decision (thread, turn);
 CREATE INDEX IF NOT EXISTS thread_decision_connection ON thread_decision (connection_id, state);
 CREATE TRIGGER IF NOT EXISTS thread_decision_born BEFORE INSERT ON thread_decision
-WHEN NEW.state IS NOT (CASE NEW.source WHEN 'provider' THEN 'delivered' ELSE 'decided' END) OR NEW.write_started_at IS NOT NULL
+WHEN NEW.state IS NOT (CASE NEW.source WHEN 'provider' THEN 'delivered' ELSE 'decided' END) OR NEW.write_started_at IS NOT NULL OR NEW.attempt_id IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'a thread decision is born decided (a provider''s observed delivered)');
 END;
@@ -69,8 +73,8 @@ WHEN NEW.id IS NOT OLD.id OR NEW.decision_id IS NOT OLD.decision_id OR NEW.threa
   OR (OLD.state = 'decided' AND NEW.state NOT IN ('decided', 'sending', 'not-sent', 'uncertain'))
   OR (OLD.state = 'sending' AND NEW.state NOT IN ('sending', 'sent', 'not-sent', 'uncertain'))
   OR (OLD.state = 'sent' AND NEW.state NOT IN ('sent', 'delivered', 'uncertain'))
-  OR (OLD.write_started_at IS NOT NULL AND NEW.write_started_at IS NOT OLD.write_started_at)
-  OR (OLD.write_started_at IS NULL AND NEW.write_started_at IS NOT NULL AND OLD.state <> 'sending')
+  OR (OLD.write_started_at IS NOT NULL AND (NEW.write_started_at IS NOT OLD.write_started_at OR NEW.attempt_id IS NOT OLD.attempt_id))
+  OR (OLD.write_started_at IS NULL AND NEW.write_started_at IS NOT NULL AND (OLD.state <> 'sending' OR NEW.state <> 'sending'))
 BEGIN
   SELECT RAISE(ABORT, 'a thread decision is written once and its state only moves forward');
 END;

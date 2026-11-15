@@ -22,7 +22,8 @@ import { admitFlexibleTurn, beginFlexibleTurn, chargeFlexibleTurn, finishFlexibl
 import { flexibleAgentLaunch, lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, startFlexibleTurn } from "./flexible-agents.js";
 import { startFlexibleRelay } from "./flexible-relay.js";
 import { ackFlexibleAnswer, cancelFlexibleAnswer, decideFlexibleAnswer, decideFlexibleAnswerByPolicy, expireFlexibleAnswers, noteFlexibleToolActivity, openFlexibleAnswerCatalog,
-  recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer, type FlexibleAnswerCatalog } from "./flexible-answers.js";
+  recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer, streamAnswerSender, type FlexibleAnswerCatalog } from "./flexible-answers.js";
+import { PassThrough } from "node:stream";
 import * as upstreams from "./flexible-relay-upstreams.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
@@ -142,12 +143,12 @@ describe("switched off", () => {
   test("the answers to a thread's agent (F2d): no catalog opens, and nothing is recorded, decided, sent, cancelled, acknowledged or recovered", async () => {
     const refused = { ok: false, reason: "not-available", message: FLEXIBLE_UNAVAILABLE };
     const catalogFile = join(dir, "orders.db.coding.sqlite");
-    expect(openFlexibleAnswerCatalog(catalogFile)).toEqual(refused);
+    expect(openFlexibleAnswerCatalog(store)).toEqual(refused);
     expect(existsSync(catalogFile)).toBe(false);
     // A catalog handed in anyway is never touched, nor the connection.
     const touched: string[] = [];
     const catalog = new Proxy({}, { get: (_target, key) => { touched.push(String(key)); throw new Error("touched"); } }) as FlexibleAnswerCatalog;
-    const connection = { id: "a".repeat(32), write: () => { touched.push("write"); return "written" as const; } };
+    const connection = { id: "a".repeat(32), frame: () => { touched.push("frame"); return new Uint8Array(1); }, send: async () => { touched.push("send"); return { written: 1, complete: true }; } };
     const ids = { thread: "a".repeat(32), turn: "b".repeat(32), connection: "c".repeat(32), request: "d".repeat(32) };
     const person = { kind: "person" as const, name: "alex", generation: store.accountOf("alex")!.generation };
     expect(recordFlexibleRequest(store, catalog, { ...ids, holder: "h1", requestRef: "r1", kind: "permission", card: { title: "Allow?" } })).toEqual(refused);
@@ -161,6 +162,7 @@ describe("switched off", () => {
     expect(expireFlexibleAnswers(store, catalog)).toEqual(refused);
     expect(recoverFlexibleAnswersOf(store, catalog, { holder: "h1" })).toEqual(refused);
     expect(recordFlexibleProviderDecision(store, { ...ids, holder: "h1", requestRef: "r1", decision: "accept", provider: "claude" })).toEqual(refused);
+    expect(streamAnswerSender(new PassThrough())).toEqual(refused);
     expect(touched).toEqual([]);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_decision").get()!["n"]).toBe(0);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible answer'").get()!["n"]).toBe(0);
@@ -289,7 +291,7 @@ describe("the switch can't become a runtime override", () => {
     expect(lines[lines.findIndex(line => line.endsWith(" {")) + 1]).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
     // The answers (F2d): every entry point checks the constant first, the catalog's opening included.
     const answers = readFileSync("src/flexible-answers.ts", "utf8");
-    const answerEntries = ["openFlexibleAnswerCatalog", "recordFlexibleRequest", "decideFlexibleAnswer", "decideFlexibleAnswerByPolicy", "sendFlexibleAnswer", "cancelFlexibleAnswer",
+    const answerEntries = ["openFlexibleAnswerCatalog", "streamAnswerSender", "recordFlexibleRequest", "decideFlexibleAnswer", "decideFlexibleAnswerByPolicy", "sendFlexibleAnswer", "cancelFlexibleAnswer",
       "revokeFlexibleAnswers", "ackFlexibleAnswer", "noteFlexibleToolActivity", "expireFlexibleAnswers", "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision"];
     expect([...answers.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual([...answerEntries].sort());
     for (const name of answerEntries) {
