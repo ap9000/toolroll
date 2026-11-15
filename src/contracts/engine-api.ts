@@ -9,10 +9,14 @@
  * side can hold the same files.
  *
  *   GET  /agents/live/run/<id>       a run's LiveSession window (liveSessionWindow)
- *   GET  /agents/live/thread/<id>    a Flexible thread's LiveSession window: refused while Flexible isn't available
+ *   GET  /agents/live/thread/<id>    a Flexible thread's LiveSession window with its facts (liveSessionWindow + thread):
+ *                                    its owner's only, refused while Flexible isn't available
+ *   GET  /agents/live/threads        the person's own Flexible threads, as the work list shows them (liveThreads): refused
+ *                                    while Flexible isn't available
  *   GET  /work/rows                  the Work list's rows and Needs-you groups (workRows)
  *   GET  /t/<task>/steps             a task's step cards (stepCards)
- *   GET  /t/<task>/diff              a result's changed files, or one file's hunks with ?run=&file= (resultDiff, resultDiffFile)
+ *   GET  /t/<task>/diff              a result's changed files, or one file's hunks with ?run=&file= (resultDiff, resultDiffFile),
+ *                                    or lines of that file around its hunks with ?run=&file=&from=&count= (resultDiffContext)
  *   POST /login/once                 a local-owner one-time link redeemed for a terminal client (linkRedemption)
  *   GET  /engine/hello               the handshake: this build and the contract's digest (hello)
  *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
@@ -55,8 +59,48 @@ export const liveSessionRefSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("thread"), id: z.string().regex(/^[0-9a-f]{32}$/), task: z.null() }),
 ]);
 
+const hex32 = z.string().regex(/^[0-9a-f]{32}$/);
+const flexibleLevelSchema = z.enum(["supervised", "auto", "full"]);
+/** Where an answer to a thread agent's request stands (flexible-answers.ts): waiting for the person, on its way, sent,
+ * confirmed, not sent, couldn't be confirmed, or withdrawn (its turn or agent ended first). */
+const answerStateSchema = z.enum(["pending", "decided", "sending", "sent", "delivered", "not-sent", "uncertain", "withdrawn"]);
+/** One request of a thread's agent, as its owner is shown it: the card exactly as recorded (its digest is what an answer
+ * names), where its answer stands, and whether it can be answered from this console now. Agent text is already
+ * cleaned; a client cleans again before drawing. */
+const threadQuestionSchema = z.object({
+  request: hex32,
+  kind: z.enum(["permission", "question"]),
+  title: z.string(),
+  /** Every line of what an allow would allow (a command's every line, a file change's whole change, anything else's
+   * full input), or a preview and the reason it can't all be shown. */
+  detail: z.string().nullable(),
+  /** The agent's tool, as the card is bound to it (with the digest of its whole input, inside `digest`). */
+  tool: z.string().nullable(),
+  /** Whether the card shows the whole request. False: it can't be allowed from a card, only denied. */
+  complete: z.boolean(),
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+  state: answerStateSchema,
+  answerable: z.boolean(),
+  /** A question's parts (empty for a permission): each part's id, its words, and the options offered. */
+  parts: z.array(z.object({ id: z.string(), question: z.string(), options: z.array(z.string()) })),
+});
+/** A Flexible thread's facts beside its window: its level, its agent, its current turn and that turn's cost so far (null
+ * until a call is charged; `costBasis` says how sure), and that turn's questions. */
+export const threadFactsSchema = z.object({
+  /** A digest of these facts: sent back as `known=`, an unchanged thread's window comes without them. */
+  version: z.string().regex(/^[0-9a-f]{16}$/),
+  title: z.string(),
+  project: z.string().nullable(),
+  level: flexibleLevelSchema.nullable(),
+  agent: z.object({ provider: z.string(), model: z.string() }).nullable(),
+  turn: z.object({ seq: z.number().int(), status: z.string(), costUsd: z.number().nullable(), costBasis: z.enum(["measured", "estimated", "unknown"]).nullable() }).nullable(),
+  questions: z.array(threadQuestionSchema),
+});
+
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
- * (GET /live?room=) that says when to read again; `cursor` is opaque state, never permission. */
+ * (GET /live?room=) that says when to read again; `cursor` is opaque state, never permission. A thread's window also
+ * carries its facts (`thread`), unless the read named their current `version` as `known=` (then they're unchanged and
+ * left out); a run's never does. */
 export const liveSessionWindowSchema = z.object({
   version,
   session: liveSessionRefSchema,
@@ -69,6 +113,15 @@ export const liveSessionWindowSchema = z.object({
     /** `off`: the run isn't this computer's (its records live where it runs); `missing`/`unavailable`: no readable file. */
     z.object({ ok: z.literal(false), reason: z.enum(["missing", "unavailable", "off"]) }),
   ]),
+  thread: threadFactsSchema.optional(),
+});
+
+/** `GET /agents/live/threads`: the person's own Flexible threads (newest first), each one more live session in the work
+ * list: its title, project, level, whether its agent is running, how many questions wait on them, its turn's cost. */
+export const liveThreadsSchema = z.object({
+  version,
+  threads: z.array(z.object({ id: hex32, title: z.string(), project: z.string().nullable(), level: flexibleLevelSchema.nullable(), live: z.boolean(), waiting: z.number().int(),
+    costUsd: z.number().nullable() })),
 });
 
 // ---- Work rows ----------------------------------------------------------------------------------------------------
@@ -161,7 +214,14 @@ export const stepCardsSchema = z.object({
    * `receipt` digest it was read at (POST /t/<task>/complete), and the `source` its revision is bound to
    * (POST /r/<run>/comment intent=revise). Null when no result waits to be checked. Read facts only, never permission:
    * every act re-proves them. */
-  review: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string() }).nullable(),
+  review: z.object({ run: z.number().int(), receipt: z.string().regex(/^[0-9a-f]{64}$/), source: z.string(),
+    /** What accepting this result means for the person reading it, said before they press Accept (T2's owed facts), in
+     * the words the completion itself would use. `owed`: an acceptance Accept records besides completing (the person's
+     * own check, or an exception that needs a reason); `blockers`: why completing is refused now (a failed required
+     * check, an open requirement); `needs`: who else has to complete it, or why this person can't (protected work on a
+     * one-person approval, a fast start that grew). Display only: the completion decides again. */
+    accept: z.object({ owed: z.enum(["person-check", "exception"]).nullable(), blockers: z.array(z.string()), needs: z.string().nullable() }),
+  }).nullable(),
   room: z.string(),
 });
 
@@ -191,6 +251,24 @@ export const resultDiffFileSchema = z.object({
   file: z.object({ file: z.number().int(), path: z.string(), oldPath: z.string().nullable(), meta: z.array(z.string()),
     hunks: z.array(z.object({ header: z.string(), lines: z.array(diffLineSchema) })) }),
   linesTruncated: z.boolean(),
+});
+
+/** Lines one expand asks for at most (`count`): a terminal never reads a whole file through this road. */
+export const DIFF_CONTEXT_MAX = 100;
+/** `GET /t/<task>/diff?run=<id>&file=<n>&from=<line>&count=<n>`: lines `from`..`from+count-1` of that file as the result
+ * left it (its head commit, read by Toolroll from its own record of the project and the run, never from the checkout),
+ * to show context a hunk hides. `lineCount` is the file's length there; `lines` stop at its end. `problem` says why there
+ * are none (the file was removed, isn't text, or the result's commit can't be read); lines that look like a key are
+ * replaced with a marker, as the saved diff does. */
+export const resultDiffContextSchema = z.object({
+  version,
+  task: z.string(),
+  run: z.number().int(),
+  file: z.number().int(),
+  from: z.number().int(),
+  lines: z.array(z.object({ newLine: z.number().int(), text: z.string() })),
+  lineCount: z.number().int().nullable(),
+  problem: z.string().nullable(),
 });
 
 // ---- Agents on this computer ---------------------------------------------------------------------------------------
@@ -248,10 +326,12 @@ export const helloSchema = z.object({ version, toolroll: z.string(), contract: z
 
 export const ENGINE_RESPONSES = {
   liveSessionWindow: { route: "GET /agents/live/<kind>/<id>", schema: liveSessionWindowSchema },
+  liveThreads: { route: "GET /agents/live/threads", schema: liveThreadsSchema },
   workRows: { route: "GET /work/rows", schema: workRowsSchema },
   stepCards: { route: "GET /t/<task>/steps", schema: stepCardsSchema },
   resultDiff: { route: "GET /t/<task>/diff", schema: resultDiffSchema },
   resultDiffFile: { route: "GET /t/<task>/diff?run=&file=", schema: resultDiffFileSchema },
+  resultDiffContext: { route: "GET /t/<task>/diff?run=&file=&from=&count=", schema: resultDiffContextSchema },
   linkRedemption: { route: "POST /login/once", schema: linkRedemptionSchema },
   refusal: { route: "every engine route's refusal", schema: engineRefusalSchema },
   hello: { route: "GET /engine/hello", schema: helloSchema },
@@ -259,11 +339,14 @@ export const ENGINE_RESPONSES = {
 } as const;
 export type EngineResponseName = keyof typeof ENGINE_RESPONSES;
 export type LiveSessionWindow = z.infer<typeof liveSessionWindowSchema>;
+export type ThreadFacts = z.infer<typeof threadFactsSchema>;
+export type LiveThreads = z.infer<typeof liveThreadsSchema>;
 export type WorkRows = z.infer<typeof workRowsSchema>;
 export type StepCards = z.infer<typeof stepCardsSchema>;
 export type StepCard = z.infer<typeof stepCardSchema>;
 export type ResultDiff = z.infer<typeof resultDiffSchema>;
 export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
+export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
 export type AgentsRead = z.infer<typeof agentsReadSchema>;
 

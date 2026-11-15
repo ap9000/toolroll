@@ -1,5 +1,5 @@
 {
-  "digest": "b0ee4ab052be41ad8e8d32c31c4ddf58b60af0ec9b66fcd053f8250fd6f199be",
+  "digest": "1197a7b1eb31799a85f5ca25bf4c419425c014d5dba8fbb622ce5e3d1e382287",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -427,6 +427,216 @@
               "additionalProperties": false
             }
           ]
+        },
+        "thread": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            },
+            "title": {
+              "type": "string"
+            },
+            "project": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "level": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "supervised",
+                    "auto",
+                    "full"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agent": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "model"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "turn": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "seq": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "costUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "costBasis": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "measured",
+                            "estimated",
+                            "unknown"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "seq",
+                    "status",
+                    "costUsd",
+                    "costBasis"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "questions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{32}$"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "permission",
+                      "question"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "tool": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "complete": {
+                    "type": "boolean"
+                  },
+                  "digest": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "decided",
+                      "sending",
+                      "sent",
+                      "delivered",
+                      "not-sent",
+                      "uncertain",
+                      "withdrawn"
+                    ]
+                  },
+                  "answerable": {
+                    "type": "boolean"
+                  },
+                  "parts": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "question": {
+                          "type": "string"
+                        },
+                        "options": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "question",
+                        "options"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "request",
+                  "kind",
+                  "title",
+                  "detail",
+                  "tool",
+                  "complete",
+                  "digest",
+                  "state",
+                  "answerable",
+                  "parts"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "version",
+            "title",
+            "project",
+            "level",
+            "agent",
+            "turn",
+            "questions"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -436,6 +646,80 @@
         "live",
         "file",
         "window"
+      ],
+      "additionalProperties": false
+    },
+    "liveThreads": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "threads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "title": {
+                "type": "string"
+              },
+              "project": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "level": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "supervised",
+                      "auto",
+                      "full"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "live": {
+                "type": "boolean"
+              },
+              "waiting": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "costUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "project",
+              "level",
+              "live",
+              "waiting",
+              "costUsd"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "version",
+        "threads"
       ],
       "additionalProperties": false
     },
@@ -1290,12 +1574,50 @@
                 },
                 "source": {
                   "type": "string"
+                },
+                "accept": {
+                  "type": "object",
+                  "properties": {
+                    "owed": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "person-check",
+                            "exception"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "blockers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "needs": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "owed",
+                    "blockers",
+                    "needs"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "run",
                 "receipt",
-                "source"
+                "source",
+                "accept"
               ],
               "additionalProperties": false
             },
@@ -1581,6 +1903,83 @@
         "run",
         "file",
         "linesTruncated"
+      ],
+      "additionalProperties": false
+    },
+    "resultDiffContext": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "task": {
+          "type": "string"
+        },
+        "run": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "file": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "from": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "newLine": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "newLine",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "lineCount": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "task",
+        "run",
+        "file",
+        "from",
+        "lines",
+        "lineCount",
+        "problem"
       ],
       "additionalProperties": false
     },

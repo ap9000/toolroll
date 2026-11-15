@@ -16,10 +16,10 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, test, type TestContext } from "vitest";
-import { agentFence, codexFenceArgv, fenceGrants, HARDENED_GIT_ARGS, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, runFolders, sandboxedSpawn, taskBoundary, trustedWorktreeBinding, type FenceGrants } from "../../src/agent-fence.js";
+import { agentFence, codexFenceArgv, fenceGrants, HARDENED_GIT_ARGS, installDenied, linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, runFolders, sandboxedSpawn, taskBoundary, trustedWorktreeBinding, type FenceGrants } from "../../src/agent-fence.js";
 import { sandboxRuntimeProblem } from "../../src/sandbox-runtime.js";
 import { poolRootOf } from "../../src/worktree.js";
 // Every attack file imports this harness, and this harness every guard (scripts/quick-check.mjs SECURITY_CRITICAL),
@@ -155,17 +155,21 @@ export function needs(ctx: TestContext, probe: Probe): void {
 
 const NATIVE_ENV = () => ({ ...process.env, NODE_OPTIONS: undefined });
 
+/** The grants as fenceFor hands them to a launch: with Toolroll's own install write-denied (agent-fence.ts
+ * installDenied), which a seccomp helper Toolroll's user owns (this checkout's, on CI) needs before it serves a launch. */
+export const asLaunched = (grants: FenceGrants, cwd: string | null, home: string = homedir()): FenceGrants => installDenied(grants, cwd, home);
+
 /** `script` in /bin/sh inside the sandbox runtime's sandbox for `fence` and `grants`, exactly as a build spawns it. */
 export function underSandbox(script: string, fence: readonly string[], grants: FenceGrants = NO_GRANTS, options: { cwd: string; env?: NodeJS.ProcessEnv; timeout?: number }): SpawnSyncReturns<string> {
   const env = options.env ?? NATIVE_ENV();
-  const { file, args, env: added } = sandboxedSpawn("/bin/sh", ["-c", script], fence, grants, options.cwd, env["TMPDIR"]);
+  const { file, args, env: added } = sandboxedSpawn("/bin/sh", ["-c", script], fence, asLaunched(grants, options.cwd), options.cwd, env["TMPDIR"]);
   return spawnSync(file, args, { cwd: options.cwd, encoding: "utf8", env: { ...env, ...added }, timeout: options.timeout ?? 60_000 });
 }
 
 /** The same, without blocking this process (a proxy or broker it talks to runs here). */
 export function underSandboxAsync(script: string, fence: readonly string[], grants: FenceGrants = NO_GRANTS, options: { cwd: string; env?: NodeJS.ProcessEnv }): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const env = options.env ?? NATIVE_ENV();
-  const { file, args, env: added } = sandboxedSpawn("/bin/sh", ["-c", script], fence, grants, options.cwd, env["TMPDIR"]);
+  const { file, args, env: added } = sandboxedSpawn("/bin/sh", ["-c", script], fence, asLaunched(grants, options.cwd), options.cwd, env["TMPDIR"]);
   return new Promise(done => {
     const child = spawn(file, args, { cwd: options.cwd, env: { ...env, ...added }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
@@ -266,7 +270,8 @@ export function plane(dir: string, secret: string) {
     return {
       binding, boundary,
       fence: agentFence({ databaseFile, worktree: active, home, boundary, binding, runFolders: folders }),
-      grants: fenceGrants({ databaseFile, worktree: active, boundary, runFolders: folders, linked: options.linked === undefined ? linked : options.linked, binding, home, poolRoots: [pool, poolRootOf(active, main)] }),
+      // As fenceFor makes them: Toolroll's own install write-denied (agent-fence.ts installDenied).
+      grants: installDenied(fenceGrants({ databaseFile, worktree: active, boundary, runFolders: folders, linked: options.linked === undefined ? linked : options.linked, binding, home, poolRoots: [pool, poolRootOf(active, main)] }), active, home, main),
     };
   };
   return { dir, state, home, pool, main, active, sibling, prefixSibling, theirs, prefixed, root, own, databaseFile, head, linked, shared, launch };

@@ -7,8 +7,9 @@ import { cardWithin } from "./chat-card.js";
 import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
 import { admitChatEvent } from "./chat-admission.js";
+import { guardDiscord, taskSubject } from "./outbound-privacy.js";
 import {
-  ChatState, ChatDeliveryError, chatHash, chatRetryAt, partContent, type ChatIdentity, type ChatContent, type ChatEvent,
+  ChatState, ChatDeliveryError, chatHash, chatRetryAt, partContent, withheldPart, type ChatIdentity, type ChatContent, type ChatEvent,
 } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readDiscordButtonToken, readDiscordComponentInteraction } from "./contracts/discord-callback.js";
@@ -272,6 +273,8 @@ export async function deliverDiscordPart(
     if (event.kind === "notice" && options.canNotify?.() === false)
       return false;
     const content = partContent(row.payload);
+    // Past here every call names this part's project if its words have to go as their safe version (outbound-privacy.ts).
+    options = { ...options, api: guardDiscord(options.api, withheldPart, taskSubject(store, content.task ?? content.image?.taskId)) };
     const destination = content.channel ?? binding.channel;
     if (
       content.task &&

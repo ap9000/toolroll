@@ -7,10 +7,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { guardDiscord } from "./outbound-privacy.js";
 import { randomBytes } from "node:crypto";
 import {
   ChatDeliveryError,
   chatHash,
+  withheldPart,
   type ChatIdentity,
 } from "./chat-delivery-state.js";
 import { chatObject as object } from "./chat-delivery.js";
@@ -33,7 +35,8 @@ export function discordApi(
   token: string,
   fetcher: typeof fetch = fetch,
 ): DiscordApi {
-  return async (method, path, body, file) => {
+  // Every call passes the outbound privacy guard (outbound-privacy.ts) first.
+  return guardDiscord<DiscordApi>(async (method, path, body, file) => {
     // Only relative API routes; never send the bot credential to supplied URLs. Beyond messages: typing, and the bot's
     // own 👀 on a message (put on, taken off).
     if (
@@ -108,7 +111,7 @@ export function discordApi(
       );
     }
     return Array.isArray(raw) ? { items: raw } : data;
-  };
+  }, withheldPart);
 }
 export const discordCredentialFile = (dir: string) =>
   join(dir, "discord-connection.json");

@@ -3,8 +3,9 @@
  * activities proved by the Bot Framework's signed token. No SDK. */
 import { chmodSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { guardTeams } from "./outbound-privacy.js";
 import { createPublicKey, randomBytes, verify as verifySignature } from "node:crypto";
-import { ChatDeliveryError, chatHash, type ChatIdentity } from "./chat-delivery-state.js";
+import { ChatDeliveryError, chatHash, withheldPart, type ChatIdentity } from "./chat-delivery-state.js";
 import { chatObject as object } from "./chat-delivery.js";
 
 export type TeamsCredentials = ChatIdentity & { tenant: string; secret: string };
@@ -73,7 +74,8 @@ export type TeamsApi = (method: "GET" | "POST" | "PUT", serviceUrl: string, path
 
 /** Outbound Bot Framework calls: only conversation routes, only under an https service URL Microsoft named in a signed token. */
 export function teamsApi(credentials: TeamsCredentials, fetcher: typeof fetch = fetch): TeamsApi {
-  return async (method, serviceUrl, path, body) => {
+  // Every call passes the outbound privacy guard (outbound-privacy.ts) first.
+  return guardTeams<TeamsApi>(async (method, serviceUrl, path, body) => {
     if (!/^\/v3\/conversations\/[A-Za-z0-9:@._%-]+(?:\/activities(?:\/[A-Za-z0-9:._%-]+)?|\/members(?:\/[A-Za-z0-9:._%-]+)?)$/.test(path)) throw new TeamsError("Invalid Teams request");
     let base: URL;
     try { base = new URL(serviceUrl); } catch { throw new TeamsError("Invalid Teams service URL"); }
@@ -97,7 +99,7 @@ export function teamsApi(credentials: TeamsCredentials, fetcher: typeof fetch = 
     const text = await response.text();
     if (text.trim() === "") return {};
     try { return object(JSON.parse(text)); } catch { return {}; }
-  };
+  }, withheldPart);
 }
 
 /** Confirm the app can sign in; the tenant and app id shape the installation identity. */

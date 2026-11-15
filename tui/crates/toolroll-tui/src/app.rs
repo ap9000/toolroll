@@ -1,12 +1,16 @@
 //! The screen's state and what changes it: one struct, updated by keys, mouse and engine answers, drawn immediate-mode
 //! each frame (view.rs). Nothing here talks to the network: an update returns the effects the loop runs (run.rs), so
 //! every screen state can be built and snapshotted from fixtures.
+use crate::review::{self, Code, Kind, Note, NoteAt, Row, Side};
+use crate::syntax::Highlights;
 use crate::text::clean;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use toolroll_api::{
-    ActOutcome, AgentsRead, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, NeedRow, Question,
-    ResultDiff, ResultDiffFile, StepCards, Window, WorkRow, WorkRows,
+    ActOutcome, AgentsRead, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, LiveThreads,
+    NeedRow, Question, ResultDiff, ResultDiffContext, ResultDiffFile, StepCards, Window, WorkRow,
+    WorkRows,
 };
 
 /// How the screen ended (the launcher reads it: tui-launch.ts TUI_EXIT).
@@ -77,8 +81,10 @@ pub struct Item {
     pub age: String,
     pub project: Option<String>,
     pub need: Option<NeedRow>,
-    /// A task row (false: an ask that is no task, opened in the browser).
+    /// A task row (false: an ask that is no task, opened in the browser, or a thread).
     pub is_task: bool,
+    /// A Flexible thread (thread.rs): one more live session, its panel the thread's own.
+    pub thread: bool,
 }
 
 impl Item {
@@ -111,9 +117,24 @@ pub struct AnswerPin {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NoteKind {
-    /// Send back the result pinned here, with the words typed.
-    SendBack(ReviewPin),
+    /// A note on a line or hunk of the diff on screen: kept in this task's draft, never sent by itself.
+    Line(NoteTarget),
 }
+
+/// Where a note being typed goes: the task, build and file it was opened on, and the line or hunk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoteTarget {
+    pub task: String,
+    pub run: i64,
+    pub file: i64,
+    pub path: String,
+    pub at: NoteAt,
+    pub order: i64,
+}
+
+/// Said when notes don't fit the dialog that would send them (nothing is sent unless every note was shown).
+pub const NOTES_TOO_LONG: &str =
+    "These notes don't fit on screen. Make the window larger, or send them from the browser (w).";
 
 /// Said when a dialog closes because what it showed changed.
 pub const RESULT_CHANGED: &str = "This result changed — look again.";
@@ -132,6 +153,10 @@ pub enum Mode {
     NewTask(String),
     ConfirmStop(i64),
     ConfirmAnswer(AnswerPin),
+    /// A thread's question and the answer picked, pinned (thread.rs): Enter posts exactly them.
+    ConfirmThread(crate::thread::ThreadPin),
+    /// A new thread's first message (refused by the engine while Flexible isn't available).
+    NewThread(String),
     /// A small task's exact terms: Enter builds (POST /tasks/fast), p files it to plan first, Esc files nothing.
     /// Build is a person's yes to exactly these terms, so every term is shown whole (wrapped, scrolled with j/k), and
     /// Enter builds only once the view has drawn the end of them (`seen_end`, set by view.rs, never by a key). The
@@ -144,8 +169,24 @@ pub enum Mode {
         scroll: usize,
         seen_end: bool,
     },
-    /// Accept the result: a plain completion of the receipt read (no acceptance of anything not shown here).
+    /// Accept the result: a plain completion of the receipt read (no acceptance of anything not shown here). With
+    /// `accept_attach`, the notes shown go with it (saved on the result first).
     ConfirmAccept(ReviewPin),
+    /// Send back with the notes in this task's draft, shown whole, and words for the whole change being typed.
+    SendBack(ReviewPin, String),
+    /// Send back's whole text, frozen when the words were typed, shown wrapped and scrolled (j/k, Space): Enter sends
+    /// exactly this text, and only once the view has drawn its end (`seen_end`, set by view.rs, never by a key).
+    SendReview {
+        pin: ReviewPin,
+        typed: String,
+        text: String,
+        scroll: usize,
+        seen_end: bool,
+    },
+    /// A batch is on its way: no other act starts until its answer comes.
+    Sending(String),
+    /// The screen was given back to the terminal so a copied hunk can be selected in its scrollback; any key returns.
+    Copied,
     Help,
     /// The settings in use and their file (settings.rs): read-only, but `t` changes the theme for the session.
     Settings,
@@ -198,11 +239,33 @@ pub enum Effect {
     },
     FetchDiff(DiffAsk),
     FetchDiffFile(FileAsk),
+    /// The person's Flexible threads (GET /agents/live/threads).
+    FetchThreads,
+    /// One window of a thread's live session from `cursor`, with its facts unless they are still `known`.
+    FetchThread {
+        thread: String,
+        cursor: Option<String>,
+        known: Option<String>,
+    },
+    FetchContext(ContextAsk),
     Act {
         path: String,
         fields: Vec<(String, String)>,
         done: String,
     },
+    /// A batch of notes, sent with the person's act: each POST in turn, stopping at the first refusal. The draft
+    /// (`task`, `run`) is cleared once the notes are on the engine's side.
+    Send {
+        acts: Vec<SendAct>,
+        task: String,
+        run: i64,
+        /// The exact text the batch carries (its identity's key).
+        text: String,
+    },
+    /// Leave the alternate screen and write these lines to the terminal's own scrollback (copy without OSC 52).
+    Scrollback(Vec<String>),
+    /// Back to the alternate screen after Scrollback.
+    ResumeScreen,
     /// The live rooms for what's on screen now (besides `workspace`).
     Watch(Vec<String>),
     OpenBrowser,
@@ -229,6 +292,34 @@ pub struct FileAsk {
     pub gen: u64,
 }
 
+/// A batch submitted and not yet done: its request identity, and whether its notes are known to be saved on the
+/// result (then a retry of Accept only completes). Kept per payload (task, build, the exact text posted).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub request: String,
+    pub saved: bool,
+}
+
+/// One POST of a batch: path, form fields, and the words when it is kept.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SendAct {
+    pub path: String,
+    pub fields: Vec<(String, String)>,
+    pub done: String,
+}
+
+/// One read of hidden lines: task, build, file, generation and the lines asked, all matched against the answer and the
+/// file on screen (a late answer for another file or an older ask is dropped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextAsk {
+    pub task: String,
+    pub run: i64,
+    pub file: i64,
+    pub gen: u64,
+    pub from: i64,
+    pub count: i64,
+}
+
 /// An engine answer or signal, as the loop hands it over.
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -238,6 +329,17 @@ pub enum Msg {
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
+    Threads(Result<LiveThreads, ApiError>),
+    Thread(String, Result<LiveSessionWindow, ApiError>),
+    Context(ContextAsk, Result<ResultDiffContext, ApiError>),
+    /// A batch's outcome: the last act's answer (or the first refusal), and how many acts were kept before it.
+    Sent {
+        task: String,
+        run: i64,
+        text: String,
+        kept: usize,
+        result: Result<ActOutcome, ApiError>,
+    },
     Acted(Result<ActOutcome, ApiError>),
     Signal(LiveSignal),
     /// The launcher's answer to an ask (descriptor 4): words to say.
@@ -273,7 +375,39 @@ pub struct App {
     pub diff: Option<ResultDiff>,
     pub diff_index: usize,
     pub diff_file: Option<ResultDiffFile>,
+    /// The first row of the file view drawn (the view keeps the cursor in sight).
     pub diff_scroll: usize,
+    /// The row the person is on (notes, expands and copies act on it).
+    pub diff_cursor: usize,
+    /// Side by side asked for (v); shown only when the pane is wide enough.
+    pub diff_split: bool,
+    /// The Diff tab's width last frame (view.rs sets it).
+    pub diff_width: u16,
+    /// The file on screen laid out (with the context revealed), and its rows.
+    pub code: Option<Code>,
+    pub rows: Vec<Row>,
+    /// Moves whenever `code` is laid out again (the colouring keys off it).
+    pub code_version: u64,
+    /// Lines revealed around the hunks (new-file number → text, cleaned), and the file's length once known.
+    pub revealed: BTreeMap<i64, String>,
+    pub line_count: Option<i64>,
+    context_wanted: Option<ContextAsk>,
+    /// Notes per task and build, in memory only, until sent. They survive switching files, tabs and tasks.
+    pub drafts: HashMap<(String, i64), Vec<Note>>,
+    /// After `n`/`N` moved to another file: land on its first (true) or last note.
+    note_jump: Option<bool>,
+    /// The file's code coloured so far, and whether more is left (the loop draws again while it is).
+    pub highlights: Option<Highlights>,
+    pub highlight_pending: bool,
+    /// Syntax colours in Diff (their shades come from the theme, theme.rs `code`).
+    pub syntax_on: bool,
+    /// The notes in the open dialog were all drawn (view.rs): only then may Enter send them.
+    pub batch_shown: bool,
+    /// Accept carries the notes shown (t in the Accept dialog).
+    pub accept_attach: bool,
+    /// Every batch submitted for a draft and not yet done, by (task, build, exact text): its request identity, reused
+    /// whenever the same text is submitted again, and whether its notes are saved. Kept for the life of the draft.
+    pub pending: HashMap<(String, i64, String), Pending>,
     /// The diff read whose answer is wanted (the newest asked), and the file read's; anything else is stale.
     diff_wanted: Option<DiffAsk>,
     file_wanted: Option<FileAsk>,
@@ -294,6 +428,12 @@ pub struct App {
     pub facts: crate::settings::RowFacts,
     /// The question, the chosen answer and its consequence were all drawn whole (view.rs): Enter may send it.
     pub answer_shown: bool,
+    /// The person's Flexible threads and the one watched (thread.rs).
+    pub threads: crate::thread::Threads,
+    /// A thread's question and the answer picked were drawn to their end (thread.rs): Enter may send it.
+    pub thread_shown: bool,
+    /// How far the thread's answer dialog is read on (j/k).
+    pub thread_scroll: usize,
     /// The title of the task New task is filing (kept for Build's "plan it first").
     pub filing: String,
     pub fetching_live: bool,
@@ -329,6 +469,23 @@ impl App {
             diff_index: 0,
             diff_file: None,
             diff_scroll: 0,
+            diff_cursor: 0,
+            diff_split: false,
+            diff_width: 0,
+            code: None,
+            rows: Vec::new(),
+            code_version: 0,
+            revealed: BTreeMap::new(),
+            line_count: None,
+            context_wanted: None,
+            drafts: HashMap::new(),
+            note_jump: None,
+            highlights: None,
+            highlight_pending: false,
+            syntax_on: true,
+            batch_shown: false,
+            accept_attach: false,
+            pending: HashMap::new(),
             diff_wanted: None,
             file_wanted: None,
             diff_gen: 0,
@@ -342,6 +499,9 @@ impl App {
             facts: crate::settings::RowFacts::default(),
             filing: String::new(),
             answer_shown: false,
+            threads: crate::thread::Threads::default(),
+            thread_shown: false,
+            thread_scroll: 0,
             fetching_live: false,
             fetching_work: false,
             agents: None,
@@ -490,12 +650,31 @@ impl App {
                 self.failed(e)
             }
             Msg::DiffFile(ask, Ok(file)) => self.got_diff_file(ask, file),
+            Msg::Threads(read) => self.got_threads(read),
+            Msg::Thread(id, read) => self.got_thread(id, read),
+            Msg::Context(ask, Ok(ctx)) => self.got_context(ask, ctx),
+            Msg::Context(ask, Err(e)) => {
+                if self.context_wanted.as_ref() != Some(&ask) && !fatal(&e) {
+                    return vec![];
+                }
+                self.context_wanted = None;
+                self.failed(e)
+            }
+            Msg::Sent {
+                task,
+                run,
+                text,
+                kept,
+                result,
+            } => self.sent(task, run, text, kept, result),
             Msg::Acted(Ok(ActOutcome::Done(words))) => {
                 self.say(Tone::Said, words);
+                self.sent_thread();
                 self.refresh()
             }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
                 self.say(Tone::Refused, words);
+                self.sent_thread();
                 self.refresh()
             }
             Msg::Acted(Ok(ActOutcome::Terms {
@@ -515,7 +694,10 @@ impl App {
                 };
                 vec![]
             }
-            Msg::Acted(Err(e)) => self.failed(e),
+            Msg::Acted(Err(e)) => {
+                self.sent_thread();
+                self.failed(e)
+            }
             Msg::Signal(signal) => self.signal(signal),
             Msg::Said(words) => {
                 self.say(Tone::Said, words);
@@ -549,6 +731,7 @@ impl App {
     /// Re-read what's on screen after an act.
     fn refresh(&mut self) -> Vec<Effect> {
         let mut fx = self.fetch_work();
+        fx.extend(self.poll_thread());
         if let Some(id) = self
             .selected_item()
             .filter(|i| i.is_task)
@@ -577,6 +760,8 @@ impl App {
         self.project_name = clean(&rows.project_name);
         self.needs_count = rows.needs_count;
         self.items = items_of(&rows);
+        self.items.extend(self.threads.items());
+        sort_sections(&mut self.items);
         self.check_pins();
         let mut fx = vec![];
         // Each change once (a task starts waiting on you, finishes or fails), in our own words (notify.rs).
@@ -609,7 +794,179 @@ impl App {
         }
         // No tasks yet: the first run's lines about this computer's agents (who the first task goes to, or how to sign in).
         fx.extend(self.fetch_agents());
+        // The person's Flexible threads, read with the work (never again once the console said they aren't available).
+        if !self.threads.off && !self.threads.fetching {
+            self.threads.fetching = true;
+            fx.push(Effect::FetchThreads);
+        }
         fx
+    }
+
+    /// The threads list: merged into the left column (the selection kept); a refusal means Flexible is off here, said
+    /// by nothing (threads are simply not listed) and never asked again.
+    fn got_threads(&mut self, read: Result<LiveThreads, ApiError>) -> Vec<Effect> {
+        self.threads.fetching = false;
+        match read {
+            Ok(list) => self.threads.listed(list),
+            Err(e) if fatal(&e) => return self.failed(e),
+            Err(_) => {
+                self.threads.off = true;
+                self.threads.rows.clear();
+            }
+        }
+        let before = self.selected_id();
+        self.items.retain(|i| !i.thread);
+        self.items.extend(self.threads.items());
+        sort_sections(&mut self.items);
+        self.selected = before
+            .as_ref()
+            .and_then(|id| self.items.iter().position(|i| &i.id == id))
+            .unwrap_or(self.selected)
+            .min(self.items.len().saturating_sub(1));
+        if self.selected_id() != before {
+            return self.selection_changed();
+        }
+        self.poll_thread()
+    }
+
+    /// The selected thread being watched, if it is one.
+    fn thread_selected(&self) -> Option<String> {
+        self.selected_item()
+            .filter(|i| i.thread)
+            .map(|i| i.id.clone())
+    }
+
+    /// Read on in the watched thread (one read at a time), now: a selection, a refresh, an act's answer.
+    fn poll_thread(&mut self) -> Vec<Effect> {
+        let Some(id) = self.thread_selected() else {
+            return vec![];
+        };
+        let view = self
+            .threads
+            .view
+            .get_or_insert_with(|| crate::thread::ThreadView {
+                id: id.clone(),
+                ..Default::default()
+            });
+        if view.id != id || view.fetching {
+            return vec![];
+        }
+        view.fetching = true;
+        view.due = 0;
+        vec![Effect::FetchThread {
+            thread: id,
+            cursor: view.transcript.cursor_main.clone(),
+            known: view.facts.as_ref().map(|f| f.version.clone()),
+        }]
+    }
+
+    /// The tick's read of the watched thread: every tick (250 ms) while a question waits on you or the thread is
+    /// changing, backing off to every eighth (2 s) while nothing changes.
+    fn tick_thread(&mut self) -> Vec<Effect> {
+        let Some(view) = self.threads.view.as_mut() else {
+            return self.poll_thread();
+        };
+        if view.due > 0 {
+            view.due -= 1;
+            return vec![];
+        }
+        self.poll_thread()
+    }
+
+    /// A thread's window: its records appended (a restart clears them first), its facts replaced when they changed (a
+    /// window without them says they didn't); a dialog whose question no longer stands closes. The next tick's read is
+    /// sooner while something changes or a question waits, later while nothing does.
+    fn got_thread(&mut self, id: String, read: Result<LiveSessionWindow, ApiError>) -> Vec<Effect> {
+        let Some(view) = self.threads.view.as_mut().filter(|v| v.id == id) else {
+            return vec![];
+        };
+        view.fetching = false;
+        let window = match read {
+            Ok(w) => w,
+            Err(e) => return self.failed(e),
+        };
+        let mut changed = view.transcript.live != window.live;
+        view.transcript.live = window.live;
+        if let Some(facts) = window.thread {
+            if view.facts.as_ref().map(|f| &f.version) != Some(&facts.version) {
+                view.facts = Some(facts);
+                changed = true;
+            }
+        }
+        let mut more = None;
+        if let Window::Read(read) = window.window {
+            if read.restarted {
+                view.transcript.main.clear();
+            }
+            if read.restarted || !read.records.is_empty() {
+                view.transcript.main.extend(read.records);
+                if view.transcript.main.len() > RECORDS_KEPT {
+                    let drop = view.transcript.main.len() - RECORDS_KEPT;
+                    view.transcript.main.drain(..drop);
+                }
+                view.transcript.version += 1;
+                changed = true;
+            }
+            view.transcript.cursor_main = Some(read.cursor.clone());
+            if read.more {
+                more = Some(read.cursor);
+            }
+        }
+        let waiting = view
+            .facts
+            .as_ref()
+            .and_then(crate::thread::shown_question)
+            .is_some();
+        view.quiet = if changed || waiting {
+            0
+        } else {
+            (view.quiet + 1).min(3)
+        };
+        view.due = (1u32 << view.quiet) - 1;
+        crate::thread::check_pin(self);
+        match more {
+            Some(cursor) => {
+                let view = self.threads.view.as_mut().unwrap();
+                view.fetching = true;
+                vec![Effect::FetchThread {
+                    thread: id,
+                    cursor: Some(cursor),
+                    known: view.facts.as_ref().map(|f| f.version.clone()),
+                }]
+            }
+            None => vec![],
+        }
+    }
+
+    /// An act came back: the answer it carried (if any) is no longer on its way here; the read says where it stands.
+    fn sent_thread(&mut self) {
+        if let Some(view) = self.threads.view.as_mut() {
+            view.sending = None;
+        }
+    }
+
+    /// Enter on a thread's answer dialog: posted only while the pinned question still stands and was drawn whole.
+    fn answer_thread(&mut self, pin: crate::thread::ThreadPin) -> Vec<Effect> {
+        if !crate::thread::stands(self.threads.view.as_ref(), &pin) {
+            self.say(Tone::Refused, crate::thread::THREAD_QUESTION_CHANGED);
+            return vec![];
+        }
+        if !self.thread_shown {
+            self.say(Tone::Refused, crate::thread::READ_TO_THE_END);
+            return vec![];
+        }
+        if let Some(view) = self.threads.view.as_mut() {
+            view.sending = Some(pin.request.clone());
+        }
+        let fields = crate::thread::answer_fields(&pin);
+        self.act(
+            format!(
+                "/agents/live/thread/{}/answer",
+                toolroll_api::client::encode(&pin.thread)
+            ),
+            fields,
+            format!("Sent: {}.", clean(&pin.label)),
+        )
     }
 
     fn got_live(
@@ -749,7 +1106,9 @@ impl App {
                 return fx;
             }
         }
-        if self.tab == Tab::Live || self.ticks.is_multiple_of(4) {
+        if self.thread_selected().is_some() {
+            fx = self.tick_thread();
+        } else if self.tab == Tab::Live || self.ticks.is_multiple_of(4) {
             fx = self.poll_live(self.ticks.is_multiple_of(8));
         }
         fx.extend(gathered);
@@ -772,28 +1131,44 @@ impl App {
         self.steps = None;
         self.transcript = Transcript::default();
         self.diff = None;
-        self.diff_file = None;
         self.diff_index = 0;
         self.diff_wanted = None;
         self.file_wanted = None;
+        self.drop_file();
         self.follow = true;
         self.scroll = 0;
         self.fetching_live = false;
         if matches!(
             self.mode,
-            Mode::ConfirmAccept(_) | Mode::ConfirmAnswer(_) | Mode::Note(..)
+            Mode::ConfirmAccept(_)
+                | Mode::ConfirmAnswer(_)
+                | Mode::Note(..)
+                | Mode::SendBack(..)
+                | Mode::SendReview { .. }
         ) {
             self.say(Tone::Refused, RESULT_CHANGED);
+        }
+        if matches!(self.mode, Mode::ConfirmThread(_)) {
+            self.say(Tone::Refused, crate::thread::THREAD_QUESTION_CHANGED);
         }
         if matches!(
             self.mode,
             Mode::ConfirmAnswer(_)
+                | Mode::ConfirmThread(_)
                 | Mode::ConfirmAccept(_)
                 | Mode::ConfirmStop(_)
                 | Mode::Note(..)
+                | Mode::SendBack(..)
+                | Mode::SendReview { .. }
                 | Mode::Steer(_)
         ) {
             self.mode = Mode::Normal;
+        }
+        self.threads.view = None;
+        if self.thread_selected().is_some() {
+            let mut fx = self.poll_thread();
+            fx.push(Effect::Watch(vec![]));
+            return fx;
         }
         let Some(id) = self
             .selected_item()
@@ -837,6 +1212,11 @@ impl App {
         }
         match self.mode.clone() {
             Mode::Fatal(_, code) => vec![Effect::Exit(code)],
+            Mode::Copied => {
+                self.mode = Mode::Normal;
+                self.say(Tone::Said, "The hunk stays in your terminal's scrollback.");
+                vec![Effect::ResumeScreen]
+            }
             Mode::Help => {
                 self.mode = if key.code == KeyCode::Char('s') {
                     Mode::Settings
@@ -979,9 +1359,86 @@ impl App {
             Mode::ConfirmAccept(pin) => {
                 self.mode = Mode::Normal;
                 match key.code {
+                    // Attach the notes (or not): the dialog stays open, showing what goes with it.
+                    KeyCode::Char('t') if !self.notes_of(&pin.task, pin.run).is_empty() => {
+                        self.accept_attach = !self.accept_attach;
+                        self.batch_shown = false;
+                        self.mode = Mode::ConfirmAccept(pin);
+                        vec![]
+                    }
+                    KeyCode::Enter if self.accept_attach && !self.batch_shown => {
+                        self.say(Tone::Refused, NOTES_TOO_LONG);
+                        vec![]
+                    }
+                    KeyCode::Enter if self.accept_attach => self.accept_with_notes(pin),
                     KeyCode::Enter => self.accept(pin),
                     _ => {
                         self.say(Tone::Said, "Not accepted.");
+                        vec![]
+                    }
+                }
+            }
+            Mode::SendBack(pin, text) => {
+                let p2 = pin.clone();
+                self.typing(
+                    key,
+                    text,
+                    move |app, text| app.mode = Mode::SendBack(p2.clone(), text),
+                    move |app, text| app.review_send_back(pin.clone(), text),
+                )
+            }
+            // Nothing else starts while a batch is on its way (Ctrl-C still quits, above).
+            Mode::Sending(_) => vec![],
+            Mode::SendReview {
+                pin,
+                typed,
+                text,
+                scroll,
+                seen_end,
+            } => {
+                let again = |scroll: usize| Mode::SendReview {
+                    pin: pin.clone(),
+                    typed: typed.clone(),
+                    text: text.clone(),
+                    scroll,
+                    seen_end,
+                };
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        self.mode = again(scroll + 1);
+                        vec![]
+                    }
+                    KeyCode::Char(' ') | KeyCode::PageDown => {
+                        self.mode = again(scroll + 10);
+                        vec![]
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.mode = again(scroll.saturating_sub(1));
+                        vec![]
+                    }
+                    KeyCode::PageUp => {
+                        self.mode = again(scroll.saturating_sub(10));
+                        vec![]
+                    }
+                    KeyCode::Enter if !seen_end => {
+                        self.mode = again(scroll);
+                        self.say(
+                            Tone::Refused,
+                            "Read it to the end first (j or Space), or send it from the browser (w).",
+                        );
+                        vec![]
+                    }
+                    KeyCode::Enter => {
+                        self.mode = Mode::Normal;
+                        self.send_back_with_notes(pin, typed, text)
+                    }
+                    // Back to the words, nothing sent.
+                    KeyCode::Esc => {
+                        self.mode = Mode::SendBack(pin, typed);
+                        vec![]
+                    }
+                    _ => {
+                        self.mode = again(scroll);
                         vec![]
                     }
                 }
@@ -1001,6 +1458,34 @@ impl App {
                     }
                 }
             }
+            Mode::ConfirmThread(pin) => {
+                // Reading on through what would be allowed: the view says when its end has been drawn.
+                let by: i64 = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => 1,
+                    KeyCode::Char(' ') | KeyCode::PageDown => 10,
+                    KeyCode::Char('k') | KeyCode::Up => -1,
+                    KeyCode::PageUp => -10,
+                    _ => 0,
+                };
+                if by != 0 {
+                    self.thread_scroll = (self.thread_scroll as i64 + by).max(0) as usize;
+                    return vec![];
+                }
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.answer_thread(pin),
+                    _ => {
+                        self.say(Tone::Said, "Not answered.");
+                        vec![]
+                    }
+                }
+            }
+            Mode::NewThread(text) => self.typing(
+                key,
+                text,
+                |app, text| app.mode = Mode::NewThread(text),
+                |app, text| app.new_thread(text),
+            ),
             Mode::Steer(text) => self.typing(
                 key,
                 text,
@@ -1074,12 +1559,22 @@ impl App {
             }
         };
         match &mut self.mode {
-            Mode::Steer(t) | Mode::NewTask(t) | Mode::Note(_, t) => grow(t),
+            Mode::Steer(t)
+            | Mode::NewTask(t)
+            | Mode::NewThread(t)
+            | Mode::Note(_, t)
+            | Mode::SendBack(_, t) => grow(t),
             _ => {}
         }
     }
 
     fn normal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        // The Diff tab's keys are a task result's; a thread's panel has no Diff (its own keys come below).
+        if self.tab == Tab::Diff && self.thread_selected().is_none() {
+            if let Some(fx) = self.diff_key(key) {
+                return fx;
+            }
+        }
         let item = self.selected_item().cloned();
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => self.select(self.selected + 1),
@@ -1124,6 +1619,27 @@ impl App {
                     vec![]
                 }
             },
+            KeyCode::Char(c @ '1'..='9') if item.as_ref().is_some_and(|i| i.thread) => {
+                let n = (c as u8 - b'1') as usize;
+                let picked = match self.threads.view.as_ref() {
+                    Some(view) => crate::thread::pin(view, n),
+                    None => Err("Reading this thread…".to_string()),
+                };
+                match picked {
+                    Ok(pin) => {
+                        self.status = None;
+                        self.mode = Mode::ConfirmThread(pin);
+                        self.thread_shown = false;
+                        self.thread_scroll = 0;
+                    }
+                    Err(why) => self.say(Tone::Refused, why),
+                }
+                vec![]
+            }
+            KeyCode::Char('T') => {
+                self.mode = Mode::NewThread(String::new());
+                vec![]
+            }
             KeyCode::Char(c @ '1'..='9') => {
                 let n = (c as u8 - b'1') as usize;
                 match item.as_ref().and_then(|i| i.question()) {
@@ -1168,12 +1684,16 @@ impl App {
                     return vec![];
                 }
                 self.status = None;
+                self.accept_attach = false;
+                self.batch_shown = false;
                 self.mode = Mode::ConfirmAccept(pin);
                 vec![]
             }
             KeyCode::Char('r') => {
                 if let Some(pin) = self.pin_review() {
-                    self.mode = Mode::Note(NoteKind::SendBack(pin), String::new());
+                    // The notes kept for this result (if any) and words for the whole change, then the whole text to
+                    // read to its end before anything is sent.
+                    self.mode = Mode::SendBack(pin, String::new());
                 }
                 vec![]
             }
@@ -1190,8 +1710,6 @@ impl App {
                 vec![]
             }
             KeyCode::Char('q') => self.quit(),
-            KeyCode::Char('[') if self.tab == Tab::Diff => self.diff_step(-1),
-            KeyCode::Char(']') if self.tab == Tab::Diff => self.diff_step(1),
             KeyCode::PageUp | KeyCode::Char('u') => {
                 self.scroll_by(10);
                 vec![]
@@ -1223,10 +1741,12 @@ impl App {
         }
     }
 
-    /// Scroll the right pane: positive is up (older).
+    /// Scroll the right pane: positive is up (older). In Diff the cursor moves with the view.
     pub fn scroll_by(&mut self, lines: i64) {
         if self.tab == Tab::Diff {
-            self.diff_scroll = (self.diff_scroll as i64 - lines).max(0) as usize;
+            let last = self.rows.len().saturating_sub(1) as i64;
+            self.diff_scroll = (self.diff_scroll as i64 - lines).clamp(0, last.max(0)) as usize;
+            self.diff_cursor = (self.diff_cursor as i64 - lines).clamp(0, last.max(0)) as usize;
             return;
         }
         let next = (self.scroll as i64 + lines).max(0) as usize;
@@ -1247,8 +1767,7 @@ impl App {
             _ => None,
         };
         self.diff_index = next;
-        self.diff_file = None;
-        self.diff_scroll = 0;
+        self.drop_file();
         self.file_wanted = None;
         // The dialog that pinned another file's view no longer shows what it asks about.
         self.check_pins();
@@ -1305,8 +1824,7 @@ impl App {
             if self.diff.as_ref().map(|d| d.run) != Some(diff.run) {
                 self.diff_index = 0;
             }
-            self.diff_file = None;
-            self.diff_scroll = 0;
+            self.drop_file();
             self.file_wanted = None;
         }
         self.diff_index = self.diff_index.min(diff.files.len().saturating_sub(1));
@@ -1340,8 +1858,18 @@ impl App {
             return vec![];
         }
         self.file_wanted = None;
-        self.diff_file = Some(file);
-        self.diff_scroll = 0;
+        let same = self.diff_file.as_ref() == Some(&file);
+        if !same {
+            self.drop_file();
+            self.diff_file = Some(file);
+            self.relayout();
+        }
+        if let Some(first) = self.note_jump.take() {
+            let notes: Vec<usize> = self.note_rows();
+            if let Some(&row) = if first { notes.first() } else { notes.last() } {
+                self.diff_cursor = row;
+            }
+        }
         self.check_pins();
         vec![]
     }
@@ -1530,8 +2058,12 @@ impl App {
     /// After a refresh: a dialog whose pinned facts no longer stand closes, saying so (nothing is sent).
     fn check_pins(&mut self) {
         let changed = match &self.mode {
-            Mode::ConfirmAccept(pin) if self.review_pin_stands(pin) => self.diff_agrees(pin).err(),
-            Mode::ConfirmAccept(pin) | Mode::Note(NoteKind::SendBack(pin), _) => {
+            Mode::ConfirmAccept(pin) | Mode::SendBack(pin, _) | Mode::SendReview { pin, .. }
+                if self.review_pin_stands(pin) =>
+            {
+                self.diff_agrees(pin).err()
+            }
+            Mode::ConfirmAccept(pin) | Mode::SendBack(pin, _) | Mode::SendReview { pin, .. } => {
                 (!self.review_pin_stands(pin)).then_some(RESULT_CHANGED)
             }
             Mode::ConfirmAnswer(pin) => self
@@ -1544,33 +2076,41 @@ impl App {
             self.mode = Mode::Normal;
             self.say(Tone::Refused, words);
         }
+        crate::thread::check_pin(self);
     }
 
     fn note(&mut self, kind: NoteKind, text: String) -> Vec<Effect> {
         let note = text.trim().to_string();
         match kind {
-            NoteKind::SendBack(pin) => {
-                if !self.review_pin_stands(&pin) {
-                    self.say(Tone::Refused, RESULT_CHANGED);
-                    return vec![];
-                }
+            NoteKind::Line(target) => {
+                let notes = self
+                    .drafts
+                    .entry((target.task.clone(), target.run))
+                    .or_default();
                 if note.is_empty() {
-                    self.say(Tone::Refused, "Say what to change, then press Enter.");
-                    self.mode = Mode::Note(NoteKind::SendBack(pin), String::new());
-                    return vec![];
+                    let before = notes.len();
+                    notes.retain(|n| !(n.file == target.file && n.at == target.at));
+                    if notes.len() < before {
+                        self.say(Tone::Said, "Note removed.");
+                    }
+                } else {
+                    review::put(
+                        notes,
+                        Note {
+                            file: target.file,
+                            path: target.path,
+                            at: target.at,
+                            order: target.order,
+                            text: clean(&note),
+                        },
+                    );
+                    self.say(
+                        Tone::Said,
+                        "Note kept. Nothing is sent until you send back (r) or accept with notes (a).",
+                    );
                 }
-                let request = self.token(32);
-                self.act(
-                    format!("/r/{}/comment", pin.run),
-                    vec![
-                        ("intent", "revise".into()),
-                        ("note", note),
-                        ("request", request),
-                        ("batch", String::new()),
-                        ("source", pin.source),
-                    ],
-                    "Sent back. The revision is filed.".into(),
-                )
+                self.rerow();
+                vec![]
             }
         }
     }
@@ -1594,6 +2134,201 @@ impl App {
         )
     }
 
+    /// The request identity for a batch of exactly `text` on this result: the one already used for it (a retry, after
+    /// an answer that was lost or refused), else a new one. The console dedupes on it (an unchanged retry lands on the
+    /// note or revision the first one made), so the same notes are never saved twice.
+    fn pending_for(&mut self, task: &str, run: i64, text: &str) -> Pending {
+        let key = (task.to_string(), run, text.to_string());
+        if let Some(p) = self.pending.get(&key) {
+            return p.clone();
+        }
+        let p = Pending {
+            request: self.token(32),
+            saved: false,
+        };
+        self.pending.insert(key, p.clone());
+        p
+    }
+
+    /// Accept with the notes shown: saved on the result as one note (POST /r/<run>/comment, the result page's own Save
+    /// note), then the same plain completion as Accept. Pinned exactly as Accept is; the notes posted are the ones the
+    /// dialog drew, under one request identity kept until both are done; notes already saved are not posted again.
+    fn accept_with_notes(&mut self, pin: ReviewPin) -> Vec<Effect> {
+        if !self.review_pin_stands(&pin) {
+            self.say(Tone::Refused, RESULT_CHANGED);
+            return vec![];
+        }
+        if let Err(why) = self.diff_agrees(&pin) {
+            self.say(Tone::Refused, why);
+            return vec![];
+        }
+        let text = review::batch_text(&self.notes_of(&pin.task, pin.run), "");
+        if text.is_empty() {
+            return self.accept(pin);
+        }
+        if text.chars().count() > review::BATCH_MAX_CHARS {
+            self.say(Tone::Refused, too_long(&text));
+            return vec![];
+        }
+        let pending = self.pending_for(&pin.task, pin.run, &text);
+        let payload = text.clone();
+        let mut acts = vec![];
+        if !pending.saved {
+            acts.push(SendAct {
+                path: format!("/r/{}/comment", pin.run),
+                fields: vec![
+                    ("note".into(), text),
+                    ("request".into(), pending.request),
+                    ("path".into(), String::new()),
+                    ("line".into(), String::new()),
+                ],
+                done: "Notes saved on the result.".into(),
+            });
+        }
+        acts.push(SendAct {
+            path: format!("/t/{}/complete", toolroll_api::client::encode(&pin.task)),
+            fields: vec![
+                ("receipt".into(), pin.receipt),
+                ("run".into(), pin.run.to_string()),
+            ],
+            done: "Accepted with your notes. The task is complete.".into(),
+        });
+        self.mode = Mode::Sending("Saving your notes, then accepting…".into());
+        vec![Effect::Send {
+            acts,
+            task: pin.task,
+            run: pin.run,
+            text: payload,
+        }]
+    }
+
+    /// Send back's words are typed: freeze the whole text it would post, and show it to be read to the end.
+    fn review_send_back(&mut self, pin: ReviewPin, general: String) -> Vec<Effect> {
+        if !self.review_pin_stands(&pin) {
+            self.say(Tone::Refused, RESULT_CHANGED);
+            return vec![];
+        }
+        let text = review::batch_text(&self.notes_of(&pin.task, pin.run), &general);
+        if text.is_empty() {
+            self.say(Tone::Refused, "Say what to change, then press Enter.");
+            self.mode = Mode::SendBack(pin, general);
+            return vec![];
+        }
+        if text.chars().count() > review::BATCH_MAX_CHARS {
+            self.say(Tone::Refused, too_long(&text));
+            self.mode = Mode::SendBack(pin, general);
+            return vec![];
+        }
+        self.status = None;
+        self.mode = Mode::SendReview {
+            pin,
+            typed: general,
+            text,
+            scroll: 0,
+            seen_end: false,
+        };
+        vec![]
+    }
+
+    /// Send back with exactly the text the review showed to its end, as one revise act (POST /r/<run>/comment
+    /// intent=revise, the result page's own Send back): pinned exactly as Accept is, under one request identity per text.
+    fn send_back_with_notes(&mut self, pin: ReviewPin, typed: String, text: String) -> Vec<Effect> {
+        if !self.review_pin_stands(&pin) {
+            self.say(Tone::Refused, RESULT_CHANGED);
+            return vec![];
+        }
+        // Notes are about lines of the diff: with any, the diff on screen must be the result's (as for Accept). Words
+        // alone for the whole change go back as Send back always has, diff shown or not.
+        if !self.notes_of(&pin.task, pin.run).is_empty() {
+            if let Err(why) = self.diff_agrees(&pin) {
+                self.say(Tone::Refused, why);
+                return vec![];
+            }
+        }
+        // Bound to the preview: the notes it was made from must still make exactly that text.
+        if review::batch_text(&self.notes_of(&pin.task, pin.run), &typed) != text {
+            self.say(
+                Tone::Refused,
+                "Your notes changed. Look at them again, then send.",
+            );
+            return vec![];
+        }
+        let pending = self.pending_for(&pin.task, pin.run, &text);
+        let payload = text.clone();
+        self.mode = Mode::Sending("Sending it back…".into());
+        vec![Effect::Send {
+            text: payload,
+            acts: vec![SendAct {
+                path: format!("/r/{}/comment", pin.run),
+                fields: vec![
+                    ("intent".into(), "revise".into()),
+                    ("note".into(), text),
+                    ("request".into(), pending.request),
+                    ("batch".into(), String::new()),
+                    ("source".into(), pin.source),
+                ],
+                done: "Sent back. The revision is filed.".into(),
+            }],
+            task: pin.task,
+            run: pin.run,
+        }]
+    }
+
+    /// A batch's outcome. Done: the draft and its identity are cleared. Refused or unanswered: the notes and the
+    /// identity stay for a retry (which the console dedupes), and notes known to be saved are marked so a retry only
+    /// completes.
+    fn sent(
+        &mut self,
+        task: String,
+        run: i64,
+        text: String,
+        kept: usize,
+        result: Result<ActOutcome, ApiError>,
+    ) -> Vec<Effect> {
+        if matches!(self.mode, Mode::Sending(_)) {
+            self.mode = Mode::Normal;
+        }
+        let key = (task.clone(), run, text);
+        if kept > 0 {
+            if let Some(p) = self.pending.get_mut(&key) {
+                p.saved = true;
+            }
+        }
+        let saved = self.pending.get(&key).is_some_and(|p| p.saved);
+        match result {
+            Ok(ActOutcome::Done(words)) => {
+                // The draft is done with: its notes and every identity kept for it.
+                self.drafts.remove(&(task.clone(), run));
+                self.pending
+                    .retain(|(t, r, _), _| !(*t == task && *r == run));
+                self.rerow();
+                self.say(Tone::Said, words);
+                self.refresh()
+            }
+            Ok(ActOutcome::Terms { .. }) => {
+                self.say(
+                    Tone::Refused,
+                    "Toolroll answered something unexpected. Your notes are kept.",
+                );
+                vec![]
+            }
+            Ok(ActOutcome::Refused(words)) => {
+                if saved {
+                    self.say(
+                        Tone::Refused,
+                        format!(
+                            "Your notes are saved on the result, but it wasn't accepted: {words}"
+                        ),
+                    );
+                } else {
+                    self.say(Tone::Refused, format!("{words} Your notes are kept."));
+                }
+                self.refresh()
+            }
+            Err(e) => self.failed(e),
+        }
+    }
+
     fn new_task(&mut self, text: String) -> Vec<Effect> {
         let title = text.trim().to_string();
         if title.is_empty() {
@@ -1609,6 +2344,24 @@ impl App {
             "/tasks/add".into(),
             fields,
             "Filed. A plan comes first.".into(),
+        )
+    }
+
+    /// A new thread with its first message, in this terminal's project. The engine refuses it while Flexible isn't
+    /// available, and says so in its own words.
+    fn new_thread(&mut self, text: String) -> Vec<Effect> {
+        let message = text.trim().to_string();
+        if message.is_empty() {
+            return vec![];
+        }
+        let mut fields = vec![("message", message)];
+        if let Some(project) = &self.project {
+            fields.push(("repo", project.clone()));
+        }
+        self.act(
+            "/agents/live/thread".into(),
+            fields,
+            "The thread started.".into(),
         )
     }
 
@@ -1716,6 +2469,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         project: r.project.as_deref().map(clean),
         need: r.need.clone(),
         is_task: true,
+        thread: false,
     };
     for r in &rows.rows {
         let waits = r.need.is_some()
@@ -1759,6 +2513,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 project: n.project.as_deref().map(clean),
                 need: Some(n.clone()),
                 is_task: false,
+                thread: false,
             });
         }
     }
@@ -1768,4 +2523,531 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
 /// Errors that end the screen whichever read they came from (a stale read's other errors are dropped).
 fn fatal(e: &ApiError) -> bool {
     matches!(e, ApiError::SessionEnded | ApiError::Contract(_))
+}
+
+/// The left column's order by section (Needs you, Working, Done today), each section's rows in the order given: a
+/// thread joins its section after the tasks there.
+fn sort_sections(items: &mut [Item]) {
+    let rank = |s: Section| match s {
+        Section::NeedsYou => 0,
+        Section::Working => 1,
+        Section::DoneToday => 2,
+    };
+    items.sort_by_key(|i| rank(i.section));
+}
+
+/// Said when a batch is over the engine's note limit.
+fn too_long(text: &str) -> String {
+    format!(
+        "These notes are too long to send together ({} of {} characters). Remove some, or send them from the browser (w).",
+        text.chars().count(),
+        review::BATCH_MAX_CHARS
+    )
+}
+
+// ---- the Diff tab: rows, cursor, notes, context, copy -------------------------------------------------------------
+
+impl App {
+    /// The file on screen is gone (another file, build or task): its layout, cursor, revealed lines and pending context
+    /// read go with it. Notes stay in their draft.
+    fn drop_file(&mut self) {
+        self.diff_file = None;
+        self.code = None;
+        self.rows.clear();
+        self.revealed.clear();
+        self.line_count = None;
+        self.context_wanted = None;
+        self.diff_cursor = 0;
+        self.diff_scroll = 0;
+        self.highlights = None;
+        self.highlight_pending = false;
+    }
+
+    /// The task, build and file the hunks on screen are of.
+    pub fn file_shown(&self) -> Option<(String, i64, i64, String)> {
+        self.diff_file
+            .as_ref()
+            .map(|f| (f.task.clone(), f.run, f.file.file, clean(&f.file.path)))
+    }
+
+    /// The notes kept for a task's build, in order.
+    pub fn notes_of(&self, task: &str, run: i64) -> Vec<Note> {
+        self.drafts
+            .get(&(task.to_string(), run))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The notes on the file on screen (what `Row::Note` indexes).
+    pub fn notes_here(&self) -> Vec<Note> {
+        match self.file_shown() {
+            Some((task, run, file, _)) => self
+                .notes_of(&task, run)
+                .into_iter()
+                .filter(|n| n.file == file)
+                .collect(),
+            None => vec![],
+        }
+    }
+
+    /// Side by side is shown: asked for, and the pane is wide enough.
+    pub fn split_on(&self) -> bool {
+        self.diff_split && self.diff_width >= review::SPLIT_MIN_WIDTH
+    }
+
+    /// The view's width this frame: the rows follow it when side by side starts or stops fitting.
+    pub fn set_diff_width(&mut self, width: u16) {
+        let before = self.split_on();
+        self.diff_width = width;
+        if before != self.split_on() {
+            self.rerow();
+        }
+    }
+
+    /// Lay the file out again (revealed lines changed), keeping the cursor on the same line.
+    fn relayout(&mut self) {
+        let keep = self.cursor_identity();
+        self.code = self
+            .diff_file
+            .as_ref()
+            .map(|f| review::layout(f, &self.revealed, self.line_count));
+        self.code_version += 1;
+        self.rerow();
+        if let Some(id) = keep {
+            if let Some(at) = self.find_identity(&id) {
+                self.diff_cursor = at;
+            }
+        }
+    }
+
+    /// The rows again (notes or side by side changed).
+    fn rerow(&mut self) {
+        let notes = self.notes_here();
+        self.rows = match &self.code {
+            Some(code) => review::rows(code, &notes, self.split_on()),
+            None => vec![],
+        };
+        self.diff_cursor = self.diff_cursor.min(self.rows.len().saturating_sub(1));
+    }
+
+    fn note_rows(&self) -> Vec<usize> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, Row::Note(_)))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// What the cursor is on, as something that survives a new layout: a hunk, or a line by its numbers.
+    fn cursor_identity(&self) -> Option<(char, Option<i64>, Option<i64>)> {
+        let code = self.code.as_ref()?;
+        match self.rows.get(self.diff_cursor)? {
+            Row::Hunk(h) => Some(('h', Some(*h as i64), None)),
+            Row::Code(c) | Row::Pair(_, Some(c)) | Row::Pair(Some(c), None) => {
+                let l = &code.lines[*c];
+                Some(('l', l.old, l.new))
+            }
+            Row::Gap { hunk, .. } => Some(('g', Some(*hunk as i64), None)),
+            _ => None,
+        }
+    }
+
+    fn find_identity(&self, id: &(char, Option<i64>, Option<i64>)) -> Option<usize> {
+        let code = self.code.as_ref()?;
+        self.rows.iter().position(|r| match (id.0, r) {
+            ('h', Row::Hunk(h)) => Some(*h as i64) == id.1,
+            ('g', Row::Gap { hunk, .. }) => Some(*hunk as i64) == id.1,
+            ('l', Row::Code(c))
+            | ('l', Row::Pair(_, Some(c)))
+            | ('l', Row::Pair(Some(c), None)) => {
+                let l = &code.lines[*c];
+                (l.old, l.new) == (id.1, id.2)
+            }
+            _ => false,
+        })
+    }
+
+    /// The hunk a row belongs to (a gap: the hunk below it).
+    fn hunk_at(&self, row: usize) -> Option<usize> {
+        let code = self.code.as_ref()?;
+        match self.rows.get(row)? {
+            Row::Hunk(h) => Some(*h),
+            Row::Gap { hunk, .. } => Some(*hunk),
+            Row::Code(c) | Row::Pair(Some(c), _) | Row::Pair(None, Some(c)) => {
+                Some(code.lines[*c].hunk)
+            }
+            Row::Note(_) | Row::Pair(None, None) => {
+                (0..row).rev().find_map(|r| match &self.rows[r] {
+                    Row::Note(_) => None,
+                    _ => self.hunk_at(r),
+                })
+            }
+        }
+    }
+
+    fn move_cursor(&mut self, by: i64) {
+        let last = self.rows.len().saturating_sub(1) as i64;
+        self.diff_cursor = (self.diff_cursor as i64 + by).clamp(0, last.max(0)) as usize;
+    }
+
+    /// The Diff tab's own keys (None: the key means what it means everywhere). Nothing here sends anything: notes,
+    /// moves, expands and copies stay on this computer, except a context read, which only reads.
+    fn diff_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
+        let fx = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.move_cursor(1);
+                vec![]
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.move_cursor(-1);
+                vec![]
+            }
+            KeyCode::PageDown | KeyCode::Char('d') => {
+                self.move_cursor(10);
+                vec![]
+            }
+            KeyCode::PageUp | KeyCode::Char('u') => {
+                self.move_cursor(-10);
+                vec![]
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.diff_cursor = 0;
+                vec![]
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.diff_cursor = self.rows.len().saturating_sub(1);
+                vec![]
+            }
+            KeyCode::Char(']') => self.hunk_step(1),
+            KeyCode::Char('[') => self.hunk_step(-1),
+            KeyCode::Char('}') => self.diff_step(1),
+            KeyCode::Char('{') => self.diff_step(-1),
+            KeyCode::Char('n') => self.note_step(true),
+            KeyCode::Char('N') => self.note_step(false),
+            KeyCode::Char('c') => self.start_note(),
+            KeyCode::Backspace | KeyCode::Delete => self.remove_note(),
+            KeyCode::Char('e') => self.expand(true),
+            KeyCode::Char('E') => self.expand(false),
+            KeyCode::Enter if matches!(self.rows.get(self.diff_cursor), Some(Row::Gap { .. })) => {
+                self.expand(true)
+            }
+            KeyCode::Char('v') => {
+                self.diff_split = !self.diff_split;
+                if self.diff_split && self.diff_width > 0 && !self.split_on() {
+                    self.say(
+                        Tone::Said,
+                        "Side by side needs a wider window, so the changes stay in one column.",
+                    );
+                }
+                self.rerow();
+                vec![]
+            }
+            KeyCode::Char('y') => self.copy_hunk(),
+            _ => return None,
+        };
+        Some(fx)
+    }
+
+    fn hunk_step(&mut self, by: i64) -> Vec<Effect> {
+        let heads: Vec<usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, Row::Hunk(_)))
+            .map(|(i, _)| i)
+            .collect();
+        let next = if by > 0 {
+            heads.iter().find(|&&i| i > self.diff_cursor)
+        } else {
+            heads.iter().rev().find(|&&i| i < self.diff_cursor)
+        };
+        match next {
+            Some(&i) => {
+                self.diff_cursor = i;
+                self.diff_scroll = i;
+            }
+            None => self.say(
+                Tone::Said,
+                if by > 0 {
+                    "That's the last hunk in this file. } goes to the next file."
+                } else {
+                    "That's the first hunk in this file. { goes to the previous file."
+                },
+            ),
+        }
+        vec![]
+    }
+
+    /// The next (or previous) note: in this file, else the next file with notes (its hunks are read first).
+    fn note_step(&mut self, forward: bool) -> Vec<Effect> {
+        let rows = self.note_rows();
+        let here = if forward {
+            rows.iter().find(|&&i| i > self.diff_cursor)
+        } else {
+            rows.iter().rev().find(|&&i| i < self.diff_cursor)
+        };
+        if let Some(&i) = here {
+            self.diff_cursor = i;
+            return vec![];
+        }
+        let (Some((task, run, file, _)), Some(diff)) = (self.file_shown(), self.diff.clone())
+        else {
+            return vec![];
+        };
+        let with_notes: HashSet<i64> = self.notes_of(&task, run).iter().map(|n| n.file).collect();
+        let order: Vec<usize> = if forward {
+            (self.diff_index + 1..diff.files.len()).collect()
+        } else {
+            (0..self.diff_index).rev().collect()
+        };
+        match order
+            .into_iter()
+            .find(|&i| with_notes.contains(&diff.files[i].file) && diff.files[i].file != file)
+        {
+            Some(i) => {
+                self.note_jump = Some(forward);
+                self.diff_step(i as i64 - self.diff_index as i64)
+            }
+            None => {
+                self.say(
+                    Tone::Said,
+                    if self.drafts.get(&(task, run)).is_none_or(Vec::is_empty) {
+                        "No notes yet. Press c on a line to leave one."
+                    } else if forward {
+                        "No more notes after this one."
+                    } else {
+                        "No notes before this one."
+                    },
+                );
+                vec![]
+            }
+        }
+    }
+
+    /// `c`: a note on the line or hunk under the cursor (or edit the note under it).
+    fn start_note(&mut self) -> Vec<Effect> {
+        let (Some((task, run, file, path)), Some(code)) = (self.file_shown(), self.code.as_ref())
+        else {
+            self.say(Tone::Refused, "Open a file's changes first.");
+            return vec![];
+        };
+        let notes = self.notes_here();
+        let line_target = |c: usize| {
+            let l = &code.lines[c];
+            match (l.kind, l.old, l.new) {
+                (Kind::Meta, ..) => None,
+                (Kind::Deletion, Some(o), _) => Some((NoteAt::Line(Side::Old, o), o)),
+                (_, _, Some(n)) => Some((NoteAt::Line(Side::New, n), n)),
+                _ => None,
+            }
+        };
+        let (at, order, text) = match self.rows.get(self.diff_cursor) {
+            Some(Row::Hunk(h)) => (
+                NoteAt::Hunk(code.headers[*h].clone()),
+                code.spans[*h].map(|s| s.first_new).unwrap_or(0),
+                String::new(),
+            ),
+            Some(Row::Code(c)) | Some(Row::Pair(_, Some(c))) | Some(Row::Pair(Some(c), None)) => {
+                match line_target(*c) {
+                    Some((at, order)) => (at, order, String::new()),
+                    None => {
+                        self.say(
+                            Tone::Refused,
+                            "Move to a line or a hunk heading to leave a note.",
+                        );
+                        return vec![];
+                    }
+                }
+            }
+            Some(Row::Note(k)) => match notes.get(*k) {
+                Some(n) => (n.at.clone(), n.order, n.text.clone()),
+                None => return vec![],
+            },
+            _ => {
+                self.say(
+                    Tone::Refused,
+                    "Move to a line or a hunk heading to leave a note.",
+                );
+                return vec![];
+            }
+        };
+        // Editing the note already on this spot.
+        let text = if text.is_empty() {
+            notes
+                .iter()
+                .find(|n| n.at == at)
+                .map(|n| n.text.clone())
+                .unwrap_or_default()
+        } else {
+            text
+        };
+        self.mode = Mode::Note(
+            NoteKind::Line(NoteTarget {
+                task,
+                run,
+                file,
+                path,
+                at,
+                order,
+            }),
+            text,
+        );
+        vec![]
+    }
+
+    fn remove_note(&mut self) -> Vec<Effect> {
+        let Some(Row::Note(k)) = self.rows.get(self.diff_cursor).cloned() else {
+            return vec![];
+        };
+        let (Some((task, run, _, _)), Some(note)) =
+            (self.file_shown(), self.notes_here().get(k).cloned())
+        else {
+            return vec![];
+        };
+        if let Some(notes) = self.drafts.get_mut(&(task, run)) {
+            notes.retain(|n| *n != note);
+        }
+        self.rerow();
+        self.say(Tone::Said, "Note removed.");
+        vec![]
+    }
+
+    /// `e` / `E`: reveal up to EXPAND_STEP hidden lines next to the hunk under the cursor (above it with `e`, below it
+    /// with `E`); on a hidden-lines marker, its lines nearest the hunk below (`e`) or above (`E`).
+    fn expand(&mut self, above: bool) -> Vec<Effect> {
+        let (Some((task, run, file, _)), Some(code)) = (self.file_shown(), self.code.as_ref())
+        else {
+            return vec![];
+        };
+        let hunks = code.spans.len();
+        if hunks == 0 {
+            return vec![];
+        }
+        let on_gap = matches!(self.rows.get(self.diff_cursor), Some(Row::Gap { .. }));
+        let Some(h) = self.hunk_at(self.diff_cursor) else {
+            return vec![];
+        };
+        // The gap to open and which end of it: `true` = its bottom (just above hunk `gap`).
+        let (gap, bottom) = match (on_gap, above) {
+            (true, true) if h < hunks => (h, true),
+            (true, _) => (h, false),
+            (false, true) => (h, true),
+            (false, false) => (h + 1, false),
+        };
+        let Some((below, top)) = review::gap_of(&code.spans, gap, self.line_count) else {
+            self.say(
+                Tone::Refused,
+                "The hidden lines here can't be worked out. Press w to see the whole file.",
+            );
+            return vec![];
+        };
+        let (from, to) = if bottom {
+            let Some(mut end) = top else { return vec![] };
+            while end >= below && self.revealed.contains_key(&end) {
+                end -= 1;
+            }
+            (below.max(end - review::EXPAND_STEP + 1), end)
+        } else {
+            let mut start = below;
+            while self.revealed.contains_key(&start) {
+                start += 1;
+            }
+            let end = start + review::EXPAND_STEP - 1;
+            (start, top.map_or(end, |t| end.min(t)))
+        };
+        if to < from {
+            self.say(
+                Tone::Said,
+                if bottom {
+                    "Nothing more is hidden above this hunk."
+                } else {
+                    "Nothing more is hidden below this hunk."
+                },
+            );
+            return vec![];
+        }
+        self.diff_gen += 1;
+        let ask = ContextAsk {
+            task,
+            run,
+            file,
+            gen: self.diff_gen,
+            from,
+            count: to - from + 1,
+        };
+        self.context_wanted = Some(ask.clone());
+        vec![Effect::FetchContext(ask)]
+    }
+
+    /// Hidden lines: taken only when they answer the read wanted, for the file still on screen (same task, build and
+    /// file), and only the lines asked for that fall between hunks. Anything else is a stale answer, dropped.
+    fn got_context(&mut self, ask: ContextAsk, ctx: ResultDiffContext) -> Vec<Effect> {
+        let shown = self.file_shown().map(|(t, r, f, _)| (t, r, f));
+        if self.context_wanted.as_ref() != Some(&ask)
+            || self.selected_id().as_deref() != Some(ask.task.as_str())
+            || shown != Some((ask.task.clone(), ask.run, ask.file))
+            || ctx.task != ask.task
+            || ctx.run != ask.run
+            || ctx.file != ask.file
+            || ctx.from != ask.from
+        {
+            return vec![];
+        }
+        self.context_wanted = None;
+        if let Some(problem) = &ctx.problem {
+            self.say(Tone::Refused, problem.clone());
+            return vec![];
+        }
+        if let Some(count) = ctx.line_count {
+            self.line_count = Some(count.max(0));
+        }
+        let spans = self
+            .code
+            .as_ref()
+            .map(|c| c.spans.clone())
+            .unwrap_or_default();
+        let inside_hunk = |n: i64| {
+            spans
+                .iter()
+                .flatten()
+                .any(|s| n >= s.first_new && n <= s.last_new)
+        };
+        for line in ctx.lines {
+            let n = line.new_line;
+            if n >= ask.from && n < ask.from + ask.count && !inside_hunk(n) {
+                self.revealed.insert(n, clean(&line.text));
+            }
+        }
+        self.relayout();
+        vec![]
+    }
+
+    /// `y`: the hunk under the cursor, written to the terminal's own scrollback (the screen steps aside until a key),
+    /// never to the clipboard by escape sequence. Every line is cleaned text.
+    fn copy_hunk(&mut self) -> Vec<Effect> {
+        let (Some(file), Some(h)) = (self.diff_file.as_ref(), self.hunk_at(self.diff_cursor))
+        else {
+            return vec![];
+        };
+        let Some(hunk) = file.file.hunks.get(h) else {
+            self.say(Tone::Said, "Move to a hunk to copy it.");
+            return vec![];
+        };
+        let mut lines = vec![format!(
+            "{} {}",
+            clean(&file.file.path),
+            clean(&hunk.header)
+        )];
+        for l in &hunk.lines {
+            let sign = match l.kind.as_str() {
+                "addition" => '+',
+                "deletion" => '-',
+                _ => ' ',
+            };
+            lines.push(format!("{sign}{}", clean(&l.text)));
+        }
+        self.mode = Mode::Copied;
+        vec![Effect::Scrollback(lines)]
+    }
 }

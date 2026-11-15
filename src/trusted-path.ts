@@ -95,6 +95,53 @@ export function trustedBinary(path: string, uid: number | undefined, acl: AclRea
 }
 
 /**
+ * Root's own folder: `folder` (made real here) and every folder above it are owned by root and not group- or
+ * world-writable (no sticky pass: a sticky /tmp still lets anyone add a name there), with no ACL that lets anyone change
+ * one. `owners`: who counts as root, [0] everywhere but a test standing its own uid in for root. The real path, or why not.
+ */
+export function rootOwnedFolders(folder: string, acl: AclReader | null = platformAcl(), owners: readonly number[] = [0], who = "root"): { ok: true; real: string } | { ok: false; why: string } {
+  let real: string;
+  try { real = realpathSync(folder); } catch (error) { return { ok: false, why: `${folder} isn't there (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` }; }
+  try {
+    for (let at = real; ; at = dirname(at)) {
+      const dir = lstatSync(at);
+      if (!dir.isDirectory()) return { ok: false, why: `${at} isn't a folder` };
+      if (!owners.includes(dir.uid)) return { ok: false, why: `${at} isn't owned by ${who}` };
+      if ((dir.mode & 0o022) !== 0) return { ok: false, why: `others can change ${at} (group- or world-writable)` };
+      const dirAcl = acl?.(at);
+      if (dirAcl !== undefined && !dirAcl.ok) return { ok: false, why: `the ACL of ${at} ${dirAcl.why}` };
+      if (dirname(at) === at) return { ok: true, real };
+    }
+  } catch (error) {
+    return { ok: false, why: `it can't be checked (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` };
+  }
+}
+
+/**
+ * Root's own program: `path`'s real path (its canonical target, symlinks resolved) is a regular file owned by root, not
+ * group- or world-writable, with no ACL change right, in folders that are all root's own (rootOwnedFolders). Only root
+ * can replace it. `owners` (and `who`, how a refusal names them): as rootOwnedFolders; a caller that also accepts one
+ * user's files passes that uid too, and the rule is otherwise the same (no sticky pass). The real path, or why not.
+ */
+export function rootOwnedBinary(path: string, acl: AclReader | null = platformAcl(), owners: readonly number[] = [0], who = "root"): { ok: true; real: string } | { ok: false; why: string } {
+  if (!isAbsolute(path)) return { ok: false, why: "it isn't an absolute path" };
+  let real: string;
+  try { real = realpathSync(path); } catch (error) { return { ok: false, why: `it isn't there (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` }; }
+  try {
+    const file = lstatSync(real);
+    if (!file.isFile()) return { ok: false, why: "it isn't a file" };
+    if (!owners.includes(file.uid)) return { ok: false, why: `${real} isn't owned by ${who}` };
+    if ((file.mode & 0o022) !== 0) return { ok: false, why: `others can change ${real} (group- or world-writable)` };
+    const fileAcl = acl?.(real);
+    if (fileAcl !== undefined && !fileAcl.ok) return { ok: false, why: `its ACL ${fileAcl.why}` };
+  } catch (error) {
+    return { ok: false, why: `it can't be checked (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` };
+  }
+  const folders = rootOwnedFolders(dirname(real), acl, owners, who);
+  return folders.ok ? { ok: true, real } : folders;
+}
+
+/**
  * A macOS ACL, from `/bin/ls -lde <path>`'s output (strict): the first line is the mode line, every other line one entry
  * ` N: <who> [inherited ]allow|deny <right>[,<right>...]`. Refused: an `allow` entry with any change right, any line that
  * isn't that shape, a right this parser doesn't know, and no output at all. Deny entries pass (every macOS home folder

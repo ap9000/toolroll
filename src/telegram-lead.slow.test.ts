@@ -52,6 +52,7 @@ import { typedStartCard } from "./typed-start.js";
 import { confirmTypedStart } from "./lead-doors.js";
 import { setChatApproval } from "./chat-approval.js";
 import { addToolTo, validateToolSpec } from "./project-tools.js";
+import { freePort } from "../test/free-port.js";
 
 const T0 = new Date("2026-09-16T09:00:00.000Z");
 const BOT = "777000";
@@ -2784,7 +2785,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       answers.push({ text: "Toolroll 0.9.9: lighter tests, shared dependencies, a clear Needs you." });
       script.updates.push([textUpdate(2, "what's the latest update of toolroll include")]);
       const lines: string[] = [];
-      const port = 43000 + (process.pid % 2000);
+      const port = await freePort();
       let ended = false;
       const running = runOperate("up", ["--repo", repo, "--repo", second, "--port", String(port), "--for", "60000"], line => lines.push(line),
         { databaseFile: file, telegramTransport: traced, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {} } }).finally(() => { ended = true; });
@@ -2818,7 +2819,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       answers.push({ text: "Still thinking.", before: () => held });
       script.updates.push([textUpdate(2, "how do things stand?")]);
       const lines: string[] = [];
-      const port = 45000 + (process.pid % 2000);
+      const port = await freePort();
       const running = runOperate("up", ["--repo", repo, "--port", String(port), "--for", "600000"], line => lines.push(line),
         { databaseFile: file, telegramTransport: script.transport, leadSeams: { subscriptionRunner: runner }, upSeams: { terminal: false, env: {} } });
       const owner = () => {

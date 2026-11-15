@@ -65,6 +65,10 @@ pub struct State {
     pub steps: HashMap<String, Value>,
     pub diffs: HashMap<String, Value>,
     pub diff_files: HashMap<String, Value>,
+    /// Each file's lines at the result's head ("task:file"), for context reads.
+    pub contexts: HashMap<String, Vec<String>>,
+    /// Context reads answer this much later (a slow read, for "a stale answer is dropped").
+    pub context_delay_ms: u64,
     /// Each run's main records, and whether it is still live.
     pub live: HashMap<i64, (Vec<Value>, bool)>,
     pub sub: HashMap<i64, Vec<Value>>,
@@ -72,11 +76,20 @@ pub struct State {
     pub acts: Vec<Act>,
     /// Every act refused with this status and these words (None: kept).
     pub refuse_acts: Option<(u16, String)>,
+    /// Only completions refused so (a note saved, then Accept refused).
+    pub refuse_complete: Option<(u16, String)>,
+    /// Notes the console saved, by the request identity they came with (an unchanged retry saves nothing more, as the
+    /// real console's sourceKey replay does): (request, note, a revision).
+    pub notes_saved: Vec<(String, String, bool)>,
     /// Every read and act answers 401 (the console no longer holds the session).
     pub session_ended: bool,
     pub redeemed: bool,
     /// Reads of each path (for "re-read on change" assertions).
     pub reads: HashMap<String, usize>,
+    /// The person's Flexible threads (GET /agents/live/threads); None: Flexible isn't available, as in this build.
+    pub threads: Option<Value>,
+    /// Each thread's LiveSession window (GET /agents/live/thread/<id>).
+    pub thread_windows: HashMap<String, Value>,
 }
 
 impl State {
@@ -275,7 +288,8 @@ pub fn steps_for(task: &str, title: &str, live_run: Option<i64>, review: Option<
         }
     }
     s["review"] = match review {
-        Some(run) => json!({ "run": run, "receipt": "a".repeat(64), "source": "b".repeat(64) }),
+        Some(run) => json!({ "run": run, "receipt": "a".repeat(64), "source": "b".repeat(64),
+            "accept": { "owed": null, "blockers": [], "needs": null } }),
         None => Value::Null,
     };
     s
@@ -351,6 +365,23 @@ pub fn scenario() -> State {
         }
         diff_files.insert(format!("t-done:{f}"), one);
     }
+    // src/total.ts as the result left it (the fixture's hunk is its lines 1-3), and README.md.
+    let mut contexts = HashMap::new();
+    let mut total: Vec<String> = vec![
+        "export function total(items) {".into(),
+        "  return sum(items) + tax(items);".into(),
+        "}".into(),
+        "".into(),
+        "export function tax(items) {".into(),
+        "  return sum(items) * 0.2;".into(),
+        "}".into(),
+    ];
+    total.extend((8..=60).map(|n| format!("// line {n}")));
+    contexts.insert("t-done:0".to_string(), total);
+    contexts.insert(
+        "t-done:1".to_string(),
+        vec!["# Shop".into(), "Totals include tax.".into()],
+    );
     let mut live = HashMap::new();
     let main = vec![
         json!({ "k": "open", "at": AT, "detail": "base" }),
@@ -384,15 +415,34 @@ pub fn scenario() -> State {
         steps,
         diffs,
         diff_files,
+        contexts,
+        context_delay_ms: 0,
         live,
         sub,
         contract: contract_digest(),
         acts: Vec::new(),
         refuse_acts: None,
+        refuse_complete: None,
+        notes_saved: Vec::new(),
         session_ended: false,
         redeemed: false,
         reads: HashMap::new(),
+        threads: None,
+        thread_windows: HashMap::new(),
     }
+}
+
+/// The thread fixture's id (test/fixtures/engine-api/live-session-window-thread.json).
+pub const THREAD: &str = "5b1e0c9a7d3f42e8a6c1b0d9e8f7a6b5";
+
+/// The scenario with Flexible on: the threads list and the thread's window, from the contract's fixtures.
+pub fn scenario_with_threads() -> State {
+    let mut state = scenario();
+    state.threads = Some(fixture("live-threads.json"));
+    state
+        .thread_windows
+        .insert(THREAD.into(), fixture("live-session-window-thread.json"));
+    state
 }
 
 #[derive(Clone)]
@@ -424,6 +474,8 @@ impl FakeEngine {
             .route("/t/{task}/steps", get(steps))
             .route("/t/{task}/diff", get(diff))
             .route("/agents/live/run/{run}", get(live_window))
+            .route("/agents/live/threads", get(threads))
+            .route("/agents/live/thread/{thread}", get(thread_window))
             .route("/live", get(live_stream))
             .fallback(post(act))
             .with_state(shared);
@@ -570,6 +622,42 @@ async fn diff(
     if let Err(r) = admitted(&s, &headers, &format!("/t/{task}/diff")) {
         return r;
     }
+    if let (Some(file), Some(from), Some(count)) = (q.get("file"), q.get("from"), q.get("count")) {
+        let delay = s.state.lock().unwrap().context_delay_ms;
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+        let st = s.state.lock().unwrap();
+        let (Ok(from), Ok(count), Ok(file_n)) = (
+            from.parse::<i64>(),
+            count.parse::<i64>(),
+            file.parse::<i64>(),
+        ) else {
+            return json_answer(400, json!({ "error": "request" }));
+        };
+        if from < 1 || !(1..=100).contains(&count) {
+            return json_answer(400, json!({ "error": "request" }));
+        }
+        let Some(lines) = st.contexts.get(&format!("{task}:{file}")) else {
+            return json_answer(404, json!({ "error": "file" }));
+        };
+        let run = q
+            .get("run")
+            .and_then(|r| r.parse::<i64>().ok())
+            .unwrap_or(0);
+        let shown: Vec<Value> = lines
+            .iter()
+            .enumerate()
+            .skip((from - 1) as usize)
+            .take(count as usize)
+            .map(|(i, t)| json!({ "newLine": i as i64 + 1, "text": t }))
+            .collect();
+        return json_answer(
+            200,
+            json!({ "version": 1, "task": task, "run": run, "file": file_n, "from": from, "lines": shown,
+                "lineCount": lines.len(), "problem": null }),
+        );
+    }
     let st = s.state.lock().unwrap();
     if let Some(file) = q.get("file") {
         return match st.diff_files.get(&format!("{task}:{file}")) {
@@ -619,6 +707,34 @@ async fn live_window(
         json!({ "version": 1, "session": { "kind": "run", "id": run, "task": null }, "room": format!("agent:{run}"), "live": live, "file": file,
         "window": { "ok": true, "records": records[from..to], "cursor": format!("c{to}"), "restarted": false, "earlier": false, "quarantined": 0, "skipped": 0, "more": to < records.len() } }),
     )
+}
+
+async fn threads(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = admitted(&s, &headers, "/agents/live/threads") {
+        return r;
+    }
+    match s.state.lock().unwrap().threads.clone() {
+        Some(list) => json_answer(200, list),
+        None => json_answer(404, json!({ "error": "not-available" })),
+    }
+}
+
+async fn thread_window(
+    AxState(s): AxState<Shared>,
+    Path(thread): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = admitted(&s, &headers, &format!("/agents/live/thread/{thread}")) {
+        return r;
+    }
+    let st = s.state.lock().unwrap();
+    if st.threads.is_none() {
+        return json_answer(404, json!({ "error": "not-available" }));
+    }
+    match st.thread_windows.get(&thread) {
+        Some(window) => json_answer(200, window.clone()),
+        None => json_answer(404, json!({ "error": "thread" })),
+    }
 }
 
 async fn live_stream(
@@ -699,6 +815,11 @@ async fn act(
     if let Some((status, words)) = st.refuse_acts.clone() {
         return json_answer(status, json!({ "outcome": "refused", "words": words }));
     }
+    if path.ends_with("/complete") {
+        if let Some((status, words)) = st.refuse_complete.clone() {
+            return json_answer(status, json!({ "outcome": "refused", "words": words }));
+        }
+    }
     if path == "/tasks/add" {
         return (StatusCode::SEE_OTHER, [("location", "/t/t-new")]).into_response();
     }
@@ -708,6 +829,46 @@ async fn act(
             json!({ "outcome": "done", "words": "Accepted. The task is complete." }),
         );
     }
+    if path.starts_with("/agents/live/thread") {
+        if st.threads.is_none() {
+            return json_answer(
+                404,
+                json!({ "outcome": "refused", "words": "Flexible projects aren't available in this version. Nothing changed." }),
+            );
+        }
+        if path.ends_with("/answer") {
+            return json_answer(
+                200,
+                json!({ "outcome": "done", "words": "Sent to the agent." }),
+            );
+        }
+    }
+    if path.ends_with("/comment") {
+        let last = st.acts.last().cloned().unwrap();
+        let (request, note) = (
+            last.field("request").unwrap_or("").to_string(),
+            last.field("note").unwrap_or("").to_string(),
+        );
+        let revise = last.field("intent") == Some("revise");
+        match st.notes_saved.iter().find(|(r, _, _)| *r == request) {
+            Some((_, earlier, _)) if *earlier != note => {
+                return json_answer(
+                    409,
+                    json!({ "outcome": "refused", "words": "This request identity already recorded a different note." }),
+                );
+            }
+            Some(_) => {}
+            None => st.notes_saved.push((request, note, revise)),
+        }
+    }
+    if path.ends_with("/comment") && record_intent(&st) != Some("revise") {
+        // A saved note (no intent): the real console lands back on the result (303).
+        return (
+            StatusCode::SEE_OTHER,
+            [("location", "/r/2?noted=1#request-changes")],
+        )
+            .into_response();
+    }
     if path.ends_with("/comment") {
         return json_answer(
             200,
@@ -715,6 +876,10 @@ async fn act(
         );
     }
     (StatusCode::SEE_OTHER, [("location", "/t/x#task-control")]).into_response()
+}
+
+fn record_intent(st: &State) -> Option<&str> {
+    st.acts.last().and_then(|a| a.field("intent"))
 }
 
 fn url_decode_form(body: &str) -> Vec<(String, String)> {

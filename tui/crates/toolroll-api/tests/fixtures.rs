@@ -28,12 +28,15 @@ fn round_trip<T: DeserializeOwned + Serialize>(name: &str) -> T {
 const FIXTURES: &[(&str, &str)] = &[
     ("live-session-window.json", "liveSessionWindow"),
     ("live-session-window-sub-missing.json", "liveSessionWindow"),
+    ("live-session-window-thread.json", "liveSessionWindow"),
+    ("live-threads.json", "liveThreads"),
     ("work-rows.json", "workRows"),
     ("step-cards-just-code.json", "stepCards"),
     ("step-cards-plan-first.json", "stepCards"),
     ("result-diff.json", "resultDiff"),
     ("result-diff-no-result.json", "resultDiff"),
     ("result-diff-file.json", "resultDiffFile"),
+    ("result-diff-context.json", "resultDiffContext"),
     ("link-redemption.json", "linkRedemption"),
     ("refusal.json", "refusal"),
     ("hello.json", "hello"),
@@ -77,9 +80,11 @@ fn every_fixture_round_trips_exactly() {
     for (name, response) in FIXTURES {
         match *response {
             "liveSessionWindow" => drop(round_trip::<LiveSessionWindow>(name)),
+            "liveThreads" => drop(round_trip::<LiveThreads>(name)),
             "workRows" => drop(round_trip::<WorkRows>(name)),
             "stepCards" => drop(round_trip::<StepCards>(name)),
             "resultDiff" => drop(round_trip::<ResultDiff>(name)),
+            "resultDiffContext" => drop(round_trip::<ResultDiffContext>(name)),
             "resultDiffFile" => drop(round_trip::<ResultDiffFile>(name)),
             "linkRedemption" => drop(round_trip::<LinkRedemption>(name)),
             "refusal" => drop(round_trip::<Refusal>(name)),

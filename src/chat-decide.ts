@@ -22,7 +22,10 @@ import { acceptAndCompleteAsOperator, assignmentOf, owedAcceptance } from "./ass
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
 import { applyChatTaskAction, chatTaskStamp } from "./chat-task-actions.js";
 import { chatTitle } from "./chat-voice.js";
-import { readVerifiedArtifact, scanForSecrets } from "./evidence.js";
+import { readVerifiedArtifact } from "./evidence.js";
+// Words a chat message never carries — a key, or an absolute folder on this computer — by the one rule every outbound
+// message shares (outbound-privacy.ts).
+import { outboundPrivate, privateWords } from "./outbound-privacy.js";
 import { chatApproveMode } from "./chat-approval.js";
 import { parseExecutionPlanDocument } from "./plan.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
@@ -223,11 +226,6 @@ export function shownWhole(text: string, channel: DecideChannel): boolean {
   }
 }
 
-/** Words a chat message never carries (chat-display.ts hides them elsewhere): a key, or an absolute folder on this
- * computer (a home folder, a drive). A project's own relative paths and a page's route are fine. */
-function privateWords(text: string): boolean {
-  return scanForSecrets(text).length > 0 || /\b\d{5,}:[A-Za-z0-9_-]{20,}\b/.test(text) || /(?:^|[\s"'`(<[=:,])(?:\/Users\/|\/home\/|\/root\/|~\/)|(?:[A-Za-z]:[\\/]|\\\\)/.test(text);
-}
 
 /** Still waiting on a person's yes: not finished, and no approval on its current terms. */
 function waitsForApproval(store: Store, taskId: string): boolean {
@@ -793,7 +791,6 @@ function offerFields(offer: DecideOffer): string[] {
   return [...(offer.text === null ? [] : [offer.text]), ...(offer.file === undefined ? [] : [offer.file.name, offer.file.text]),
     ...offer.rows.flat().map(one => one.label ?? "")];
 }
-const outboundPrivate = (fields: readonly string[]): boolean => fields.some(privateWords);
 
 /** What a card says instead of words that name a key or a folder on this computer. */
 const PRIVATE_CARD = "Its words name a key or a folder on this computer, so you review it in Toolroll.";

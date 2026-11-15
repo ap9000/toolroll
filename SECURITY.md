@@ -151,6 +151,12 @@ Known limits:
   Subscription mode (the default) puts no key there.
 - **Full access** lets an agent change files anywhere on your computer
   outside the fence. Use it only for repositories you trust.
+- On a user-owned install (npm or nvm under your home), a launch that may
+  write the install's parent folders could swap Toolroll's code and its
+  seccomp helper alike: the fence denies writing the install and the
+  helper, not renaming a folder above them. A swap after Toolroll first
+  checked them refuses the next launch, but a later fresh check would take
+  the new copy. Use a root-owned install for write-anywhere builds.
 - The console serves plain HTTP. Keep it on localhost or a private network
   such as Tailscale; don't expose it to the internet.
 - The network rule restricts where a build connects, not what it sends

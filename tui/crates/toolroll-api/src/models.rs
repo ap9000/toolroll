@@ -159,6 +159,90 @@ pub struct LiveSessionWindow {
     pub live: bool,
     pub file: String,
     pub window: Window,
+    /// A Flexible thread's facts (its window only; a run's never has them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<ThreadFacts>,
+}
+
+// ---- Flexible threads (F3) ----------------------------------------------------------------------------------------
+
+/// One part of an agent's question: its id (what the answer names), its words, and the options offered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadPart {
+    pub id: String,
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+/// One request of a thread's agent as its owner is shown it: the card (its `digest` is what an answer names), where
+/// its answer stands (`state`), and whether it can be answered from this console now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadQuestion {
+    pub request: String,
+    pub kind: String,
+    pub title: String,
+    /// Every line of what an allow would allow, or a preview and why it can't all be shown.
+    pub detail: Option<String>,
+    pub tool: Option<String>,
+    /// Whether the card shows the whole request (false: it can only be denied here).
+    pub complete: bool,
+    pub digest: String,
+    pub state: String,
+    pub answerable: bool,
+    pub parts: Vec<ThreadPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadAgent {
+    pub provider: String,
+    pub model: String,
+}
+
+/// The thread's current turn and its cost so far (`cost_usd` None until a call is charged; `cost_basis` how sure).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ThreadTurn {
+    pub seq: i64,
+    pub status: String,
+    pub cost_usd: Option<f64>,
+    pub cost_basis: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadFacts {
+    /// The facts' digest: sent back as `known`, an unchanged thread's window comes without them.
+    pub version: String,
+    pub title: String,
+    pub project: Option<String>,
+    pub level: Option<String>,
+    pub agent: Option<ThreadAgent>,
+    pub turn: Option<ThreadTurn>,
+    pub questions: Vec<ThreadQuestion>,
+}
+
+/// One of the person's threads, as the work list shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ThreadRow {
+    pub id: String,
+    pub title: String,
+    pub project: Option<String>,
+    pub level: Option<String>,
+    pub live: bool,
+    pub waiting: i64,
+    pub cost_usd: Option<f64>,
+}
+
+/// `GET /agents/live/threads`: the person's own Flexible threads (refused while Flexible isn't available).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveThreads {
+    pub version: u32,
+    pub threads: Vec<ThreadRow>,
 }
 
 // ---- Work rows ------------------------------------------------------------------------------------------------
@@ -310,13 +394,25 @@ pub struct StepTask {
     pub project: Option<String>,
 }
 
-/// The result waiting for Accept or Send back: what the task page's own forms carry.
+/// The result waiting for Accept or Send back: what the task page's own forms carry, and what accepting it means for
+/// the person reading (said before they press Accept).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Review {
     pub run: i64,
     pub receipt: String,
     pub source: String,
+    pub accept: ReviewAccept,
+}
+
+/// What Accept owes (`person-check`, `exception`), what refuses a completion now, and who else has to complete it, in
+/// the engine's words. Display only: the completion decides again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewAccept {
+    pub owed: Option<String>,
+    pub blockers: Vec<String>,
+    pub needs: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -402,6 +498,28 @@ pub struct ResultDiffFile {
     pub run: i64,
     pub file: FileHunks,
     pub lines_truncated: bool,
+}
+
+/// One line of a result's file at its head, shown as context a hunk hides.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ContextLine {
+    pub new_line: i64,
+    pub text: String,
+}
+
+/// `GET /t/<task>/diff?run=&file=&from=&count=`: lines of one file around its hunks (at most 100 a read).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResultDiffContext {
+    pub version: u32,
+    pub task: String,
+    pub run: i64,
+    pub file: i64,
+    pub from: i64,
+    pub lines: Vec<ContextLine>,
+    pub line_count: Option<i64>,
+    pub problem: Option<String>,
 }
 
 // ---- Sign-in, refusals, the handshake ------------------------------------------------------------------------

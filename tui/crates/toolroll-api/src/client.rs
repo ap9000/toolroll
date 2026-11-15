@@ -320,6 +320,28 @@ impl Client {
         )
     }
 
+    /// Lines `from`..`from + count - 1` of a result's file at its head (context a hunk hides).
+    pub async fn diff_context(
+        &self,
+        task: &str,
+        run: i64,
+        file: i64,
+        from: i64,
+        count: i64,
+    ) -> Result<ResultDiffContext, ApiError> {
+        versioned(
+            self.get::<ResultDiffContext>(
+                &format!(
+                    "/t/{}/diff?run={run}&file={file}&from={from}&count={count}",
+                    encode(task)
+                ),
+                "the hidden lines",
+            )
+            .await?,
+            |r| r.version,
+        )
+    }
+
     /// One window of a run's live records (`file`: main or sub), from `cursor`.
     pub async fn live_window(
         &self,
@@ -334,6 +356,38 @@ impl Client {
             self.get::<LiveSessionWindow>(
                 &format!("/agents/live/run/{run}?file={}{q}", encode(file)),
                 "the live output",
+            )
+            .await?,
+            |r| r.version,
+        )
+    }
+
+    /// The person's own Flexible threads (`Refused` while Flexible isn't available on the console).
+    pub async fn threads(&self) -> Result<LiveThreads, ApiError> {
+        versioned(
+            self.get::<LiveThreads>("/agents/live/threads", "your threads")
+                .await?,
+            |r| r.version,
+        )
+    }
+
+    /// One window of a Flexible thread's live session from `cursor`, with its facts unless they are still `known`.
+    pub async fn thread_window(
+        &self,
+        thread: &str,
+        cursor: Option<&str>,
+        known: Option<&str>,
+    ) -> Result<LiveSessionWindow, ApiError> {
+        let mut q = cursor
+            .map(|c| format!("&cursor={}", encode(c)))
+            .unwrap_or_default();
+        if let Some(known) = known {
+            q.push_str(&format!("&known={}", encode(known)));
+        }
+        versioned(
+            self.get::<LiveSessionWindow>(
+                &format!("/agents/live/thread/{}?file=main{q}", encode(thread)),
+                "the thread",
             )
             .await?,
             |r| r.version,
