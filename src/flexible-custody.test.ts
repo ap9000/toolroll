@@ -291,7 +291,15 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("r
     const person = leader("sleep 30"); // younger than the launch, not its descendant
     await lead.closed;
     const outcome = await stopCustody(launch, io);
-    expect(outcome).toMatchObject({ verified: false, blockers: [{ pid: person.pid, why: "in-folder" }] });
+    // The person's program may be its shell plus the command it forked (Linux `sh -c` does): every one of them blocks,
+    // each only as "in-folder", and none is signalled.
+    expect(outcome).toMatchObject({ verified: false });
+    const blockers = (outcome as { blockers: { pid: number; why: string }[] }).blockers;
+    expect(blockers.map(one => one.pid)).toContain(person.pid);
+    for (const one of blockers) {
+      expect(one.why).toBe("in-folder");
+      expect(alive(one.pid)).toBe(true);
+    }
     expect(alive(person.pid)).toBe(true);
     process.kill(-person.pid, "SIGKILL");
     await person.closed;
