@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
-import { openStore, type Store } from "./store.js";
+import { openStore, typedNotesFor, type Store } from "./store.js";
 import { acquire, release } from "./claim.js";
 import { register, hashToken } from "./runner.js";
 import { addApprover, approvalOf, approve, propose } from "./scope.js";
@@ -1824,13 +1824,21 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     expect(options).not.toContain('<span class="primary">');
     expect(options).toContain("<button type=\"submit\">Hold the next attempt</button>");
 
-    // Retry with a note: the same requeue, and the note reaches the next attempt as steering.
+    // Retry with the suggestion as the page filled it in, unchanged: it reaches the next attempt as steering, and none of
+    // it is ever quoted as the person's words (one-workspace S5).
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "";
-    const retried = await fetch(url("/t/t-broke/requeue"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, note: "Keep the flag's tests; only remove the branches." }), redirect: "manual" });
-    expect(retried.status).toBe(303);
+    const retry = (fields: Record<string, string>) => fetch(url("/t/t-broke/requeue"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
+    expect((await retry({ context: suggestion, note: "" })).status).toBe(303);
     expect(store.getTask("t-broke")?.state).toBe("queued");
-    expect(store.listSteerNotes(ref).map(one => one.note)).toEqual(["Keep the flag's tests; only remove the branches."]);
+    expect(store.listSteerNotes(ref).map(one => one.note)).toEqual([suggestion]);
+    expect(typedNotesFor(store, "t-broke", 8)).toEqual([]);
+    // Retry with a note of their own: the same requeue, the suggestion and the note reach the next attempt together, and
+    // only the note they typed is theirs to quote.
+    store.setTaskState("t-broke", "failed", T0);
+    expect((await retry({ context: suggestion, note: "Keep the flag's tests; only remove the branches." })).status).toBe(303);
+    expect(store.listSteerNotes(ref).map(one => one.note)).toEqual([suggestion, `${suggestion}\n\nKeep the flag's tests; only remove the branches.`]);
+    expect(typedNotesFor(store, "t-broke", 8).map(one => one.note)).toEqual(["Keep the flag's tests; only remove the branches."]);
   });
 
   test("fresh base: the task page's details name the commit the work starts from", async () => {

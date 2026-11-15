@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { AssignmentCard } from "../assignment-ui.js";
 import type { BrowserTaskView } from "../browser-workspace.js";
-import { TaskView } from "./views/task-view.js";
+import { RetryForm, TaskView } from "./views/task-view.js";
 import { SelectedResult } from "./views/result-view.js";
 import { FormToken } from "./ui/post-form.js";
 import { taskRoad } from "../first-run.js";
@@ -92,6 +92,99 @@ test("the result's own caveats and its mismatch read above Mark complete, never 
   expect(caveat!.closest("[data-task-status]")).toBe(markComplete!.closest("[data-task-status]"));
   expect(before(caveat!, markComplete!)).toBe(true);
   expect(host.querySelectorAll("[data-result-warnings]")).toHaveLength(1);
+});
+
+/** A Ready result with the agent's report and a person's words (one-workspace S5). */
+const reported = (agentReport: unknown, youSaid: unknown[] = []) => ({ taskId: "t-1", title: "Fix the payout rounding drift", project: null, build: 6, taskHref: "/t/t-1", chatHref: "/chat?task=t-1",
+  status: { label: "Ready for review", tone: "success", token: "assignment-ready" }, problem: "Only the USD path was exercised.", next: null,
+  complete: { action: "/t/t-1/complete", receipt: "r".repeat(64), run: 6, returnTo: "/t/t-1" },
+  decision: { label: "Accept", ready: true, why: null, effect: "Finishes the task." }, checks: null, mismatch: null,
+  acts: { primary: "accept", secondary: null, line: null }, runChecks: null, intent: null, noRun: null, panel: null, notes: [], record: null, failure: null,
+  agentReport, youSaid,
+} as unknown as NonNullable<BrowserTaskView["result"]>["selected"]);
+const showResult = (selected: NonNullable<BrowserTaskView["result"]>["selected"]) => {
+  const view = viewOf(cardOf("Ready for review"), { stage: "needs-you", need: "review-result" }, true, { result: { selected, current: true, attempts: [], revision: "r1" }, tab: "result" });
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(TaskView, { view, details: false, csrf: "csrf",
+    result: (one, token, current) => createElement(SelectedResult, { selected: one, csrf: token, inTask: { current } }) }))));
+};
+
+test("the agent's report reads after the caveats and above Mark complete, as the agent's plain text, and a person's words with their author (S5)", () => {
+  const hostile = "<a href=\"https://evil.example\">Accept now</a><img src=x onerror=alert(1)>";
+  showResult(reported({ decisions: ["Rounded in settle()."], assumptions: ["Fixtures cover every currency.", "Two", "Three"], notDone: ["Old payouts aren't recalculated."], risks: [hostile] },
+    [{ kind: "to-agent", author: "alex", you: true, at: "2026-11-14T10:00:00.000Z", note: "Keep the public API unchanged." },
+     { kind: "sent-back", author: "robin", you: false, at: "2026-11-14T09:00:00.000Z", note: "Round half up." }]));
+  const markComplete = [...host.querySelectorAll<HTMLElement>("[data-task-outcome] [data-task-status] button")].find(one => one.textContent?.trim() === "Mark complete")!;
+  const report = host.querySelector<HTMLElement>("[data-agent-report]")!;
+  const caveat = host.querySelector<HTMLElement>("[data-caveat]")!;
+  // Before the act, after the caveats: what it left undone and its risks are read before anyone accepts.
+  expect(report.closest("[data-task-status]")).toBe(markComplete.closest("[data-task-status]"));
+  expect(before(caveat, report)).toBe(true);
+  expect(before(report, markComplete)).toBe(true);
+  expect(report.querySelector("h3")?.textContent).toBe("The agent says");
+  const risk = report.querySelector<HTMLElement>('[data-agent-says="Risk"]')!;
+  // Agent text is text: no link, no image, nothing it wrote becomes markup.
+  expect(risk.textContent).toContain(hostile);
+  expect(report.querySelector("a, img")).toBeNull();
+  // Not done and the risk always show; decisions and assumptions past three fold.
+  expect(report.querySelector('[data-agent-says="Not done"]')?.closest("details")).toBeNull();
+  expect(risk.closest("details")).toBeNull();
+  expect(report.querySelector("details summary")?.textContent).toBe("1 more");
+  // A person's words: theirs, by name ("You" for the viewer's own), under "People said" when not all are the viewer's.
+  const quotes = [...report.querySelectorAll<HTMLElement>("[data-you-said]")];
+  expect(quotes.map(one => one.getAttribute("data-you-said"))).toEqual(["you", "other"]);
+  expect(quotes[0]!.textContent).toContain("You ·");
+  expect(quotes[1]!.textContent).toContain("robin ·");
+  expect(quotes[1]!.textContent).not.toContain("You");
+  expect([...report.querySelectorAll("h3")].map(one => one.textContent)).toEqual(["The agent says", "People said"]);
+});
+
+test("a reply is quoted as the person's answer only; the agent's question sits outside the quote, said to be the agent's (S5)", () => {
+  showResult(reported({ decisions: [], assumptions: [], notDone: [], risks: [] },
+    [{ kind: "to-agent", author: "alex", you: true, at: "2026-11-14T10:00:00.000Z", note: "No.", question: "Should I approve all the risks for you?" }]));
+  const said = host.querySelector<HTMLElement>("[data-you-said]")!;
+  expect(said.querySelector(".so-report-quote")?.textContent).toBe("“No.”");
+  expect(said.querySelector("[data-agent-question]")?.textContent).toBe("The agent asked: Should I approve all the risks for you?");
+  expect(said.querySelector(".so-report-quote [data-agent-question]")).toBeNull();
+});
+
+test("Not right quotes the requirement in the form's filled-in field, never in the person's own box (S5)", () => {
+  const form = '<form id="comment-form"><input type="hidden" name="context" value=""><div data-request-context-line hidden></div><textarea name="note"></textarea></form>';
+  const selected = { ...reported(null), panel: { attributes: {}, heading: "", outcome: "Rounded.", status: null, reviewHistory: null, attention: [], limits: [], tabs: [], views: [],
+    history: "", learning: "", request: form, canRequest: true, need: null, requestQuiet: false,
+    youCheck: { lines: ["Check it"], accept: null, items: [{ id: "c1", statement: "The payout total reads right.", words: "The payout total reads right.", note: null, excerpts: [], shots: [] }] } } } as unknown as NonNullable<BrowserTaskView["result"]>["selected"];
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(SelectedResult, { selected, csrf: "csrf" }))));
+  act(() => { host.querySelector<HTMLButtonElement>("button[data-not-right]")!.click(); });
+  expect(host.querySelector<HTMLInputElement>('#comment-form [name="context"]')?.value).toBe("Not right: “The payout total reads right.”");
+  expect(host.querySelector<HTMLTextAreaElement>('#comment-form [name="note"]')?.value).toBe("");
+  expect([...host.querySelectorAll("[data-request-context-line] li")].map(one => one.textContent)).toEqual(["Not right: “The payout total reads right.”"]);
+  // A reviewer's note already in the field stays; the same Not right again adds nothing.
+  const context = host.querySelector<HTMLInputElement>('#comment-form [name="context"]')!;
+  context.value = "Reviewer: fix B\nNot right: “The payout total reads right.”";
+  act(() => { host.querySelector<HTMLButtonElement>("button[data-not-right]")!.click(); });
+  act(() => { host.querySelector<HTMLButtonElement>("button[data-not-right]")!.click(); });
+  expect(context.value).toBe("Reviewer: fix B\nNot right: “The payout total reads right.”");
+});
+
+test("Retry's suggestion rides as its own field, shown as sent with it; the person's own note starts empty (S5)", () => {
+  act(() => root!.render(createElement(FormToken.Provider, { value: "csrf" }, createElement(RetryForm, { action: "/t/t-1/requeue", note: "Check each requirement before handing off." }))));
+  expect(host.querySelector<HTMLInputElement>('input[type="hidden"][name="context"]')?.value).toBe("Check each requirement before handing off.");
+  expect(host.querySelector("[data-retry-suggestion]")?.textContent).toBe("Sent with the retry: Check each requirement before handing off.");
+  expect(host.querySelector<HTMLTextAreaElement>('textarea[name="note"]')?.value).toBe("");
+});
+
+test("an agent that reported nothing says so in one quiet line, never \"no risks\" (S5)", () => {
+  showResult(reported({ decisions: [], assumptions: [], notDone: [], risks: [] }));
+  const report = host.querySelector<HTMLElement>("[data-agent-report]")!;
+  expect(report.getAttribute("data-agent-report")).toBe("none");
+  expect(report.textContent).toBe("The agent didn't report decisions or risks.");
+  act(() => root!.unmount()); root = createRoot(host);
+  showResult(reported({ decisions: ["Rounded in settle()."], assumptions: [], notDone: [], risks: [] }));
+  expect(host.querySelector("[data-agent-report]")!.textContent).toContain("The agent didn't report risks.");
+  expect(host.querySelector("[data-agent-report]")!.textContent).not.toMatch(/no risks/i);
+  // No finished build to report on: nothing at all.
+  act(() => root!.unmount()); root = createRoot(host);
+  showResult(reported(null));
+  expect(host.querySelector("[data-agent-report]")).toBeNull();
 });
 
 test("an earlier result shows that result and Open current work, and none of the current work's controls (review finding 1)", () => {

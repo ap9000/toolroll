@@ -47,6 +47,12 @@ export const handoffSchema = versioned(HANDOFF_VERSION, {
   changes: z.array(z.string()).optional(),
   verification: z.array(z.string()).optional(),
   followUps: z.array(z.string()).optional(),
+  /** The agent's report (one-workspace S5): its decisions, assumptions, what it left undone and the risks it sees.
+   * Agent-written display text, never a check; absent on handoffs written before they existed, read as not reported. */
+  decisions: z.array(z.string()).optional(),
+  assumptions: z.array(z.string()).optional(),
+  notDone: z.array(z.string()).optional(),
+  risks: z.array(z.string()).optional(),
   freshness: z.strictObject({
     stampedAt: z.string(),
     /** A successor proves this against the branch before trusting anything above. */

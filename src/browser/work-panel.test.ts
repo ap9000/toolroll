@@ -452,6 +452,27 @@ test("a ready result: its state, outcome, caveat and checks are on screen before
   noPasswordField();
 });
 
+test("the agent's report and a person's words read in the panel after the caveats and before Accept, as text (S5)", async () => {
+  const reported = (id: string) => {
+    const workspace = resultOf(id);
+    const selected = taskOf(workspace).result!.selected as Selected & { agentReport: unknown; youSaid: unknown };
+    selected.agentReport = { decisions: ["Rounded in settle()."], assumptions: [], notDone: [], risks: ["<img src=x onerror=alert(1)> old payouts"] };
+    selected.youSaid = [{ kind: "sent-back", author: "robin", you: false, at: "2026-11-14T09:00:00.000Z", note: "Round half up." }];
+    return workspace;
+  };
+  answer = call => json(reported(call.url.split("?")[0]!.slice(3)));
+  await mount(homeOf([], ["a"]));
+  await settle();
+  const report = pane().querySelector<HTMLElement>("[data-agent-report]")!;
+  expect(report).not.toBeNull();
+  const before = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  expect(before(pane().querySelector("[data-work-caveat]")!, report)).toBe(true);
+  expect(before(report, acceptButton()!)).toBe(true);
+  expect(report.querySelector('[data-agent-says="Risk"]')?.textContent).toContain("<img src=x onerror=alert(1)> old payouts");
+  expect(report.querySelector("img, a")).toBeNull();
+  expect(report.querySelector("[data-you-said]")?.textContent).toContain("robin ·");
+});
+
 test("a result that changed by the press posts nothing: the new terms are drawn, the line says so, and Accept waits", async () => {
   let pressed = false;
   answer = call => call.method === "POST" ? json({ outcome: "done", words: "Accepted." }) : json(resultOf("a", pressed ? { revision: "r2", receipt: "ef".repeat(32) } : {}));

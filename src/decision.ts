@@ -253,6 +253,13 @@ export type ParsedHandoff = {
   changes: string[];
   verification: string[];
   followUps: string[];
+  /** The agent's own account of its judgement calls (one-workspace S5): what it decided, what it assumed, what it left
+   * undone and the risks it sees. Optional: an agent that reports none (and every handoff before these existed) has
+   * empty lists, which a page says as "didn't report", never as "none". Display text, never a check. */
+  decisions: string[];
+  assumptions: string[];
+  notDone: string[];
+  risks: string[];
 };
 
 export const HANDOFF_VERSION = 2;
@@ -262,6 +269,9 @@ export const HANDOFF_CONCLUSION_CAP = 600;
 export const HANDOFF_PAYLOAD_CAP = 16 * 1024;
 export const HANDOFF_LIST_CAP = 8;
 export const HANDOFF_ITEM_CAP = 240;
+/** The agent's report lists (decisions, assumptions, notDone, risks): fewer items than the other lists, each one line. */
+export const HANDOFF_REPORT_CAP = 5;
+export const HANDOFF_REPORT_FIELDS = ["decisions", "assumptions", "notDone", "risks"] as const;
 
 /** Agent prose is display material, not authority. Once the structural
  * outcome is valid, excess verbosity is compacted deterministically rather
@@ -283,6 +293,22 @@ function handoffList(value: unknown): string[] {
     .filter((one): one is string => typeof one === "string" && one.trim() !== "" && !FORBIDDEN_MULTILINE.test(one))
     .slice(0, HANDOFF_LIST_CAP)
     .map(one => compactHandoffText(one, HANDOFF_ITEM_CAP));
+}
+
+/** One of the agent's report lists: shown to a person at the moment they decide, so an item with controls or
+ * direction-override invisibles is dropped (it could read as something it isn't), and the list is capped. Anything
+ * that isn't a list of strings is no list: the agent didn't report it. */
+export function handoffReportList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((one): one is string => typeof one === "string" && one.trim() !== "" && !hasDisguisedText(one))
+    .slice(0, HANDOFF_REPORT_CAP)
+    .map(one => compactHandoffText(one, HANDOFF_ITEM_CAP));
+}
+
+/** The report lists a handoff artifact keeps: each one the agent reported, absent when it reported none. */
+export function handoffReportOf(handoff: Pick<ParsedHandoff, (typeof HANDOFF_REPORT_FIELDS)[number]>): Partial<Record<(typeof HANDOFF_REPORT_FIELDS)[number], string[]>> {
+  return Object.fromEntries(HANDOFF_REPORT_FIELDS.filter(field => handoff[field].length > 0).map(field => [field, [...handoff[field]]]));
 }
 
 export function parseHandoff(
@@ -338,6 +364,10 @@ export function parseHandoff(
       changes: handoffList(body["changes"]),
       verification: handoffList(body["verification"]),
       followUps: handoffList(body["followUps"]),
+      decisions: handoffReportList(body["decisions"]),
+      assumptions: handoffReportList(body["assumptions"]),
+      notDone: handoffReportList(body["notDone"]),
+      risks: handoffReportList(body["risks"]),
     },
   };
 }

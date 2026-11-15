@@ -21,6 +21,8 @@ import { toneOf } from "./tone.js";
 import { RecheckStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
 import { Html, ResultStatusAct, ResultStatusWarnings, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 import { KButton, KInput, KLinkButton } from "../kit/index.js";
+import { AgentReport } from "./agent-report.js";
+import { showContextItems } from "../work/result.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
 
@@ -148,15 +150,23 @@ function StatusCard({ selected, acts, answers, bare = false }: { selected: Selec
   </Card>;
 }
 
-/** Not right: the request form opens with the item quoted, ready for the why. */
+/** Not right: the request form opens with the item quoted, ready for the why. The quote rides in the form's own
+ * filled-in field, shown as sent with the note, never in the person's box (one-workspace S5: only what they type is
+ * ever quoted as theirs). */
 function requestChange(statement: string) {
   const form = document.getElementById("comment-form");
   const box = form?.querySelector<HTMLTextAreaElement>("textarea[name=note]") ?? null;
+  const context = form?.querySelector<HTMLInputElement>("input[name=context]") ?? null;
   const shell = form?.closest("details") ?? null;
   if (shell !== null && !shell.open) shell.open = true;
-  if (box === null) { window.location.hash = "request-changes"; return; }
-  const quote = `Not right: “${statement}” — `;
-  if (!box.value.includes(quote)) box.value = box.value.trim() === "" ? quote : `${box.value.trimEnd()}\n\n${quote}`;
+  if (box === null || context === null) { window.location.hash = "request-changes"; return; }
+  // One item per line, joining what is already there (the same one again changes nothing).
+  const quote = `Not right: “${statement.replace(/\s+/g, " ")}”`;
+  const items = context.value.split("\n").filter(one => one.trim() !== "");
+  if (!items.includes(quote)) items.push(quote);
+  context.value = items.join("\n");
+  const line = form?.querySelector<HTMLElement>("[data-request-context-line]") ?? null;
+  if (line !== null) showContextItems(line, context.value);
   box.dispatchEvent(new Event("input", { bubbles: true }));
   box.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
   box.focus();
@@ -566,7 +576,10 @@ export function SelectedResult({ selected, csrf, inTask }: { selected: Selected;
   const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} statusSlot={inTask?.current === true ? slot : null} />;
   // Leading a task page, the result's own warnings read in its status box, above the act that completes it.
   const warnings = useContext(ResultStatusWarnings);
-  const card = <StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />;
+  // What the agent says about its own work, and what a person said (one-workspace S5): after the outcome and caveats,
+  // before the evidence and the act, so what it left undone and its risks are read before anyone accepts.
+  const card = <><StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />
+    <AgentReport report={selected.agentReport} said={selected.youSaid} /></>;
   return <>
     {inTask?.current === true && warnings !== null ? createPortal(card, warnings) : card}
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the

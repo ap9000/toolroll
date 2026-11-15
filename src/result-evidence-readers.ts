@@ -1,7 +1,7 @@
 /** Shared verified readers for result screens and the compact CLI review. */
 import type { Artifact } from "./store.js";
 import { readVerifiedArtifact } from "./evidence.js";
-import { hasForbiddenControls } from "./decision.js";
+import { HANDOFF_REPORT_CAP, hasDisguisedText, hasForbiddenControls } from "./decision.js";
 import { parseHandoffArtifact } from "./contracts/handoff.js";
 
 const CAPTURE_EXIT = /\(exit ([0-9]{1,4})\)\s*$/;
@@ -37,7 +37,13 @@ export type StructuredHandoffView = {
   changes: string[];
   verification: string[];
   followUps: string[];
+  /** The agent's report (one-workspace S5), read again by the same rule the parser keeps: one line each, nothing
+   * disguised, at most five. An empty list is "not reported", never "none". */
+  report: AgentReport;
 };
+
+/** What the agent says about its own work: agent-written display text, never a check, never a link. */
+export type AgentReport = { decisions: string[]; assumptions: string[]; notDone: string[]; risks: string[] };
 
 export function structuredHandoffView(artifacts: Artifact[], root: string, displayText: (text: string) => string = text => text): StructuredHandoffView | null {
   const artifact = [...artifacts].reverse().find(one => one.kind === "handoff");
@@ -54,7 +60,16 @@ export function structuredHandoffView(artifacts: Artifact[], root: string, displ
       .filter(one => one.trim() !== "" && !hasForbiddenControls(one))
       .slice(0, 8)
       .map(one => oneLineOf(one, 240));
-  return { conclusion, changes: list(handoff.changes), verification: list(handoff.verification), followUps: list(handoff.followUps) };
+  // The saved artifact is the machine's own write, but a page shows these at the moment a person decides: the parser's
+  // rule holds again here, whatever the bytes say.
+  const reported = (items: readonly string[] | undefined): string[] =>
+    (items ?? [])
+      .filter(one => one.trim() !== "" && !hasDisguisedText(one))
+      .slice(0, HANDOFF_REPORT_CAP)
+      .map(one => oneLineOf(displayText(one), 240))
+      .filter(one => one !== "" && !hasDisguisedText(one));
+  return { conclusion, changes: list(handoff.changes), verification: list(handoff.verification), followUps: list(handoff.followUps),
+    report: { decisions: reported(handoff.decisions), assumptions: reported(handoff.assumptions), notDone: reported(handoff.notDone), risks: reported(handoff.risks) } };
 }
 
 /** A failed capture or unverifiable bytes keep their problem; absence returns null. */
