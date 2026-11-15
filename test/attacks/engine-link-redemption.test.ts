@@ -36,7 +36,8 @@ test("a local owner's link becomes the local-owner session, its cookie, form tok
   expect(body).toMatchObject({ account: "alex", cookie: { name: "standing-orders_session" }, epoch: world.server.keyEpoch });
   // The very session the browser road makes: local-owner authority, keyed to this console start, only the key's hash kept.
   const [saved] = world.store.webSessions("alex");
-  expect(saved).toMatchObject({ authority: "local-owner", keyEpoch: world.server.keyEpoch, keyHash: keyHashOf(body.key) });
+  // Marked a terminal client's session on its row (mutation-key.ts TERMINAL_EPOCH): it presents its key on any install.
+  expect(saved).toMatchObject({ authority: "local-owner", keyEpoch: `terminal:${world.server.keyEpoch}`, keyHash: keyHashOf(body.key) });
   expect(JSON.stringify(world.store.webSessions("alex"))).not.toContain(body.key);
   // It works: a read, and the local owner's own act with the form token and the key; without the key it is refused.
   const cookie = `${body.cookie.name}=${body.cookie.value}`;
@@ -99,7 +100,7 @@ test("this computer only, at the console's own address: forwarded, remote-lookin
   expect(sessions()).toBe(0);
 });
 
-test("a full account's link, a link minted before local mode moved, and an expired link are refused", async () => {
+test("a link minted before local mode moved, junk and a malformed body are refused (expiry: link-redemption-parity.test.ts)", async () => {
   // Local mode turned off after the link was minted: its generation no longer stands.
   const before = codeOf(world.server.mintLocalLink()!);
   expect(setLocalModeOff(world.store, { name: "alex", authority: "full" }, new Date()).ok).toBe(true);
@@ -178,4 +179,52 @@ test("a tailnet machine: no browser key there (unchanged), yet the terminal clie
   const code = codeOf(world.server.mintLocalLink()!);
   expect((await world.send("/login/once", "POST", { ...TERMINAL, host: `box.tail1234.ts.net:${world.port}` }, JSON.stringify({ code }))).status).toBe(403);
   expect((await redeem(code)).status).toBe(410);
+}, LOCAL_WORLD_SETUP_MS);
+
+/** A console over the same database (a restart), with the options given. */
+async function restarted(extra: Parameters<typeof createDecisionServer>[0] extends infer O ? Partial<O> : never): Promise<{ port: number; close: () => Promise<void> }> {
+  await new Promise<void>(resolve => world.server.close(() => resolve()));
+  const again = createDecisionServer({ store: world.store, evidenceRoot: join(world.root, "evidence"), repo: world.repo, admittedRepos: () => [world.repo], configDir: world.configDir, browserKey: true,
+    connectionProbe: async () => ({ code: 1, stdout: "{}", stderr: "", timedOut: false, notFound: false }), modelCatalogFetcher: (async () => { throw new Error("offline"); }) as typeof fetch, ...extra });
+  await new Promise<void>(resolve => again.listen(0, "127.0.0.1", resolve));
+  return { port: (again.address() as { port: number }).port, close: () => new Promise<void>(resolve => again.close(() => resolve())) };
+}
+/** POST /tasks/add as this session on this port, with or without its key. */
+async function addTask(port: number, cookie: string, csrf: string, title: string, key?: string): Promise<number> {
+  const { request } = await import("node:http");
+  return new Promise<number>((resolve, reject) => {
+    const sent = request({ host: "127.0.0.1", port, path: "/tasks/add", method: "POST", headers: { host: `127.0.0.1:${port}`, cookie, origin: `http://127.0.0.1:${port}`,
+      "content-type": "application/x-www-form-urlencoded", ...(key === undefined ? {} : { "x-toolroll-key": key }) } }, response => { response.resume(); resolve(response.statusCode!); });
+    sent.on("error", reject);
+    sent.end(new URLSearchParams({ csrf, repo: world.repo, title }).toString());
+  });
+}
+
+test("Codex A0 r1 #1: tailnet names appear while a browser session and a terminal session hold keys: the browser works as before, the terminal still needs its key", async () => {
+  // A protected install at first; its tailnet names arrive a moment later (as the five-minute refresh would bring them).
+  await world.close();
+  let arrive: (names: readonly string[]) => void = () => {};
+  world = await openLocalWorld({ browserKey: true, tailnetNames: () => new Promise(resolve => { arrive = resolve; }) });
+  const spent = await world.send(world.server.mintLocalLink()!, "GET");
+  expect(spent.status).toBe(200); // the key's delivery page: protected, the browser holds a key
+  const browserCookie = [spent.headers["set-cookie"] ?? []].flat().map(one => String(one).split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
+  const browserCsrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: browserCookie })).body) as { csrf: string }).csrf;
+  const terminal = linkRedemptionSchema.parse(JSON.parse((await redeem(codeOf(world.server.mintLocalLink()!))).body));
+  const terminalCookie = `${terminal.cookie.name}=${terminal.cookie.value}`;
+  arrive(["box.tail1234.ts.net"]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  // Not protected any more: pages carry no key, and the browser session's form posts without one, as before.
+  expect(await addTask(world.port, browserCookie, browserCsrf, "Browser after tailnet")).toBe(303);
+  // The terminal session: refused without its key, accepted with it.
+  expect(await addTask(world.port, terminalCookie, terminal.csrf, "Terminal, no key")).toBe(403);
+  expect(await addTask(world.port, terminalCookie, terminal.csrf, "Terminal, keyed", terminal.key)).toBe(303);
+  // After a restart on the tailnet machine: the browser session still works as before; the terminal session's key is
+  // from the earlier start, so it is told to reconnect (409), key or not.
+  const again = await restarted({ tailnetNames: async () => ["box.tail1234.ts.net"] });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(await addTask(again.port, browserCookie, browserCsrf, "Browser after restart")).toBe(303);
+    expect(await addTask(again.port, terminalCookie, terminal.csrf, "Terminal after restart", terminal.key)).toBe(409);
+    expect(await addTask(again.port, terminalCookie, terminal.csrf, "Terminal after restart, no key")).toBe(409);
+  } finally { await again.close(); }
 }, LOCAL_WORLD_SETUP_MS);

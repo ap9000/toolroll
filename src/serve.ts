@@ -881,7 +881,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // The reads that never extend the session, whatever their header says.
     const noTouch = edgeRoute?.domain === 'live' || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'
       // The Agents view's Live grid only watches: its polls never extend or write the session.
-      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live');
+      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live')
+      // The engine API's LiveSession windows (engine-api.ts) are the same passive reads.
+      || /^\/agents\/live\/(?:run\/[0-9]{1,15}|thread\/[0-9a-f]{32})$/.test(url.pathname);
     // A followed link (`navigate`) extends the session exactly as the HTML GET of the same address would; every other
     // workspace read (a re-read, a prefetch) does not.
     const touch = !(method === "GET" && (noTouch || (workspaceRead && purpose !== 'navigate')));

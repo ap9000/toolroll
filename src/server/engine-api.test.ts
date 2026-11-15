@@ -227,3 +227,26 @@ describe("the local owner reads them with the session a terminal client redeems"
     expect((await get(THREAD)).body).toEqual({ error: "not-available" });
   });
 });
+
+describe("Codex A0 r1 #2: LiveSession polls are passive reads, like the Live grid's", () => {
+  test("polling never moves the session's last use, so it can't keep an idle session alive", async () => {
+    const cookie = cookies["viewer"]!;
+    const lastSeen = () => store.handle.prepare("SELECT last_seen FROM web_session WHERE account = 'vera'").all().map(row => row["last_seen"]);
+    const before = lastSeen();
+    const realNow = Date.now.bind(Date);
+    const at = (ms: number) => vi.spyOn(Date, "now").mockImplementation(() => realNow() + ms);
+    // Eleven hours on (inside the twelve-hour idle limit, past the once-a-minute save): polls read, and touch nothing.
+    let clock = at(11 * 3_600_000);
+    try {
+      for (const [path, status] of [[`/agents/live/run/${liveRun}?file=main`, 200], [`/agents/live/run/${liveRun}?file=sub`, 200], [THREAD, 404]] as const) {
+        expect((await fetch(`${base}${path}`, { headers: { cookie }, redirect: "manual" })).status, path).toBe(status);
+      }
+    } finally { clock.mockRestore(); }
+    expect(lastSeen()).toEqual(before);
+    // Thirteen hours on: twelve since the session was last used, so it has idled out; the polls didn't keep it alive.
+    clock = at(13 * 3_600_000);
+    try {
+      expect((await fetch(`${base}/agents/live/run/${liveRun}?file=main`, { headers: { cookie }, redirect: "manual" })).status).not.toBe(200);
+    } finally { clock.mockRestore(); }
+  });
+});
