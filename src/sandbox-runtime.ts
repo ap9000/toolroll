@@ -14,13 +14,14 @@
  * (sandbox-launch.ts) that changes into the launch's folder, asks the runtime for the command, runs it and cleans up.
  */
 import { spawnSync } from "node:child_process";
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import type { FsReadRestrictionConfig, FsWriteRestrictionConfig } from "@anthropic-ai/sandbox-runtime";
+import { trustedBinary } from "./trusted-path.js";
 
 const require = createRequire(import.meta.url);
 
@@ -71,12 +72,16 @@ export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platfo
     // The programs it needs, named with the line that installs them (LINUX_SANDBOX_TOOLS), before anything else.
     const missing = missingLinuxSandboxTools();
     if (missing.length > 0) return `${toolWords(missing)} ${missing.length === 1 ? "is" : "are"} not installed (${linuxSandboxInstallLine(missing)})`;
-    const checked = checkLinuxDependencies();
+    // Each program the sandbox runs, by a path Toolroll trusts (never a PATH lookup): none, and no sandbox starts.
+    const resolved = linuxSandboxTools();
+    if (!resolved.ok) return resolved.why;
+    const { tools } = resolved;
+    const checked = checkLinuxDependencies({ bwrapPath: tools.bwrap, socatPath: tools.socat });
     if (checked.errors.length > 0) return checked.errors.join("; ");
-    if (!getLinuxDependencyStatus().hasSeccompApply) return "the sandbox runtime's seccomp helper isn't available for this processor";
+    if (!getLinuxDependencyStatus({ bwrapPath: tools.bwrap, socatPath: tools.socat }).hasSeccompApply) return "the sandbox runtime's seccomp helper isn't available for this processor";
     // The runtime finds nested protected names (a subfolder's .git/hooks, .vscode, shell profiles) with ripgrep.
-    if (spawnSync("rg", ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return "ripgrep (rg) is not installed";
-    const probe = spawnSync("bwrap", ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: "ignore" });
+    if (spawnSync(tools.rg, ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return `ripgrep (${tools.rg}) doesn't run`;
+    const probe = spawnSync(tools.bwrap, ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: "ignore" });
     return probe.status === 0 ? null : "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
   }
   return `the sandbox runtime has no sandbox for ${platform}`;
@@ -122,6 +127,86 @@ export function missingSandboxToolsWords(missing: readonly string[]): string[] {
     `Toolroll needs ${toolWords(missing)} to run agents in a sandbox on this computer.`,
     `Install ${missing.length === 1 ? "it" : "them"}, then run toolroll again: ${linuxSandboxInstallLine(missing)}`,
   ];
+}
+
+/**
+ * The programs the Linux sandbox itself runs, each resolved once to an absolute path Toolroll trusts and handed to the
+ * runtime by path (its `bwrapPath`, `socatPath`, `binShell` and ripgrep `command`), so the runtime never looks one up
+ * by name on PATH: a person's or a test's PATH can't change which bubblewrap fences a launch. They are looked for only
+ * in these system folders, in this order, never on PATH.
+ */
+export const SANDBOX_TOOL_FOLDERS: readonly string[] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin", "/run/current-system/sw/bin"];
+const SANDBOX_TOOL_NAMES = [
+  { key: "bwrap", command: "bwrap", words: "bubblewrap (bwrap)" },
+  { key: "socat", command: "socat", words: "socat" },
+  { key: "bash", command: "bash", words: "bash" },
+  { key: "rg", command: "rg", words: "ripgrep (rg)" },
+] as const;
+export type LinuxSandboxTools = { bwrap: string; socat: string; bash: string; rg: string };
+export type LinuxSandboxToolsVerdict = { ok: true; tools: LinuxSandboxTools } | { ok: false; why: string };
+
+const insideOrAt = (path: string, root: string): boolean => path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
+const realOrSelf = (path: string): string => { try { return realpathSync(path); } catch { return path; } };
+
+/**
+ * The folders a launch's agent can write or that hold projects, worktrees and Toolroll's state, from its terms: its
+ * working folder, its write roots (all but `/`: a launch allowed to write anywhere still can't change a root-owned
+ * system folder, which the trust check proves), and everything its fence denies. No sandbox program may live in one.
+ */
+export function sandboxToolExclusions(terms: SrtTerms, cwd: string): string[] {
+  const roots = [cwd, ...terms.writeConfig.allowOnly, ...terms.writeConfig.denyWithinAllow, ...terms.readConfig.denyOnly]
+    .map(path => path.replace(/\/?\*.*$/, ""))
+    .filter(path => path !== "" && path !== "/" && path.startsWith("/"));
+  return [...new Set(roots.flatMap(path => [path, realOrSelf(path)]))];
+}
+
+/**
+ * Each sandbox program as a trusted absolute path (trusted-path.ts trustedBinary: a regular file owned by this user or
+ * root, not group- or world-writable, in folders that are the same), found in `folders` (SANDBOX_TOOL_FOLDERS), and
+ * whose real path is in none of `exclusions` (projects, worktrees, state). A candidate that fails the check is passed
+ * over, never used; when none passes for some program, the plain reason, and nothing is returned to fall back on.
+ */
+export function resolveLinuxSandboxTools(options: { folders?: readonly string[]; uid?: number | undefined; exclusions?: readonly string[] } = {}): LinuxSandboxToolsVerdict {
+  const folders = options.folders ?? SANDBOX_TOOL_FOLDERS;
+  const uid = "uid" in options ? options.uid : process.getuid?.();
+  const exclusions = options.exclusions ?? [];
+  const found: Partial<Record<keyof LinuxSandboxTools, string>> = {};
+  for (const tool of SANDBOX_TOOL_NAMES) {
+    const passedOver: string[] = [];
+    for (const folder of folders) {
+      const candidate = join(folder, tool.command);
+      if (!existsSync(candidate)) continue;
+      const trusted = trustedBinary(candidate, uid);
+      if (!trusted.ok) { passedOver.push(`${candidate}: ${trusted.why}`); continue; }
+      if (exclusions.some(root => insideOrAt(trusted.real, root))) { passedOver.push(`${candidate}: it is inside a project, worktree or Toolroll's own folder`); continue; }
+      try { accessSync(trusted.real, fsConstants.X_OK); } catch { passedOver.push(`${candidate}: it can't be run`); continue; }
+      found[tool.key] = trusted.real;
+      break;
+    }
+    if (found[tool.key] === undefined) {
+      const where = folders.join(", ");
+      return { ok: false, why: passedOver.length === 0
+        ? `${tool.words} isn't installed in a system folder Toolroll trusts (${where})`
+        : `${tool.words} has no copy Toolroll can trust in ${where} (${passedOver.join("; ")})` };
+    }
+  }
+  return { ok: true, tools: found as LinuxSandboxTools };
+}
+
+/** One successful resolution per process for the default folders (they are root's; a refusal is asked again next time). */
+let resolvedTools: LinuxSandboxTools | null = null;
+function linuxSandboxTools(exclusions: readonly string[] = []): LinuxSandboxToolsVerdict {
+  if (resolvedTools === null) {
+    const verdict = resolveLinuxSandboxTools();
+    if (!verdict.ok) return verdict;
+    resolvedTools = verdict.tools;
+  }
+  // Checked against this launch's own folders every time: the paths were resolved once, the launches differ.
+  const tools = resolvedTools;
+  for (const tool of SANDBOX_TOOL_NAMES) {
+    if (exclusions.some(root => insideOrAt(tools[tool.key], root))) return { ok: false, why: `${tool.words} at ${tools[tool.key]} is inside a project, worktree or Toolroll's own folder` };
+  }
+  return { ok: true, tools };
 }
 
 /** POSIX shell words. */
@@ -331,20 +416,24 @@ export const sandboxLaunchHelper = (): string => {
   return existsSync(beside) ? beside : fileURLToPath(new URL("../dist/sandbox-launch.js", import.meta.url));
 };
 
-/** What the Linux helper is given: the command, where it runs, and the terms. */
-export type SandboxLaunchSpec = { file: string; args: string[]; cwd: string; terms: SrtTerms; temp?: string };
+/** What the Linux helper is given: the command, where it runs, the terms, and the sandbox's own programs by their
+ * trusted paths (resolveLinuxSandboxTools). */
+export type SandboxLaunchSpec = { file: string; args: string[]; cwd: string; terms: SrtTerms; tools: LinuxSandboxTools; temp?: string };
 
 /**
  * `file args` inside the runtime's sandbox, as a spawn: on macOS `/bin/sh -c <its command>` in a session of its own
  * (DETACH); on Linux the helper,
  * handed the launch in its environment (never its arguments, which other users can list).
  */
-export function srtSpawn(file: string, args: readonly string[], terms: SrtTerms, cwd: string = process.cwd(), temp?: string, platform: NodeJS.Platform = process.platform): { file: string; args: string[]; env: Record<string, string> } {
+export function srtSpawn(file: string, args: readonly string[], terms: SrtTerms, cwd: string = process.cwd(), temp?: string, platform: NodeJS.Platform = process.platform, tools: (exclusions: readonly string[]) => LinuxSandboxToolsVerdict = linuxSandboxTools): { file: string; args: string[]; env: Record<string, string> } {
   if (platform === "darwin") {
     const command = srtMacosCommand(file, args, terms, cwd, temp);
     if (!command.includes(SANDBOX_EXEC)) throw new Error("the sandbox runtime returned the command unsandboxed");
     return { file: "/usr/bin/perl", args: [...DETACH, "/bin/sh", "-c", command], env: {} };
   }
-  const spec: SandboxLaunchSpec = { file, args: [...args], cwd, terms, ...(temp === undefined ? {} : { temp }) };
+  // The sandbox's programs by trusted path, none inside this launch's projects, worktrees or state: else nothing starts.
+  const resolved = tools(sandboxToolExclusions(terms, cwd));
+  if (!resolved.ok) throw new Error(resolved.why);
+  const spec: SandboxLaunchSpec = { file, args: [...args], cwd, terms, tools: resolved.tools, ...(temp === undefined ? {} : { temp }) };
   return { file: process.execPath, args: [sandboxLaunchHelper()], env: { [SANDBOX_LAUNCH_SPEC]: JSON.stringify(spec) } };
 }

@@ -9,18 +9,31 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { checkLinuxDependencies, cleanupBwrapMountPoints, getLinuxDependencyStatus, initializeLinuxNetworkBridge, wrapCommandWithSandboxLinux, type LinuxNetworkBridgeContext } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
-import { SANDBOX_LAUNCH_SPEC, shellQuote, withRuntimeTemp, type SandboxLaunchSpec } from "./sandbox-runtime.js";
+import { SANDBOX_LAUNCH_SPEC, SANDBOX_TOOL_FOLDERS, shellQuote, withRuntimeTemp, type LinuxSandboxTools, type SandboxLaunchSpec } from "./sandbox-runtime.js";
 
 const REFUSED = 126;
 /** The status a launch stopped before it ran ends with (128 + SIGTERM). */
 const STOPPED = 143;
 
 /** Why the runtime can't sandbox here now (bubblewrap, socat or its seccomp helper gone), or null: asked again before
- * each attempt, never remembered from an earlier look. */
-function missing(): string | null {
-  const checked = checkLinuxDependencies();
+ * each attempt, never remembered from an earlier look. bubblewrap and socat are checked at their trusted paths. */
+function missing(tools: LinuxSandboxTools): string | null {
+  const paths = { bwrapPath: tools.bwrap, socatPath: tools.socat };
+  const checked = checkLinuxDependencies(paths);
   if (checked.errors.length > 0) return checked.errors.join("; ");
-  return getLinuxDependencyStatus().hasSeccompApply ? null : "the sandbox runtime's seccomp helper isn't available";
+  return getLinuxDependencyStatus(paths).hasSeccompApply ? null : "the sandbox runtime's seccomp helper isn't available";
+}
+
+/** The four programs, each an absolute path (sandbox-runtime.ts resolveLinuxSandboxTools made them trusted): anything
+ * else, or none, and nothing starts. Never a name the runtime would look up on PATH. */
+function toolsOf(spec: SandboxLaunchSpec): LinuxSandboxTools | null {
+  const tools = (spec as { tools?: unknown }).tools as Partial<Record<keyof LinuxSandboxTools, unknown>> | undefined;
+  if (tools === undefined || tools === null || typeof tools !== "object") return null;
+  for (const key of ["bwrap", "socat", "bash", "rg"] as const) {
+    const path = tools[key];
+    if (typeof path !== "string" || !path.startsWith("/") || /[\u0000-\u001f\u007f]/.test(path)) return null;
+  }
+  return tools as LinuxSandboxTools;
 }
 
 async function main(): Promise<number> {
@@ -28,6 +41,12 @@ async function main(): Promise<number> {
   delete process.env[SANDBOX_LAUNCH_SPEC];
   if (raw === undefined) { process.stderr.write("toolroll sandbox: no launch was given\n"); return REFUSED; }
   const spec = JSON.parse(raw) as SandboxLaunchSpec;
+  const tools = toolsOf(spec);
+  if (tools === null) { process.stderr.write("toolroll sandbox: nothing was started: the sandbox's programs weren't given by trusted paths\n"); return REFUSED; }
+  // The launch keeps the environment it was given; this helper's own lookups (the runtime still asks `which` for the
+  // shell it was handed by path) see only the system folders.
+  const launchEnv = { ...process.env };
+  process.env["PATH"] = SANDBOX_TOOL_FOLDERS.join(":");
   process.chdir(spec.cwd);
   // A stop at any point: what is running is passed it, and nothing starts after it.
   let stopping = false;
@@ -46,7 +65,10 @@ async function main(): Promise<number> {
     })));
   };
   try {
-    if (network.kind === "proxy") bridge = await initializeLinuxNetworkBridge(network.httpPort, network.socksPort ?? network.httpPort);
+    // The runtime's relay start waits for its two sockets about 600 ms in all (five looks, 0, 100, 200 and 300 ms apart)
+    // before it gives up. Its API (sandbox-runtime 0.0.79: httpProxyPort, socksProxyPort, socatPath) has no option to
+    // wait longer, so that wait is left as it is; socat goes by its trusted path.
+    if (network.kind === "proxy") bridge = await initializeLinuxNetworkBridge(network.httpPort, network.socksPort ?? network.httpPort, tools.socat);
     // The runtime reads the temp folder it gives the command when it builds it (withRuntimeTemp, sandbox-runtime.ts).
     if (spec.temp !== undefined) process.env["CLAUDE_CODE_TMPDIR"] = spec.temp;
     else withRuntimeTemp(undefined, () => undefined);
@@ -57,7 +79,7 @@ async function main(): Promise<number> {
     for (let attempt = 1; ; attempt++) {
       // Stopped during setup or between attempts: nothing starts.
       if (stopping) return STOPPED;
-      const gone = missing();
+      const gone = missing(tools);
       if (gone !== null) throw new Error(`the sandbox can't be made here: ${gone}`);
       const command = await wrapCommandWithSandboxLinux({
         command: started,
@@ -69,11 +91,15 @@ async function main(): Promise<number> {
         }),
         readConfig: spec.terms.readConfig,
         writeConfig: spec.terms.writeConfig,
+        bwrapPath: tools.bwrap,
+        socatPath: tools.socat,
+        binShell: tools.bash,
+        ripgrepConfig: { command: tools.rg },
       });
       // bubblewrap, and the runtime's seccomp filter inside it: anything less is not this sandbox.
-      if (!/\bbwrap\b/.test(command) || !command.includes("apply-seccomp")) throw new Error("the sandbox runtime returned a command without its sandbox or its seccomp filter");
+      if (!/\bbwrap\b/.test(command) || !command.includes(tools.bwrap) || !command.includes("apply-seccomp")) throw new Error("the sandbox runtime returned a command without its sandbox or its seccomp filter");
       if (stopping) return STOPPED;
-      const run = spawn("/bin/sh", ["-c", command], { stdio: ["inherit", "inherit", "pipe", "pipe"] });
+      const run = spawn("/bin/sh", ["-c", command], { stdio: ["inherit", "inherit", "pipe", "pipe"], env: launchEnv });
       child = run;
       let ran = false;
       const held: Buffer[] = [];

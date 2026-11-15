@@ -1,11 +1,12 @@
 /** The Linux launch helper (sandbox-launch.ts): the launch runs once, its exit status is the helper's, and the
  * descriptor that says it started never reaches it. */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { linuxFenceAvailable, NO_GRANTS, sandboxedSpawn } from "./agent-fence.js";
+import { SANDBOX_LAUNCH_SPEC, type SandboxLaunchSpec } from "./sandbox-runtime.js";
 
 test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linux: a launch runs exactly once, keeps its exit status, and never sees the start descriptor", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-launch-")));
@@ -19,25 +20,32 @@ test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linu
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linux: where bubblewrap, socat or the seccomp helper is gone, nothing runs; with them, it does (positive control)", () => {
+test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linux: where bubblewrap, socat or the seccomp helper is gone, nothing runs; with them, it does (positive control), and PATH never picks them", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-launch-")));
   try {
     const marker = join(dir, "ran");
     const wrapped = sandboxedSpawn("/bin/sh", ["-c", `touch ${JSON.stringify(marker)}`], [join(dir, "denied")], NO_GRANTS, dir);
-    // The helper looks again for itself: a PATH with none of them is a machine without them.
-    const bare = spawnSync(wrapped.file, wrapped.args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...wrapped.env, PATH: "/nonexistent" } });
+    // The helper looks again for itself, at the trusted paths it was handed (never PATH): bubblewrap gone from its path
+    // is a machine without it.
+    const spec = JSON.parse(wrapped.env[SANDBOX_LAUNCH_SPEC]!) as SandboxLaunchSpec;
+    const gone = { [SANDBOX_LAUNCH_SPEC]: JSON.stringify({ ...spec, tools: { ...spec.tools, bwrap: join(dir, "gone", "bwrap") } }) };
+    const bare = spawnSync(wrapped.file, wrapped.args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...wrapped.env, ...gone } });
     expect(bare.status, bare.stderr).toBe(126);
     expect(bare.stderr).toMatch(/can't be made here/);
     expect(() => readFileSync(marker)).toThrow();
-    const ok = spawnSync(wrapped.file, wrapped.args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...wrapped.env } });
+    // A bubblewrap planted first on the launch's PATH is never the one that runs: the trusted one does.
+    const planted = join(dir, "planted");
+    mkdirSync(planted);
+    writeFileSync(join(planted, "bwrap"), `#!/bin/sh\ntouch ${JSON.stringify(join(dir, "planted-ran"))}\nexit 0\n`, { mode: 0o755 });
+    const ok = spawnSync(wrapped.file, wrapped.args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...wrapped.env, PATH: `${planted}:${process.env["PATH"] ?? ""}` } });
     expect(ok.status, ok.stderr).toBe(0);
     expect(readFileSync(marker, "utf8")).toBe("");
+    expect(existsSync(join(dir, "planted-ran"))).toBe(false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linux: a stop at any point of setup never lets the launch start afterwards, and ends nonzero", async () => {
   const { spawn } = await import("node:child_process");
-  const { existsSync } = await import("node:fs");
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-launch-")));
   try {
     for (const delay of [0, 30, 80, 150, 300, 600]) {
