@@ -26,8 +26,9 @@ import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, signInLinkFrom, signInOpenerStandIn, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
+import { checkedEnv, ownRoot, flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, signInLinkFrom, signInOpenerStandIn, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+import { isolatedEnvironment } from "./isolated-env.mjs";
 /** The saved login `up` writes: in the reserved secrets folder, else (an older install) beside the database. */
 const savedLoginOf = state => existsSync(join(state, ".toolroll-secrets", "up-login.txt")) ? join(state, ".toolroll-secrets", "up-login.txt") : join(state, "up-login.txt");
 
@@ -619,7 +620,7 @@ await journey("console", SCRIPTED, "The command line answers: the task list, the
   const list = cli(["task", "list"]);
   const people = cli(["approver", "list"]);
   const verify = cli(["verify", "show", "--repo", repo], { json: false });
-  const help = execFileSync(process.execPath, [w.bin, "--help"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } });
+  const help = execFileSync(process.execPath, [w.bin, "--help"], { encoding: "utf8", env: checkedEnv(process.env, { NODE_OPTIONS: "" }) });
   if (list === null || typeof list !== "object") throw new Error("task list didn't answer as JSON");
   if (!JSON.stringify(people).includes("sam")) throw new Error(`the approvers: ${JSON.stringify(people).slice(0, 200)}`);
   if (!/npm test/.test(verify)) throw new Error(`the project's check: ${verify.slice(0, 200)}`);
@@ -2924,10 +2925,10 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
   const root = realpathSync(laptop ? makeTempRoot("tr-es-", { keep: flag("--keep"), parent: "/tmp" }) : makeTempRoot(`toolroll-onboarding-${name}-`, { keep: flag("--keep") }));
   const home = join(root, "home"), shop = join(root, "shop"), bin = join(root, "bin"), opened = join(root, "opened.html"), log = join(root, "terminal.log");
   for (const one of [home, shop, bin]) mkdirSync(one);
-  // The PATH a stranger's shell might have, minus every agent CLI: node and npm, git, the system's own tools.
-  symlinkSync(process.execPath, join(bin, "node"));
-  const npm = join(dirname(process.execPath), "npm");
-  if (existsSync(npm)) symlinkSync(realpathSync(npm), join(bin, "npm"));
+  // A stranger's computer (isolated-env.mjs): its home, temp and bin here, an allowlisted PATH (this bin, then approved
+  // tools: no agent CLI but the one a journey puts in this bin), recording openers and gh, refusing supervisors.
+  const computer = isolatedEnvironment({ root });
+  ownRoot(root);
   const signIn = () => {
     // This computer's Claude Code, with its own home and user (its sign-in lives in the user's keychain).
     const user = JSON.stringify(process.env.USER ?? "");
@@ -2957,10 +2958,10 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
   writeFileSync(join(shop, "README.md"), "# Shop\n\nA tiny shop library.\n");
   const git = (...args) => execFileSync("git", ["-C", shop, ...args], { stdio: "ignore" });
   git("init", "-q", "-b", "main"); git("add", "."); git("-c", "user.name=Sam Rivera", "-c", "user.email=sam@example.invalid", "commit", "-qm", "First version");
-  const env = { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, USER: "sam", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: join(root, "tmp"),
+  const env = { ...computer.env, LANG: "en_US.UTF-8", TERM: "xterm-256color",
     TOOLROLL_BROWSER_COMMAND: join(bin, "open-browser"), TOOLROLL_NO_PLAN_PROBE: "1",
     GIT_AUTHOR_NAME: "Sam Rivera", GIT_AUTHOR_EMAIL: "sam@example.invalid", GIT_COMMITTER_NAME: "Sam Rivera", GIT_COMMITTER_EMAIL: "sam@example.invalid" };
-  mkdirSync(env.TMPDIR);
+  // Checked right before each process starts (spawnOwned → checkedEnv).
   const terminal = () => existsSync(log) ? readFileSync(log, "utf8").replace(/\r/g, "").replace(/\^D\x08\x08/g, "") : "";
   // A laptop install starts from the home folder (no repository: `up --laptop` uses ~/Projects), as bare `toolroll` would.
   const install = { root, home, shop, bin, terminal, signIn, env, log, opened, laptop, cwd: laptop ? home : shop, groups: [], stopped: false };
@@ -2988,7 +2989,7 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
     // person does once, from the terminal, before anything is filed.
     if (crewModels) {
       const [who, secret] = readFileSync(savedLoginOf(state), "utf8").trim().split(" ");
-      const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: { ...process.env, HOME: home } });
+      const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: checkedEnv(env) });
       for (const phase of ["plan", "build", "repair", "review"]) toolroll("config", "set", phase, "--provider", "claude", "--model", "sonnet");
       toolroll("verify", "set", "--repo", realpathSync(shop), "--command", "npm test", "--timeout-seconds", "120", "--yes");
       // Inside the plane's macOS check fence, as the world itself does (e2e-kit insideFence): this throwaway install's
