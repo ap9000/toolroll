@@ -10,7 +10,9 @@ use ratatui::Terminal;
 use serde_json::Value;
 use toolroll_api::*;
 use toolroll_fake_engine as fake;
-use toolroll_tui::app::{App, Effect, Mode, Msg, Tab, TermLink, BACK, STILL_BUILDING, TYPING};
+use toolroll_tui::app::{
+    App, Effect, Mode, Msg, Tab, TermLink, BACK, OFF_SCREEN, STILL_BUILDING, TYPING,
+};
 use toolroll_tui::term::{Link, Pane};
 
 /// 4 min 12 s after the fixtures' builds started.
@@ -69,7 +71,7 @@ fn taken_over() -> App {
         .update(Msg::TermOpened {
             task: "t-done".into(),
             run: fake::RESULT_RUN,
-            result: Ok((ID.into(), link()))
+            result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link()))
         })
         .is_empty());
     assert_eq!(app.mode, Mode::TakeOver);
@@ -77,7 +79,11 @@ fn taken_over() -> App {
     // The screen as it was (before hello), then live output.
     app.update(Msg::Term(
         ID.into(),
-        TermEvent::Output(b"\x1b[1mbuild #2\x1b[0m ready in its worktree\r\n".to_vec()),
+        TermEvent::Output(
+            b"\x1b[1mbuild #2\x1b[0m ready in its worktree\r\n"
+                .to_vec()
+                .into(),
+        ),
     ));
     app.update(Msg::Term(
         ID.into(),
@@ -89,7 +95,11 @@ fn taken_over() -> App {
     ));
     app.update(Msg::Term(
         ID.into(),
-        TermEvent::Output(b"$ npm test\r\n\x1b[32m212 passed\x1b[0m (3.1 s)\r\n$ ".to_vec()),
+        TermEvent::Output(
+            b"$ npm test\r\n\x1b[32m212 passed\x1b[0m (3.1 s)\r\n$ "
+                .to_vec()
+                .into(),
+        ),
     ));
     app
 }
@@ -102,7 +112,7 @@ fn the_terminal_tab_before_and_while_typing() {
     let mut app = taken_over();
     let shown = screen(&mut app, 120, 30);
     assert!(
-        shown.contains("212 passed") && shown.contains("Typing in the terminal"),
+        shown.contains("212 passed") && shown.contains("Typing in a separate copy"),
         "{shown}"
     );
     insta::assert_snapshot!("terminal_tab_typing", shown);
@@ -157,7 +167,7 @@ fn every_key_goes_to_the_terminal_but_ctrl_close_bracket() {
     // A paste is bracketed when the program asked, with no way to end the bracket early.
     app.update(Msg::Term(
         ID.into(),
-        TermEvent::Output(b"\x1b[?2004h".to_vec()),
+        TermEvent::Output(b"\x1b[?2004h".to_vec().into()),
     ));
     assert_eq!(
         input(app.paste("ls\x1b[20\x1b[201~1~; rm x\n")),
@@ -174,7 +184,7 @@ fn every_key_goes_to_the_terminal_but_ctrl_close_bracket() {
     assert_eq!(app.mouse(click), vec![]);
     app.update(Msg::Term(
         ID.into(),
-        TermEvent::Output(b"\x1b[?1000h\x1b[?1006h".to_vec()),
+        TermEvent::Output(b"\x1b[?1000h\x1b[?1006h".to_vec().into()),
     ));
     assert_eq!(input(app.mouse(click)), "\x1b[<0;3;2M");
     // Ctrl-] comes back; the terminal keeps running, and keys are the workbench's again.
@@ -200,11 +210,14 @@ fn keys_reach_only_the_terminal_on_screen() {
     assert!(fx.contains(&Effect::TermDetach(ID.into())), "{fx:?}");
     assert!(app.term.is_none());
     // Output for a terminal no pane shows is dropped; an attach for a pane no longer wanted is let go of.
-    app.update(Msg::Term(ID.into(), TermEvent::Output(b"late".to_vec())));
+    app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Output(b"late".to_vec().into()),
+    ));
     let fx = app.update(Msg::TermOpened {
         task: "t-done".into(),
         run: fake::RESULT_RUN,
-        result: Ok((ID.into(), link())),
+        result: Ok((ID.into(), "toolroll/live-0123456789ab".into(), link())),
     });
     assert_eq!(fx, vec![Effect::TermDetach(ID.into())]);
 }
@@ -255,7 +268,10 @@ fn scrollback_and_copy_into_the_real_terminals_own_scrollback() {
     for i in 0..200 {
         lines.push_str(&format!("line {i}\r\n"));
     }
-    app.update(Msg::Term(ID.into(), TermEvent::Output(lines.into_bytes())));
+    app.update(Msg::Term(
+        ID.into(),
+        TermEvent::Output(lines.into_bytes().into()),
+    ));
     screen(&mut app, 120, 30);
     app.key(ctrl(']'));
     app.key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
@@ -382,4 +398,127 @@ fn a_hostile_program_cannot_make_the_emulator_panic() {
     let (out, text) = written(&junk);
     assert!(text.contains("still here"), "{text}");
     assert!(!out.contains("\x1b]"));
+}
+
+#[test]
+fn a_terminal_off_screen_takes_no_keys_until_t() {
+    let sends = |fx: &[Effect]| {
+        fx.iter().any(|e| {
+            matches!(
+                e,
+                Effect::TermSend {
+                    send: TermSend::Input(_),
+                    ..
+                }
+            )
+        })
+    };
+    let mut app = taken_over();
+    screen(&mut app, 120, 30);
+    assert!(sends(&app.key(key('a'))));
+    // The window shrinks below what the workbench can draw: typing stops, and nothing typed reaches the terminal.
+    screen(&mut app, 25, 8);
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.as_ref().unwrap().1, OFF_SCREEN);
+    for c in "echo hi".chars() {
+        assert!(!sends(&app.key(key(c))));
+    }
+    assert!(!sends(&app.paste("rm -rf build\n")));
+    assert_eq!(
+        app.term_resize(),
+        None,
+        "no size is sent for a terminal that isn't drawn"
+    );
+    // Back to a size it fits: still not typing until t; its new size is sent.
+    screen(&mut app, 120, 30);
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(matches!(
+        app.term_resize(),
+        Some(Effect::TermSend {
+            send: TermSend::Resize { .. },
+            ..
+        })
+    ));
+    assert!(!sends(&app.key(key('l'))));
+    app.key(key('t'));
+    assert_eq!(app.mode, Mode::TakeOver);
+    assert!(sends(&app.key(key('l'))));
+    // A key that arrives while the last frame didn't draw it (another tab drawn) is never sent either.
+    app.tab = Tab::Steps;
+    screen(&mut app, 120, 30);
+    assert_eq!(app.mode, Mode::Normal);
+    app.tab = Tab::Terminal;
+    app.mode = Mode::TakeOver;
+    app.term.as_mut().unwrap().drawn = false;
+    assert!(!sends(&app.key(key('l'))));
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn the_pane_says_it_is_a_separate_copy_on_its_own_branch() {
+    let mut app = taken_over();
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("separate copy at build #2 on toolroll/live-0123456789ab"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn nested_dcs_and_apc_strings_and_raw_8_bit_c1_never_reach_the_real_terminal() {
+    let mut bytes: Vec<u8> = b"one ".to_vec();
+    // A DCS holding another DCS and an APC, an APC holding an OSC, and a PM and SOS for good measure.
+    bytes.extend_from_slice(b"\x1bPq\x1bP1$tevil-dcs\x1b\\inner\x1b_evil-apc\x1b\\\x1b\\");
+    bytes.extend_from_slice(b"\x1b_G\x1b]52;c;U0VWRU4=\x07evil-apc2\x1b\\");
+    bytes.extend_from_slice(b"\x1b^evil-pm\x1b\\\x1bXevil-sos\x1b\\");
+    // Raw 8-bit C1 bytes: CSI, OSC (with a clipboard payload), DCS, APC and ST as single bytes. In UTF-8 they are no
+    // sequence at all: nothing reaches the terminal but inert text (at most the payload, drawn as characters).
+    bytes.extend_from_slice(b"\x9b31m\x9d52;c;OCTET==\x9c\x90evil-dcs8\x9c\x9fevil-apc8\x9c");
+    bytes.extend_from_slice(b"two");
+    let (out, text) = written(&bytes);
+    for leak in [
+        "\x1b]", "\x1bP", "\x1b_", "\x1b^", "\x1bX", "U0VWRU4", "\u{9b}", "\u{9d}", "\u{90}",
+        "\u{9c}", "\u{9f}",
+    ] {
+        assert!(
+            !out.contains(leak),
+            "{leak:?} reached the terminal: {out:?}"
+        );
+    }
+    assert!(
+        !out.contains("evil-dcs\x1b") && !out.contains("\x1b\\"),
+        "{out:?}"
+    );
+    assert!(text.contains("one") && text.contains("two"), "{text}");
+    // Every escape the backend wrote is its own: cursor moves and colours (CSI), nothing else.
+    let mut rest = out.as_str();
+    while let Some(at) = rest.find('\x1b') {
+        assert_eq!(rest.as_bytes().get(at + 1), Some(&b'['), "{out:?}");
+        rest = &rest[at + 1..];
+    }
+}
+
+#[test]
+fn sequences_split_across_chunks_are_still_parsed_whole() {
+    let mut pane = Pane::opening("t".into(), 1);
+    pane.attached(ID.into());
+    pane.hello(60, 6, false);
+    // An OSC 52 cut into one-byte pieces, a CSI cut mid-parameter, and a UTF-8 character cut between its bytes.
+    let osc = b"\x1b]52;c;ZXZpbC1zcGxpdA==\x07";
+    for b in osc {
+        pane.output(&[*b]);
+    }
+    pane.output(b"\x1b[3");
+    pane.output(b"1mred\x1b[0m ");
+    let ja = "日".as_bytes();
+    pane.output(&ja[..1]);
+    pane.output(&ja[1..]);
+    pane.output(b" end");
+    let area = Rect::new(0, 0, 60, 6);
+    let mut buf = Buffer::empty(area);
+    toolroll_tui::term::draw(&mut buf, area, pane.parser.screen(), Style::default());
+    let text: String = buf.content.iter().map(|c| c.symbol()).collect();
+    assert!(text.starts_with("red 日 end"), "{text:?}");
+    assert!(!text.contains("ZXZp") && !text.contains("52;"), "{text:?}");
+    assert_eq!(buf[(0, 0)].fg, ratatui::style::Color::Indexed(1));
 }

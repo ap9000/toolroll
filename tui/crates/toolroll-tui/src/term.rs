@@ -50,6 +50,11 @@ pub struct Pane {
     /// The size last sent to the console (cols, rows), and the pane's size last frame.
     pub sent: Option<(u16, u16)>,
     pub area: Rect,
+    /// The console's branch for it (its own copy's branch), for the pane's line.
+    pub branch: String,
+    /// The last frame drew this terminal on screen (view.rs sets it each frame). Nothing reaches the terminal while it
+    /// isn't drawn — a window too small, another tab, a dialog over it.
+    pub drawn: bool,
     /// Lines up into the scrollback (0: the live screen).
     pub scroll: usize,
     /// The program said it isn't reading input (typing waits until it does).
@@ -77,6 +82,8 @@ impl Pane {
             held: Vec::new(),
             sent: None,
             area: Rect::default(),
+            branch: String::new(),
+            drawn: false,
             scroll: 0,
             input_full: false,
         }
@@ -124,7 +131,7 @@ impl Pane {
 
     /// The size this pane wants the terminal to be, when it differs from the one last sent (only while live).
     pub fn wanted_size(&mut self) -> Option<(u16, u16)> {
-        if !self.live() || self.area.width < 2 || self.area.height < 1 {
+        if !self.live() || !self.drawn || self.area.width < 2 || self.area.height < 1 {
             return None;
         }
         let want = (self.area.width.min(500), self.area.height.min(200));

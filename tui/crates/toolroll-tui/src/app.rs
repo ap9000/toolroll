@@ -194,9 +194,13 @@ pub enum Mode {
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
-pub const TYPING: &str = "Typing in the terminal. It keeps running in Toolroll after you leave.";
+pub const TYPING: &str =
+    "Typing in a separate copy of the build. Your shell's own startup files run in it.";
 /// Said when Ctrl-] leaves the terminal.
 pub const BACK: &str = "Back to the workbench. The terminal keeps running in Toolroll.";
+/// Said when typing stops because the terminal isn't on screen (too small a window, another tab, a dialog).
+pub const OFF_SCREEN: &str =
+    "The terminal isn't on screen, so typing stopped. Press t to type in it again.";
 /// Said when there is no saved build to take over yet.
 pub const STILL_BUILDING: &str =
     "This build is still running. Stop it (x) or wait for its result, then press t to take over.";
@@ -364,11 +368,11 @@ pub enum Msg {
     /// The launcher's answer to an ask (descriptor 4): words to say.
     Said(String),
     Tick,
-    /// A take-over's terminal: attached (its id and socket) or why not.
+    /// A take-over's terminal: attached (its id, its branch, its socket) or why not.
     TermOpened {
         task: String,
         run: i64,
-        result: Result<(String, TermLink), ApiError>,
+        result: Result<(String, String, TermLink), ApiError>,
     },
     /// What terminal `id` said.
     Term(String, TermEvent),
@@ -2905,16 +2909,17 @@ impl App {
         &mut self,
         task: String,
         run: i64,
-        result: Result<(String, TermLink), ApiError>,
+        result: Result<(String, String, TermLink), ApiError>,
     ) -> Vec<Effect> {
         let wanted = self
             .term
             .as_ref()
             .is_some_and(|p| p.task == task && p.run == run && p.link == Link::Opening);
         match result {
-            Ok((id, _link)) if wanted => {
+            Ok((id, branch, _link)) if wanted => {
                 if let Some(pane) = self.term.as_mut() {
                     pane.attached(id);
+                    pane.branch = clean(&branch);
                 }
                 // Straight to typing, when the person is still looking at it.
                 if self.tab == Tab::Terminal
@@ -2927,7 +2932,7 @@ impl App {
                 vec![]
             }
             // Opened for a pane no longer wanted (another task, another build): let go of it.
-            Ok((id, _)) => vec![Effect::TermDetach(id)],
+            Ok((id, _, _)) => vec![Effect::TermDetach(id)],
             Err(e) if wanted => {
                 let words = e.to_string();
                 if let Some(pane) = self.term.as_mut() {
@@ -2956,7 +2961,7 @@ impl App {
         match event {
             TermEvent::Output(bytes) => {
                 pane.input_full = false;
-                pane.output(&bytes);
+                pane.output(&bytes[..]);
             }
             TermEvent::Hello { cols, rows, ended } => pane.hello(cols, rows, ended),
             TermEvent::Exit { code, signal } => {
@@ -2979,7 +2984,7 @@ impl App {
                 if !matches!(pane.link, Link::Ended { .. }) {
                     let words = match code {
                         Some(4401) => "This terminal is no longer yours to type in (signed out, or someone else joined this Toolroll).",
-                        Some(4008) => "The terminal fell behind. Press t to attach again.",
+                        Some(4008) => "Too much output; reattach with t.",
                         Some(1008) => "Typing went faster than the terminal reads. Press t to attach again.",
                         Some(4429) => "This terminal is open in too many places. Close one, then press t.",
                         _ => "The terminal's connection closed. It keeps running in Toolroll — press t to attach again.",
@@ -3001,7 +3006,8 @@ impl App {
 
     /// Bytes for the terminal the pane shows (only while live).
     fn term_input(&mut self, bytes: Vec<u8>) -> Vec<Effect> {
-        let Some(pane) = self.term.as_mut().filter(|p| p.live()) else {
+        // Only to a terminal on screen now (the last frame drew it).
+        let Some(pane) = self.term.as_mut().filter(|p| p.live() && p.drawn) else {
             return vec![];
         };
         let (Some(id), Ok(text)) = (pane.id.clone(), String::from_utf8(bytes)) else {
@@ -3028,6 +3034,11 @@ impl App {
             self.mode = Mode::Normal;
             return vec![];
         };
+        if !pane.drawn {
+            self.mode = Mode::Normal;
+            self.say(Tone::Said, OFF_SCREEN);
+            return vec![];
+        }
         match pane.key_bytes(key) {
             Some(bytes) => self.term_input(bytes),
             None => vec![],

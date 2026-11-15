@@ -6,4 +6,4 @@ pub mod term;
 
 pub use client::{check_hello, redeem, ActOutcome, ApiError, Client, LiveSignal};
 pub use models::*;
-pub use term::{TermEvent, TermSend};
+pub use term::{Chunk, Held, TermEvent, TermSend, OUTPUT_BUDGET};

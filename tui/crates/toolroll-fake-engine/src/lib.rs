@@ -93,6 +93,8 @@ pub struct State {
     /// The scripted PTY stream after `hello`: each chunk, then this many microseconds.
     pub term_stream: Vec<Vec<u8>>,
     pub term_stream_gap_us: u64,
+    /// The stream is sent this many times over (a sustained stream without holding it all in memory).
+    pub term_stream_repeat: usize,
     /// Typed input comes back as output (a shell with echo on: Enter as CR LF).
     pub term_echo: bool,
     /// A full-screen program instead (the harness's busy terminal): typed input is redrawn on the terminal's fixed top
@@ -457,6 +459,7 @@ pub fn scenario() -> State {
         term_screen: vec![b"\x1b[1mbuild #2\x1b[0m ready in its worktree\r\n$ ".to_vec()],
         term_stream: Vec::new(),
         term_stream_gap_us: 0,
+        term_stream_repeat: 1,
         term_echo: true,
         term_full_screen: false,
         term_frames: Vec::new(),
@@ -990,7 +993,8 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
     use axum::extract::ws::Message;
     use futures_util::SinkExt;
     let (mut sink, mut source) = socket.split();
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+    // Bounded: a client that stops reading holds the stream back here too (the fake never buffers without limit).
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(64);
     let writer = tokio::spawn(async move {
         while let Some(m) = out_rx.recv().await {
             if sink.send(m).await.is_err() {
@@ -998,7 +1002,7 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
             }
         }
     });
-    let (screen, stream, gap, echo, full) = {
+    let (screen, stream, gap, echo, full, repeat) = {
         let mut st = s.state.lock().unwrap();
         st.term_attaches += 1;
         (
@@ -1007,21 +1011,24 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
             st.term_stream_gap_us,
             st.term_echo,
             st.term_full_screen,
+            st.term_stream_repeat,
         )
     };
     let rows = Arc::new(std::sync::atomic::AtomicU16::new(30));
     let mut typed = String::new();
     for chunk in screen {
-        let _ = out_tx.send(Message::Binary(chunk.into()));
+        let _ = out_tx.send(Message::Binary(chunk.into())).await;
     }
-    let _ = out_tx.send(Message::Text(
-        r#"{"t":"hello","cols":100,"rows":30,"program":"shell","ended":false}"#.into(),
-    ));
+    let _ = out_tx
+        .send(Message::Text(
+            r#"{"t":"hello","cols":100,"rows":30,"program":"shell","ended":false}"#.into(),
+        ))
+        .await;
     let streamer = {
         let out_tx = out_tx.clone();
         let rows = rows.clone();
         tokio::spawn(async move {
-            for chunk in stream {
+            for chunk in std::iter::repeat_n(stream, repeat).flatten() {
                 let chunk = if full {
                     let r = rows.load(std::sync::atomic::Ordering::Relaxed);
                     let mut c = format!("\x1b[2;{r}r\x1b[{r};1H").into_bytes();
@@ -1030,7 +1037,7 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
                 } else {
                     chunk
                 };
-                if out_tx.send(Message::Binary(chunk.into())).is_err() {
+                if out_tx.send(Message::Binary(chunk.into())).await.is_err() {
                     break;
                 }
                 if gap > 0 {
@@ -1053,10 +1060,12 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
                 if v["t"] == "in" && full {
                     typed.push_str(v["d"].as_str().unwrap_or(""));
                     let line = format!("\x1b7\x1b[1;1H\x1b[2K\u{2301} {typed}\x1b8");
-                    let _ = out_tx.send(Message::Binary(line.into_bytes().into()));
+                    let _ = out_tx.send(Message::Binary(line.into_bytes().into())).await;
                 } else if v["t"] == "in" && echo {
                     let typed = v["d"].as_str().unwrap_or("").replace('\r', "\r\n");
-                    let _ = out_tx.send(Message::Binary(typed.into_bytes().into()));
+                    let _ = out_tx
+                        .send(Message::Binary(typed.into_bytes().into()))
+                        .await;
                 }
             }
             Message::Close(_) => break,

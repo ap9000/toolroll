@@ -20,11 +20,89 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
+/// Output bytes received and not yet let go of by whoever consumes them (the screen, once parsed), across every hop
+/// from the socket on: at this or past it, the socket isn't read until some are (backpressure; the console then drops a
+/// viewer that falls 4 MiB behind, said plainly as "Too much output"). So at most this plus one message (8 MiB at most)
+/// is ever held.
+pub const OUTPUT_BUDGET: usize = 4 << 20;
+
+/// What the budget holds now (shared by a connection's reader and every chunk it handed on).
+#[derive(Debug, Default)]
+pub struct Held {
+    bytes: std::sync::atomic::AtomicUsize,
+    freed: tokio::sync::Notify,
+}
+
+impl Held {
+    pub fn bytes(&self) -> usize {
+        self.bytes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// Terminal output on its way to the emulator; its bytes count against the connection's budget until it is dropped.
+#[derive(Debug, Clone)]
+pub struct Chunk {
+    bytes: std::sync::Arc<Vec<u8>>,
+    _held: Option<std::sync::Arc<ChunkHold>>,
+}
+
+#[derive(Debug)]
+struct ChunkHold {
+    len: usize,
+    held: std::sync::Arc<Held>,
+}
+
+impl Drop for ChunkHold {
+    fn drop(&mut self) {
+        self.held
+            .bytes
+            .fetch_sub(self.len, std::sync::atomic::Ordering::SeqCst);
+        self.held.freed.notify_one();
+    }
+}
+
+impl Chunk {
+    fn held(bytes: Vec<u8>, held: &std::sync::Arc<Held>) -> Chunk {
+        let len = bytes.len();
+        held.bytes
+            .fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+        Chunk {
+            bytes: std::sync::Arc::new(bytes),
+            _held: Some(std::sync::Arc::new(ChunkHold {
+                len,
+                held: held.clone(),
+            })),
+        }
+    }
+}
+
+impl From<Vec<u8>> for Chunk {
+    fn from(bytes: Vec<u8>) -> Chunk {
+        Chunk {
+            bytes: std::sync::Arc::new(bytes),
+            _held: None,
+        }
+    }
+}
+
+impl std::ops::Deref for Chunk {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl PartialEq for Chunk {
+    fn eq(&self, other: &Chunk) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
 /// A frame the console's terminal sent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TermEvent {
     /// Terminal output: for the VT emulator only.
-    Output(Vec<u8>),
+    Output(Chunk),
     /// Everything before this was the screen as it is now (sent on attach); live output follows.
     Hello { cols: u16, rows: u16, ended: bool },
     /// The program ended.
@@ -131,6 +209,7 @@ impl Client {
         (
             mpsc::UnboundedSender<TermSend>,
             mpsc::UnboundedReceiver<TermEvent>,
+            std::sync::Arc<Held>,
         ),
         ApiError,
     > {
@@ -195,9 +274,14 @@ impl Client {
         let (mut sink, mut source) = ws.split();
         let (send_tx, mut send_rx) = mpsc::unbounded_channel::<TermSend>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<TermEvent>();
+        let held = std::sync::Arc::new(Held::default());
+        let budget = held.clone();
         tokio::spawn(async move {
             loop {
+                // Over budget: typing still goes out, but nothing more is read until the screen lets go of some.
+                let can_read = budget.bytes() < OUTPUT_BUDGET;
                 tokio::select! {
+                    _ = budget.freed.notified(), if !can_read => {}
                     out = send_rx.recv() => {
                         let Some(out) = out else {
                             // The screen let go of it (detached, another task, quitting): close it; the program runs on.
@@ -214,9 +298,9 @@ impl Client {
                             }
                         }
                     }
-                    frame = source.next() => {
+                    frame = source.next(), if can_read => {
                         let event = match frame {
-                            Some(Ok(Message::Binary(bytes))) => TermEvent::Output(bytes.to_vec()),
+                            Some(Ok(Message::Binary(bytes))) => TermEvent::Output(Chunk::held(bytes.to_vec(), &budget)),
                             Some(Ok(Message::Text(text))) => match control_of(text.as_str()) {
                                 Some(e) => e,
                                 None => continue,
@@ -238,7 +322,7 @@ impl Client {
                 }
             }
         });
-        Ok((send_tx, event_rx))
+        Ok((send_tx, event_rx, held))
     }
 }
 

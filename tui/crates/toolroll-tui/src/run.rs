@@ -114,8 +114,8 @@ struct Loop {
     term: Option<(String, mpsc::UnboundedSender<TermSend>)>,
 }
 
-/// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one, then
-/// attached; its frames come back as messages until the socket closes.
+/// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one; listed
+/// again (it must still be this session's) before it is attached; its frames come back as messages until it closes.
 async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: String, run: i64) {
     let fail = |e: ApiError| {
         let _ = tx.send(Msg::TermOpened {
@@ -124,34 +124,47 @@ async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: Str
             result: Err(e),
         });
     };
-    let listed = match client.term_state().await {
-        Ok(state) => state
+    let mine = |state: &toolroll_api::TermState| {
+        state
             .sessions
-            .into_iter()
+            .iter()
             .find(|one| {
                 one.task.as_deref() == Some(task.as_str())
                     && one.run == Some(run)
                     && one.ended_at.is_none()
             })
-            .map(|one| one.id),
+            .map(|one| (one.id.clone(), one.branch.clone()))
+    };
+    let listed = match client.term_state().await {
+        Ok(state) => mine(&state),
         Err(e) => return fail(e),
     };
-    let id = match listed {
-        Some(id) => id,
-        None => match client.term_start(&task, run, "shell").await {
-            Ok(id) => id,
-            Err(e) => return fail(e),
+    if listed.is_none() {
+        if let Err(e) = client.term_start(&task, run, "shell").await {
+            return fail(e);
+        }
+    }
+    // Whichever it is, attached only as the console lists it for this session now.
+    let (id, branch) = match client.term_state().await {
+        Ok(state) => match mine(&state) {
+            Some(found) => found,
+            None => {
+                return fail(ApiError::Refused(
+                    "That terminal isn't yours to open any more.".into(),
+                ))
+            }
         },
+        Err(e) => return fail(e),
     };
-    let (send, mut events) = match client.term_connect(&id).await {
-        Ok(pair) => pair,
+    let (send, mut events, _held) = match client.term_connect(&id).await {
+        Ok(three) => three,
         Err(e) => return fail(e),
     };
     if tx
         .send(Msg::TermOpened {
             task: task.clone(),
             run,
-            result: Ok((id.clone(), crate::app::TermLink(send))),
+            result: Ok((id.clone(), branch, crate::app::TermLink(send))),
         })
         .is_err()
     {
@@ -494,7 +507,13 @@ async fn event_loop(
                     }
                     Event::Paste(p) => { pending.extend(app.paste(&p)); dirty = true; }
                     Event::Mouse(m) => { pending.extend(app.mouse(m)); dirty = true; }
-                    Event::Resize(_, _) => { dirty = true; last_frame = None; }
+                    // Drawn at once: a key right behind a resize meets the new layout (a terminal that no longer fits
+                    // takes no keys), and the terminal hears its new size.
+                    Event::Resize(_, _) => {
+                        last_frame = Some(draw(term, &mut app, &mut frames)?);
+                        dirty = app.highlight_pending;
+                        pending.extend(app.term_resize());
+                    }
                     _ => {}
                 }
             }
@@ -514,7 +533,7 @@ async fn event_loop(
             }
             Some(msg) = rx.recv() => {
                 // A take-over's socket: held here (the newest replaces the last, whose socket then closes).
-                if let Msg::TermOpened { result: Ok((id, link)), .. } = &msg {
+                if let Msg::TermOpened { result: Ok((id, _, link)), .. } = &msg {
                     lp.term = Some((id.clone(), link.0.clone()));
                 }
                 // Typed input's echo: drawn at once while the person is typing (never waiting for the frame cap).

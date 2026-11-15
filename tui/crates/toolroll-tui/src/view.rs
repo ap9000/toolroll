@@ -168,7 +168,23 @@ fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
+    // On screen this frame only if draw_terminal draws it, and no dialog is drawn over it.
+    if let Some(pane) = app.term.as_mut() {
+        pane.drawn = false;
+    }
     draw_frame(f, app);
+    let dialog = !matches!(
+        app.mode,
+        Mode::Normal | Mode::TakeOver | Mode::Steer(_) | Mode::NewTask(_) | Mode::Note(..)
+    );
+    if let Some(pane) = app.term.as_mut().filter(|_| dialog) {
+        pane.drawn = false;
+    }
+    // Typing stops when its terminal isn't on screen; t starts it again once it is.
+    if app.mode == Mode::TakeOver && !app.term.as_ref().is_some_and(|p| p.drawn) {
+        app.mode = Mode::Normal;
+        app.status = Some((Tone::Said, crate::app::OFF_SCREEN.into()));
+    }
     if app.prefs.settings.glyphs == crate::theme::Glyphs::Ascii {
         // Every symbol drawn, borders included, as its ASCII stand-in.
         for cell in f.buffer_mut().content.iter_mut() {
@@ -1884,15 +1900,25 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         ),
         crate::term::Link::Closed(words) => (clean(words), dim()),
     };
-    let mut spans = vec![
-        Span::styled(format!("Build #{} · ", pane.run), dim()),
-        Span::styled(state, style),
-    ];
+    // Said plainly: a separate copy at that build, on its own branch.
+    let place = if pane.branch.is_empty() {
+        format!("separate copy at build #{}", pane.run)
+    } else {
+        format!("separate copy at build #{} on {}", pane.run, pane.branch)
+    };
+    // What it's doing first (and how far back it's scrolled); where it is after, cut first when the pane is narrow.
+    let mut spans = vec![Span::styled(state, style)];
     if pane.scroll > 0 {
         spans.push(Span::styled(
             format!(" · {} lines back, End returns", pane.scroll),
             dim(),
         ));
+    }
+    if !matches!(
+        pane.link,
+        crate::term::Link::Closed(_) | crate::term::Link::Opening
+    ) {
+        spans.push(Span::styled(format!(" · {place}"), dim()));
     }
     f.render_widget(Paragraph::new(fit_line(Line::from(spans), w)), head);
     pane.area = body;
@@ -1900,6 +1926,7 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         return;
     }
     crate::term::draw(f.buffer_mut(), body, pane.parser.screen(), base());
+    pane.drawn = body.width > 0 && body.height > 0;
     if typing {
         if let Some((x, y)) = pane.cursor() {
             f.set_cursor_position((x, y));

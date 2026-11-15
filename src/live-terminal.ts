@@ -9,10 +9,12 @@
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { codingEnvironment } from "./coding-provider.js";
-import { teardownGit, refusal, type Git } from "./teardown-git.js";
+import { teardownGit, refusal, recordedCommonDir, TEARDOWN_FLAGS, type Git } from "./teardown-git.js";
+import { run, type ExecResult } from "./exec.js";
+import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { sleep } from "./sleep.js";
 
 export type TerminalProgram = "claude" | "codex" | "shell";
@@ -165,6 +167,8 @@ export type TerminalSummary = {
 };
 
 type Session = TerminalSummary & {
+  /** A take-over's commit: its copy may be removed only while it still holds nothing but that commit. */
+  base: string | null;
   pty: Pty | null;
   /** The program's own process (it leads the terminal's session and process group) and its terminal device. */
   leader: number;
@@ -224,9 +228,23 @@ export type TerminalHostOptions = {
   ledger?: TerminalLedger;
   /** The process table (tests stand a failing one in); null when it can't be read. */
   processes?: () => ProcessTable | null;
+  /** Git for a take-over's own copy (copyAt); default the hardened runner. */
+  copyGit?: (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
   /** Who else works in a worktree (tests stand theirs in); default worktreeResidents. */
   residents?: (table: ProcessTable, worktreeReal: string, terminalStartedMs: number) => Set<number> | null;
 };
+
+/** A take-over copy's whole git config: Toolroll's lines and nothing else. */
+export const COPY_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n";
+
+/** What a take-over's shell starts with: the person's own identity, locale, shell and path, and nothing else of the
+ * console's environment (its login shell reads the person's startup files from there). */
+export const TAKE_OVER_ENV = ["HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TMPDIR", "TZ"] as const;
+export function takeOverEnvironment(from: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of TAKE_OVER_ENV) if (typeof from[key] === "string") env[key] = from[key];
+  return env;
+}
 
 const clamp = (value: number, range: { min: number; max: number }) => Math.min(range.max, Math.max(range.min, Math.trunc(value)));
 
@@ -307,7 +325,9 @@ export class TerminalHost {
     if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex or a shell.");
     if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
     if (this.sessions.size + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
-    const env = { ...this.env(), TERM: "xterm-256color", COLORTERM: "truecolor" };
+    // A take-over's shell starts from a short list of the person's own settings, not the console's whole environment;
+    // the person's login shell then reads its own startup files, as any new terminal does (the pane says so).
+    const env = { ...(from === null ? this.env() : takeOverEnvironment(this.env())), TERM: "xterm-256color", COLORTERM: "truecolor" };
     const command = this.options.programs?.[program] ?? defaultProgram(program, env);
     if (command === null) throw new TerminalError(`${program === "claude" ? "Claude Code" : "Codex"} isn't installed on this computer (\`${program}\` is not on PATH).`);
     const id = randomBytes(16).toString("hex");
@@ -333,7 +353,8 @@ export class TerminalHost {
       const branch = `toolroll/live-${id.slice(0, 12)}`;
       const worktree = join(this.options.worktreeRoot, id);
       mkdirSync(this.options.worktreeRoot, { recursive: true, mode: 0o700 });
-      await git(["worktree", "add", "-b", branch, "--", worktree, base]);
+      if (from === null) await git(["worktree", "add", "-b", branch, "--", worktree, base]);
+      else await this.copyAt(repo, worktree, branch, base);
       const cols = clamp(size.cols, COLS), rows = clamp(size.rows, ROWS);
       let pty: Pty;
       try {
@@ -342,13 +363,16 @@ export class TerminalHost {
         if (refused !== null) throw new TerminalError(refused);
         pty = this.options.spawn(command.file, command.args, { cwd: worktree, env, cols, rows });
       } catch (error) {
-        // Nothing ran in it: take the worktree and branch back.
-        await git(["worktree", "remove", "--force", "--", worktree]).catch(() => {});
-        await git(["branch", "-D", "--", branch]).catch(() => {});
+        // Nothing ran in it: take the worktree and branch back (a take-over's copy is Toolroll's own folder).
+        if (from !== null) rmSync(worktree, { recursive: true, force: true });
+        else {
+          await git(["worktree", "remove", "--force", "--", worktree]).catch(() => {});
+          await git(["branch", "-D", "--", branch]).catch(() => {});
+        }
         throw error instanceof TerminalError ? error : new TerminalError(`The program couldn't start: ${error instanceof Error ? error.message : String(error)}`);
       }
       let resolveExited!: () => void;
-      const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
+      const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), viewers: new Set(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }) };
       this.sessions.set(id, session);
@@ -377,6 +401,44 @@ export class TerminalHost {
     } finally {
       this.starting -= 1;
       if (reserved) this.ledger.release(id, null);
+    }
+  }
+
+  /**
+   * A take-over's folder (T4): an independent repository of Toolroll's own at `revision`, never a worktree of the
+   * project. A worktree's git folder lives in the project's shared `.git`, where a build can plant hooks and config that
+   * the person's shell prompt (`git status`) would then run outside the fence. This one's `.git` is made here, from an
+   * empty template (no hooks folder, no info), with a config of Toolroll's few lines; its only link to the project is a
+   * read-only alternates entry naming the objects folder of Toolroll's own record of the project (recordedCommonDir,
+   * proven from disk, never a pointer a build wrote) — objects are data and run nothing. Every git here runs hardened
+   * (no system or global config, no hooks, no fsmonitor). The folder is in the console's state folder, which no build
+   * may write. Throws a TerminalError when it can't be made.
+   */
+  private async copyAt(repo: string, folder: string, branch: string, revision: string): Promise<void> {
+    let objects: string;
+    try { objects = realpathSync(join(recordedCommonDir(repo), "objects")); } catch { throw new TerminalError("Toolroll couldn't read this project's own git folder, so it won't open a copy of the build."); }
+    const template = join(this.options.worktreeRoot, ".empty-template");
+    mkdirSync(template, { recursive: true, mode: 0o700 });
+    if (readdirSync(template).length > 0 || lstatSync(template).isSymbolicLink()) throw new TerminalError("Toolroll's terminal folder isn't as it left it.");
+    const git = async (cwd: string, args: string[]): Promise<ExecResult> => {
+      const result = await (this.options.copyGit ?? run)("git", [...TEARDOWN_FLAGS, ...args], { cwd, envAllowlist: ENV_ALLOWLIST, env: { ...ENV }, timeoutMs: 120_000, maxBuffer: 16 * 1024 * 1024 });
+      if (result.code !== 0) throw new TerminalError("Git couldn't make a copy of this build for the terminal.");
+      return result;
+    };
+    mkdirSync(folder, { recursive: false, mode: 0o700 });
+    try {
+      await git(folder, ["init", "--quiet", `--template=${template}`, "-b", branch]);
+      const dotgit = join(folder, ".git");
+      // Toolroll's lines only: whatever git init wrote is replaced.
+      writeFileSync(join(dotgit, "config"), COPY_CONFIG, { mode: 0o600 });
+      mkdirSync(join(dotgit, "objects", "info"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(dotgit, "objects", "info", "alternates"), `${objects}\n`, { mode: 0o600 });
+      await git(folder, ["reset", "--quiet", "--hard", revision]);
+      const head = (await git(folder, ["rev-parse", "--verify", "HEAD^{commit}"])).stdout.trim();
+      if (head !== revision) throw new TerminalError("The copy of this build isn't at its saved commit.");
+    } catch (error) {
+      rmSync(folder, { recursive: true, force: true });
+      throw error instanceof TerminalError ? error : new TerminalError("Git couldn't make a copy of this build for the terminal.");
     }
   }
 
@@ -578,17 +640,39 @@ export class TerminalHost {
     // Each process seen working in it when the sweep ended must have exited (the same pid with the same start time is
     // the same process, wherever it now works).
     if ([...session.residentsSeen].some(([pid, started]) => table!.get(pid)?.started === started)) throw busy;
+    // A take-over's copy is the only place its work lives: it goes only while it holds nothing but the build's commit.
+    if (session.base !== null) {
+      const own = await this.copyHasWork(session.worktree, session.base);
+      if (own !== null) throw new TerminalError(own);
+    }
     this.sessions.delete(id);
     this.ledger.forget(id);
     for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit?.code ?? null, signal: session.exit?.signal ?? null }); } catch { /* gone */ } }
     session.viewers.clear();
     session.screen.dispose();
+    if (session.base !== null) {
+      rmSync(session.worktree, { recursive: true, force: true });
+      this.options.record?.("remove", this.summary(session));
+      return;
+    }
     const result = await (this.options.git ?? teardownGit())(session.repo, ["worktree", "remove", "--force", "--", session.worktree]);
     this.options.record?.("remove", this.summary(session));
     if (result.code !== 0 && existsSync(session.worktree)) {
       const why = refusal(result);
       throw new TerminalError(`The terminal is gone, but its worktree stays${why === null ? "" : ` (${why})`}. Remove it with \`git worktree remove\`.`);
     }
+  }
+
+  /** Why a take-over's copy can't be removed (commits or changes of its own, or it can't be read), else null. */
+  private async copyHasWork(folder: string, base: string): Promise<string | null> {
+    const keep = `This copy has work of its own (commits or changes), so it stays at ${folder}. Copy what you need out of it, then delete the folder.`;
+    const read = async (args: string[]) => (this.options.copyGit ?? run)("git", [...TEARDOWN_FLAGS, ...args], { cwd: folder, envAllowlist: ENV_ALLOWLIST, env: { ...ENV }, timeoutMs: 60_000, maxBuffer: 16 * 1024 * 1024 });
+    try {
+      const head = await read(["rev-parse", "--verify", "HEAD^{commit}"]);
+      const status = await read(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]);
+      if (head.code !== 0 || status.code !== 0) return keep;
+      return head.stdout.trim() === base && status.stdout.trim() === "" ? null : keep;
+    } catch { return keep; }
   }
 
   /** Whether new sessions may start (false once the console is stopping). */

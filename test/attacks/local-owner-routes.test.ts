@@ -7,13 +7,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { WebSocket } from "ws";
 import { join } from "node:path";
-import { loadPtySpawn, TerminalHost } from "../../src/live-terminal.js";
+import { COPY_CONFIG, loadPtySpawn, TerminalHost } from "../../src/live-terminal.js";
 import { openLocalWorld, LOCAL_T0, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { enrollOwnerPassword } from "../../src/store.js";
 import { hashPassword } from "../../src/scope.js";
 import { networkInterfaces, tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { acquire, release } from "../../src/claim.js";
 import { register } from "../../src/runner.js";
 import { presented } from "../serve-kit.js";
@@ -209,8 +209,10 @@ describe.skipIf(spawn === null || process.platform === "win32")("terminals, as a
   const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   beforeEach(async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-local-term-")));
-    host = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live"), closeGraceMs: 300, programs: { claude: { file: "/bin/cat", args: [] }, shell: { file: "/bin/sh", args: [] } },
-      env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
+    // The shell is the real default: the person's login shell (here bash -l, with SHELL unset and a HOME of the test's
+    // own), started with the take-over's short environment. Only `claude` is a stand-in (cat).
+    host = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live"), closeGraceMs: 300, programs: { claude: { file: "/bin/cat", args: [] } },
+      env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir, SECRET_TOKEN_FOR_TEST: "never-in-a-take-over" }) });
     world = await openLocalWorld({ terminalHost: host } as never);
     // The build's own commit, on a branch of the project (the project's HEAD stays where it was).
     const git = (...args: string[]) => execFileSync("git", ["-C", world.repo, "-c", "user.email=q@example.com", "-c", "user.name=q", ...args], { env: gitEnv, encoding: "utf8" }).trim();
@@ -264,6 +266,45 @@ describe.skipIf(spawn === null || process.platform === "win32")("terminals, as a
     ws.send(JSON.stringify({ t: "in", d: "echo took-over-$((40+2))\r" }));
     await echoed;
     ws.close();
+  });
+
+  test("the copy is a repository of its own: hooks and config planted in the project's shared .git never run from it", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const id = (await takeOver(cookie, csrf)).body.id!;
+    const copy = host.get(id)!.worktree;
+    // Toolroll's own .git: its config is Toolroll's lines only, no hooks, objects read from the project's record only.
+    expect(readFileSync(join(copy, ".git", "config"), "utf8")).toBe(COPY_CONFIG);
+    expect(existsSync(join(copy, ".git", "hooks")) ? readdirSync(join(copy, ".git", "hooks")) : []).toEqual([]);
+    expect(lstatSync(join(copy, ".git")).isDirectory()).toBe(true);
+    expect(readFileSync(join(copy, ".git", "objects", "info", "alternates"), "utf8")).toBe(`${realpathSync(join(world.repo, ".git", "objects"))}\n`);
+    // A build plants a hook and a command in the project's shared git folder after the copy was made.
+    const fired = join(world.root, "fired");
+    const script = join(world.root, "evil.sh");
+    writeFileSync(script, `#!/bin/sh\necho "$0" >> ${fired}\n`, { mode: 0o755 });
+    writeFileSync(join(world.repo, ".git", "config"), `${readFileSync(join(world.repo, ".git", "config"), "utf8")}[core]\n\tfsmonitor = ${script}\n\thooksPath = ${join(world.repo, ".git", "evil-hooks")}\n`);
+    mkdirSync(join(world.repo, ".git", "hooks"), { recursive: true });
+    mkdirSync(join(world.repo, ".git", "evil-hooks"), { recursive: true });
+    for (const hook of ["pre-commit", "post-commit", "reference-transaction"]) {
+      writeFileSync(join(world.repo, ".git", "hooks", hook), `#!/bin/sh\necho ${hook} >> ${fired}\n`, { mode: 0o755 });
+      writeFileSync(join(world.repo, ".git", "evil-hooks", hook), `#!/bin/sh\necho ${hook} >> ${fired}\n`, { mode: 0o755 });
+    }
+    // The person's shell runs git in the copy: status, a commit, and the environment it was started with.
+    const ws = new WebSocket(`ws://127.0.0.1:${world.port}/term/${id}/socket`, { headers: { cookie, origin: world.origin } });
+    let seen = "";
+    const done = new Promise<void>(resolve => ws.on("message", (data, binary) => { if (binary) { seen += String(data); if (/finished-2\b/.test(seen)) resolve(); } }));
+    await new Promise(resolve => ws.on("open", resolve));
+    ws.send(JSON.stringify({ t: "in", d: "git status; git -c user.email=q@example.com -c user.name=q commit -q --allow-empty -m mine; env | grep -c SECRET_TOKEN_FOR_TEST; echo finished-$((1+1))\r" }));
+    await done;
+    ws.close();
+    expect(existsSync(fired)).toBe(false);
+    expect(seen).toMatch(/\r?\n0\r?\n/);
+    // The plant is real: git in the project itself runs it.
+    execFileSync("git", ["-C", world.repo, "status"], { env: gitEnv });
+    expect(readFileSync(fired, "utf8")).toContain("evil.sh");
+    // The copy now holds a commit of the person's own: it isn't removed with the terminal.
+    await host.close(id);
+    await expect(host.remove(id)).rejects.toThrow(/work of its own/);
+    expect(existsSync(copy)).toBe(true);
   });
 
   test("it names a task and its build, nothing else: a project, half a pair or a build of no result is refused", async () => {

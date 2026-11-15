@@ -624,6 +624,7 @@ fn bench_term(args: &[String]) -> Result<()> {
         run: toolroll_fake_engine::RESULT_RUN,
         result: Ok((
             id.clone(),
+            "toolroll/live-0123456789ab".to_string(),
             TermLink(tokio::sync::mpsc::unbounded_channel().0),
         )),
     });
@@ -645,7 +646,7 @@ fn bench_term(args: &[String]) -> Result<()> {
     for c in stream.into_iter().take(frames) {
         bytes += c.len();
         let t = Instant::now();
-        app.update(Msg::Term(id.clone(), TermEvent::Output(c)));
+        app.update(Msg::Term(id.clone(), TermEvent::Output(c.into())));
         let parsed = t.elapsed();
         let t2 = Instant::now();
         term.draw(|f| toolroll_tui::view::draw(f, &mut app))?;
