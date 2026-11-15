@@ -6,7 +6,7 @@
  * only: every act keeps its own route and rules (an agent's question is answered through POST /d/<id>/answer, the
  * same one-click act as its own page).
  */
-import type { BrowserHomeAsk, BrowserHomeRow, BrowserHomeView } from "../browser-workspace.js";
+import type { BrowserHomeAsk, BrowserHomeRow, BrowserHomeView, WorkNeedsGroup } from "../browser-workspace.js";
 import { browserWorkActionHref } from "../browser-crew.js";
 import { NO_REASON_RECORDED } from "../needs-you.js";
 import { projectName } from "../project.js";
@@ -89,7 +89,7 @@ function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, can
   // take a yes now; its one link opens the sheet.
   if (state === "needs" && item.askGroup === "release" && release !== null) {
     const href = releaseSheetHref(item.activeTaskId);
-    return { id: item.rootId, title: item.title, href, state, ask: "release", reason: null,
+    return { id: item.rootId, title: item.title, href, state, ask: "release", group: "decide", reason: null,
       project: multi || item.repo === null ? (item.repo === null ? "Unplaced" : projectName(item.repo)) : null,
       age: relativeAge(item.updatedAt, now), line: release(item.activeTaskId), action: { label: "Review the release", href }, question: null };
   }
@@ -114,12 +114,18 @@ function rowOf(store: Store, item: WorkIndexItem, now: Date, multi: boolean, can
   // A plan that can't take a yes never offers one: the reason, and the one act that opens it, as the task page says.
   const door = state === "needs" && action?.code === "approve-scope" ? closedDoor(action.target.taskId) : null;
   return {
-    id: item.rootId, title: item.title, href: taskHref(item.rootId), state, ask, reason,
+    id: item.rootId, title: item.title, href: taskHref(item.rootId), state, ask, ...(state === "needs" && item.ask !== null ? { group: item.ask } : {}), reason,
     project: multi || item.repo === null ? (item.repo === null ? "Unplaced" : projectName(item.repo)) : null,
     age: relativeAge(item.updatedAt, now), line: door === null ? line : door.title,
     action: door !== null ? { label: door.road === "agents" ? "Change the agents" : "Edit the plan", href: `${taskHref(action!.target.taskId)}#${door.road === "agents" ? "agents" : "scope"}` }
       : href === null || action === null ? null : { label: action.label, href }, question,
   };
+}
+
+/** A row that isn't a task's own (a held publication, a flow card, a setup step): its one link opens its own page. */
+function askRowOf(one: HomeAskRow, ask: BrowserHomeAsk, multi: boolean, now: Date): BrowserHomeRow {
+  return { id: one.id, title: one.title, href: one.href, state: "needs", ask, group: WORK_GROUP_OF_ASK[ask], reason: null,
+    project: multi && one.repo !== null ? projectName(one.repo) : null, age: one.at === null ? "" : relativeAge(one.at, now), line: one.line, action: one.action, question: null };
 }
 
 /** Home's view for one person and scope, from four reads of the work index: what waits on you (with exact per-ask
@@ -167,8 +173,7 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
   const multi = project === null && new Set([...yours, ...live, ...queued, ...done].map(one => one.repo ?? "").concat(extra.flatMap(one => one.repo === null ? [] : [one.repo]))).size > 1;
   const row = (item: WorkIndexItem, state: BrowserHomeRow["state"]) => rowOf(store, item, now, multi, facts.canAnswer, facts.closedDoor, state, approver ? asks.release : null);
   const rows = yours.map(one => row(one, "needs"));
-  const askRow = (one: HomeAskRow, ask: BrowserHomeAsk): BrowserHomeRow => ({ id: one.id, title: one.title, href: one.href, state: "needs", ask, reason: null,
-    project: multi && one.repo !== null ? projectName(one.repo) : null, age: one.at === null ? "" : relativeAge(one.at, now), line: one.line, action: one.action, question: null });
+  const askRow = (one: HomeAskRow, ask: BrowserHomeAsk): BrowserHomeRow => askRowOf(one, ask, multi, now);
   // Each group's count is exact over every row in view, not only those listed: the work index's total for a task ask
   // (a release counted once, in its own group for an approver and as a plan for anyone else), and every other row.
   const askTotals: Record<BrowserHomeAsk, number> = {
@@ -204,4 +209,46 @@ export function homeView(facts: HomeFacts): BrowserHomeView {
     lastLead: lead === null || leadText === "" ? null : { text: leadText, age: relativeAge(lead.at, now), href: "/chat" },
     empty: any || others > 0 ? null : { title: "No tasks yet", text: "Describe a change in a sentence; an agent writes a plan for you to approve." },
   };
+}
+
+/** Work's group for each kind of ask Home admits (the one-workspace plan S2a): every kind has one, so nothing Home listed
+ * can fall out of Work. A task row keeps the Tasks list's own group (its `group`); this places the rows that aren't
+ * tasks, and any task row without one. */
+export const WORK_GROUP_OF_ASK: Readonly<Record<BrowserHomeAsk, WorkNeedsGroup>> = {
+  release: "decide", approve: "decide", answer: "decide", flow: "decide", review: "review", wrong: "unblock", setup: "unblock", other: "unblock",
+};
+export const WORK_GROUP_LABEL: Readonly<Record<WorkNeedsGroup, string>> = { decide: "Decide", review: "Review", unblock: "Unblock" };
+const WORK_GROUP_ORDER: readonly WorkNeedsGroup[] = ["decide", "review", "unblock"];
+
+/**
+ * Work's Needs you (the one-workspace plan S2a): the rows Home lists, through the same rules (homeView's own) — for the
+ * tasks, from the very list page Work shows (its view, project, state filter and cursor, so a later page lists later
+ * tasks and nothing repeats), and on the first unfiltered page every held publication, flow card and setup step Home
+ * admits — grouped Decide / Review / Unblock. Each group's count is exact past the rows listed: the page's own group
+ * totals for the tasks, plus the asks that aren't tasks.
+ */
+export function workNeeds(facts: HomeFacts, page: WorkIndexPage, filtered: boolean): { groups: { key: WorkNeedsGroup; label: string; count: number; rows: BrowserHomeRow[] }[]; total: number; tasks: number; any: boolean } {
+  const { store, now, project } = facts;
+  const yours = page.items.filter(one => one.status.views.includes("needs-you") && one.archived === undefined);
+  const approver = facts.approver ?? facts.canAnswer;
+  const asks = facts.asks ?? NO_HOME_ASKS;
+  // The same rules as homeView: held publications, flow cards and setup steps are an approver's; the builder step waits
+  // behind a task row that already asks for a builder. They are no task's row: listed once, on the first page.
+  const held = approver && !filtered ? asks.held : [], flows = approver && !filtered ? asks.flows : [];
+  const setup = approver && !filtered ? asks.setup.filter(one => one.key !== "builder" || page.builderWaits === 0) : [];
+  const multi = project === null && new Set(yours.map(one => one.repo ?? "").concat([...held, ...flows, ...setup].flatMap(one => one.repo === null ? [] : [one.repo]))).size > 1;
+  const rows = [
+    ...yours.map(one => rowOf(store, one, now, multi, facts.canAnswer, facts.closedDoor, "needs", approver ? asks.release : null)),
+    ...held.map(one => askRowOf(one, "release", multi, now)), ...flows.map(one => askRowOf(one, "flow", multi, now)), ...setup.map(one => askRowOf(one, "setup", multi, now)),
+  ];
+  const groupOf = (row: BrowserHomeRow): WorkNeedsGroup => row.group ?? WORK_GROUP_OF_ASK[row.ask ?? "other"];
+  const extra: Record<WorkNeedsGroup, number> = { decide: held.length + flows.length, review: 0, unblock: setup.length };
+  const groups = WORK_GROUP_ORDER.flatMap(key => {
+    const listed = rows.filter(row => groupOf(row) === key);
+    const count = Math.max(page.groups[key] + extra[key], listed.length);
+    return count === 0 ? [] : [{ key, label: WORK_GROUP_LABEL[key], count, rows: listed }];
+  });
+  const tasks = page.totals["needs-you"];
+  const any = page.totals.all > 0 || page.totals.completed > 0 || (page.totals.archived ?? 0) > 0;
+  return { groups, total: tasks + held.length + flows.length + setup.length, tasks, any };
 }

@@ -816,10 +816,10 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
   async function providerResume(ctx: HandlerContext): Promise<void> {
     const { url, who, response } = ctx;
     const provider = url.pathname.split("/")[2]!;
-    if (!isProviderId(provider)) return refuse(response, who, 400, "unknown provider", "/tasks");
-    if (who.role !== "approver") return refuse(response, who, 403, "Only an operator can resume an agent's work.", "/tasks");
+    if (!isProviderId(provider)) return refuse(response, who, 400, "unknown provider", "/");
+    if (who.role !== "approver") return refuse(response, who, 403, "Only an operator can resume an agent's work.", "/");
     liftAuthPause(store, provider, "person", who.name, clock());
-    return redirect(response, "/tasks");
+    return redirect(response, "/");
   }
   // The update notice is dismissed per browser and per version: a newer release shows it again.
   // Cockpit B2: Forget — nothing verified on this session before now counts as fresh (a CSRF-checked post, like every act).

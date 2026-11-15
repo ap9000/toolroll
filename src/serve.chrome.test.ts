@@ -761,13 +761,13 @@ describe("the reduction pass (Laws of UX): five always-visible rows and two acco
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("every retired destination still answers: the queue redirects for good to Tasks' order view; done, review, and activity still land on a page", async () => {
+  test("every retired destination still answers: the queue redirects for good to Work's order view; done, review, and activity still land on a page", async () => {
     const cookie = await login();
     const queue = await fetch(url("/queue"), { headers: { cookie }, redirect: "manual" });
     expect(queue.status).toBe(301);
-    expect(queue.headers.get("location")).toBe("/tasks?view=order");
+    expect(queue.headers.get("location")).toBe("/?view=order");
     // The fragment the order view polls is served from its new address.
-    expect((await fetch(url("/tasks?view=order&fragment=1"), { headers: { cookie } })).status).toBe(200);
+    expect((await fetch(url("/?view=order&fragment=1"), { headers: { cookie } })).status).toBe(200);
     for (const path of ["/done", "/review", "/activity", "/runs", "/workbench", "/tasks", "/fleet", "/projects", "/menu", "/board?view=order"]) {
       expect((await fetch(url(path), { headers: { cookie } })).status).toBe(200);
     }

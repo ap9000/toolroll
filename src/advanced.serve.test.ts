@@ -31,7 +31,10 @@ afterEach(async () => {
 
 const cookieOf = (answer: Response) => answer.headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
 const csrfOf = (html: string) => /name="csrf" value="([0-9a-f]{64})"/.exec(html)![1]!;
-const rail = async (cookie: string) => ((await (await fetch(`${base}/tasks?format=workspace`, { headers: { cookie } })).json()) as BrowserWorkspace).navigation.map(one => one.label);
+// The rail is Work · Chat · Settings either way (S2a); Advanced on puts Flows and Agents back in Search (the page's
+// `advanced` flag, absent when on).
+const rail = async (cookie: string) => { const read = (await (await fetch(`${base}/?view=all&format=workspace`, { headers: { cookie } })).json()) as BrowserWorkspace;
+  return [...read.navigation.map(one => one.label), ...(read.advanced === false ? [] : ["Flows", "Agents"])]; };
 const ledgerRows = () => Number(store.handle.prepare("SELECT COUNT(*) AS n FROM view_preference").get()?.["n"]);
 async function signIn(name: string) {
   const cookie = cookieOf(await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name, token: passwords[name]! }), redirect: "manual" }));
@@ -63,7 +66,7 @@ test("a person's own switch: off by default after the upgrade, theirs only, stri
   expect([moved.status, moved.headers.get("location")]).toEqual([301, "/settings/general?said=x&section=advanced&open=1"]);
   await fetch(`${base}/settings/advanced`, { method: "HEAD", headers: { cookie: a.cookie } });
   expect(ledgerRows()).toBe(0);
-  expect(await rail(a.cookie)).toEqual(["Home", "Chat", "Tasks", "Projects", "Settings"]);
+  expect(await rail(a.cookie)).toEqual(["Work", "Chat", "Settings"]);
 
   // Strict: one field, on or off; a duplicate or anything else is refused and changes nothing.
   expect((await a.post("advanced=on&advanced=off")).status).toBe(400);
@@ -81,7 +84,7 @@ test("a person's own switch: off by default after the upgrade, theirs only, stri
   expect(on.headers.get("location")).toMatch(/^\/settings\/general\?section=advanced&said=/);
   expect(advancedPreferenceOf(store, "alex")).toBe(true);
   expect(advancedPreferenceOf(store, "vic")).toBeNull();
-  expect(await rail(a.cookie)).toEqual(["Home", "Chat", "Tasks", "Flows", "Agents", "Projects", "Settings"]);
+  expect(await rail(a.cookie)).toEqual(["Work", "Chat", "Settings", "Flows", "Agents"]);
 
   // A viewer limited to one project sets their own, and only their own.
   const v = await signIn("vic");
@@ -110,7 +113,7 @@ test("the local owner changes and keeps it before setting any password", async (
   await start();
   const link = server.mintLocalLink()!;
   const cookie = cookieOf(await fetch(`${base}${link}`, { redirect: "manual" }));
-  expect(await rail(cookie)).toEqual(["Home", "Chat", "Tasks", "Projects", "Settings"]);
+  expect(await rail(cookie)).toEqual(["Work", "Chat", "Settings"]);
   const page = await (await fetch(`${base}/settings/advanced`, { headers: { cookie } })).text();
   const posted = await fetch(`${base}/settings/advanced`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf: csrfOf(page), advanced: "on" }) });
   expect(posted.status).toBe(303);

@@ -392,11 +392,10 @@ get("tasks", "done", "/done", RETIRED);
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system", free);
-// Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
 // Settings → Computers' "Connect a builder" now (settings plan F2): a permanent redirect keeping its task, admitted as
 // the Computers area is.
 get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free, retired: true });
-get("tasks", "tasks", "/tasks", { limited: "collection", ...free });
+get("tasks", "tasks", "/tasks", RETIRED);
 get("tasks", "queue", "/queue", RETIRED);
 get("pages", "peek", "/peek", free);
 get("pages", "agents", "/agents", { limited: "unscoped", ...free });

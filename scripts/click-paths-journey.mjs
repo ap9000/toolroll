@@ -2,9 +2,10 @@
 /** Click paths (the one-workspace plan, slice S0): how many clicks and full page loads the common jobs take today,
  * measured in a browser on the demo (as `toolroll demo` serves it: a fenced sandbox, a scripted lead, no model call,
  * nothing reaching outside), at 1440x900, signed in through the demo's own one-time link. Each job starts on a fresh
- * demo with Home open and Passwordless on (the no-password case), and ends when the console itself shows it done:
+ * demo with Work open (`/`, slice S2a) and Passwordless on (the no-password case), and ends when the console itself
+ * shows it done:
  *
- *   approve-plan      approve the plan Home shows first (the scope is approved)
+ *   approve-plan      approve the plan Work shows first (the scope is approved)
  *   review-accept     open the waiting result and accept it (the task is done)
  *   send-back         open the waiting result and send it back with a note (the revision is filed)
  *   watch-running     open the running task's live activity (the activity panel is showing)
@@ -15,7 +16,7 @@
  *   approve-plan-password  the same approval with Passwordless off, measured up to the password field and stopped there:
  *                     nothing is typed. The task page carrying the password field is a ceremony load.
  *
- * A click is a pressed control; typing into a field is counted apart. A load is a full document load after Home is
+ * A click is a pressed control; typing into a field is counted apart. A load is a full document load after Work is
  * open; a ceremony load (a page with a password field, or a ceremony route in test/destinations.json) is counted apart
  * from the others. Each number is held to its ceiling in test/click-path-ceilings.json: a run over any ceiling fails.
  * A slice that shortens a path lowers its ceiling in the same change; `--write-ceilings` rewrites the file from the run.
@@ -107,11 +108,11 @@ const waitingPlans = store => store.listTasks().filter(task => { const scope = s
 
 const FLOWS = [
   {
-    name: "approve-plan", about: "approve the plan Home shows first", passwordless: true,
+    name: "approve-plan", about: "approve the plan Work shows first", passwordless: true,
     async run({ page, store, click }) {
-      const pane = page.locator('[data-home-approval="approve"]');
+      const pane = page.locator('[data-work-panel] [data-home-approval="approve"]');
       await pane.waitFor();
-      const id = await page.locator('[data-group="approve"] a[data-row]').first().getAttribute("data-row");
+      const id = await page.locator('[data-group="decide"] [data-row]').first().getAttribute("data-row");
       const before = waitingPlans(store);
       await click(pane.locator("[data-home-approve]"));
       await until(`a plan of ${id} approved`, () => waitingPlans(store).length === before.length - 1);
@@ -124,9 +125,8 @@ const FLOWS = [
     name: "review-accept", about: "open the waiting result and accept it", passwordless: true,
     async run({ page, store, click }) {
       const id = "fix-payout-rounding";
-      await click(page.locator(`a[data-row="${id}"]`));
-      await click(page.getByRole("link", { name: "Open result" }));
-      await click(page.locator("[data-accept-result]"));
+      await click(page.locator(`[data-row="${id}"] .k-row-t`));
+      await click(page.locator(`[data-work-task="${id}"] [data-work-accept]:not([aria-disabled])`));
       await until(`${id} done`, () => store.getTask(id)?.state === "done");
       return `${id} done`;
     },
@@ -135,11 +135,13 @@ const FLOWS = [
     name: "send-back", about: "open the waiting result and send it back with a note", passwordless: true,
     async run({ page, store, click, type }) {
       const id = "fix-payout-rounding";
-      await click(page.locator(`a[data-row="${id}"]`));
-      await click(page.getByRole("link", { name: "Open result" }));
-      await click(page.locator('a[href="#request-changes"]').first());
-      await type(page.locator("#request-changes textarea[name=note]"), "Round half-cents up, not down.");
-      await click(page.locator("#request-changes [data-request-changes]"));
+      await click(page.locator(`[data-row="${id}"] .k-row-t`));
+      const box = page.locator(`[data-work-task="${id}"] [data-work-send-back]`);
+      await type(box.locator("textarea"), "Round half-cents up, not down.");
+      const send = box.getByRole("button", { name: "Send back" });
+      // The send takes a press once the result on screen has settled (a redraw holds it for a moment).
+      await until("Send back takes a press", async () => await send.getAttribute("aria-disabled") === null);
+      await click(send);
       await until(`${id}'s revision filed`, () => store.getTask(`${id}-v2`) !== null);
       return `${id}-v2 filed`;
     },
@@ -149,9 +151,8 @@ const FLOWS = [
     async run({ page, store, click }) {
       const id = "harden-webhook-retries";
       if (store.getTask(id)?.state !== "running") throw new Error(`${id} isn't running in the demo`);
-      await click(page.locator(".so-rail").getByRole("link", { name: "Tasks", exact: true }));
-      await click(page.locator(`main a[href="/t/${id}"]`).first());
-      await click(page.getByRole("button", { name: "Watch the work" }).first());
+      await click(page.locator(`[data-row="${id}"] .k-row-t`));
+      await click(page.locator(`[data-work-task="${id}"] [data-work-watch]`));
       await page.locator('[data-task-panel="activity"]').waitFor({ state: "visible" });
       return `${id}'s activity showing`;
     },
@@ -173,7 +174,7 @@ const FLOWS = [
     name: "add-project", about: "add a git repository from a projects folder", passwordless: true, projectsFolder: true,
     async run({ page, store, click, type, newRepo }) {
       const want = realpathSync(newRepo);
-      await click(page.locator(".so-rail").getByRole("link", { name: "Projects", exact: true }));
+      await click(page.locator(".so-rail").getByRole("link", { name: "Manage projects", exact: true }));
       await click(page.getByRole("button", { name: "Add project" }).first());
       await type(page.locator("#add-path"), newRepo);
       await click(page.getByRole("button", { name: "Add and open" }));
@@ -194,9 +195,9 @@ const FLOWS = [
   {
     name: "approve-plan-password", about: "approve with Passwordless off, up to the password field (nothing typed)", passwordless: false,
     async run({ page, store, click }) {
-      const pane = page.locator('[data-home-approval="review"]');
+      const pane = page.locator('[data-work-panel] [data-home-approval="review"]');
       await pane.waitFor();
-      const id = await page.locator('[data-group="approve"] a[data-row]').first().getAttribute("data-row");
+      const id = await page.locator('[data-group="decide"] [data-row]').first().getAttribute("data-row");
       const before = waitingPlans(store);
       await click(pane.getByRole("link", { name: /Review the plan/ }));
       await click(page.getByRole("button", { name: "Approve", exact: true }).first());
@@ -242,7 +243,7 @@ try {
     try {
       await page.goto(world.base + world.server.mintSignInLink(world.made.seed.login.name));
       await page.goto(world.base + "/", { waitUntil: "load" });
-      await page.locator("[data-home]").waitFor();
+      await page.locator("[data-work]").waitFor();
       counting = true;
       const outcome = await flow.run({ page, store: world.store, click, type, newRepo: world.newRepo });
       // A load the last click started finishes before the count is read.

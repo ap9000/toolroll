@@ -16,12 +16,12 @@ const SETTINGS_PAGES = [
     "skills", "flows", "knowledge", "learning", "spend", "passwordless"].map(one => `settings.${one}`),
 ];
 
-/** Home, the Tasks list, a task page, Projects, Agents (the list), Search and the Settings pages. */
-export const IN_PLACE_ROUTES: ReadonlySet<string> = new Set(["home", "tasks", "task.page", "projects.page", "agents", "search", ...SETTINGS_PAGES]);
+/** Work (`/`), a task page, Projects, Agents (the list), Search and the Settings pages. (`/tasks` only redirects to Work.) */
+export const IN_PLACE_ROUTES: ReadonlySet<string> = new Set(["home", "task.page", "projects.page", "agents", "search", ...SETTINGS_PAGES]);
 
-/** What may be read ahead with `x-toolroll-read: prefetch`: Home, the Tasks list, Projects, Agents (the list, never an
- * opened agent), Search, a task page. Everything else answers 204. */
-export const PREFETCH_ROUTES: ReadonlySet<string> = new Set(["home", "tasks", "projects.page", "agents", "search", "task.page"]);
+/** What may be read ahead with `x-toolroll-read: prefetch`: Work, Projects, Agents (the list, never an opened agent),
+ * Search, a task page (Work's panel reads its selected task so). Everything else answers 204. */
+export const PREFETCH_ROUTES: ReadonlySet<string> = new Set(["home", "projects.page", "agents", "search", "task.page"]);
 
 /** The Agents view's Live grid shares the `agents` row (`/agents?view=live`); it only watches, and is never in place. */
 const liveGrid = (id: string, url: URL): boolean => id === "agents" && url.searchParams.get("view") === "live";

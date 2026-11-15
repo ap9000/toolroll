@@ -1130,11 +1130,10 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(store.listLeadMessages(projectThread.id, 10).map(one => one.text)).toEqual(['What is queued?', 'Two tasks are queued here.']);
     const lead = store.liveLeadThreadFor('alex');
     expect(lead === null ? [] : store.listLeadMessages(lead.id, 10)).toEqual([]);
-    // The project's Tasks page docks it, and the chat list names it.
-    const projectRead = await (await fetch(url(`/tasks?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
-    expect(projectRead.view?.kind).toBe('tasks');
-    expect(projectRead.conversation).toMatchObject({ project: repoDir, taskId: null });
-    expect(projectRead.conversation!.messages.map(one => one.text)).toEqual(['What is queued?', 'Two tasks are queued here.']);
+    // The chat list names it on every page (Work for that project included: Work docks no conversation, S2a).
+    const projectRead = await (await fetch(url(`/?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
+    expect(projectRead.view?.kind).toBe('work');
+    expect(projectRead.conversation).toBeNull();
     expect(projectRead.chats).toEqual([expect.objectContaining({ kind: 'project', href: `/chat?project=${encodeURIComponent(repoDir)}`, active: false })]);
     // The project's own chat page speaks in the same thread.
     const projectChat = await (await fetch(url(`/chat?project=${encodeURIComponent(repoDir)}&format=workspace`), { headers: { cookie } })).json() as Workspace;
@@ -1171,23 +1170,22 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
 
   test('React project links narrow reads without changing the selected project', async () => {
     const cookie = await login();
-    const target = `/tasks?project=${encodeURIComponent(repoDir)}&format=workspace`;
+    const target = `/?project=${encodeURIComponent(repoDir)}&format=workspace`;
     const response = await fetch(url(target), { headers: { cookie } });
     expect(response.status).toBe(200);
     const data = await response.json() as import('./browser-workspace.js').BrowserWorkspace;
     expect(data.crew.map(one => one.id).sort()).toEqual(['a', 'b']);
-    expect(data.path).toBe(`/tasks?project=${encodeURIComponent(repoDir)}`);
-    // The rebuilt Tasks view carries the same facts as the HTML fallback:
-    // tabs keep the project filter, rows keep their ids and task links.
-    expect(data.view?.kind).toBe('tasks');
-    const tasksView = data.view as import('./browser-workspace.js').BrowserTasksView;
+    expect(data.path).toBe(`/?project=${encodeURIComponent(repoDir)}`);
+    // Work's list (S2a): its segments keep the project filter, rows keep their ids and task links.
+    expect(data.view?.kind).toBe('work');
+    const tasksView = (data.view as import('./browser-workspace.js').BrowserWorkView).list;
     expect(tasksView.tabs.map(tab => new URL(tab.href, base).searchParams.get('project'))).toEqual(tasksView.tabs.map(() => repoDir));
     expect(tasksView.tabs.map(tab => tab.label)).toEqual(['All', 'Needs you', 'Ready', 'Running', 'Queued', 'Finished']);
     expect(tasksView.tabs.find(tab => tab.active)?.label).toBe('All');
     expect(tasksView.rows.map(row => row.id).sort()).toEqual(['a', 'b']);
     expect(tasksView.rows.every(row => row.href.startsWith('/t/'))).toBe(true);
-    expect((await fetch(url('/tasks?project=%2Fforeign&format=workspace'), { headers: { cookie } })).status).toBe(404);
-    expect((await fetch(url(`/tasks?project=${encodeURIComponent(repoDir)}&project=%2Fforeign&format=workspace`), { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(url('/?project=%2Fforeign&format=workspace'), { headers: { cookie } })).status).toBe(404);
+    expect((await fetch(url(`/?project=${encodeURIComponent(repoDir)}&project=%2Fforeign&format=workspace`), { headers: { cookie } })).status).toBe(404);
   });
 
   test("the mint card is the one password ceremony; the thread then takes messages without one", async () => {
@@ -2216,13 +2214,13 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
       const bounced = await fetch(`${twoBase}/mode`, { headers: { cookie }, redirect: "manual" });
       expect(bounced.status).toBe(303);
       expect(bounced.headers.get("location")).toBe("/projects?return=%2Fmode");
-      // The board is a Tasks view now: it reads across the admitted projects, and the ceiling still holds there.
+      // The board is a Work view now: it reads across the admitted projects, and the ceiling still holds there.
       const retired = await fetch(`${twoBase}/board`, { headers: { cookie }, redirect: "manual" });
       expect(retired.status).toBe(301);
-      expect(retired.headers.get("location")).toBe("/tasks?view=board");
-      const board = await fetch(`${twoBase}/tasks?view=board`, { headers: { cookie }, redirect: "manual" });
+      expect(retired.headers.get("location")).toBe("/?view=board");
+      const board = await fetch(`${twoBase}/?view=board`, { headers: { cookie }, redirect: "manual" });
       expect(board.status).toBe(200);
-      const boardView = workspaceOf(await board.text()).view as import("./browser-workspace.js").BrowserTasksView;
+      const boardView = (workspaceOf(await board.text()).view as import("./browser-workspace.js").BrowserWorkView).list;
       expect(boardView.rows.map(row => row.id).sort()).toEqual(["a", "b", "c"]);
       // Choosing a project afterwards keeps polling (the earlier behaviour).
       const chosen = await fetch(`${twoBase}/projects/select`, { method: "POST", headers: { cookie, origin: twoBase }, body: new URLSearchParams({ csrf, path: repoTwo, return: "/chat" }), redirect: "manual" });

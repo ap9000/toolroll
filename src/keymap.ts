@@ -26,7 +26,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "p", says: "Ask for a plan (presses the button on the page)", web: { kind: "press", selectors: PLAN_SELECTORS }, tui: "plan" },
   { keys: "/", says: "search", web: { kind: "search" }, tui: { none: "The terminal has no search; press w to open the console." } },
   { keys: "g h", says: "go Home", web: { kind: "go", href: "/" }, tui: "list" },
-  { keys: "g t", says: "go to Tasks", web: { kind: "go", href: "/tasks" }, tui: "list" },
+  { keys: "g t", says: "go to Work", web: { kind: "go", href: "/" }, tui: "list" },
   { keys: "?", says: "these shortcuts", web: { kind: "help" }, tui: "help" },
 ];
 

@@ -130,7 +130,7 @@ function buildersSection(deps: ComputersDeps, subject: ComputersSubject): Sectio
           // `workers`: Settings → Agents and models' old builders list, kept for its links.
           html`<div id="workers">${summary.list.length === 0 ? note("No computer is building yet. Approved tasks wait until one is connected (above).") : joinHtml(rows)}</div>`,
           detail !== null && "missing" in detail ? notice(`There's no computer named ${detail.missing}.`) : "",
-          summary.shared > 0 ? note(html`${plural(summary.shared, "task waits", "tasks wait")} in the shared queue for any free computer. <a class="k-link" href="/tasks?view=order">Reserve one for a computer</a>`) : "",
+          summary.shared > 0 ? note(html`${plural(summary.shared, "task waits", "tasks wait")} in the shared queue for any free computer. <a class="k-link" href="/?view=order">Reserve one for a computer</a>`) : "",
         ]),
       });
     },

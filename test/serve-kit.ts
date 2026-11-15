@@ -77,3 +77,23 @@ export function sealScopeFixture(store: Store, taskId: string, token: string, go
   const approved = approve(store, taskId, "alex", T0, scope.digest, token);
   if (!approved.ok) throw new Error(`the fixture approval of ${taskId} was refused: ${approved.reason}`);
 }
+
+/** Work's list ("/", the one-workspace plan S2a): the Tasks list view it carries, from a workspace snapshot (or a Tasks
+ * view itself, for a page that still sends one). */
+export function workListOf(workspace: import('../src/browser-workspace.js').BrowserWorkspace): import('../src/browser-workspace.js').BrowserTasksView {
+  const view = workspace.view;
+  if (view?.kind === 'work') return view.list;
+  if (view?.kind === 'tasks') return view;
+  throw new Error(`not Work's list: ${view?.kind ?? 'no view'}`);
+}
+
+/** Work's Needs-you rows (every ask Home admitted), in their Decide / Review / Unblock groups' order. */
+export function workNeedsRowsOf(workspace: import('../src/browser-workspace.js').BrowserWorkspace): import('../src/browser-workspace.js').BrowserHomeRow[] {
+  const view = workspace.view;
+  if (view?.kind !== 'work') throw new Error(`not Work: ${view?.kind ?? 'no view'}`);
+  // The tasks' rows ride the list's own rows (`need`); the groups hold the asks that are no task's row.
+  const order = { decide: 0, review: 1, unblock: 2 } as const;
+  const tasks = view.list.rows.flatMap(row => row.need === undefined ? [] : [row.need]);
+  return view.needs.flatMap(group => [...tasks.filter(row => row.group === group.key), ...group.rows]).concat(tasks.filter(row => row.group === undefined))
+    .sort((a, b) => (order[a.group ?? 'unblock'] - order[b.group ?? 'unblock']));
+}

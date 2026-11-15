@@ -13,6 +13,7 @@ import { openStore, archiveOf, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { fire, seedFlow } from "../test/tidy-fixture.js";
+import { workListOf, workspaceOf } from "../test/serve-kit.js";
 
 const REPO = resolve("/repo/main");
 const day = (d: number) => new Date(Date.UTC(2026, 9, d, 16));
@@ -85,7 +86,7 @@ describe("Put away old tasks on the console", () => {
     const csrf = csrfOf(html), digest = digestOf(html);
     const good: [string, string][] = [["csrf", csrf], ["digest", digest], ["days", "14"], ["task", "site-oct-28"], ["password", alexToken]];
     const vera = await loginAs("vera", veraToken);
-    const veraCsrf = csrfOf(await (await page(vera, "/tasks")).text());
+    const veraCsrf = csrfOf(await (await page(vera, "/")).text());
     expect((await post(vera, "/work/put-away", good.map(([k, v]) => [k, k === "csrf" ? veraCsrf : k === "password" ? veraToken : v]))).status).toBe(403);
     expect((await post(alex, "/work/put-away", good.map(([k, v]) => [k, k === "csrf" ? "0".repeat(64) : v]))).status).toBe(403);
     expect((await post("", "/work/put-away", good, { authorization: `Bearer alex:${alexToken}` })).status).toBe(403);
@@ -105,12 +106,12 @@ describe("Put away old tasks on the console", () => {
     const html = await (await page(alex, "/tasks/archive")).text();
     const done = await post(alex, "/work/put-away", [["csrf", csrfOf(html)], ["digest", digestOf(html)], ["days", "14"], ["task", "site-oct-28"], ["task", "site-oct-30"], ["password", alexToken]]);
     expect(done.status).toBe(303);
-    expect(done.headers.get("location")).toBe("/tasks?view=archived");
+    expect(done.headers.get("location")).toBe("/?view=archived");
     expect(archived()).toEqual(["site-oct-28", "site-oct-30"]);
     expect(archiveOf(store, "site-oct-28")).toMatchObject({ by: "alex", byKind: "person", rule: "routine" });
-    const list = await (await page(alex, "/tasks?view=archived")).text();
+    const list = await (await page(alex, "/?view=archived")).text();
     expect(list).toContain("Archived by alex: A newer run, “Is the site current? — Oct 31”, replaces it.");
-    const needs = await (await page(alex, "/tasks?view=needs-you")).text();
+    const needs = await (await page(alex, "/?view=needs-you")).text();
     expect(needs).not.toContain('data-task="site-oct-28"');
     const taskPage = await (await page(alex, "/t/site-oct-30")).text();
     expect(taskPage).toContain("data-archived");
@@ -121,9 +122,9 @@ describe("Put away old tasks on the console", () => {
 
   test("Put away one task: an approver's browser act; a viewer, a bad form token and a token caller are refused", async () => {
     const alex = await loginAs("alex", alexToken);
-    const csrf = csrfOf(await (await page(alex, "/tasks")).text());
+    const csrf = csrfOf(await (await page(alex, "/")).text());
     const vera = await loginAs("vera", veraToken);
-    const veraCsrf = csrfOf(await (await page(vera, "/tasks")).text());
+    const veraCsrf = csrfOf(await (await page(vera, "/")).text());
     expect((await post(vera, "/t/site-oct-31/archive", [["csrf", veraCsrf]])).status).toBe(403);
     expect((await post(alex, "/t/site-oct-31/archive", [["csrf", "0".repeat(64)]])).status).toBe(403);
     expect((await post("", "/t/site-oct-31/archive", [["csrf", csrf]], { authorization: `Bearer alex:${alexToken}` })).status).toBe(403);
@@ -136,12 +137,12 @@ describe("Put away old tasks on the console", () => {
     expect((await post(alex, "/t/site-oct-31/restore", [["csrf", csrf], ["return", "https://evil.example/"]])).headers.get("location")).toBe("/t/site-oct-31");
   });
 
-  test("the Tasks page offers Put away old tasks and Put away to an approver only", async () => {
-    const alex = await (await page(await loginAs("alex", alexToken), "/tasks?view=needs-you")).text();
-    expect(alex).toContain('href="/tasks/archive"');
-    expect(alex).toContain('action="/t/site-oct-28/archive"');
-    const vera = await (await page(await loginAs("vera", veraToken), "/tasks?view=needs-you")).text();
-    expect(vera).not.toContain('href="/tasks/archive"');
-    expect(vera).not.toContain("/archive");
+  test("Work offers Put away old tasks and Put away to an approver only", async () => {
+    const alex = workListOf(workspaceOf(await (await page(await loginAs("alex", alexToken), "/?view=needs-you")).text()));
+    expect(alex.putAway?.href).toBe("/tasks/archive");
+    expect(alex.rows.find(row => row.id === "site-oct-28")?.tidy?.action).toBe("/t/site-oct-28/archive");
+    const vera = workListOf(workspaceOf(await (await page(await loginAs("vera", veraToken), "/?view=needs-you")).text()));
+    expect(vera.putAway ?? null).toBeNull();
+    expect(vera.rows.some(row => row.tidy != null)).toBe(false);
   });
 });

@@ -1018,7 +1018,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
   if (view.historical != null) return <HistoricalResult view={view} loaded={loadedResult.current} csrf={csrf} result={result} />;
   return <ResultStatusAct.Provider value={statusAct}><ResultStatusWarnings.Provider value={outcomeFirst ? statusWarnings : null}><div data-kit-page data-task-page={view.id} className={cn("so-task-page", activity && "so-task-page--work")}>
     <div className="k-doc" onClick={inPage}>
-      <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta}
+      <KDocHeader back={["/", "Work"]} title={view.title} meta={meta}
         right={<nav className="k-acts so-task-tools" aria-label="Task tools">
           {record !== null && <KLinkButton variant="ghost" sm className="k-desk-only" label={record.label} href={record.href} />}
           <KButton ref={activityButton} variant="ghost" sm label="Activity" aria-expanded={activity} aria-controls="task-activity" onClick={() => activity ? closeActivity() : openActivity()} data-open-activity="" />
@@ -1073,7 +1073,7 @@ function HistoricalResult({ view, loaded, csrf, result }: { view: BrowserTaskVie
   const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span></>;
   return <div data-kit-page data-task-page={view.id} data-task-historical="" className="so-task-page">
     <div className="k-doc">
-      <KDocHeader back={["/tasks", "Tasks"]} title={view.title} meta={meta} />
+      <KDocHeader back={["/", "Work"]} title={view.title} meta={meta} />
       <KSlots status={<h2>Earlier result</h2>} text={historical.label}
         acts={<KLinkButton variant="primary" label="Open current work" href={historical.href} data-open-current="" />} terms="" />
       <ResultPanel view={{ ...view, result: loaded ?? view.result ?? null }} loaded={loaded ?? view.result ?? null} csrf={csrf} result={result === undefined ? undefined : (selected, token) => result(selected, token, false)} />

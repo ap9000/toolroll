@@ -7,7 +7,7 @@ import { projectIdentities } from "./project-identity.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer as createNetServer } from "node:net";
 import type { FolderLookRunner } from "./folder-look.js";
-import type { BrowserAgentsView, BrowserHomeView, BrowserTasksView, BrowserTaskView } from "./browser-workspace.js";
+import type { BrowserAgentsView, BrowserHomeRow, BrowserTaskRow, BrowserTaskView } from "./browser-workspace.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -22,16 +22,19 @@ import { createDecisionServer } from "./serve.js";
 import { parseExecutionPlanDocument, milestonesOf } from "./plan.js";
 import { resolveAgentAuthority } from "./agentconfig.js";
 import { Window } from "happy-dom";
-import { presented, T0, renderedHtmlOf, workspaceOf, revisionIdOf, plannerKeptTerms, revisionFormOf, sealScopeFixture } from "../test/serve-kit.js";
+import { presented, T0, renderedHtmlOf, workspaceOf, workListOf, workNeedsRowsOf, revisionIdOf, plannerKeptTerms, revisionFormOf, sealScopeFixture } from "../test/serve-kit.js";
 import { handoffBytes } from "../test/handoff-fixture.js";
 
-/** Home's rows and a Board column, as the page's own snapshot carries them (Home and the Board render in the browser). */
-const homeRowsOf = (html: string) => {
-  const view = workspaceOf(html).view as BrowserHomeView;
-  return [...view.groups.flatMap(group => group.rows), ...view.working, ...view.finishedToday.rows];
+/** Work's rows (its Needs you, then its list) and a Board column, as the page's own snapshot carries them (Work and the
+ * Board render in the browser). */
+const homeRowsOf = (html: string): (BrowserHomeRow | BrowserTaskRow)[] => {
+  const workspace = workspaceOf(html);
+  const view = workspace.view;
+  const needs = view?.kind === "work" ? workNeedsRowsOf(workspace) : [];
+  return [...needs, ...workListOf(workspace).rows.filter(row => !needs.some(one => one.id === row.id))];
 };
 const homeRowOf = (html: string, id: string) => homeRowsOf(html).find(one => one.id === id) ?? null;
-const boardColumnOf = (html: string, key: string) => (workspaceOf(html).view as BrowserTasksView).board!.find(one => one.key === key)!;
+const boardColumnOf = (html: string, key: string) => workListOf(workspaceOf(html)).board!.find(one => one.key === key)!;
 
 describe("the operations console", () => {
   let store: Store;
@@ -52,7 +55,7 @@ describe("the operations console", () => {
     return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
   };
 
-  const csrfFrom = async (cookie: string, path = "/tasks"): Promise<string> => {
+  const csrfFrom = async (cookie: string, path = "/"): Promise<string> => {
     const html = await (await fetch(url(path), { headers: { cookie } })).text();
     const match = /name="csrf" value="([0-9a-f]{64})"/.exec(html);
     if (match === null) throw new Error("no csrf on the page");
@@ -577,7 +580,7 @@ describe("the operations console", () => {
     // The bare list retired to Tasks; a result lives on its task page (one task view, task-link.ts).
     const bareReview = await fetch(url("/review"), { headers: { cookie }, redirect: "manual" });
     expect(bareReview.status).toBe(301);
-    expect(bareReview.headers.get("location")).toBe("/tasks?view=ready");
+    expect(bareReview.headers.get("location")).toBe("/?view=ready");
     const moved = await fetch(url("/review?result=t-pr2"), { headers: { cookie }, redirect: "manual" });
     expect(moved.status).toBe(303);
     expect(moved.headers.get("location")).toBe("/t/t-pr2?tab=result");
@@ -660,8 +663,8 @@ describe("the operations console", () => {
     const inbox = await (await fetch(url("/inbox"), { headers: { cookie } })).text();
     expect(workspaceOf(inbox).refreshSeconds).toBeUndefined();
     expect(inbox).not.toContain('http-equiv="refresh"');
-    // Tasks, a task and Home read themselves every 10 s while something builds, without a docked chat.
-    for (const path of ["/tasks", "/t/t-live", "/chat"]) {
+    // A task and Chat read themselves every 10 s while something builds, without a docked chat (Work follows its live room).
+    for (const path of ["/t/t-live", "/chat"]) {
       const html = await (await fetch(url(path), { headers: { cookie } })).text();
       expect(workspaceOf(html).refreshSeconds, path).toBe(10);
       expect(workspaceOf(html).conversation ?? null, path).toBeNull();
@@ -673,10 +676,10 @@ describe("the operations console", () => {
     store.createTask({ id: "t-1", title: "already here" }, T0);
     const cookie = await login();
 
-    const list = await (await fetch(url("/tasks"), { headers: { cookie } })).text();
+    const list = await (await fetch(url("/"), { headers: { cookie } })).text();
     expect(list).toContain("already here");
 
-    expect((await fetch(url("/tasks?state=bogus"), { headers: { cookie } })).status).toBe(400);
+    expect((await fetch(url("/?state=bogus"), { headers: { cookie } })).status).toBe(400);
 
     const csrf = await csrfFrom(cookie);
     const added = await post("/tasks/add", cookie, {
@@ -1228,7 +1231,7 @@ describe("the operations console", () => {
     const csrf = await csrfFrom(cookie);
     await post("/t/t-x/scope", cookie, { csrf, acceptance: "c1: ok | manual-review", sawDigest: "", goal: `goal ${probe}`, not: `not ${probe}`, touches: `touch-${probe}` });
 
-    for (const path of ["/", "/inbox", "/tasks", "/t/t-x", "/runs", `/r/${run}`]) {
+    for (const path of ["/", "/inbox", "/?view=running", "/t/t-x", "/runs", `/r/${run}`]) {
       const html = await (await fetch(url(path), { headers: { cookie } })).text();
       expect(html, path).not.toContain("<script>alert(1)");
       expect(html, path).not.toContain("<img src=x");
@@ -1240,7 +1243,7 @@ describe("the operations console", () => {
     store.createTask({ id: "a b?c=1", title: "awkward id" }, T0);
     const cookie = await login();
 
-    const list = await (await fetch(url("/tasks"), { headers: { cookie } })).text();
+    const list = await (await fetch(url("/"), { headers: { cookie } })).text();
     expect(list).toContain(`/t/a%20b%3Fc%3D1`);
 
     const screen = await fetch(url("/t/a%20b%3Fc%3D1"), { headers: { cookie } });
@@ -1271,7 +1274,7 @@ describe("console v2: projects, the ceiling, and the workspace", () => {
   };
 
   const csrfFrom = async (cookie: string): Promise<string> => {
-    const html = await (await fetch(url("/tasks"), { headers: { cookie } })).text();
+    const html = await (await fetch(url("/"), { headers: { cookie } })).text();
     const match = /name="csrf" value="([0-9a-f]{64})"/.exec(html);
     if (match === null) throw new Error("no csrf");
     return match[1] as string;
@@ -1345,7 +1348,7 @@ describe("console v2: projects, the ceiling, and the workspace", () => {
     const csrf = await csrfFrom(cookie);
     expect((await post("/t/t-out/hold", cookie, { csrf, reason: "x" })).status).toBe(404);
 
-    const list = await (await fetch(url("/tasks"), { headers: { cookie } })).text();
+    const list = await (await fetch(url("/"), { headers: { cookie } })).text();
     expect(list).toContain("t-in");
     expect(list).not.toContain("t-out");
   });
@@ -1487,7 +1490,7 @@ describe("console v2: projects, the ceiling, and the workspace", () => {
     const auth = { authorization: `Bearer alex:${approverToken}` };
 
     // Naming an out-of-ceiling project is a refusal, not a fallback.
-    const denied = await fetch(url("/tasks"), { headers: { ...auth, "x-standing-orders-project": repoB } });
+    const denied = await fetch(url("/"), { headers: { ...auth, "x-standing-orders-project": repoB } });
     expect(denied.status).toBe(403);
 
     // And the resource ceiling holds without any header games.
@@ -1590,8 +1593,8 @@ describe("the board — the pipeline as lanes, live in place", () => {
     store.placeTask(store.refFor("built-in", "t-bare").id, "/repo/main");
 
     const cookie = await login();
-    const board = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
-    expect((workspaceOf(board).view as BrowserTasksView).board!.map(one => one.label)).toEqual(["Needs you", "Queued", "Running", "Finished"]);
+    const board = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
+    expect(workListOf(workspaceOf(board)).board!.map(one => one.label)).toEqual(["Needs you", "Queued", "Running", "Finished"]);
     expect(boardColumnOf(board, "running").rows.map(one => one.title)).toEqual(["being built"]);
     expect(boardColumnOf(board, "running").rows[0]!.word).toMatchObject({ word: "Building" });
     expect(board).toContain("all set");
@@ -1630,19 +1633,19 @@ describe("the board — the pipeline as lanes, live in place", () => {
 
   test("the order view's fragment is the region alone, behind the same auth", async () => {
     const cookie = await login();
-    const fragment = await fetch(url("/tasks?view=order&fragment=1"), { headers: { cookie } });
+    const fragment = await fetch(url("/?view=order&fragment=1"), { headers: { cookie } });
     const body = await fragment.text();
     expect(body).toContain('class="lanes"');
     expect(body).not.toContain("<html");
     expect(body).not.toContain("<script");
 
-    const anonymous = await fetch(url("/tasks?view=order&fragment=1"), { redirect: "manual" });
+    const anonymous = await fetch(url("/?view=order&fragment=1"), { redirect: "manual" });
     expect(anonymous.status).toBe(303);
     expect(anonymous.headers.get("location")).toBe("/login");
     // The Board reads itself in the page now: the old fragment address keeps only what its target knows.
     const retired = await fetch(url("/board?fragment=1"), { headers: { cookie }, redirect: "manual" });
     expect(retired.status).toBe(301);
-    expect(retired.headers.get("location")).toBe("/tasks?view=board");
+    expect(retired.headers.get("location")).toBe("/?view=board");
   });
 
   test("new implementation tasks recommend and request planning before approval", async () => {
@@ -1726,7 +1729,7 @@ describe("the board — the pipeline as lanes, live in place", () => {
     expect(screen).not.toContain(">plan first<");
     expect(screen).not.toContain("approval-sheet");
 
-    const board = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
+    const board = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
     expect(JSON.stringify(boardColumnOf(board, "queued").rows)).toContain("Waiting to plan.");
 
     // The draft arrives: proposed scope + plan state; the board flips to
@@ -1767,7 +1770,7 @@ describe("the board — the pipeline as lanes, live in place", () => {
     }, new Date());
     store.finishRun(run, { outcome: "built", reason: "plan-drafted", now: new Date() });
 
-    const review = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
+    const review = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
     expect(boardColumnOf(review, "needs").rows.find(one => one.id === "t-plan")?.action?.label).toBe("Approve plan");
     const drafted = await (await fetch(url("/t/t-plan"), { headers: { cookie } })).text();
     expect(drafted).toContain("Do the thing carefully.");
@@ -2096,7 +2099,7 @@ describe("the rolled-up board — every project, one ceiling", () => {
     store.createTask({ id: "t-unplaced", title: "belongs to nobody yet" }, T0);
 
     const cookie = await login();
-    const board = await (await fetch(url("/tasks?view=board&scope=all"), { headers: { cookie } })).text();
+    const board = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
     expect(board).toContain("t-alpha");
     expect(board).toContain("t-beta");
     // Outside the ceiling: not a card, not a name, not a byte.
@@ -2108,7 +2111,7 @@ describe("the rolled-up board — every project, one ceiling", () => {
     // An old roll-up link carries the same scope and the same ceiling.
     const old = await fetch(url("/board?scope=all&fragment=1"), { headers: { cookie }, redirect: "manual" });
     expect(old.status).toBe(301);
-    expect(old.headers.get("location")).toBe("/tasks?scope=all&view=board");
+    expect(old.headers.get("location")).toBe("/?view=board");
     const followed = await (await fetch(url("/board?scope=all&fragment=1"), { headers: { cookie } })).text();
     expect(followed).toContain("t-alpha");
     expect(followed).not.toContain("t-outside");
@@ -2117,8 +2120,8 @@ describe("the rolled-up board — every project, one ceiling", () => {
     // roll-up under the same ceiling: a redirect decides nothing, its target admits.
     const bare = await fetch(url("/board"), { headers: { cookie }, redirect: "manual" });
     expect(bare.status).toBe(301);
-    expect(bare.headers.get("location")).toBe("/tasks?view=board");
-    const rolled = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
+    expect(bare.headers.get("location")).toBe("/?view=board");
+    const rolled = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
     expect(rolled).toContain("t-alpha");
     expect(rolled).toContain("t-beta");
     expect(rolled).not.toContain("t-outside");
@@ -2139,7 +2142,7 @@ describe("the rolled-up board — every project, one ceiling", () => {
     });
 
     const cookie = await login();
-    const board = await (await fetch(url("/tasks?view=board&scope=all"), { headers: { cookie } })).text();
+    const board = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
     // The Board says the task waits, and names nothing beyond the ceiling.
     expect(JSON.stringify(boardColumnOf(board, "queued").rows)).toContain("Waiting for another task to finish first.");
     expect(board).not.toContain("t-secret");
@@ -2450,8 +2453,8 @@ describe("the roll-up Home — every project, one ceiling, links only", () => {
       // The Board rolls up under the same ceiling: its redirect decides nothing.
       const board = await fetch(`${base}/board`, { headers: { cookie }, redirect: "manual" });
       expect(board.status).toBe(301);
-      expect(board.headers.get("location")).toBe("/tasks?view=board");
-      const rolled = await (await fetch(`${base}/tasks?view=board`, { headers: { cookie } })).text();
+      expect(board.headers.get("location")).toBe("/?view=board");
+      const rolled = await (await fetch(`${base}/?view=board`, { headers: { cookie } })).text();
       expect(rolled).toContain("t-main");
       expect(rolled).not.toContain("t-secret");
     } finally {
@@ -2569,7 +2572,7 @@ describe("the filesystem browser — confined to what opening allows", () => {
     await identities.refresh([repo, root]);
     await boot({ repos: [repo], projectRoots: [root], identities, backgroundChecks: true, backgroundChecksMs: 100 });
     const cookie = await login();
-    for (const path of ["/healthz", "/projects", "/tasks", "/chat", "/settings/project", "/settings/tools"]) {
+    for (const path of ["/healthz", "/projects", "/?view=all", "/chat", "/settings/project", "/settings/tools"]) {
       expect((await fetch(url(path), { headers: { cookie }, redirect: "manual" })).status, path).toBeLessThan(500);
     }
     // A path a request names that no answer vouches for is refused, never resolved on the console's thread.
@@ -2936,16 +2939,16 @@ describe("the workbench (attended A1) and the live substrate", () => {
     rmSync(evidenceRoot, { recursive: true, force: true });
   });
 
-  test("the old workbench lands on Tasks across every project, under the same auth", async () => {
+  test("the old workbench lands on Work across every project, under the same auth", async () => {
     const cookie = await login();
     const moved = await fetch(url("/workbench?fragment=rail"), { headers: { cookie }, redirect: "manual" });
     expect(moved.status).toBe(301);
-    expect(moved.headers.get("location")).toBe("/tasks?scope=all");
-    expect(await (await fetch(url("/tasks?scope=all"), { headers: { cookie } })).text()).toContain("Needs a scope written");
+    expect(moved.headers.get("location")).toBe("/");
+    expect(await (await fetch(url("/"), { headers: { cookie } })).text()).toContain("Needs a scope written");
     // Unauthenticated: the target refuses like any page.
-    const bare = await fetch(url("/tasks?scope=all"), { redirect: "manual" });
+    const bare = await fetch(url("/?scope=all"), { redirect: "manual" });
     expect(bare.status).toBe(303);
-    expect(bare.headers.get("location")).toBe("/login?return=%2Ftasks%3Fscope%3Dall");
+    expect(bare.headers.get("location")).toBe("/login");
   });
 
   test("a selected task opens as its own full page — forms and all — with no whole-page reload", async () => {
@@ -3131,9 +3134,9 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
 
   test("a building card lands on the build itself; a vanished build stays a repair card on the task", async () => {
     const cookie = await login();
-    const board = await (await fetch(url("/tasks?view=board"), { headers: { cookie } })).text();
-    expect(board).toContain(`href="/r/${liveRun}"`);
-    expect(boardColumnOf(board, "running").rows.map(one => one.id)).toEqual(["alive"]);
+    const board = await (await fetch(url("/?view=board"), { headers: { cookie } })).text();
+    // The building card opens its task (Work's panel offers Watch the work there).
+    expect(boardColumnOf(board, "running").rows.map(one => [one.id, one.href])).toEqual([["alive", "/t/alive"]]);
     // The orphan's dead lease never reads as live: it waits on a person, in
     // Needs you, as a stopped build to open, never as one to watch.
     expect(boardColumnOf(board, "needs").rows.find(one => one.id === "orphan")).toMatchObject({
@@ -3212,7 +3215,7 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     expect((await post("/t/q-two/next")).status).toBe(303);
 
     // The order view lists the queue as it dispatches: the last promoted card is at the front.
-    const queueOrder = async () => [...(await (await fetch(url("/tasks?view=order&fragment=1"), { headers: { cookie } })).text()).matchAll(/data-task="(q-[a-z]+)"/g)].map(one => one[1]);
+    const queueOrder = async () => [...(await (await fetch(url("/?view=order&fragment=1"), { headers: { cookie } })).text()).matchAll(/data-task="(q-[a-z]+)"/g)].map(one => one[1]);
     expect(await queueOrder()).toEqual(["q-two", "q-one"]);
     expect((await post("/t/q-one/next")).status).toBe(303);
     expect(await queueOrder()).toEqual(["q-one", "q-two"]);
