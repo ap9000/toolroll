@@ -271,6 +271,15 @@ impl Client {
         self.get("/engine/hello", "the handshake").await
     }
 
+    /// The coding agents on the console's computer and who the first task goes to (the console's last look).
+    pub async fn agents(&self) -> Result<AgentsRead, ApiError> {
+        versioned(
+            self.get::<AgentsRead>("/engine/agents", "this computer's agents")
+                .await?,
+            |r| r.version,
+        )
+    }
+
     pub async fn work_rows(&self) -> Result<WorkRows, ApiError> {
         versioned(
             self.get::<WorkRows>("/work/rows", "your tasks").await?,

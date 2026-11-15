@@ -259,10 +259,12 @@ fn syntax_highlighted_rust() {
     screen(&mut app, 120, 34);
     assert!(!app.highlight_pending);
     let shown = styled(&mut app, 120, 34, 9, 24);
-    assert!(shown.contains("LightMagenta:use⟧"), "{shown}");
+    // (The default look: the terminal's 16 colours, dark. Keywords by weight, strings in the code accent.)
+    assert!(shown.contains("BOLD:use⟧"), "{shown}");
     insta::assert_snapshot!(shown);
-    // NO_COLOR: the same screen, no colour anywhere.
-    app.colour = false;
+    // NO_COLOR (the theme at depth Off): the same screen, no colour anywhere, code included.
+    use toolroll_tui::theme::{Depth, Theme, ThemeName};
+    app.prefs.theme = Theme::build(ThemeName::Terminal, Depth::Off, None, &[]).0;
     let term = draw(&mut app, 120, 34);
     assert!(term
         .backend()
@@ -938,4 +940,55 @@ fn request_of(acts: &[SendAct]) -> Option<String> {
 
 fn paths(acts: &[SendAct]) -> Vec<&str> {
     acts.iter().map(|a| a.path.as_str()).collect()
+}
+
+/// The Diff tab follows the look like every other screen: at 256 colours, light or dark or high contrast, code takes
+/// its theme role (never a meaning colour); with ASCII glyphs every mark it draws is ASCII.
+#[test]
+fn diff_view_follows_the_theme_and_glyphs() {
+    use toolroll_tui::theme::{Depth, Glyphs, Theme, ThemeName};
+    toolroll_tui::syntax::load_now();
+    for name in [ThemeName::Light, ThemeName::Dark, ThemeName::HighContrast] {
+        let mut app = review_app(no_accept_facts());
+        app.prefs.theme = Theme::build(name, Depth::Ansi256, None, &[]).0;
+        let meaning = [
+            app.prefs.theme.running().fg,
+            app.prefs.theme.passed().fg,
+            app.prefs.theme.failed().fg,
+        ];
+        screen(&mut app, 120, 34);
+        assert!(app
+            .highlights
+            .as_ref()
+            .unwrap()
+            .wait(std::time::Duration::from_secs(10)));
+        let term = draw(&mut app, 120, 34);
+        let code_rows: Vec<_> = (9..24u16)
+            .flat_map(|y| (50..119u16).map(move |x| (x, y)))
+            .map(|p| term.backend().buffer()[p].fg)
+            .collect();
+        // Strings in the code accent (an indexed colour at 256), and never a meaning colour.
+        let accent = app.prefs.theme.code(toolroll_tui::syntax::Token::Text).fg;
+        assert!(
+            matches!(accent, Some(Color::Indexed(_))),
+            "{name:?} {accent:?}"
+        );
+        assert!(!meaning.contains(&accent), "{name:?}");
+        assert!(
+            code_rows.contains(&accent.unwrap()),
+            "{name:?}: no string drawn in the accent"
+        );
+    }
+    let mut app = review_app(no_accept_facts());
+    app.prefs.settings.glyphs = Glyphs::Ascii;
+    to_line(&mut app, 3);
+    app.key(key('c'));
+    type_words(&mut app, "subtotal reads better");
+    app.key(code(KeyCode::Enter));
+    let shown = screen(&mut app, 120, 34);
+    assert!(shown.is_ascii(), "{shown}");
+    assert!(
+        shown.contains("> src/cart.rs") && shown.contains("~ 13 hidden lines"),
+        "{shown}"
+    );
 }

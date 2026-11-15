@@ -60,6 +60,8 @@ impl Act {
 #[derive(Debug)]
 pub struct State {
     pub work: Value,
+    /// The agents read (GET /engine/agents).
+    pub agents: Value,
     pub steps: HashMap<String, Value>,
     pub diffs: HashMap<String, Value>,
     pub diff_files: HashMap<String, Value>,
@@ -405,6 +407,7 @@ pub fn scenario() -> State {
     );
     State {
         work: scenario_work(),
+        agents: fixture("agents.json"),
         steps,
         diffs,
         diff_files,
@@ -448,6 +451,7 @@ impl FakeEngine {
             .route("/login/once", post(redeem))
             .route("/engine/hello", get(hello))
             .route("/work/rows", get(work))
+            .route("/engine/agents", get(agents))
             .route("/t/{task}/steps", get(steps))
             .route("/t/{task}/diff", get(diff))
             .route("/agents/live/run/{run}", get(live_window))
@@ -564,6 +568,13 @@ async fn work(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
         return r;
     }
     json_answer(200, s.state.lock().unwrap().work.clone())
+}
+
+async fn agents(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = admitted(&s, &headers, "/engine/agents") {
+        return r;
+    }
+    json_answer(200, s.state.lock().unwrap().agents.clone())
 }
 
 async fn steps(

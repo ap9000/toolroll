@@ -198,28 +198,23 @@ describe("the welcome's one model (web, terminal and --json read the same facts)
     expect(optional({ agents: { claude: "signed-out", codex: "signed-out" } })).toEqual([["claude", false], ["codex", false]]);
     expect(optional({ agents: { claude: "not-installed", codex: "not-installed" } })).toEqual([["claude", false], ["codex", false]]);
     expect(optional({ agents: { claude: null, codex: null } })).toEqual([["claude", false], ["codex", false]]);
-    // The stranger's case (Linux, 0.9.106): Claude Code installed, not signed in; Codex not installed.
+    // The stranger's case (Linux, 0.9.106): Claude Code installed, not signed in; Codex not installed. One line per
+    // installed agent (A0b instant start): the one not installed isn't a second step.
     expect(welcomeStepLines(welcomeModel({ ...base, inUse: null, agents: { claude: "signed-out", codex: "not-installed" } }), "agent")).toEqual([
       "1. Agent · To do",
-      "   Claude Code: not signed in",
-      "     To sign in, run: claude auth login",
-      "   Codex (optional): not installed",
-      "     To sign in, run: npm install -g @openai/codex && codex login",
+      "   Sign in to Claude Code: run `claude auth login`",
     ]);
-    // Signed in to one: the other is optional, with no command to run.
+    // Signed in to one: who the first task goes to, and nothing else to run.
     expect(welcomeStepLines(welcomeModel({ ...base, agents: { claude: "connected", codex: "not-installed" } }), "agent")).toEqual([
       "1. Agent · Done",
-      "   Claude Code: signed in (in use)",
-      "   Codex (optional): not installed",
+      "   Your first task goes to Claude Code.",
     ]);
-    // Neither installed: it says one is enough, once.
+    // Neither installed: how to install one, once.
     expect(welcomeStepLines(welcomeModel({ ...base, inUse: null, agents: { claude: "not-installed", codex: "not-installed" } }), "agent")).toEqual([
       "1. Agent · To do",
-      "   You need one of these:",
-      "   Claude Code: not installed",
-      "     To sign in, run: npm install -g @anthropic-ai/claude-code && claude auth login",
-      "   Codex: not installed",
-      "     To sign in, run: npm install -g @openai/codex && codex login",
+      "   Install one:",
+      "     Claude Code: run `npm install -g @anthropic-ai/claude-code && claude auth login`",
+      "     Codex: run `npm install -g @openai/codex && codex login`",
     ]);
   });
 

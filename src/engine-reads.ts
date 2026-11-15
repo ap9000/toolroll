@@ -20,7 +20,8 @@ import { taskWorkSummaryOf, type WorkSummaryAccess } from "./work-summary.js";
 import { terminalDiffView } from "./result-evidence-readers.js";
 import { parseReviewDiff } from "./server/render-results.js";
 import { revisionSourceOf } from "./result-review.js";
-import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { detectionLines, NO_AGENT_YET, type AgentDetection } from "./agent-detect.js";
 import { scanPatchForSecrets } from "./evidence.js";
 import { viewedGitSync } from "./teardown-git.js";
 
@@ -207,7 +208,7 @@ const CONTEXT_LINE_CHARS = 2_000;
  */
 function keyMaterialIn(content: string): boolean {
   if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(content) || /PuTTY-User-Key-File-\d+:/.test(content)) return true;
-  if (/\baws_secret_access_key\b\s*[=:]/i.test(content)) return true;
+  if (/\b(?:aws_secret_access_key|SecretAccessKey)\b["']?\s*[=:]/i.test(content)) return true;
   return /"d"\s*:\s*"[^"]{8,}"/.test(content) && /"(?:kty|crv|n)"\s*:/.test(content);
 }
 
@@ -280,4 +281,19 @@ export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: 
     return { newLine: from + index, text: name === undefined ? line.slice(0, CONTEXT_LINE_CHARS) : `[redacted: ${name} detected on this line]` };
   });
   return answer(lines, lineCount, null);
+}
+
+/** `GET /engine/agents`: the last detection of this computer's agents (agent-detect.ts) as the contract says it; null
+ * (not looked for yet) reads as no agents and the "looking" line. */
+export function agentsReadOf(detection: AgentDetection | null, view: "full" | "summary" = "full"): AgentsRead {
+  const agents = (detection?.agents ?? []).map(one => ({ id: one.id, name: one.name, state: one.state, how: one.how, signIn: one.signIn, ready: one.ready, next: one.next }));
+  const first = detection?.firstTask ?? null;
+  const firstTask = first === null ? null : { id: first, name: agents.find(one => one.id === first)?.name ?? first };
+  // Summary (a person who isn't an instance operator, server/welcome.ts agentInventoryOf): who the first task goes to,
+  // never which agents this computer has.
+  if (view === "summary") {
+    const lines = firstTask !== null ? [`Your first task goes to ${firstTask.name}.`] : detection === null ? detectionLines(null) : [NO_AGENT_YET];
+    return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents: [], firstTask, lines };
+  }
+  return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents, firstTask, lines: detectionLines(detection) };
 }

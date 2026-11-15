@@ -23,7 +23,7 @@ import * as reads from "../engine-reads.js";
 import * as fast from "../fast-start.js";
 import * as newTask from "./render-new-task.js";
 import * as mainRead from "../live-main-read.js";
-import { engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffContextSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { agentsReadSchema, engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffContextSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
 
 // Every loader a spy around the real one: a refused caller must cause none of them.
 vi.mock("../engine-reads.js", async importOriginal => {
@@ -106,7 +106,11 @@ beforeAll(async () => {
   store.setTaskState("t-done", "done", T0);
   storeEvidence(store, evidenceRoot, resultRun, "terminal-diff", "diff.patch", Buffer.from(PATCH), "git diff (exit 0)", T0, { captureStatus: "ok" });
   started("t-b", repoB);
-  server = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(), localRunner: "builder-1" });
+  // This computer's sign-in check (stubbed, no process): Codex signed in, nothing else installed. Builds are already set
+  // to Claude Code here, so the first task waits for it.
+  const notFound = { code: 127, stdout: "", stderr: "", timedOut: false, notFound: true };
+  server = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(), localRunner: "builder-1", leadByDefault: true,
+    connectionProbe: (async (file: string) => file === "codex" ? { code: 0, stdout: "Logged in using ChatGPT\n", stderr: "", timedOut: false, notFound: false } : notFound) as never });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   cookies["operator"] = await login("alex", alex.token);
@@ -122,7 +126,7 @@ afterAll(async () => {
 });
 
 const THREAD = `/agents/live/thread/${"a".repeat(32)}`;
-const paths = () => ({ hello: "/engine/hello", work: "/work/rows", steps: "/t/t-done/steps", diff: "/t/t-done/diff", file: `/t/t-done/diff?run=${resultRun}&file=0`, live: `/agents/live/run/${liveRun}?file=main`, thread: THREAD });
+const paths = () => ({ hello: "/engine/hello", agents: "/engine/agents", work: "/work/rows", steps: "/t/t-done/steps", diff: "/t/t-done/diff", file: `/t/t-done/diff?run=${resultRun}&file=0`, live: `/agents/live/run/${liveRun}?file=main`, thread: THREAD });
 type Route = keyof ReturnType<typeof paths>;
 async function read(persona: string, path: string): Promise<{ status: number; body: unknown }> {
   const headers: Record<string, string> = persona === "token" ? { authorization: `Bearer ${readToken}` } : { cookie: cookies[persona]! };
@@ -136,11 +140,11 @@ async function read(persona: string, path: string): Promise<{ status: number; bo
 /** Who reads what, written out by hand from the pages each route mirrors: Work and the task page admit any signed-in
  * caller with the project (a token too); the Live grid's reads are a browser session's only; a thread is refused for now. */
 const ADMITTED: Record<string, Record<Route, number>> = {
-  operator: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  approver: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  viewer: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  "project-limited": { hello: 200, work: 200, steps: 404, diff: 404, file: 404, live: 404, thread: 404 },
-  token: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 403, thread: 403 },
+  operator: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  approver: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  viewer: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  "project-limited": { hello: 200, agents: 200, work: 200, steps: 404, diff: 404, file: 404, live: 404, thread: 404 },
+  token: { hello: 200, agents: 403, work: 200, steps: 200, diff: 200, file: 200, live: 403, thread: 403 },
 };
 
 describe("each engine read admits per persona as the page it mirrors; a refusal reads nothing", () => {
@@ -171,6 +175,27 @@ describe("each engine read admits per persona as the page it mirrors; a refusal 
     expect((await read("operator", `/t/t-done/diff?run=${resultRun}&file=9`)).status).toBe(404);
     expect((await read("operator", "/t/t-done/steps?x=1")).status).toBe(400);
     expect((await read("operator", `/agents/live/run/${liveRun}?file=other`)).status).toBe(400);
+  });
+});
+
+describe("this computer's agents: one inventory policy for the engine read and the welcome", () => {
+  test("an instance operator sees each agent; another person's session sees only who the first task goes to; a token nothing", async () => {
+    // The console's own check looked once at start (the lead on by default); wait for its answer, not a window.
+    let full = agentsReadSchema.parse((await read("operator", "/engine/agents")).body);
+    for (let i = 0; i < 100 && full.checkedAt === null; i++) { await new Promise(done => setTimeout(done, 20)); full = agentsReadSchema.parse((await read("operator", "/engine/agents")).body); }
+    expect(full.agents.map(one => [one.id, one.state]).slice(0, 2)).toEqual([["claude", "not-installed"], ["codex", "signed-in"]]);
+    expect(full.firstTask).toBeNull();
+    expect(full.lines).toContain("Codex is signed in. To give it tasks, choose it in Settings → Models.");
+    for (const persona of ["viewer", "project-limited"]) {
+      const summary = agentsReadSchema.parse((await read(persona, "/engine/agents")).body);
+      expect(summary, persona).toMatchObject({ agents: [], firstTask: null, lines: ["No coding agent can take tasks on this computer yet."] });
+    }
+    expect((await read("token", "/engine/agents")).status).toBe(403);
+    // The welcome reads the same policy (its rendering per view: welcome.test.ts).
+    const { agentInventoryOf } = await import("./welcome.js");
+    const who = (name: string) => ({ name, via: "cookie" }) as never;
+    expect(["alex", "vera", "robin"].map(name => agentInventoryOf(who(name), store))).toEqual(["full", "summary", "summary"]);
+    expect(agentInventoryOf({ name: "alex", via: "bearer", role: "approver", generation: 1 }, store)).toBe("none");
   });
 });
 
@@ -236,6 +261,7 @@ describe("every answer is its contract's shape", () => {
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {
     // The handshake first: this build's contract, the one the fixtures and schemas.json hold.
     expect(helloSchema.parse((await read("operator", "/engine/hello")).body)).toMatchObject({ version: 1, contract: engineContractDigest() });
+    expect((await read("operator", "/engine/agents?fresh=1")).status).toBe(400);
     workRowsSchema.parse((await read("operator", "/work/rows")).body);
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body);
     expect(steps).toMatchObject({ task: { id: "t-done" }, room: "task:t-done" });
@@ -426,6 +452,11 @@ describe("T2 context expand: lines a hunk hides, read at the result's own commit
       writeFileSync(join(repoA, "src/putty.ppk"), [`${"PuTTY"}-User-Key-File-3: ssh-ed25519`, "Encryption: none", "Comment: test", "Public-Lines: 2", "AAAAC3NzaC1lZDI1NTE5", "AAAAIQ", ""].join("\n"));
       writeFileSync(join(repoA, "src/jwk.json"), ["{", '  "kty": "EC",', '  "crv": "P-256",', '  "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",', `  "${"d"}": "jpsQnnGQmL-YBIffH1136cLvxs4ibs8HnbFuBfmEvr0",`, '  "use": "sig"', "}", ""].join("\n"));
       writeFileSync(join(repoA, "src/aws.env"), ["# deploy", "REGION=eu-west-1", `${"aws_secret"}_access_key = ${"Qw3/".repeat(10)}`, "BUCKET=shop", ""].join("\n"));
+      // The same secret with its name quoted: JSON, a dict literal, quoted YAML, and the AWS CLI's JSON.
+      writeFileSync(join(repoA, "src/aws.json"), ["{", '  "region": "eu-west-1",', `  "${"aws_secret"}_access_key": "${"Jk8+".repeat(10)}",`, '  "bucket": "shop"', "}", ""].join("\n"));
+      writeFileSync(join(repoA, "src/aws_conf.py"), ["# deploy", "REGION = 'eu-west-1'", `CREDS = {'${"aws_secret"}_access_key': '${"Lm9/".repeat(10)}'}`, "BUCKET = 'shop'", ""].join("\n"));
+      writeFileSync(join(repoA, "src/aws.yaml"), ["deploy:", "  region: eu-west-1", `  "${"aws_secret"}_access_key": "${"Np0+".repeat(10)}"`, "  bucket: shop", ""].join("\n"));
+      writeFileSync(join(repoA, "src/sts.json"), ["{", '  "Credentials": {', '    "AccessKeyId": "ASIAEXAMPLE",', `    "${"SecretAccess"}Key": "${"Rs1/".repeat(10)}",`, '    "Expiration": "2026-11-15T00:00:00Z"', "  }", "}", ""].join("\n"));
       git("add", "."); git("commit", "-q", "-m", "more");
       const head2 = git("rev-parse", "HEAD");
       const stat = budgetedStatJson(parseNumstat(execFileSync("git", ["diff", "--numstat", "-z", head, head2], { cwd: repoA, encoding: "utf8" }), head, head2));
@@ -462,7 +493,8 @@ describe("T2 context expand: lines a hunk hides, read at the result's own commit
       expect(JSON.stringify(await lines("t-more", more, file, "from=4&count=1"))).not.toContain("MIIBOg");
     });
 
-    test.each([["src/putty.ppk", "AAAAC3"], ["src/jwk.json", "jpsQnn"], ["src/aws.env", "Qw3/"]])("%s (another key format) shows none of its hidden lines", async (path, secret) => {
+    test.each([["src/putty.ppk", "AAAAC3"], ["src/jwk.json", "jpsQnn"], ["src/aws.env", "Qw3/"], ["src/aws.json", "Jk8+"], ["src/aws_conf.py", "Lm9/"],
+      ["src/aws.yaml", "Np0+"], ["src/sts.json", "Rs1/"]])("%s (another key format) shows none of its hidden lines", async (path, secret) => {
       const file = await fileOf("t-more", more, path);
       expect(file).toBeGreaterThanOrEqual(0);
       for (const from of [1, 2, 3, 4, 5]) {

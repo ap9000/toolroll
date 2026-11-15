@@ -831,7 +831,8 @@ export const SECRET_PATTERNS: readonly { name: string; pattern: RegExp }[] = [
   { name: "password-in-url", pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:[^\s:@/]{3,}@[^\s/]/i },
   // T2 review: a PuTTY private key's first line, and an AWS secret key assigned on its own (its 40 characters).
   { name: "putty-private-key", pattern: /PuTTY-User-Key-File-\d+:/ },
-  { name: "aws-secret-key", pattern: /\baws_secret_access_key\b\s*[=:]\s*["']?[A-Za-z0-9/+]{40}/i },
+  // (The name may be quoted, as in JSON, a dict literal or quoted YAML; SecretAccessKey is the AWS CLI's and STS's JSON.)
+  { name: "aws-secret-key", pattern: /\b(?:aws_secret_access_key|SecretAccessKey)\b["']?\s*[=:]\s*["']?[A-Za-z0-9/+]{40}/i },
 ];
 
 export type SecretHit = { name: string; line: number };

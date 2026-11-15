@@ -7,9 +7,8 @@
 //!   Toolroll draws the pieces with its own styles; nothing syntect makes is ever written to the terminal, so no escape
 //!   sequence can come back out of agent-written code.
 //! - DESIGN.md: blue, green and red mean running, passed and failed, and amber means nothing here, so code takes only
-//!   magenta, cyan, bold and dim. The terminal's light or dark background picks the shade (`Theme`); NO_COLOR or a dumb
-//!   terminal draw no colour at all (view.rs strips it from the whole frame).
-use ratatui::style::{Color, Modifier, Style};
+//!   the code roles theme.rs gives them (theme.rs `code`): the theme, its depth (16, 256, full colour) and NO_COLOR
+//!   apply to code as to everything else.
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -42,52 +41,6 @@ impl Token {
             _ => Token::Plain,
         }
     }
-}
-
-/// The terminal's background, for the shade of each colour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Theme {
-    Dark,
-    Light,
-}
-
-impl Theme {
-    /// `TOOLROLL_TUI_THEME=light|dark` (a setting), else the terminal's own COLORFGBG ("15;0": light text on dark), else
-    /// dark.
-    pub fn detect(setting: Option<&str>, colorfgbg: Option<&str>) -> Theme {
-        match setting.map(str::trim) {
-            Some("light") => return Theme::Light,
-            Some("dark") => return Theme::Dark,
-            _ => {}
-        }
-        let bg = colorfgbg
-            .and_then(|v| v.rsplit(';').next())
-            .and_then(|b| b.trim().parse::<u8>().ok());
-        match bg {
-            Some(7) | Some(15) => Theme::Light,
-            _ => Theme::Dark,
-        }
-    }
-
-    pub fn style(self, token: Token) -> Style {
-        let (keyword, text) = match self {
-            Theme::Dark => (Color::LightMagenta, Color::LightCyan),
-            Theme::Light => (Color::Magenta, Color::Cyan),
-        };
-        match token {
-            Token::Plain => Style::default(),
-            Token::Keyword => Style::default().fg(keyword),
-            Token::Text => Style::default().fg(text),
-            Token::Comment => Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
-            Token::Number => Style::default().fg(keyword),
-            Token::Type => Style::default().add_modifier(Modifier::BOLD),
-        }
-    }
-}
-
-/// Whether colour may be drawn at all: never with NO_COLOR set (to anything) or on a dumb terminal.
-pub fn colour_allowed(no_color: Option<&str>, term: Option<&str>) -> bool {
-    no_color.is_none_or(str::is_empty) && term != Some("dumb")
 }
 
 static SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -285,47 +238,57 @@ fn grammar_for(set: &SyntaxSet, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
 
     #[test]
-    fn theme_and_colour_follow_the_terminal_or_the_setting() {
-        assert_eq!(Theme::detect(Some("light"), Some("15;0")), Theme::Light);
-        assert_eq!(Theme::detect(None, Some("0;15")), Theme::Light);
-        assert_eq!(Theme::detect(None, Some("15;0")), Theme::Dark);
-        assert_eq!(Theme::detect(None, None), Theme::Dark);
-        assert!(colour_allowed(None, Some("xterm-256color")));
-        assert!(colour_allowed(Some(""), None));
-        assert!(!colour_allowed(Some("1"), Some("xterm")));
-        assert!(!colour_allowed(None, Some("dumb")));
-    }
-
-    #[test]
-    fn code_never_takes_blue_green_red_or_amber() {
-        for theme in [Theme::Dark, Theme::Light] {
-            for t in [
-                Token::Plain,
-                Token::Keyword,
-                Token::Text,
-                Token::Comment,
-                Token::Number,
-                Token::Type,
-            ] {
-                let fg = theme.style(t).fg;
-                assert!(
-                    !matches!(
-                        fg,
-                        Some(
-                            Color::Blue
-                                | Color::LightBlue
-                                | Color::Green
-                                | Color::LightGreen
-                                | Color::Red
-                                | Color::LightRed
-                                | Color::Yellow
-                                | Color::LightYellow
-                        )
-                    ),
-                    "{t:?} {fg:?}"
-                );
+    fn code_never_takes_a_meaning_colour_in_any_theme_or_depth() {
+        use crate::theme::{Depth, Role, Theme as Look, ThemeName};
+        for name in ThemeName::ALL {
+            for depth in [Depth::TrueColor, Depth::Ansi256, Depth::Ansi16, Depth::Off] {
+                for bg in [None, Some(crate::theme::Rgb(250, 250, 250))] {
+                    let (look, _) = Look::build(name, depth, bg, &[]);
+                    let meaning: Vec<Option<Color>> = [Role::Running, Role::Passed, Role::Failed]
+                        .iter()
+                        .map(|r| match *r {
+                            Role::Running => look.running().fg,
+                            Role::Passed => look.passed().fg,
+                            _ => look.failed().fg,
+                        })
+                        .collect();
+                    for t in [
+                        Token::Plain,
+                        Token::Keyword,
+                        Token::Text,
+                        Token::Comment,
+                        Token::Number,
+                        Token::Type,
+                    ] {
+                        let fg = look.code(t).fg;
+                        assert!(
+                            !matches!(
+                                fg,
+                                Some(
+                                    Color::Blue
+                                        | Color::LightBlue
+                                        | Color::Green
+                                        | Color::LightGreen
+                                        | Color::Red
+                                        | Color::LightRed
+                                        | Color::Yellow
+                                        | Color::LightYellow
+                                )
+                            ),
+                            "{name:?} {depth:?} {t:?} {fg:?}"
+                        );
+                        assert!(
+                            fg.is_none() || fg == Some(Color::Reset) || !meaning.contains(&fg),
+                            "{name:?} {depth:?} {t:?}"
+                        );
+                        if depth == Depth::Off {
+                            assert!(fg.is_none(), "colour with NO_COLOR: {t:?}");
+                        }
+                    }
+                }
             }
         }
     }

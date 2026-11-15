@@ -1,5 +1,5 @@
 {
-  "digest": "c979f21a9cc7ead27f5f22520c1b4d27ffb4ee3b2ffdbde1f41507c578c5f0f6",
+  "digest": "3ae5e49dff852fe2745eb98efd5eab57222717f2cf249aec77a9e625941825f5",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1802,6 +1802,112 @@
         "responses",
         "mode",
         "defaultChain"
+      ],
+      "additionalProperties": false
+    },
+    "agents": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "checkedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "signed-in",
+                  "signed-out",
+                  "unknown",
+                  "not-installed"
+                ]
+              },
+              "how": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signIn": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "next": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "state",
+              "how",
+              "signIn",
+              "ready",
+              "next"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "firstTask": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "checkedAt",
+        "agents",
+        "firstTask",
+        "lines"
       ],
       "additionalProperties": false
     }

@@ -79,13 +79,14 @@ export function versionInRange(version: string, range: AttestationRange): boolea
 }
 
 /** PATH resolution to ONE absolute realpath — the path the probe runs and
- * the path the gateway spawns (v3 B3: no second resolution). */
-export function resolveExecutable(binary: string): string | null {
+ * the path the gateway spawns (v3 B3: no second resolution). `path`: the
+ * PATH searched (agent-detect.ts passes its own; the process's by default). */
+export function resolveExecutable(binary: string, path: string = process.env["PATH"] ?? ""): string | null {
   const candidates: string[] = [];
   if (binary.includes("/") || isAbsolute(binary)) {
     candidates.push(binary);
   } else {
-    for (const dir of (process.env["PATH"] ?? "").split(delimiter)) {
+    for (const dir of path.split(delimiter)) {
       if (dir !== "") candidates.push(join(dir, binary));
     }
   }

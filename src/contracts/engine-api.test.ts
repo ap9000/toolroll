@@ -23,6 +23,8 @@ const FIXTURES: Record<string, EngineResponseName> = {
   "link-redemption.json": "linkRedemption",
   "refusal.json": "refusal",
   "hello.json": "hello",
+  "agents.json": "agents",
+  "agents-none-signed-in.json": "agents",
 };
 /** Not a response: every schema as JSON Schema, with the contract's digest (what a client generates its models from). */
 const SCHEMAS = "schemas.json";

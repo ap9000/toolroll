@@ -16,6 +16,7 @@
  *                                    or lines of that file around its hunks with ?run=&file=&from=&count= (resultDiffContext)
  *   POST /login/once                 a local-owner one-time link redeemed for a terminal client (linkRedemption)
  *   GET  /engine/hello               the handshake: this build and the contract's digest (hello)
+ *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
  *
  * test/fixtures/engine-api/schemas.json is every schema here as JSON Schema with their digest (engineJsonSchemas), the
  * file a client generates its models from; engine-api.test.ts keeps it current.
@@ -218,6 +219,31 @@ export const resultDiffContextSchema = z.object({
   problem: z.string().nullable(),
 });
 
+// ---- Agents on this computer ---------------------------------------------------------------------------------------
+
+/** `GET /engine/agents`: every supported coding agent on the console's computer as its last detection saw it
+ * (agent-detect.ts; the console looks in the background, a read never does), who the first task goes to, and the first
+ * run's lines every screen shows. `checkedAt` null: not looked for yet since the console started (the lines say so).
+ * Facts only, never a credential: a sign-in is "signed in" and how, in fixed words. */
+export const agentsReadSchema = z.object({
+  version,
+  checkedAt: iso.nullable(),
+  agents: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    state: z.enum(["signed-in", "signed-out", "unknown", "not-installed"]),
+    how: z.string().nullable(),
+    /** The command that signs it in, for an installed agent that isn't; null otherwise. */
+    signIn: z.string().nullable(),
+    /** It can take a task now. */
+    ready: z.boolean(),
+    /** What it still needs before it takes tasks; null when nothing. */
+    next: z.string().nullable(),
+  })),
+  firstTask: z.object({ id: z.string(), name: z.string() }).nullable(),
+  lines: z.array(z.string()),
+});
+
 // ---- Local-owner link redemption ------------------------------------------------------------------------------------
 
 /** `POST /login/once` (application/json `{ "code": "<the link's code>" }`): the local owner's session for a terminal
@@ -256,6 +282,7 @@ export const ENGINE_RESPONSES = {
   linkRedemption: { route: "POST /login/once", schema: linkRedemptionSchema },
   refusal: { route: "every engine route's refusal", schema: engineRefusalSchema },
   hello: { route: "GET /engine/hello", schema: helloSchema },
+  agents: { route: "GET /engine/agents", schema: agentsReadSchema },
 } as const;
 export type EngineResponseName = keyof typeof ENGINE_RESPONSES;
 export type LiveSessionWindow = z.infer<typeof liveSessionWindowSchema>;
@@ -266,6 +293,7 @@ export type ResultDiff = z.infer<typeof resultDiffSchema>;
 export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
 export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
+export type AgentsRead = z.infer<typeof agentsReadSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;
 const toStderr: EngineReport = (route, issues) => process.stderr.write(`engine api: ${route} disagrees with its contract: ${issues.slice(0, 5).map(one => `${one.path} ${one.kind}`).join("; ")}\n`);

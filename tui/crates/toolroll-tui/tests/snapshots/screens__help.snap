@@ -1,6 +1,6 @@
 ---
 source: crates/toolroll-tui/tests/screens.rs
-assertion_line: 305
+assertion_line: 332
 expression: "screen(&mut app, 120, 30)"
 ---
 "┌ Toolroll · shop ───────────────────────────────────────────────────────────────────────────────────────── 2 need you ┐"
@@ -28,7 +28,7 @@ expression: "screen(&mut app, 120, 30)"
 "│                       │q            quit                                                     │                       │"
 "│                       │                                                                      │                       │"
 "│                       │Mouse: click to select, wheel to scroll, drag the divider.            │                       │"
-"│                       │Press any key to close.                                               │                       │"
+"│                       │Press s for settings, any other key to close.                         │                       │"
 "│                       └──────────────────────────────────────────────────────────────────────┘dy                     │"
 "│                                                                                                                      │"
 "│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  n new  w browser  ? help  q quit       │"
