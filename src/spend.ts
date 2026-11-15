@@ -172,7 +172,7 @@ export type Budget = { id: number; scope: BudgetScope; key: string; limitMicrous
 
 /** One piece of spend, whatever made it, with what it counts toward. */
 export type SpendItem = {
-  at: string; kind: "run" | "subagent" | "chat" | "sort" | "draft"; microusd: number | null; source: PriceSource;
+  at: string; kind: "run" | "subagent" | "chat" | "sort" | "draft" | "flexible"; microusd: number | null; source: PriceSource;
   project: string | null; person: string | null; subagent: number | null; provider: string; model: string | null;
   tokensIn: number | null; tokensOut: number | null; taskId: string | null; runId: number | null; authMode: string | null;
 };
@@ -304,6 +304,20 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
     const cost = typeof row["cost"] === "number" && Number.isFinite(row["cost"]) && row["cost"] >= 0 ? row["cost"] : null;
     items.push({ at: String(row["at"]), kind: "sort", microusd: cost === null ? null : Math.round(cost * 1_000_000), source: cost === null ? "unpriced" : "reported",
       project: text(row["repo"]), person: null, subagent: null, provider: "openrouter", model: text(row["model"]), tokensIn: null, tokensOut: null, taskId: null, runId: null, authMode: "api-key" });
+  }
+  // v164: a Flexible thread's turns (flexible-turns.ts), by when they started, counted toward the thread's project and
+  // its owner. A withdrawn turn never reached the provider. A plan's turn is $0; a keyed turn whose cost Toolroll couldn't
+  // measure is unpriced (never free); a turn still running counts what it has cost so far.
+  if (db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'thread_turn'").get() !== undefined) {
+    for (const row of db.prepare(`SELECT COALESCE(started_at, admitted_at) AS at, repo, owner, provider, model, billing, status, cost_basis, cost_microusd, tokens_in, tokens_out
+        FROM thread_turn WHERE status <> 'withdrawn' AND COALESCE(started_at, admitted_at) >= ? AND COALESCE(started_at, admitted_at) < ? ORDER BY admitted_at, id`).all(from, to)) {
+      const billing: Billing = row["billing"] === "subscription" ? "subscription" : "api-key";
+      const blind = billing === "api-key" && row["cost_basis"] === "unknown";
+      items.push({ at: String(row["at"]), kind: "flexible", microusd: billing === "subscription" ? 0 : blind ? null : Number(row["cost_microusd"]),
+        source: billing === "subscription" ? "subscription" : blind ? "unpriced" : row["cost_basis"] === "measured" ? "reported" : "estimated",
+        project: String(row["repo"]), person: String(row["owner"]), subagent: null, provider: String(row["provider"]), model: text(row["model"]),
+        tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), taskId: null, runId: null, authMode: billing });
+    }
   }
   return items;
 }

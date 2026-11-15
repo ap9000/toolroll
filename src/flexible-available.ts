@@ -13,6 +13,8 @@
  * (setsid survivors, a crash between spawn and registration, a durable process identity instead of a bare live_pid),
  * F2c; the import filters and validates protected names and placeholders (exclude is no import boundary: `git add -f`
  * commits one), F4; Codex threads stay refused until they run inside the srt fence; the bubblewrap attack runs green in
- * CI; the F0 real-model matrix recorded (each batch with the owner's yes); F2b–F2e, F3, F4 and the docs shipped with it.
+ * CI; the F0 real-model matrix recorded (each batch with the owner's yes); F2b–F2e, F3, F4 and the docs shipped with it;
+ * the unknown-cost monthly hold is explained in the user-facing Flexible terms before enablement (F2e: a keyed turn of
+ * unknown cost holds the monthly hard budgets it counts toward until the month ends).
  */
 export const FLEXIBLE_AVAILABLE: boolean = false;
