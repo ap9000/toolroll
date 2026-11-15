@@ -20,6 +20,7 @@ import {
   type FlexibleTurnRequest, type FlexibleUsage,
 } from "./flexible-turns.js";
 import { spendItems } from "./spend.js";
+import { fakePid } from "../test/fake-pid.js";
 
 vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
 
@@ -121,7 +122,7 @@ describe("admission", () => {
 
   test("a different level waits while the thread's agent is still running at the old one", () => {
     turn({ level: "full" });
-    store.handle.prepare("UPDATE flexible_thread SET live_pid = 4242, live_since = ? WHERE id = ?").run(NOW.toISOString(), T1);
+    store.handle.prepare("UPDATE flexible_thread SET live_pid = ?, live_since = ? WHERE id = ?").run(fakePid(1), NOW.toISOString(), T1);
     expect(admit({ level: "auto" })).toMatchObject({ ok: false, reason: "level-pending", message: expect.stringContaining("still running at Full access") });
     expect(admit({ level: "full" })).toMatchObject({ ok: true });
   });
