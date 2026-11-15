@@ -9704,6 +9704,19 @@ async function addTask(
       if (agentless !== null) noAgent = `${NO_AGENT_TITLE}. Run \`${agentless.command}\` so it can be planned.`;
     } catch { noAgent = null; }
   }
+  // Nothing is planned until a plan is asked for, and filing from a shell never asks: `task add` carries no credential
+  // (a coding agent may run it) and a plan dispatches an agent that spends. So the reply says the one way to ask from
+  // here, with the authority it takes: `task plan`, which asks for an approver's password, once anyone has one; else the
+  // terminal app's p (a password-free owner's own road; before the first start, `toolroll` sets that owner up). Words
+  // only; who may ask is unchanged.
+  let next: string | null = null;
+  if (filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")) {
+    let passwordSet = false;
+    try { passwordSet = store.handle.prepare("SELECT 1 FROM approver WHERE password_set = 1 AND revoked_at IS NULL LIMIT 1").get() !== undefined; } catch { passwordSet = false; }
+    next = !passwordSet
+      ? "Next: open `toolroll` and press p on it to ask for its plan. You approve the plan before anything is built."
+      : `Next: ask for its plan with \`toolroll task plan ${outcome.task.id}\` (it asks for your password), or press p on it in \`toolroll\`.`;
+  }
   return succeed(
     write,
     json,
@@ -9715,10 +9728,12 @@ async function addTask(
       ...(checks === undefined ? {} : { checks }),
       ...(link === null ? {} : { links: { task: link } }),
       ...(noAgent === null ? {} : { waiting: noAgent }),
+      ...(next === null ? {} : { next }),
     },
     () => [`Queued ${outcome.task.id} — ${outcome.task.title}${flags.has("report") ? " (a scout task: it delivers a report)" : ""}${checks === undefined ? "" : ` · checks: ${CHECK_LEVEL_WORDS[checks]}`}`, ...(replaces === undefined ? [] : [`  It replaces ${replaces}.`]), ...(noAgent === null ? [] : [`  ${noAgent}`]),
       // No project named: it can't be planned until it has one (placement is never guessed from the folder).
       ...(placedIn === undefined && remote === null ? ["  It has no project yet: choose one on its page in Toolroll, or file it with `--repo <folder>`."] : []),
+      ...(next === null ? [] : [`  ${next}`]),
       ...(link === null ? [] : [`  ${link}`])],
   );
 }

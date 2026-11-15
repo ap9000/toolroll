@@ -11,7 +11,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runOperate } from "./operate.js";
 import { register } from "./runner.js";
-import { openStore } from "./store.js";
+import { initLocalMode, openStore } from "./store.js";
+import { planSourceOf } from "./local-owner-acts.js";
+import { addApprover } from "./scope.js";
 import { GENERIC_FIRST_TASKS, welcomeModel } from "./first-run.js";
 import { welcomeLines } from "./welcome-facts.js";
 import { htmlString } from "./html.js";
@@ -87,6 +89,48 @@ describe("a first task filed from a shell with no coding agent signed in", () =>
     expect(added.out).not.toContain("No coding agent");
     const json = await run(["task", "add", "Fix another typo", "--id", "t-second", "--repo", repo, "--json"]);
     expect(JSON.parse(json.out)).not.toHaveProperty("waiting");
+  });
+});
+
+describe("a task filed from a shell waits for its plan to be asked for, and the reply says how", () => {
+  test("filing asks for no plan; once a password exists the reply names `task plan`, and the terminal app's p", async () => {
+    builder("ready");
+    const seeded = openStore(db);
+    try { if (!addApprover(seeded, "alex", T0).ok) throw Error("approver"); } finally { seeded.close(); }
+    const added = await run(["task", "add", "Fix a typo in the README", "--id", "t-first", "--repo", repo]);
+    expect(added.out).toMatch(/^ {2}Next: ask for its plan with `toolroll task plan t-first` \(it asks for your password\), or press p on it in `toolroll`\.$/m);
+    const json = await run(["task", "add", "Fix another typo", "--id", "t-second", "--repo", repo, "--json"]);
+    expect(JSON.parse(json.out).next).toContain("toolroll task plan t-second");
+    const store = openStore(db);
+    try {
+      // Filing never asked for a plan (no credential rode it), and the terminal app can ask: p is offered.
+      expect(store.lookupRef("t-first")?.plan).toBeNull();
+      expect(planSourceOf(store, "t-first")).not.toBeNull();
+    } finally { store.close(); }
+  });
+
+  test("a password-free owner is pointed at the terminal app's p, never at a password", async () => {
+    builder("ready");
+    const store = openStore(db, { createdBy: "laptop" });
+    try { if (!initLocalMode(store, { owner: "sam", fenceAvailable: true, now: T0 }).ok) throw Error("local mode"); } finally { store.close(); }
+    const added = await run(["task", "add", "Fix a typo in the README", "--id", "t-first", "--repo", repo]);
+    expect(added.out).toContain("  Next: open `toolroll` and press p on it to ask for its plan. You approve the plan before anything is built.");
+    expect(added.out).not.toMatch(/password/i);
+  });
+
+  test("before the first start (no account yet) the reply points at `toolroll` and p, never a password", async () => {
+    builder("ready");
+    const added = await run(["task", "add", "Fix a typo in the README", "--id", "t-first", "--repo", repo]);
+    expect(added.out).toContain("  Next: open `toolroll` and press p on it to ask for its plan.");
+    expect(added.out).not.toMatch(/password/i);
+  });
+
+  test("nothing about a plan for a task already planned or with no project", async () => {
+    builder("ready");
+    const loose = await run(["task", "add", "Fix a typo in the README", "--id", "t-loose"]);
+    expect(loose.out).not.toContain("Next:");
+    const report = await run(["task", "add", "Why does the login test flake?", "--id", "t-why", "--repo", repo, "--report"]);
+    expect(report.out).not.toContain("Next:");
   });
 });
 
