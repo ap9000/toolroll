@@ -145,10 +145,18 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
   // What the page fills in for the person (a reviewer's note to act on, a requirement marked Not right) is its own field,
   // shown as sent with the note and never written into the person's own box: only what they type is theirs (S5).
   const contextBox = form.querySelector<Field>("[name=context]"), contextLine = form.querySelector<HTMLElement>("[data-request-context-line]");
+  // One item per line; each is shown, as text, in a list under "Sent with it".
   const setContext = (text: string): void => {
     if (contextBox === null) return;
     contextBox.value = text;
-    if (contextLine !== null) { contextLine.textContent = text ? `Sent with it: ${text}` : ""; contextLine.hidden = !text; }
+    if (contextLine !== null) showContextItems(contextLine, text);
+  };
+  // A further item joins what is already there (the same one again changes nothing): earlier feedback is never lost.
+  const addContext = (item: string): void => {
+    if (contextBox === null || item.trim() === "") return;
+    const items = contextBox.value.split("\n").filter(one => one.trim() !== "");
+    if (!items.includes(item)) items.push(item);
+    setContext(items.join("\n"));
   };
   const showImage = (): void => {
     if (imageBox === null || imagePreview === null) return;
@@ -202,7 +210,10 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
     const button = within(event, "button.pick-file,button.pick-line");
     if (button === null) return;
     const reviewNote = button.getAttribute("data-review-note");
-    if (reviewNote !== null) setContext(reviewNote);
+    if (reviewNote !== null) {
+      const at = button.getAttribute("data-path"), line = button.getAttribute("data-line");
+      addContext(`${reviewNote.replace(/\s+/g, " ")}${at ? ` (${at}${line ? `:${line}` : ""})` : ""}`);
+    }
     if (pathBox !== null) pathBox.value = button.getAttribute("data-path") || "";
     if (lineBox !== null) lineBox.value = button.getAttribute("data-line") || "";
     if (pin !== null) pin.open = true;
@@ -281,4 +292,17 @@ export function resultWork(signal: AbortSignal, deps: ResultDeps = { replaceAddr
     form.setAttribute("aria-busy", "true");
   }, { signal });
   window.addEventListener("pageshow", () => form.removeAttribute("aria-busy"), { signal });
+}
+
+/** The form's filled-in items (one per line), shown as text in a list under "Sent with it"; hidden when there are none.
+ * Shared with the result view's Not right (one-workspace S5). */
+export function showContextItems(line: HTMLElement, text: string): void {
+  line.replaceChildren();
+  const items = text.split("\n").filter(one => one.trim() !== "");
+  if (items.length > 0) {
+    const list = document.createElement("ul");
+    for (const one of items) { const item = document.createElement("li"); item.textContent = one; list.append(item); }
+    line.append("Sent with it:", list);
+  }
+  line.hidden = items.length === 0;
 }

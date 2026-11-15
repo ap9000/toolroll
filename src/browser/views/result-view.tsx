@@ -22,6 +22,7 @@ import { RecheckStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHea
 import { Html, ResultStatusAct, ResultStatusWarnings, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 import { KButton, KInput, KLinkButton } from "../kit/index.js";
 import { AgentReport } from "./agent-report.js";
+import { showContextItems } from "../work/result.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
 
@@ -159,10 +160,13 @@ function requestChange(statement: string) {
   const shell = form?.closest("details") ?? null;
   if (shell !== null && !shell.open) shell.open = true;
   if (box === null || context === null) { window.location.hash = "request-changes"; return; }
-  const quote = `Not right: “${statement}”`;
-  if (!context.value.includes(quote)) context.value = context.value.trim() === "" ? quote : `${context.value.trimEnd()}\n${quote}`;
+  // One item per line, joining what is already there (the same one again changes nothing).
+  const quote = `Not right: “${statement.replace(/\s+/g, " ")}”`;
+  const items = context.value.split("\n").filter(one => one.trim() !== "");
+  if (!items.includes(quote)) items.push(quote);
+  context.value = items.join("\n");
   const line = form?.querySelector<HTMLElement>("[data-request-context-line]") ?? null;
-  if (line !== null) { line.textContent = `Sent with it: ${context.value}`; line.hidden = false; }
+  if (line !== null) showContextItems(line, context.value);
   box.dispatchEvent(new Event("input", { bubbles: true }));
   box.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
   box.focus();

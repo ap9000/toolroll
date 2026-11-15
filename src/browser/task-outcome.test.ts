@@ -148,7 +148,7 @@ test("a reply is quoted as the person's answer only; the agent's question sits o
 });
 
 test("Not right quotes the requirement in the form's filled-in field, never in the person's own box (S5)", () => {
-  const form = '<form id="comment-form"><input type="hidden" name="context" value=""><p data-request-context-line hidden></p><textarea name="note"></textarea></form>';
+  const form = '<form id="comment-form"><input type="hidden" name="context" value=""><div data-request-context-line hidden></div><textarea name="note"></textarea></form>';
   const selected = { ...reported(null), panel: { attributes: {}, heading: "", outcome: "Rounded.", status: null, reviewHistory: null, attention: [], limits: [], tabs: [], views: [],
     history: "", learning: "", request: form, canRequest: true, need: null, requestQuiet: false,
     youCheck: { lines: ["Check it"], accept: null, items: [{ id: "c1", statement: "The payout total reads right.", words: "The payout total reads right.", note: null, excerpts: [], shots: [] }] } } } as unknown as NonNullable<BrowserTaskView["result"]>["selected"];
@@ -156,7 +156,13 @@ test("Not right quotes the requirement in the form's filled-in field, never in t
   act(() => { host.querySelector<HTMLButtonElement>("button[data-not-right]")!.click(); });
   expect(host.querySelector<HTMLInputElement>('#comment-form [name="context"]')?.value).toBe("Not right: “The payout total reads right.”");
   expect(host.querySelector<HTMLTextAreaElement>('#comment-form [name="note"]')?.value).toBe("");
-  expect(host.querySelector("[data-request-context-line]")?.textContent).toBe("Sent with it: Not right: “The payout total reads right.”");
+  expect([...host.querySelectorAll("[data-request-context-line] li")].map(one => one.textContent)).toEqual(["Not right: “The payout total reads right.”"]);
+  // A reviewer's note already in the field stays; the same Not right again adds nothing.
+  const context = host.querySelector<HTMLInputElement>('#comment-form [name="context"]')!;
+  context.value = "Reviewer: fix B\nNot right: “The payout total reads right.”";
+  act(() => { host.querySelector<HTMLButtonElement>("button[data-not-right]")!.click(); });
+  act(() => { host.querySelector<HTMLButtonElement>("button[data-not-right]")!.click(); });
+  expect(context.value).toBe("Reviewer: fix B\nNot right: “The payout total reads right.”");
 });
 
 test("Retry's suggestion rides as its own field, shown as sent with it; the person's own note starts empty (S5)", () => {

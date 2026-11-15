@@ -386,7 +386,12 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
     // What the page fills in for the person (a reviewer's note to act on, a requirement marked Not right) is its own
     // field, shown as sent with the note and never written into the person's own box: only what they type is theirs.
     var contextBox=form.querySelector('[name=context]'),contextLine=form.querySelector('[data-request-context-line]');
-    function setContext(text){if(!contextBox)return;contextBox.value=text;if(contextLine){contextLine.textContent=text?'Sent with it: '+text:'';contextLine.hidden=!text;}}
+    // One item per line; each is shown, as text, in a list under "Sent with it".
+    function setContext(text){if(!contextBox)return;contextBox.value=text;if(contextLine){contextLine.textContent='';var items=text.split('\n').filter(function(one){return one.trim()!=='';});
+      if(items.length>0){contextLine.appendChild(document.createTextNode('Sent with it:'));var list=document.createElement('ul');items.forEach(function(one){var li=document.createElement('li');li.textContent=one;list.appendChild(li);});contextLine.appendChild(list);}
+      contextLine.hidden=items.length===0;}}
+    // A further item joins what is already there (the same one again changes nothing): earlier feedback is never lost.
+    function addContext(item){if(!contextBox||!item.trim())return;var items=contextBox.value.split('\n').filter(function(one){return one.trim()!=='';});if(items.indexOf(item)<0)items.push(item);setContext(items.join('\n'));}
     function showImage(){
       if(!imageBox||!imagePreview)return;
       imagePreview.hidden=!imageBox.value;
@@ -417,7 +422,7 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
     document.addEventListener('click',function(ev){
       var button=ev.target&&ev.target.closest?ev.target.closest('button.pick-file,button.pick-line'):null;if(!button)return;
       var reviewNote=button.getAttribute('data-review-note');
-      if(reviewNote!==null)setContext(reviewNote);
+      if(reviewNote!==null){var at=button.getAttribute('data-path');addContext(reviewNote.replace(/\s+/g,' ')+(at?' ('+at+(button.getAttribute('data-line')?':'+button.getAttribute('data-line'):'')+')':''));}
       if(pathBox)pathBox.value=button.getAttribute('data-path')||'';
       if(lineBox)lineBox.value=button.getAttribute('data-line')||'';
       if(pin)pin.open=true;

@@ -25,7 +25,7 @@ const PAGE = (o: PageOptions = {}): string => {
     `<input type="hidden" name="tab" value="summary"><input type="hidden" name="request" value="${TOKEN}">` +
     `<input type="hidden" name="batch" value="${o.batch ?? ""}"><input type="hidden" data-recorded-requests value="${o.recorded ?? ""}">` +
     `<input type="hidden" name="image" value=""><figure data-feedback-image hidden><img alt="Selected screenshot" hidden><figcaption></figcaption><button type="button" data-remove-image>Remove image</button></figure>` +
-    `<input type="hidden" name="context" value=""><p data-request-context-line hidden></p>` +
+    `<input type="hidden" name="context" value=""><div data-request-context-line hidden></div>` +
     `<textarea name="note"${o.limit === null ? "" : ` maxlength="${o.limit ?? 4000}"`}></textarea><span id="comment-note-limit">up to 4000 characters</span>` +
     `<details class="result-pin"><summary>Attach to a file or line</summary><input type="text" name="path"><input type="text" name="line"></details>` +
     `<button type="submit" name="intent" value="revise" data-request-changes>Send back</button><button type="submit" name="intent" value="note" data-save-feedback>Save for later</button>` +
@@ -235,8 +235,8 @@ describe.each([asString, asApp])("reviewing a result: $name", form => {
     // Nothing typed is replaced, so nothing is asked; the reviewer's words are the page's, never the person's box.
     expect(asked).toEqual([]);
     expect(noteBox().value).toBe("");
-    expect(field("context").value).toBe("Reviewer: handle the empty list");
-    expect($("[data-request-context-line]").textContent).toBe("Sent with it: Reviewer: handle the empty list");
+    expect(field("context").value).toBe("Reviewer: handle the empty list (src/b.ts:3)");
+    expect([...$("[data-request-context-line]").querySelectorAll("li")].map(one => one.textContent)).toEqual(["Reviewer: handle the empty list (src/b.ts:3)"]);
     expect(($("[data-request-context-line]") as HTMLElement).hidden).toBe(false);
     expect(field("path").value).toBe("src/b.ts");
     expect(field("line").value).toBe("3");
@@ -246,11 +246,26 @@ describe.each([asString, asApp])("reviewing a result: $name", form => {
     click("#finding");
     expect(asked).toEqual([]);
     expect(noteBox().value).toBe("my own words");
-    expect(draft()).toMatchObject({ note: "my own words", context: "Reviewer: handle the empty list" });
+    // The same reviewer note again changes nothing: one item.
+    expect(field("context").value).toBe("Reviewer: handle the empty list (src/b.ts:3)");
+    expect(draft()).toMatchObject({ note: "my own words", context: "Reviewer: handle the empty list (src/b.ts:3)" });
     // A plain pin leaves both alone.
     click("button.diff-annotate");
     expect(noteBox().value).toBe("my own words");
-    expect(field("context").value).toBe("Reviewer: handle the empty list");
+    expect(field("context").value).toBe("Reviewer: handle the empty list (src/b.ts:3)");
+  });
+
+  test("a reviewer's note joins earlier filled-in feedback, never replaces it, and the draft keeps both (S5)", () => {
+    // A requirement already marked Not right, kept in the draft.
+    keep({ note: "", path: "", line: "", image: "", context: "Not right: “Requirement A”", request: TOKEN, sent: null });
+    begin();
+    expect(field("context").value).toBe("Not right: “Requirement A”");
+    click("#finding");
+    click("#finding");
+    expect(field("context").value).toBe("Not right: “Requirement A”\nReviewer: handle the empty list (src/b.ts:3)");
+    expect([...$("[data-request-context-line]").querySelectorAll("li")].map(one => one.textContent)).toEqual(["Not right: “Requirement A”", "Reviewer: handle the empty list (src/b.ts:3)"]);
+    expect(draft()).toMatchObject({ context: "Not right: “Requirement A”\nReviewer: handle the empty list (src/b.ts:3)" });
+    expect(noteBox().value).toBe("");
   });
 
   test("a screenshot joins the feedback with its own picture, and leaves again", () => {
