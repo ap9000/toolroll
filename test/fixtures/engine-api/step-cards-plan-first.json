@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "task": {
+    "id": "t-b",
+    "root": "t-b",
+    "title": "Fix t-b",
+    "state": "queued",
+    "project": "/home/me/billing"
+  },
+  "chain": "plan-first",
+  "headline": "Queued",
+  "liveRun": 3,
+  "cards": [
+    {
+      "key": "plan",
+      "label": "Plan",
+      "state": "current",
+      "mark": "wait",
+      "sentence": "No plan yet",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "approve",
+      "label": "Approval",
+      "state": "todo",
+      "mark": "todo",
+      "sentence": "You approve before anything is built",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "build",
+      "label": "Build",
+      "state": "todo",
+      "mark": "todo",
+      "sentence": "Starts after approval",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": {
+        "provider": "claude",
+        "model": null
+      },
+      "startedAt": "2026-11-15T04:43:27.075Z",
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": [
+        3
+      ]
+    },
+    {
+      "key": "checks",
+      "label": "Checks",
+      "state": "todo",
+      "mark": "todo",
+      "sentence": "The project's checks run on the result",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "ready",
+      "label": "Ready",
+      "state": "todo",
+      "mark": "todo",
+      "sentence": "A result for you to review",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    }
+  ],
+  "room": "task:t-b"
+}

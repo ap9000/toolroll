@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "toolroll": "0.9.109",
+  "contract": "3f9a2c1e5b7d4068a1c2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f708192",
+  "responses": ["liveSessionWindow", "workRows", "stepCards", "resultDiff", "resultDiffFile", "linkRedemption", "refusal", "hello"]
+}

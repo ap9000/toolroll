@@ -65,6 +65,7 @@ import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
 import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
 import { withWorkReads } from "./work-reads.js";
+import { createEngineHandlers } from "./server/engine-api.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
@@ -767,6 +768,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if ((options.allowedHosts ?? []).length > 0 || publicOrigin !== null || tailnet.length > 0) return null;
       return address.address === "127.0.0.1" ? `127.0.0.1:${port}` : address.address === "::1" ? `[::1]:${port}` : null;
     },
+    // A terminal client's key (engine-api.ts): this console's own loopback names on its served port, whatever else it serves.
+    servedPort,
   });
   /** The exact command that starts this console again as it runs now, plus a listening address or one more allowed host. */
   const consoleCommand = (change: { host?: string; allow?: string }): string => {
@@ -878,7 +881,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // The reads that never extend the session, whatever their header says.
     const noTouch = edgeRoute?.domain === 'live' || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'
       // The Agents view's Live grid only watches: its polls never extend or write the session.
-      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live');
+      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live')
+      // The engine API's LiveSession windows (engine-api.ts) are the same passive reads.
+      || /^\/agents\/live\/(?:run\/[0-9]{1,15}|thread\/[0-9a-f]{32})$/.test(url.pathname);
     // A followed link (`navigate`) extends the session exactly as the HTML GET of the same address would; every other
     // workspace read (a re-read, a prefetch) does not.
     const touch = !(method === "GET" && (noTouch || (workspaceRead && purpose !== 'navigate')));
@@ -2403,7 +2408,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
     ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
-    ...createWelcomeHandlers(handlerRuntime).registrations,
+    ...createWelcomeHandlers(handlerRuntime).registrations, ...createEngineHandlers(handlerRuntime).registrations,
   ]);
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {

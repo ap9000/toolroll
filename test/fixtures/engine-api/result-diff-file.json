@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "task": "t-done",
+  "run": 2,
+  "file": {
+    "file": 0,
+    "path": "src/total.ts",
+    "oldPath": "src/total.ts",
+    "meta": [
+      "diff --git a/src/total.ts b/src/total.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/total.ts",
+      "+++ b/src/total.ts"
+    ],
+    "hunks": [
+      {
+        "header": "@@ -1,3 +1,3 @@",
+        "lines": [
+          {
+            "kind": "context",
+            "text": "export function total(items) {",
+            "oldLine": 1,
+            "newLine": 1
+          },
+          {
+            "kind": "deletion",
+            "text": "  return sum(items);",
+            "oldLine": 2,
+            "newLine": null
+          },
+          {
+            "kind": "addition",
+            "text": "  return sum(items) + tax(items);",
+            "oldLine": null,
+            "newLine": 2
+          },
+          {
+            "kind": "context",
+            "text": "}",
+            "oldLine": 3,
+            "newLine": 3
+          }
+        ]
+      }
+    ]
+  },
+  "linesTruncated": false
+}
