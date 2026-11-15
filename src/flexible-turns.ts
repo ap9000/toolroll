@@ -111,6 +111,16 @@ const WORDS: Readonly<Record<Exclude<FlexibleTurnRefusalReason, "cap-reached" | 
 });
 const refuse = (reason: keyof typeof WORDS): FlexibleTurnRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
+/** A clock: every writer here reads it once, inside its write transaction (after the write lock is held, however long
+ * that took), and uses that one time for every check and write in it. Never a time the caller took earlier. */
+export type FlexibleClock = () => Date;
+function timeOf(clock: FlexibleClock | undefined): Date {
+  const now = (clock ?? (() => new Date()))();
+  if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new Error("the Flexible turn clock gave no usable time");
+  return now;
+}
+const clockOk = (clock: unknown): boolean => clock === undefined || typeof clock === "function";
+
 /** The next midnight (UTC) after `now`: when a day's limits have room again. */
 const nextUtcDay = (now: Date): string => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -142,7 +152,8 @@ export type FlexibleTurnRequest = {
   requestKey: string;
   /** The process that will run the turn: only it may start, finish or charge it, and when it is gone its turns end. */
   holder: string;
-  now: Date;
+  /** Where the time comes from, read once after the write lock is held (default: the system clock). */
+  clock?: FlexibleClock;
 };
 export type FlexibleTurnAdmission = { ok: true; turn: string; seq: number; replayed: boolean };
 
@@ -246,7 +257,7 @@ function validRequest(input: FlexibleTurnRequest): boolean {
     && typeof input.digest === "string" && isFlexibleLevel(input.level) && typeof input.freshProof === "boolean" && (input.provider === "claude" || input.provider === "codex")
     && typeof input.model === "string" && MODEL.test(input.model) && (input.billing === "subscription" || input.billing === "api-key")
     && typeof input.requestKey === "string" && KEY.test(input.requestKey) && typeof input.holder === "string" && KEY.test(input.holder)
-    && input.now instanceof Date && Number.isFinite(input.now.getTime());
+    && clockOk(input.clock);
 }
 
 /**
@@ -260,6 +271,7 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!validRequest(input)) return refuse("invalid-request");
   return store.transact((): FlexibleTurnAdmission | FlexibleTurnRefusal => {
+    const now = timeOf(input.clock);
     const thread = store.handle.prepare("SELECT repo, state, created_by, live_pid FROM flexible_thread WHERE id = ?").get(input.thread);
     if (thread === undefined) return refuse("thread-unknown");
     if (thread["state"] !== "ready") return refuse("thread-not-ready");
@@ -274,7 +286,7 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
       if (same.termsId !== delegation.termsId) {
         // Admitted under terms that have since ended (off and on again, even with the same words): it can never start.
         // It is withdrawn, and this request is admitted afresh under the live terms, every limit checked again.
-        withdrawTurn(store, same, "admitted under terms that have since ended", input.now.toISOString());
+        withdrawTurn(store, same, "admitted under terms that have since ended", now.toISOString());
       } else {
         // The same request, exactly: the waiting turn back. Anything else about it differing is refused, never merged.
         const exact = same.owner === input.starter.name && same.ownerGeneration === input.starter.generation && same.termsDigest === delegation.digest && same.level === input.level
@@ -290,17 +302,17 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
       return { ok: false as const, reason: "level-pending" as const, message: `This thread's agent is still running at ${was}. Stop it, and its next turn starts at ${FLEXIBLE_LEVEL_WORDS[input.level]}.` };
     }
 
-    const limits = countsRefusal(store, repo, input, delegation.terms) ?? spendRefusal(store, repo, input.starter.name, input.provider, input.billing, delegation.terms, input.now, false);
+    const limits = countsRefusal(store, repo, input.starter.name, delegation.terms, now) ?? spendRefusal(store, repo, input.starter.name, input.provider, input.billing, delegation.terms, now, false);
     if (limits !== null) return limits;
-    const day = input.now.toISOString().slice(0, 10);
+    const day = now.toISOString().slice(0, 10);
     const before = reservedStarts(store, repo, day);
-    const rail = store.reserveModeRail(repo, 1, input.now);
-    if (!rail.ok) return capReached(rail.rail === "daily-runs" ? "mode-runs" : "mode-dollars", `This project's mode limits it: ${rail.detail}.`, nextUtcDay(input.now));
+    const rail = store.reserveModeRail(repo, 1, now);
+    if (!rail.ok) return capReached(rail.rail === "daily-runs" ? "mode-runs" : "mode-dollars", `This project's mode limits it: ${rail.detail}.`, nextUtcDay(now));
     const railReserved = reservedStarts(store, repo, day) > before ? 1 : 0;
 
     const id = randomBytes(16).toString("hex");
     const seq = Number(store.handle.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM thread_turn WHERE thread = ?").get(input.thread)!["n"]);
-    const at = input.now.toISOString();
+    const at = now.toISOString();
     store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing, request_key, holder, admitted_at, utc_day, rail_reserved, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted')`).run(id, input.thread, seq, repo, input.starter.name, input.starter.generation, delegation.termsId, delegation.digest,
       input.level, input.provider, input.model, input.billing, input.requestKey, input.holder, at, day, railReserved);
@@ -312,8 +324,7 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
 
 /** The first count limit (threads at once, turns today) with no room for this turn, or null. Read inside the admission's
  * transaction; the turn's own place is reserved by the row it writes. */
-function countsRefusal(store: Store, repo: string, input: FlexibleTurnRequest, terms: FlexibleTerms): FlexibleTurnRefusal | null {
-  const { now } = input;
+function countsRefusal(store: Store, repo: string, person: string, terms: FlexibleTerms, now: Date): FlexibleTurnRefusal | null {
   const day = now.toISOString().slice(0, 10);
   const tomorrow = nextUtcDay(now);
   const caps = terms.caps;
@@ -322,8 +333,8 @@ function countsRefusal(store: Store, repo: string, input: FlexibleTurnRequest, t
     return capReached("project-threads", `This project already has ${plural(project.threads, "thread")} working, the most its Flexible terms allow. Try again when one finishes.`, null);
   }
   if (project.turns >= caps.turnsPerDayProject) return capReached("project-turns", `This project used its ${plural(caps.turnsPerDayProject, "agent turn")} for today. ${TOMORROW}`, tomorrow);
-  const person = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE owner = ? AND utc_day = ? AND status <> 'withdrawn'").get(input.starter.name, day)!["n"]);
-  if (person >= caps.turnsPerDayPerson) return capReached("person-turns", `You used your ${plural(caps.turnsPerDayPerson, "agent turn")} for today across Flexible projects. ${TOMORROW}`, tomorrow);
+  const personTurns = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE owner = ? AND utc_day = ? AND status <> 'withdrawn'").get(person, day)!["n"]);
+  if (personTurns >= caps.turnsPerDayPerson) return capReached("person-turns", `You used your ${plural(caps.turnsPerDayPerson, "agent turn")} for today across Flexible projects. ${TOMORROW}`, tomorrow);
   const own = flexibleInstallationCaps(store);
   if (own.liveThreads !== null || own.turnsPerDay !== null) {
     const all = usageOf(store, day, null);
@@ -377,14 +388,16 @@ function spendRefusal(store: Store, repo: string, owner: string, provider: Flexi
  * limit: if the terms lapsed or changed, the thread is no longer ready, a spend limit has no room now, or the UTC day
  * it was admitted in has passed, the turn is withdrawn (it counts toward nothing) and refused. It reserves nothing more.
  */
-export function beginFlexibleTurn(store: Store, input: { turn: string; holder: string; now: Date }): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal {
+export function beginFlexibleTurn(store: Store, input: { turn: string; holder: string; clock?: FlexibleClock }): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal => {
+    const now = timeOf(input.clock);
     const turn = flexibleTurn(store, input.turn);
     if (turn === null) return refuse("turn-unknown");
     if (turn.status !== "admitted") return refuse("turn-not-admitted");
     if (turn.holder !== input.holder) return refuse("held-elsewhere");
-    const at = input.now.toISOString();
+    const at = now.toISOString();
     const withdraw = (refusal: FlexibleTurnRefusal): FlexibleTurnRefusal => { withdrawTurn(store, turn, refusal.message, at); return refusal; };
     // An admission lasts its own UTC day: its place was counted in that day, so a later start would spend outside it.
     if (at.slice(0, 10) !== turn.utcDay) return withdraw(refuse("turn-expired"));
@@ -399,7 +412,7 @@ export function beginFlexibleTurn(store: Store, input: { turn: string; holder: s
       return withdraw({ ok: false, reason: "terms-changed", message: "This project's Flexible terms changed since this turn was admitted, so it didn't start. Send the message again." });
     }
     // Spend may have moved while it waited: a dollar limit reached, a plan window used up, a budget spent.
-    const spend = spendRefusal(store, turn.repo, turn.owner, turn.provider, turn.billing, delegation.terms, input.now, true);
+    const spend = spendRefusal(store, turn.repo, turn.owner, turn.provider, turn.billing, delegation.terms, now, true);
     if (spend !== null) return withdraw(spend);
     store.handle.prepare("UPDATE thread_turn SET status = 'running', started_at = ? WHERE id = ? AND status = 'admitted'").run(at, turn.id);
     return { ok: true as const, turn: flexibleTurn(store, turn.id)! };
@@ -447,16 +460,16 @@ export function chargeFlexibleTurn(store: Store, input: { turn: string; usage: F
  * counts when it charged any calls (not something the agent can shape); otherwise what the provider reported; with
  * neither, the cost is unknown (a keyed turn's then holds any dollar limit for the day).
  */
-export function finishFlexibleTurn(store: Store, input: { turn: string; holder: string; outcome: "finished" | "unknown"; usage: FlexibleUsage | null; detail?: string; now: Date }):
+export function finishFlexibleTurn(store: Store, input: { turn: string; holder: string; outcome: "finished" | "unknown"; usage: FlexibleUsage | null; detail?: string; clock?: FlexibleClock }):
   { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
-  if ((input.outcome !== "finished" && input.outcome !== "unknown") || (input.usage !== null && !validUsage(input.usage))) return refuse("invalid-request");
+  if ((input.outcome !== "finished" && input.outcome !== "unknown") || (input.usage !== null && !validUsage(input.usage)) || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; turn: FlexibleTurnRow } | FlexibleTurnRefusal => {
     const turn = flexibleTurn(store, input.turn);
     if (turn === null) return refuse("turn-unknown");
     if (turn.status !== "running") return refuse("turn-not-running");
     if (turn.holder !== input.holder) return refuse("held-elsewhere");
-    const at = input.now.toISOString();
+    const at = timeOf(input.clock).toISOString();
     const detail = input.detail === undefined ? null : input.detail.slice(0, 2000);
     if (turn.relayCalls > 0) {
       store.handle.prepare("UPDATE thread_turn SET status = ?, ended_at = ?, end_detail = ?, cost_basis = ? WHERE id = ?").run(input.outcome, at, detail, turn.costBasis ?? "unknown", turn.id);
@@ -478,11 +491,11 @@ export function finishFlexibleTurn(store: Store, input: { turn: string; holder: 
  * interrupted and still count. An interrupted keyed turn's cost is unknown (a call may have been answered and not yet
  * charged), never $0. Nothing is resumed or replayed.
  */
-export function interruptFlexibleTurnsOf(store: Store, input: { holder: string; now: Date }): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal {
+export function interruptFlexibleTurnsOf(store: Store, input: { holder: string; clock?: FlexibleClock }): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
-  if (typeof input.holder !== "string" || !KEY.test(input.holder)) return refuse("invalid-request");
+  if (typeof input.holder !== "string" || !KEY.test(input.holder) || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal => {
-    const at = input.now.toISOString();
+    const at = timeOf(input.clock).toISOString();
     let withdrawn = 0, interrupted = 0;
     for (const row of store.handle.prepare("SELECT * FROM thread_turn WHERE holder = ? AND status IN ('admitted', 'running') ORDER BY admitted_at, id").all(input.holder)) {
       const turn = readTurn(row as Record<string, unknown>)!;
@@ -510,16 +523,16 @@ const limitOk = (value: unknown, max: number) => value === null || (typeof value
 
 /** Set the installation's own Flexible limits across every project (null: none). An instance operator only; a surface
  * that offers it adds its own step-up. Written and recorded in one transaction. */
-export function setFlexibleInstallationCaps(store: Store, input: { by: string; caps: FlexibleInstallationCaps; now: Date }): { ok: true; caps: FlexibleInstallationCaps } | FlexibleTurnRefusal {
+export function setFlexibleInstallationCaps(store: Store, input: { by: string; caps: FlexibleInstallationCaps; clock?: FlexibleClock }): { ok: true; caps: FlexibleInstallationCaps } | FlexibleTurnRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const caps = input.caps;
   if (typeof caps !== "object" || caps === null || !limitOk(caps.liveThreads, INSTALLATION_LIMITS.liveThreads) || !limitOk(caps.turnsPerDay, INSTALLATION_LIMITS.turnsPerDay)
-    || !limitOk(caps.measuredMicrousdPerDay, INSTALLATION_LIMITS.measuredMicrousdPerDay)) return refuse("invalid-request");
+    || !limitOk(caps.measuredMicrousdPerDay, INSTALLATION_LIMITS.measuredMicrousdPerDay) || !clockOk(input.clock)) return refuse("invalid-request");
   return store.transact((): { ok: true; caps: FlexibleInstallationCaps } | FlexibleTurnRefusal => {
     const account = store.accountOf(input.by);
     if (account === null || account.revokedAt !== null || !store.isInstanceOperator(input.by)) return refuse("not-an-operator");
     const before = flexibleInstallationCaps(store);
-    const at = input.now.toISOString();
+    const at = timeOf(input.clock).toISOString();
     store.handle.prepare(`INSERT INTO flexible_installation_caps (id, live_threads, turns_per_day, measured_microusd_per_day, updated_by, updated_at) VALUES (1, ?, ?, ?, ?, ?)
       ON CONFLICT (id) DO UPDATE SET live_threads = excluded.live_threads, turns_per_day = excluded.turns_per_day, measured_microusd_per_day = excluded.measured_microusd_per_day,
         updated_by = excluded.updated_by, updated_at = excluded.updated_at`).run(caps.liveThreads, caps.turnsPerDay, caps.measuredMicrousdPerDay, input.by, at);

@@ -72,7 +72,7 @@ function admit(over: Partial<FlexibleTurnRequest> = {}) {
   const who = over.starter?.name ?? "pat";
   const threadRepo = String(store.handle.prepare("SELECT repo FROM flexible_thread WHERE id = ?").get(over.thread ?? T1)?.["repo"] ?? REPO);
   return admitFlexibleTurn(store, { thread: T1, starter: { name: who, generation: gen(who) }, digest: digests[threadRepo]!, level: "full", freshProof: false, provider: "claude",
-    model: "claude-sonnet-4-5", billing: "subscription", requestKey: `m-${++n}`, holder: "h1", now: NOW, ...over });
+    model: "claude-sonnet-4-5", billing: "subscription", requestKey: `m-${++n}`, holder: "h1", clock: () => NOW, ...over });
 }
 function admitted(over: Partial<FlexibleTurnRequest> = {}): string {
   const made = admit(over);
@@ -82,8 +82,8 @@ function admitted(over: Partial<FlexibleTurnRequest> = {}): string {
 /** A whole turn: admitted, started, finished. */
 function turn(over: Partial<FlexibleTurnRequest> = {}, usage: FlexibleUsage | null = { tokensIn: 10, tokensOut: 5, costUsd: null }, outcome: "finished" | "unknown" = "finished"): string {
   const id = admitted(over);
-  expect(beginFlexibleTurn(store, { turn: id, holder: over.holder ?? "h1", now: over.now ?? NOW })).toMatchObject({ ok: true });
-  expect(finishFlexibleTurn(store, { turn: id, holder: over.holder ?? "h1", outcome, usage, now: over.now ?? NOW })).toMatchObject({ ok: true });
+  expect(beginFlexibleTurn(store, { turn: id, holder: over.holder ?? "h1", clock: over.clock ?? (() => NOW) })).toMatchObject({ ok: true });
+  expect(finishFlexibleTurn(store, { turn: id, holder: over.holder ?? "h1", outcome, usage, clock: over.clock ?? (() => NOW) })).toMatchObject({ ok: true });
   return id;
 }
 const statusOf = (id: string) => flexibleTurn(store, id)!.status;
@@ -103,7 +103,7 @@ describe("admission", () => {
     const first = admitted({ requestKey: "msg-1" });
     expect(admit({ requestKey: "msg-1" })).toEqual({ ok: true, turn: first, seq: 1, replayed: true });
     expect(admit({ requestKey: "msg-2" })).toMatchObject({ ok: false, reason: "turn-in-progress" });
-    expect(beginFlexibleTurn(store, { turn: first, holder: "h1", now: NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: first, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
     expect(admit({ requestKey: "msg-1" })).toMatchObject({ ok: false, reason: "already-sent", message: "That message already started a turn. Nothing new was started." });
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn").get()!["n"]).toBe(1);
   });
@@ -141,16 +141,16 @@ describe("limits at each level", () => {
     admitted({ thread: T2 });
     expect(admit({ thread: T3 })).toMatchObject({ ok: false, reason: "cap-reached", cap: "project-threads", resetsAt: null,
       message: "This project already has 2 threads working, the most its Flexible terms allow. Try again when one finishes." });
-    expect(beginFlexibleTurn(store, { turn: a, holder: "h1", now: NOW })).toMatchObject({ ok: true });
-    expect(finishFlexibleTurn(store, { turn: a, holder: "h1", outcome: "finished", usage: null, now: NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: a, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
+    expect(finishFlexibleTurn(store, { turn: a, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
     expect(admit({ thread: T3 })).toMatchObject({ ok: true });
   });
 
   test("turns a day in a project, until midnight UTC", () => {
     plant(REPO, { turnsPerDayProject: 2 });
     turn(); turn();
-    expect(admit({ now: LATER })).toMatchObject({ ok: false, reason: "cap-reached", cap: "project-turns", resetsAt: MIDNIGHT, message: "This project used its 2 agent turns for today. New turns can start after midnight UTC." });
-    expect(admit({ now: TOMORROW })).toMatchObject({ ok: true });
+    expect(admit({ clock: () => LATER })).toMatchObject({ ok: false, reason: "cap-reached", cap: "project-turns", resetsAt: MIDNIGHT, message: "This project used its 2 agent turns for today. New turns can start after midnight UTC." });
+    expect(admit({ clock: () => TOMORROW })).toMatchObject({ ok: true });
   });
 
   test("a person's turns count across every project", () => {
@@ -168,19 +168,19 @@ describe("limits at each level", () => {
 
   test("the installation's own limits across every project, set by an instance operator only", () => {
     expect(flexibleInstallationCaps(store)).toEqual({ liveThreads: null, turnsPerDay: null, measuredMicrousdPerDay: null });
-    expect(setFlexibleInstallationCaps(store, { by: "pat", caps: { liveThreads: 1, turnsPerDay: null, measuredMicrousdPerDay: null }, now: NOW })).toMatchObject({ ok: false, reason: "not-an-operator" });
-    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 0, turnsPerDay: null, measuredMicrousdPerDay: null }, now: NOW })).toMatchObject({ ok: false, reason: "invalid-request" });
-    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 1, turnsPerDay: 3, measuredMicrousdPerDay: null }, now: NOW })).toMatchObject({ ok: true });
+    expect(setFlexibleInstallationCaps(store, { by: "pat", caps: { liveThreads: 1, turnsPerDay: null, measuredMicrousdPerDay: null }, clock: () => NOW })).toMatchObject({ ok: false, reason: "not-an-operator" });
+    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 0, turnsPerDay: null, measuredMicrousdPerDay: null }, clock: () => NOW })).toMatchObject({ ok: false, reason: "invalid-request" });
+    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 1, turnsPerDay: 3, measuredMicrousdPerDay: null }, clock: () => NOW })).toMatchObject({ ok: true });
     expect(ledger().at(-1)).toEqual({ actor: "alex", action: "flexible installation limits changed", outcome: "changed" });
     plant(OTHER);
     thread(T2, "pat", OTHER);
     const a = admitted({ thread: T1 });
     expect(admit({ thread: T2 })).toMatchObject({ ok: false, reason: "cap-reached", cap: "installation-threads", resetsAt: null });
-    expect(beginFlexibleTurn(store, { turn: a, holder: "h1", now: NOW })).toMatchObject({ ok: true });
-    expect(finishFlexibleTurn(store, { turn: a, holder: "h1", outcome: "finished", usage: null, now: NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: a, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
+    expect(finishFlexibleTurn(store, { turn: a, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
     turn({ thread: T2 }); turn({ thread: T1 });
     expect(admit({ thread: T2 })).toMatchObject({ ok: false, reason: "cap-reached", cap: "installation-turns", resetsAt: MIDNIGHT });
-    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: null, turnsPerDay: null, measuredMicrousdPerDay: 1_000_000 }, now: NOW })).toMatchObject({ ok: true });
+    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: null, turnsPerDay: null, measuredMicrousdPerDay: 1_000_000 }, clock: () => NOW })).toMatchObject({ ok: true });
     turn({ thread: T2, billing: "api-key" }, { tokensIn: 1, tokensOut: 1, costUsd: 1.25 });
     expect(admit({ thread: T1 })).toMatchObject({ ok: false, reason: "cap-reached", cap: "installation-dollars", message: expect.stringContaining("The installation's measured spend today reached its $1.00 limit") });
   });
@@ -188,12 +188,12 @@ describe("limits at each level", () => {
   test("a project's dollar limit is soft: a running turn may go past it, then no new turn starts", () => {
     plant(REPO, { measuredMicrousdPerDay: 1_000_000 });
     const running = admitted({ billing: "api-key" });
-    expect(beginFlexibleTurn(store, { turn: running, holder: "h1", now: NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: running, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
     expect(chargeFlexibleTurn(store, { turn: running, usage: { tokensIn: 100, tokensOut: 100, costUsd: 0.75 } })).toEqual({ ok: true, costMicrousd: 750_000 });
     expect(chargeFlexibleTurn(store, { turn: running, usage: { tokensIn: 100, tokensOut: 100, costUsd: 0.75 } })).toEqual({ ok: true, costMicrousd: 750_000 });
-    expect(finishFlexibleTurn(store, { turn: running, holder: "h1", outcome: "finished", usage: null, now: NOW })).toMatchObject({ ok: true, turn: { costMicrousd: 1_500_000, costBasis: "measured", relayCalls: 2 } });
+    expect(finishFlexibleTurn(store, { turn: running, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true, turn: { costMicrousd: 1_500_000, costBasis: "measured", relayCalls: 2 } });
     expect(admit()).toMatchObject({ ok: false, reason: "cap-reached", cap: "project-dollars", resetsAt: MIDNIGHT, message: "This project's measured spend today reached its $1.00 limit. New turns can start after midnight UTC." });
-    expect(admit({ now: TOMORROW })).toMatchObject({ ok: true });
+    expect(admit({ clock: () => TOMORROW })).toMatchObject({ ok: true });
   });
 
   test("an active mode's daily starts count each turn, and a turn that never started gives its start back", () => {
@@ -201,7 +201,7 @@ describe("limits at each level", () => {
       .run(REPO, JSON.stringify({ dailyRunCap: 1 }), NOW.toISOString(), TOMORROW.toISOString());
     const first = admitted({ requestKey: "msg-1" });
     expect(store.handle.prepare("SELECT reserved_starts FROM mode_rail WHERE repo = ?").get(REPO)!["reserved_starts"]).toBe(1);
-    expect(interruptFlexibleTurnsOf(store, { holder: "h1", now: NOW })).toEqual({ ok: true, withdrawn: 1, interrupted: 0 });
+    expect(interruptFlexibleTurnsOf(store, { holder: "h1", clock: () => NOW })).toEqual({ ok: true, withdrawn: 1, interrupted: 0 });
     expect(statusOf(first)).toBe("withdrawn");
     expect(store.handle.prepare("SELECT reserved_starts FROM mode_rail WHERE repo = ?").get(REPO)!["reserved_starts"]).toBe(0);
     turn({ requestKey: "msg-1", holder: "h2" });
@@ -244,7 +244,7 @@ describe("unknown cost", () => {
     // With one, the day's spend can't be checked: nothing new starts until tomorrow.
     plant(REPO, { turnsPerDayProject: 3, measuredMicrousdPerDay: 50_000_000 });
     expect(admit()).toMatchObject({ ok: false, reason: "spend-unknown", cap: "project-dollars", resetsAt: MIDNIGHT, message: expect.stringContaining("can't be checked") });
-    expect(admit({ now: TOMORROW })).toMatchObject({ ok: true });
+    expect(admit({ clock: () => TOMORROW })).toMatchObject({ ok: true });
   });
 
   test("tokens Toolroll can't price make the cost unknown; a plan turn with no usage is still $0", () => {
@@ -272,13 +272,13 @@ describe("the turn's life", () => {
   test("only the holder starts and finishes it; the relay charges only a turn that started, and its counts win over the provider's", () => {
     const id = admitted();
     expect(chargeFlexibleTurn(store, { turn: id, usage: { tokensIn: 1, tokensOut: 1, costUsd: 0 } })).toMatchObject({ ok: false, reason: "turn-not-running" });
-    expect(beginFlexibleTurn(store, { turn: id, holder: "h2", now: NOW })).toMatchObject({ ok: false, reason: "held-elsewhere" });
-    expect(beginFlexibleTurn(store, { turn: id, holder: "h1", now: NOW })).toMatchObject({ ok: true, turn: { status: "running" } });
-    expect(beginFlexibleTurn(store, { turn: id, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "turn-not-admitted" });
+    expect(beginFlexibleTurn(store, { turn: id, holder: "h2", clock: () => NOW })).toMatchObject({ ok: false, reason: "held-elsewhere" });
+    expect(beginFlexibleTurn(store, { turn: id, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true, turn: { status: "running" } });
+    expect(beginFlexibleTurn(store, { turn: id, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "turn-not-admitted" });
     expect(chargeFlexibleTurn(store, { turn: id, usage: { tokensIn: 7, tokensOut: 3, costUsd: null } })).toMatchObject({ ok: true, costMicrousd: 0 });
-    expect(finishFlexibleTurn(store, { turn: id, holder: "h2", outcome: "finished", usage: null, now: NOW })).toMatchObject({ ok: false, reason: "held-elsewhere" });
+    expect(finishFlexibleTurn(store, { turn: id, holder: "h2", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: false, reason: "held-elsewhere" });
     // The agent's own report says less than the relay counted: the relay's counts stand.
-    expect(finishFlexibleTurn(store, { turn: id, holder: "h1", outcome: "finished", usage: { tokensIn: 1, tokensOut: 1, costUsd: null }, now: NOW }))
+    expect(finishFlexibleTurn(store, { turn: id, holder: "h1", outcome: "finished", usage: { tokensIn: 1, tokensOut: 1, costUsd: null }, clock: () => NOW }))
       .toMatchObject({ ok: true, turn: { status: "finished", tokensIn: 7, tokensOut: 3, costBasis: "estimated" } });
   });
 
@@ -288,14 +288,14 @@ describe("the turn's life", () => {
     const waiting = admitted();
     // The signer's account changed underneath (read as a lapse on every check, before anything ends the terms).
     store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
-    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "terms-lapsed" });
+    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "terms-lapsed" });
     expect(statusOf(waiting)).toBe("withdrawn");
     expect(admit()).toMatchObject({ ok: false, reason: "terms-lapsed" });
     // The signer's password changed through the store: the lapse ends the terms durably.
     plant(REPO, { turnsPerDayProject: 2 });
     const next = admitted();
     store.saveApprover("alex", "hash-a2", NOW);
-    expect(beginFlexibleTurn(store, { turn: next, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "not-flexible" });
+    expect(beginFlexibleTurn(store, { turn: next, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "not-flexible" });
     expect(statusOf(next)).toBe("withdrawn");
     // Signed again: the withdrawn turn took no place in the day.
     plant(REPO, { turnsPerDayProject: 2 });
@@ -305,7 +305,7 @@ describe("the turn's life", () => {
   test("lowered terms withdraw a turn admitted under the old ones", () => {
     const waiting = admitted();
     plant(REPO, { liveThreads: 2 }); // new terms, a new digest
-    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "terms-changed" });
+    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "terms-changed" });
     expect(statusOf(waiting)).toBe("withdrawn");
   });
 
@@ -314,9 +314,9 @@ describe("the turn's life", () => {
     thread(T2);
     const waiting = admitted({ thread: T1, requestKey: "msg-1" });
     const running = admitted({ thread: T2, requestKey: "msg-2", billing: "api-key" });
-    expect(beginFlexibleTurn(store, { turn: running, holder: "h1", now: NOW })).toMatchObject({ ok: true });
-    expect(interruptFlexibleTurnsOf(store, { holder: "h0", now: NOW })).toEqual({ ok: true, withdrawn: 0, interrupted: 0 }); // another process's turns are left alone
-    expect(interruptFlexibleTurnsOf(store, { holder: "h1", now: NOW })).toEqual({ ok: true, withdrawn: 1, interrupted: 1 });
+    expect(beginFlexibleTurn(store, { turn: running, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
+    expect(interruptFlexibleTurnsOf(store, { holder: "h0", clock: () => NOW })).toEqual({ ok: true, withdrawn: 0, interrupted: 0 }); // another process's turns are left alone
+    expect(interruptFlexibleTurnsOf(store, { holder: "h1", clock: () => NOW })).toEqual({ ok: true, withdrawn: 1, interrupted: 1 });
     expect(flexibleTurn(store, waiting)).toMatchObject({ status: "withdrawn" });
     expect(flexibleTurn(store, running)).toMatchObject({ status: "interrupted", costBasis: "unknown" });
     expect(ledger().at(-1)).toEqual({ actor: "toolroll", action: "flexible turns ended at restart", outcome: "interrupted" });
@@ -335,7 +335,7 @@ describe("the turn's life", () => {
     expect(() => db.prepare("UPDATE thread_turn SET status = 'finished', ended_at = ?, started_at = ?, cost_basis = 'measured' WHERE id = ?").run(NOW.toISOString(), NOW.toISOString(), id)).toThrow(/only moves forward/);
     expect(() => db.prepare("UPDATE thread_turn SET level = 'supervised' WHERE id = ?").run(id)).toThrow(/written once/);
     expect(() => db.prepare("UPDATE thread_turn SET tokens_in = 5 WHERE id = ?").run(id)).toThrow(); // no usage before it starts
-    expect(beginFlexibleTurn(store, { turn: id, holder: "h1", now: NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: id, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
     expect(() => db.prepare("UPDATE thread_turn SET status = 'withdrawn', ended_at = ? WHERE id = ?").run(NOW.toISOString(), id)).toThrow(/only moves forward/);
     expect(() => db.prepare("UPDATE thread_turn SET started_at = ? WHERE id = ?").run(LATER.toISOString(), id)).toThrow(/only moves forward/);
   });
@@ -362,13 +362,13 @@ describe("an admission is for exactly that request, under exactly those terms, o
       expect(admit({ requestKey: "msg-1", ...change }), JSON.stringify(change)).toMatchObject({ ok: false, reason: "request-changed" });
     }
     expect(admit({ requestKey: "msg-1", level: "full" })).toEqual({ ok: true, turn: first, seq: 1, replayed: true });
-    expect(beginFlexibleTurn(store, { turn: first, holder: "h1", now: NOW })).toMatchObject({ ok: true, turn: { level: "full", provider: "claude", billing: "subscription" } });
+    expect(beginFlexibleTurn(store, { turn: first, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true, turn: { level: "full", provider: "claude", billing: "subscription" } });
   });
 
   test("terms turned off and on again with the same words don't revive a turn admitted under the old ones", () => {
     const waiting = admitted({ requestKey: "msg-1" });
     offAndOn(REPO);
-    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "terms-changed" });
+    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "terms-changed" });
     expect(statusOf(waiting)).toBe("withdrawn");
     // The same request again: admitted afresh under the live terms.
     const again = admit({ requestKey: "msg-1" });
@@ -383,20 +383,38 @@ describe("an admission is for exactly that request, under exactly those terms, o
   });
 
   test("a waiting turn doesn't start once a dollar limit is reached while it waited", () => {
-    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: null, turnsPerDay: null, measuredMicrousdPerDay: 1_000_000 }, now: NOW })).toMatchObject({ ok: true });
+    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: null, turnsPerDay: null, measuredMicrousdPerDay: 1_000_000 }, clock: () => NOW })).toMatchObject({ ok: true });
     thread(T2);
     const a = admitted({ thread: T1, billing: "api-key" });
     const b = admitted({ thread: T2, billing: "api-key" });
-    expect(beginFlexibleTurn(store, { turn: b, holder: "h1", now: NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: b, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
     expect(chargeFlexibleTurn(store, { turn: b, usage: { tokensIn: 1, tokensOut: 1, costUsd: 2 } })).toMatchObject({ ok: true });
-    expect(finishFlexibleTurn(store, { turn: b, holder: "h1", outcome: "finished", usage: null, now: NOW })).toMatchObject({ ok: true });
-    expect(beginFlexibleTurn(store, { turn: a, holder: "h1", now: NOW })).toMatchObject({ ok: false, reason: "cap-reached", cap: "installation-dollars", resetsAt: MIDNIGHT });
+    expect(finishFlexibleTurn(store, { turn: b, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true });
+    expect(beginFlexibleTurn(store, { turn: a, holder: "h1", clock: () => NOW })).toMatchObject({ ok: false, reason: "cap-reached", cap: "installation-dollars", resetsAt: MIDNIGHT });
     expect(statusOf(a)).toBe("withdrawn");
   });
 
   test("a waiting turn doesn't start on a later day: its place was counted in the day it was admitted", () => {
-    const waiting = admitted({ now: LATER });
-    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", now: TOMORROW })).toMatchObject({ ok: false, reason: "turn-expired", message: "This turn waited past midnight UTC, so it didn't start. Send the message again." });
+    const waiting = admitted({ clock: () => LATER });
+    expect(beginFlexibleTurn(store, { turn: waiting, holder: "h1", clock: () => TOMORROW })).toMatchObject({ ok: false, reason: "turn-expired", message: "This turn waited past midnight UTC, so it didn't start. Send the message again." });
+    expect(statusOf(waiting)).toBe("withdrawn");
+  });
+
+  test("the time is read once the write lock is held: a wait for another writer across midnight expires the turn", async () => {
+    const waiting = admitted({ clock: () => LATER });
+    // Another connection holds the database's write lock for a while, as a busy writer would.
+    const ready = join(dir, "holding"), hold = 1_500;
+    const holder = new Promise<void>((resolve, reject) => {
+      execFile(process.execPath, ["-e", `const { DatabaseSync } = require("node:sqlite"); const fs = require("node:fs"); const db = new DatabaseSync(${JSON.stringify(file)});
+        db.exec("BEGIN IMMEDIATE"); fs.writeFileSync(${JSON.stringify(ready)}, ""); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${hold}); db.exec("COMMIT"); db.close();`],
+      { timeout: 30_000 }, error => error === null ? resolve() : reject(error));
+    });
+    while (!existsSync(ready)) await new Promise(resolve => setTimeout(resolve, 5));
+    const asked = Date.now();
+    // The clock crosses midnight while the lock is held: the start must see the time after the wait, not before it.
+    const started = beginFlexibleTurn(store, { turn: waiting, holder: "h1", clock: () => (Date.now() - asked >= hold * 0.6 ? TOMORROW : LATER) });
+    await holder;
+    expect(started).toMatchObject({ ok: false, reason: "turn-expired" });
     expect(statusOf(waiting)).toBe("withdrawn");
   });
 
@@ -422,7 +440,7 @@ const store = openStore(env.file);
 writeFileSync(env.ready, "");
 while (!existsSync(env.go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
 const made = admitFlexibleTurn(store, { thread: env.thread, starter: env.starter, digest: env.digest, level: "full", freshProof: false, provider: "claude", model: "claude-sonnet-4-5",
-  billing: "subscription", requestKey: "race", holder: "h-" + env.thread, now: new Date(env.now) });
+  billing: "subscription", requestKey: "race", holder: "h-" + env.thread, clock: () => new Date(env.now) });
 store.close();
 process.stdout.write(JSON.stringify(made));
 `;

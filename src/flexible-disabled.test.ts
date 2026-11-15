@@ -95,17 +95,17 @@ describe("switched off", () => {
     store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'alex', ?, 'ready')`)
       .run(id, repo, "a".repeat(40), `refs/toolroll/threads/${id}/base`, join(dir, "threads", id), NOW.toISOString());
     expect(admitFlexibleTurn(store, { thread: id, starter: { name: "alex", generation: store.accountOf("alex")!.generation }, digest, level: "full", freshProof: true, provider: "claude",
-      model: "claude-sonnet-4-5", billing: "subscription", requestKey: "m-1", holder: "h1", now: NOW })).toEqual(refused);
+      model: "claude-sonnet-4-5", billing: "subscription", requestKey: "m-1", holder: "h1", clock: () => NOW })).toEqual(refused);
     // A turn planted as if a later build had admitted it: still nothing moves.
     const turn = "c".repeat(32);
     store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing, request_key, holder, admitted_at, utc_day, status)
       VALUES (?, ?, 1, ?, 'alex', 1, 1, ?, 'full', 'claude', 'claude-sonnet-4-5', 'subscription', 'm-0', 'h1', ?, ?, 'admitted')`).run(turn, id, repo, digest, NOW.toISOString(), NOW.toISOString().slice(0, 10));
     const before = store.handle.prepare("SELECT * FROM thread_turn").all().map(row => ({ ...row }));
-    expect(beginFlexibleTurn(store, { turn, holder: "h1", now: NOW })).toEqual(refused);
+    expect(beginFlexibleTurn(store, { turn, holder: "h1", clock: () => NOW })).toEqual(refused);
     expect(chargeFlexibleTurn(store, { turn, usage: { tokensIn: 1, tokensOut: 1, costUsd: 1 } })).toEqual(refused);
-    expect(finishFlexibleTurn(store, { turn, holder: "h1", outcome: "finished", usage: null, now: NOW })).toEqual(refused);
-    expect(interruptFlexibleTurnsOf(store, { holder: "h1", now: NOW })).toEqual(refused);
-    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 1, turnsPerDay: null, measuredMicrousdPerDay: null }, now: NOW })).toEqual(refused);
+    expect(finishFlexibleTurn(store, { turn, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toEqual(refused);
+    expect(interruptFlexibleTurnsOf(store, { holder: "h1", clock: () => NOW })).toEqual(refused);
+    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 1, turnsPerDay: null, measuredMicrousdPerDay: null }, clock: () => NOW })).toEqual(refused);
     expect(store.handle.prepare("SELECT * FROM thread_turn").all().map(row => ({ ...row }))).toEqual(before);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_installation_caps").get()!["n"]).toBe(0);
   });
