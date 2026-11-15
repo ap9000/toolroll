@@ -60,7 +60,7 @@ export const NEEDS: Readonly<Record<NeedKey, Need>> = {
   hold: { sentence: () => "A hold is keeping this task from starting. Review it to release it.", action: { code: "inspect-hold", label: "Review hold" } },
   // The storage check couldn't finish (protected-storage.ts): its own words say which program macOS may need to allow.
   storage: { sentence: () => "Toolroll couldn't finish checking other apps' data before starting. Allow it in Privacy & Security, then try again.", action: { code: "unhold", label: "Try again" }, useReason: always },
-  "choose-project": { sentence: () => "Choose a project so a builder can start.", action: { code: "place-task", label: "Choose a project" } },
+  "choose-project": { sentence: () => "Choose a project so it can start.", action: { code: "place-task", label: "Choose a project" } },
   "define-task": { sentence: () => "Say what the task should do so it can be planned.", action: { code: "write-scope", label: "Define the task" } },
   "fix-request": { sentence: () => "The request can't be planned as written. Edit it so the planner can start.", action: { code: "write-scope", label: "Edit the request" },
     // Its own size and limit say exactly what to shorten.

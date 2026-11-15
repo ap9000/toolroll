@@ -332,9 +332,12 @@ describe("retryWhenWords: when a backed-off task tries again, in words", () => {
     expect(retryWhenWords(at(20_000), now)).toBe("in under a minute");
     expect(retryWhenWords(at(-5_000), now)).toBe("in under a minute");
     expect(retryWhenWords(at(5 * 60_000 + 22_591), now)).toBe("in 6 minutes");
-    expect(retryWhenWords(at(3 * 3_600_000), now)).toBe("at 13:15 UTC");
-    expect(retryWhenWords(at(20 * 3_600_000), now)).toBe("tomorrow at 06:15 UTC");
-    expect(retryWhenWords(at(5 * 86_400_000), now)).toBe("on Nov 9 10:15 UTC");
+    // Later on: this computer's own time, never UTC's (a usage limit's reset reads the same way).
+    expect(retryWhenWords(at(3 * 3_600_000), now, "UTC")).toBe("at 13:15");
+    expect(retryWhenWords(at(20 * 3_600_000), now, "UTC")).toBe("tomorrow at 06:15");
+    expect(retryWhenWords(at(5 * 86_400_000), now, "UTC")).toBe("on Nov 9 10:15");
+    expect(retryWhenWords(at(3 * 3_600_000), now, "America/Los_Angeles")).toBe("at 05:15");
+    for (const ms of [3 * 3_600_000, 20 * 3_600_000, 5 * 86_400_000]) expect(retryWhenWords(at(ms), now, "Europe/Berlin")).not.toContain("UTC");
     expect(retryWhenWords("not a time", now)).toBe("soon");
     for (const ms of [20_000, 6 * 60_000, 3 * 3_600_000, 5 * 86_400_000]) expect(retryWhenWords(at(ms), now)).not.toMatch(/\dT\d|Z$/);
   });

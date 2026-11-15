@@ -104,7 +104,17 @@ describe("missing paths", () => {
     const code = await main(["help"], line => lines.push(line));
 
     expect(code).toBe(0);
-    expect(lines.join("\n")).toContain("hand coding work to agents, approve each plan, accept what comes back Ready");
+    expect(lines.join("\n")).toContain("Toolroll — your agents build. You decide.");
+  });
+
+  test("help leads with the README's tagline and stays short", async () => {
+    const lines: string[] = [];
+    expect(await main(["--help"], line => lines.push(line))).toBe(0);
+    const help = lines.join("\n").split("\n");
+    const tagline = /^### (.+)$/m.exec(readFileSync(new URL("../README.md", import.meta.url), "utf8"))?.[1] ?? "";
+    expect(tagline).toBe("Your agents build. You decide.");
+    expect(help[0]!.toLowerCase()).toContain(tagline.toLowerCase());
+    expect(help.length).toBeLessThanOrEqual(12);
   });
 
   test("`toolroll scan --help` prints the scan's options; top-level help leaves them out", async () => {
@@ -442,6 +452,27 @@ describe("repos add-from-github — behavior through injected gh halves", () => 
   });
 });
 
+describe("repos add with no remote", () => {
+  test("says the project was added and to run toolroll, and nothing about a remote", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const home = await mkdtemp(join(tmpdir(), "so-cli-noremote-"));
+    const repo = join(home, "shop");
+    await mkdir(repo);
+    execFileSync("git", ["init", "-q", repo]);
+    const old = process.env["TOOLROLL_DB"];
+    process.env["TOOLROLL_DB"] = join(home, "orders.db");
+    const lines: string[] = [];
+    try {
+      expect(await main(["repos", "add", repo], line => lines.push(line))).toBe(0);
+      expect(lines.join("\n")).toContain("run `toolroll`");
+      expect(lines.join("\n")).not.toMatch(/remote/i);
+    } finally {
+      if (old === undefined) delete process.env["TOOLROLL_DB"]; else process.env["TOOLROLL_DB"] = old;
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("repos recorded remote", () => {
   test("owner add records an explicit URL, plain re-add preserves it, and list reports it", async () => {
     const { execFileSync } = await import("node:child_process");
@@ -460,7 +491,7 @@ describe("repos recorded remote", () => {
       expect(JSON.parse(lines[0]!).projects[0].remoteUrl).toBe(trusted);
       execFileSync("git", ["config", "remote.origin.url", "https://evil.example/shop.git"], { cwd: repo });
       expect(await invoke(["repos", "add", repo])).toBe(0);
-      expect(lines.join("\n")).toContain(`Recorded remote: ${trusted}`);
+      expect(lines.join("\n")).toContain(`Remote: ${trusted}`);
       expect(await invoke(["repos", "--json"])).toBe(0);
       expect(JSON.parse(lines[0]!).projects[0].remoteUrl).toBe(trusted);
       expect(await invoke(["repos"])).toBe(0);

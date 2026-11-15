@@ -821,7 +821,8 @@ async function addToRepos(admission: Admission, targets: readonly string[], writ
     }
     projects.push({ repo: admitted.repo, name: admitted.name, added: admitted.added, remoteUrl: admitted.remote.url });
     write(addedWords(admitted.name, admitted.added, running));
-    write(`Recorded remote: ${admitted.remote.url ?? "None. Use repos add <project> --remote <url> to record one."}`);
+    // A remote is named only when there is one: a repository with none needs nothing more to start (day-one words).
+    if (admitted.remote.url !== null) write(`Remote: ${admitted.remote.url}`);
   }
   said.projects = projects;
   return 0;
@@ -1532,7 +1533,7 @@ async function runDemoCommand(argv: readonly string[], write: Write, seams: Main
     // envelopes land in logs. It lives in the 0600 file and on the TTY.
     write(envelopeJson({ ok: true, command: "demo", url, sandbox, login: { name: seed.login.name, passwordFile }, keep }));
   } else {
-    write("Demo sandbox is up. A scripted lead answers Chat: no model, no key, no spend, nothing leaves this machine.");
+    write("Demo sandbox is up. Chat answers from a script: no model, no key, no cost, nothing leaves this machine.");
     write("");
     write(`  open      ${url}`);
     write(`  login     ${seed.login.name} / ${seed.login.password}`);
@@ -1575,7 +1576,7 @@ async function runDemoCommand(argv: readonly string[], write: Write, seams: Main
     if (!json) write("Sandbox deleted.");
   } else if (!json) {
     write(`Sandbox kept at ${sandbox} — reopen it any time: toolroll serve --db ${join(sandbox, "orders.db")}`);
-    write("Ready for your own repository? `toolroll up --repo <path>` starts the real thing.");
+    write("For your own project, run `toolroll` in its folder.");
   }
   return 0;
 }
