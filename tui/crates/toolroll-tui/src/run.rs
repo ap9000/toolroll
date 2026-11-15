@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use toolroll_api::{ApiError, Client, LiveSignal};
+use toolroll_api::{ApiError, Client, LiveSignal, TermSend};
 
 const FRAME_MIN: Duration = Duration::from_micros(8_333);
 
@@ -109,6 +109,72 @@ struct Loop {
     tx: mpsc::UnboundedSender<Msg>,
     watch: Option<JoinHandle<()>>,
     watching: Vec<String>,
+    /// The one terminal socket held (T4): the terminal the pane shows, by id. Dropping it closes the socket; the
+    /// program keeps running in the console.
+    term: Option<(String, mpsc::UnboundedSender<TermSend>)>,
+}
+
+/// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one; listed
+/// again (it must still be this session's) before it is attached; its frames come back as messages until it closes.
+async fn open_terminal(client: Client, tx: mpsc::UnboundedSender<Msg>, task: String, run: i64) {
+    let fail = |e: ApiError| {
+        let _ = tx.send(Msg::TermOpened {
+            task: task.clone(),
+            run,
+            result: Err(e),
+        });
+    };
+    let mine = |state: &toolroll_api::TermState| {
+        state
+            .sessions
+            .iter()
+            .find(|one| {
+                one.task.as_deref() == Some(task.as_str())
+                    && one.run == Some(run)
+                    && one.ended_at.is_none()
+            })
+            .map(|one| (one.id.clone(), one.branch.clone()))
+    };
+    let listed = match client.term_state().await {
+        Ok(state) => mine(&state),
+        Err(e) => return fail(e),
+    };
+    if listed.is_none() {
+        if let Err(e) = client.term_start(&task, run, "shell").await {
+            return fail(e);
+        }
+    }
+    // Whichever it is, attached only as the console lists it for this session now.
+    let (id, branch) = match client.term_state().await {
+        Ok(state) => match mine(&state) {
+            Some(found) => found,
+            None => {
+                return fail(ApiError::Refused(
+                    "That terminal isn't yours to open any more.".into(),
+                ))
+            }
+        },
+        Err(e) => return fail(e),
+    };
+    let (send, mut events, _held) = match client.term_connect(&id).await {
+        Ok(three) => three,
+        Err(e) => return fail(e),
+    };
+    if tx
+        .send(Msg::TermOpened {
+            task: task.clone(),
+            run,
+            result: Ok((id.clone(), branch, crate::app::TermLink(send))),
+        })
+        .is_err()
+    {
+        return;
+    }
+    while let Some(event) = events.recv().await {
+        if tx.send(Msg::Term(id.clone(), event)).is_err() {
+            return;
+        }
+    }
 }
 
 impl Loop {
@@ -272,6 +338,22 @@ impl Loop {
                 let _ = out.flush();
             }
             Effect::Exit(code) => return Some(code),
+            Effect::TermOpen { task, run } => {
+                drop(tokio::spawn(open_terminal(client, tx, task, run)));
+            }
+            Effect::TermSend { id, send } => {
+                // Only the terminal the pane shows: anything else is dropped.
+                if let Some((held, link)) = &self.term {
+                    if *held == id {
+                        let _ = link.send(send);
+                    }
+                }
+            }
+            Effect::TermDetach(id) => {
+                if self.term.as_ref().is_some_and(|(held, _)| *held == id) {
+                    self.term = None;
+                }
+            }
         }
         None
     }
@@ -324,6 +406,7 @@ async fn event_loop(
         tx: tx.clone(),
         watch: None,
         watching: vec![],
+        term: None,
     };
     // The launcher's answers on descriptor 4 (one JSON line each, capped): read on a thread of their own.
     if let Some(reader) = opts.control.as_ref().and_then(|c| c.try_clone().ok()) {
@@ -373,6 +456,7 @@ async fn event_loop(
     let mut frames = Samples::default();
     let mut echo = Samples::default();
     let mut last_frame: Option<Instant> = None;
+    let mut last_key: Option<Instant> = None;
     let mut dirty = true;
     let mut exit: Option<i32> = None;
 
@@ -428,19 +512,28 @@ async fn event_loop(
                         }
                         let done = draw(term, &mut app, &mut frames)?;
                         last_frame = Some(done);
+                        last_key = Some(received);
                         echo.push(done - received);
+                        pending.extend(app.term_resize());
                         // Colouring left for later frames: draw again at the next slot.
                         dirty = app.highlight_pending;
                     }
-                    Event::Paste(p) => { app.paste(&p); dirty = true; }
+                    Event::Paste(p) => { pending.extend(app.paste(&p)); dirty = true; }
                     Event::Mouse(m) => { pending.extend(app.mouse(m)); dirty = true; }
-                    Event::Resize(_, _) => { dirty = true; last_frame = None; }
+                    // Drawn at once: a key right behind a resize meets the new layout (a terminal that no longer fits
+                    // takes no keys), and the terminal hears its new size.
+                    Event::Resize(_, _) => {
+                        last_frame = Some(draw(term, &mut app, &mut frames)?);
+                        dirty = app.highlight_pending;
+                        pending.extend(app.term_resize());
+                    }
                     _ => {}
                 }
             }
             _ = tokio::time::sleep(wait), if dirty => {
                 last_frame = Some(draw(term, &mut app, &mut frames)?);
                 dirty = app.highlight_pending;
+                pending.extend(app.term_resize());
             }
             _ = tick.tick() => {
                 for k in late.flush(Instant::now()) {
@@ -452,8 +545,21 @@ async fn event_loop(
                 pending.extend(app.update(Msg::Tick));
             }
             Some(msg) = rx.recv() => {
+                // A take-over's socket: held here (the newest replaces the last, whose socket then closes).
+                if let Msg::TermOpened { result: Ok((id, _, link)), .. } = &msg {
+                    lp.term = Some((id.clone(), link.0.clone()));
+                }
+                // Typed input's echo: drawn at once while the person is typing (never waiting for the frame cap).
+                let echo_now = matches!(msg, Msg::Term(_, toolroll_api::TermEvent::Output(_)))
+                    && app.mode == crate::app::Mode::TakeOver
+                    && last_key.is_some_and(|k| k.elapsed() < Duration::from_millis(50));
                 pending.extend(app.update(msg));
                 dirty = true;
+                if echo_now {
+                    last_frame = Some(draw(term, &mut app, &mut frames)?);
+                    dirty = app.highlight_pending;
+                    pending.extend(app.term_resize());
+                }
                 // The window title: how many wait on you (our words and a number, nothing else).
                 if app.loaded && titled != Some(app.needs_count) {
                     titled = Some(app.needs_count);

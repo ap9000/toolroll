@@ -1,5 +1,5 @@
 {
-  "digest": "1197a7b1eb31799a85f5ca25bf4c419425c014d5dba8fbb622ce5e3d1e382287",
+  "digest": "24c571f4b6968de3a8fcb05c43570d3175e408acd4c7734b42e37bd0fd482223",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2194,6 +2194,222 @@
         "lines"
       ],
       "additionalProperties": false
+    },
+    "termState": {
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "programs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex",
+              "shell"
+            ]
+          }
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "repo": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "program": {
+                "type": "string",
+                "enum": [
+                  "claude",
+                  "codex",
+                  "shell"
+                ]
+              },
+              "branch": {
+                "type": "string"
+              },
+              "startedAt": {
+                "type": "string"
+              },
+              "endedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "signal": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "code",
+                      "signal"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "cleanup": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "clean",
+                      "uncertain"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "task": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "run": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "repo",
+              "project",
+              "program",
+              "branch",
+              "startedAt",
+              "endedAt",
+              "exit",
+              "cleanup",
+              "task",
+              "run"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "available",
+        "problem",
+        "programs",
+        "projects",
+        "sessions"
+      ],
+      "additionalProperties": false
+    },
+    "termStarted": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": true
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            }
+          },
+          "required": [
+            "ok",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean",
+              "const": false
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
     }
   },
   "requests": {

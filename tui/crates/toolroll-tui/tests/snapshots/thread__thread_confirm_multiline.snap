@@ -30,5 +30,5 @@ expression: shown
 "│                                    │◐ Should tax be rounded per line or on the total?  Sent, not yet confirmed       │"
 "│                                    │                                                                                 │"
 "│                                                                                                                      │"
-"│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  n new  w browser  ? help  q quit       │"
+"│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  t take over  n new  ? help  q quit     │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"

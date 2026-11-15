@@ -42,6 +42,9 @@ const FIXTURES: &[(&str, &str)] = &[
     ("hello.json", "hello"),
     ("agents.json", "agents"),
     ("agents-none-signed-in.json", "agents"),
+    ("term-state.json", "termState"),
+    ("term-started.json", "termStarted"),
+    ("term-start-refused.json", "termStarted"),
 ];
 
 #[test]
@@ -90,6 +93,8 @@ fn every_fixture_round_trips_exactly() {
             "refusal" => drop(round_trip::<Refusal>(name)),
             "hello" => drop(round_trip::<Hello>(name)),
             "agents" => drop(round_trip::<AgentsRead>(name)),
+            "termState" => drop(round_trip::<TermState>(name)),
+            "termStarted" => drop(round_trip::<TermStarted>(name)),
             other => panic!("no model for {other}"),
         }
     }

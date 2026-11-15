@@ -65,6 +65,10 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Settings → Advanced (the eight plan, W4): this person's own "Show advanced features". It hides or shows entry points
   // on their own pages and grants nothing; the writer (advanced.ts setAdvancedPreference) checks this exact act.
   "view-preference",
+  // Solo-workbench T4: take over — start, close or remove one's own live terminal, from this computer only, while the
+  // install is solo (server/terminals.ts reads solo and the local sign-in again at every proof and right before the
+  // program starts). A shell for the person already at this computer; it grants no credential and widens no way in.
+  "take-over",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);
