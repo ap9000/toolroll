@@ -1,5 +1,5 @@
 {
-  "digest": "7ead78472a8ca0f325a74a8131528206689c630584a04bfa4aca4e1755da62fa",
+  "digest": "8c1bdce84c037105b61596347d5ab99bb834216936a18d103557062c1139e2e3",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -431,6 +431,10 @@
         "thread": {
           "type": "object",
           "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            },
             "title": {
               "type": "string"
             },
@@ -551,6 +555,15 @@
                       "null"
                     ]
                   },
+                  "tool": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "complete": {
+                    "type": "boolean"
+                  },
                   "digest": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{64}$"
@@ -603,6 +616,8 @@
                   "kind",
                   "title",
                   "detail",
+                  "tool",
+                  "complete",
                   "digest",
                   "state",
                   "answerable",
@@ -613,6 +628,7 @@
             }
           },
           "required": [
+            "version",
             "title",
             "project",
             "level",

@@ -173,8 +173,14 @@ impl Loop {
             Effect::FetchThreads => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Threads(client.threads().await));
             })),
-            Effect::FetchThread { thread, cursor } => drop(tokio::spawn(async move {
-                let r = client.thread_window(&thread, cursor.as_deref()).await;
+            Effect::FetchThread {
+                thread,
+                cursor,
+                known,
+            } => drop(tokio::spawn(async move {
+                let r = client
+                    .thread_window(&thread, cursor.as_deref(), known.as_deref())
+                    .await;
                 let _ = tx.send(Msg::Thread(thread, r));
             })),
             Effect::Act { path, fields, done } => drop(tokio::spawn(async move {

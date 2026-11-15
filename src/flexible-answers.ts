@@ -82,7 +82,8 @@ export type FlexibleAnswerRule = keyof typeof FLEXIBLE_ANSWER_RULES;
 
 export type FlexibleAnswerRefusal = { ok: false; reason: FlexibleAnswerReason; message: string; state?: FlexibleAnswerState };
 type FlexibleAnswerReason = "not-available" | "invalid-request" | "request-unknown" | "not-a-person" | "token-mismatch" | "already-answered" | "card-changed"
-  | "not-owner" | "stale-generation" | "authority-changed" | "thread-changed" | "turn-changed" | "connection-changed" | "stores-disagree" | "too-late" | "not-sent" | "uncertain" | "catalog-unsafe";
+  | "not-owner" | "stale-generation" | "authority-changed" | "thread-changed" | "turn-changed" | "connection-changed" | "stores-disagree" | "too-late" | "not-sent" | "uncertain" | "catalog-unsafe"
+  | "scope-unshown";
 const WORDS: Readonly<Record<FlexibleAnswerReason, string>> = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
   "invalid-request": "That answer isn't one Toolroll can read. Nothing was sent.",
@@ -102,6 +103,7 @@ const WORDS: Readonly<Record<FlexibleAnswerReason, string>> = Object.freeze({
   "not-sent": "Your answer wasn't sent.",
   "uncertain": "We couldn't confirm the agent got your answer. Check its activity. If it asks again, you'll get a new card.",
   "catalog-unsafe": "Toolroll's record of agents' requests isn't where, or what, Toolroll made it, so it wasn't opened.",
+  "scope-unshown": "This request couldn't be shown in full, so it can't be allowed. You can deny it. Nothing was sent.",
 });
 const refuse = (reason: FlexibleAnswerReason, state?: FlexibleAnswerState, message: string = WORDS[reason]): FlexibleAnswerRefusal =>
   state === undefined ? { ok: false, reason, message } : { ok: false, reason, message, state };
@@ -424,13 +426,22 @@ const boundOf = (row: RequestRow) => ({ thread: row.thread, turn: row.turn, conn
 
 /** Question ids that name an object's own machinery: never a question's id, never a key of an answer. */
 const RESERVED_IDS = new Set(["__proto__", "constructor", "prototype"]);
-export type FlexibleRequestCard = { title: string; detail?: string; questions?: { id: string; question: string; options?: { label: string }[] }[] };
+/** A request's card: what the person is shown and answers. `tool` and `input` (the SHA-256 of the agent's COMPLETE
+ * request, canonical JSON) bind the card to exactly what an allow would allow; `complete` false says the card couldn't
+ * show all of it (too long, a secret-shaped line, characters a terminal can't show), and then it can't be accepted. */
+export type FlexibleRequestCard = { title: string; detail?: string; tool?: string; input?: string; complete?: boolean;
+  questions?: { id: string; question: string; options?: { label: string }[] }[] };
 function cardProblem(kind: unknown, card: unknown): string | null {
   if (kind !== "permission" && kind !== "question") return "kind";
   if (typeof card !== "object" || card === null || Array.isArray(card)) return "card";
   const c = card as Record<string, unknown>;
   if (typeof c["title"] !== "string" || c["title"].length < 1 || c["title"].length > 200) return "title";
   if (c["detail"] !== undefined && (typeof c["detail"] !== "string" || c["detail"].length > 32_000)) return "detail";
+  if (c["tool"] !== undefined && (typeof c["tool"] !== "string" || !/^[\x21-\x7e]{1,100}$/.test(c["tool"]))) return "tool";
+  if (c["input"] !== undefined && (typeof c["input"] !== "string" || !/^[0-9a-f]{64}$/.test(c["input"]))) return "input";
+  if (c["complete"] !== undefined && typeof c["complete"] !== "boolean") return "complete";
+  // A permission is bound to the tool and the digest of its whole input: a card without them isn't one.
+  if (kind === "permission" && (c["tool"] === undefined || c["input"] === undefined)) return "scope";
   const questions = c["questions"];
   if (kind === "question" && (!Array.isArray(questions) || questions.length < 1)) return "questions";
   if (questions !== undefined) {
@@ -514,7 +525,7 @@ type Decided = { ok: true; decisionId: string; state: "decided" };
 /** Record a decision: the main database first (thread_decision + the ledger's intent, in the transaction that checked
  * standing), then the catalog row pending → decided by compare-and-swap. If the catalog moved meanwhile, the decision is
  * not-sent at once. */
-function decide(store: Store, catalog: FlexibleAnswerCatalog, input: { request: string; clock?: FlexibleClock }, who: { source: "person"; name: string; generation: number; token: string; shownDigest: string } | { source: "policy"; rule: FlexibleAnswerRule },
+function decide(store: Store, catalog: FlexibleAnswerCatalog, input: { request: string; clock?: FlexibleClock }, who: { source: "person"; name: string; generation: number; token: string; shownDigest: string; held?: () => boolean } | { source: "policy"; rule: FlexibleAnswerRule },
   decision: FlexibleDecision, answers: unknown): Decided | FlexibleAnswerRefusal {
   const clock = input.clock ?? systemClock;
   const made = store.transact((): FlexibleAnswerRefusal | { decisionId: string; answer: string; payloadDigest: string; tokenDigest: string; at: string; row: RequestRow } => {
@@ -526,6 +537,15 @@ function decide(store: Store, catalog: FlexibleAnswerCatalog, input: { request: 
     if (who.source === "person" && who.shownDigest !== row.requestDigest) return refuse("card-changed");
     const problem = standing(store, boundOf(row), who.source === "person" ? { name: who.name, generation: who.generation } : null);
     if (problem !== null) return problem;
+    // The person's own session, still held now (its saved authority, read in this transaction).
+    if (who.source === "person" && who.held !== undefined) {
+      let held = false;
+      try { held = who.held() === true; } catch { held = false; }
+      if (!held) return refuse("authority-changed");
+    }
+    // An allow covers the agent's whole request: only one whose card says it showed all of it (a card without the
+    // flag fails closed).
+    if (decision === "accept" && row.kind === "permission" && (JSON.parse(row.card) as FlexibleRequestCard).complete !== true) return refuse("scope-unshown");
     const payload = answerFor(row.kind, row.card, decision, answers);
     if (payload === null) return refuse("invalid-request");
     const answer = JSON.stringify(payload), payloadDigest = sha256(answer), decisionId = randomBytes(16).toString("hex");
@@ -552,13 +572,16 @@ function decide(store: Store, catalog: FlexibleAnswerCatalog, input: { request: 
  * (the caller's surface proves the person; F3).
  */
 export function decideFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalog, input: { request: string; token: string; shownDigest: string; by: { kind: "person"; name: string; generation: number };
-  decision: FlexibleDecision; answers?: unknown; clock?: FlexibleClock }): Decided | FlexibleAnswerRefusal {
+  decision: FlexibleDecision; answers?: unknown; clock?: FlexibleClock;
+  /** The person's own session (the surface that proved them), re-read inside the decision's transaction: false refuses. */
+  held?: () => boolean }): Decided | FlexibleAnswerRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (input.by?.kind !== "person") return refuse("not-a-person");
   if (typeof input.request !== "string" || !ID.test(input.request) || typeof input.token !== "string" || !/^[0-9a-f]{64}$/.test(input.token)
     || typeof input.shownDigest !== "string" || typeof input.by.name !== "string" || !Number.isSafeInteger(input.by.generation)
-    || !["accept", "decline", "cancel", "answer"].includes(input.decision)) return refuse("invalid-request");
-  return decide(store, catalog, input, { source: "person", name: input.by.name, generation: input.by.generation, token: input.token, shownDigest: input.shownDigest }, input.decision, input.answers);
+    || !["accept", "decline", "cancel", "answer"].includes(input.decision) || (input.held !== undefined && typeof input.held !== "function")) return refuse("invalid-request");
+  return decide(store, catalog, input, { source: "person", name: input.by.name, generation: input.by.generation, token: input.token, shownDigest: input.shownDigest,
+    ...(input.held === undefined ? {} : { held: input.held }) }, input.decision, input.answers);
 }
 
 /** Toolroll decides a request by a recorded rule (FLEXIBLE_ANSWER_RULES): only ever a decline or a cancel. */
@@ -590,19 +613,27 @@ function agreeing(store: Store, catalog: FlexibleAnswerCatalog, request: string)
  * 4. The outcome (a new transaction): sent only when every byte was handed over; anything else (partial, late, an
  *    error) is uncertain. A failure to record leaves the attempt for the reconcilers, which make it uncertain.
  */
-export async function sendFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalog, input: { request: string; connection: FlexibleAnswerConnection; holder: string; clock?: FlexibleClock; writeMs?: number }):
+export async function sendFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalog, input: { request: string; connection: FlexibleAnswerConnection; holder: string; clock?: FlexibleClock; writeMs?: number;
+  /** The deciding person's own session, re-read inside the queue's and the final attempt's transactions: false, and the
+   * answer is not-sent (bound to the decision by its caller, which decides and sends with the same session). */
+  held?: () => boolean }):
   Promise<{ ok: true; state: "sent"; decisionId: string } | FlexibleAnswerRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.request !== "string" || !ID.test(input.request) || typeof input.holder !== "string" || !HOLDER.test(input.holder)
     || typeof input.connection?.id !== "string" || typeof input.connection.frame !== "function" || typeof input.connection.send !== "function"
-    || (input.writeMs !== undefined && (!Number.isSafeInteger(input.writeMs) || input.writeMs < 1 || input.writeMs > 60_000))) return refuse("invalid-request");
+    || (input.writeMs !== undefined && (!Number.isSafeInteger(input.writeMs) || input.writeMs < 1 || input.writeMs > 60_000))
+    || (input.held !== undefined && typeof input.held !== "function")) return refuse("invalid-request");
   const clock = input.clock ?? systemClock;
   const connection = input.connection;
   const writeMs = input.writeMs ?? FLEXIBLE_ANSWER_WRITE_MS;
   /** Why this answer may not go now, or null (the caller holds the main transaction). */
   const blocked = (row: RequestRow, decision: DecisionRow): FlexibleAnswerRefusal | null => {
     if (connection.id !== row.connection || input.holder !== row.holder) return refuse("connection-changed");
-    return standing(store, boundOf(row), decision.source === "person" ? { name: decision.by, generation: decision.byGeneration ?? -1 } : null);
+    const problem = standing(store, boundOf(row), decision.source === "person" ? { name: decision.by, generation: decision.byGeneration ?? -1 } : null);
+    if (problem !== null) return problem;
+    let held = true;
+    try { held = input.held === undefined || input.held() === true; } catch { held = false; }
+    return held ? null : refuse("authority-changed");
   };
   // 1. Queue it.
   const queued = store.transact((): FlexibleAnswerRefusal | { decisionId: string } => {

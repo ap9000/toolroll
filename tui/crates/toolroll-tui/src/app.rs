@@ -206,10 +206,11 @@ pub enum Effect {
     FetchDiffFile(FileAsk),
     /// The person's Flexible threads (GET /agents/live/threads).
     FetchThreads,
-    /// One window of a thread's live session with its facts, from `cursor`.
+    /// One window of a thread's live session from `cursor`, with its facts unless they are still `known`.
     FetchThread {
         thread: String,
         cursor: Option<String>,
+        known: Option<String>,
     },
     Act {
         path: String,
@@ -311,8 +312,10 @@ pub struct App {
     pub answer_shown: bool,
     /// The person's Flexible threads and the one watched (thread.rs).
     pub threads: crate::thread::Threads,
-    /// A thread's question and the answer picked were drawn whole (thread.rs): Enter may send it.
+    /// A thread's question and the answer picked were drawn to their end (thread.rs): Enter may send it.
     pub thread_shown: bool,
+    /// How far the thread's answer dialog is read on (j/k).
+    pub thread_scroll: usize,
     /// The title of the task New task is filing (kept for Build's "plan it first").
     pub filing: String,
     pub fetching_live: bool,
@@ -363,6 +366,7 @@ impl App {
             answer_shown: false,
             threads: crate::thread::Threads::default(),
             thread_shown: false,
+            thread_scroll: 0,
             fetching_live: false,
             fetching_work: false,
             agents: None,
@@ -682,7 +686,7 @@ impl App {
             .map(|i| i.id.clone())
     }
 
-    /// Read on in the watched thread (one read at a time).
+    /// Read on in the watched thread (one read at a time), now: a selection, a refresh, an act's answer.
     fn poll_thread(&mut self) -> Vec<Effect> {
         let Some(id) = self.thread_selected() else {
             return vec![];
@@ -698,14 +702,30 @@ impl App {
             return vec![];
         }
         view.fetching = true;
+        view.due = 0;
         vec![Effect::FetchThread {
             thread: id,
             cursor: view.transcript.cursor_main.clone(),
+            known: view.facts.as_ref().map(|f| f.version.clone()),
         }]
     }
 
-    /// A thread's window: its records appended (a restart clears them first), its facts replaced; a dialog whose
-    /// question no longer stands closes.
+    /// The tick's read of the watched thread: every tick (250 ms) while a question waits on you or the thread is
+    /// changing, backing off to every eighth (2 s) while nothing changes.
+    fn tick_thread(&mut self) -> Vec<Effect> {
+        let Some(view) = self.threads.view.as_mut() else {
+            return self.poll_thread();
+        };
+        if view.due > 0 {
+            view.due -= 1;
+            return vec![];
+        }
+        self.poll_thread()
+    }
+
+    /// A thread's window: its records appended (a restart clears them first), its facts replaced when they changed (a
+    /// window without them says they didn't); a dialog whose question no longer stands closes. The next tick's read is
+    /// sooner while something changes or a question waits, later while nothing does.
     fn got_thread(&mut self, id: String, read: Result<LiveSessionWindow, ApiError>) -> Vec<Effect> {
         let Some(view) = self.threads.view.as_mut().filter(|v| v.id == id) else {
             return vec![];
@@ -715,33 +735,53 @@ impl App {
             Ok(w) => w,
             Err(e) => return self.failed(e),
         };
+        let mut changed = view.transcript.live != window.live;
         view.transcript.live = window.live;
-        view.facts = window.thread;
+        if let Some(facts) = window.thread {
+            if view.facts.as_ref().map(|f| &f.version) != Some(&facts.version) {
+                view.facts = Some(facts);
+                changed = true;
+            }
+        }
         let mut more = None;
         if let Window::Read(read) = window.window {
             if read.restarted {
                 view.transcript.main.clear();
             }
-            view.transcript.main.extend(read.records);
-            if view.transcript.main.len() > RECORDS_KEPT {
-                let drop = view.transcript.main.len() - RECORDS_KEPT;
-                view.transcript.main.drain(..drop);
+            if read.restarted || !read.records.is_empty() {
+                view.transcript.main.extend(read.records);
+                if view.transcript.main.len() > RECORDS_KEPT {
+                    let drop = view.transcript.main.len() - RECORDS_KEPT;
+                    view.transcript.main.drain(..drop);
+                }
+                view.transcript.version += 1;
+                changed = true;
             }
             view.transcript.cursor_main = Some(read.cursor.clone());
-            view.transcript.version += 1;
             if read.more {
                 more = Some(read.cursor);
             }
         }
+        let waiting = view
+            .facts
+            .as_ref()
+            .and_then(crate::thread::shown_question)
+            .is_some();
+        view.quiet = if changed || waiting {
+            0
+        } else {
+            (view.quiet + 1).min(3)
+        };
+        view.due = (1u32 << view.quiet) - 1;
         crate::thread::check_pin(self);
         match more {
             Some(cursor) => {
-                if let Some(view) = self.threads.view.as_mut() {
-                    view.fetching = true;
-                }
+                let view = self.threads.view.as_mut().unwrap();
+                view.fetching = true;
                 vec![Effect::FetchThread {
                     thread: id,
                     cursor: Some(cursor),
+                    known: view.facts.as_ref().map(|f| f.version.clone()),
                 }]
             }
             None => vec![],
@@ -762,7 +802,7 @@ impl App {
             return vec![];
         }
         if !self.thread_shown {
-            self.say(Tone::Refused, ANSWER_TOO_LONG);
+            self.say(Tone::Refused, crate::thread::READ_TO_THE_END);
             return vec![];
         }
         if let Some(view) = self.threads.view.as_mut() {
@@ -917,7 +957,7 @@ impl App {
             }
         }
         if self.thread_selected().is_some() {
-            fx = self.poll_thread();
+            fx = self.tick_thread();
         } else if self.tab == Tab::Live || self.ticks.is_multiple_of(4) {
             fx = self.poll_live(self.ticks.is_multiple_of(8));
         }
@@ -1181,6 +1221,18 @@ impl App {
                 }
             }
             Mode::ConfirmThread(pin) => {
+                // Reading on through what would be allowed: the view says when its end has been drawn.
+                let by: i64 = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => 1,
+                    KeyCode::Char(' ') | KeyCode::PageDown => 10,
+                    KeyCode::Char('k') | KeyCode::Up => -1,
+                    KeyCode::PageUp => -10,
+                    _ => 0,
+                };
+                if by != 0 {
+                    self.thread_scroll = (self.thread_scroll as i64 + by).max(0) as usize;
+                    return vec![];
+                }
                 self.mode = Mode::Normal;
                 match key.code {
                     KeyCode::Enter => self.answer_thread(pin),
@@ -1330,6 +1382,7 @@ impl App {
                         self.status = None;
                         self.mode = Mode::ConfirmThread(pin);
                         self.thread_shown = false;
+                        self.thread_scroll = 0;
                     }
                     Err(why) => self.say(Tone::Refused, why),
                 }

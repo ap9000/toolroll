@@ -22,14 +22,27 @@ import { threadWorld, type ThreadWorld } from "../../test/flexible-thread-world.
 import { fakePid } from "../../test/fake-pid.js";
 
 vi.mock("../flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
-// The console's own host, kept where the test can attach a scripted agent to it (the real opener, called as the console calls it).
-const held = vi.hoisted(() => ({ sessions: null as unknown }));
+// The console's own host, kept where the test can attach a scripted agent to it (the real opener, called as the console
+// calls it); and hooks run in the middle of a read and between a decision and its send (a session ending right there).
+const held = vi.hoisted(() => ({ sessions: null as unknown, duringRead: null as (() => void) | null, afterDecide: null as (() => void) | null }));
 vi.mock("../flexible-session.js", async importOriginal => {
   const real = await importOriginal<typeof import("../flexible-session.js")>();
   return { ...real, openFlexibleSessions: (...args: Parameters<typeof real.openFlexibleSessions>) => {
     const opened = real.openFlexibleSessions(...args);
     if (opened.ok) held.sessions = opened.sessions;
     return opened;
+  }, flexibleThreadLiveOf: (...args: Parameters<typeof real.flexibleThreadLiveOf>) => {
+    const read = real.flexibleThreadLiveOf(...args);
+    held.duringRead?.();
+    return read;
+  } };
+});
+vi.mock("../flexible-answers.js", async importOriginal => {
+  const real = await importOriginal<typeof import("../flexible-answers.js")>();
+  return { ...real, decideFlexibleAnswer: (...args: Parameters<typeof real.decideFlexibleAnswer>) => {
+    const decided = real.decideFlexibleAnswer(...args);
+    held.afterDecide?.();
+    return decided;
   } };
 });
 
@@ -52,6 +65,24 @@ async function read(persona: string, path: string): Promise<{ status: number; bo
   const text = await response.text();
   let body: unknown = text;
   try { body = JSON.parse(text); } catch { /* a refusal page */ }
+  return { status: response.status, body };
+}
+/** A second browser session of `name`'s: its cookie, form token, and a way to end it (as signing out elsewhere does). */
+async function secondSession(name: string, token: string): Promise<{ cookie: string; csrf: string; end: () => void }> {
+  const before = new Set(world.store.handle.prepare("SELECT id_hash FROM web_session WHERE account = ?").all(name).map(row => String(row["id_hash"])));
+  const cookie = await login(name, token);
+  const hash = world.store.handle.prepare("SELECT id_hash FROM web_session WHERE account = ?").all(name).map(row => String(row["id_hash"])).find(one => !before.has(one))!;
+  const page = await (await fetch(`${base}/settings/project?repo=${encodeURIComponent(world.project)}`, { headers: { cookie } })).text();
+  return { cookie, csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!, end: () => { world.store.handle.prepare("DELETE FROM web_session WHERE id_hash = ?").run(hash); } };
+}
+const tokenOf: Record<string, string> = {};
+async function answerAs(session: { cookie: string; csrf: string }, fields: Record<string, string>): Promise<{ status: number; body: unknown }> {
+  const response = await fetch(`${base}/agents/live/thread/${T1}/answer`, { method: "POST", redirect: "manual",
+    headers: { cookie: session.cookie, origin: base, "content-type": "application/x-www-form-urlencoded", "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
+    body: new URLSearchParams({ csrf: session.csrf, ...fields }).toString() });
+  const text = await response.text();
+  let body: unknown = text;
+  try { body = JSON.parse(text); } catch { /* a page */ }
   return { status: response.status, body };
 }
 async function answer(persona: string, fields: Record<string, string>): Promise<{ status: number; body: unknown }> {
@@ -103,6 +134,7 @@ beforeAll(async () => {
   say({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Running the tests first" }] } },
     { type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "npm test" }, tool_use_id: "toolu-1" } });
   await settled();
+  tokenOf["pat"] = pat.token;
   for (const [name, token] of [["pat", pat.token], ["ines", ines.token], ["alex", alex.token]] as const) {
     cookies[name] = await login(name, token);
     const page = await (await fetch(`${base}/settings/project?repo=${encodeURIComponent(world.project)}`, { headers: { cookie: cookies[name]! } })).text();
@@ -167,5 +199,41 @@ describe("an answer goes only through its owner, naming the card they were shown
       body: new URLSearchParams({ csrf, repo: world.project, message: "Fix the README", model: "claude-sonnet-4-5", terms: "0".repeat(64) }).toString() });
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ outcome: "refused", words: "This console can't give a thread its network yet, so no thread was started." });
+  });
+});
+
+describe("a session that ends is refused at admission, during the read, and between the decision and the send", () => {
+  const settledAgent = () => new Promise(resolve => setImmediate(resolve));
+  test("ended before: the read and an answer are refused; ended during the read: nothing read is sent", async () => {
+    const before = await secondSession("pat", tokenOf["pat"]!);
+    before.end();
+    const read = await fetch(`${base}${THREAD}`, { headers: { cookie: before.cookie, accept: "application/json" }, redirect: "manual" });
+    expect(read.status).not.toBe(200);
+    const sentBefore = agent.sent.length;
+    const refused = await answerAs(before, { request: "d".repeat(32), card: "1".repeat(64), decision: "accept" });
+    expect(refused.status === 303 || refused.status === 401 || refused.status === 403, `${refused.status}`).toBe(true);
+    expect(agent.sent.length).toBe(sentBefore);
+    const during = await secondSession("pat", tokenOf["pat"]!);
+    held.duringRead = during.end;
+    try {
+      const answered = await fetch(`${base}${THREAD}`, { headers: { cookie: during.cookie, accept: "application/json" }, redirect: "manual" });
+      expect(answered.status).toBe(404);
+      expect(await answered.json()).toEqual({ error: "thread" });
+    } finally { held.duringRead = null; }
+  });
+
+  test("ended between the decision and the send: F2d's final attempt refuses it, and the agent gets nothing", async () => {
+    say({ type: "control_request", request_id: "r9", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "npm run build" }, tool_use_id: "toolu-9" } });
+    await settledAgent();
+    const session = await secondSession("pat", tokenOf["pat"]!);
+    const shown = liveSessionWindowSchema.parse((await read("pat", THREAD)).body).thread!.questions.find(one => one.state === "pending")!;
+    const sentBefore = agent.sent.length;
+    held.afterDecide = session.end;
+    try {
+      const answered = await answerAs(session, { request: shown.request, card: shown.digest, decision: "accept" });
+      expect(answered).toEqual({ status: 409, body: { outcome: "refused", words: "You can no longer answer for this thread (its Flexible terms or your access changed). Nothing was sent." } });
+    } finally { held.afterDecide = null; }
+    expect(agent.sent.length).toBe(sentBefore);
+    expect(liveSessionWindowSchema.parse((await read("pat", THREAD)).body).thread!.questions.find(one => one.request === shown.request)).toMatchObject({ state: "not-sent" });
   });
 });

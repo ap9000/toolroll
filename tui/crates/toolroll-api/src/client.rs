@@ -349,15 +349,19 @@ impl Client {
         )
     }
 
-    /// One window of a Flexible thread's live session, with its facts, from `cursor`.
+    /// One window of a Flexible thread's live session from `cursor`, with its facts unless they are still `known`.
     pub async fn thread_window(
         &self,
         thread: &str,
         cursor: Option<&str>,
+        known: Option<&str>,
     ) -> Result<LiveSessionWindow, ApiError> {
-        let q = cursor
+        let mut q = cursor
             .map(|c| format!("&cursor={}", encode(c)))
             .unwrap_or_default();
+        if let Some(known) = known {
+            q.push_str(&format!("&known={}", encode(known)));
+        }
         versioned(
             self.get::<LiveSessionWindow>(
                 &format!("/agents/live/thread/{}?file=main{q}", encode(thread)),

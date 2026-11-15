@@ -28,8 +28,14 @@ async fn settle(app: &mut App, client: &Client, mut fx: Vec<Effect>) {
         let more = match effect {
             Effect::FetchWork => app.update(Msg::Work(client.work_rows().await)),
             Effect::FetchThreads => app.update(Msg::Threads(client.threads().await)),
-            Effect::FetchThread { thread, cursor } => {
-                let read = client.thread_window(&thread, cursor.as_deref()).await;
+            Effect::FetchThread {
+                thread,
+                cursor,
+                known,
+            } => {
+                let read = client
+                    .thread_window(&thread, cursor.as_deref(), known.as_deref())
+                    .await;
                 app.update(Msg::Thread(thread, read))
             }
             Effect::Act { path, fields, done } => {

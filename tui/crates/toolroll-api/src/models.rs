@@ -183,7 +183,11 @@ pub struct ThreadQuestion {
     pub request: String,
     pub kind: String,
     pub title: String,
+    /// Every line of what an allow would allow, or a preview and why it can't all be shown.
     pub detail: Option<String>,
+    pub tool: Option<String>,
+    /// Whether the card shows the whole request (false: it can only be denied here).
+    pub complete: bool,
     pub digest: String,
     pub state: String,
     pub answerable: bool,
@@ -210,6 +214,8 @@ pub struct ThreadTurn {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadFacts {
+    /// The facts' digest: sent back as `known`, an unchanged thread's window comes without them.
+    pub version: String,
     pub title: String,
     pub project: Option<String>,
     pub level: Option<String>,

@@ -23,7 +23,7 @@ import type { ChildProcess } from "node:child_process";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { threadLevelAllowed, FLEXIBLE_PROVEN, type FlexibleProvenMatrix } from "./flexible-levels.js";
-import { defaultCustodyIO, freshProviderFolder, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
+import { defaultCustodyIO, flexibleLaunch, freshProviderFolder, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
 import { relayUrlInside, type FlexibleRelay, type FlexibleRelayEndpoint } from "./flexible-relay.js";
 import { startIdentityOf } from "./flexible-custody.js";
 import { flexibleFenceDigest, flexibleThread, flexibleThreadFence, flexibleThreadSpawn, stopFlexibleThreadAgent, withFlexibleThreadLock, type FlexibleThreadRefusal, type FlexibleThreadSpawnSeams } from "./flexible-thread.js";
@@ -280,12 +280,18 @@ export async function recoverFlexibleLaunchesOf(store: Store, input: { holder: s
   Promise<{ ok: true; settled: number; unresolved: number; withdrawn: number; interrupted: number } | FlexibleAgentRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.holder !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(input.holder)) return refuse("invalid-request");
-  const threads = store.handle.prepare("SELECT DISTINCT thread FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited'").all(input.holder).map(row => String(row["thread"]));
+  const launches = store.handle.prepare("SELECT thread, id FROM flexible_thread_launch WHERE holder = ? AND state <> 'exited' ORDER BY started_at, id").all(input.holder)
+    .map(row => ({ thread: String(row["thread"]), launch: String(row["id"]) }));
   let settled = 0, unresolved = 0;
-  for (const thread of threads) {
-    // The caller proved the holder gone: its proxy and relay handles died with it.
-    const result = await stopFlexibleThreadAgent(store, { id: thread, reason: "Toolroll restarted", holderGone: true, ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }) });
-    if ("reason" in result || !result.ok) unresolved++; else settled++;
+  for (const one of launches) {
+    // The caller proved the holder gone: its proxy and relay handles died with it. Only that holder's very launch is
+    // settled: rechecked under the thread's lock, so a replacement another console started meanwhile is left alone.
+    const result = await stopFlexibleThreadAgent(store, { id: one.thread, reason: "Toolroll restarted", holderGone: true, expect: { launch: one.launch, holder: input.holder },
+      ...(input.clock === undefined ? {} : { clock: input.clock }), ...(input.io === undefined ? {} : { io: input.io }) });
+    if ("reason" in result || !result.ok) unresolved++;
+    // Replaced: settled only if this holder's launch itself has ended (by whoever replaced it); otherwise unresolved.
+    else if (result.how === "replaced" && flexibleLaunch(store, one.launch)?.state !== "exited") unresolved++;
+    else settled++;
   }
   if (unresolved > 0) return { ok: true, settled, unresolved, withdrawn: 0, interrupted: 0 };
   const ended = interruptFlexibleTurnsOf(store, { holder: input.holder, ...(input.clock === undefined ? {} : { clock: input.clock }) });

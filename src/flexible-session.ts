@@ -48,12 +48,12 @@ import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.j
 import { flexibleThread, prepareFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
-import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveCommand, livePath, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
+import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
 import type { ProtectedStorage } from "./protected-storage.js";
 import { primaryResultEvent } from "./stream-scope.js";
 import type { Store } from "./store.js";
 
-export type FlexibleSessionReason = "not-available" | "invalid-request" | "no-holder" | "thread-unknown" | "not-owner" | "not-answerable" | "no-network";
+export type FlexibleSessionReason = "not-available" | "invalid-request" | "no-holder" | "thread-unknown" | "not-owner" | "not-answerable" | "scope-unshown" | "no-network";
 export type FlexibleSessionRefusal = { ok: false; reason: FlexibleSessionReason; message: string };
 const WORDS: Readonly<Record<FlexibleSessionReason, string>> = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
@@ -61,6 +61,7 @@ const WORDS: Readonly<Record<FlexibleSessionReason, string>> = Object.freeze({
   "no-holder": "Toolroll can't tell which process this is, so it holds no threads.",
   "thread-unknown": "There's no such thread.",
   "not-owner": "Only the person who started this thread can answer its agent. Nothing was sent.",
+  "scope-unshown": "This request couldn't be shown in full, so it can't be allowed from here. You can deny it. Nothing was sent.",
   "not-answerable": "This question can't be answered from here: Toolroll restarted since it was asked, or another Toolroll holds it. Nothing was sent.",
   "no-network": "This console can't give a thread its network yet, so no thread was started.",
 });
@@ -78,7 +79,7 @@ const LINE_CAP = 1_048_576;
 
 // ---- the host ----------------------------------------------------------------------------------------------------------------
 
-type Asked = { request: string; token: string; ref: string; kind: FlexibleRequestKind; input: Record<string, unknown>; questions: string[] };
+type Asked = { request: string; token: string; ref: string; kind: FlexibleRequestKind; tool: string; input: Record<string, unknown>; inputDigest: string; complete: boolean; questions: string[] };
 type AgentLink = { launch: string; turn: string | null; stdin: Writable; connection: FlexibleAnswerConnection; recorder: LiveRecorder };
 type ThreadSession = { thread: string; relay: FlexibleRelayServer | null; agent: AgentLink | null; records: LiveRecord[]; dropped: number; epoch: string;
   asked: Map<string, Asked>; title: string | null };
@@ -93,12 +94,24 @@ function holderOf(pid: number, io: Pick<CustodyIO, "table">): string | null {
   const start = startIdentityOf(pid, io);
   return start === null ? null : `console:${pid}:${sha16(start)}`;
 }
-/** Whether a holder named as holderOf names them is proved gone: no process runs with its pid and start identity. A holder
- * named any other way is never proved gone here. */
-function holderGone(holder: string, io: Pick<CustodyIO, "table">): boolean {
+/**
+ * Whether a holder named as holderOf names them is gone, alive or unknown. Gone only on proof: the process table was
+ * read whole and has no live process with its pid, or that pid's start identity is known and is another one. A table
+ * that can't be read, or a start identity that can't, is unknown; a holder named any other way is unknown too. Unknown
+ * never recovers.
+ */
+export type FlexibleHolderLife = "gone" | "alive" | "unknown";
+function holderLife(holder: string, io: Pick<CustodyIO, "table">): FlexibleHolderLife {
   const named = HOLDER.exec(holder);
-  if (named === null) return false;
-  return holderOf(Number(named[1]), io) !== holder;
+  if (named === null) return "unknown";
+  let table: ReturnType<CustodyIO["table"]>;
+  try { table = io.table(); } catch { return "unknown"; }
+  if (table === null) return "unknown";
+  const pid = Number(named[1]);
+  const row = table.find(one => one.pid === pid && !one.zombie);
+  if (row === undefined) return "gone";
+  if (row.start === null) return "unknown";
+  return sha16(row.start) === named[2] ? "alive" : "gone";
 }
 
 /**
@@ -140,21 +153,24 @@ export function tickFlexibleSessions(store: Store, sessions: FlexibleSessions, i
  * proved gone is left alone.
  */
 export async function recoverFlexibleHolders(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}):
-  Promise<{ ok: true; recovered: string[]; unresolved: string[] } | FlexibleSessionRefusal> {
+  Promise<{ ok: true; recovered: string[]; unresolved: string[]; unknown: string[] } | FlexibleSessionRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const holders = new Set([
     ...store.handle.prepare("SELECT DISTINCT holder FROM flexible_thread_launch WHERE state <> 'exited'").all().map(row => String(row["holder"])),
     ...store.handle.prepare("SELECT DISTINCT holder FROM thread_turn WHERE status IN ('admitted', 'running')").all().map(row => String(row["holder"])),
   ]);
-  const recovered: string[] = [], unresolved: string[] = [];
+  const recovered: string[] = [], unresolved: string[] = [], unknown: string[] = [];
   for (const holder of [...holders].sort()) {
-    if (holder === sessions.holder || !holderGone(holder, sessions.io)) continue;
+    if (holder === sessions.holder) continue;
+    const life = holderLife(holder, sessions.io);
+    if (life === "unknown" && HOLDER.test(holder)) unknown.push(holder);
+    if (life !== "gone") continue;
     const launches = await recoverFlexibleLaunchesOf(store, { holder, ...clocked, io: sessions.io });
     const answers = recoverFlexibleAnswersOf(store, sessions.catalog, { holder, ...clocked });
     if (!launches.ok || launches.unresolved > 0 || !answers.ok) unresolved.push(holder); else recovered.push(holder);
   }
-  return { ok: true, recovered, unresolved };
+  return { ok: true, recovered, unresolved, unknown };
 }
 
 // ---- a thread's session: its relay, its agent ---------------------------------------------------------------------------------
@@ -204,18 +220,74 @@ function cardText(given: unknown, cap: number): string {
   return liveSecretHit(one) ? HIDDEN_LINE : one;
 }
 
+/** The agent's whole request as canonical JSON (keys sorted at every level), and its SHA-256: what an allow binds to. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+function flexibleInputDigest(tool: string, input: Record<string, unknown>): string {
+  return createHash("sha256").update(canonical({ tool, input }), "utf8").digest("hex");
+}
+
+/** How much of a request a card shows whole; past either, it can't be allowed from a card. */
+export const FLEXIBLE_SCOPE_LINES = 200;
+export const FLEXIBLE_SCOPE_CHARS = 16_000;
+const FILE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/**
+ * Every line of what an allow would allow, as the person reads it: a command's every line, a file change's path and its
+ * whole change (each line marked - or +, its size), anything else as its full input. `complete` is false, and the
+ * lines a short preview with the reason, when it can't all be shown truthfully: too long, a line shaped like a secret,
+ * or characters a terminal can't show (cleaning would change what the person reads).
+ */
+function scopeOf(tool: string, input: Record<string, unknown>): { lines: string[]; complete: boolean; why: string | null } {
+  const raw: string[] = [];
+  const text = (value: unknown): string => typeof value === "string" ? value : JSON.stringify(value) ?? "";
+  const rest = (skip: string[]) => {
+    for (const key of Object.keys(input).sort()) if (!skip.includes(key)) raw.push(`${key}: ${text(input[key])}`);
+  };
+  if (tool === "Bash") {
+    raw.push(...text(input["command"]).split("\n"));
+    rest(["command"]);
+  } else if (tool === "Write") {
+    const content = text(input["content"]);
+    raw.push(`file: ${text(input["file_path"])}`, `content (${Buffer.byteLength(content, "utf8")} bytes):`, ...content.split("\n").map(line => `+ ${line}`));
+    rest(["file_path", "content"]);
+  } else if (tool === "Edit") {
+    raw.push(`file: ${text(input["file_path"])}`, ...text(input["old_string"]).split("\n").map(line => `- ${line}`), ...text(input["new_string"]).split("\n").map(line => `+ ${line}`));
+    rest(["file_path", "old_string", "new_string"]);
+  } else {
+    raw.push(...JSON.stringify(input, null, 2).split("\n"));
+  }
+  const why = raw.length > FLEXIBLE_SCOPE_LINES || raw.reduce((sum, line) => sum + line.length + 1, 0) > FLEXIBLE_SCOPE_CHARS ? "it is too long to show here"
+    : raw.some(line => liveSecretHit(line)) ? "part of it is shaped like a secret, so it isn't shown"
+    : raw.some(line => cleanLiveText(line) !== line.replace(/\t/g, " ")) ? "it holds characters a terminal can't show"
+    : null;
+  if (why === null) return { lines: raw.map(line => line.replace(/\t/g, " ")), complete: true, why: null };
+  const preview = raw.slice(0, 10).map(line => cardText(line, 300));
+  return { lines: [...preview, ...(raw.length > 10 ? [`… and ${raw.length - 10} more lines`] : []), `This can't be allowed from here: ${why}. You can deny it.`], complete: false, why };
+}
+
 /** The card a person is shown for an agent's request (Claude's stdio permission channel: `can_use_tool`), in Toolroll's
- * own words with the agent's text cleaned; null when it isn't a request Toolroll can show. */
-function cardOf(tool: string, input: Record<string, unknown>, base: string | null): { kind: FlexibleRequestKind; card: FlexibleRequestCard; questions: string[] } | null {
+ * own words with the agent's text cleaned, bound to the tool and the digest of its whole input; null when it isn't a
+ * request Toolroll can show. */
+function cardOf(tool: string, input: Record<string, unknown>): { kind: FlexibleRequestKind; card: FlexibleRequestCard; questions: string[]; inputDigest: string } | null {
+  const inputDigest = flexibleInputDigest(tool, input);
+  const bound = { tool: cardText(tool, 100) || "unknown", input: inputDigest };
   if (tool === "AskUserQuestion") {
     const given = Array.isArray(input["questions"]) ? (input["questions"] as unknown[]).slice(0, 9) : [];
     const questions: { id: string; question: string; options?: { label: string }[] }[] = [];
     const texts: string[] = [];
+    let complete = (input["questions"] as unknown[] | undefined)?.length === given.length;
     for (const [index, one] of given.entries()) {
       if (typeof one !== "object" || one === null) return null;
       const q = one as Record<string, unknown>;
       const question = cardText(q["question"], 4000);
       if (question === "" || typeof q["question"] !== "string") return null;
+      if (question !== q["question"]) complete = false;
       const options = (Array.isArray(q["options"]) ? (q["options"] as unknown[]).slice(0, 9) : [])
         .map(option => ({ label: cardText(typeof option === "object" && option !== null ? (option as Record<string, unknown>)["label"] : null, 200) }))
         .filter(option => option.label !== "");
@@ -223,15 +295,12 @@ function cardOf(tool: string, input: Record<string, unknown>, base: string | nul
       texts.push(q["question"]);
     }
     if (questions.length === 0) return null;
-    return { kind: "question", card: { title: questions.length === 1 ? "The agent asks you" : `The agent asks you ${questions.length} things`, questions }, questions: texts };
+    return { kind: "question", card: { title: questions.length === 1 ? "The agent asks you" : `The agent asks you ${questions.length} things`, ...bound, complete, questions }, questions: texts, inputDigest };
   }
-  const detail = tool === "Bash" ? liveCommand(input["command"])
-    : ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool) ? livePath(base, input["file_path"] ?? input["notebook_path"])
-    : tool === "WebFetch" ? cardText(input["url"], 300) || null
-    : null;
-  const title = tool === "Bash" ? "Allow this command?" : ["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool) ? "Allow this change to a file?"
-    : tool === "WebFetch" || tool === "WebSearch" ? "Allow this lookup?" : "Allow this step?";
-  return { kind: "permission", card: { title, ...(detail === null ? {} : { detail }) }, questions: [] };
+  const scope = scopeOf(tool, input);
+  const title = tool === "Bash" ? "Allow this command?" : FILE_TOOLS.includes(tool) ? "Allow this change to a file?"
+    : tool === "WebFetch" || tool === "WebSearch" ? "Allow this lookup?" : `Allow the agent's ${bound.tool} step?`;
+  return { kind: "permission", card: { title, detail: scope.lines.join("\n").slice(0, 32_000), ...bound, complete: scope.complete }, questions: [], inputDigest };
 }
 
 /** An answer in Claude's stdio control form for the request it answers (`frame`: pure, run inside F2d's attempt). */
@@ -290,12 +359,14 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
       if (typeof request !== "object" || request === null || request["subtype"] !== "can_use_tool" || typeof ref !== "string" || !REF.test(ref) || link.turn === null) return;
       const given = request["input"];
       const toolInput = typeof given === "object" && given !== null && !Array.isArray(given) ? given as Record<string, unknown> : {};
-      const shown = cardOf(String(request["tool_name"] ?? ""), toolInput, `${thread.folder}/repo`);
+      const tool = String(request["tool_name"] ?? "");
+      const shown = cardOf(tool, toolInput);
       if (shown === null) return;
       const correlation = typeof request["tool_use_id"] === "string" && REF.test(request["tool_use_id"]) ? request["tool_use_id"] : null;
       const made = recordFlexibleRequest(store, sessions.catalog, { thread: input.thread, turn: link.turn, connection: link.launch, holder: sessions.holder, requestRef: ref,
         kind: shown.kind, card: shown.card, correlation, ...clocked });
-      if (made.ok) session.asked.set(made.request, { request: made.request, token: made.token, ref, kind: shown.kind, input: toolInput, questions: shown.questions });
+      if (made.ok) session.asked.set(made.request, { request: made.request, token: made.token, ref, kind: shown.kind, tool, input: structuredClone(toolInput), inputDigest: shown.inputDigest,
+        complete: shown.card.complete !== false, questions: shown.questions });
       return;
     }
     // Tool activity carrying a request's tool id: F2d decides whether it is that answer's acknowledgement.
@@ -433,10 +504,13 @@ export type FlexibleChoice = { decision: "accept" | "decline" } | { question: st
  * bytes may be part way out, and nothing more is written after them.
  */
 export async function answerFlexibleRequest(store: Store, sessions: FlexibleSessions, input: { thread: string; request: string; shownDigest: string; by: { kind: "person"; name: string; generation: number };
-  choice: FlexibleChoice; clock?: FlexibleClock; writeMs?: number }): Promise<{ ok: true; state: "sent" } | FlexibleSessionRefusal | FlexibleAnswerRefusal> {
+  choice: FlexibleChoice; clock?: FlexibleClock; writeMs?: number;
+  /** The person's own session, still held (its saved authority, re-read): bound to the decision and checked again
+   * inside F2d's decision and its final attempt transaction. */
+  held: () => boolean }): Promise<{ ok: true; state: "sent" } | FlexibleSessionRefusal | FlexibleAnswerRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.thread !== "string" || !ID.test(input.thread) || typeof input.request !== "string" || !ID.test(input.request) || typeof input.shownDigest !== "string"
-    || typeof input.choice !== "object" || input.choice === null) return refuse("invalid-request");
+    || typeof input.choice !== "object" || input.choice === null || typeof input.held !== "function") return refuse("invalid-request");
   // The thread's owner only, at their account's current generation, checked here before anything is decided; F2d
   // checks the turn's owner and generation again at the decision and at the write (the backstop, not the only line).
   if (input.by?.kind !== "person" || typeof input.by.name !== "string" || !Number.isSafeInteger(input.by.generation)) return refuse("not-owner");
@@ -448,15 +522,18 @@ export async function answerFlexibleRequest(store: Store, sessions: FlexibleSess
   const choice = input.choice;
   const decision = "decision" in choice ? (choice.decision === "accept" || choice.decision === "decline" ? choice.decision : null) : asked.kind === "question" ? "answer" as const : null;
   if (decision === null || (!("decision" in choice) && (typeof choice.question !== "string" || typeof choice.answer !== "string" || choice.answer.length < 1 || choice.answer.length > 16_000))) return refuse("invalid-request");
+  // An allow covers the whole request: only one whose card showed all of it, and whose input is still the one digested.
+  if (decision === "accept" && (!asked.complete || flexibleInputDigest(asked.tool, asked.input) !== asked.inputDigest)) return refuse("scope-unshown");
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
   const answers = "decision" in choice ? undefined : { [choice.question]: { answers: [choice.answer] } };
-  const decided = decideFlexibleAnswer(store, sessions.catalog, { request: input.request, token: asked.token, shownDigest: input.shownDigest, by: input.by, decision, ...(answers === undefined ? {} : { answers }), ...clocked });
+  const decided = decideFlexibleAnswer(store, sessions.catalog, { request: input.request, token: asked.token, shownDigest: input.shownDigest, by: input.by, decision, ...(answers === undefined ? {} : { answers }),
+    held: input.held, ...clocked });
   if (!decided.ok) return decided;
   // The agent's connection as this host holds it now; with none, F2d refuses the send (the connection changed) and the
   // answer is not-sent.
   const agent = session.agent;
   const connection: FlexibleAnswerConnection = agent?.connection ?? { id: "0".repeat(32), frame: () => new Uint8Array(0), send: async () => ({ written: 0, complete: false }) };
-  const sent = await sendFlexibleAnswer(store, sessions.catalog, { request: input.request, connection, holder: sessions.holder, ...clocked, ...(input.writeMs === undefined ? {} : { writeMs: input.writeMs }) });
+  const sent = await sendFlexibleAnswer(store, sessions.catalog, { request: input.request, connection, holder: sessions.holder, held: input.held, ...clocked, ...(input.writeMs === undefined ? {} : { writeMs: input.writeMs }) });
   if (!sent.ok && sent.reason === "uncertain" && agent != null) {
     try { agent.stdin.destroy(); } catch { /* already closed */ }
   }
@@ -465,9 +542,9 @@ export async function answerFlexibleRequest(store: Store, sessions: FlexibleSess
 
 // ---- what the owner's surface reads ----------------------------------------------------------------------------------------------
 
-export type FlexibleQuestionView = { request: string; kind: FlexibleRequestKind; title: string; detail: string | null; digest: string; state: FlexibleAnswerState; answerable: boolean;
-  parts: { id: string; question: string; options: string[] }[] };
-export type FlexibleThreadFacts = { title: string; project: string | null; level: FlexibleLevel | null; agent: { provider: string; model: string } | null;
+export type FlexibleQuestionView = { request: string; kind: FlexibleRequestKind; title: string; detail: string | null; tool: string | null; complete: boolean; digest: string;
+  state: FlexibleAnswerState; answerable: boolean; parts: { id: string; question: string; options: string[] }[] };
+export type FlexibleThreadFacts = { version: string; title: string; project: string | null; level: FlexibleLevel | null; agent: { provider: string; model: string } | null;
   turn: { seq: number; status: string; costUsd: number | null; costBasis: "measured" | "estimated" | "unknown" | null } | null; questions: FlexibleQuestionView[] };
 export type FlexibleWindow = { ok: true; records: LiveRecord[]; cursor: string; restarted: boolean; earlier: boolean; quarantined: number; skipped: number; more: boolean }
   | { ok: false; reason: "missing" };
@@ -485,12 +562,12 @@ function factsOf(store: Store, sessions: FlexibleSessions, thread: { id: string;
   const turn = typeof last === "string" ? flexibleTurn(store, last) : null;
   const read = turn === null ? null : flexibleRequestsOf(sessions.catalog, { thread: thread.id, turn: turn.id });
   const questions = read === null || !read.ok ? [] : read.requests.map(one => ({
-    request: one.request, kind: one.kind, title: one.card.title, detail: one.card.detail ?? null, digest: one.requestDigest, state: one.state,
+    request: one.request, kind: one.kind, title: one.card.title, detail: one.card.detail ?? null, tool: one.card.tool ?? null, complete: one.card.complete !== false, digest: one.requestDigest, state: one.state,
     answerable: one.state === "pending" && session?.asked.has(one.request) === true && session.agent?.launch === one.connection,
     parts: (one.card.questions ?? []).map(q => ({ id: q.id, question: q.question, options: (q.options ?? []).map(option => option.label) })),
   }));
   const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(thread.repo)?.["name"];
-  return {
+  const facts = {
     title: session?.title ?? `Thread ${thread.id.slice(0, 8)}`,
     project: typeof project === "string" ? project : null,
     level: levelOf(store, thread.id),
@@ -498,6 +575,8 @@ function factsOf(store: Store, sessions: FlexibleSessions, thread: { id: string;
     turn: turn === null ? null : { seq: turn.seq, status: turn.status, costUsd: turn.costBasis === null ? null : turn.costMicrousd / 1_000_000, costBasis: turn.costBasis },
     questions,
   };
+  // What the facts are, as one short digest: a client holding it is told "unchanged" instead of being sent them again.
+  return { version: sha16(JSON.stringify(facts)), ...facts };
 }
 
 /** The thread if `viewer` is its owner (the person who started it: flexible_thread.created_by) and it is ready; null

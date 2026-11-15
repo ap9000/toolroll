@@ -70,7 +70,13 @@ const threadQuestionSchema = z.object({
   request: hex32,
   kind: z.enum(["permission", "question"]),
   title: z.string(),
+  /** Every line of what an allow would allow (a command's every line, a file change's whole change, anything else's
+   * full input), or a preview and the reason it can't all be shown. */
   detail: z.string().nullable(),
+  /** The agent's tool, as the card is bound to it (with the digest of its whole input, inside `digest`). */
+  tool: z.string().nullable(),
+  /** Whether the card shows the whole request. False: it can't be allowed from a card, only denied. */
+  complete: z.boolean(),
   digest: z.string().regex(/^[0-9a-f]{64}$/),
   state: answerStateSchema,
   answerable: z.boolean(),
@@ -80,6 +86,8 @@ const threadQuestionSchema = z.object({
 /** A Flexible thread's facts beside its window: its level, its agent, its current turn and that turn's cost so far (null
  * until a call is charged; `costBasis` says how sure), and that turn's questions. */
 export const threadFactsSchema = z.object({
+  /** A digest of these facts: sent back as `known=`, an unchanged thread's window comes without them. */
+  version: z.string().regex(/^[0-9a-f]{16}$/),
   title: z.string(),
   project: z.string().nullable(),
   level: flexibleLevelSchema.nullable(),
@@ -90,7 +98,8 @@ export const threadFactsSchema = z.object({
 
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
  * (GET /live?room=) that says when to read again; `cursor` is opaque state, never permission. A thread's window also
- * carries its facts (`thread`); a run's never does. */
+ * carries its facts (`thread`), unless the read named their current `version` as `known=` (then they're unchanged and
+ * left out); a run's never does. */
 export const liveSessionWindowSchema = z.object({
   version,
   session: liveSessionRefSchema,

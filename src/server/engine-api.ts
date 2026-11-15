@@ -151,20 +151,25 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   /** An act's answer as data (`{ outcome, words }`): a thread's acts are a terminal's or an API client's, never a page's. */
   const acted = (response: JsonResponse, status: number, outcome: "done" | "refused", words: string): void => json(response, status, { outcome, words });
 
-  /** GET /agents/live/thread/<id>: a Flexible thread's LiveSession window and its facts, its owner's only. Refused, before
-   * anything is looked up, while Flexible isn't available (flexible-available.ts). */
+  /** GET /agents/live/thread/<id>[?file=&cursor=&known=]: a Flexible thread's LiveSession window and its facts, its
+   * owner's only; `known` (the facts' version the client holds) leaves unchanged facts out. Refused, before anything is
+   * looked up, while Flexible isn't available (flexible-available.ts). */
   async function liveThread(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
     if (!FLEXIBLE_AVAILABLE || flexible === null) return refusal(response, 404, "not-available");
-    const query = liveQueryOf(url);
+    const known = url.searchParams.get("known");
+    const plain = new URL(url.href);
+    plain.searchParams.delete("known");
+    const query = url.searchParams.getAll("known").length > 1 || (known !== null && !/^[0-9a-f]{16}$/.test(known)) ? null : liveQueryOf(plain);
     if (query === null) return refusal(response, 400, "request");
     const id = url.pathname.slice("/agents/live/thread/".length);
     // Admitted before the read and again after it: someone else's thread, or one gone from view, gets nothing read.
     if (ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
     const read = flexibleThreadLiveOf(store, flexible, { thread: id, viewer: { name: who.name }, file: query.file, cursor: query.cursor });
     if (!read.ok || ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
-    const body: LiveSessionWindow = { version: ENGINE_API_VERSION, session: { kind: "thread", id, task: null }, room: `thread:${id}`, live: read.live, file: query.file, window: read.window, thread: read.facts };
+    const body: LiveSessionWindow = { version: ENGINE_API_VERSION, session: { kind: "thread", id, task: null }, room: `thread:${id}`, live: read.live, file: query.file, window: read.window,
+      ...(known === read.facts.version ? {} : { thread: read.facts }) };
     return sendChecked(response, 200, "liveSessionWindow", body);
   }
 
@@ -196,8 +201,16 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const decision = body.get("decision"), question = body.get("question"), answer = body.get("answer");
     const choice: FlexibleChoice | null = decision === "accept" || decision === "decline" ? { decision } : question !== null && answer !== null && decision === null ? { question, answer } : null;
     if (choice === null) return acted(response, 400, "refused", "That answer isn't one Toolroll can read. Nothing was sent.");
+    // This very session, bound to the decision: its saved authority (the session row, the account's standing at the
+    // session's generation, the thread's project) is read again inside F2d's decision and its final attempt.
+    const sessionHash = runtime.sessions.hashOf(who.session);
+    const held = (): boolean => {
+      const saved = sessionHash === null ? null : store.webSession(sessionHash), account = store.accountOf(who.name);
+      return saved !== null && account !== null && account.revokedAt === null && account.generation === who.session.generation && saved.generation === account.generation
+        && saved.role === account.role && admitFlexibleThreadOwner(store, flexible, { thread: id, viewer: { name: who.name }, canAccess: repo => store.accountCanAccess(who.name, repo) }).ok;
+    };
     const done = await answerFlexibleRequest(store, flexible, { thread: id, request: body.get("request") ?? "", shownDigest: body.get("card") ?? "",
-      by: { kind: "person", name: who.name, generation: who.session.generation }, choice });
+      by: { kind: "person", name: who.name, generation: who.session.generation }, choice, held });
     return done.ok ? acted(response, 200, "done", "Sent to the agent.") : acted(response, 409, "refused", done.message);
   }
 

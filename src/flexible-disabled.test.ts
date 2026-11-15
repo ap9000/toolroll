@@ -197,7 +197,7 @@ describe("switched off", () => {
     const launcher = { network: async () => { touched.push("network"); return { proxyPort: 1, token: "t", proxyEnv: {}, close: () => {} }; }, storage: { names: [], denies: [] } };
     expect(await beginFlexibleThreadTurn(store, sessions, { turn, message: "hello", launcher })).toEqual(refused);
     expect(await startFlexibleThread(store, sessions, { repo, by: person, digest: "0".repeat(64), message: "hello", model: "claude-sonnet-4-5", launcher })).toEqual(refused);
-    expect(await answerFlexibleRequest(store, sessions, { thread: id, request, shownDigest: "1".repeat(64), by: { kind: "person", ...person }, choice: { decision: "accept" } })).toEqual(refused);
+    expect(await answerFlexibleRequest(store, sessions, { held: () => true, thread: id, request, shownDigest: "1".repeat(64), by: { kind: "person", ...person }, choice: { decision: "accept" } })).toEqual(refused);
     expect(flexibleThreadLiveOf(store, sessions, { thread: id, viewer: { name: "alex" }, file: "main", cursor: null })).toEqual(refused);
     expect(flexibleThreadsOf(store, sessions, { owner: "alex" })).toEqual(refused);
     expect(admitFlexibleThreadOwner(store, sessions, { thread: id, viewer: { name: "alex" }, canAccess: () => { touched.push("canAccess"); return true; } })).toEqual(refused);

@@ -18,7 +18,15 @@ use toolroll_api::{LiveThreads, ThreadFacts, ThreadQuestion, ThreadRow};
 
 /// Said when a thread's question changed (or was answered elsewhere) while its dialog was open.
 pub const THREAD_QUESTION_CHANGED: &str = "This question changed — look again.";
+/// Said when Enter is pressed before the dialog drew the end of what would be allowed.
+pub const READ_TO_THE_END: &str =
+    "Read it to the end first (j or Space), then press Enter. Nothing was sent.";
+/// Said when Allow is picked for a request whose card couldn't show all of it.
+pub const CANT_ALLOW_UNSHOWN: &str =
+    "This request couldn't be shown in full, so it can't be allowed from here. Press 2 to deny it.";
 /// Said when a question can't be answered here (more than one part, or no options to pick from).
+/// How many of a card's lines the panel shows (the dialog shows them all).
+const PANEL_DETAIL: usize = 6;
 pub const THREAD_ANSWER_ELSEWHERE: &str =
     "This question can't be answered with a number here — it has more than one part or no options.";
 
@@ -41,6 +49,16 @@ pub struct ThreadView {
     pub fetching: bool,
     /// The request whose answer was posted and hasn't been answered yet (shown as sending).
     pub sending: Option<String>,
+    /// Reads in a row that changed nothing (polls back off with it), and ticks until the next one.
+    pub quiet: u32,
+    pub due: u32,
+    /// The transcript's laid-out lines for (transcript version, width): rebuilt only when either moves.
+    pub lines: Option<(u64, usize, Vec<Line<'static>>)>,
+}
+
+/// A card's detail as lines, each cleaned (agent text: drawn inert).
+pub fn detail_lines(detail: &str) -> Vec<String> {
+    detail.split('\n').map(clean).collect()
 }
 
 /// What a dialog showed, pinned when it opened: the request, the card digest, the option's place and exact words, and
@@ -142,6 +160,10 @@ pub fn pin(view: &ThreadView, n: usize) -> Result<ThreadPin, String> {
         .get(n)
         .ok_or_else(|| format!("There's no answer {}.", n + 1))?
         .clone();
+    // An allow covers the agent's whole request: never one whose card couldn't show all of it.
+    if q.kind == "permission" && n == 0 && !q.complete {
+        return Err(CANT_ALLOW_UNSHOWN.to_string());
+    }
     let fields = if q.kind == "permission" {
         vec![(
             "decision".to_string(),
@@ -257,7 +279,11 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let q_lines = shown
         .as_ref()
         .map(|q| {
-            3 + u16::from(q.detail.is_some())
+            3 + q
+                .detail
+                .as_deref()
+                .map(|d| detail_lines(d).len().min(PANEL_DETAIL + 1) as u16)
+                .unwrap_or(0)
                 + options.as_ref().map(|o| o.len() as u16).unwrap_or(1)
         })
         .unwrap_or(0)
@@ -286,9 +312,14 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         head,
     );
     // The transcript: the same cards as a build's live output.
-    let lines: Vec<Line<'static>> = match app.threads.view.as_ref().filter(|v| v.id == item.id) {
+    let lines: Vec<Line<'static>> = match app.threads.view.as_mut().filter(|v| v.id == item.id) {
         Some(v) if !v.transcript.main.is_empty() => {
-            let all = crate::transcript::lines(&v.transcript, w, 0);
+            // Laid out again only when a record arrived or the width moved: an unchanged poll rebuilds nothing.
+            let version = v.transcript.version;
+            if !matches!(&v.lines, Some((at, width, _)) if *at == version && *width == w) {
+                v.lines = Some((version, w, crate::transcript::lines(&v.transcript, w, 0)));
+            }
+            let all = &v.lines.as_ref().unwrap().2;
             let h = content.height as usize;
             all[all.len().saturating_sub(h)..].to_vec()
         }
@@ -312,10 +343,23 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             Span::styled(format!("  {words}"), dim()),
         ]));
         if let Some(detail) = &q.detail {
-            lines.push(Line::from(Span::styled(
-                format!("  {}", fit(&clean(detail), w.saturating_sub(2))),
-                dim(),
-            )));
+            // Its first lines here; every line in the dialog, which must be read to the end before Enter sends.
+            let all = detail_lines(detail);
+            for line in all.iter().take(PANEL_DETAIL) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", fit(line, w.saturating_sub(2))),
+                    dim(),
+                )));
+            }
+            if all.len() > PANEL_DETAIL {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  … {} more lines: picking an answer shows them all",
+                        all.len() - PANEL_DETAIL
+                    ),
+                    dim(),
+                )));
+            }
         }
         if let Some(part) = q.parts.first().filter(|_| q.kind == "question") {
             lines.push(Line::from(Span::styled(
@@ -327,11 +371,18 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             Some(options) => {
                 for (i, o) in options.iter().enumerate() {
                     let chosen = matches!(&app.mode, Mode::ConfirmThread(pin) if pin.index == i && pin.request == q.request);
-                    lines.push(Line::from(Span::styled(
+                    let unshown = q.kind == "permission" && i == 0 && !q.complete;
+                    let text = if unshown {
                         format!(
-                            "  {}",
-                            fit(&format!("{} {}", i + 1, clean(o)), w.saturating_sub(2))
-                        ),
+                            "{} {} — not from here: it can't all be shown",
+                            i + 1,
+                            clean(o)
+                        )
+                    } else {
+                        format!("{} {}", i + 1, clean(o))
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("  {}", fit(&text, w.saturating_sub(2))),
                         if chosen {
                             selected().add_modifier(Modifier::BOLD)
                         } else {
@@ -388,42 +439,71 @@ pub fn confirm_lines(app: &mut App, area: Rect) -> Option<(&'static str, Vec<Lin
         .filter(|q| q.request == pin.request)?
         .clone();
     let w = (area.width as usize).saturating_sub(8).min(72);
-    let mut lines = vec![Line::raw("")];
+    let mut body: Vec<Line<'static>> = vec![];
     let said = |text: &str, style: Style, lines: &mut Vec<Line<'static>>| {
         lines.extend(
-            wrap(&clean(text), w)
+            wrap(text, w)
                 .into_iter()
                 .map(|l| Line::from(Span::styled(l, style))),
         );
     };
-    said(&q.title, ink(), &mut lines);
+    said(&clean(&q.title), ink(), &mut body);
+    if let Some(tool) = q.tool.as_deref().filter(|_| q.kind == "permission") {
+        said(&format!("Tool: {}", clean(tool)), dim(), &mut body);
+    }
+    // Every line of what an allow would allow, wrapped, never cut.
     if let Some(detail) = &q.detail {
-        said(detail, Style::default(), &mut lines);
+        for line in detail_lines(detail) {
+            said(&line, Style::default(), &mut body);
+        }
     }
     if let Some(part) = q.parts.first().filter(|_| q.kind == "question") {
-        said(&part.question, Style::default(), &mut lines);
+        said(&clean(&part.question), Style::default(), &mut body);
     }
-    lines.push(Line::raw(""));
-    said(&format!("Your answer: {}", pin.label), ink(), &mut lines);
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled("Enter  ", ink()),
-        Span::raw("Send it to the agent"),
-    ]));
-    lines.push(Line::from(Span::styled("Any other key cancels.", dim())));
-    let fits = w >= 20 && lines.len() + 2 <= area.height as usize;
-    app.thread_shown = fits;
-    Some(if fits {
-        (" Answer ", lines)
-    } else {
-        (
+    body.push(Line::raw(""));
+    said(
+        &format!("Your answer: {}", clean(&pin.label)),
+        ink(),
+        &mut body,
+    );
+    // As many lines as the window holds, from where the person has read to; Enter sends only once the end was drawn.
+    let room = (area.height as usize).saturating_sub(6).max(1);
+    if w < 20 {
+        app.thread_shown = false;
+        return Some((
             " Answer ",
-            wrap(crate::app::ANSWER_TOO_LONG, w.max(16))
+            wrap(READ_TO_THE_END, 16)
                 .into_iter()
                 .map(|l| Line::from(Span::styled(l, ink())))
                 .collect(),
-        )
-    })
+        ));
+    }
+    let top = app.thread_scroll.min(body.len().saturating_sub(room));
+    app.thread_scroll = top;
+    let end = (top + room).min(body.len());
+    if end == body.len() {
+        app.thread_shown = true;
+    }
+    let mut lines = vec![Line::raw("")];
+    lines.extend(body[top..end].iter().cloned());
+    lines.push(Line::raw(""));
+    if app.thread_shown {
+        lines.push(Line::from(vec![
+            Span::styled("Enter  ", ink()),
+            Span::raw("Send it to the agent"),
+        ]));
+        lines.push(Line::from(Span::styled("Esc cancels.", dim())));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("j/Space  ", ink()),
+            Span::raw(format!("Read on ({} more lines)", body.len() - end)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            "Enter sends once you've read to the end. Esc cancels.",
+            dim(),
+        )));
+    }
+    Some((" Answer ", lines))
 }
 
 /// After a refresh: a dialog whose question no longer stands closes, saying so (nothing is sent).

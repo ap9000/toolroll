@@ -53,6 +53,7 @@
     "more": false
   },
   "thread": {
+    "version": "4b7d1e9a0c3f5a28",
     "title": "Make the totals include tax",
     "project": "shop",
     "level": "full",
@@ -72,6 +73,8 @@
         "kind": "question",
         "title": "The agent asks you",
         "detail": null,
+        "tool": "AskUserQuestion",
+        "complete": true,
         "digest": "3d1f0a8e5b7c9d2e4f6a8b0c1d3e5f7a9b0c2d4e6f8a1b3c5d7e9f0a2b4c6d8e",
         "state": "sent",
         "answerable": false,
@@ -90,7 +93,9 @@
         "request": "c0ffee00c0ffee00c0ffee00c0ffee02",
         "kind": "permission",
         "title": "Allow this command?",
-        "detail": "npm test",
+        "detail": "npm test -- --run src/total.test.ts\nnpm run lint",
+        "tool": "Bash",
+        "complete": true,
         "digest": "7a9c1e3f5b7d9f1a3c5e7a9b1d3f5a7c9e1b3d5f7a9c1e3b5d7f9a1c3e5b7d9f",
         "state": "pending",
         "answerable": true,
