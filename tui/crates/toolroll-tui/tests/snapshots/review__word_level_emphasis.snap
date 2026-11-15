@@ -1,0 +1,13 @@
+---
+source: crates/toolroll-tui/tests/review.rs
+expression: shown
+---
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   1    1   ⟧use std::fmt;
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   2    2   ⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   3      ⟧⟦Red:− fn ⟧⟦Red+REVERSED:total⟧⟦Red:(items: &[i64]) -> i64 {⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:        3 ⟧⟦Green:+ fn ⟧⟦Green+REVERSED:subtotal⟧⟦Green:(items: &[i64]) -> i64 {⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   4    4   ⟧    items.iter().sum()
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   5    5   ⟧}
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:        6 ⟧⟦Green:+ // Tax is added at checkout.⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   6    7   ⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:⋯ 13 hidden lines · e/E show more⟧

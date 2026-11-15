@@ -1,0 +1,19 @@
+---
+source: crates/toolroll-tui/tests/review.rs
+expression: shown
+---
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   1    1   ⟧⟦LightMagenta:use⟧ std::fmt;
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   2    2   ⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   3      ⟧⟦Red:− fn ⟧⟦Red+REVERSED:total⟧⟦Red:(items: &[i64]) -> i64 {⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:        3 ⟧⟦Green:+ ⟧⟦LightMagenta:fn⟧ ⟦Reset+REVERSED:subtotal⟧(items: ⟦LightMagenta:&⟧[⟦LightMagenta:i64⟧]) -> ⟦LightMagenta:i64⟧ {
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   4    4   ⟧    items.iter().sum()
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   5    5   ⟧}
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:        6 ⟧⟦Green:+ ⟧⟦Reset+DIM | ITALIC:// Tax is added at checkout.⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   6    7   ⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:⋯ 13 hidden lines · e/E show more⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:@@ -20,3 +21,3 @@ impl Cart {⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:  20   21   ⟧    ⟦LightMagenta:pub⟧ ⟦LightMagenta:fn⟧ count(⟦LightMagenta:&⟧self) -> ⟦LightMagenta:usize⟧ {
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:  21      ⟧⟦Red:−         self.items.⟧⟦Red+REVERSED:len⟧⟦Red:()⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:       22 ⟧⟦Green:+ ⟧        self.items.⟦Reset+REVERSED:iter⟧()⟦Reset+REVERSED:.filter(|i| ⟧⟦LightMagenta+REVERSED:**⟧⟦Reset+REVERSED:i ⟧⟦LightMagenta+REVERSED:>⟧⟦Reset+REVERSED: ⟧⟦LightMagenta+REVERSED:0⟧⟦Reset+REVERSED:).count()⟧
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:  22   23   ⟧    }
+⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:⋯ more lines below · E shows them⟧

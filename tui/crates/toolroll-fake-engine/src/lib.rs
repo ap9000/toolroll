@@ -63,6 +63,10 @@ pub struct State {
     pub steps: HashMap<String, Value>,
     pub diffs: HashMap<String, Value>,
     pub diff_files: HashMap<String, Value>,
+    /// Each file's lines at the result's head ("task:file"), for context reads.
+    pub contexts: HashMap<String, Vec<String>>,
+    /// Context reads answer this much later (a slow read, for "a stale answer is dropped").
+    pub context_delay_ms: u64,
     /// Each run's main records, and whether it is still live.
     pub live: HashMap<i64, (Vec<Value>, bool)>,
     pub sub: HashMap<i64, Vec<Value>>,
@@ -273,7 +277,8 @@ pub fn steps_for(task: &str, title: &str, live_run: Option<i64>, review: Option<
         }
     }
     s["review"] = match review {
-        Some(run) => json!({ "run": run, "receipt": "a".repeat(64), "source": "b".repeat(64) }),
+        Some(run) => json!({ "run": run, "receipt": "a".repeat(64), "source": "b".repeat(64),
+            "accept": { "owed": null, "blockers": [], "needs": null } }),
         None => Value::Null,
     };
     s
@@ -349,6 +354,23 @@ pub fn scenario() -> State {
         }
         diff_files.insert(format!("t-done:{f}"), one);
     }
+    // src/total.ts as the result left it (the fixture's hunk is its lines 1-3), and README.md.
+    let mut contexts = HashMap::new();
+    let mut total: Vec<String> = vec![
+        "export function total(items) {".into(),
+        "  return sum(items) + tax(items);".into(),
+        "}".into(),
+        "".into(),
+        "export function tax(items) {".into(),
+        "  return sum(items) * 0.2;".into(),
+        "}".into(),
+    ];
+    total.extend((8..=60).map(|n| format!("// line {n}")));
+    contexts.insert("t-done:0".to_string(), total);
+    contexts.insert(
+        "t-done:1".to_string(),
+        vec!["# Shop".into(), "Totals include tax.".into()],
+    );
     let mut live = HashMap::new();
     let main = vec![
         json!({ "k": "open", "at": AT, "detail": "base" }),
@@ -381,6 +403,8 @@ pub fn scenario() -> State {
         steps,
         diffs,
         diff_files,
+        contexts,
+        context_delay_ms: 0,
         live,
         sub,
         contract: contract_digest(),
@@ -559,6 +583,42 @@ async fn diff(
     if let Err(r) = admitted(&s, &headers, &format!("/t/{task}/diff")) {
         return r;
     }
+    if let (Some(file), Some(from), Some(count)) = (q.get("file"), q.get("from"), q.get("count")) {
+        let delay = s.state.lock().unwrap().context_delay_ms;
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+        let st = s.state.lock().unwrap();
+        let (Ok(from), Ok(count), Ok(file_n)) = (
+            from.parse::<i64>(),
+            count.parse::<i64>(),
+            file.parse::<i64>(),
+        ) else {
+            return json_answer(400, json!({ "error": "request" }));
+        };
+        if from < 1 || !(1..=100).contains(&count) {
+            return json_answer(400, json!({ "error": "request" }));
+        }
+        let Some(lines) = st.contexts.get(&format!("{task}:{file}")) else {
+            return json_answer(404, json!({ "error": "file" }));
+        };
+        let run = q
+            .get("run")
+            .and_then(|r| r.parse::<i64>().ok())
+            .unwrap_or(0);
+        let shown: Vec<Value> = lines
+            .iter()
+            .enumerate()
+            .skip((from - 1) as usize)
+            .take(count as usize)
+            .map(|(i, t)| json!({ "newLine": i as i64 + 1, "text": t }))
+            .collect();
+        return json_answer(
+            200,
+            json!({ "version": 1, "task": task, "run": run, "file": file_n, "from": from, "lines": shown,
+                "lineCount": lines.len(), "problem": null }),
+        );
+    }
     let st = s.state.lock().unwrap();
     if let Some(file) = q.get("file") {
         return match st.diff_files.get(&format!("{task}:{file}")) {
@@ -697,6 +757,14 @@ async fn act(
             json!({ "outcome": "done", "words": "Accepted. The task is complete." }),
         );
     }
+    if path.ends_with("/comment") && record_intent(&st) != Some("revise") {
+        // A saved note (no intent): the real console lands back on the result (303).
+        return (
+            StatusCode::SEE_OTHER,
+            [("location", "/r/2?noted=1#request-changes")],
+        )
+            .into_response();
+    }
     if path.ends_with("/comment") {
         return json_answer(
             200,
@@ -704,6 +772,10 @@ async fn act(
         );
     }
     (StatusCode::SEE_OTHER, [("location", "/t/x#task-control")]).into_response()
+}
+
+fn record_intent(st: &State) -> Option<&str> {
+    st.acts.last().and_then(|a| a.field("intent"))
 }
 
 fn url_decode_form(body: &str) -> Vec<(String, String)> {

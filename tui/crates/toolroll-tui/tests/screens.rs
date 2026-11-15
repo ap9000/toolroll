@@ -291,7 +291,8 @@ fn diff_tab() {
         Ok(parse(state.diff_files["t-done:0"].clone())),
     ));
     insta::assert_snapshot!(screen(&mut app, 120, 30));
-    let next = file_ask(&app.key(key(']')));
+    // } is the next file now ([ ] move between hunks).
+    let next = file_ask(&app.key(key('}')));
     assert_eq!((next.task.as_str(), next.run, next.file), ("t-done", 2, 1));
 }
 
@@ -715,8 +716,7 @@ fn dialogs_post_the_facts_they_showed_and_close_when_those_change() {
     let state = fake::scenario();
     let steps_with = |run: i64, receipt: &str| {
         let mut v = state.steps["t-done"].clone();
-        v["review"] =
-            serde_json::json!({ "run": run, "receipt": receipt, "source": "b".repeat(64) });
+        v["review"] = serde_json::json!({ "run": run, "receipt": receipt, "source": "b".repeat(64), "accept": { "owed": null, "blockers": [], "needs": null } });
         parse::<StepCards>(v)
     };
     // Accept: a newer result arrives while the dialog is open.
@@ -793,8 +793,7 @@ fn accept_never_approves_a_diff_other_than_the_one_shown() {
     let state = fake::scenario();
     let steps_with = |run: i64, receipt: &str| {
         let mut v = state.steps["t-done"].clone();
-        v["review"] =
-            serde_json::json!({ "run": run, "receipt": receipt, "source": "b".repeat(64) });
+        v["review"] = serde_json::json!({ "run": run, "receipt": receipt, "source": "b".repeat(64), "accept": { "owed": null, "blockers": [], "needs": null } });
         parse::<StepCards>(v)
     };
     let diff_of = |run: i64| {

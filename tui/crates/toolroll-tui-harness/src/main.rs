@@ -2,6 +2,9 @@
 //!
 //!   toolroll-tui-harness bench [--width 200] [--height 60] [--frames 3000] [--records 20000]
 //!       the real view on ratatui's TestBackend, a long live transcript growing every frame: frame time.
+//!   toolroll-tui-harness bench-diff [--width 200] [--height 60] [--lines 2000] [--frames 600]
+//!       the Diff tab on a file of --lines changed lines (Rust, syntax colours on), scrolled a page a frame and back:
+//!       frame time (colouring runs on its own thread meanwhile), grammar load time, and how long the colouring took.
 //!   toolroll-tui-harness drive --bin <toolroll-tui> [--cols 200] [--rows 60] [--keys 300] [--interval-ms 40]
 //!       [--resizes N] [--records 20000] [--rate 200] [--stats-out F] [--screen-out F]
 //!       the real binary in a real PTY against the fake console (records streaming into the live build at --rate per
@@ -30,6 +33,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(|s| s.as_str()) {
         Some("bench") => bench(&args[1..]),
+        Some("bench-diff") => bench_diff(&args[1..]),
         Some("drive") => drive(&args[1..]),
         _ => bail!("usage: bench | drive --bin <toolroll-tui>"),
     }
@@ -87,6 +91,123 @@ fn bench(args: &[String]) -> Result<()> {
         "{}",
         serde_json::to_string_pretty(
             &json!({ "size": format!("{w}x{h}"), "records": records, "frame_time": summary(times) })
+        )?
+    );
+    Ok(())
+}
+
+/// A long Rust diff: `n` changed lines in hunks of 20 (10 removed, 10 added, with context), as the engine sends it.
+fn long_diff(n: usize) -> (serde_json::Value, serde_json::Value) {
+    let mut hunks = vec![];
+    let (mut old, mut new) = (1i64, 1i64);
+    let body = |i: usize| {
+        match i % 5 {
+        0 => format!("    let total_{i} = items.iter().map(|x| x.price * {i}).sum::<u64>(); // running total"),
+        1 => format!("    if total_{} > LIMIT {{ return Err(Error::TooLarge(\"{i}\".into())); }}", i - 1),
+        2 => format!("    pub fn apply_{i}(&mut self, cart: &Cart) -> Result<u64, Error> {{"),
+        3 => format!("        self.seen.insert({i}, String::from(\"line {i}\"));"),
+        _ => "    }".to_string(),
+    }
+    };
+    for h in 0..n.div_ceil(20) {
+        let mut lines = vec![];
+        let (o0, n0) = (old, new);
+        for c in 0..3 {
+            lines.push(json!({ "kind": "context", "text": body(h * 100 + c), "oldLine": old, "newLine": new }));
+            old += 1;
+            new += 1;
+        }
+        for i in 0..10 {
+            lines.push(json!({ "kind": "deletion", "text": body(h * 20 + i), "oldLine": old, "newLine": null }));
+            old += 1;
+        }
+        for i in 0..10 {
+            lines.push(json!({ "kind": "addition", "text": body(h * 20 + i).replace("total", "subtotal"), "oldLine": null, "newLine": new }));
+            new += 1;
+        }
+        for c in 0..3 {
+            lines.push(json!({ "kind": "context", "text": body(h * 100 + 50 + c), "oldLine": old, "newLine": new }));
+            old += 1;
+            new += 1;
+        }
+        hunks.push(json!({ "header": format!("@@ -{o0},16 +{n0},16 @@"), "lines": lines }));
+        old += 20;
+        new += 20;
+    }
+    let file = json!({ "version": 1, "task": "t-done", "run": 2, "linesTruncated": false,
+        "file": { "file": 0, "path": "src/checkout.rs", "oldPath": "src/checkout.rs", "meta": [], "hunks": hunks } });
+    let diff = json!({ "version": 1, "task": "t-done", "run": 2, "patchTruncated": false, "problem": null,
+        "totals": { "files": 1, "additions": n / 2, "deletions": n / 2, "binary": 0, "filesTruncated": false },
+        "files": [{ "file": 0, "path": "src/checkout.rs", "oldPath": "src/checkout.rs", "additions": n / 2, "deletions": n / 2, "binary": false, "hunks": n.div_ceil(20) }] });
+    (diff, file)
+}
+
+fn bench_diff(args: &[String]) -> Result<()> {
+    use crossterm::event::{KeyCode, KeyEvent};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use toolroll_tui::app::{App, Effect, Msg};
+    let (w, h): (u16, u16) = (num(args, "--width", 200), num(args, "--height", 60));
+    let n: usize = num(args, "--lines", 2000);
+    let frames: usize = num(args, "--frames", 600);
+    let t = Instant::now();
+    toolroll_tui::syntax::load_now();
+    let load_ms = t.elapsed().as_secs_f64() * 1000.0;
+    let state = toolroll_fake_engine::scenario();
+    let mut app = App::new(false, None);
+    app.update(Msg::Work(Ok(serde_json::from_value(
+        toolroll_fake_engine::scenario_work(),
+    )?)));
+    app.key(KeyEvent::from(KeyCode::Char('j')));
+    app.update(Msg::Steps(
+        "t-done".into(),
+        Ok(serde_json::from_value(state.steps["t-done"].clone())?),
+    ));
+    let fx = app.key(KeyEvent::from(KeyCode::Enter));
+    let ask = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::FetchDiff(a) => Some(a.clone()),
+            _ => None,
+        })
+        .context("diff read")?;
+    let (diff, file) = long_diff(n);
+    let fx = app.update(Msg::Diff(ask, Ok(serde_json::from_value(diff)?)));
+    let ask = fx
+        .iter()
+        .find_map(|e| match e {
+            Effect::FetchDiffFile(a) => Some(a.clone()),
+            _ => None,
+        })
+        .context("file read")?;
+    app.update(Msg::DiffFile(ask, Ok(serde_json::from_value(file)?)));
+    let rows = app.rows.len();
+    let mut term = Terminal::new(TestBackend::new(w, h))?;
+    let mut times = vec![];
+    let mut coloured_after = None;
+    let started = Instant::now();
+    for i in 0..frames {
+        // A page down a frame to the end, then back up: every row is drawn, coloured or not yet.
+        let key = if (i / (rows / 20 + 1)).is_multiple_of(2) {
+            KeyCode::PageDown
+        } else {
+            KeyCode::PageUp
+        };
+        let t = Instant::now();
+        app.key(KeyEvent::from(key));
+        term.draw(|f| toolroll_tui::view::draw(f, &mut app))?;
+        times.push(t.elapsed().as_secs_f64() * 1000.0);
+        if coloured_after.is_none() && !app.highlight_pending {
+            coloured_after = Some((started.elapsed().as_secs_f64() * 1000.0).round());
+        }
+        // ~120 frames a second at most, as the screen draws.
+        std::thread::sleep(Duration::from_micros(8_333));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &json!({ "size": format!("{w}x{h}"), "changed_lines": n, "rows": rows,
+            "grammar_load_ms": (load_ms * 10.0).round() / 10.0, "coloured_all_after_ms": coloured_after, "key_to_frame": summary(times) })
         )?
     );
     Ok(())

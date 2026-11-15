@@ -158,6 +158,44 @@ impl Loop {
                 let r = client.diff_file(&ask.task, ask.run, ask.file).await;
                 let _ = tx.send(Msg::DiffFile(ask, r));
             })),
+            Effect::FetchContext(ask) => drop(tokio::spawn(async move {
+                let r = client
+                    .diff_context(&ask.task, ask.run, ask.file, ask.from, ask.count)
+                    .await;
+                let _ = tx.send(Msg::Context(ask, r));
+            })),
+            Effect::Send { acts, task, run } => drop(tokio::spawn(async move {
+                let _ = tx.send(send_batch(&client, acts, task, run).await);
+            })),
+            Effect::Scrollback(lines) => {
+                // The normal screen, mouse off (so the person can select), the lines, then a word on how to come back.
+                let out = term.backend_mut();
+                let _ = crossterm::execute!(out, DisableMouseCapture, LeaveAlternateScreen);
+                let mut text = String::new();
+                for line in &lines {
+                    text.push_str(&clean(line));
+                    text.push_str("\r\n");
+                }
+                text.push_str(
+                    "\r\n(Copied by Toolroll. Select it now; press any key to go back.)\r\n",
+                );
+                let _ = out.write_all(text.as_bytes());
+                let _ = out.flush();
+            }
+            Effect::ResumeScreen => {
+                let out = term.backend_mut();
+                let _ = crossterm::execute!(out, EnterAlternateScreen, EnableMouseCapture);
+                // Every cell painted again, without asking the terminal anything (ratatui's clear asks for the cursor,
+                // which would race the key reader): one frame unlike any real one, then the real one over it.
+                let _ = term.draw(|f| {
+                    let area = f.area();
+                    f.buffer_mut().set_style(
+                        area,
+                        ratatui::style::Style::default()
+                            .add_modifier(ratatui::style::Modifier::HIDDEN),
+                    );
+                });
+            }
             Effect::Act { path, fields, done } => drop(tokio::spawn(async move {
                 let pairs: Vec<(&str, &str)> = fields
                     .iter()
@@ -210,6 +248,39 @@ impl Loop {
     }
 }
 
+/// A batch's acts in turn, stopping at the first that isn't kept; the answer says how many were kept before it.
+pub async fn send_batch(
+    client: &Client,
+    acts: Vec<crate::app::SendAct>,
+    task: String,
+    run: i64,
+) -> Msg {
+    let mut kept = 0;
+    let mut result = Ok(toolroll_api::ActOutcome::Done(String::new()));
+    for act in acts {
+        let pairs: Vec<(&str, &str)> = act
+            .fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        result = client.act(&act.path, &pairs, &act.done).await;
+        if !matches!(result, Ok(toolroll_api::ActOutcome::Done(_))) {
+            break;
+        }
+        kept += 1;
+    }
+    // (The last act kept isn't counted as "kept before a refusal": a full batch is Done.)
+    if matches!(result, Ok(toolroll_api::ActOutcome::Done(_))) {
+        kept = 0;
+    }
+    Msg::Sent {
+        task,
+        run,
+        kept,
+        result,
+    }
+}
+
 async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std::io::Result<i32> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let mut lp = Loop {
@@ -241,6 +312,12 @@ async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std:
     }
     let mut app = App::new(opts.owned, opts.project.clone());
     app.now = now_secs();
+    let env = |name: &str| std::env::var(name).ok();
+    app.colour = crate::syntax::colour_allowed(env("NO_COLOR").as_deref(), env("TERM").as_deref());
+    app.theme = crate::syntax::Theme::detect(
+        env("TOOLROLL_TUI_THEME").as_deref(),
+        env("COLORFGBG").as_deref(),
+    );
     // The workspace room, for as long as the screen is open.
     let workspace = lp.spawn_live(vec!["workspace".into()]);
     let mut pending: Vec<Effect> = vec![Effect::FetchWork];
@@ -260,6 +337,10 @@ async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std:
 
     let draw = |term: &mut Term, app: &mut App, frames: &mut Samples| -> std::io::Result<Instant> {
         let t = Instant::now();
+        // The screen has stepped aside for the scrollback (a copied hunk): nothing is drawn over it.
+        if app.mode == crate::app::Mode::Copied {
+            return Ok(t);
+        }
         crossterm::queue!(term.backend_mut(), BeginSynchronizedUpdate)?;
         term.draw(|f| view::draw(f, app))?;
         crossterm::queue!(term.backend_mut(), EndSynchronizedUpdate)?;
@@ -292,10 +373,17 @@ async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std:
                         let received = Instant::now();
                         pending.extend(app.key(k));
                         // Echoed in the same frame: drawn now, not at the next cap slot.
+                        // (Effects first: a key that hands the screen to the scrollback must not paint over it.)
+                        for fx in pending.drain(..) {
+                            if let Some(code) = lp.effect(fx, term, opts, &mut app) {
+                                exit = Some(code);
+                            }
+                        }
                         let done = draw(term, &mut app, &mut frames)?;
                         last_frame = Some(done);
                         echo.push(done - received);
-                        dirty = false;
+                        // Colouring left for later frames: draw again at the next slot.
+                        dirty = app.highlight_pending;
                     }
                     Event::Paste(p) => { app.paste(&p); dirty = true; }
                     Event::Mouse(m) => { pending.extend(app.mouse(m)); dirty = true; }
@@ -305,7 +393,7 @@ async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std:
             }
             _ = tokio::time::sleep(wait), if dirty => {
                 last_frame = Some(draw(term, &mut app, &mut frames)?);
-                dirty = false;
+                dirty = app.highlight_pending;
             }
             _ = tick.tick() => {
                 let now = now_secs();

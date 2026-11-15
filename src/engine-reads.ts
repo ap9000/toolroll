@@ -9,7 +9,7 @@
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
 import type { Run, Store, TaskFamily } from "./store.js";
-import { assignmentOf } from "./assignment.js";
+import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
 import { taskRoad, type RoadChecks } from "./first-run.js";
@@ -20,7 +20,9 @@ import { taskWorkSummaryOf, type WorkSummaryAccess } from "./work-summary.js";
 import { terminalDiffView } from "./result-evidence-readers.js";
 import { parseReviewDiff } from "./server/render-results.js";
 import { revisionSourceOf } from "./result-review.js";
-import { ENGINE_API_VERSION, type ResultDiff, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { scanPatchForSecrets } from "./evidence.js";
+import { viewedGitSync } from "./teardown-git.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
@@ -28,11 +30,13 @@ export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => r
 /** Approvals no person gave at the moment of approval (a check rule's own yes). */
 const AUTOMATIC = new Set(["auto-check", "auto-green"]);
 
-type StepRead = { store: Store; family: TaskFamily; now: Date; access: WorkSummaryAccess; evidenceRoot: string };
+type StepRead = { store: Store; family: TaskFamily; now: Date; access: WorkSummaryAccess; evidenceRoot: string;
+  /** Who is reading (their completion is what `review.accept.needs` speaks of); null: nobody in particular. */
+  viewer?: string | null };
 
 /** One task's step cards: the task page's road and rows (taskRoad, stepRowsOf) over the facts they read, each with
  * the agent, time and cost of the runs behind it. */
-export function stepCardsOf({ store, family, now, access, evidenceRoot }: StepRead): StepCards {
+export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer = null }: StepRead): StepCards {
   const current = family.current, root = family.root;
   const ref = store.lookupRef(current.id);
   const scope = store.getScope(current.id);
@@ -104,7 +108,8 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot }: StepRe
     cards,
     // The result this task's page offers Accept and Send back on (chat-decide.ts resultFresh reads the same facts).
     review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
-      ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null) } : null,
+      ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null),
+        accept: acceptFactsOf(store, assignment, viewer, evidenceRoot) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
   };
 }
@@ -178,4 +183,85 @@ export function resultDiffFileOf(store: Store, evidenceRoot: string, taskId: str
   const one = parsed.files[0];
   if (one === undefined) return null;
   return { version: ENGINE_API_VERSION, task: taskId, run: run.id, file: { file, path: one.path, oldPath: one.oldPath, meta: one.meta, hunks: one.hunks }, linesTruncated: parsed.linesTruncated };
+}
+
+/** What accepting a waiting result means for `viewer`, read the way the completion reads it (assignment.ts
+ * acknowledgeCurrent, acceptAndCompleteAsOperator; result-page's personCompletionRefusal): words only, never permission. */
+function acceptFactsOf(store: Store, assignment: AssignmentSnapshot, viewer: string | null, evidenceRoot: string): NonNullable<StepCards["review"]>["accept"] {
+  const receipt = assignment.receipt!;
+  const blockers = assignment.readiness?.blockers ?? [];
+  return {
+    owed: owedAcceptance(receipt, blockers),
+    blockers: blockers.map(one => one.message),
+    needs: personCompletionRefusal(store, receipt.taskId, receipt.runId, viewer, evidenceRoot),
+  };
+}
+
+/** The largest file a context read loads (its head blob), and the longest line it sends. */
+const CONTEXT_FILE_BYTES = 2 * 1024 * 1024;
+const CONTEXT_LINE_CHARS = 2_000;
+
+/**
+ * Lines `from`..`from + count - 1` of one file of a result as its build left it, to show context its hunks hide
+ * (T2's context expand). The file is the patch's own file `file` (the same sealed bytes the hunks read), read at the
+ * run's recorded head commit from the project's repository as Toolroll records them (`repo`, `run.headRevision`), never
+ * from anything a checkout says: the head must be the one the saved stat names, and the read goes through the hardened
+ * view (viewedGitSync: no config, hooks, filters or network the checkout chose). At most DIFF_CONTEXT_MAX lines, from a
+ * file of at most CONTEXT_FILE_BYTES that is text; a line that looks like a key is replaced as the saved diff does.
+ * null when the result or the file isn't there.
+ */
+export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: string, run: Run, file: number, from: number, count: number,
+  repo: string | null): ResultDiffContext | null {
+  const source = diffSourceOf(store, evidenceRoot, run);
+  if (!source.ok) return null;
+  const text = patchFiles(source.patch)[file];
+  if (text === undefined) return null;
+  const one = parseReviewDiff(text).files[0];
+  if (one === undefined) return null;
+  const answer = (lines: ResultDiffContext["lines"], lineCount: number | null, problem: string | null): ResultDiffContext =>
+    ({ version: ENGINE_API_VERSION, task: taskId, run: run.id, file, from, lines, lineCount, problem });
+  const unread = "The rest of this file can't be read here. Press w to see it in the browser.";
+  if (!Number.isSafeInteger(from) || from < 1 || !Number.isSafeInteger(count) || count < 1 || count > DIFF_CONTEXT_MAX) return answer([], null, unread);
+  if (/^deleted file mode /m.test(text) || /^\+\+\+ \/dev\/null$/m.test(text)) return answer([], 0, "This file was removed by the change.");
+  const path = one.path;
+  const stat = source.stat?.stat;
+  const head = run.headRevision;
+  if (repo === null || head === null || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(head) || stat == null || "problem" in stat || stat.head !== head
+    || path === "" || path === "changed file" || path.startsWith("/") || path.split("/").some(part => part === ".." || part === "." || part === "")
+    || /[\u0000-\u001f\u007f]/.test(path)) return answer([], null, unread);
+  let bytes: Buffer;
+  try {
+    const listed = viewedGitSync(repo, ["--no-replace-objects", "--literal-pathspecs", "ls-tree", "-z", "-l", "--full-tree", head, "--", path],
+      { timeoutMs: 10_000, maxBuffer: 64 * 1024, binding: { repo } });
+    if (listed.status !== 0) return answer([], null, unread);
+    const entry = listed.stdout.split("\0").map(row => /^(\d{6}) (\w+) ([0-9a-f]{40,64}) +(\d+|-)\t(.+)$/s.exec(row)).find(match => match !== null && match[5] === path);
+    if (entry == null) return answer([], 0, "This file isn't in the result's commit.");
+    const [, mode, kind, oid, sized] = entry as unknown as [string, string, string, string, string];
+    if (kind !== "blob" || (mode !== "100644" && mode !== "100755") || sized === "-") return answer([], null, "This file isn't text.");
+    const size = Number(sized);
+    if (size > CONTEXT_FILE_BYTES) return answer([], null, "This file is too large to show here. Press w to see it in the browser.");
+    const read = viewedGitSync(repo, ["--no-replace-objects", "cat-file", "blob", oid], { timeoutMs: 10_000, maxBuffer: size + 1024, binding: { repo }, buffer: true });
+    if (read.status !== 0 || read.stdout.length !== size) return answer([], null, unread);
+    bytes = read.stdout;
+  } catch {
+    return answer([], null, unread);
+  }
+  let content: string;
+  try {
+    if (bytes.includes(0)) throw new Error("binary");
+    content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return answer([], null, "This file isn't text.");
+  }
+  const all = content.split("\n");
+  if (all.at(-1) === "") all.pop();
+  const lineCount = all.length;
+  const shown = all.slice(from - 1, from - 1 + count).map(line => line.replace(/\r$/, "").slice(0, CONTEXT_LINE_CHARS));
+  // The saved diff's rule for keys (evidence.ts): checked as lines the change adds, each hit replaced by its marker.
+  const hits = new Map(scanPatchForSecrets(["diff --git a/f b/f", `@@ -0,0 +1,${shown.length} @@`, ...shown.map(line => `+${line}`)].join("\n")).map(hit => [hit.line - 3, hit.name] as const));
+  const lines = shown.map((line, index) => {
+    const name = hits.get(index);
+    return { newLine: from + index, text: name === undefined ? line : `[redacted: ${name} detected on this line]` };
+  });
+  return answer(lines, lineCount, null);
 }

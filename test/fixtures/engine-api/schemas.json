@@ -1,5 +1,5 @@
 {
-  "digest": "6bb9db559fbb0afbd59f6c898f42d96b2b32994ee95ca2265721ec5821bb1563",
+  "digest": "c979f21a9cc7ead27f5f22520c1b4d27ffb4ee3b2ffdbde1f41507c578c5f0f6",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1290,12 +1290,50 @@
                 },
                 "source": {
                   "type": "string"
+                },
+                "accept": {
+                  "type": "object",
+                  "properties": {
+                    "owed": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "person-check",
+                            "exception"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "blockers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "needs": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "owed",
+                    "blockers",
+                    "needs"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
                 "run",
                 "receipt",
-                "source"
+                "source",
+                "accept"
               ],
               "additionalProperties": false
             },
@@ -1581,6 +1619,83 @@
         "run",
         "file",
         "linesTruncated"
+      ],
+      "additionalProperties": false
+    },
+    "resultDiffContext": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "task": {
+          "type": "string"
+        },
+        "run": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "file": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "from": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "newLine": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "newLine",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "lineCount": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "task",
+        "run",
+        "file",
+        "from",
+        "lines",
+        "lineCount",
+        "problem"
       ],
       "additionalProperties": false
     },

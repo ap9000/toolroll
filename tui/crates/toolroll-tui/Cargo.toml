@@ -23,9 +23,14 @@ serde_json.workspace = true
 unicode-width = "0.2"
 zeroize = "1"
 libc = "0.2"
+# Syntax colours in the Diff tab: Sublime grammars with the pure-Rust regex engine (no C, so every target still links
+# without a cross compiler); no bundled themes (Toolroll maps scopes to its own few colours), no HTML, no YAML loader.
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 
 [dev-dependencies]
 insta = "1"
+portable-pty = "0.9"
+vt100 = "0.16"
 serde = { version = "1" }
 toolroll-fake-engine = { path = "../toolroll-fake-engine" }
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "net", "io-util", "rt-multi-thread"] }
