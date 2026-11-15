@@ -58,7 +58,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ServerResponse } from "node:http";
 import { attributes, html, joinHtml, postForm, scriptElement, styleElement, type Html } from "../html.js";
-import { page,respond } from "./http.js";
+import { page,refusedInPlace,respond } from "./http.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { type Who } from "./session.js";
 
@@ -110,6 +110,8 @@ export function refuse(
   if (who === null || who.via === "bearer") {
     return respond(response, status, "text/plain; charset=utf-8", message);
   }
+  // A terminal client's act: the same words, in place (http.ts refusedInPlace).
+  if (refusedInPlace(response, status, message)) return;
   // Kit pages (Wave E): a missing page is plain news, not an error, with two ways on; a refusal says what was refused
   // where it happened and leads back.
   const path = new URL(requestContext.getStore()?.returnTo ?? "/", "http://standing-orders.local").pathname;

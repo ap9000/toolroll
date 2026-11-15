@@ -1,0 +1,454 @@
+//! The engine API's responses (src/contracts/engine-api.ts), as serde models.
+//!
+//! Hand-written from `test/fixtures/engine-api/schemas.json` and held to it by `tests/fixtures.rs`: every fixture parses
+//! here and serialises back to exactly the same JSON (nothing dropped, nothing added), and the contract digest this
+//! build was written against is the one in that file (`CONTRACT_DIGEST`). Objects are strict where the contract is
+//! (`deny_unknown_fields`): a field this client doesn't know is a contract change, said by the `hello` handshake.
+//!
+//! Field rules, so a round trip is exact: a field the schema makes required but nullable is an `Option` that serialises
+//! `null`; a field the schema makes optional is an `Option` that is left out when absent.
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// The contract file this client was written against (its `digest` is what `hello` must answer).
+pub const SCHEMAS_JSON: &str = include_str!("../../../../test/fixtures/engine-api/schemas.json");
+/// The engine API version this client speaks.
+pub const API_VERSION: u32 = 1;
+
+/// The contract digest in `schemas.json` (sha256 of every schema with the API version, computed by the engine).
+pub fn contract_digest() -> String {
+    serde_json::from_str::<serde_json::Value>(SCHEMAS_JSON)
+        .ok()
+        .and_then(|v| v["digest"].as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+// ---- LiveSession ------------------------------------------------------------------------------------------------
+
+/// One record of a live window (live-records.ts LiveRecord): display only, already sanitised and redacted by the
+/// engine. `s` is a subagent's stream number (records from the `sub` file).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "lowercase")]
+pub enum LiveRecord {
+    Open {
+        at: String,
+        detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<i64>,
+    },
+    Start {
+        at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<i64>,
+    },
+    Say {
+        at: String,
+        t: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<i64>,
+    },
+    Step {
+        at: String,
+        id: String,
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        once: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<i64>,
+    },
+    Done {
+        at: String,
+        id: String,
+        ok: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        out: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<i64>,
+    },
+    Cut {
+        at: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<i64>,
+    },
+    Cap {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<i64>,
+    },
+    Child {
+        s: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+        parent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        desc: Option<String>,
+    },
+    End {
+        s: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+        ok: Option<bool>,
+    },
+    Over {},
+}
+
+impl LiveRecord {
+    /// The subagent stream a record belongs to (None: the run's own).
+    pub fn stream(&self) -> Option<i64> {
+        match self {
+            LiveRecord::Open { s, .. }
+            | LiveRecord::Start { s, .. }
+            | LiveRecord::Say { s, .. }
+            | LiveRecord::Step { s, .. }
+            | LiveRecord::Done { s, .. }
+            | LiveRecord::Cut { s, .. }
+            | LiveRecord::Cap { s, .. } => *s,
+            LiveRecord::Child { s, .. } | LiveRecord::End { s, .. } => Some(*s),
+            LiveRecord::Over {} => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum SessionRef {
+    Run { id: i64, task: Option<String> },
+    Thread { id: String, task: Option<String> },
+}
+
+/// A window that was read: its records and the cursor to read on from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowRead {
+    pub ok: bool,
+    pub records: Vec<LiveRecord>,
+    pub cursor: String,
+    pub restarted: bool,
+    pub earlier: bool,
+    pub quarantined: i64,
+    pub skipped: i64,
+    pub more: bool,
+}
+
+/// No readable window: `off` (the run isn't this computer's), `missing` or `unavailable`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowMissing {
+    pub ok: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Window {
+    Read(WindowRead),
+    Missing(WindowMissing),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveSessionWindow {
+    pub version: u32,
+    pub session: SessionRef,
+    pub room: String,
+    pub live: bool,
+    pub file: String,
+    pub window: Window,
+}
+
+// ---- Work rows ------------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Action {
+    pub label: String,
+    pub href: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionOption {
+    pub id: String,
+    pub label: String,
+    pub consequence: String,
+    pub recommended: bool,
+}
+
+/// An agent's question, answered in place (POST /d/<id>/answer).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Question {
+    pub id: i64,
+    pub text: String,
+    pub recap: String,
+    pub options: Vec<QuestionOption>,
+}
+
+/// What a waiting row asks (browser-workspace.ts BrowserHomeRow).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeedRow {
+    pub id: String,
+    pub title: String,
+    pub href: String,
+    pub project: Option<String>,
+    pub age: String,
+    pub state: String,
+    pub ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    pub reason: Option<String>,
+    pub line: Option<String>,
+    pub action: Option<Action>,
+    pub question: Option<Question>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Status {
+    pub label: String,
+    pub tone: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Word {
+    pub word: String,
+    pub tone: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkRow {
+    pub id: String,
+    pub title: String,
+    pub href: String,
+    pub project: Option<String>,
+    pub age: String,
+    pub status: Status,
+    pub word: Word,
+    pub ask: Option<String>,
+    pub chip: Option<String>,
+    pub group: String,
+    pub rank: i64,
+    pub detail: Option<String>,
+    pub problem: Option<String>,
+    pub need: Option<NeedRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Group {
+    pub key: String,
+    pub label: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NeedGroup {
+    pub key: String,
+    pub label: String,
+    pub count: i64,
+    pub rows: Vec<NeedRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkRows {
+    pub version: u32,
+    pub project: Option<String>,
+    pub project_name: String,
+    pub needs_count: i64,
+    pub groups: Option<Vec<Group>>,
+    pub rows: Vec<WorkRow>,
+    pub needs: Vec<NeedGroup>,
+    pub next: Option<String>,
+    pub room: String,
+}
+
+// ---- Step cards -----------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Agent {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StepCard {
+    pub key: String,
+    pub label: String,
+    pub state: String,
+    pub mark: String,
+    pub sentence: String,
+    pub at: Option<String>,
+    pub needs_you: bool,
+    pub in_chain: bool,
+    pub agent: Option<Agent>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub cost_usd: Option<f64>,
+    pub runs: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StepTask {
+    pub id: String,
+    pub root: String,
+    pub title: String,
+    pub state: String,
+    pub project: Option<String>,
+}
+
+/// The result waiting for Accept or Send back: what the task page's own forms carry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Review {
+    pub run: i64,
+    pub receipt: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StepCards {
+    pub version: u32,
+    pub task: StepTask,
+    pub chain: String,
+    pub headline: Option<String>,
+    pub live_run: Option<i64>,
+    pub cards: Option<Vec<StepCard>>,
+    pub review: Option<Review>,
+    pub room: String,
+}
+
+// ---- Result diff ----------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DiffTotals {
+    pub files: i64,
+    pub additions: i64,
+    pub deletions: i64,
+    pub binary: i64,
+    pub files_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DiffFile {
+    pub file: i64,
+    pub path: String,
+    pub old_path: Option<String>,
+    pub additions: i64,
+    pub deletions: i64,
+    pub binary: bool,
+    pub hunks: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResultDiff {
+    pub version: u32,
+    pub task: String,
+    pub run: Option<i64>,
+    pub totals: Option<DiffTotals>,
+    pub files: Vec<DiffFile>,
+    pub patch_truncated: bool,
+    pub problem: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DiffLine {
+    pub kind: String,
+    pub text: String,
+    pub old_line: Option<i64>,
+    pub new_line: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hunk {
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct FileHunks {
+    pub file: i64,
+    pub path: String,
+    pub old_path: Option<String>,
+    pub meta: Vec<String>,
+    pub hunks: Vec<Hunk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResultDiffFile {
+    pub version: u32,
+    pub task: String,
+    pub run: i64,
+    pub file: FileHunks,
+    pub lines_truncated: bool,
+}
+
+// ---- Sign-in, refusals, the handshake ------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCookie {
+    pub name: String,
+    pub value: String,
+}
+
+/// `POST /login/once`: the local owner's session for this client's memory only. Its Debug prints no secret.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkRedemption {
+    pub version: u32,
+    pub account: String,
+    pub cookie: SessionCookie,
+    pub csrf: String,
+    pub key: String,
+    pub epoch: String,
+}
+
+impl fmt::Debug for LinkRedemption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "LinkRedemption {{ version: {}, account: {:?}, cookie: <{} chars>, csrf: <held>, key: <held>, epoch: <{} chars> }}",
+            self.version,
+            self.account,
+            self.cookie.value.len(),
+            self.epoch.len()
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Refusal {
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hello {
+    pub version: u32,
+    pub toolroll: String,
+    pub contract: String,
+    pub responses: Vec<String>,
+}
