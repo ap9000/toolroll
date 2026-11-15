@@ -12,9 +12,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fakePid } from "../test/fake-pid.js";
 import { custodySettled, observeCustody, realCustodyIO, scanCustody, startIdentityOf, stopCustody, trustedPython, type CustodyIO, type LaunchCustody, type ProcRow, type ProcessWitness, type SignalResult } from "./flexible-custody.js";
 
 const BOOT = "11111111-1111-4111-8111-111111111111";
+/** A fake process by its place in the fixture: never a pid a real process can hold (test/fake-pid.ts). */
+const P = (n: number) => fakePid(n);
 
 /** A stand-in OS: a mutable process table, identity-bound signals that freeze and kill rows, and a log of every signal. */
 function fakeOS(rows: ProcRow[], options: { platform?: NodeJS.Platform; namespaces?: Record<number, string>; holders?: number[] | null; boot?: string | null; immortal?: number[];
@@ -25,17 +28,17 @@ function fakeOS(rows: ProcRow[], options: { platform?: NodeJS.Platform; namespac
   const log: string[] = [];
   const io: CustodyIO = {
     platform: options.platform ?? "darwin",
-    self: 1000,
+    self: P(1000),
     identityBound: options.identityBound ?? true,
     table: () => [...table.values()].map(row => ({ ...row })),
-    namespaceOf: pid => pid === 1000 || table.has(pid) ? options.namespaces?.[pid] ?? "pid:[1]" : null,
+    namespaceOf: pid => pid === P(1000) || table.has(pid) ? options.namespaces?.[pid] ?? "pid:[4026531836]" : null,
     holdersOf: () => options.holders === null ? null : (options.holders ?? []).filter(pid => table.has(pid)),
     signal: (targets: readonly ProcessWitness[], signal) => {
       const results = new Map<number, SignalResult>();
       for (const target of targets) {
         if (options.noIdentitySignals) { results.set(target.pid, "unavailable"); continue; }
         const swap = options.replaceBeforeSignal;
-        if (swap?.pid === target.pid && table.get(target.pid)?.start !== swap.start) table.set(target.pid, { ...table.get(target.pid)!, start: swap.start, pgid: 9999, ppid: 1 });
+        if (swap?.pid === target.pid && table.get(target.pid)?.start !== swap.start) table.set(target.pid, { ...table.get(target.pid)!, start: swap.start, pgid: P(9999), ppid: 1 });
         const now = table.get(target.pid);
         if (now === undefined) { results.set(target.pid, "gone"); continue; }
         if (now.start !== target.start) { results.set(target.pid, "changed"); continue; }
@@ -53,63 +56,63 @@ function fakeOS(rows: ProcRow[], options: { platform?: NodeJS.Platform; namespac
   return { io, table, stopped, log };
 }
 const row = (pid: number, over: Partial<ProcRow> = {}): ProcRow => ({ pid, ppid: 1, pgid: pid, uid: 501, start: "s1000", zombie: false, ...over });
-const custody = (over: Partial<LaunchCustody> = {}): LaunchCustody => ({ host: "here", machineId: null, bootId: BOOT, leader: { pid: 500, start: "s1000" }, namespaces: [], witnesses: [], folder: "/state/threads/t", ...over });
+const custody = (over: Partial<LaunchCustody> = {}): LaunchCustody => ({ host: "here", machineId: null, bootId: BOOT, leader: { pid: P(500), start: "s1000" }, namespaces: [], witnesses: [], folder: "/state/threads/t", ...over });
 const pids = (rows: readonly { pid: number }[]) => rows.map(one => one.pid);
 
 describe("which processes are proven the launch's, and which only block", () => {
   test("the live leader's group, its descendants and its witnesses; never a reused pid, a process older than the leader, this process or a zombie", () => {
     const { io } = fakeOS([
-      row(500), // the leader
-      row(501, { ppid: 500, pgid: 500, start: "s1001" }), // in its group
-      row(502, { ppid: 1, pgid: 500, start: "s0999" }), // in its group but older than the leader: not the agent's
-      row(600, { ppid: 501, pgid: 600, start: "s1002" }), // left the group (setsid) while its parent lives
-      row(700, { ppid: 1, pgid: 700, start: "s1003" }), // a witness: seen while it ran, now reparented
-      row(701, { ppid: 1, pgid: 701, start: "s0500" }), // a witness's pid, reused by an older process
-      row(1000, { ppid: 501, pgid: 500, start: "s1004" }), // this process
-      row(503, { ppid: 500, pgid: 500, start: "s1005", zombie: true }),
+      row(P(500)), // the leader
+      row(P(501), { ppid: P(500), pgid: P(500), start: "s1001" }), // in its group
+      row(P(502), { ppid: 1, pgid: P(500), start: "s0999" }), // in its group but older than the leader: not the agent's
+      row(P(600), { ppid: P(501), pgid: P(600), start: "s1002" }), // left the group (setsid) while its parent lives
+      row(P(700), { ppid: 1, pgid: P(700), start: "s1003" }), // a witness: seen while it ran, now reparented
+      row(P(701), { ppid: 1, pgid: P(701), start: "s0500" }), // a witness's pid, reused by an older process
+      row(P(1000), { ppid: P(501), pgid: P(500), start: "s1004" }), // this process
+      row(P(503), { ppid: P(500), pgid: P(500), start: "s1005", zombie: true }),
     ]);
-    const scan = scanCustody(custody({ witnesses: [{ pid: 700, start: "s1003" }, { pid: 701, start: "s1003" }] }), io);
-    expect(pids(scan.members)).toEqual([500, 501, 600, 700]);
+    const scan = scanCustody(custody({ witnesses: [{ pid: P(700), start: "s1003" }, { pid: P(701), start: "s1003" }] }), io);
+    expect(pids(scan.members)).toEqual([P(500), P(501), P(600), P(700)]);
     expect(scan.blockers).toEqual([]);
   });
 
   test("a leader's number taken by another process: its group is no longer the launch's, and nothing in it is signalled", async () => {
-    const os = fakeOS([row(500, { start: "s2000" }), row(501, { ppid: 500, pgid: 500, start: "s2001" })]);
+    const os = fakeOS([row(P(500), { start: "s2000" }), row(P(501), { ppid: P(500), pgid: P(500), start: "s2001" })]);
     expect(pids(scanCustody(custody(), os.io).members)).toEqual([]);
-    expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: false, blockers: [{ pid: 500, why: "orphaned-group" }, { pid: 501, why: "orphaned-group" }] });
+    expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: false, blockers: [{ pid: P(500), why: "orphaned-group" }, { pid: P(501), why: "orphaned-group" }] });
     expect(os.log).toEqual([]);
   });
 
   test("a leader gone with its group left: the group can't be proven the launch's (its number may have been reused), so it blocks and is never signalled", async () => {
-    const os = fakeOS([row(501, { ppid: 1, pgid: 500, start: "s1001" })]);
+    const os = fakeOS([row(P(501), { ppid: 1, pgid: P(500), start: "s1001" })]);
     const outcome = await stopCustody(custody(), os.io);
-    expect(outcome).toMatchObject({ verified: false, survivors: [], blockers: [{ pid: 501, why: "orphaned-group" }], why: expect.stringContaining("process 501 is left in the agent's process group") });
+    expect(outcome).toMatchObject({ verified: false, survivors: [], blockers: [{ pid: P(501), why: "orphaned-group" }], why: expect.stringContaining(`process ${P(501)} is left in the agent's process group`) });
     expect(os.log).toEqual([]);
     // A witness of it, though, is proven: then it is stopped.
-    expect(await stopCustody(custody({ witnesses: [{ pid: 501, start: "s1001" }] }), os.io)).toMatchObject({ verified: true });
+    expect(await stopCustody(custody({ witnesses: [{ pid: P(501), start: "s1001" }] }), os.io)).toMatchObject({ verified: true });
   });
 
   test("Linux: every process in the launch's pid namespace, setsid and double-forked ones included; new namespaces are learned", () => {
-    const { io } = fakeOS([row(500), row(510, { ppid: 500, pgid: 500, start: "s1001" }), row(800, { ppid: 1, pgid: 800, start: "s1002" }), row(900, { ppid: 1, pgid: 900, start: "s1002" })],
-      { platform: "linux", namespaces: { 1000: "pid:[1]", 500: "pid:[1]", 510: "pid:[42]", 800: "pid:[42]", 900: "pid:[7]" } });
+    const { io } = fakeOS([row(P(500)), row(P(510), { ppid: P(500), pgid: P(500), start: "s1001" }), row(P(800), { ppid: 1, pgid: P(800), start: "s1002" }), row(P(900), { ppid: 1, pgid: P(900), start: "s1002" })],
+      { platform: "linux", namespaces: { [P(1000)]: "pid:[4026531836]", [P(500)]: "pid:[4026531836]", [P(510)]: "pid:[4026532042]", [P(800)]: "pid:[4026532042]", [P(900)]: "pid:[4026532007]" } });
     const first = scanCustody(custody(), io);
-    expect(pids(first.members)).toEqual([500, 510]);
-    expect(first.namespaces).toEqual(["pid:[42]"]);
-    expect(pids(scanCustody(custody({ namespaces: ["pid:[42]"] }), io).members)).toEqual([500, 510, 800]);
+    expect(pids(first.members)).toEqual([P(500), P(510)]);
+    expect(first.namespaces).toEqual(["pid:[4026532042]"]);
+    expect(pids(scanCustody(custody({ namespaces: ["pid:[4026532042]"] }), io).members)).toEqual([P(500), P(510), P(800)]);
   });
 
   test("the thread's folder: anything working there that isn't proven the launch's blocks and is never signalled, whatever its age (a person's new shell)", async () => {
-    const os = fakeOS([row(600, { start: "s1002" }), row(601, { start: "s0001" })], { holders: [600, 601] });
+    const os = fakeOS([row(P(600), { start: "s1002" }), row(P(601), { start: "s0001" })], { holders: [P(600), P(601)] });
     const outcome = await stopCustody(custody({ leader: null }), os.io);
-    expect(outcome).toMatchObject({ verified: false, survivors: [], blockers: [{ pid: 600, why: "in-folder" }, { pid: 601, why: "in-folder" }], why: expect.stringContaining("isn't proven to be the agent's") });
+    expect(outcome).toMatchObject({ verified: false, survivors: [], blockers: [{ pid: P(600), why: "in-folder" }, { pid: P(601), why: "in-folder" }], why: expect.stringContaining("isn't proven to be the agent's") });
     expect(os.log).toEqual([]);
-    expect([...os.table.keys()].sort()).toEqual([600, 601]);
+    expect([...os.table.keys()].sort()).toEqual([P(600), P(601)]);
   });
 
   test("two looks that disagree (a process in the folder the table didn't have) are never a verified exit", () => {
-    const os = fakeOS([], { holders: [600] });
-    os.io.holdersOf = () => [600]; // listed by lsof, absent from the process table read just before
-    expect(custodySettled(custody({ leader: null }), os.io)).toMatchObject({ verified: false, why: "process 600 appeared while the scan ran" });
+    const os = fakeOS([], { holders: [P(600)] });
+    os.io.holdersOf = () => [P(600)]; // listed by lsof, absent from the process table read just before
+    expect(custodySettled(custody({ leader: null }), os.io)).toMatchObject({ verified: false, why: `process ${P(600)} appeared while the scan ran` });
   });
 
   test("a table or listing that can't be read whole is never a verified exit", () => {
@@ -120,64 +123,64 @@ describe("which processes are proven the launch's, and which only block", () => 
 
 describe("stopping, by identity, and proving the exit", () => {
   test("everything is frozen before anything is killed, each by its identity, then a scan finds none", async () => {
-    const os = fakeOS([row(500), row(501, { ppid: 500, pgid: 500, start: "s1001" }), row(600, { ppid: 501, pgid: 600, start: "s1002" })]);
+    const os = fakeOS([row(P(500)), row(P(501), { ppid: P(500), pgid: P(500), start: "s1001" }), row(P(600), { ppid: P(501), pgid: P(600), start: "s1002" })]);
     expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: true, how: "none-left" });
     const firstKill = os.log.findIndex(line => line.startsWith("SIGKILL"));
-    expect(os.log.slice(0, firstKill).sort()).toEqual(["SIGSTOP 500", "SIGSTOP 501", "SIGSTOP 600"]);
-    expect(os.log.filter(line => line.startsWith("SIGKILL")).sort()).toEqual(["SIGKILL 500", "SIGKILL 501", "SIGKILL 600"]);
+    expect(os.log.slice(0, firstKill).sort()).toEqual([`SIGSTOP ${P(500)}`, `SIGSTOP ${P(501)}`, `SIGSTOP ${P(600)}`]);
+    expect(os.log.filter(line => line.startsWith("SIGKILL")).sort()).toEqual([`SIGKILL ${P(500)}`, `SIGKILL ${P(501)}`, `SIGKILL ${P(600)}`]);
     expect(os.table.size).toBe(0);
   });
 
   test("a pid replaced by another process between the scan and the signal: the new one is never signalled", async () => {
-    const os = fakeOS([row(500), row(600, { ppid: 500, pgid: 600, start: "s1002" })], { replaceBeforeSignal: { pid: 600, start: "s5000" } });
+    const os = fakeOS([row(P(500)), row(P(600), { ppid: P(500), pgid: P(600), start: "s1002" })], { replaceBeforeSignal: { pid: P(600), start: "s5000" } });
     const outcome = await stopCustody(custody(), os.io);
-    expect(os.log.some(line => line.endsWith(" 600"))).toBe(false);
-    expect(os.table.get(600)?.start).toBe("s5000"); // the other process lives on
-    expect(outcome.verified).toBe(true); // the scanned 600 is gone; the newcomer was never the launch's
+    expect(os.log.some(line => line.endsWith(` ${P(600)}`))).toBe(false);
+    expect(os.table.get(P(600))?.start).toBe("s5000"); // the other process lives on
+    expect(outcome.verified).toBe(true); // the scanned P(600) is gone; the newcomer was never the launch's
   });
 
   test("a pid signalled and later showing another start identity: a race was possible, so the exit is never called verified", async () => {
-    const os = fakeOS([row(500), row(600, { ppid: 500, pgid: 600, start: "s1002" })]);
+    const os = fakeOS([row(P(500)), row(P(600), { ppid: P(500), pgid: P(600), start: "s1002" })]);
     const real = os.io.signal;
     os.io.signal = (targets, signal) => {
       const results = real(targets, signal);
       // Right after the kill, the number is taken by an unrelated newer process.
-      if (signal === "SIGKILL" && results.get(600) === "sent") os.table.set(600, row(600, { start: "s6000", pgid: 600 }));
+      if (signal === "SIGKILL" && results.get(P(600)) === "sent") os.table.set(P(600), row(P(600), { start: "s6000", pgid: P(600) }));
       return results;
     };
-    expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: false, why: "process 600 was replaced by another while it was being stopped, so the stop can't be proven" });
+    expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: false, why: `process ${P(600)} was replaced by another while it was being stopped, so the stop can't be proven` });
   });
 
   test("macOS: a stop that signalled anything by a bare pid (start identity checked just before) is best effort, never fully verified; the leader through its own handle isn't", async () => {
-    const os = fakeOS([row(500), row(600, { ppid: 500, pgid: 600, start: "s1002" })], { identityBound: false });
+    const os = fakeOS([row(P(500)), row(P(600), { ppid: P(500), pgid: P(600), start: "s1002" })], { identityBound: false });
     expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: true, how: "best-effort" });
-    const leaderOnly = fakeOS([row(500)], { identityBound: false });
+    const leaderOnly = fakeOS([row(P(500))], { identityBound: false });
     const handled: string[] = [];
-    const outcome = await stopCustody(custody(), leaderOnly.io, { leaderSignal: signal => { handled.push(signal); if (signal === "SIGKILL") leaderOnly.table.delete(500); return "sent"; } });
+    const outcome = await stopCustody(custody(), leaderOnly.io, { leaderSignal: signal => { handled.push(signal); if (signal === "SIGKILL") leaderOnly.table.delete(P(500)); return "sent"; } });
     expect(outcome).toMatchObject({ verified: true, how: "none-left" });
     expect(handled).toEqual(["SIGSTOP", "SIGKILL"]);
     expect(leaderOnly.log).toEqual([]); // nothing went to its pid
   });
 
   test("where no identity-bound signal can be sent, nothing is signalled and custody stays unresolved", async () => {
-    const os = fakeOS([row(500)], { noIdentitySignals: true });
+    const os = fakeOS([row(P(500))], { noIdentitySignals: true });
     expect(await stopCustody(custody(), os.io)).toMatchObject({ verified: false, why: expect.stringContaining("can't send a signal bound to a process's identity") });
-    expect(os.table.has(500)).toBe(true);
+    expect(os.table.has(P(500))).toBe(true);
   });
 
   test("a process that can't be killed keeps custody unresolved, and is left running rather than frozen", async () => {
-    const os = fakeOS([row(500), row(600, { ppid: 500, pgid: 600, start: "s1002" })], { immortal: [600] });
+    const os = fakeOS([row(P(500)), row(P(600), { ppid: P(500), pgid: P(600), start: "s1002" })], { immortal: [P(600)] });
     const outcome = await stopCustody(custody(), os.io, { deadlineMs: 200 });
-    expect(outcome).toMatchObject({ verified: false, survivors: [600] });
-    expect(os.stopped.has(600)).toBe(false);
+    expect(outcome).toMatchObject({ verified: false, survivors: [P(600)] });
+    expect(os.stopped.has(P(600))).toBe(false);
   });
 
   test("a reboot since the launch is a verified exit without a look; an unknown boot never is", async () => {
     const host = (await import("node:os")).hostname();
-    const after = fakeOS([row(500)], { boot: "22222222-2222-4222-8222-222222222222" });
+    const after = fakeOS([row(P(500))], { boot: "22222222-2222-4222-8222-222222222222" });
     expect(await stopCustody(custody({ host }), after.io)).toMatchObject({ verified: true, how: "boot-changed" });
     expect(after.log).toEqual([]);
-    expect(custodySettled(custody({ host }), fakeOS([row(500)], { boot: null }).io)).toMatchObject({ verified: false });
+    expect(custodySettled(custody({ host }), fakeOS([row(P(500))], { boot: null }).io)).toMatchObject({ verified: false });
   });
 });
 

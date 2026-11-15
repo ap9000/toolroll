@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { openStore, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS, updateSafeSchema, V165_STEPS } from "./store.js";
 import { V165_TABLES } from "./flexible-launch-schema.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -55,17 +56,17 @@ describe("v165", () => {
     expect(() => insert(db, { marker: "short" })).toThrow();
     expect(() => insert(db, { state: "live" })).toThrow(); // live needs a leader
     expect(() => insert(db, { leader_pid: 1, leader_start: "t1" })).toThrow(); // never pid 1
-    expect(() => insert(db, { leader_pid: 42 })).toThrow(); // a pid without its start identity is no identity
+    expect(() => insert(db, { leader_pid: fakePid(1) })).toThrow(); // a pid without its start identity is no identity
     expect(() => insert(db, { state: "exited" })).toThrow(); // an exit has a time
     insert(db);
     expect(() => insert(db, { id: "1".repeat(32) })).toThrow(); // one unsettled launch per thread
     for (const column of ["thread", "provider", "level", "fence_digest", "holder", "host", "boot_id", "marker", "started_at"]) {
       expect(() => db.prepare(`UPDATE flexible_thread_launch SET ${column} = 'changed' WHERE id = ?`).run(ID), column).toThrow();
     }
-    db.prepare("UPDATE flexible_thread_launch SET state = 'live', leader_pid = 4242, leader_start = 't100' WHERE id = ?").run(ID);
-    expect(() => db.prepare("UPDATE flexible_thread_launch SET leader_pid = 4343 WHERE id = ?").run(ID)).toThrow(/written once/);
+    db.prepare(`UPDATE flexible_thread_launch SET state = 'live', leader_pid = ${fakePid(2)}, leader_start = 't100' WHERE id = ?`).run(ID);
+    expect(() => db.prepare(`UPDATE flexible_thread_launch SET leader_pid = ${fakePid(3)} WHERE id = ?`).run(ID)).toThrow(/written once/);
     expect(() => db.prepare("UPDATE flexible_thread_launch SET state = 'spawning' WHERE id = ?").run(ID)).toThrow(/only moves forward/);
-    db.prepare(`UPDATE flexible_thread_launch SET witnesses = '[{"pid":5,"start":"t101"}]', namespaces = '["pid:[4026532000]"]' WHERE id = ?`).run(ID);
+    db.prepare(`UPDATE flexible_thread_launch SET witnesses = '[{"pid":${fakePid(4)},"start":"t101"}]', namespaces = '["pid:[4026532000]"]' WHERE id = ?`).run(ID);
     expect(() => db.prepare("UPDATE flexible_thread_launch SET witnesses = '[]' WHERE id = ?").run(ID)).toThrow(/only grows/);
     expect(() => db.prepare("UPDATE flexible_thread_launch SET namespaces = '{}' WHERE id = ?").run(ID)).toThrow();
     db.prepare("UPDATE flexible_thread_launch SET network_closed_at = ? WHERE id = ?").run(T0, ID);
