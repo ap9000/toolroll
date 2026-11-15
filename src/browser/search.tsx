@@ -16,6 +16,7 @@ export type SearchEntry = { kind: "task" | "project" | "chat" | "setting" | "pag
 
 /** Every place a person might look for, by the name they'd type; `also` holds the other words that should find it. */
 export const DESTINATIONS: readonly (readonly [title: string, href: string, where: string, also?: string])[] = [
+  ["Computers", "/settings/computers", "Settings → Computers", "builder builders runner fleet connect toolroll up register retire start a builder"],
   ["Models", "/settings/models", "Settings → Agents and models", "planner builder reviewer opus sonnet haiku codex model per phase"],
   ["Lead and subagents", "/settings/lead", "Settings → Agents and models", "lead chat subagent"],
   ["Tools", "/settings/tools", "Settings → Agents and models", "mcp"],
@@ -50,7 +51,7 @@ export const LEGACY: readonly (readonly [title: string, href: string, now: strin
   ["Kits", "/kits", "Flows → New flow", "kit starter"],
   ["Limits", "/spend", "Spend → Monthly limits", "budget"],
   ["Live", "/agents", "Agents", "live view peek"],
-  ["Builders", "/agents#computers", "Agents → Computers that build", "builder computers runner fleet"],
+  ["Builders", "/settings/computers?section=builders", "Settings → Computers", "builder runner fleet workers"],
   ["System", "/agents", "Agents", "agents per phase"],
   ["Tasks", "/", "Work", "task list all tasks"],
   ["Home", "/", "Work", "start"],

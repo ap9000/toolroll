@@ -25,13 +25,15 @@ export type NeedActionCode =
   | "place-task" | "write-scope" | "select-agent" | "repair-dependency" | "repair-capability" | "start-worker" | "reconcile-run"
   | "open-result" | "retry-task" | "inspect-task" | "inspect-findings" | "unhold";
 export type NeedAction = { code: NeedActionCode; label: string };
-/** Where "Connect a builder" and "Start the builder" lead (code `start-worker`): the Start a builder page, which shows
+/** Where "Connect a builder" and "Start the builder" lead (code `start-worker`): Settings → Computers' Connect a builder
+ * (it was /start-builder, which redirects there), which shows
  * the one command to run and the open project's builder state. Every signed-in person can open it, a project-limited
  * one included (System is instance-only). Never the task's own page, which only repeats that nothing is connected. */
-export const START_BUILDER_HREF = "/start-builder";
-/** Start a builder for one task: the page reports that task's own project, whatever project is open. */
+export const START_BUILDER_HREF = "/settings/computers?section=start";
+/** Start a builder for one task: the page reports that task's own project, whatever project is open (the order the
+ * retired /start-builder?task= redirect writes). */
 export const startBuilderHref = (taskId: string | null): string =>
-  taskId === null ? START_BUILDER_HREF : `${START_BUILDER_HREF}?task=${encodeURIComponent(taskId)}`;
+  taskId === null ? START_BUILDER_HREF : `/settings/computers?task=${encodeURIComponent(taskId)}&section=start`;
 /** What starts a builder: run on the machine where the project lives, in the project's folder. */
 export const START_BUILDER_COMMAND = "toolroll up";
 /** `build`: the run a sentence names; `provider`: the agent that signed out; `task`: another task it names (an

@@ -392,8 +392,9 @@ get("tasks", "done", "/done", RETIRED);
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system", free);
-// Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
-get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
+// Settings → Computers' "Connect a builder" now (settings plan F2): a permanent redirect keeping its task, admitted as
+// the Computers area is.
+get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free, retired: true });
 get("tasks", "tasks", "/tasks", RETIRED);
 get("tasks", "queue", "/queue", RETIRED);
 get("pages", "peek", "/peek", free);
@@ -404,7 +405,8 @@ get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["co
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
 // Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
 get("pages", "agents.terminals", "/agents/terminals", TERM);
-// Fleet and System are parts of Agents now: GET aliases to /agents#computers and /agents#models.
+// Fleet is Settings → Computers now (settings plan F2) and System is part of Agents: GET aliases to
+// /settings/computers?section=builders and /agents#models.
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
 // The first run's own page (Wave E): five guided steps, reads only; it leads Home once the first run is over.
@@ -483,14 +485,14 @@ get("settings", "settings.page", "/settings", { limited: "unscoped", ...free });
 // The Settings groups (docs/plans/settings-revamp.md §3): one read-only page each, drawn by the overview's handler.
 // Anyone signed in may open one; the page shows only the sections this person can use, and every form's own route
 // keeps its own role and proof.
-for (const one of ["general", "agents", "alerts", "projects", "access", "system"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
+for (const one of ["general", "agents", "computers", "alerts", "projects", "access", "system"]) get("settings", `settings.group-${one}`, `/settings/${one}`, { limited: "unscoped", ...free });
 // Settings → Advanced is General's Advanced section now (settings plan F0): a permanent redirect, admitted as General is.
 get("settings", "settings.group-advanced", "/settings/advanced", { limited: "unscoped", ...free, retired: true });
 // Change documents (settings plan v2 §2.2): one per section whose act needs a proof or a page script, generated from the
 // section table and carrying that section's own route policy. The handler admits the section again and shows the form
 // only to a person who may make the change; the POST it sends to keeps its own row, role and proof.
 for (const one of CHANGE_DOCUMENTS) {
-  const { local: _local, ...policy } = one.policy;
+  const { local: _local, ...policy } = one.section.policy;
   get("settings", `settings.change.${one.id}`, `/settings/change/${one.id}`, { ...policy });
 }
 get("pages", "health", "/health", { ...free, ...anyOperator("An instance operator reads server health.", "/") });
