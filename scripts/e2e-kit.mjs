@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { countingProvider, scriptedProvider, turnsOf } from "./fixtures/scripted-provider.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
-import { assertIsolated, BUILT_NAMES, CREDENTIAL_NAME, isolatedEnvironment, JOURNEY_NAMES, openedLines, PASS_NAMES, personHomes, residueCheck, startupHook, validOverrides } from "./isolated-env.mjs";
+import { acceptedLine, assertIsolated, BUILT_NAMES, CREDENTIAL_NAME, isolatedEnvironment, JOURNEY_NAMES, openedLines, PASS_NAMES, personHomes, residueCheck, startupHook, validOverrides } from "./isolated-env.mjs";
 import { result as checkResult } from "./check-results.mjs";
 
 // Every Toolroll an end-to-end run starts keeps tool secrets as files in its own temporary state folder, never in the
@@ -593,7 +593,8 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
     // model turn in the provider journal, and this process's environment is still the world's.
     if (isolation !== null) await check(ISOLATION_CHECK, [], async () => {
       const wrong = [];
-      const { left, unknown, unknownFails } = residue.check();
+      const { left, unknown, unknownFails, acceptedUnreadable } = residue.check();
+      if (acceptedUnreadable) say(acceptedLine(unknown, PERSON_HOMES));
       if (left.length > 0) wrong.push(`residue in the person's home (${left.length}): ${left.slice(0, 5).join(", ")}`);
       if (unknownFails) wrong.push(`the residue check couldn't read ${unknown.join(", ")}: unknown, not clean (TOOLROLL_RESIDUE_UNREADABLE=accept says a run accepts that)`);
       const real = turnsOf(provider.journal()).real;
@@ -601,7 +602,7 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
       try { assertIsolated(process.env, { root, homes: PERSON_HOMES }); } catch (error) { wrong.push(error.message); }
       if (wrong.length > 0) throw new Error(wrong.join(" | "));
       const opened = openedLines(isolation.opened);
-      return { checked: "transcripts named after this run, its build cache, git incidents", ...(unknown.length > 0 ? { unreadableAccepted: unknown } : {}), ...(opened.length === 0 ? {} : { browserOpenerHanded: opened.length }) };
+      return { checked: "transcripts named after this run, its build cache, git incidents", ...(acceptedUnreadable ? { accepted: acceptedLine(unknown, PERSON_HOMES) } : {}), ...(opened.length === 0 ? {} : { browserOpenerHanded: opened.length }) };
     }, { always: true });
     const journal = provider.journal();
     writeFileSync(join(out, "model-calls.jsonl"), journal.map(one => JSON.stringify(one)).join("\n") + (journal.length > 0 ? "\n" : ""));

@@ -89,6 +89,21 @@ describe("a test run's residue check", () => {
     try { expect(() => teardown()).toThrow(/couldn't read .*projects.*unknown, not clean/); } finally { chmodSync(projects, 0o755); }
   });
 
+  it("accepts unreadable places only when the run said so up front, and names them on its line", () => {
+    const prior = process.env["TOOLROLL_RESIDUE_UNREADABLE"];
+    process.env["TOOLROLL_RESIDUE_UNREADABLE"] = "accept";
+    try {
+      const { fake, teardown } = run();
+      const projects = join(fake, ".claude", "projects");
+      mkdirSync(projects, { recursive: true });
+      chmodSync(projects, 0o000);
+      made.push(projects);
+      let line: string | null = null;
+      try { line = teardown(); } finally { chmodSync(projects, 0o755); }
+      expect(line).toMatch(/^Residue check: ~\/\.claude\/projects \(EACCES\) unreadable inside the fence, accepted$/);
+    } finally { if (prior === undefined) delete process.env["TOOLROLL_RESIDUE_UNREADABLE"]; else process.env["TOOLROLL_RESIDUE_UNREADABLE"] = prior; }
+  });
+
   it("passes when the person's home only changed in ways that aren't this run's", () => {
     const { fake, teardown } = run();
     mkdirSync(join(fake, ".toolroll"), { recursive: true });

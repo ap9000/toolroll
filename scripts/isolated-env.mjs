@@ -364,6 +364,12 @@ export function residueCheck({ root, also = [], repos = [], homes = personHomes(
   };
 }
 
+/** The residue check's line for unreadable places it accepted: the places, with the home shown as ~. */
+export function acceptedLine(unknown, homes = personHomes()) {
+  const shown = unknown.map(one => homes.reduce((text, home) => text.split(home).join("~"), one));
+  return `Residue check: ${shown.join(", ")} unreadable inside the fence, accepted`;
+}
+
 /** A short line for a report: what a world's browser openers were handed (never opened). */
 export function openedLines(opened) {
   try { return readFileSync(opened, "utf8").split("\n").filter(line => line !== ""); } catch { return []; }

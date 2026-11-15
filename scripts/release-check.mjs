@@ -521,15 +521,26 @@ export function enclosingLaunchOf(temp = tmpdir()) {
   return null;
 }
 
+/**
+ * Whether this release check runs inside the plane's macOS fence, from what the plane's launch itself established (never
+ * a variable a caller sets): a macOS run, started by a plane (its handshake on stdin), whose temp folder lies in the
+ * plane's check launch folder (`so-cmd-…`), and which couldn't make its temp root beside that folder (a sandboxed check
+ * can't write there). Only then may its suites accept that the residue check can't read the person's home
+ * (TOOLROLL_RESIDUE_UNREADABLE=accept): the fence hides ~/.toolroll and ~/.claude. Anywhere else, unknown still fails.
+ */
+export function insidePlaneFence({ platform = process.platform, handshake, enclosing, besideRoot }) {
+  return platform === "darwin" && handshake !== null && handshake !== undefined && enclosing !== null && besideRoot === null;
+}
+
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const started = Date.now();
   // Run by a plane, its temp folder inside the check's launch folder: every part takes a temp root beside that folder
   // when it can be made there (an unsandboxed check; a sandboxed one can't write there, and nests no fence anyway).
   const enclosing = enclosingLaunchOf();
+  let besideRoot = null;
   if (enclosing !== null) {
-    let root = null;
-    try { root = makeTempRoot("so-rc-", { parent: dirname(enclosing) }); } catch { root = null; }
-    if (root !== null) for (const name of ["TMPDIR", "TMP", "TEMP"]) process.env[name] = root;
+    try { besideRoot = makeTempRoot("so-rc-", { parent: dirname(enclosing) }); } catch { besideRoot = null; }
+    if (besideRoot !== null) for (const name of ["TMPDIR", "TMP", "TEMP"]) process.env[name] = besideRoot;
   }
   // Newer release tags first: a checkout without them would quietly compare with an old release.
   if (process.env.TOOLROLL_RELEASE_LOCAL_TAGS !== "1") {
@@ -561,6 +572,13 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   // prints its report last. A targeted one runs exactly its plan. A person's own run reads none and behaves as before.
   const handshake = await readHandshake();
   const releaseRun = handshake !== null;
+  // The residue check's unreadable places, accepted only inside the plane's macOS fence (insidePlaneFence); a value the
+  // caller brought in is never kept.
+  delete process.env.TOOLROLL_RESIDUE_UNREADABLE;
+  if (insidePlaneFence({ handshake, enclosing, besideRoot })) {
+    process.env.TOOLROLL_RESIDUE_UNREADABLE = "accept";
+    console.log("Residue check: inside the plane's macOS fence, ~/.toolroll and ~/.claude are unreadable to its suites; accepted there (unknown fails everywhere else).");
+  }
   const targeted = handshake?.mode === "targeted" ? handshake.plan : null;
   // A full release run runs at least what the plane owes it (its handshake), whatever the diff selected.
   const selection = owedSelection(plan, upgrade, handshake);

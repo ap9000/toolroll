@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { journeyEnv, upgradeChanges, needsUpgrade, partRunner, planFor, releaseTagProblem, versionOnly } from "../scripts/release-check.mjs";
+import { insidePlaneFence, journeyEnv, upgradeChanges, needsUpgrade, partRunner, planFor, releaseTagProblem, versionOnly } from "../scripts/release-check.mjs";
 import { historicalSchema, atLeast, completionProblems, FIRST_RELEASE, installPublished, lastPublished, ownedCacheDir, LONG_TEXT, missingTables, ROLLBACK_FROM, selectedVersions, upgradeLanes, upgradeVersions } from "../scripts/upgrade-path.mjs";
 import { openGate, providerCap } from "../scripts/provider-gate.mjs";
 import { ciJobNames, ciSucceeded, macUnitFiles, passedCandidateCI } from "../scripts/release-check-ci.mjs";
@@ -258,6 +258,17 @@ console.log(JSON.stringify(process.argv.at(-1).includes('/attempts/')
     expect(runs).toEqual([]);
     expect(out).toContain("\nbuild: exit 1\n");
     expect(out).toContain("\nbrowser journeys not run: the typecheck or build failed\n");
+  });
+});
+
+describe("the residue check inside the plane's fence", () => {
+  test("accepts unreadable places only on a macOS plane run whose temp folder is in the launch folder and that couldn't write beside it", () => {
+    const fenced = { platform: "darwin" as const, handshake: { nonce: "n" }, enclosing: "/var/folders/x/so-cmd-abc", besideRoot: null };
+    expect(insidePlaneFence(fenced)).toBe(true);
+    expect(insidePlaneFence({ ...fenced, platform: "linux" as const })).toBe(false);
+    expect(insidePlaneFence({ ...fenced, handshake: null })).toBe(false);
+    expect(insidePlaneFence({ ...fenced, enclosing: null })).toBe(false);
+    expect(insidePlaneFence({ ...fenced, besideRoot: "/var/folders/x/so-rc-1" })).toBe(false);
   });
 });
 

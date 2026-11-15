@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { makeTempRoot, removeOnExit, removeRoot } from "../scripts/suite-lifecycle.mjs";
 // @ts-expect-error plain ESM script without declarations
-import { residueCheck } from "../scripts/isolated-env.mjs";
+import { acceptedLine, residueCheck } from "../scripts/isolated-env.mjs";
 
 /**
  * Tests leave no temp folders. Every test run gets one temp root of its own, before any worker starts: the workers
@@ -26,7 +26,7 @@ import { residueCheck } from "../scripts/isolated-env.mjs";
  * those places). `homes`: where to look (tests of this check), else the account's own home and the HOME this run started
  * with. Cleanup removes only what this run made and recorded (scripts/suite-lifecycle.mjs removeRoot).
  */
-export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, options: { homes?: string[]; outerParent?: string } = {}): () => void {
+export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, options: { homes?: string[]; outerParent?: string } = {}): () => string | null {
   const own = project?.vitest?._tmpDir;
   if (typeof own === "string" && dirname(own) === tmpdir() && /^[\w-]{21}$/.test(basename(own))) removeOnExit(own);
   const before = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP, TOOLROLL_TEST_OUTER_HOME: process.env.TOOLROLL_TEST_OUTER_HOME };
@@ -47,11 +47,14 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, o
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
-    const { left, unknown, unknownFails } = residue.check() as { left: string[]; unknown: string[]; unknownFails: boolean };
+    const { left, unknown, unknownFails, acceptedUnreadable } = residue.check() as { left: string[]; unknown: string[]; unknownFails: boolean; acceptedUnreadable: boolean };
+    const accepted = acceptedUnreadable ? acceptedLine(unknown, options.homes) as string : null;
+    if (accepted !== null) console.log(accepted);
     removeRoot(root);
     removeRoot(outer);
     if (left.length > 0) throw new Error(`Residue check: these tests left ${left.length} trace(s) in the person's real home: ${left.slice(0, 10).join(", ")}. A test's HOME is its own (test/setup-state.ts); find what ignored it.`);
     if (unknownFails) throw new Error(`Residue check: couldn't read ${unknown.join(", ")}, so this run's traces there are unknown, not clean.`);
+    return accepted;
   };
 }
 
