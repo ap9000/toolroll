@@ -1418,7 +1418,11 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
       if (connectionsOf(store, target).find(one => one.id === service.id)?.state !== "open") return back(`${projectName(target)} already has ${service.label}.`);
     }
     // Connecting a tool stores a sign-in for it: a credential act (a password typed now, never the session, solo or not).
+    // The generation is the one the password was checked against, read before it and before any wait: a rotation in
+    // between refuses here, and one later refuses at the callback (standing() compares this exact generation).
+    const provedGeneration = store.accountOf(who.name)?.generation ?? -1;
     if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("Enter your Toolroll password to connect a tool.");
+    if ((store.accountOf(who.name)?.generation ?? -2) !== provedGeneration) return back("Your sign-in changed. Connect again.");
     // An app on this computer: added like a common tool and tested; one that can't be reached isn't kept.
     if (local !== null) {
       const had = projectToolsOf(store, repo).find(one => one.name === local.id);
@@ -1442,12 +1446,15 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     const readOnly = also === null && body.get("access") === "read";
     const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template, readOnly }, options.connectFetch ?? fetch);
     if (!started.ok) return back(started.said);
+    // After the wait: the account still stands at the generation the password proved, or nothing is started.
+    const standing = store.accountOf(who.name);
+    if (standing === null || standing.revokedAt !== null || standing.role !== "approver" || standing.generation !== provedGeneration || !store.accountCanAccess(who.name, target)) return back("Your sign-in changed. Connect again.");
     for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
     // The password above proves one thing: this connection, by this account as it is now, and (from a kit whose subagent
     // is set up) letting that subagent use this tool in this project. The callback holds the visit to exactly that.
     const kitSet = kit === null || also !== null ? null : kitOf(kit);
     const installed = kitSet === null || !kitSet.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kitSet, target);
-    connectVisits.set(started.state, { ...started.visit, generation: store.accountOf(who.name)?.generation ?? -1,
+    connectVisits.set(started.state, { ...started.visit, generation: provedGeneration,
       grant: installed === null ? null : { subagent: installed.mate.id, tool: service.id, repo: target } });
     return goOutside(response, started.go, `Going to ${service.label} to sign in…`, { state: started.state, path: CONNECT_CALLBACK, secure: origin.startsWith("https:") });
   }
@@ -2037,6 +2044,8 @@ ${postForm("/settings/chat-approval/save", html`\
     // finding 2): an invalid key must never persist a mode change it
     // then hides, a mode equal to the current one is not a "change",
     // and an unchanged blank form does nothing.
+    // Saving a key (or how the provider is paid) is a credential act: a password typed now, never the session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return redirect(response, `/settings/agents?problem=${encodeURIComponent("Enter your Toolroll password to save a key. Nothing changed.")}#providers`);
     const wantedMode = body.get("auth-mode");
     const value = (body.get("value") ?? "").trim();
     const modeSelected = wantedMode === "subscription" || wantedMode === "api-key";
@@ -2073,6 +2082,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const { who, response, posted } = ctx;
     if (options.telegramTokenFile === undefined) return refuse(response, who, 404, "There's no page at this address.", "/chat");
     const body = readForm(posted, CONSOLE_FORMS.telegramToken);
+    // The bot's token is a credential: saving it takes a password typed now, never the session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return redirect(response, `/settings/alerts?problem=${encodeURIComponent("Enter your Toolroll password to save the bot token. Nothing changed.")}#telegram-token`);
     const value = body.get("token") ?? "";
     const saved = saveBotToken(options.telegramTokenFile, value);
     if (!saved.ok) return redirect(response, `/settings/alerts?problem=${encodeURIComponent(saved.message)}#telegram-token`);
@@ -2085,6 +2096,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const body = readForm(posted, CONSOLE_FORMS.email);
     const said = (words: string, key: "said" | "problem" = "said") => redirect(response, `/settings/alerts?${key}=${encodeURIComponent(words)}#email`);
     if (op === "save") {
+      // The mail account's sign-in is a credential: a password typed now (the form's `token`), never the session.
+      if (!authenticateCredential(who, body.get("token") ?? "").ok) return said("Enter your Toolroll password to save email. Nothing changed.", "problem");
       const saved = saveEmailSettings(options.configDir, { host: body.get("host"), port: body.get("port"), secure: body.get("secure"), user: body.get("user"), from: body.get("from"), password: body.get("password"), imapHost: body.get("imapHost"), imapPort: body.get("imapPort") });
       return saved.ok ? said(saved.said) : said(saved.message, "problem");
     }
@@ -2111,6 +2124,8 @@ ${postForm("/settings/chat-approval/save", html`\
       await disconnectGoogle(options.configDir, options.googleFetch ?? fetch);
       return said("Google disconnected. Email goes through the mail server again, if one is set up.");
     }
+    // Connecting a Google account stores its client secret and, after consent, its sign-in: a credential act.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return redirect(response, `/settings/alerts?problem=${encodeURIComponent("Enter your Toolroll password to connect Google. Nothing changed.")}#email`);
     const saved = saveGoogleClient(options.configDir, { clientId: body.get("clientId"), clientSecret: body.get("clientSecret") });
     if (!saved.ok) return said(saved.message);
     const origin = consoleOrigin(request.headers.host);

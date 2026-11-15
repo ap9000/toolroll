@@ -35,6 +35,7 @@ import { applyChatReview, type ReviewRequest } from "./chat-review.js";
 import { applyChatTaskAction } from "./chat-task-actions.js";
 import { currentLocalOwner, localOwnerRefusal, proposalLocalAct, withLocalAct, type Authority } from "./local-owner.js";
 import { chatStartPreview, consumeChatStartPreview } from "./fast-start.js";
+import { soloChatSeatRefusal } from "./install-mode.js";
 
 /** Easy-start C1: whether this door is a local owner's — named by the caller, or the chain's own (the stricter wins). */
 function localDoor(options: Pick<DoorOptions, "authority">): boolean {
@@ -353,6 +354,12 @@ function executeProposal(
   options: DoorOptions & { scopeAuthor?: "mate" | "coordinator"; deferSignal: NonNullable<import("./task-control.js").StopRequest["deferSignal"]> },
 ): DoorOutcome {
   if (!isVerifiedApprover(actor) || !reproveApprover(store, actor).ok) return { ok: false, kind, reason: "standing", said: "Your sign-in changed. Sign in again." };
+  // A chat app's yes on a solo install stands only from the owner's own paired chat identity: read here, inside the
+  // confirmation's transaction (both doors reach this). A chat road with no binding names no identity, and refuses.
+  if (options.via !== "web" && options.via !== "cli") {
+    const solo = soloChatSeatRefusal(store, { provider: options.via, binding: options.binding, approver: actor.name });
+    if (solo !== null) return { ok: false, kind, reason: "standing", said: solo };
+  }
   const taskId = payloadString(payload, "task");
   const admitted = (repo: string | null): boolean => repo !== null && actor.repos.includes(repo);
   const refuse = (reason: DoorRefusal, said: string): DoorOutcome => ({ ok: false, kind, reason, said });
@@ -429,7 +436,7 @@ function executeProposal(
   if (kind === "task_action") {
     // A person's own surface (the console, the paired phone) honours the
     // operator's own automatic-approval mode; the CLI keeps its ceremony.
-    const result = applyChatTaskAction(store, actor, payload, now, options.via !== "cli", { deferSignal: options.deferSignal, via: options.via, person: options.via === "web" ? options.person === true : options.via !== "cli", ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }) });
+    const result = applyChatTaskAction(store, actor, payload, now, options.via !== "cli", { deferSignal: options.deferSignal, via: options.via, person: options.via === "web" ? options.person === true : options.via !== "cli", ...(options.evidenceRoot === undefined ? {} : { evidenceRoot: options.evidenceRoot }), ...(options.binding === undefined ? {} : { binding: options.binding }) });
     return result.ok ? { ok: true, kind, taskId: result.taskId, said: result.said } : refuse("stale", result.message);
   }
 

@@ -169,7 +169,7 @@ test("#3: push enrolment posts exactly once, after the password and the subscrip
 });
 
 test("a form with fields named action and id posts to its own action and keeps its own id (they never shadow the form's)", async () => {
-  render(withFormToken("c".repeat(64), () => htmlString(kitSectionForm({ proof: "email", action: "/settings/email", id: "shadowed", hidden: { action: "save", id: "7" }, body: html`<input name="host" value="h">` }))));
+  render(withFormToken("c".repeat(64), () => htmlString(kitSectionForm({ proof: "notifications", action: "/settings/notifications", id: "shadowed", hidden: { action: "save", id: "7" }, body: html`<input name="host" value="h">` }))));
   // A real browser's named form properties (happy-dom doesn't draw them): the fields stand in for form.action and form.id.
   const shadow = () => { const it = form("shadowed"); for (const name of ["action", "id"]) Object.defineProperty(it, name, { configurable: true, get: () => it.querySelector(`input[name="${name}"]`) }); };
   shadow();
@@ -178,12 +178,12 @@ test("a form with fields named action and id posts to its own action and keeps i
   save("shadowed");
   await tick();
   expect(fetched).toHaveBeenCalledTimes(1);
-  expect(new URL(String(fetched.mock.calls[0]![0])).pathname).toBe("/settings/email");
+  expect(new URL(String(fetched.mock.calls[0]![0])).pathname).toBe("/settings/notifications");
   expect(assigned).toEqual(["/settings/alerts?said=x"]);
   // Refused: the refusal slot is the form's own, named by its id attribute.
-  render(withFormToken("c".repeat(64), () => htmlString(kitSectionForm({ proof: "email", action: "/settings/email", id: "shadowed", hidden: { action: "save", id: "7" }, body: html`<input name="host" value="h">` }))));
+  render(withFormToken("c".repeat(64), () => htmlString(kitSectionForm({ proof: "notifications", action: "/settings/notifications", id: "shadowed", hidden: { action: "save", id: "7" }, body: html`<input name="host" value="h">` }))));
   shadow();
-  vi.stubGlobal("fetch", vi.fn(async () => ({ url: `${location.origin}/settings/email`, redirected: false, ok: false, status: 400, text: async () => "<p role=alert>No.</p>" })));
+  vi.stubGlobal("fetch", vi.fn(async () => ({ url: `${location.origin}/settings/notifications`, redirected: false, ok: false, status: 400, text: async () => "<p role=alert>No.</p>" })));
   save("shadowed");
   await tick();
   expect(document.getElementById("shadowed-err")!.textContent).toContain("No.");

@@ -21,6 +21,10 @@ import { declareJustMe, declareSoloOnUpgrade, installModeNow, INSTALL_MODE_ACTIO
 import { setPasswordless } from "./passwordless.js";
 import { soloChatSeatRefusal } from "./install-mode.js";
 import { applyDecideTap } from "./chat-decide.js";
+import { confirmLeadProposal } from "./lead-doors.js";
+import { applyChatTaskAction } from "./chat-task-actions.js";
+import { verifyApproverStanding } from "./principal.js";
+import { credentialKeyOf } from "./converse.js";
 import { createDecisionServer } from "./serve.js";
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
@@ -487,5 +491,40 @@ describe("chat in solo: only the owner's own paired chat identity acts", () => {
     // Team: the team rules decide, as before.
     store.saveApprover("robin", hashPassword("robin-pw-1"), NOW);
     expect(soloChatSeatRefusal(store, { provider: "telegram", binding: own + 1, approver: "alex" })).toBeNull();
+  });
+});
+
+describe("chat in solo, at the confirmation doors: only the owner's own paired identity", () => {
+  test("on all four apps, a hold with no binding or a non-owner binding is refused inside the lead's confirmation; a legacy task resume too", () => {
+    const CREDENTIAL = credentialKeyOf("anthropic-api", "sk-test");
+    expect(fileTaskProposal(store, { id: "a", title: "task a", repo: REPO, filedVia: "cli" }, NOW).ok).toBe(true);
+    const verified = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, [REPO]);
+    if (!verified.ok) throw new Error(verified.reason);
+    const who = verified.who;
+    store.mintLeadSession({ approver: "alex", approverGeneration: who.generation, credentialKey: CREDENTIAL, ceilingMicrousd: 5_000_000, ceilingDigest: who.ceilingDigest, termsDigest: "t".repeat(64) }, NOW);
+    const hold = (): number => {
+      const thread = store.openLeadThread("alex", who.ceilingDigest, NOW).thread;
+      const opened = store.openLeadTurn({ approver: "alex", session: store.activeLeadSession("alex")!.id, thread: thread.id, credentialKey: CREDENTIAL, reservedMicrousd: 10, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, NOW);
+      if (!opened.ok) throw new Error(opened.reason);
+      const started = store.startLeadTurn(opened.id, NOW);
+      if (!started.ok) throw new Error("start");
+      const id = store.draftLeadProposal({ thread: thread.id, turn: opened.id, kind: "hold", payload: { task: "a", reason: "wait", sawHold: null }, ceilingDigest: who.ceilingDigest }, NOW);
+      store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 1, tokensIn: 1, tokensOut: 1 }, NOW);
+      return id;
+    };
+    const own = pair("alex-phone");
+    expect(soloNow(store)).toBe(true);
+    const holds = () => store.activeHolds(store.refFor("built-in", "a").id, NOW).length;
+    for (const via of ["telegram", "slack", "discord", "teams"] as const) {
+      for (const binding of [undefined, own + 7, ...(via === "telegram" ? [] : [own])]) {
+        const outcome = confirmLeadProposal(store, who, hold(), NOW, { authority: "full", via, ...(binding === undefined ? {} : { binding }) });
+        expect(outcome, `${via} ${binding}`).toMatchObject({ ok: false, said: expect.stringMatching(/chat account its owner paired/) });
+        expect(holds()).toBe(0);
+      }
+      expect(applyChatTaskAction(store, who, { task: "a", operation: "resume", stamp: "x", run: 1 }, NOW, true, { via, person: true })).toEqual({ ok: false, message: expect.stringMatching(/chat account its owner paired/) });
+    }
+    // The owner's own paired identity passes this door (whatever the card's other rules then say).
+    const mine = confirmLeadProposal(store, who, hold(), NOW, { authority: "full", via: "telegram", binding: own });
+    expect(JSON.stringify(mine)).not.toMatch(/chat account its owner paired/);
   });
 });

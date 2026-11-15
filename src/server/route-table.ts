@@ -676,8 +676,13 @@ post("settings", "settings.telegram-retry", "/settings/telegram/retry", { limite
 for (const one of ["confirm", "save", "off"]) post("settings", `settings.chat-approval-${one}`, `/settings/chat-approval/${one}`, { limited: "self", callers: ["cookie"], ...(one === "save" ? { scope: "step-up" as const } : {}), ...approver("An approver turns on approving from their own chat.", "/settings") });
 post("settings", "settings.telegram-pair", "/settings/telegram/pair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
 post("settings", "settings.telegram-unpair", "/settings/telegram/unpair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
-for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key", "provider-key-clear", "telegram-token", "email", "email-test", "email-read-test", "google", "google/disconnect"]) {
+for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key-clear", "email-test", "email-read-test", "google/disconnect"]) {
   post("settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`);
+}
+// Saving a credential (an AI provider key, the Telegram bot token, the mail account, a Google account): a credential act
+// from a browser (the handler proves a password typed now, or a one-use provider re-check; never a session or a token).
+for (const one of ["provider-key", "telegram-token", "email", "google"]) {
+  post("settings", `settings.${one}-send`, `/settings/${one}`, { callers: ["cookie"], scope: "step-up" });
 }
 post("pages", "projects.github-list", "/projects/github", { callers: ["cookie"], ...anyApprover("your login can watch — adding projects is an approver's act") });
 post("pages", "projects.select", "/projects/select", { project: "form-path", limited: "unscoped", viewer: true });

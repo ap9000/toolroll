@@ -1016,6 +1016,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>toolsConnect@67": 1,
     "src/server/tasks.ts#createTasksHandlers@2": 2,
     "src/server/tasks.ts#createTasksHandlers@2>codeAct@22><anonymous>@1": 1,
+    // Solo or team (Codex round 2): saving a provider key, the Telegram bot token, the mail account or a Google account.
+    "src/server/settings.ts#createSettingsHandlers@1>providerKeyAct@91><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>telegramTokenSave@92": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>emailAct@93><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>googleAct@94><anonymous>@1": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
@@ -1039,6 +1044,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#publishCommand@70": 2,
   },
   proveCredential: {
+    // Solo or team (Codex round 2): a credential-class shared action's secure screen takes a credential proof.
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction@26": 1,
     "src/scope.ts#addApprover@31>store.transact(_)@1": 1,
     "src/scope.ts#proveCredential@41": 1,
     // Passwordless review round 1: reviewed new sites.
