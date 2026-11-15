@@ -4,7 +4,7 @@
  * Code); its pre-flight aborts the run when an agent CLI resolves outside the stand-in folder or HOME is the real one;
  * and a run with a required outcome false fails. Nothing here starts the journey: only its functions are imported.
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, test } from "vitest";
@@ -79,7 +79,7 @@ describe("the pre-flight", () => {
   test.skipIf(process.platform === "win32")("the real lookup runs a shell with exactly that environment", () => {
     stand(AGENT_CLIS as string[]);
     const env = build();
-    expect(whereIn(env, "claude")).toBe(join(bin, "claude"));
+    expect(whereIn(env, "claude", bin)).toBe(join(bin, "claude"));
     expect(whereIn(env, "no-such-tool-anywhere")).toBe("");
     const verdict = preflightOf(env, { bin, realHome: REAL_HOME }) as Preflight;
     expect(verdict.ok, JSON.stringify(verdict.problems)).toBe(true);
@@ -87,11 +87,22 @@ describe("the pre-flight", () => {
 });
 
 test("a run with any required outcome false fails (accepted=false is no longer a pass)", () => {
-  const ran = { preflight: { ok: true }, workbench: true, exit: "ended", diff_shown: true, accepted: false, provider_turns: ["builder"] };
+  const ran = { preflight: { ok: true }, workbench: true, exit: "ended", diff_shown: true, accept_dialog: true, accepted: false, final_state: "done", provider_turns: ["builder"] };
   const full = requiredOf(ran, { modelFree: false, browser: false, raw: "Using your own terminal workbench build at /x (--tui-binary).", failure: null }) as Record<string, boolean>;
   expect(full["accepted"]).toBe(false);
   expect(Object.values(requiredOf({ ...ran, accepted: true }, { modelFree: false, browser: false, raw: "Using your own terminal workbench build", failure: null }) as Record<string, boolean>).every(Boolean)).toBe(true);
+  // The dialog the app really shows, and the task really done in the database, are both required.
+  const noDialog = requiredOf({ ...ran, accepted: true, accept_dialog: false, final_state: "running" }, { modelFree: false, browser: false, raw: "Using your own terminal workbench build", failure: null }) as Record<string, boolean>;
+  expect([noDialog["accept_dialog_shown"], noDialog["task_done"]]).toEqual([false, false]);
   const free = requiredOf({ ...ran, filed: 1 }, { modelFree: true, browser: false, raw: "", failure: null }) as Record<string, boolean>;
   expect(free["nothing_filed"]).toBe(false);
   expect(free["signed_in_by_flag"]).toBe(false);
+});
+
+test("the journey waits for the Accept dialog the app really draws", () => {
+  const view = readFileSync(new URL("../tui/crates/toolroll-tui/src/view.rs", import.meta.url), "utf8");
+  const journey = readFileSync(new URL("../scripts/tui-e2e.mjs", import.meta.url), "utf8");
+  expect(view).toContain('format!("Accept the result of build #{run}{files}?")');
+  expect(journey).toContain("const DIALOG = /Accept the result of build #\\d+/;");
+  expect(journey).not.toContain("Accept, with a note");
 });

@@ -6,11 +6,12 @@
  * descriptor 4, and how the binary's exit code ends the screen.
  */
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { easyStartArgs } from "./easy-start-args.js";
-import { chooseTuiBinary, runTuiBinary, trustedBinary, type TuiChoiceInput } from "./tui-launch.js";
+import { aclVerdictOf, chooseTuiBinary, runTuiBinary, trustedBinary, type TuiChoiceInput } from "./tui-launch.js";
 import type { TuiSession } from "./tui-contract.js";
 
 const CONTRACT = "c".repeat(64);
@@ -138,6 +139,47 @@ describe.skipIf(!unix)("which screen opens", () => {
     expect(ran).toEqual([]);
   });
 
+  test("macOS ACLs, read strictly: an allow entry with any change right refuses; deny entries pass; unreadable refuses", () => {
+    const mode = "-rwxr-xr-x+ 1 me  staff  1024 Nov 14 22:00 /home/me/bin/toolroll-tui";
+    expect(aclVerdictOf("-rwxr-xr-x  1 me  staff  1024 Nov 14 22:00 /home/me/bin/toolroll-tui\n")).toEqual({ ok: true });
+    // Every macOS home folder carries this one.
+    expect(aclVerdictOf("drwxr-x---+ 52 me  staff  1664 Nov 14 22:00 /home/me\n 0: group:everyone deny delete\n")).toEqual({ ok: true });
+    expect(aclVerdictOf(`${mode}\n 0: user:me allow read,execute,readattr,readextattr,readsecurity\n`)).toEqual({ ok: true });
+    expect(aclVerdictOf(`${mode}\n 0: user:me allow write\n`)).toEqual({ ok: false, why: "allows user:me to change it (write)" });
+    expect(aclVerdictOf(`drwxr-xr-x@ 4 me  staff  128 Nov 14 22:00 /home/me/bin\n 0: group:everyone deny delete\n 1: group:staff inherited allow list,add_file,delete_child,file_inherit,directory_inherit\n`))
+      .toEqual({ ok: false, why: "allows group:staff to change it (add_file,delete_child)" });
+    for (const right of ["append", "add_subdirectory", "delete", "writeattr", "writeextattr", "writesecurity", "chown"]) {
+      expect(aclVerdictOf(`${mode}\n 0: group:everyone allow ${right}\n`).ok, right).toBe(false);
+    }
+    // Unreadable: nothing, a mangled line, an unknown right, a forged-looking entry.
+    for (const bad of ["", "ls: /home/me/x: Permission denied\n", `${mode}\n0: user:me deny delete\n`, `${mode}\n 0: user:me deny teleport\n`, `${mode}\n 0: user:me allow\n`, `${mode}\n garbage\n`]) {
+      expect(aclVerdictOf(bad).ok, JSON.stringify(bad)).toBe(false);
+    }
+    // An ACL that can't be read refuses the binary (fail closed).
+    expect(trustedBinary(OWN, process.getuid!(), () => ({ ok: false, why: "can't be read" }))).toEqual({ ok: false, why: "its ACL can't be read" });
+    expect(trustedBinary(OWN, process.getuid!(), path => (path === dirname(OWN) ? { ok: false, why: "allows group:staff to change it (add_file)" } : { ok: true })))
+      .toEqual({ ok: false, why: `the ACL of ${dirname(OWN)} allows group:staff to change it (add_file)` });
+  });
+
+  test.skipIf(process.platform !== "darwin")("macOS: a real `allow write` ACL on a 0755 copy (this user's own entry) is refused", () => {
+    const copy = place(join(dir, "acl", "toolroll-tui"), "#!/bin/sh\n");
+    expect(trustedBinary(copy, process.getuid!())).toEqual({ ok: true, real: copy });
+    const me = userInfo().username;
+    try {
+      expect(spawnSync("/bin/chmod", ["+a", `${me} allow write`, copy]).status).toBe(0);
+      expect(trustedBinary(copy, process.getuid!())).toMatchObject({ ok: false, why: expect.stringMatching(/^its ACL allows user:.* to change it \(write\)$/) });
+      expect(why(base({ devBinary: copy }))).toMatch(/can't be trusted: its ACL allows/);
+      // The same on the folder above it.
+      spawnSync("/bin/chmod", ["-N", copy]);
+      expect(spawnSync("/bin/chmod", ["+a", `${me} allow add_file,delete_child`, dirname(copy)]).status).toBe(0);
+      expect(trustedBinary(copy, process.getuid!())).toMatchObject({ ok: false, why: expect.stringMatching(/^the ACL of .*acl allows user:.* to change it \(add_file,delete_child\)$/) });
+    } finally {
+      spawnSync("/bin/chmod", ["-N", copy]);
+      spawnSync("/bin/chmod", ["-N", dirname(copy)]);
+    }
+    expect(trustedBinary(copy, process.getuid!())).toEqual({ ok: true, real: copy });
+  });
+
   test("a source checkout's build only when Toolroll itself runs from that checkout", () => {
     const root = join(dir, "checkout");
     const built = place(join(root, "tui", "target", "release", "toolroll-tui"), "#!/bin/sh\n");
@@ -259,6 +301,22 @@ setTimeout(() => process.exit(${code}), 2000);
     expect(await runTuiBinary({ binary: unready(null), link: LINK, session: session(false), project: null, stdio: ["ignore", "ignore", "ignore"], started, readyMs: 300 })).toBe("classic");
     expect(seen.written).toBe(false);
     expect(Date.now() - at).toBeLessThan(10_000);
+  });
+
+  test("past the ready deadline the hand-off is expired for good: a late ready line sends nothing, and a binary that ignores SIGTERM is killed", async () => {
+    // Ignores SIGTERM, says ready late (after the deadline, before the kill), and would wait forever.
+    const stubborn = join(dir, "stubborn.mjs");
+    writeFileSync(stubborn, `#!${process.execPath}\nimport { writeSync } from "node:fs";\nprocess.on("SIGTERM", () => {});\nsetTimeout(() => writeSync(4, ${JSON.stringify(READY)}), 450);\nsetInterval(() => {}, 1000);\n`);
+    chmodSync(stubborn, 0o755);
+    const { seen, started: watch } = watchLink();
+    let child: import("node:child_process").ChildProcess | null = null;
+    const at = Date.now();
+    const end = await runTuiBinary({ binary: stubborn, link: LINK, session: session(false), project: null, stdio: ["ignore", "ignore", "ignore"],
+      started: one => { child = one; watch(one); }, readyMs: 250, killAfterMs: 500 });
+    expect(end).toBe("classic");
+    expect(seen.written).toBe(false);
+    expect((child as import("node:child_process").ChildProcess | null)?.signalCode).toBe("SIGKILL");
+    expect(Date.now() - at).toBeLessThan(5_000);
   });
 
   test("only the exact absolute path that was checked is started", async () => {

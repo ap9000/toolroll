@@ -40,11 +40,22 @@ export function childEnv({ bin, home, tmp, db, xdg, git }) {
   };
 }
 
-/** Where `name` resolves inside `env` (`command -v` in a shell started with exactly that environment), or "". */
-export function whereIn(env, name) {
-  const ran = spawnSync("/bin/sh", ["-c", 'command -v "$1" || true', "sh", name], { env, encoding: "utf8" });
-  if (ran.status !== 0) throw new Error(`couldn't ask where ${name} is`);
-  return (ran.stdout ?? "").trim();
+/** The shells asked: a plain one, and login shells (which run the system's profile, e.g. macOS path_helper adding
+ * /etc/paths and /etc/paths.d folders). Only the ones this computer has. */
+export const LOOKUP_SHELLS = [["/bin/sh", "-c"], ["/bin/zsh", "-lc"], ["/bin/bash", "-lc"]].filter(([shell]) => existsSync(shell));
+
+/** Where `name` resolves inside `env` in each lookup shell started with exactly that environment ("" = nowhere); the
+ * first answer that isn't in `bin` wins, so any shell finding a real CLI is reported. */
+export function whereIn(env, name, bin = null) {
+  let found = "";
+  for (const [shell, flag] of LOOKUP_SHELLS) {
+    const ran = spawnSync(shell, [flag, 'command -v "$0" || true', name], { env, encoding: "utf8", timeout: 10_000 });
+    if (ran.status !== 0) throw new Error(`couldn't ask ${shell} where ${name} is`);
+    const said = (ran.stdout ?? "").trim().split("\n").pop() ?? "";
+    if (said !== "" && (bin === null || !said.startsWith(`${bin}/`))) return said;
+    if (said !== "") found = said;
+  }
+  return found;
 }
 
 /**
@@ -59,7 +70,7 @@ export function preflightOf(env, { bin, realHome, where = whereIn }) {
   const agents = {};
   for (const name of AGENT_CLIS) {
     let found;
-    try { found = where(env, name); } catch (error) { problems.push(error.message); continue; }
+    try { found = where(env, name, bin); } catch (error) { problems.push(error.message); continue; }
     agents[name] = found === "" ? null : found.startsWith(`${bin}/`) ? "stand-in" : found;
     if (found !== "" && !found.startsWith(`${bin}/`)) problems.push(`${name} resolves outside the stand-in folder (${found})`);
   }
@@ -74,7 +85,8 @@ export function requiredOf(report, { modelFree, browser, raw, failure }) {
     preflight: report.preflight?.ok === true, workbench: report.workbench === true,
     signed_in_by_flag: /Using your own terminal workbench build/.test(raw), quit: report.exit === "ended", no_failure: failure === null,
     ...(modelFree ? { nothing_filed: report.filed === 0, ...(browser ? { browser_stand_in: report.browser_opened === true } : {}) }
-      : { diff_shown: report.diff_shown === true, accepted: report.accepted === true, scripted_turns_only: (report.provider_turns ?? []).length > 0 }),
+      : { diff_shown: report.diff_shown === true, accept_dialog_shown: report.accept_dialog === true, accepted: report.accepted === true,
+        task_done: report.final_state === "done", scripted_turns_only: (report.provider_turns ?? []).length > 0 }),
   };
 }
 
@@ -97,13 +109,12 @@ async function main() {
   // SAFETY (found by this script's first run, 2026-11-14): a build started on this checkout's console ran this computer's
   // own Claude Code (~/.local/bin/claude) under the person's own login (a session appeared in the real ~/.claude/projects)
   // instead of the scripted stand-in. The cause: the child environment was a copy of this process's, spread last, so the
-  // real HOME and PATH replaced the throwaway ones. It is now built from an allowlist with a pre-flight that aborts the run
-  // (below). As a second guard, until a run proves the build stays inside the HOME it was given, this script still files
-  // and builds nothing when this computer has an agent CLI of its own: it opens the workbench, types a task and cancels
-  // it, and quits.
+  // real HOME and PATH replaced the throwaway ones. It is now built from an allowlist, and the pre-flight below (a plain
+  // shell and login shells, inside exactly that environment) aborts the run unless every agent CLI is its stand-in. The
+  // console resolves a provider through its own PATH (attest.ts resolveExecutable), which is that environment's. A run
+  // also fails unless the scripted provider answered (report.required.scripted_turns_only). --no-model files nothing.
   const realHome = userInfo().homedir;
-  const ownAgents = ["claude", "codex", "gemini"].flatMap(name => [join(realHome, ".local", "bin", name), join(realHome, ".claude", "local", name), `/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`]).filter(one => existsSync(one));
-  const modelFree = ownAgents.length > 0 || args.includes("--no-model");
+  const modelFree = args.includes("--no-model");
   const home = join(out, "home"), bin = join(out, "bin"), tmp = join(out, "tmp"), shop = join(home, "shop");
   const xdg = { XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state") };
   for (const one of [home, bin, tmp, join(shop, "src"), join(shop, "test"), ...Object.values(xdg)]) mkdirSync(one, { recursive: true });
@@ -112,7 +123,7 @@ async function main() {
   mkdirSync(dbDir);
   const db = join(dbDir, "orders.db");
   const screens = join(out, "screens.txt");
-  const report = { port, binary, steps: [], model_free: modelFree, ...(ownAgents.length > 0 ? { why_model_free: `this computer's own agent CLIs (${ownAgents.join(", ")}) could run under the person's login` } : {}) };
+  const report = { port, binary, steps: [], model_free: modelFree };
 
   const TASK = "Add a subtract(a, b) function next to add in src/math.js, with a test.";
   const files = {
@@ -279,20 +290,32 @@ async function main() {
     step("waiting on the person");
     const scope = sqlite(`SELECT approved_at FROM task_scope WHERE task_id = '${task?.id ?? ""}'`)[0] ?? null;
     report.approved = scope?.approved_at ?? null;
-    // 4. Its changes, then accept it with a.
+    // 4. Its changes (Enter opens the Diff tab), then accept it with a: the dialog names the build it accepts
+    // (view.rs "Accept the result of build #N"); a with no diff of that build on screen shows the changes first.
     term.write("\r");
-    await sleep(1500);
+    await waitFor(/src\/math\.js/, "the result's changes", 20_000);
     step("Enter: the result's changes");
-    report.diff_shown = /src\/math\.js/.test(text());
+    report.diff_shown = true;
+    const DIALOG = /Accept the result of build #\d+/;
+    const NOT_NOW = /Refused: |isn't ready to accept|No result is waiting|aren't the result waiting/;
     term.write("a");
-    await waitFor(/Accept, with a note|Refused: |isn't ready/, "the accept box or why not", 10_000);
+    await waitFor(new RegExp(`${DIALOG.source}|Here are its changes|${NOT_NOW.source}`), "the accept dialog or why not", 10_000);
+    if (/Here are its changes/.test(text()) && !DIALOG.test(text())) {
+      await sleep(1500);
+      term.write("a");
+      await waitFor(new RegExp(`${DIALOG.source}|${NOT_NOW.source}`), "the accept dialog or why not", 10_000);
+    }
     step("a: accept");
-    if (/Accept, with a note/.test(text())) {
+    report.accept_dialog = DIALOG.test(text());
+    if (report.accept_dialog) {
       term.write("\r");
-      await waitFor(/Accepted\.|Refused: /, "the accept's answer", 30_000);
+      // The console's own words when it keeps the act ("Marked complete."), else the workbench's ("Accepted. …").
+      await waitFor(/Marked complete\.|Accepted\.|Refused: |aren't the result waiting|This result changed/, "the accept's answer", 30_000);
       step("accepted");
-      report.accepted = /Accepted\./.test(text());
+      report.accepted = /Marked complete\.|Accepted\./.test(text());
     } else report.accepted = false;
+    // The acceptance happened in the database too, not just on screen.
+    for (let i = 0; i < 50 && sqlite(`SELECT state FROM task WHERE id = '${task?.id ?? ""}'`)[0]?.state !== "done"; i += 1) await sleep(200);
     report.final_state = sqlite(`SELECT state FROM task WHERE id = '${task?.id ?? ""}'`)[0]?.state ?? null;
     }
     // 5. q: owned, so it asks; s stops the agents and quits.

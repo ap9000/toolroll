@@ -13,7 +13,11 @@
  *     said in one line when used. `TOOLROLL_TUI_BINARY` is not read (a variable set in an environment is no decision).
  *   Whichever it is, its real path (symlinks resolved) must be a regular file owned by this user or root and not
  *   writable by group or others, in folders that are all owned by this user or root and not writable by group or others
- *   (an ancestor may be a sticky shared folder such as /tmp: nobody else can rename what is in it). Then nobody but this
+ *   (an ancestor may be a sticky shared folder such as /tmp: nobody else can rename what is in it), and on macOS none of
+ *   them may carry an ACL entry that allows anyone a change right (write, append, add_file, add_subdirectory, delete,
+ *   delete_child, writeattr, writeextattr, writesecurity, chown; deny entries are fine, and an ACL that can't be read
+ *   refuses). On Linux a POSIX ACL granting write shows up in the group mode bits (its mask), so the mode check covers
+ *   it. Then nobody but this
  *   user (or root) can replace it between the check and the start. Anyone able to write Toolroll's own install tree
  *   already controls Toolroll's JavaScript, so that tree is as trusted as this file.
  * - Self-check, a compatibility test only: `<binary> --version` must answer `toolroll-tui <v> contract <digest>` with
@@ -49,8 +53,14 @@ export const TUI_PACKAGES: Readonly<Record<string, string>> = Object.freeze({
 /** The longest ask line read from descriptor 4; anything longer is dropped whole. */
 const ASK_CAP = 1024;
 const SELF_CHECK_MS = 3_000;
-/** How long the binary has to say it is protected before it is stopped (and the link never sent). */
+/** How long the binary has to say it is protected; past it the hand-off is expired for good (the link is never sent). */
 const READY_MS = 5_000;
+/** How long a binary stopped with SIGTERM (at the ready deadline) has before SIGKILL. */
+const KILL_AFTER_MS = 1_000;
+/** macOS ACL rights that let someone change a file or folder (an `allow` entry with any of these refuses). */
+const ACL_CHANGE: ReadonlySet<string> = new Set(["write", "append", "add_file", "add_subdirectory", "delete", "delete_child", "writeattr", "writeextattr", "writesecurity", "chown"]);
+/** Every right `ls -le` may print; an unknown word refuses (the parser is strict). */
+const ACL_RIGHTS: ReadonlySet<string> = new Set([...ACL_CHANGE, "read", "execute", "readattr", "readextattr", "readsecurity", "list", "search", "file_inherit", "directory_inherit", "limit_inherit", "only_inherit"]);
 /** The line the binary says on descriptor 4 once crash dumps are off (tui/crates/toolroll-tui/src/guard.rs READY_LINE). */
 const READY = "protected";
 
@@ -83,7 +93,7 @@ const defaultSelfCheck = (binary: string) => {
  * Whether `path` may be started: its real path is a regular file owned by `uid` or root and not group- or
  * world-writable, and so is every folder above it (an ancestor may instead be a sticky folder). The real path, or why not.
  */
-export function trustedBinary(path: string, uid: number | undefined): { ok: true; real: string } | { ok: false; why: string } {
+export function trustedBinary(path: string, uid: number | undefined, acl: ((path: string) => AclVerdict) | null = process.platform === "darwin" ? macAcl : null): { ok: true; real: string } | { ok: false; why: string } {
   if (!isAbsolute(path)) return { ok: false, why: "it isn't an absolute path" };
   if (uid === undefined) return { ok: false, why: "who owns it can't be checked on this system" };
   let real: string;
@@ -94,6 +104,8 @@ export function trustedBinary(path: string, uid: number | undefined): { ok: true
     if (!file.isFile()) return { ok: false, why: "it isn't a file" };
     if (!owned(file.uid)) return { ok: false, why: "it is owned by another user" };
     if ((file.mode & 0o022) !== 0) return { ok: false, why: "others can change it (group- or world-writable)" };
+    const fileAcl = acl?.(real);
+    if (fileAcl !== undefined && !fileAcl.ok) return { ok: false, why: `its ACL ${fileAcl.why}` };
     let folder = dirname(real);
     for (let first = true; ; first = false) {
       const dir = lstatSync(folder);
@@ -101,6 +113,8 @@ export function trustedBinary(path: string, uid: number | undefined): { ok: true
       if (!owned(dir.uid)) return { ok: false, why: `${folder} is owned by another user` };
       const sticky = (dir.mode & 0o1000) !== 0;
       if ((dir.mode & 0o022) !== 0 && (first || !sticky)) return { ok: false, why: `others can change ${folder} (group- or world-writable)` };
+      const dirAcl = acl?.(folder);
+      if (dirAcl !== undefined && !dirAcl.ok) return { ok: false, why: `the ACL of ${folder} ${dirAcl.why}` };
       const up = dirname(folder);
       if (up === folder) break;
       folder = up;
@@ -109,6 +123,38 @@ export function trustedBinary(path: string, uid: number | undefined): { ok: true
     return { ok: false, why: `it can't be checked (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` };
   }
   return { ok: true, real };
+}
+
+export type AclVerdict = { ok: true } | { ok: false; why: string };
+
+/**
+ * A macOS ACL, from `/bin/ls -lde <path>`'s output (strict): the first line is the mode line, every other line one entry
+ * ` N: <who> [inherited ]allow|deny <right>[,<right>...]`. Refused: an `allow` entry with any change right, any line that
+ * isn't that shape, a right this parser doesn't know, and no output at all. Deny entries pass (every macOS home folder
+ * has `group:everyone deny delete`).
+ */
+export function aclVerdictOf(output: string): AclVerdict {
+  const lines = output.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0 || !/^[-dlbcpsw][-rwxsStT]{9}[@+]? /.test(lines[0]!)) return { ok: false, why: "can't be read" };
+  for (const line of lines.slice(1)) {
+    const entry = /^ \d+: (\S.*?) (?:inherited )?(allow|deny) ([a-z_]+(?:,[a-z_]+)*)$/.exec(line);
+    if (entry === null) return { ok: false, why: "can't be read" };
+    const rights = entry[3]!.split(",");
+    if (rights.some(right => !ACL_RIGHTS.has(right))) return { ok: false, why: "can't be read (an unknown right)" };
+    const granted = rights.filter(right => ACL_CHANGE.has(right));
+    if (entry[2] === "allow" && granted.length > 0) return { ok: false, why: `allows ${entry[1]} to change it (${granted.join(",")})` };
+  }
+  return { ok: true };
+}
+
+/** The ACL of `path` on macOS: `/bin/ls -lde` by its absolute path (no PATH lookup), C locale; unreadable refuses. */
+function macAcl(path: string): AclVerdict {
+  // A name with a control character could forge an entry line: refused before asking.
+  if (/[\u0000-\u001f\u007f]/.test(path)) return { ok: false, why: "can't be read (a control character in the path)" };
+  const ran = spawnSync("/bin/ls", ["-lde", "--", path], { encoding: "utf8", timeout: SELF_CHECK_MS, env: { LC_ALL: "C", PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "ignore"] });
+  if (ran.status !== 0 || typeof ran.stdout !== "string") return { ok: false, why: "can't be read" };
+  return aclVerdictOf(ran.stdout);
 }
 
 /** Where the platform package may be: only inside Toolroll's own install tree (see the header), never an upward search. */
@@ -189,6 +235,8 @@ export type TuiRunInput = {
   started?: (child: ChildProcess) => void;
   /** Tests: how long the binary has to say it is protected (default 5 s). */
   readyMs?: number;
+  /** Tests: how long after SIGTERM before SIGKILL (default 1 s). */
+  killAfterMs?: number;
 };
 
 /** How the binary ended: a screen exit, or "classic" (open the classic screen; it said why). */
@@ -204,9 +252,19 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
     ...(input.stdio === undefined ? {} : { stdio: input.stdio }), control: true,
   });
   input.started?.(child);
-  // The link is written only once the binary says crash dumps are off; one that doesn't say so in time is stopped.
+  // The link is written only once the binary says crash dumps are off. Past the deadline the hand-off is expired for
+  // good: a ready line arriving later sends nothing, and this exact child is stopped (SIGTERM, then SIGKILL).
   let sentLink = false;
-  const readyTimer = setTimeout(() => { if (!sentLink && child.exitCode === null) child.kill("SIGTERM"); }, input.readyMs ?? READY_MS);
+  let expired = false;
+  let killTimer: NodeJS.Timeout | undefined;
+  const running = () => child.exitCode === null && child.signalCode === null;
+  const readyTimer = setTimeout(() => {
+    if (sentLink) return;
+    expired = true;
+    if (!running()) return;
+    child.kill("SIGTERM");
+    killTimer = setTimeout(() => { if (running()) child.kill("SIGKILL"); }, input.killAfterMs ?? KILL_AFTER_MS);
+  }, input.readyMs ?? READY_MS);
   const asks = child.stdio[4];
   if (asks !== null && asks !== undefined && "on" in asks) {
     let pending = "";
@@ -223,7 +281,7 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
         let ask: unknown = null;
         try { ask = JSON.parse(line); } catch { ask = null; }
         if (ask !== null && typeof ask === "object" && (ask as Record<string, unknown>)["ready"] === READY) {
-          if (!sentLink) { sentLink = send(); clearTimeout(readyTimer); }
+          if (!sentLink && !expired) { sentLink = send(); clearTimeout(readyTimer); }
           continue;
         }
         // The answer goes back on the same descriptor, one line: what to say ({"said": "..."}).
@@ -246,6 +304,7 @@ export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
   });
   for (const [signal, handler] of handlers) process.off(signal, handler);
   clearTimeout(readyTimer);
+  clearTimeout(killTimer);
   // It never said it was protected (so it never had the link): the screen never opened.
   if (!sentLink) return "classic";
   if (code === TUI_EXIT.stop) return "stop";
