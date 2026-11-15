@@ -8,6 +8,19 @@ web second; the terminal is a COMPLETE workbench (diffs, review, accept too) and
 steered from one screen, reviewed and accepted without leaving it, with none of your keys inside the agent. When a
 second person joins, it becomes the team's control plane.
 
+## Owner decision (2026-11-14, later): Flexible is the solo terminal default
+For a solo developer the terminal workbench defaults to Flexible: no approval steps, full access inside the thread's
+isolated repository copy (no keychain, no other projects, proxy-only network), one-press Ship — no more friction than
+T3 Code or herdr. Consequences:
+- Flexible moves onto the critical path and IS the launch: F2e (week 1) → F2c thread start + full process custody
+  (week 2) → F2b Claude relay (week 3) → F2d answers (weeks 3–4) → F3 the thread view in the terminal, as one more
+  LiveSession in the same panes (weeks 4–5) → F4 controlled import + one-press Ship (weeks 5–6) → launch week 7.
+- Until Flexible ships, solo mode's default chain is "Just code" (no plan approval), Accept is one key, and password
+  steps remain only for credentials — ordinary builds still run in the fence.
+- Invisible protections stay: full process custody, import filtering of protected names and placeholders, the Linux
+  (bubblewrap) attack rows green, and a kill switch, before the default flips. Each real-model F0 batch still needs the
+  owner's explicit yes (it spends money).
+
 ## Principles
 1. **One engine, two renderers, one keymap.** The Node engine owns state, PTYs, the fence, sanitising, auth and every
    write. The Rust TUI and the web are clients of one local API (never two runtimes — herdr-app's split is the warning).
