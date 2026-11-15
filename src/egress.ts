@@ -209,14 +209,19 @@ export function projectNetworkFromValue(value: unknown): ProjectNetwork | null {
 }
 
 /** The network in plain words, for an approval card and a run's record. */
-export function networkWords(network: NetworkProfile | null): string {
+export function networkWords(network: NetworkProfile | null, provider: string): string {
   if (network === null) return "Network: approved before network rules (provider and package registries only)";
   if (network.mode === "open") return `Network: open — any host${network.loopback === "proxy-only" ? "" : ", and every local service on this Mac"}`;
-  const registries = (Object.entries(REGISTRY_HOSTS) as [Ecosystem, readonly string[]][])
-    .filter(([, hosts]) => hosts.every(one => network.hosts.includes(one))).map(([name]) => REGISTRY_NAMES[name]);
-  const known = new Set([...Object.values(REGISTRY_HOSTS).flat(), ...Object.values(PROVIDER_HOSTS).flat()]);
+  // Only what is accounted for collapses into a name: this agent's own provider hosts, and a registry whose every host is
+  // listed. Any other host — another provider's included, or part of a registry — is said exactly (the terms diet,
+  // Codex r1 finding 3).
+  const full = (Object.entries(REGISTRY_HOSTS) as [Ecosystem, readonly string[]][]).filter(([, hosts]) => hosts.every(one => network.hosts.includes(one)));
+  const own = PROVIDER_HOSTS[provider] ?? [];
+  const named = own.length > 0 && own.every(one => network.hosts.includes(one));
+  const known = new Set([...(named ? own : []), ...full.flatMap(([, hosts]) => hosts)]);
   const added = network.hosts.filter(one => !known.has(one));
-  return `Network: the agent's provider${registries.length === 0 ? "" : `, ${registries.join(", ")}`}${added.length === 0 ? "" : `, and ${added.join(", ")}`}`
+  const parts = [...(named ? ["the agent's provider"] : []), ...full.map(([name]) => REGISTRY_NAMES[name])];
+  return `Network: ${parts.length === 0 && added.length === 0 ? "no hosts" : [parts.join(", "), added.length === 0 ? "" : `${parts.length === 0 ? "" : "and "}${added.join(", ")}`].filter(Boolean).join(", ")}`
     + (network.loopback === "any" ? "; and every local service on this Mac" : "");
 }
 const REGISTRY_NAMES: Readonly<Record<Ecosystem, string>> = { npm: "npm", python: "PyPI", rust: "crates.io", go: "the Go proxy", ruby: "RubyGems", jvm: "Maven and Gradle" };

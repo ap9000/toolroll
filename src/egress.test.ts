@@ -56,9 +56,13 @@ describe("the network a scope is written with", () => {
     const network = resolveNetwork("claude", { mode: "allowlist", hosts: ["api.stripe.com", "registry.npmjs.org"], loopback: "proxy-only" }, ["npm"]);
     expect(network.mode).toBe("allowlist");
     expect(network.hosts).toEqual([...new Set([...PROVIDER_HOSTS["claude"]!, ...REGISTRY_HOSTS.npm, "api.stripe.com"])].sort());
-    expect(networkWords(network)).toBe("Network: the agent's provider, npm, and api.stripe.com");
+    expect(networkWords(network, "claude")).toBe("Network: the agent's provider, npm, and api.stripe.com");
+    // Only this agent's own provider collapses: another provider's host, or part of a registry, is said exactly.
+    const wider = { ...network, hosts: [...network.hosts, "api.openai.com", "pypi.org"] };
+    expect(networkWords(wider, "claude")).toBe("Network: the agent's provider, npm, and api.stripe.com, api.openai.com, pypi.org");
+    expect(networkWords(network, "codex")).toContain("api.anthropic.com");
     expect(resolveNetwork("claude", { mode: "open", hosts: [], loopback: "any" }, ["npm"])).toEqual({ version: 1, mode: "open", hosts: [], loopback: "any" });
-    expect(networkWords(resolveNetwork("claude", { mode: "open", hosts: [], loopback: "any" }, []))).toBe("Network: open — any host, and every local service on this Mac");
+    expect(networkWords(resolveNetwork("claude", { mode: "open", hosts: [], loopback: "any" }, []), "claude")).toBe("Network: open — any host, and every local service on this Mac");
   });
 
   test("the defaults are the narrow ones: no local services, provider-only for launches nothing sealed, legacy approvals narrowed", () => {
@@ -66,7 +70,7 @@ describe("the network a scope is written with", () => {
     expect(providerOnlyNetwork("codex")).toEqual({ version: 1, mode: "allowlist", hosts: [...PROVIDER_HOSTS["codex"]!].sort(), loopback: "proxy-only" });
     expect(legacyNetwork("claude", ["python"]).hosts).toEqual([...PROVIDER_HOSTS["claude"]!, ...REGISTRY_HOSTS.python].sort());
     expect(legacyNetwork("claude", []).loopback).toBe("proxy-only");
-    expect(networkWords(null)).toContain("approved before network rules");
+    expect(networkWords(null, "claude")).toContain("approved before network rules");
   });
 });
 

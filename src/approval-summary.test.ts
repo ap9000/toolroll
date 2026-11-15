@@ -5,9 +5,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover, propose, type Scope } from "./scope.js";
+import { addApprover, canonicalChainJson, LIVE_CHAIN_VERSION, propose, type Scope } from "./scope.js";
 import { runOperate } from "./operate.js";
-import { approvalSummaryFor, approvalSummaryOf, boundFieldsOf, describeScope, summaryContextOf, summaryFields, summaryLines, summaryText, type SummaryContext } from "./approval-summary.js";
+import { approvalSummaryFor, approvalSummaryOf, boundFieldsOf, describeScope, limitChanges, revisionWords, summaryContextOf, summaryFields, summaryLines, summaryText, type SummaryContext } from "./approval-summary.js";
 import { approvalFormDigest, approvalSheetParts, revisionLineageWords, type ApprovalSheetInput } from "./server/render-tasks.js";
 import { planCardText } from "./chat-decide.js";
 import { htmlString } from "./html.js";
@@ -50,7 +50,7 @@ function representative(): { name: string; scope: Scope; context: SummaryContext
   const add = (name: string, scope: Scope, extra: Partial<SummaryContext> = {}) => made.push({ name, scope, context: { ...contextOf(scope), ...extra } });
   add("plain", file("plain"));
   add("revision", file("revision", { goal: "Add a per-account guard to the payout limiter. — repair exactly the unmet criteria named below; a comment cannot widen the scope. Unmet: c1." }),
-    { revision: { sourceTask: "plain", sourceRun: 9, hadPlan: true, sameLimits: true, problem: null, repair: { cap: null, remaining: null } } });
+    { revision: { sourceTask: "plain", sourceRun: 9, hadPlan: true, changed: [], problem: null, repair: { cap: null, remaining: null } } });
   add("custom model", file("custom", { pin: ["codex", "gpt-5-codex"] }));
   add("path limits", file("paths", { touches: ["src/payout-limiter.ts", "src/settle.ts"], outOfScope: "No changes to the limiter's public API." }));
   add("budget", file("budget", { budgetMicrousd: 2_500_000 }));
@@ -175,6 +175,82 @@ describe("exact consent", () => {
     expect(warnings).toContain("two people must approve it");
     expect(warnings).toContain("can’t approve it");
     expect(summary.usual.map(one => one.words).join("\n")).not.toMatch(/not sandboxed|macOS services/);
+  });
+
+  // Nested fields, each checked by the words a person reads, never by the rows' own field labels (Codex r1 finding 7).
+  test("a fallback's own access and limits are said where they differ from the first agent's", () => {
+    const scope = file("t-chain");
+    const base = scope.profile!;
+    const wide = { ...base, network: { version: 1, mode: "open", hosts: [], loopback: "any" }, writes: "anywhere", checkAccess: "unsandboxed", machLookup: ["com.apple.trustd.agent"], timeoutSeconds: 7200 } as typeof base;
+    const chained = { ...scope, proposedChainJson: canonicalChainJson([{ profile: base, authMode: "subscription" }, { profile: wide, authMode: "api-key" }], LIVE_CHAIN_VERSION) } as Scope;
+    const text = summaryLines(approvalSummaryOf(chained, contextOf(scope))).join("\n");
+    expect(text).toContain("Fallback 2 differs from the first: network: open — any host, and every local service on this Mac; writes: anywhere outside Toolroll's fenced folders");
+    expect(text).toContain("project checks: not sandboxed");
+    expect(text).toContain("macOS services: also reaches these macOS services: com.apple.trustd.agent");
+    expect(text).toContain("time limit: stops after 1000 turns or 120 min without progress");
+    // Said in the open, never in the usual settings' line.
+    expect(text.split("\n").find(line => line.startsWith("  Usual"))).not.toMatch(/Fallback|not sandboxed/);
+  });
+
+  test("every host is said exactly unless it is this agent's own provider or a whole registry", () => {
+    const scope = file("t-hosts");
+    const hosts = [...scope.profile!.network!.hosts, "api.openai.com", "files.pythonhosted.org"];
+    const wider = { ...scope, profile: { ...scope.profile!, network: { ...scope.profile!.network!, hosts } } } as Scope;
+    const touch = approvalSummaryOf(wider, contextOf(scope)).decisions.find(row => row.label === "May touch")!.words;
+    expect(touch).toContain("network: the agent's provider, and api.openai.com, files.pythonhosted.org");
+  });
+
+  test("a release's repository, branch, grant and check access are said whether or not it carries", () => {
+    const scope = file("t-release");
+    const terms = { v: 1, repo: "/work/shop", packageVersion: "1.4.0", branch: "release-1.4.0", pr: 12, base: "main", approvedSha: "a".repeat(40), approvedTree: "b".repeat(40),
+      policy: { v: 1, rules: 1, carry: false, protectProject: false, protectedPaths: [], limits: { lines: 400, files: 20, churn: 800 } },
+      grant: { id: 3, digest: "g".repeat(16) }, access: "unsandboxed", expiresAt: "2026-11-13T09:00:00.000Z" } as unknown as NonNullable<Scope["releaseTerms"]>;
+    for (const carry of [false, true]) {
+      const text = summaryLines(approvalSummaryOf({ ...scope, releaseTerms: { ...terms, policy: { ...terms.policy, carry } } } as Scope, contextOf(scope))).join("\n");
+      expect(text, String(carry)).toContain("Repository /work/shop, branch release-1.4.0 into main, check grant 3");
+      expect(text, String(carry)).toContain("outside the sandbox (unsandboxed)");
+    }
+    const purpose = { v: 1, purpose: "release-check", repo: "/work/shop", packageVersion: "1.4.0", branch: "release-1.4.0", pr: 12, base: "main", approvedSha: "a".repeat(40),
+      approvedTree: "b".repeat(40), grant: { id: 4, digest: "g".repeat(16) }, access: "sandboxed" } as unknown as NonNullable<Scope["releaseCheck"]>;
+    expect(summaryLines(approvalSummaryOf({ ...scope, releaseCheck: purpose } as Scope, contextOf(scope))).join("\n")).toContain("Repository /work/shop, branch release-1.4.0 into main, check grant 4, checks in the sandbox.");
+  });
+
+  test("risky access stays in the open even when it is the project's usual setting", () => {
+    store.setProjectWrites(REPO, "anywhere", "alex", at);
+    const scope = file("t-anywhere");
+    const summary = approvalSummaryOf(scope, contextOf(scope));
+    expect(summary.usual.map(row => row.label)).not.toContain("Writes");
+    expect(summaryLines(summary).join("\n")).toMatch(/^ {2}Writes {7}anywhere outside Toolroll's fenced folders/m);
+    // And the baseline is bound: the usual network changing alone is another key.
+    const before = summary.key;
+    store.setProjectNetwork(REPO, { mode: "allowlist", hosts: ["api.stripe.com"], loopback: "proxy-only" }, "alex", at);
+    expect(approvalSummaryOf(scope, contextOf(scope)).key).not.toBe(before);
+  });
+
+  test("a revision says exactly which limits changed from the build it revises, every effective one compared", () => {
+    const source = file("t-source");
+    store.setProjectWrites(REPO, "anywhere", "alex", at);
+    const child = file("t-child");
+    expect(limitChanges(source, source)).toEqual([]);
+    expect(limitChanges(source, child)).toEqual(["writes: anywhere outside Toolroll's fenced folders (an approver's choice)"]);
+    const words = revisionWords({ sourceTask: "t-source", sourceRun: 9, hadPlan: true, changed: limitChanges(source, child), problem: null, repair: null });
+    expect(words).toBe("This revises build #9. Changed from that build: writes: anywhere outside Toolroll's fenced folders (an approver's choice).");
+    expect(words).not.toContain("keeps the same limits");
+  });
+
+  test("a scripted CLI yes without --terms approves nothing, and says the terms and the key to run it with", async () => {
+    file("t-script");
+    const digest = store.getScope("t-script")!.digest;
+    const key = approvalSummaryFor(store, "t-script", new Date())!.key;
+    store.close();
+    const lines: string[] = [];
+    const code = await runOperate("task", ["approve", "t-script", "--yes", "--digest", digest, "--as", "alex", "--token", token], line => lines.push(line), { databaseFile: db });
+    store = openStore(db);
+    expect(code).toBe(3);
+    expect(lines.join("\n")).toContain("Name the terms you read. Nothing was approved.");
+    expect(lines.join("\n")).toContain(`--terms ${key}`);
+    expect(lines.join("\n")).toMatch(/^ {2}May touch/m);
+    expect(store.getScope("t-script")!.approvedAt).toBeNull();
   });
 
   test("a change to the usual settings between display and press refuses the CLI's yes; unchanged, the same yes stands", async () => {

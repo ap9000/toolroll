@@ -646,7 +646,7 @@ External trackers — build what a tracker nominates, under local approvals
   toolroll task scope <id> --goal <what success is>
       [--not <text>] [--touches a,b] [--budget-usd <n>]
   toolroll task approve <id>         the yes — interactive, or
-      --yes --digest <d> --as <you> --token <t> for scripts
+      --yes --digest <d> --terms <key> --as <you> --token <t>
   toolroll task requeue <id> --as <you> --token <t>
                                         exit a stall: incidents resolved,
                                         strikes cleared, queued again
@@ -11197,7 +11197,22 @@ async function approveTask(
     // Unconfirmed is "no, not yet" — exit 3 in both modes (round-4 finding 10).
     return EXIT.refused;
   }
-  if (saw === undefined || asWho === undefined || token === undefined) return fail(write, json, "task approve", "usage", "approving non-interactively takes --yes --digest <d> --as <you> --token <t>", EXIT.usage);
+  if (saw === undefined || asWho === undefined || token === undefined) return fail(write, json, "task approve", "usage", "approving non-interactively takes --yes --digest <d> --terms <key> --as <you> --token <t>", EXIT.usage);
+  // A yes from a script names the terms it read, as well as the plan version (the terms diet, Codex r1 finding 4): the
+  // summary's key, which `task approve <id>` prints. Without it nothing is approved, and the terms and key are said so a
+  // person can read them and run it again.
+  if (shownTerms === undefined) {
+    if (json) {
+      write(envelopeJson({ ok: false, command: "task approve", reason: "unconfirmed", message: "Name the terms you read: --terms <key>. Nothing was approved.", scope, terms: summary.key }));
+      return EXIT.refused;
+    }
+    write(`Name the terms you read. Nothing was approved. ${id} would be approved on exactly this:`);
+    write("");
+    for (const line of describeScope(scope, undefined, null, summaryContextOf(store, id, scope, now))) write(line);
+    write("");
+    write(`  toolroll task approve ${id} --yes --digest ${scope.digest} --terms ${summary.key} --as <you> --token <your password>`);
+    return EXIT.refused;
+  }
 
   // The digest is named rather than assumed, so an operator who read one scope
   // cannot approve a different one that replaced it while they were reading.

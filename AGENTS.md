@@ -4,7 +4,7 @@ Every UI change and UI review must include a simplicity pass before sign-off.
 
 - Plain English: describe what happened and what the user can do. Avoid internal terms such as "proof disagrees" or "replace blocker" when a concrete explanation is clearer.
 - Say it once. Remove duplicate status labels, instructional subtitles, and footer explanations. Use a short title, concise outcome, and one specific primary action.
-- Show secondary detail on demand. Put advanced settings, diagnostics, provenance, and exact scope in the relevant disclosure; keep important risks and full approval terms visible before consent.
+- Show secondary detail on demand. Put advanced settings, diagnostics, provenance, and exact scope in the relevant disclosure. Keep decisions, deviations and risky access visible before consent. Unchanged routine settings may sit in one clearly labelled disclosure before Approve; its exact contents are part of what is approved and are bound against changes.
 - Reduce unnecessary fields, choices, steps, and competing controls. Prefer familiar chat and form interactions. Do not add paragraphs to explain an overcomplicated flow.
 - Preserve real functionality: truthful status, recoverable drafts, explicit approvals, keyboard access, readable contrast, and clear error recovery. Concision must not conceal a problem or weaken a safeguard.
 - Verify actual desktop and phone viewports, including long content, empty states, and failures. Check alignment, overflow, fixed-control overlap, comfortable tap targets, and single-line short CTAs. Keep animations subtle and respect reduced motion.

@@ -39,6 +39,7 @@ import { approvalSheetHtml, approveKitOf } from "./server/render-tasks.js";
 import { htmlString } from "./html.js";
 import { withFormToken } from "./server/request-context.js";
 import { OK, T0, AGENT_SAID, registerRunner, concludeDone } from "../test/tick-kit.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const FIXTURE = JSON.parse(readFileSync(new URL("../test/fixtures/fallback/claude-subscription-weekly-limit.json", import.meta.url), "utf8")) as { terminal: { text: string } };
 const PARK = { urgency: "blocking", recap: "The guard needs a policy call: the payout path can fail open or fail closed.", question: "Fail open or fail closed on timeout?",
@@ -93,7 +94,7 @@ describe("a chain, against real git", () => {
   };
   const approve = async (id: string) => {
     await say(["task", "approve", id, "--json"]);
-    await say(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, "--as", "alex", "--token", approver]);
+    await say(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, ...termsArgs(db, id), "--as", "alex", "--token", approver]);
   };
   const outcomeOf = (id: string) => (payload().dispatched as { id: string; outcome: string; reason?: string }[]).find(one => one.id === id)!;
   const refOf = (id: string) => withStore(store => store.lookupRef(id)!.id);
@@ -468,7 +469,9 @@ describe("a chain, against real git", () => {
       const sheet = withFormToken("c", () => htmlString(approvalSheetHtml(input)));
       // The chain is a risk in the approval summary: said whole above the terms, before Approve, never folded.
       const warning = /data-terms-warning>([^<]*)</.exec(sheet)?.[1] ?? "";
-      expect(warning).toBe(chainTermsLines(scope).join(" "));
+      expect(warning.startsWith(chainTermsLines(scope).join(" "))).toBe(true);
+      // Each fallback's own access and limits are said too, where they differ from the first agent's.
+      expect(warning).toMatch(/Fallback 2 (differs from the first|has the same access and limits as the first)/);
       expect(warning).toMatch(/opus/i);
       expect(warning).toContain("which spends money");
       expect(sheet.indexOf("data-terms-warning")).toBeLessThan(sheet.indexOf('<div class="approval-act"'));

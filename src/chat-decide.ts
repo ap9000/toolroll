@@ -37,7 +37,7 @@ import type { Store } from "./store.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
 import { cardTermsDigest, chatLimitProblem, permissionPlainWords, scopeTermsText, shownAsWritten, shownTermsDigest } from "./chat-terms.js";
-import { approvalSummaryOf, EVIDENCE_WORDS, summaryContextOf, type SummaryRow } from "./approval-summary.js";
+import { approvalSummaryOf, EVIDENCE_WORDS, summaryContextOf, summaryText, type SummaryRow } from "./approval-summary.js";
 import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./contracts/youiyoux-request.js";
 import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
 import { discordPlain } from "./reply-shape.js";
@@ -184,6 +184,17 @@ const TOO_LONG = "its full terms don't fit in one chat message";
 const ROOM = 400;
 
 type Listed = { taskId: string; digest: string };
+/** A card that shows a plan's terms whole (machine-written terms, a youiyoux request): every word of them, then the
+ * approval summary's other rows (who builds, what it may touch and cost, what differs, every risk, the usual settings
+ * by name: approval-summary.ts). Both parts are bound: the words by cardTermsDigest/shownTermsDigest, the summary by
+ * its key (wholeCardDigest, planInChat). */
+export function wholeTermsText(store: Store, taskId: string, scope: Scope, now: Date): string {
+  const summary = approvalSummaryOf(scope, summaryContextOf(store, taskId, scope, now));
+  return `${scopeTermsText(scope)}\n\n${summaryText(summary, one => one.fields.some(field => field === "goal" || field === "outOfScope" || field === "acceptance"))}`;
+}
+/** A youiyoux card's per-task binding: the words shown whole and the summary shown beside them. */
+const wholeCardDigest = (store: Store, taskId: string, scope: Scope, now: Date): string =>
+  sha(`${shownTermsDigest(scope)}:${approvalSummaryOf(scope, summaryContextOf(store, taskId, scope, now)).key}`);
 const listedDigest = (list: readonly Listed[]): string => `${REQUESTS_DIGEST}${list.map(one => `${one.taskId}=${one.digest}`).join(",")}`;
 const LISTABLE_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -238,7 +249,7 @@ function requestsOffer(store: Store, taskId: string, who: VerifiedApprover, now:
   const head = `${waiting.length === 1 ? `A youiyoux ${what} waits` : `${waiting.length} youiyoux ${what}s wait`} for you · ${projectLabel(repo)}`;
   const mode = chatApproveMode(store, repo, who.name, now, channel);
   const items: CardItem[] = waiting.map((id, index) => ({ n: index + 1, taskId: id, name: title(store, id), listed: null, why: null }));
-  const block = (item: CardItem): string => `${item.n}. ${item.name}\n${scopeTermsText(store.getScope(item.taskId)!)}`;
+  const block = (item: CardItem): string => `${item.n}. ${item.name}\n${wholeTermsText(store, item.taskId, store.getScope(item.taskId)!, now)}`;
   const compose = (): string => {
     const shown = items.filter(one => one.listed !== null);
     const open = items.filter(one => one.listed === null);
@@ -264,7 +275,7 @@ function requestsOffer(store: Store, taskId: string, who: VerifiedApprover, now:
     // Shown whole means shown raw: words chat text otherwise hides (a key, a folder on this computer) stay in Toolroll.
     if (privateWords(scopeTermsText(plan.scope))) { item.why = "its terms name a key or a folder on this computer"; continue; }
     // In order, each whole or not at all: one that doesn't fit beside the ones before it is named instead.
-    item.listed = { taskId: item.taskId, digest: shownTermsDigest(plan.scope) };
+    item.listed = { taskId: item.taskId, digest: wholeCardDigest(store, item.taskId, plan.scope, now) };
     if (!shownWhole(compose(), channel)) { item.listed = null; item.why = TOO_LONG; }
   }
   const shown = items.filter(one => one.listed !== null);
@@ -298,8 +309,10 @@ function requestsNow(store: Store, tokenTask: string, digest: string, who: Verif
     const plan = planInChat(store, one.taskId, who.name, now, channel, root, "requests");
     if (!plan.ok) { skipped.push({ name, why: plan.why }); continue; }
     if (passwordOnlySeal(plan.scope) || deployGateScope(plan.scope)) { skipped.push({ name, why: "it needs your password in Toolroll" }); continue; }
-    if (shownTermsDigest(plan.scope) !== one.digest) { skipped.push({ name, why: "its terms changed since this card was sent" }); continue; }
-    ready.push({ taskId: one.taskId, name, digest: one.digest, plan });
+    if (wholeCardDigest(store, one.taskId, plan.scope, now) !== one.digest) { skipped.push({ name, why: "its terms changed since this card was sent" }); continue; }
+    // The seal's own check reads the words' digest (store.ts, the outside-request quarantine): the card's binding above
+    // covered those words and the summary beside them.
+    ready.push({ taskId: one.taskId, name, digest: shownTermsDigest(plan.scope), plan });
   }
   return { ok: true, ready, skipped };
 }
@@ -721,6 +734,43 @@ function cardBody(shown: string): string {
  * token's own (person, chat, message); a spent, expired or foreign button acts on nothing.
  */
 export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: string; message: string; shown: string; repos: readonly string[]; root?: string; now: Date }): DecideTapOutcome | null {
+  const outcome = decideTapUnchecked(store, seat, input);
+  if (outcome === null) return null;
+  // Every card that carries a live button shows its whole text in one message, as this chat app will draw it: one that
+  // doesn't fit would be cut by the app with its buttons kept, so a yes there could be to words never shown. Its buttons
+  // are dropped and the card links to Toolroll instead (the terms diet, Codex r1 finding 1).
+  type Card = NonNullable<DecideTapOutcome["edit"]>;
+  const fitted = (card: Card): Card => {
+    if (card.tokens.length === 0 || fitsOneMessage(card.text, seat.channel)) return card;
+    dropDecideTokens(store, card.tokens, input.now);
+    const target = decideTargetOfToken(store, input.token);
+    const why = `This doesn't fit in one ${CHANNEL_NAMES[seat.channel]} message, so you approve it in Toolroll. Nothing was done.`;
+    return { text: `${cardBody(input.shown).slice(0, 1_000)}\n\n${why}`, rows: target === null ? [] : linksFor(target), tokens: [] };
+  };
+  return { ...outcome, ...(outcome.edit === undefined ? {} : { edit: fitted(outcome.edit) }), ...(outcome.unsent === undefined ? {} : { unsent: fitted(outcome.unsent) }) };
+}
+
+/** Whether a card's whole text fits one message of this chat app as the app draws it (its own escaping counted). */
+export function fitsOneMessage(text: string, channel: DecideChannel): boolean {
+  switch (channel) {
+    // Plain text, no parse mode; the transport sends at most 4,000 characters (telegram.ts).
+    case "telegram": return text.length <= 4_000;
+    // mrkdwn escapes &, < and > before sending.
+    case "slack": return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").length <= PLATFORM_LIMITS.slack;
+    case "discord": return discordPlain(text).length <= PLATFORM_LIMITS.discord;
+    case "teams": return text.length <= PLATFORM_LIMITS.teams;
+  }
+}
+
+/** The target a button names, for the link a card falls back to. */
+function decideTargetOfToken(store: Store, token: string): DecideTarget | null {
+  const raw = store.handle.prepare("SELECT * FROM chat_decide_action WHERE token = ?").get(token);
+  if (raw === undefined) return null;
+  const read = readAction(raw);
+  return read.ok ? targetOf(read.value) : null;
+}
+
+function decideTapUnchecked(store: Store, seat: DecideSeat, input: { token: string; message: string; shown: string; repos: readonly string[]; root?: string; now: Date }): DecideTapOutcome | null {
   const raw = input.token.startsWith("d:") ? store.handle.prepare("SELECT * FROM chat_decide_action WHERE token = ?").get(input.token) : undefined;
   if (raw === undefined) return null;
   const read = readAction(raw);
@@ -821,9 +871,11 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       const spec: ActSpec = { act: "approve", run: null, digest: row.digest };
       const yes = mint(store, seat, input.message, spec, row.taskId, "yes", now);
       const later = mint(store, seat, input.message, { act: "not-now", run: null, digest: row.digest }, row.taskId, "offer", now);
-      // Terms a machine wrote go on the card word for word, or the yes isn't to what they say.
-      if (plan.whole && scopeTermsText(plan.scope).length > PLATFORM_LIMITS[seat.channel] - ROOM) return stale(`This plan's ${TOO_LONG}, so you approve it in Toolroll.`);
-      return { ack: "Read the plan, then approve.", edit: { text: `${plan.whole ? `${name}\n\n${scopeTermsText(plan.scope)}` : planCardText(store, row.taskId, plan.scope, input.root, seat.channel)}\n\n${QUESTIONS.approve(name)} This approves exactly this plan.`,
+      // Terms a machine wrote go on the card word for word (with the summary beside them), or the yes isn't to what they
+      // say; any card's whole text must fit one message (applyDecideTap checks every card that carries a button).
+      const text = `${plan.whole ? `${name}\n\n${wholeTermsText(store, row.taskId, plan.scope, now)}` : planCardText(store, row.taskId, plan.scope, input.root, seat.channel)}\n\n${QUESTIONS.approve(name)} This approves exactly this plan.`;
+      if (!fitsOneMessage(text, seat.channel) || (plan.whole && !shownAsWritten(text, seat.channel))) return stale(`This plan's ${TOO_LONG}, so you approve it in Toolroll.`);
+      return { ack: "Read the plan, then approve.", edit: { text,
         rows: [[{ label: DECIDE_LABELS.approve, token: yes }], [{ label: DECIDE_LABELS.edit, link: { label: DECIDE_LABELS.edit, path: chatControlHref("approval", row.taskId) } }, { label: DECIDE_LABELS["not-now"], token: later }]], tokens: [yes, later] } };
     }
     // The first tap asks; only the yes acts, bound to exactly what this button was.
@@ -880,8 +932,8 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       if (passwordOnlySeal(plan.scope)) return notDone(needsFullCard(plan.scope));
       // The one approval every road shares (scope.ts approve): the rules, two-person votes and the proof, as this person.
       // plan.digest matched this button's kept digest above (staleWhy), so these are the words its card showed.
-      const words = scopeTermsText(plan.scope);
-      if (plan.whole && (plan.digest !== row.digest || words.length > PLATFORM_LIMITS[seat.channel] - ROOM)) return notDone("this plan changed. Open it in Toolroll.");
+      const words = wholeTermsText(store, row.taskId, plan.scope, now);
+      if (plan.whole && (plan.digest !== row.digest || !fitsOneMessage(words, seat.channel))) return notDone("this plan changed. Open it in Toolroll.");
       const approved = approve(store, row.taskId, who.name, now, plan.scope.digest, "", {}, undefined, { modeDigest: plan.modeDigest, shown: plan.whole ? { expect: cardTermsDigest(words), terms: words } : null });
       if (!approved.ok && approved.reason === "second-approver") return done(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }));
       if (!approved.ok) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");

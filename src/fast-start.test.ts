@@ -16,6 +16,7 @@ import { scopeApprovedForDispatch } from "./dispatch.js";
 import { installFilingSizer, type Sizer } from "./task-sizing.js";
 import { chatStartPreview, consumeChatStartPreview, expireFastStarts, fastAcceptance, fastChangeProblem, fastCompletionProblem, fastPublishProblem, fastStartBuild, fastStartOn, fastStartRules, fastStarted, FAST_MAX_LINES, FAST_START_RULE, FAST_WINDOW_MS, GREW_WORDS, keepGrownChange, prepareChatStart, prepareFastStart, setFastStart, verifiedChange, type FastApprove, type FastVia, type PasswordFacts } from "./fast-start.js";
 import { cardTermsDigest, scopeTermsText } from "./chat-terms.js";
+import { approvalSummaryOf, summaryContextOf } from "./approval-summary.js";
 import { fileTaskProposal } from "./proposal.js";
 import { withRemote, type RemoteRun } from "./remote-run.js";
 import { RELEASE_CI_HELD_ACTION } from "./release-ci-hold.js";
@@ -89,6 +90,22 @@ describe("Build is a person's approval of exactly the terms shown", () => {
     expect(fastStartBuild(store, { preview: shown.preview, digest: shown.digest, actor: "someone", via: "console", password: FACTS, approveNow: () => { throw new Error("never"); } }, NOW)).toMatchObject({ ok: false, reason: "gone" });
     expect(press(shown.preview, shown.digest).ok).toBe(true);
     expect(press(shown.preview, shown.digest)).toMatchObject({ ok: false, reason: "gone" });
+  });
+
+  test("terms diet: Build is bound to the summary the form showed, kept with the preview; another or none refuses", async () => {
+    const shown = await prepare();
+    if (!shown.eligible) throw new Error(shown.reason);
+    const kept = String(store.handle.prepare("SELECT digest FROM fast_preview WHERE id = ?").get(shown.preview)?.["digest"]);
+    // The scope's digest, then the key of the summary the form showed (fast-terms.ts reads the same project).
+    expect(kept).toMatch(/^[0-9a-f]{32} [0-9a-f]{32}$/);
+    expect(kept.split(" ")[1]).toBe(approvalSummaryOf(shown.scope, summaryContextOf(store, shown.taskId, shown.scope, NOW, null, REPO)).key);
+    for (const stored of [`${shown.digest} ${"0".repeat(32)}`, shown.digest]) {
+      store.handle.prepare("UPDATE fast_preview SET digest = ? WHERE id = ?").run(stored, shown.preview);
+      expect(press(shown.preview, shown.digest)).toMatchObject({ ok: false, reason: "changed" });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task").get()?.["n"]).toBe(0);
+    }
+    store.handle.prepare("UPDATE fast_preview SET digest = ? WHERE id = ?").run(kept, shown.preview);
+    expect(press(shown.preview, shown.digest).ok).toBe(true);
   });
 
   test("terms: a digest that differs at the seal refuses, and nothing is left behind", async () => {

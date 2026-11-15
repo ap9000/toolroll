@@ -23,7 +23,7 @@ import { agentModelName } from "./model-names.js";
 import { makesNoPlan, NO_READINESS, projectRoute, routeFromJson, sizeWords, type PhaseRoute, type ReadinessLookup } from "./phase-routing.js";
 import { sandboxTermsWords } from "./project-sandbox.js";
 import { qualityModeTitle, type QualityMode } from "./quality.js";
-import { approvalOf, chainTermsLines, describeApproval, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence, type ExecutionProfile, type Scope } from "./scope.js";
+import { approvalOf, chainTermsLines, describeApproval, liveChainFromJson, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence, type ExecutionProfile, type Scope } from "./scope.js";
 import { writesWords } from "./writes-mode.js";
 import type { RevisionLineage, Store } from "./store.js";
 
@@ -62,8 +62,10 @@ export type RevisionFacts = {
   sourceTask: string;
   sourceRun: number | null;
   hadPlan: boolean;
-  /** Whether the limits match the source's: null when the source's terms can't be read. */
-  sameLimits: boolean | null;
+  /** What changed from the source's limits, each in plain words ("writes: anywhere …"); [] when nothing did; null when
+   * the source's terms can't be read. Every effective limit is compared: checks level, budget, exclusions, paths,
+   * network, tools, writes, reads, project checks, macOS services, time and fix limits. */
+  changed: string[] | null;
   problem: string | null;
   repair: { cap: number | null; remaining: number | null } | null;
 };
@@ -139,23 +141,57 @@ function fixWords(profile: ExecutionProfile): string {
 }
 
 /** The settings a person usually leaves alone, each with the profile keys it states and how to read them. */
-type Setting = { label: string; fields: readonly string[]; words: (profile: ExecutionProfile) => string };
+/** `routine`: whether this value may sit in the usual-settings fold when it equals the project's usual one. Risky access
+ * (writing anywhere) is said in the open whatever the baseline is (the terms diet, Codex r1 finding 5). */
+type Setting = { label: string; fields: readonly string[]; words: (profile: ExecutionProfile) => string; routine: (profile: ExecutionProfile) => boolean };
 const SETTINGS: readonly Setting[] = [
-  { label: "Writes", fields: ["writes"], words: profile => writesWords(profile.writes) },
-  { label: "Reads", fields: ["fencePolicy", "readDeny"], words: profile => sandboxTermsWords(profile).reads },
-  { label: "Time limit", fields: ["maxTurns", "timeoutSeconds", "timeoutKind", "idleTimeoutSeconds"], words: limitWords },
-  { label: "Fixes", fields: ["repairModel", "repairMaxTurns", "repairTimeoutSeconds", "repairIdleTimeoutSeconds"], words: fixWords },
+  { label: "Writes", fields: ["writes"], words: profile => writesWords(profile.writes), routine: profile => profile.writes === "workspace" },
+  { label: "Reads", fields: ["fencePolicy", "readDeny"], words: profile => sandboxTermsWords(profile).reads, routine: () => true },
+  { label: "Time limit", fields: ["maxTurns", "timeoutSeconds", "timeoutKind", "idleTimeoutSeconds"], words: limitWords, routine: () => true },
+  { label: "Fixes", fields: ["repairModel", "repairMaxTurns", "repairTimeoutSeconds", "repairIdleTimeoutSeconds"], words: fixWords, routine: () => true },
 ];
 
 const valueOf = (profile: ExecutionProfile, keys: readonly string[]): string =>
   JSON.stringify(keys.map(key => (profile as Record<string, unknown>)[key] ?? null));
 
+/** A release's authority in one line: where it ships from and to, the check grant, and how far its checks reach. */
+function releaseAuthorityWords(release: { repo: string; branch: string; base: string; grant: { id: number }; access: string }): string {
+  return `Repository ${release.repo}, branch ${release.branch} into ${release.base}, check grant ${release.grant.id}, ${release.access === "sandboxed" ? "checks in the sandbox" : `checks outside the sandbox (${release.access})`}.`;
+}
+
+/** Every access and limit a profile has, in plain words, by name: what a fallback is compared on. */
+function accessWords(profile: ExecutionProfile): [string, string][] {
+  const terms = sandboxTermsWords(profile);
+  return [
+    ["network", lowerFirst(networkWords(profile.network ?? null, profile.provider).replace(/^Network: /, ""))],
+    ["tools", permissionPlainWords(profile) ?? "not known"],
+    ["writes", writesWords(profile.writes)],
+    ["reads", terms.reads],
+    ["project checks", checkAccessWords(profile.checkAccess ?? "sandboxed")],
+    ["macOS services", terms.mach ?? "none beyond the sandbox's"],
+    ["time limit", limitWords(profile)],
+    ["fixes", fixWords(profile)],
+  ];
+}
+
+/** Each fallback's access and limits that differ from the first agent's, said exactly. */
+function fallbackDifferences(scope: Scope): string[] {
+  const chain = liveChainFromJson(scope.proposedChainJson ?? null);
+  if (chain === null) return [];
+  const base = new Map(accessWords(chain[0]!.profile));
+  return chain.slice(1).map((entry, at) => {
+    const differs = accessWords(entry.profile).filter(([name, words]) => base.get(name) !== words);
+    return differs.length === 0 ? `Fallback ${at + 2} has the same access and limits as the first.`
+      : `Fallback ${at + 2} differs from the first: ${differs.map(([name, words]) => `${name}: ${words}`).join("; ")}.`;
+  });
+}
+
 /** The revision's one sentence. */
 export function revisionWords(facts: RevisionFacts): string {
   const parts = [facts.sourceRun === null ? `This revises ${facts.sourceTask}.` : `This revises build #${facts.sourceRun}.`];
   if (!facts.hadPlan) parts.push("The earlier version had no plan, so nothing was copied.");
-  else if (facts.sameLimits === true) parts.push("It keeps the same limits.");
-  else if (facts.sameLimits === false) parts.push("Its limits differ from that build's.");
+  else if (facts.changed !== null && facts.changed.length === 0) parts.push("It keeps the same limits.");
+  else if (facts.changed !== null) parts.push(`Changed from that build: ${facts.changed.join("; ")}.`);
   if (facts.repair !== null && facts.problem === null) {
     parts.push(facts.repair.cap !== null && (facts.repair.remaining ?? 0) > 0
       ? `${plural(facts.repair.remaining!, "more attempt")} can run without asking you.`
@@ -196,7 +232,7 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   const usualTools = usualProfile === null ? null : permissionPlainWords(usualProfile);
   const touch = [
     scope.touches.length === 0 ? "any file" : `only ${scope.touches.join(", ")}`,
-    ...(profile === null ? [] : [`network: ${lowerFirst(networkWords(profile.network ?? null).replace(/^Network: /, ""))}`]),
+    ...(profile === null ? [] : [`network: ${lowerFirst(networkWords(profile.network ?? null, profile.provider).replace(/^Network: /, ""))}`]),
     ...(tools === null ? [] : [`tools: ${tools}${usualTools !== null && usualTools !== tools ? " (not the project’s usual)" : ""}`]),
   ];
   decisions.push({ label: "May touch", words: touch.join(" · "), fields: ["touches", ...(profile === null ? [] : ["profile.network"] as BoundField[]), ...(permissionKey === null ? [] : [`profile.${permissionKey}` as BoundField])] });
@@ -205,10 +241,14 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   decisions.push({ label: "May cost", words: scope.budgetMicrousd === null ? "no cap" : `up to ${money(scope.budgetMicrousd)} per attempt; the agent is stopped there`, fields: ["budget"] });
 
   // A release is said whole: what asks again is part of the yes.
+  // Its repository, branch, check grant and check access are said whatever it carries (the carry rules' last line names
+  // them already).
   if (scope.releaseTerms != null) {
-    decisions.push({ label: "Release", words: releaseTermsSentence(scope.releaseTerms), ...(scope.releaseTerms.policy.carry ? { lines: releaseAsksAgainWords(scope.releaseTerms) } : {}), fields: ["releaseTerms"] });
+    const terms = scope.releaseTerms;
+    decisions.push({ label: "Release", words: releaseTermsSentence(terms), lines: terms.policy.carry ? releaseAsksAgainWords(terms)
+      : [releaseAuthorityWords(terms) + ` Until ${terms.expiresAt}.`], fields: ["releaseTerms"] });
   }
-  if (scope.releaseCheck != null) decisions.push({ label: "Release", words: releaseCheckSentence(scope.releaseCheck), fields: ["releaseCheck"] });
+  if (scope.releaseCheck != null) decisions.push({ label: "Release", words: releaseCheckSentence(scope.releaseCheck), lines: [releaseAuthorityWords(scope.releaseCheck)], fields: ["releaseCheck"] });
 
   // Agents a person picked by hand: not the usual pick, so said.
   const byHand = route === null ? [] : route.legs.filter(leg => leg.chosen !== "recommended");
@@ -224,6 +264,7 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
     for (const setting of SETTINGS) {
       const row: SummaryRow = { label: setting.label, words: setting.words(profile), fields: setting.fields.filter(key => key in profile).map(key => `profile.${key}` as BoundField) };
       if (usualProfile !== null && valueOf(profile, setting.fields) !== valueOf(usualProfile, setting.fields)) differs.push({ ...row, words: `${row.words} (usually ${setting.words(usualProfile)})` });
+      else if (!setting.routine(profile)) differs.push(row);
       else usual.push(row);
     }
     // Checks past the sandbox and extra services are risks, said in the open (chat-terms.ts cardShowsScope reads these words).
@@ -233,9 +274,10 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
     if (mach !== null) warnings.push({ words: `It ${mach}.`, fields: ["profile.machLookup"] });
   }
 
-  // Fallback agents (an older approval's chain): said whole, never folded.
+  // Fallback agents (an older approval's chain): said whole, never folded — each one's own access and limits wherever
+  // they differ from the first agent's, so nothing a fallback may do is left unsaid.
   const chain = chainTermsLines(scope);
-  if (chain.length > 0) warnings.push({ words: chain.join(" "), fields: ["chain"] });
+  if (chain.length > 0) warnings.push({ words: [...chain, ...fallbackDifferences(scope)].join(" "), fields: ["chain"] });
 
   // The project's own approval rules.
   const rules = context.rules;
@@ -247,7 +289,9 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   if (context.revision?.problem != null) warnings.push({ words: `Toolroll can’t check what this revises (${context.revision.problem}), so no fix runs on its own.`, fields: [] });
 
   const usualLabel = context.usual === null ? OTHER_LABEL : USUAL_LABEL;
-  const key = createHash("sha256").update(JSON.stringify({ v: 1, digest: scope.digest, revision, decisions, differs, warnings, usual, usualLabel }), "utf8").digest("hex").slice(0, 32);
+  // The baseline the rows were compared with is bound too (its network included), so a change to it is a stale form even
+  // where no row's words move.
+  const key = createHash("sha256").update(JSON.stringify({ v: 2, digest: scope.digest, revision, decisions, differs, warnings, usual, usualLabel, baseline: context.usual }), "utf8").digest("hex").slice(0, 32);
   const why = context.evidence == null || context.evidence === "" ? null : context.evidence.replace(/^Why this model: /, "");
   return { revision, decisions, why, differs, warnings, usual, usualLabel, key };
 }
@@ -331,34 +375,42 @@ export function usualSettingsOf(store: Store, repo: string | null, scope: Pick<S
   return resolved.ok ? { profile: resolved.profile, qualityMode } : null;
 }
 
+/** Every effective limit of `next` that differs from `before`'s, in plain words with its new value. */
+export function limitChanges(before: Scope, next: Scope): string[] {
+  const out: string[] = [];
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  if ((before.qualityMode ?? "default") !== (next.qualityMode ?? "default")) out.push(`checks level: ${qualityModeTitle(next.qualityMode ?? "default")}`);
+  if (before.budgetMicrousd !== next.budgetMicrousd) out.push(`cost: ${next.budgetMicrousd === null ? "no cap" : `up to ${money(next.budgetMicrousd)} per attempt`}`);
+  if ((before.outOfScope ?? null) !== (next.outOfScope ?? null)) out.push(`won’t touch: ${next.outOfScope ?? "nothing ruled out"}`);
+  if (!same([...before.touches].sort(), [...next.touches].sort())) out.push(`files: ${next.touches.length === 0 ? "any file" : `only ${next.touches.join(", ")}`}`);
+  const was = before.profile ?? null, now = next.profile ?? null;
+  if (was === null || now === null) { if (was !== now) out.push("agent setup"); return out; }
+  const wasWords = new Map(accessWords(was));
+  for (const [name, words] of accessWords(now)) if (wasWords.get(name) !== words) out.push(`${name}: ${words}`);
+  return out;
+}
+
 /** A revision's facts from its lineage and the source's own scope. */
 export function revisionFactsOf(store: Store, lineage: RevisionLineage | null, scope: Scope): RevisionFacts | null {
   if (lineage === null) return null;
   const source = lineage.sourceHadScope ? store.getScope(lineage.sourceTask) : null;
-  const permission = (one: Scope): string => {
-    const p = one.profile ?? null;
-    if (p === null) return "";
-    const key = PERMISSION_KEYS.find(name => name in p);
-    return key === undefined ? "" : String((p as Record<string, unknown>)[key]);
-  };
-  const sameLimits = source === null ? null
-    : (source.qualityMode ?? "default") === (scope.qualityMode ?? "default") && source.budgetMicrousd === scope.budgetMicrousd
-      && (source.outOfScope ?? null) === (scope.outOfScope ?? null) && JSON.stringify([...source.touches].sort()) === JSON.stringify([...scope.touches].sort())
-      && permission(source) === permission(scope);
+  const changed = source === null ? null : limitChanges(source, scope);
   return {
     sourceTask: lineage.sourceTask,
     sourceRun: lineage.sourceRun,
     hadPlan: lineage.sourceHadScope,
-    sameLimits,
+    changed,
     problem: lineage.problem ?? null,
     repair: lineage.repair === null ? null : { cap: lineage.repair.cap, remaining: lineage.repair.remaining },
   };
 }
 
 /** The whole context for a task's waiting approval, read from the store: one reading for every surface. */
-export function summaryContextOf(store: Store, taskId: string, scope: Scope, now: Date, evidence: string | null = null): SummaryContext {
+export function summaryContextOf(store: Store, taskId: string, scope: Scope, now: Date, evidence: string | null = null,
+  /** The project, for a scope whose task isn't filed (yet): a fast start's preview, read after its dry run. */
+  project: string | null = null): SummaryContext {
   const ref = store.lookupRef(taskId);
-  const repo = ref?.repo ?? null;
+  const repo = ref?.repo ?? project;
   const lineage = ref !== null && ref.revisionBriefArtifact !== null ? store.revisionLineageOf(taskId, now) : null;
   return {
     usual: usualSettingsOf(store, repo, scope),

@@ -339,7 +339,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   sheet: Html;
   /** The sheet's lead sentence (the approach's first sentence, else the goal), for a one-line summary of the plan. */
   sheetLead: string } {
-  const { scope, route } = input;
+  const { scope } = input;
   // A machine-drafted repair appends its brief to the signed goal; the row
   // shows the goal and one sentence says what the repair fixes. The whole
   // signed goal stays in Details.
@@ -488,11 +488,15 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   ]);
   // A release's terms are part of what the yes agrees to (the digest signs them): said whole on every approval
   // surface (the plan sheet, the page without script, chat), before Approve, with nothing folded.
-  const releaseBody: Html | "" = scope.releaseTerms == null && scope.releaseCheck == null ? "" : joinHtml([
-    scope.releaseTerms == null ? "" : html`<p>${releaseTermsSentence(scope.releaseTerms)}</p>`,
-    scope.releaseCheck == null ? "" : html`<p>${releaseCheckSentence(scope.releaseCheck)}</p>`,
+  // The summary's release rows (approval-summary.ts): the sentence, then its repository, branch, grant and access, or
+  // with carry, what asks again (whose last line names them).
+  const releaseRows = summary.decisions.filter(one => one.fields.includes("releaseTerms") || one.fields.includes("releaseCheck"));
+  const releaseBody: Html | "" = releaseRows.length === 0 ? "" : joinHtml([
+    ...releaseRows.map(one => html`<p>${one.words}</p>`),
     input.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : "",
-    scope.releaseTerms?.policy.carry !== true ? "" : html`<p class="plan-sheet-sub">What asks again</p><ul class="plan-sheet-list">${releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`)}</ul>`,
+    ...releaseRows.map(one => (one.lines ?? []).length === 0 ? "" : one.fields.includes("releaseTerms") && scope.releaseTerms?.policy.carry === true
+      ? html`<p class="plan-sheet-sub">What asks again</p><ul class="plan-sheet-list">${one.lines!.map(line => html`<li>${line}</li>`)}</ul>`
+      : html`${one.lines!.map(line => html`<p>${line}</p>`)}`),
   ]);
   // The decisions, in the open; every risk above them; the rest of what the yes binds one tap away, named whole.
   const termRow = (one: SummaryRow): Html => one.label === "Done when" ? row("Done when", doneWhen)
@@ -736,7 +740,7 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
   // What the build may reach is part of what is approved (egress.ts): said on every approval form.
   // Its sandbox terms (project-sandbox.ts): what it reads always, and any widening, part of what the yes agrees to.
   const terms = sandboxTermsWords(profile);
-  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
+  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null, profile.provider)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
 }
 /** The Agents view every console surface renders (v47): the SAME
  * projection the CLI prints — who plans, builds, and revises,
@@ -1509,7 +1513,7 @@ export type RevisionView =
  * rows, read from the child's scope, never restated here.
  */
 export function revisionLineageWords(lineage: RevisionLineage): string[] {
-  const facts = { sourceTask: lineage.sourceTask, sourceRun: lineage.sourceRun, hadPlan: lineage.sourceHadScope, sameLimits: null,
+  const facts = { sourceTask: lineage.sourceTask, sourceRun: lineage.sourceRun, hadPlan: lineage.sourceHadScope, changed: null,
     problem: lineage.problem ?? null, repair: lineage.repair === null ? null : { cap: lineage.repair.cap, remaining: lineage.repair.remaining } };
   return [
     ...(facts.problem === null ? [] : [`Toolroll can’t check what this revises (${facts.problem}), so no fix runs on its own.`]),

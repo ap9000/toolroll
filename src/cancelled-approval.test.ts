@@ -14,6 +14,7 @@ import { addApprover, approve, APPROVAL_PROOF, propose } from "./scope.js";
 import { taskCancelled } from "./task-archive.js";
 import { createDecisionServer } from "./serve.js";
 import { EXIT, runOperate } from "./operate.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const T0 = new Date("2026-11-01T10:00:00.000Z");
 const LATER = new Date("2026-11-01T10:05:00.000Z");
@@ -134,7 +135,8 @@ describe("the console and the CLI", () => {
     expect((await post("/t/t-stale/scope", { acceptance: "c1: ok | manual-review", sawDigest: "", goal: "do t-stale", not: "", touches: "" })).status).toBe(303);
     const page = await (await fetch(`${base}/t/t-stale`, { headers: { cookie } })).text();
     const nonce = /name="nonce" value="([0-9a-f]{32})"/.exec(page)?.[1] ?? "";
-    const digest = store.getScope("t-stale")!.digest;
+    // The form's own digest, sent whole: the scope's with the approval summary's key (approvalFormDigest).
+    const digest = /name="digest" value="([0-9a-f]+)"/.exec(page)?.[1] ?? "";
     expect(nonce).not.toBe("");
     // Cancelled in another window; the open page's nonce, digest and password are all still good.
     expect(store.cancelTask("t-stale", new Date(), "changed my mind")).toEqual({ ok: true });
@@ -152,7 +154,7 @@ describe("the console and the CLI", () => {
     const digest = store.getScope("t-cli")!.digest;
     expect(store.cancelTask("t-cli", T0)).toEqual({ ok: true });
     const lines: string[] = [];
-    const code = await runOperate("task", ["approve", "t-cli", "--as", "alex", "--token", password, "--digest", digest, "--yes", "--json"], line => lines.push(line), { databaseFile: join(dir, "orders.db"), now: LATER });
+    const code = await runOperate("task", ["approve", "t-cli", "--as", "alex", "--token", password, "--digest", digest, ...termsArgs(join(dir, "orders.db"), "t-cli"), "--yes", "--json"], line => lines.push(line), { databaseFile: join(dir, "orders.db"), now: LATER });
     expect(code).toBe(EXIT.refused);
     expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, reason: "cancelled", message: "t-cli was cancelled, so there is nothing to approve" });
     expect(store.getScope("t-cli")).toMatchObject({ approvedAt: null, approvedBy: null });

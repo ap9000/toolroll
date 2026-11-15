@@ -30,6 +30,7 @@ import { readVerifiedReport } from "./evidence.js";
 import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { Runner } from "./builder.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-09-02T22:00:00.000Z");
@@ -282,7 +283,7 @@ describe("scout tasks, against real git", () => {
     const digest = store.getScope("flaky")?.digest as string;
     expect(store.refFor("built-in", "flaky").deliverable).toBe("report");
     store.close();
-    await run(["task", "approve", "flaky", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+    await run(["task", "approve", "flaky", "--as", "alex", "--token", approverToken, "--digest", digest, ...termsArgs(db, "flaky"), "--yes", "--json"], reportingAgent);
     expect(payload().ok).toBe(true);
     return { runnerToken, approverToken };
   };
@@ -617,7 +618,7 @@ describe("scout tasks, against real git", () => {
     connect("posthog", ["query-run", "insight-create-from-query", "feature-flag-get-all"]);
     connect("betterstack", ["uptime_list_monitors"]);
     store.close();
-    await run(["task", "approve", "onboard", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+    await run(["task", "approve", "onboard", "--as", "alex", "--token", approverToken, "--digest", digest, ...termsArgs(db, "onboard"), "--yes", "--json"], reportingAgent);
     // This run launches Mobbin and PostHog (their sign-ins are set); Better Stack is left out of it.
     const launched = vi.spyOn(projectTools, "toolLaunchFor").mockImplementation(() => ({ tools: ["mobbin", "posthog"].map(id => ({ spec: connectedSpec(id)!, digest: "d", values: {} })), skipped: [] }));
     expect(payload().ok).toBe(true);
@@ -660,7 +661,7 @@ describe("scout tasks, against real git", () => {
       store.recordProjectToolTest(repo, id, JSON.stringify({ at: T0.toISOString(), ok: true, tools, problem: null }));
     }
     store.close();
-    await run(["task", "approve", "onboard", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+    await run(["task", "approve", "onboard", "--as", "alex", "--token", approverToken, "--digest", digest, ...termsArgs(db, "onboard"), "--yes", "--json"], reportingAgent);
     vi.spyOn(projectTools, "toolLaunchFor").mockImplementation(() => ({ tools: ["mobbin", "posthog"].map(id => ({ spec: connectedSpec(id)!, digest: "d", values: {} })), skipped: [] }));
     expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
     expect(payload().dispatched).toContainEqual(expect.objectContaining({ id: "onboard", outcome: "reported" }));
@@ -691,7 +692,7 @@ describe("scout tasks, against real git", () => {
       const scoped = openStore(db);
       const digest = scoped.getScope(id)?.digest as string;
       scoped.close();
-      await run(["task", "approve", id, "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"], reportingAgent);
+      await run(["task", "approve", id, "--as", "alex", "--token", approverToken, "--digest", digest, ...termsArgs(db, id), "--yes", "--json"], reportingAgent);
       expect(await tick(runnerToken, codexScout)).toBe(EXIT.ok);
       expect(payload().dispatched).toContainEqual(expect.objectContaining({ id, outcome: "reported" }));
     }

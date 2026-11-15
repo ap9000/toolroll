@@ -9,7 +9,7 @@ const LABELS: Readonly<Record<string, string>> = { goal: "Goal", "not this": "No
 
 export function fastTermsLines(store: Store, scope: Scope, repo: string): { label: string; words: string }[] {
   const lines: { label: string; words: string }[] = [];
-  for (const raw of describeScope(scope, undefined, null, summaryContextOf(store, scope.taskId, scope, new Date()))) {
+  for (const raw of describeScope(scope, undefined, null, summaryContextOf(store, scope.taskId, scope, new Date(), null, repo))) {
     const line = raw.trimEnd();
     const named = /^ {2}(\S+(?: \S+)?) {2,}(.*)$/.exec(line);
     if (named !== null && (named[1] === "version" || named[1] === "approved")) continue;
