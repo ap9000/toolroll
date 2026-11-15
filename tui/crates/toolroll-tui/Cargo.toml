@@ -1,0 +1,26 @@
+[package]
+name = "toolroll-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "toolroll-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync", "net", "io-util"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tui-term = "0.3.4"
+vt100 = "0.16"
+# Loopback only (http://127.0.0.1:<port>): no TLS stack at all, so every target links without a C cross compiler.
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+anyhow = "1"
