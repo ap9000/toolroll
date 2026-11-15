@@ -1245,6 +1245,11 @@
   .approval-detail p, .approval-detail ul, .approval-detail dl { margin: var(--so-space-xs) 0; }
   .approval-detail ul { padding-left: 1.25rem; }
   .approval-detail .revision-card { margin: 0; padding: 0; border: 0; background: none; }
+  /* The approval summary's usual settings, one tap away (approval-summary.ts). */
+  details.terms-usual > summary { color: var(--muted-foreground); }
+  details.terms-usual > .approval-rows { margin: var(--so-space-sm) 0 0; gap: var(--so-space-sm); }
+  details.terms-usual .approval-row dd p { font-size: 13px; color: var(--muted-foreground); }
+  .approval-revision-plain { max-width: 75ch; margin: 0; font-size: 14px; line-height: 1.6; }
   .approval-roles { display: grid; gap: var(--so-space-sm); }
   .approval-roles > div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: var(--so-space-md); }
   .approval-roles dt { color: var(--muted-foreground); font-weight: 500; }

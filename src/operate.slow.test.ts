@@ -2057,10 +2057,10 @@ describe("explainable phase routing from the command line (v47)", () => {
     await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token]);
     await run(["task", "add", "Fix the Save label", "--id", "copy", "--repo", ROUTED_REPO]);
     expect(await run(["task", "scope", "copy", "--goal", "Change one line to say Save", "--acceptance", "The button says Save|check"])).toBe(EXIT.ok);
-    expect(text()).toContain("size         Small change: fast model, no plan");
-    expect(text()).toContain("build  claude · haiku");
+    // The approval summary's Agent row names who builds and the size, plainly.
+    expect(text()).toMatch(/^ {2}Agent {8}.*Haiku builds.*\(small change: fast model, no plan\)$/m);
     await run(["task", "show", "copy"]);
-    expect(text()).toContain("size         Small change: fast model, no plan");
+    expect(text()).toContain("(small change: fast model, no plan)");
     const store = openStore(db);
     let digest: string;
     try {
@@ -2234,12 +2234,13 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(await run(["task", "route", "payouts", "--size", "medium", "--risky", "yes", "--as", "alex", "--token", token])).toBe(0);
     expect(text()).toContain("route        risky · stronger configured agents");
     await run(["task", "show", "payouts"]);
-    expect(text()).toContain("route        risky · stronger configured agents");
+    // The approval summary says the risky size in its Agent row (the route's own words stay on `task route`).
+    expect(text()).toMatch(/^ {2}Agent {8}.*\(risky change: strongest agents plan and build\)$/m);
     const store = openStore(db);
     try { store.setPlanState(store.refFor("built-in", "payouts").id, "drafted"); }
     finally { store.close(); }
     await run(["task", "approve", "payouts"]);
-    expect(text()).toContain("route        risky · stronger configured agents");
+    expect(text()).toMatch(/^ {2}Agent {8}.*\(risky change: strongest agents plan and build\)$/m);
     await run(["task", "show", "payouts", "--json"]);
     expect(payload().route).toMatchObject({ risk: "routine", riskTitle: "Risky", size: { risky: true } });
   });

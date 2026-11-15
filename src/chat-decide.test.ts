@@ -148,7 +148,7 @@ describe("decisions finish in the chat app", () => {
   /** A plan written and waiting for approval, filed by alex, with the scope's own limits. */
   const planWaiting = (id: string, title: string, extra: Partial<Parameters<typeof propose>[1]> = {}) => {
     const ref = placed(id, title);
-    propose(store, { taskId: id, goal: `${title}.\nKeep the public API unchanged.\nA third line the card leaves out.`, touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
+    propose(store, { taskId: id, goal: `${title}.\nKeep the public API unchanged.\nA third line the card once left out.`, touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }], now, ...extra });
     return ref;
   };
@@ -335,9 +335,14 @@ describe("decisions finish in the chat app", () => {
     await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
     expect(script.current(BOB, card.messageId).text).toBe(`${[
       "Plan ready: Refuse over-limit payouts",
-      "Starting allows: file edits and routine commands; anything risky stops · up to $2.00 per attempt", "",
-      "Refuse over-limit payouts.", "Keep the public API unchanged.", "Only in: src/guard.ts", "",
-      "Done when:", "• Over-limit payouts are refused.",
+      // The approval summary: the signed goal whole (no line left out), then the decisions and the usual settings.
+      "",
+      "Refuse over-limit payouts.", "Keep the public API unchanged.", "A third line the card once left out.", "",
+      "Done when:", "• Over-limit payouts are refused. (runs automatically)", "",
+      "Agent: Claude Sonnet plans, builds, fixes and reviews",
+      "May touch: only src/guard.ts · network: the agent's provider · tools: file edits and routine commands; anything risky stops",
+      "May cost: up to $2.00 per attempt; the agent is stopped there",
+      "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed",
     ].join("\n")}\n\nApprove and start "Refuse over-limit payouts"? This approves exactly this plan.`);
     expect(script.current(BOB, card.messageId).labels).toEqual(["Approve & start", "Edit ↗", "Not now"]);
     expect(store.getScope("plan-5")!.approvedDigest).toBeNull();

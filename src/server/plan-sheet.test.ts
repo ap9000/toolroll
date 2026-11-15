@@ -78,7 +78,8 @@ const said = (shown: string, term: string): boolean => term.startsWith(CLAUSE) ?
 function termsOf(markup: string): string[] {
   const host = document.createElement("div");
   host.innerHTML = markup;
-  host.querySelectorAll("h2, h3, dt, summary, .approval-signed-criteria code, .approval-signed-criteria .meta").forEach(one => one.remove());
+  // The usual project settings are one disclosure on both (the terms diet): compared on their own below.
+  host.querySelectorAll("h2, h3, dt, summary, .approval-signed-criteria code, .approval-signed-criteria .meta, [data-terms-usual]").forEach(one => one.remove());
   const out: string[] = [];
   const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
@@ -91,7 +92,19 @@ function termsOf(markup: string): string[] {
   return out;
 }
 
-/** The new sheet's text a person can see: no <details>, nothing hidden. */
+/** The sheet's only fold: the usual project settings (approval-summary.ts), the same rows on both. */
+function onlyUsualFolded(sheet: string, old: string): void {
+  const host = document.createElement("div");
+  host.innerHTML = sheet;
+  const folds = [...host.querySelectorAll("details")];
+  expect(folds.every(one => one.hasAttribute("data-terms-usual"))).toBe(true);
+  expect(folds.length).toBeLessThanOrEqual(1);
+  const was = document.createElement("div");
+  was.innerHTML = old;
+  expect(folds[0]?.textContent ?? "").toBe(was.querySelector("[data-terms-usual]")?.textContent ?? "");
+}
+
+/** The new sheet's text a person can see: nothing folded, nothing hidden. */
 function visibleText(markup: string): string {
   const host = document.createElement("div");
   host.innerHTML = markup;
@@ -104,7 +117,7 @@ for (const [name, input] of Object.entries(CASES)) {
     const parts = withFormToken("c", () => approvalSheetParts(input));
     const old = htmlString(parts.lead) + htmlString(parts.rows) + htmlString(parts.details);
     const sheet = withFormToken("c", () => htmlString(planSheetHtml(input)));
-    expect(sheet).not.toContain("<details");
+    onlyUsualFolded(sheet, old);
     const shown = visibleText(sheet);
     const terms = termsOf(old);
     expect(terms.length).toBeGreaterThan(5);
@@ -152,7 +165,8 @@ test("a release's terms are in the plan sheet, whole: what later ships without a
     policy: { v: 1, rules: 1, carry: true, protectProject: false, protectedPaths: ["src/billing"], limits: { lines: 400, files: 20, churn: 800 } },
     grant: { id: 3, digest: "g".repeat(16) }, access: "sandboxed", expiresAt: "2026-11-13T09:00:00.000Z" } as unknown as NonNullable<Scope["releaseTerms"]>;
   const markup = htmlString(planSheetHtml(inputOf({ scope: scopeOf({ releaseTerms: terms } as Partial<Scope>), releaseCiRunning: true })));
-  expect(markup).not.toContain("<details");
+  expect(markup.match(/<details/g) ?? []).toEqual(["<details"]);
+  expect(markup).toContain("<details class=\"approval-details terms-usual\" data-terms-usual>");
   const sheet = visibleText(markup);
   expect(sheet).toContain(releaseTermsSentence(terms));
   expect(sheet).toContain("ship without asking you again");

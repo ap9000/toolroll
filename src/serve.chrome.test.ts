@@ -10,6 +10,8 @@ import { join } from "node:path";
 import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
+import { approvalSummaryFor } from "./approval-summary.js";
+import { approvalFormDigest } from "./server/render-tasks.js";
 import { storeEvidence } from "./evidence.js";
 import { createDecisionServer, SENSITIVE_INPUT } from "./serve.js";
 import { presented, T0, workspaceOf } from "../test/serve-kit.js";
@@ -159,7 +161,7 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     const ceremonySeal = approveForm.indexOf('<div class="approval-act" id="approval-confirm">');
     expect(ceremonyAcceptance).toBeGreaterThan(-1);
     expect(ceremonyAcceptance).toBeLessThan(ceremonySeal);
-    expect(approveForm).toContain('<ul class="approval-done"><li>The payout guard rejects a negative amount.</li><li>The settings panel still opens.</li></ul>');
+    expect(approveForm).toContain('<ul class="approval-done"><li>The payout guard rejects a negative amount. <span class="meta">Runs automatically</span></li><li>The settings panel still opens. <span class="meta">Shown in a screenshot</span></li></ul>');
     const rows = approveForm.slice(0, approveForm.indexOf('<details class="approval-details"'));
     expect(rows).not.toMatch(/\bc[12]\b|requires:/);
     expect(approveForm).toContain('<code>c1</code> The payout guard rejects a negative amount. <span class="meta">shown by the project check</span>');
@@ -582,8 +584,9 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     });
     const before = store.getScope("t-edit")!;
     const page = await (await fetch(url("/t/t-edit"), { headers: { cookie } })).text();
-    // The plain consent line, the password's reason, and the in-place editor.
-    expect(page).toContain("You’re allowing: file edits and routine commands; anything risky stops · up to $1.50 per attempt</p>");
+    // The plain terms (what it may touch and cost), the password's reason, and the in-place editor.
+    expect(page).toContain("tools: file edits and routine commands; anything risky stops</p>");
+    expect(page).toContain("<dt>May cost</dt><dd><p>up to $1.50 per attempt; the agent is stopped there</p>");
     expect(page).not.toContain("data-approval-you-check");
     // Submit exactly what the editor's form carries, with the fields edited.
     const editorForm = page.slice(page.indexOf('<form method="post" action="/t/t-edit/scope" id="plan-editor-form"'));
@@ -614,11 +617,24 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     expect(after.profile).toMatchObject({ provider: "claude", permissionArgv: "auto" });
     expect(after.digest).not.toBe(before.digest);
     // The seal is unchanged: the new wording approves only through the password ceremony, bound to its digest.
+    // The terms diet: a project's usual settings shown beside the yes are part of what the form pins. Changed between
+    // display and press, the press refuses as a stale plan does, and nothing is approved.
+    const shown = await (await fetch(url("/t/t-edit"), { headers: { cookie } })).text();
+    store.setQualityDefault("strict", "alex", T0);
+    const stale = await fetch(url("/t/t-edit/approve"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf: csrfOf(shown),
+      nonce: /name="nonce" value="([0-9a-f]+)"/.exec(shown)?.[1] ?? "", digest: /name="digest" value="([0-9a-f]+)"/.exec(shown)?.[1] ?? "", token: approverToken }), redirect: "manual" });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).toContain("changed while this form was open");
+    expect(store.getScope("t-edit")!.approvedDigest).not.toBe(after.digest);
+    store.setQualityDefault("default", "alex", T0);
     const edited = await (await fetch(url("/t/t-edit"), { headers: { cookie } })).text();
-    expect(edited).toContain('<p class="approval-you-check" data-approval-you-check>You’ll check: Negative and zero payouts are refused; The refusal reads plainly</p>');
+    // Each requirement says how it is shown; the ones a person checks say so beside them.
+    expect(edited).toContain('<li>Negative and zero payouts are refused. <span class="meta">You review it</span></li>');
+    expect(edited).toContain('<li>The refusal reads plainly <span class="meta">You review it</span></li>');
     const nonce = /name="nonce" value="([0-9a-f]+)"/.exec(edited)?.[1] ?? "";
     const digest = /name="digest" value="([0-9a-f]+)"/.exec(edited)?.[1] ?? "";
-    expect(digest).toBe(after.digest);
+    // The form's digest is the scope's, the plan's and the summary's together (approvalFormDigest).
+    expect(digest).toBe(approvalFormDigest(after.digest, null, approvalSummaryFor(store, "t-edit", T0)!.key));
     const approved = await fetch(url("/t/t-edit/approve"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf: csrfOf(edited), nonce, digest, token: approverToken }), redirect: "manual" });
     expect(approved.status).toBe(303);
     expect(store.getScope("t-edit")).toMatchObject({ approvedDigest: after.digest, approvedBy: "alex" });
@@ -657,7 +673,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
 
     // No limit stays no limit; an odd cap comes back to the millionth.
     const open = await editorOf();
-    expect(open.page).toContain(" · no attempt limit</p>");
+    expect(open.page).toContain("<dt>May cost</dt><dd><p>no cap</p>");
     expect(Object.fromEntries(open.hidden)["budget-microusd"]).toBe("none");
     expect((await save(open.hidden, "guard the payout path, plainly")).status).toBe(303);
     expect(store.getScope("t-keep")?.budgetMicrousd).toBeNull();
@@ -690,7 +706,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
     const legacy = store.getScope("t-keep")!;
     expect(legacy.profile).toMatchObject({ permissionArgv: "acceptEdits" });
     const kept = await editorOf();
-    expect(kept.page).toContain("You’re allowing: file edits only; commands are refused");
+    expect(kept.page).toContain("tools: file edits only; commands are refused (not the project’s usual)");
     const raised = await save(kept.hidden, "guard the payout path, edited");
     expect(raised.status).toBe(409);
     expect(await raised.text()).toContain("Not saved: this would change what the agent may do.");

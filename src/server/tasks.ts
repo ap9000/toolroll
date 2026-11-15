@@ -116,6 +116,7 @@ import { putAwayPage,boardBody,boardWorkers,QUEUE_FRONT,queueBody,queueScript,TA
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { timingFor } from "../latency-timeline.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
+import { approvalSummaryFor } from "../approval-summary.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { approveReleaseCard, releaseApprovalCard, releaseSheetHref, releaseTaskOf } from "../release-approval.js";
@@ -2352,8 +2353,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if (sheet) return releaseSheet.approveFromSheet({ who, response, project: null }, taskId, digest, token);
         const scopeRow = store.getScope(taskId);
         if (scopeRow === null) return approvalProblem("refused", "this task has no scope to approve", 409);
-        const planView = planViewOf(ref.id);
-        const expectedDigest = approvalFormDigest(scopeRow.digest, planView?.sha256 ?? null);
+        // What the form showed: the scope, the plan beside it, and the approval summary as it reads now (the project's usual
+        // settings it names, a revision's sentence, the rules it says). Any of them changed since: the form is stale.
+        const formDigestNow = (): string | null => {
+          const live = store.getScope(taskId);
+          return live === null ? null : approvalFormDigest(live.digest, planViewOf(ref.id)?.sha256 ?? null, approvalSummaryFor(store, taskId, now)?.key ?? null);
+        };
+        const expectedDigest = formDigestNow();
         if (digest !== expectedDigest) {
           return approvalProblem("refused", "the scope or plan changed while this form was open — read the latest version and approve again", 409);
         }
@@ -2369,7 +2375,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           }
         }
         // A re-check is spent only if this yes is kept (sealed, or a protected-work vote recorded).
-        const approved = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => approveScope(store, taskId, who.name, now, scopeRow.digest, token)),
+        // Read again inside the seal's transaction: what the form showed is still what it would approve, then the yes.
+        const approved = spendingOnlyOnSuccess(() => withFreshness("approve-standard", () => store.transact(() =>
+          formDigestNow() !== digest ? { ok: false as const, reason: "changed" as const } : approveScope(store, taskId, who.name, now, scopeRow.digest, token))),
           result => !result.ok && !(result.reason === "second-approver" && !result.already));
         if (!approved.ok) {
           // v102: a first yes on protected work is recorded, not refused — the page says who else is needed.

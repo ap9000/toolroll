@@ -1214,15 +1214,14 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
 
     const draftHtml = await (await fetch(url(`/t/${trigger.draftTaskId}`), { headers: { cookie } })).text();
     expect(draftHtml).toContain("Automatic recovery");
-    // The repair's approval says what it fixes in one sentence, the
-    // criterion as words; the machine brief ("Unmet: c1") stays in Details.
+    // The repair's approval says what it fixes in one plain lead sentence, the criterion as words; the signed goal
+    // below it is whole, the machine brief ("Unmet: c1") included: a yes never sees less than it signs.
     expect(draftHtml).toContain(`<p class="approval-revision">Fixes what build #${run} missed: it works.</p>`);
-    const sheetMain = draftHtml.slice(draftHtml.indexOf('class="approve-form approval-sheet"'), draftHtml.indexOf('<details class="approval-details"'));
-    expect(sheetMain).not.toContain("Unmet");
-    // Its requirement is one only you can check, said plainly above Approve.
-    expect(sheetMain).toContain('<p class="approval-you-check" data-approval-you-check>You’ll check: it works</p>');
-    // Edit plan shows the goal without the machine brief, which rides along unchanged.
-    expect(sheetMain).not.toContain("inherited terms");
+    const sheetMain = draftHtml.slice(draftHtml.indexOf('class="approve-form approval-sheet"'), draftHtml.indexOf('<div class="approval-act"'));
+    expect(sheetMain).toMatch(/<p class="approval-goal">[^<]*Unmet: c1\.<\/p>/);
+    // Its requirement is one only you can check, said beside it above Approve.
+    expect(sheetMain).toContain('<li>it works <span class="meta">You review it</span></li>');
+    expect(sheetMain).not.toMatch(/inherited|repair chain/);
     // Without script the steps are the page too (docs/plans/task-page-steps.md): every row open, in order, and the
     // approval form the person signs sits in the Approval row.
     const native = new Window();
@@ -1991,15 +1990,12 @@ describe("the phase route on the console (v47): one projection on the task page,
     // The ceremony restates the agents where the yes is given — and never
     // the volatile availability.
     const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(html)?.[1] ?? "";
-    // One plain line of who builds in view; the full route in Details.
-    expect(ceremony).toContain('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
-    const details = ceremony.slice(ceremony.indexOf('<details class="approval-details"'));
-    expect(details).toContain("<h3>Why these agents</h3><p>claude · sonnet plans; claude · opus builds and repairs</p>");
-    expect(details).toContain("These exact agents are part of what you approve");
-    // Why stronger agents run, in plain words, and the runtime mechanics folded away.
-    expect(details).toContain("a large change — planning and building use the strongest configured agent");
-    expect(details).not.toContain("High risk");
-    expect(details).toContain("<h3>Runtime limits</h3>");
+    // The approval summary's one Agent row names every leg and the size, in view before the password; the reasons stay
+    // on the Agents card, and the runtime limits are among the usual project settings.
+    expect(ceremony).toMatch(/<dt>Agent<\/dt><dd><p>Claude Sonnet plans; Claude Opus builds and fixes[^<]* reviews \(large change: strongest agents plan and build\)<\/p>/);
+    expect(ceremony.indexOf("<dt>Agent</dt>")).toBeLessThan(ceremony.indexOf('name="token"'));
+    expect(ceremony).not.toContain("High risk");
+    expect(ceremony).toMatch(/<details class="approval-details terms-usual" data-terms-usual><summary>Your usual project settings<\/summary>.*<dt>Time limit<\/dt>/s);
     expect(ceremony).not.toContain("--dangerously");
     expect(ceremony).not.toContain("unavailable");
     expect(ceremony).not.toContain("not yet checked");
@@ -2085,10 +2081,8 @@ describe("the phase route on the console (v47): one projection on the task page,
     // Package 2: the approval card is a section — the concise plan, then
     // the Review plan disclosure over the exact terms.
     const approvalCard = /<section class="card chat-action-card chat-plan" id="task-chat-action"[^>]*>(.*?)<\/form><\/section>/s.exec(chat)?.[0] ?? "";
-    expect(approvalCard).toContain('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
-    expect(approvalCard).toContain("a large change — planning and building use the strongest configured agent");
-    expect(approvalCard).toContain("<h3>Why these agents</h3>");
-    expect(approvalCard).not.toContain("codex · gpt-5-codex");
+    // The same Agent row as the task page: every leg the yes binds, the reviewer included, and the size.
+    expect(approvalCard).toMatch(/<dt>Agent<\/dt><dd><p>Claude Sonnet plans; Claude Opus builds and fixes[^<]* reviews \(large change: strongest agents plan and build\)<\/p>/);
     expect(approvalCard).not.toContain("not yet checked");
   });
 
@@ -2139,11 +2133,12 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(store.refFor("built-in", "payouts").sizing).toEqual({ size: "small", risky: false, source: "person", reason: "set by alex" });
     expect(store.refFor("built-in", "payouts").plan).toBeNull();
     const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(await page(cookie, "/t/payouts"))?.[1] ?? "";
-    const sizeAt = ceremony.indexOf('<p class="agents-size"><strong>');
+    const sizeAt = ceremony.indexOf("(small change: strongest model, no plan)");
     expect(sizeAt).toBeGreaterThan(-1);
     expect(ceremony.indexOf('name="token"')).toBeGreaterThan(sizeAt);
-    // The rubric here asks for screenshots, which lifts the builder: the size line says what actually runs.
-    expect(ceremony.slice(sizeAt)).toMatch(/^<p class="agents-size"><strong>Small change: strongest model, no plan\.<\/strong> <span class="meta">set by alex<\/span><\/p>/);
+    // The rubric here asks for screenshots, which lifts the builder: the Agent row says what actually runs, and the
+    // planner that a small change skips is still named, as what it is.
+    expect(ceremony).toMatch(/<dt>Agent<\/dt><dd><p>[^<]*plans only if you ask for a plan \(small change: strongest model, no plan\)<\/p>/);
   });
 
   test("size: setting a size keeps the risky flag, and the page can mark a task risky", async () => {
@@ -2163,23 +2158,21 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect((await form([["risky", "maybe"]])).status).toBe(400);
   });
 
-  test("consent: the task page and the focused chat restate the same concise exact agents before the password, with runtime limits after it (open on the task page, folded in chat); Home only leads there", async () => {
+  test("consent: the task page and the focused chat restate the same concise exact agents before the password, with runtime limits among the usual project settings; Home only leads there", async () => {
     const cookie = await loginAs("alex", approverToken);
-    const summary = "claude · sonnet plans; claude · opus builds and repairs";
-    const why = "a large change — planning and building use the strongest configured agent";
     const ceremonyOf = (html: string, action: string): string => new RegExp(`<form method="post" action="${action}"(.*?)<\\/form>`, "s").exec(html)?.[1] ?? "";
-    // The task page and chat share the approval sheet: who builds in one
-    // line before the password, the exact route and limits in Details.
+    // The task page and chat share the approval sheet: every agent in one Agent row before the password, and the
+    // runtime limits among the usual project settings (one tap, still before the password).
     const sheet = (ceremony: string, surface: "task" | "chat"): void => {
-      const whoAt = ceremony.indexOf('<p class="approval-who">Builder Claude Opus · Planner Claude Sonnet</p>');
+      const whoAt = ceremony.search(/<dt>Agent<\/dt><dd><p>Claude Sonnet plans; Claude Opus builds and fixes[^<]* reviews \(large change: strongest agents plan and build\)<\/p>/);
+      const usualAt = ceremony.indexOf('<details class="approval-details terms-usual" data-terms-usual>');
       const passwordAt = ceremony.indexOf('name="token"');
-      const detailsAt = ceremony.indexOf('<details class="approval-details"');
+      const detailsAt = ceremony.indexOf('<details class="approval-details"', passwordAt);
       expect(whoAt).toBeGreaterThan(-1);
-      expect(passwordAt).toBeGreaterThan(whoAt);
+      expect(usualAt).toBeGreaterThan(whoAt);
+      expect(passwordAt).toBeGreaterThan(usualAt);
       expect(detailsAt).toBeGreaterThan(passwordAt);
-      expect(ceremony.slice(detailsAt)).toContain(`<h3>Why these agents</h3><p>${summary}</p>`);
-      expect(ceremony.slice(detailsAt)).toContain(why);
-      expect(ceremony.slice(detailsAt)).toContain("<h3>Runtime limits</h3>");
+      expect(ceremony.slice(usualAt, passwordAt)).toContain("<dt>Time limit</dt>");
       // The task page (the page without script) shows every term before the yes; chat keeps them one fold away.
       expect(ceremony).not.toContain("<details open");
       expect(ceremony.includes('<details class="approval-details" open>')).toBe(surface === "task");
@@ -2208,7 +2201,10 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(changed.status).toBe(303);
     expect(approvalOf(store.getScope("payouts")!)).toMatchObject({ approved: false, reason: "changed" });
     for (const path of ["/t/payouts", "/chat?task=payouts"]) {
-      expect(ceremonyOf(await page(cookie, path), "\\/t\\/payouts\\/approve"), path).toContain("claude · sonnet plans, builds, and repairs");
+      const ceremony = ceremonyOf(await page(cookie, path), "\\/t\\/payouts\\/approve");
+      expect(ceremony, path).toMatch(/<dt>Agent<\/dt><dd><p>Claude Sonnet plans, builds and fixes/);
+      // A pick by hand differs from the project's usual one: said in the open.
+      expect(ceremony, path).toContain("<dt>Your pick</dt><dd><p>builder Claude Sonnet, not the project’s usual pick</p>");
     }
   });
 
@@ -2226,7 +2222,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     for (const path of ["/t/payouts", "/chat?task=payouts", row!.action!.href]) {
       const shown = await page(cookie, path);
       const ceremony = /<form method="post" action="\/t\/payouts\/approve"(.*?)<\/form>/s.exec(shown)?.[1] ?? "";
-      expect(ceremony, path).toMatch(/a risky change — planning and building use the strongest configured agent|Risky change: strongest agents plan and build/);
+      expect(ceremony, path).toMatch(/\(risky change: strongest agents plan and build\)/);
       expect(ceremony, path).not.toContain("Routine:");
     }
     const scope = store.getScope("payouts")!;

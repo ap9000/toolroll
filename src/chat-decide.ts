@@ -37,7 +37,7 @@ import type { Store } from "./store.js";
 import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
 import { cardTermsDigest, chatLimitProblem, permissionPlainWords, scopeTermsText, shownAsWritten, shownTermsDigest } from "./chat-terms.js";
-import { chainTermsLines } from "./scope.js";
+import { approvalSummaryOf, EVIDENCE_WORDS, summaryContextOf, type SummaryRow } from "./approval-summary.js";
 import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./contracts/youiyoux-request.js";
 import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
 import { discordPlain } from "./reply-shape.js";
@@ -99,7 +99,6 @@ const title = (store: Store, taskId: string): string => phoneText(chatTitle(stor
 
 export { chatApproveMode };
 
-const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 
 /** A plan this person's chat may approve now: the term, the plan's exact bytes, and none of the reasons it must open
  * Toolroll instead. `digest` binds the scope and the plan document the card shows. */
@@ -144,7 +143,9 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
     if (!verified) return { ok: false, why: "The saved plan can't be verified here, so you approve it in Toolroll." };
   }
   // Terms shown whole are part of what the card is bound to, so the digest kept on its buttons covers those words.
-  return { ok: true, modeDigest: mode.digest, source: mode.source, scope, whole, digest: sha(`${scope.digest}:${plan?.sha256 ?? ""}${whole ? `:${cardTermsDigest(scopeTermsText(scope))}` : ""}`) };
+  // The summary the card shows (approval-summary.ts) is bound too: the project's usual settings it names, the rules it says.
+  const summaryKey = approvalSummaryOf(scope, summaryContextOf(store, taskId, scope, now)).key;
+  return { ok: true, modeDigest: mode.digest, source: mode.source, scope, whole, digest: sha(`${scope.digest}:${plan?.sha256 ?? ""}:${summaryKey}${whole ? `:${cardTermsDigest(scopeTermsText(scope))}` : ""}`) };
 }
 
 /** A ready pull request this person's chat may merge now, bound to the exact commit. */
@@ -336,9 +337,11 @@ function approveRequests(store: Store, seat: DecideSeat, who: VerifiedApprover, 
   return { ack, edit: { text: again.text ?? said, ...mintDecideButtons(store, seat, target, again, now, message) } };
 }
 
-/** The plan card: title, goal in two lines, what changes, done when, and what the yes allows. On Telegram the yes's
- * terms come second, under the title, and the steps are fewer: the full plan is behind Edit. */
-export function planCardText(store: Store, taskId: string, scope: Scope, root?: string, channel?: DecideChannel): string {
+/** The plan card: the approval summary (approval-summary.ts), short for a phone — title, the revision's sentence and
+ * every risk first, the goal in two lines, the steps and what it's done when, then who builds, what it may touch and
+ * cost, what differs from the project's usual settings, and the usual settings by name. The card's digest binds the
+ * summary's key (planInChat), so a card whose words no longer hold refuses. */
+export function planCardText(store: Store, taskId: string, scope: Scope, root?: string, _channel?: DecideChannel): string {
   const ref = store.lookupRef(taskId);
   const artifact = ref === null ? null : store.latestPlanArtifact(ref.id);
   let milestones: string[] = [];
@@ -351,43 +354,27 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   }
   const bullets = (items: readonly string[], cap: number): string[] =>
     [...items.slice(0, cap).map(one => `• ${phoneText(one, 120)}`), ...(items.length > cap ? [`• and ${items.length - cap} more`] : [])];
-  // The goal in two lines at most: its first two, each kept short.
-  const goal = scope.goal.split("\n").filter(one => one.trim() !== "").slice(0, 2).map(one => phoneText(one, 160));
-  const allowing = [permissionPlainWords(scope.profile), scope.budgetMicrousd === null ? "no attempt limit" : `up to ${money(scope.budgetMicrousd)} per attempt`]
-    .filter((one): one is string => one !== null);
+  // The signed goal, whole: a card that collects a yes never shows less of it than is signed.
+  const goal = scope.goal.split("\n").filter(one => one.trim() !== "");
   const changed = routeChangeOf(store, taskId);
-  // Fallback agents are terms: in full on every card, near the top, and never cut.
-  const chain = chainTermsLines(scope);
-  if (channel === "telegram") {
-    return [
-      `Plan ready: ${title(store, taskId)}`,
-      ...(changed === null ? [] : [changed]),
-      ...chain,
-      `Starting allows: ${allowing.join(" · ")}`,
-      "",
-      ...goal,
-      ...(scope.touches.length > 0 ? [`Only in: ${scope.touches.slice(0, 6).map(one => phoneText(one, 80)).join(", ")}${scope.touches.length > 6 ? ", …" : ""}`] : ["Any file in the project."]),
-      "",
-      "Done when:",
-      ...(scope.acceptance.length > 0 ? bullets(scope.acceptance.map(one => one.statement), 5) : ["You decide when you review the result."]),
-      ...(milestones.length > 0 ? ["", "Steps:", ...bullets(milestones, 3)] : []),
-    ].join("\n");
-  }
+  const summary = approvalSummaryOf(scope, summaryContextOf(store, taskId, scope, new Date()));
+  const shown = (one: SummaryRow): boolean => !one.fields.some(field => field === "goal" || field === "acceptance");
   return [
     `Plan ready: ${title(store, taskId)}`,
     ...(changed === null ? [] : [changed]),
-    ...chain,
+    ...(summary.revision === null ? [] : [summary.revision]),
+    // Risks first, whole: never cut.
+    ...summary.warnings.map(one => one.words),
     "",
     ...goal,
-    "",
-    "Changes:",
-    ...(milestones.length > 0 ? bullets(milestones, 5) : []),
-    ...(scope.touches.length > 0 ? [`Only in: ${scope.touches.slice(0, 6).map(one => phoneText(one, 80)).join(", ")}${scope.touches.length > 6 ? ", …" : ""}`] : milestones.length > 0 ? [] : ["Any file in the project."]),
+    ...(milestones.length > 0 ? ["", "Steps:", ...bullets(milestones, 3)] : []),
     "",
     "Done when:",
-    ...(scope.acceptance.length > 0 ? bullets(scope.acceptance.map(one => one.statement), 5) : ["You decide when you review the result."]),
+    // Every requirement, whole, with how it is shown (signed terms are never cut on a card that asks for a yes).
+    ...(scope.acceptance.length > 0 ? scope.acceptance.map(one => `• ${one.statement} (${one.evidence.map(kind => EVIDENCE_WORDS[kind] ?? kind).join(", ")})`) : ["You decide when you review the result."]),
     "",
-    `You're allowing: ${allowing.join(" · ")}`,
+    ...[...summary.decisions.filter(shown), ...summary.differs].flatMap(one => [`${one.label}: ${one.words}`, ...(one.lines ?? [])]),
+    ...(summary.usual.length === 0 ? [] : [`${summary.usualLabel}: ${summary.usual.map(one => `${one.label.toLowerCase()} ${one.words}`).join(" · ")}`]),
   ].join("\n");
 }
 

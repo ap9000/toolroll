@@ -248,7 +248,7 @@ describe("decide-in-chat cards", () => {
   test("a plan: sent, armed, approved; ledgered as before", async () => {
     sign("bob");
     const ref = placed("plan-5", "Refuse over-limit payouts");
-    propose(store, { taskId: "plan-5", goal: "Refuse over-limit payouts.\nKeep the public API unchanged.\nA third line the card leaves out.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
+    propose(store, { taskId: "plan-5", goal: "Refuse over-limit payouts.\nKeep the public API unchanged.\nA third line the card once left out.", touches: ["src/guard.ts"], budgetMicrousd: 2_000_000,
       acceptance: [{ id: "c1", statement: "Over-limit payouts are refused.", how: null, evidence: ["check"] }, { id: "c2", statement: "Refusals are logged with the payout id.", how: null, evidence: ["check"] }], now });
     store.enqueueNotification({ dedupeKey: "plan-ready:plan-5", kind: "plan-ready", subject: "plan-5: plan ready for review", body: "Review, edit, and approve the scope — nothing builds until you do.", source: { taskRef: ref } }, now);
     await pass();
@@ -258,9 +258,15 @@ describe("decide-in-chat cards", () => {
     expect(card.labels).toEqual(["Review plan", "Details ↗"]);
     const terms = [
       "Plan ready: Refuse over-limit payouts",
-      "Starting allows: file edits and routine commands; anything risky stops · up to $2.00 per attempt", "",
-      "Refuse over-limit payouts.", "Keep the public API unchanged.", "Only in: src/guard.ts", "",
-      "Done when:", "• Over-limit payouts are refused.", "• Refusals are logged with the payout id.",
+      // The approval summary (approval-summary.ts): the signed goal whole, every requirement whole, then who, what it may
+      // touch and cost, and the usual settings by name.
+      "",
+      "Refuse over-limit payouts.", "Keep the public API unchanged.", "A third line the card once left out.", "",
+      "Done when:", "• Over-limit payouts are refused. (runs automatically)", "• Refusals are logged with the payout id. (runs automatically)", "",
+      "Agent: Claude Sonnet plans, builds, fixes and reviews",
+      "May touch: only src/guard.ts · network: the agent's provider · tools: file edits and routine commands; anything risky stops",
+      "May cost: up to $2.00 per attempt; the agent is stopped there",
+      "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed",
     ].join("\n");
     await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
     const armed = seen("Plan approval", "terms", script.current(BOB, card.messageId));

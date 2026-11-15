@@ -30,7 +30,8 @@ import { openStore, type Store } from "./store.js";
 import type { Runner } from "./builder.js";
 import { withActor } from "./actor.js";
 import { bindRunToWalk, chainCustodyProblem, clearFallbackChain, setFallbackChain, setPaidGrant, chainJsonOf, chainSealProblem, dispatchEntryOf, fallbackBriefFor, fallbackSettingOf, moveOnIfExhausted, pinnedEntryOf, ranOutOnChain, reconcileWalks } from "./fallback.js";
-import { canonicalChainJson, chainFromJson, chainTermsLines, describeScope, liveChainFromJson, scopeAuthorityOf } from "./scope.js";
+import { canonicalChainJson, chainFromJson, chainTermsLines, liveChainFromJson, scopeAuthorityOf } from "./scope.js";
+import { describeScope } from "./approval-summary.js";
 import { cardShowsScope, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
 import { planCardText } from "./chat-decide.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
@@ -465,11 +466,12 @@ describe("a chain, against real git", () => {
       const input = { surface: "task" as const, action: "/t/t-1/approve", csrf: "c", nonce: "n", digest: scope.digest, returnTo: null, scope, planDocument: null, planContract: null,
         revision: null, revisionSourceHref: "", repairChain: null, route: null, coordinator: null, origin: null, deliverable: "branch" as const, editHref: "#", notNowHref: "#", sticky: false, earlier: { active: 0, running: 0 }, edit: null };
       const sheet = withFormToken("c", () => htmlString(approvalSheetHtml(input)));
-      expect(sheet).toContain("data-approval-fallback");
-      expect(sheet).toContain("opus");
-      const allowing = /data-approval-allowing>([^<]*)</.exec(sheet)?.[1] ?? "";
-      expect(allowing, sheet.slice(sheet.indexOf("approval-allowing") - 20, sheet.indexOf("approval-allowing") + 400)).toMatch(/opus/i);
-      expect(allowing).toContain("which spends money");
+      // The chain is a risk in the approval summary: said whole above the terms, before Approve, never folded.
+      const warning = /data-terms-warning>([^<]*)</.exec(sheet)?.[1] ?? "";
+      expect(warning).toBe(chainTermsLines(scope).join(" "));
+      expect(warning).toMatch(/opus/i);
+      expect(warning).toContain("which spends money");
+      expect(sheet.indexOf("data-terms-warning")).toBeLessThan(sheet.indexOf('<div class="approval-act"'));
       const kit = withFormToken("c", () => approveKitOf(input, null));
       expect(JSON.stringify(kit)).toContain("on an API key, which spends money");
       expect(chainTermsLines(scope).join("\n")).toContain("which spends money");
