@@ -4,7 +4,6 @@ import { basename, dirname, join } from "node:path";
 import { makeTempRoot, removeOnExit, removeRoot } from "../scripts/suite-lifecycle.mjs";
 // @ts-expect-error plain ESM script without declarations
 import { acceptedLine, residueCheck } from "../scripts/isolated-env.mjs";
-import { INCIDENTS_ENV, incidentEvidenceFolder, keepIncidentRecordsUnder } from "./incident-evidence.js";
 
 /**
  * Tests leave no temp folders. Every test run gets one temp root of its own, before any worker starts: the workers
@@ -30,9 +29,7 @@ import { INCIDENTS_ENV, incidentEvidenceFolder, keepIncidentRecordsUnder } from 
 export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, options: { homes?: string[]; outerParent?: string } = {}): () => string | null {
   const own = project?.vitest?._tmpDir;
   if (typeof own === "string" && dirname(own) === tmpdir() && /^[\w-]{21}$/.test(basename(own))) removeOnExit(own);
-  const before = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP, TOOLROLL_TEST_OUTER_HOME: process.env.TOOLROLL_TEST_OUTER_HOME, [INCIDENTS_ENV]: process.env[INCIDENTS_ENV] };
-  // On CI, git incident records are kept outside the root (it goes at the end) for a failed run's artifact.
-  const evidence = incidentEvidenceFolder(process.env, tmpdir());
+  const before = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP, TOOLROLL_TEST_OUTER_HOME: process.env.TOOLROLL_TEST_OUTER_HOME };
   const root = makeTempRoot("so-t", { parent: shortTempParent() });
   // Windows keeps its suite as it was (test/setup-state.ts): no fake outer home there (outsideTempDir serves POSIX tests).
   const windows = process.platform === "win32" && options.outerParent === undefined;
@@ -48,7 +45,6 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, o
   process.env.TMP = root;
   process.env.TEMP = root;
   if (!windows) process.env.TOOLROLL_TEST_OUTER_HOME = outer;
-  if (evidence !== null) process.env[INCIDENTS_ENV] = evidence;
   const residue = residueCheck({ root, also: [outer], acceptUnreadable: process.env.TOOLROLL_RESIDUE_UNREADABLE === "accept", ...(options.homes === undefined ? {} : { homes: options.homes }) });
   return () => {
     for (const [name, value] of Object.entries(before)) {
@@ -58,7 +54,6 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }, o
     const { left, unknown, unknownFails, acceptedUnreadable } = residue.check() as { left: string[]; unknown: string[]; unknownFails: boolean; acceptedUnreadable: boolean };
     const accepted = acceptedUnreadable ? acceptedLine(unknown, options.homes) as string : null;
     if (accepted !== null) console.log(accepted);
-    if (evidence !== null) for (const [folder, label] of [[root, "temp-root"], [outer, "outer-home"]] as const) keepIncidentRecordsUnder(folder, evidence, label);
     removeRoot(root);
     removeRoot(outer);
     if (left.length > 0) throw new Error(`Residue check: these tests left ${left.length} trace(s) in the person's real home: ${left.slice(0, 10).join(", ")}. A test's HOME is its own (test/setup-state.ts); find what ignored it.`);

@@ -152,15 +152,6 @@ jobs:
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
           retention-days: 7
-      # A failed run's git incident records (why a Flexible git check refused), copied out of the candidate's temp folder
-      # by the harness (ci-candidate.mjs collectIncidents: plain files only, bounded): none written is no artifact.
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: git-incidents-shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
-          path: ${{ runner.temp }}/git-incidents
-          if-no-files-found: ignore
-          retention-days: 3
 
   # The required Linux check, under the name `toolroll release` and main's protection wait for. It
   # always runs (a job skipped because a shard failed would read as passing to a required check) and fails unless
@@ -290,15 +281,6 @@ jobs:
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
           retention-days: 7
-      # A failed run's git incident records (why a Flexible git check refused), copied out of the candidate's temp folder
-      # by the harness (ci-candidate.mjs collectIncidents: plain files only, bounded): none written is no artifact.
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: git-incidents-macos-shard-${{ matrix.node }}-${{ matrix.shard }}-a${{ github.run_attempt }}
-          path: ${{ runner.temp }}/git-incidents
-          if-no-files-found: ignore
-          retention-days: 3
 
   # The required macOS check, joined exactly as the Linux one: it always runs, and fails unless every
   # macOS shard passed and together they ran every test file of the tested commit once, judged by the trusted base

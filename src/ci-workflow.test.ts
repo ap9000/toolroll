@@ -20,8 +20,6 @@ import { ADVISORY_PR_CHECKS, prChecksVerdict, RELEASE_TAG_CHECKS, REQUIRED_PR_CH
 import { GIT_FLOOR_WORDS } from "./git-floor.js";
 
 type Step = { uses?: string; with?: Record<string, unknown>; name?: string; run?: string; if?: unknown; env?: Record<string, unknown>; id?: string; "continue-on-error"?: unknown };
-/** The one upload a job may make only on failure: its git incident records (test/incident-evidence.ts). */
-const incidentsUpload = (step: Step): boolean => step.uses?.startsWith("actions/upload-artifact@") === true && String(step.with?.["name"] ?? "").startsWith("git-incidents-");
 type Job = {
   name?: string; "runs-on"?: string; uses?: string; container?: unknown; env?: Record<string, unknown>; if?: unknown; needs?: string | string[]; "continue-on-error"?: unknown;
   permissions?: Record<string, string>; outputs?: Record<string, string>; strategy?: { matrix?: Record<string, unknown[]> }; steps?: Step[];
@@ -519,8 +517,7 @@ describe("the CI workflows", () => {
         expect(checks(join, joinId, pr([]), file).map(check => check.name)).toEqual([`node ${node} · ${os}-latest`]);
         for (const job of [shard, join]) {
           expect(job["continue-on-error"] ?? false).toBe(false);
-          // One step only runs on failure: the upload of a failed run's git incident records (it changes no outcome).
-          for (const step of job.steps ?? []) { expect(step.if).toBe(incidentsUpload(step) ? "failure()" : undefined); expect(step["continue-on-error"] ?? false).toBe(false); }
+          for (const step of job.steps ?? []) { expect(step.if).toBeUndefined(); expect(step["continue-on-error"] ?? false).toBe(false); }
         }
         // Each shard runs the whole suite's command on its slice and uploads Vitest's own report, written outside the
         // checkout: no candidate script summarizes it (Codex review round 1, finding 1).
@@ -575,8 +572,7 @@ describe("H1: the root lanes run in a workflow run of their own", () => {
     expect(native().permissions).toEqual({ contents: "read" });
     for (const [id, job] of Object.entries(native().jobs)) {
       expect((REQUIRED_PR_CHECKS as readonly string[]).includes(job.name ?? ""), id).toBe(false);
-      // Nothing but a failed run's git incident records, which no release reads.
-      expect(job.steps?.some(step => step.uses?.includes("artifact") && !incidentsUpload(step)), id).toBe(false);
+      expect(job.steps?.some(step => step.uses?.includes("artifact")), id).toBe(false);
     }
     expect(Object.keys(native().jobs).filter(id => id !== "scope").map(id => native().jobs[id]!.name).sort()).toEqual([...NATIVE].sort());
     expect(`.github/workflows/${native().file}`).toBe(NATIVE_WORKFLOW);
@@ -1144,24 +1140,5 @@ describe("the wire budgets (.github/workflows/wire-budgets.yml)", () => {
     expect(wire.permissions).toEqual({ contents: "read", actions: "read" });
     expect(readFileSync(join(folder, "wire-budgets.yml"), "utf8")).not.toMatch(/secrets\./);
     expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
-  });
-});
-
-describe("a failed run keeps its git incident records (why a Flexible git check refused)", () => {
-  test("each Linux and macOS shard and each Linux native lane uploads them only on failure, small, briefly, from the runner's own temp folder", () => {
-    const uploads = [["ci.yml", "test-shard"], ["ci.yml", "macos-shard"], ["native-lanes.yml", "linux-native-containment"], ["native-lanes.yml", "linux-fence"]] as const;
-    for (const [file, id] of uploads) {
-      const job = workflow(file).jobs[id]!;
-      const found = (job.steps ?? []).filter(incidentsUpload);
-      expect(found, `${file} ${id}`).toHaveLength(1);
-      expect(found[0]?.if, `${file} ${id}`).toBe("failure()");
-      expect(found[0]?.with, `${file} ${id}`).toMatchObject({ path: "${{ runner.temp }}/git-incidents", "if-no-files-found": "ignore", "retention-days": 3 });
-      expect(String(found[0]?.with?.["name"]), `${file} ${id}`).toContain("${{ github.run_attempt }}");
-      // The upload comes after the tests whose records it carries.
-      const steps = job.steps ?? [];
-      expect(steps.indexOf(found[0]!), `${file} ${id}`).toBeGreaterThan(steps.findIndex(step => /vitest|npm run test/.test(step.run ?? "")));
-    }
-    // A native lane writes them there itself; a hardened shard's harness copies them out of the candidate's temp folder.
-    for (const id of ["linux-native-containment", "linux-fence"]) expect(workflow("native-lanes.yml").jobs[id]?.env?.["TOOLROLL_TEST_INCIDENTS"]).toBe("${{ runner.temp }}/git-incidents");
   });
 });
