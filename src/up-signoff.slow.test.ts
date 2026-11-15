@@ -11,15 +11,18 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { shortTempDir } from "../test/short-temp.js";
+import { freePort, freePorts } from "../test/free-port.js";
 import { listProcesses } from "../scripts/deploy-stop.mjs";
 
 const dist = fileURLToPath(new URL("../dist", import.meta.url));
-const PORT = 46000 + (process.pid % 1000);
+/** This test's own port, chosen at run time (test/free-port.ts). */
+let PORT: number;
 const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
 
 let base: string, repo: string, db: string, env: NodeJS.ProcessEnv;
 const started: ChildProcess[] = [];
-beforeEach(() => {
+beforeEach(async () => {
+  PORT = await freePort();
   base = realpathSync(shortTempDir("so-signoff-"));
   repo = join(base, "project");
   db = join(base, "orders.db");
@@ -94,9 +97,10 @@ describe("up signs off however it is stopped", () => {
   }, 90_000);
 
   test("everything killed outright: the next start proves the holder gone and takes over at once; a live holder is still refused", async () => {
+    const [p1] = await freePorts(1);
     const s = await service();
     // Two live `up`s stay impossible: the holder's record shows its processes running.
-    const second = spawnSync(process.execPath, upArgs(PORT + 1), { env, encoding: "utf8", timeout: 60_000 });
+    const second = spawnSync(process.execPath, upArgs(p1), { env, encoding: "utf8", timeout: 60_000 });
     expect(second.status).not.toBe(0);
     expect(`${second.stdout}${second.stderr}`).toMatch(/looks alive/);
     for (const pid of [s.supervisor, s.up, ...s.roles]) process.kill(pid, "SIGKILL");

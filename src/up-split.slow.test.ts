@@ -16,9 +16,11 @@ import { PACKAGE_VERSION } from "./version.js";
 import { openStore } from "./store.js";
 import { readInstance } from "./console-instance.js";
 import { shortTempDir } from "../test/short-temp.js";
+import { freePort, freePorts } from "../test/free-port.js";
 import { addRepos, updateRepos } from "./repos.js";
 
-const PORT = 44000 + (process.pid % 2000);
+/** This test's own port, chosen at run time (test/free-port.ts). */
+let PORT: number;
 const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
 
 let base: string;
@@ -27,7 +29,8 @@ let db: string;
 let lines: string[];
 const savedPath = process.env["PATH"];
 
-beforeEach(() => {
+beforeEach(async () => {
+  PORT = await freePort();
   base = shortTempDir("so-split-");
   repo = join(base, "project");
   db = join(base, "orders.db");
@@ -156,9 +159,10 @@ describe("toolroll up as two processes", () => {
   }, 90_000);
 
   test("a killed worker starts again and recovers its predecessor's claims only after its lease lapses: never two holders", async () => {
-    const up = startUp(PORT + 1);
+    const [p1] = await freePorts(1);
+    const up = startUp(p1);
     try {
-      const envelope = await started(up, PORT + 1);
+      const envelope = await started(up, p1);
       const first = roles().worker!;
       const before = await until("the first worker's lease", () => liveLease());
 
@@ -291,6 +295,7 @@ describe("toolroll up as two processes", () => {
   }, 60_000);
 
   test("a role child takes its start only from `up`'s channel, refuses a console start carrying a token, and refuses another build", async () => {
+    const [p2] = await freePorts(1);
     const entry = fileURLToPath(new URL("./up-role-child.ts", import.meta.url));
     const tsx = import.meta.resolve("tsx");
     const child = (role: string, start: unknown) => new Promise<{ code: number | null; messages: unknown[] }>(resolve => {
@@ -300,7 +305,7 @@ describe("toolroll up as two processes", () => {
       one.on("exit", code => resolve({ code, messages }));
       one.send(start);
     });
-    const consoleConfig = { host: "127.0.0.1", port: PORT + 2, allowedHosts: null, publicUrl: null, localRunner: "w", poolRoot: base, repos: [], projectRoots: [], registryPath: join(base, "repos.json"), editor: false, startAuthority: "none" };
+    const consoleConfig = { host: "127.0.0.1", port: p2, allowedHosts: null, publicUrl: null, localRunner: "w", poolRoot: base, repos: [], projectRoots: [], registryPath: join(base, "repos.json"), editor: false, startAuthority: "none" };
     // A console never holds the runner token: a start that hands it one is not a start at all.
     expect(await child("console", { type: "start", role: "console", databaseFile: db, containment: null, build: "x", config: { ...consoleConfig, token: "secret" } })).toMatchObject({ code: 2, messages: [] });
     // The role on the command line and the one started must agree.
