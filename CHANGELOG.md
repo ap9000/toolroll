@@ -4,6 +4,36 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.109 — 2026-11-14
+
+One Work screen, pages several times faster on a busy install, and what the agent decided before you accept.
+
+### New
+
+- **Work is the first screen.** What needs you comes first (Decide, Review, Unblock), then Running, Queued and Done;
+  pick a row and the task opens beside the list. Approve, Accept and Send back work there without a page load.
+- **The agent says what it decided.** Before you accept, a result shows what the agent decided, assumed, didn't finish
+  and thinks is risky, and quotes the notes you and your teammates wrote for it.
+- **Settings → Computers** holds the computers that build: connect a builder, see each one, and add or retire one on
+  its own password page.
+
+### Changed
+
+- **Home and Tasks are one screen.** Old Home and Tasks links open Work with the same filters; the sidebar is Work,
+  Chat and Settings, with your projects and Manage projects.
+- **Faster on a busy install.** Chat, Work and task pages read many times less from the database: on 10,000 tasks
+  Chat opens in about 2 s instead of 14 s.
+- **One page per result.** Every "Open result" (Work, Chat, chat apps, notifications) opens the task page at that
+  exact result, status and action first; an earlier attempt opens on its own page with nothing that acts on the
+  current one.
+- **Live pages recover in about half a second** after your phone wakes or the network changes, without a gap.
+- **Show advanced features** moved to Settings → General.
+
+### Fixed
+
+- **Send back never sends notes you haven't seen,** and a lost answer is never shown as done.
+- **A result page sends its result panel once,** about half the size it was.
+
 ## 0.9.108 — 2026-11-14
 
 Add projects from the browser, get back in when you forget your password, and pages that reconnect on their own.
