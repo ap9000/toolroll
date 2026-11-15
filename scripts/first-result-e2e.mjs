@@ -91,6 +91,16 @@ const roundedPriceFiles = () => ({
   "test/price.test.js": "import assert from \"node:assert/strict\";\nimport { test } from \"node:test\";\nimport { priceWithDiscount } from \"../src/price.js\";\n\ntest(\"takes the discount off the price\", () => {\n  assert.equal(priceWithDiscount(80, 25), 60);\n});\ntest(\"rounds to whole cents\", () => {\n  assert.equal(priceWithDiscount(9.99, 33), 6.69);\n});\n",
 });
 
+/** --port <n>: each bare start (`toolroll`, `toolroll --web`, `npx -y <pkg>`, the terminal's and the browser's) gets its
+ * own port from n on. It must be a port number, and never 4180, the default a real install listens on: the point of
+ * --port is to stay off it. */
+const PORT_GIVEN = option("--port", null);
+let nextPort = PORT_GIVEN === null ? null : Number(PORT_GIVEN);
+if (!listing && nextPort !== null && (!Number.isInteger(nextPort) || nextPort < 1024 || nextPort > 65_000 || (nextPort <= 4180 && nextPort + 40 > 4180))) {
+  console.error(`Not started: --port needs a port from 1024 to 65000 whose next 40 stay clear of 4180 (got ${PORT_GIVEN}).`);
+  process.exit(2);
+}
+const withPort = typed => nextPort === null || !/^(?:toolroll|npx -y \S+)(?: --web)?$/.test(typed) ? typed : `${typed} --port ${nextPort++}`;
 const w = await world("first-result", {});
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const evidence = option("--evidence", join(here, "evidence", "first-result", `${stamp}-${scriptedRun ? "scripted" : "real"}`));
@@ -100,9 +110,6 @@ const WAIT = real ? { start: 10 * 60_000, sizing: 120_000, plan: 2 * REAL_TURN_M
 
 const shellWord = text => `'${String(text).replace(/'/g, "'\\''")}'`;
 /** The first words Toolroll itself prints at a terminal: the end of npx's download. */
-/** --port <n>: each bare start (`toolroll`, `toolroll --web`, `npx -y <pkg>`) gets its own port from n on. */
-let nextPort = option("--port", null) === null ? null : Number(option("--port", null));
-const withPort = typed => nextPort === null || !/^(?:toolroll|npx -y \S+)(?: --web)?$/.test(typed) ? typed : `${typed} --port ${nextPort++}`;
 const TOOLROLL_FIRST_LINE = /Starting Toolroll|Toolroll is on|Get to your first result|Nothing needs you|needs you|local mode is on|Toolroll didn't start|can't open/;
 /** The terminal host and the python3 that runs it (the system's own, as a newcomer's computer has it). */
 const PTY_HOST = join(here, "scripts", "fixtures", "pty-host.py");
@@ -715,7 +722,7 @@ async function browserInRepo({ trace, criterion, note }) {
     const plan = launchPlan({ install, pkg, root: inst.root, localBin: w.bin, brewPrefix: inst.brewPrefix ?? null });
     Object.assign(inst.env, plan.env);
     if (plan.path.length > 0) inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`;
-    const typed = `${plan.start} --web`;
+    const typed = withPort(`${plan.start} --web`);
     term = await openTerminal(inst, "web", typed);
     trace.interaction(`Type \`${typed}\` and press Return`, { surface: "terminal", keys: typed });
     if (plan.install === null) trace.startClock();
