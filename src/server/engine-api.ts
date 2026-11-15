@@ -19,12 +19,13 @@ import { FLEXIBLE_AVAILABLE } from "../flexible-available.js";
 import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
-import { localOwnerBinding, runLiveCommands, type Run } from "../store.js";
+import { runLiveCommands, type Run } from "../store.js";
 import { resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
 import type { EdgeContext, HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
 import { matchTaskPath, respond } from "./http.js";
 import { rereadBrowser } from "./live.js";
+import { admitLink, saveLinkSession, spendLink } from "./link-redemption.js";
 import type { ServerRuntime } from "./runtime.js";
 import { SESSION_COOKIE, type Who } from "./session.js";
 
@@ -178,39 +179,27 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const raw = await bodyOf(request, 1024);
     let code: string | null = null;
     if (raw !== null) { try { const read = linkRedemptionRequestSchema.safeParse(JSON.parse(raw)); code = read.success ? read.data.code : null; } catch { code = null; } }
-    const held = code === null ? undefined : runtime.signInLinks.get(runtime.linkKey(code));
-    if (held !== undefined) runtime.signInLinks.delete(runtime.linkKey(code!));
+    // The one admission both link roads share (link-redemption.ts), the spend first, whatever happens next.
+    const held = spendLink(runtime, code);
     const refused = (status: number, error: string, why?: string): void => {
-      if (why !== undefined && held !== undefined) runtime.recordSignIn(held?.account ?? "unknown account", "sign-in refused", "one-time link (terminal)", why);
+      if (why !== undefined && held !== undefined) runtime.recordSignIn(held.account, "sign-in refused", "one-time link (terminal)", why);
       return refusal(response, status, error);
     };
+    // Never a browser's: these come before the shared admission, and the link is already spent.
     const headers = request.headers;
     if (headers.origin !== undefined || Object.keys(headers).some(name => name.startsWith("sec-fetch-"))) return refused(403, "browser", "opened by a browser page");
     if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(String(headers["content-type"] ?? "")) || headers["x-toolroll-client"] !== "terminal") return refused(400, "request");
     if (code === null) return refused(400, "request");
-    if (!runtime.fromThisComputer(request)) return refused(403, "elsewhere", "opened from another device");
-    if (held === undefined || held.expires < Date.now()) return refused(410, "used");
-    if (held.kind !== "local-owner") return refused(403, "local-owner", "not a local owner's link");
-    const account = store.accountOf(held.account);
-    if (account === null || account.role !== "approver" || account.revokedAt !== null) return refused(403, "account");
+    const admitted = admitLink(runtime, request, held, "terminal");
+    if (!admitted.ok) return refusal(response, admitted.refusal.status, admitted.refusal.why);
     const fields: { keyEpoch: string | null; keyHash: string | null } = { keyEpoch: null, keyHash: null };
     // Its key, always (a tailnet machine's included, where a browser gets none): the cookie alone, which any server on
     // another port of this computer receives, never acts for it. Only at this console's own loopback address.
     const key = runtime.browserKeys.issueForClient(fields, request);
     if (key === null || fields.keyEpoch === null) return refused(403, "host", "not this console's own address");
-    const id = randomBytes(32).toString("hex"), csrf = randomBytes(32).toString("hex"), at = Date.now();
-    // The HTML road's own transaction (people-tokens.ts signInLink): local mode still on, for the same owner, at the
-    // link's local and account generations, read where the session is saved.
-    const made = store.transact(() => {
-      const now = localOwnerBinding(store);
-      if (now === null || now.account !== held.account || now.localGeneration !== held.localGeneration || now.accountGeneration !== held.accountGeneration) return false;
-      runtime.sessions.set(id, { ...runtime.arrival(request), name: held.account, csrf, role: account.role, generation: now.accountGeneration, createdAt: at, lastSeen: at,
-        sawBoardAt: null, project: runtime.defaultProject, projectRevision: 1, authority: "local-owner", localGeneration: now.localGeneration, ...fields });
-      return true;
-    });
-    if (!made) return refused(410, "used");
-    runtime.recordSignIn(held.account, "signed in", "local link (terminal)");
-    const body: LinkRedemption = { version: ENGINE_API_VERSION, account: held.account, cookie: { name: SESSION_COOKIE, value: id }, csrf, key, epoch: fields.keyEpoch };
+    const id = randomBytes(32).toString("hex"), csrf = randomBytes(32).toString("hex");
+    if (!saveLinkSession(runtime, request, admitted.held, "terminal", { id, csrf, keys: fields })) return refusal(response, 410, "used");
+    const body: LinkRedemption = { version: ENGINE_API_VERSION, account: admitted.held.account, cookie: { name: SESSION_COOKIE, value: id }, csrf, key, epoch: fields.keyEpoch };
     return sendChecked(response, 200, "linkRedemption", body);
   }
 
