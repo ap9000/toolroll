@@ -18,6 +18,7 @@
 import { fastPublishProblem } from "./fast-start.js";
 import { createHash, randomUUID } from "node:crypto";
 import { run as execRun } from "./exec.js";
+import { flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { bodyHashOf, publicationBody, publicationGrantOf, type ObservedPullRequest, type PublishExec } from "./publish.js";
 import { failingChecks, summarizeChecks } from "./pulls.js";
 import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
@@ -318,6 +319,8 @@ export async function followPullRequests(
     const taskId = taskIdOf(store, publication);
     // A put-away task (v145) gets no automatic revision, merge or ready notice: restoring it resumes following.
     if (refArchived(store, publication.taskRef)) continue;
+    // A Flexible result is its armed Ship's alone (flexible-merge-guard.ts): no revision, ready mark or merge here.
+    if (flexibleMergeRefusal(store, taskId, "merge-when-green") !== null) continue;
 
     if (one.remoteState === "MERGED") {
       updateFollow(store, publication.id, { merge_commit: one.mergeCommit ?? "", merged_by: "GitHub", merged_at: clock().toISOString() }, clock());
@@ -432,8 +435,8 @@ export async function mergePullRequest(
     anyway?: boolean;
     /** An automatic pass's standing, read in the write that reserves the merge: false refuses ("halted") and merges nothing. */
     proceed?: () => boolean;
-    /** The Flexible Ship whose Complete and merge authority this merge carries (flexible-ship.ts mergeArmedFlexible, the
-     * only caller that passes it, after re-proving that authority). A Flexible result merges by no other road. */
+    /** The Flexible Ship whose armed merge this is (flexible-ship.ts mergeArmedFlexible, the only caller that passes it,
+     * after re-proving that authority). A Flexible result merges by no other road. */
     flexibleShip?: string },
 ): Promise<Result<{ commit: string | null }>> {
   const exec = input.exec ?? execRun;
@@ -448,13 +451,11 @@ export async function mergePullRequest(
   if (mergedTask !== null && belongsToRelease(store, mergedTask)) return refuse("release", "This result belongs to a release; it merges only through `toolroll release`.");
   // A release task the plane approved (or is checking) automatically (auto-approve-green.md) never merges here either.
   if (mergedTask !== null && autoReleaseSealed(store, mergedTask)) return refuse("release", "This result was approved automatically for a release; it merges only through `toolroll release`.");
-  // A result from a Flexible thread (the Flexible plan v2 §7) merges only through its own Complete and merge, after the
-  // required check passed on its exact commit: never `anyway`, never "merge when checks pass", a mode's automerge, a flow
-  // or a chat merge. Its provenance is immutable (filed as `flexible:<ship>`), so no road around this exists.
-  const flexibleVia = mergedTask === null ? null : store.filedViaOf(mergedTask);
-  if (flexibleVia?.startsWith("flexible:") === true && (input.anyway === true || input.flexibleShip === undefined || `flexible:${input.flexibleShip}` !== flexibleVia)) {
-    return refuse("flexible", "This result came from a Flexible thread. It merges only through Complete and merge, after its check passed on this exact commit.");
-  }
+  // A result from a Flexible thread (the Flexible plan v2 §7) merges only through its own armed Ship, after the required
+  // check passed on its exact commit: never `anyway`, never "merge when checks pass", a mode's automerge, a flow or a
+  // chat merge (flexible-merge-guard.ts, asked on every merge road).
+  const flexibleHold = flexibleMergeRefusal(store, mergedTask, "pull-request", { ...(input.flexibleShip === undefined ? {} : { ship: input.flexibleShip }), ...(input.anyway === true ? { anyway: true } : {}) });
+  if (flexibleHold !== null) return refuse("flexible", flexibleHold);
   // A fast start merges only after a person accepted it, and only a change that stayed small (fast-start.ts).
   const fastHold = mergedTask === null ? null : fastPublishProblem(store, mergedTask, input.runId);
   if (fastHold !== null) return refuse("fast-start", fastHold);

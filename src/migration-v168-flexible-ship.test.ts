@@ -60,9 +60,9 @@ describe("v168", () => {
     expect(() => insert(db, { import_ref: "refs/heads/main" })).toThrow(); // never another ref
     expect(() => insert(db, { branch: "main" })).toThrow(); // never the default branch
     expect(() => insert(db, { candidate: "not-a-sha" })).toThrow();
-    expect(() => insert(db, { proof: "remote-token" })).toThrow(); // a person's password typed now
-    expect(() => insert(db, { proof: "fresh-password" })).toThrow();
-    expect(() => insert(db, { state: "sent" })).toThrow(); // born approved
+    expect(() => insert(db, { proof: "remote-token" })).toThrow(); // a person's proof, never a machine's credential
+    expect(() => insert(db, { proof: "lead-token" })).toThrow();
+    expect(() => insert(db, { state: "armed" })).toThrow(); // born approved
     expect(() => insert(db, { state: "approved", task_id: "t", scope_digest: "d" })).toThrow();
     expect(() => insert(db, { seq: 0 })).toThrow();
     insert(db, { seq: 1 });
@@ -79,24 +79,29 @@ describe("v168", () => {
       expect(() => db.prepare(`UPDATE flexible_ship SET ${column} = ? WHERE id = ?`).run(value, id), column).toThrow();
     }
     const move = (state: string, extra = "", ...values: (string | number)[]) => db.prepare(`UPDATE flexible_ship SET state = ?${extra} WHERE id = ?`).run(state, ...values, id);
-    expect(() => move("sent", ", task_id = 't', scope_digest = 'd'")).toThrow(/only moves forward/); // never skips the import
+    expect(() => move("armed", ", task_id = 't', scope_digest = 'd'")).toThrow(/only moves forward/); // never skips the import
     expect(() => move("refused")).toThrow(); // a refusal says why
+    expect(() => move("failed")).toThrow(); // so does an interrupted one
     move("imported");
     expect(() => move("approved")).toThrow(/only moves forward/);
-    expect(() => move("sent")).toThrow(); // a sent send names its task
-    move("sent", ", task_id = 'flexible-x', scope_digest = 'scope'");
+    expect(() => move("armed")).toThrow(); // an armed Ship names its task
+    move("armed", ", task_id = 'flexible-x', scope_digest = 'scope'");
     expect(() => db.prepare("UPDATE flexible_ship SET task_id = 'other' WHERE id = ?").run(id)).toThrow(/only moves forward/);
-    expect(() => move("merge-armed")).toThrow(); // an armed merge names its head
-    move("merge-armed", ", merge_head = ?, merge_by = 'alex', merge_generation = 1, merge_at = ?", "5".repeat(40), T0);
+    expect(() => move("merged")).toThrow(/only moves forward/); // never merged before its checked head is completed
+    expect(() => move("completed")).toThrow(); // a completed Ship names the checked head
+    move("completed", ", merge_head = ?, merge_at = ?", "5".repeat(40), T0);
     expect(() => db.prepare("UPDATE flexible_ship SET merge_head = ? WHERE id = ?").run("6".repeat(40), id)).toThrow(/only moves forward/);
     move("cancelled");
-    for (const to of ["merge-armed", "sent", "merged", "imported"]) expect(() => move(to), to).toThrow(/only moves forward/); // cancelled is final
+    for (const to of ["armed", "completed", "merged", "imported"]) expect(() => move(to), to).toThrow(/only moves forward/); // cancelled is final
+    const crashed = insert(db, { seq: 7 });
+    db.prepare("UPDATE flexible_ship SET state = 'failed', reason = 'interrupted' WHERE id = ?").run(crashed);
+    expect(() => db.prepare("UPDATE flexible_ship SET state = 'imported' WHERE id = ?").run(crashed)).toThrow(/only moves forward/); // failed is final
     const back = insert(db, { seq: 6 });
     db.prepare("UPDATE flexible_ship SET state = 'imported' WHERE id = ?").run(back);
-    db.prepare("UPDATE flexible_ship SET state = 'sent', task_id = 'flexible-y', scope_digest = 's' WHERE id = ?").run(back);
+    db.prepare("UPDATE flexible_ship SET state = 'armed', task_id = 'flexible-y', scope_digest = 's' WHERE id = ?").run(back);
     expect(() => db.prepare("UPDATE flexible_ship SET state = 'sent-back' WHERE id = ?").run(back)).toThrow(); // sent back with its feedback
     db.prepare("UPDATE flexible_ship SET state = 'sent-back', feedback = 'Rename it.' WHERE id = ?").run(back);
-    expect(() => db.prepare("UPDATE flexible_ship SET state = 'sent', feedback = NULL WHERE id = ?").run(back)).toThrow(/only moves forward/);
+    expect(() => db.prepare("UPDATE flexible_ship SET state = 'armed', feedback = NULL WHERE id = ?").run(back)).toThrow(/only moves forward/);
     store.close();
   });
 

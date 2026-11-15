@@ -18,11 +18,13 @@
  *   empty tree).
  * - Every check runs in that quarantine BEFORE ANY REF MOVES in the project's repository: the candidate is a commit that
  *   descends from the thread's recorded base, with no merge commit between them (none from outside, by default none at
- *   all), within the commit, object, per-file and on-disk limits; no submodule; none of Toolroll's placeholder files (the
+ *   all; refused before anything else is checked), within the commit, object, per-file and on-disk limits; and then on
+ *   EVERY commit between them, not just the net change (a later commit can't take back what an earlier one carries into
+ *   the project's history): no submodule; none of Toolroll's placeholder files (the
  *   bytes flexible-thread.ts reserves protected names with: `git add -f` can commit one, so the thread's exclude list is
  *   no import boundary); no protected name (agent-fence.ts protectedChanges) and no link at one (protectedLinks); no
- *   link that leads out of the project or into a `.git`; and the existing secret check on the diff (evidence.ts
- *   scanPatchForSecrets). Each refusal says what it found, in words, and leaves the project's refs exactly as they were.
+ *   link that leads out of the project or into a `.git`, resolved against that commit's tree following every link on
+ *   the way; and the existing secret check on each commit's diff (evidence.ts scanPatchForSecrets). Each refusal says what it found, in words, and leaves the project's refs exactly as they were.
  * - Only then is the candidate fetched from the quarantine into the project's repository, at
  *   refs/toolroll/import/<thread>/<n> (create-only, `transfer.fsckObjects`, no tags, no FETCH_HEAD, no submodules, a
  *   time limit), and the thread's branch toolroll/code-<thread> moved to it by compare-and-swap from exactly what the
@@ -357,14 +359,81 @@ export function linkLeadsOut(path: string, target: string): boolean {
   return false;
 }
 
+/** `log --raw -z --format=commit:%H` output, parsed strictly into each commit's own changes; null when it isn't
+ * exactly that. */
+function parseRawLog(stdout: string): { commit: string; entries: DiffEntry[] }[] | null {
+  const fields = stdout.split("\0").map(field => field.replace(/^\n/, ""));
+  if (fields.at(-1) === "") fields.pop();
+  const commits: { commit: string; entries: DiffEntry[] }[] = [];
+  for (let at = 0; at < fields.length; at++) {
+    const field = fields[at]!;
+    const header = /^commit:([0-9a-f]{40}|[0-9a-f]{64})$/.exec(field);
+    if (header !== null) { commits.push({ commit: header[1]!, entries: [] }); continue; }
+    const meta = /^:(\d{6}) (\d{6}) ([0-9a-f]{40,64}) ([0-9a-f]{40,64}) ([ADMT])$/.exec(field);
+    const path = fields[at + 1];
+    if (meta === null || path === undefined || commits.length === 0) return null;
+    commits.at(-1)!.entries.push({ oldMode: meta[1]!, newMode: meta[2]!, oldSha: meta[3]!, newSha: meta[4]!, status: meta[5]!, path });
+    at++;
+  }
+  return commits;
+}
+
+/** The first of `links` (paths of links in `commit`'s tree) that leads out of the tree or into a `.git`, resolved
+ * against that tree and following every link on the way (links already there and links the same change adds), or
+ * null when none does. A chain longer than 40 steps, or a target that can't be read, counts as leading out. */
+async function linkEscaping(read: Git, repo: string, commit: string, links: readonly string[]): Promise<string | null> {
+  const listed = await read(repo, ["ls-tree", "-r", "-z", "--full-tree", commit], { maxBuffer: 64 * 1024 * 1024 });
+  if (listed.code !== 0) return links[0] ?? null;
+  const tree = new Map<string, string>();
+  for (const entry of listed.stdout.split("\0")) {
+    const found = /^120000 blob ([0-9a-f]{40,64})\t(.+)$/s.exec(entry);
+    if (found !== null) tree.set(found[2]!, found[1]!);
+  }
+  const targets = new Map<string, string | null>();
+  const targetOf = async (path: string): Promise<string | null> => {
+    if (!targets.has(path)) {
+      const blob = await read(repo, ["cat-file", "blob", tree.get(path)!], { maxBuffer: 8192 });
+      targets.set(path, blob.code !== 0 || blob.stdout.length > 4096 ? null : blob.stdout);
+    }
+    return targets.get(path)!;
+  };
+  for (const link of links) {
+    if (!tree.has(link)) return link;
+    const start = await targetOf(link);
+    if (start === null || linkLeadsOut(link, start)) return link;
+    // Walk the resolved path one name at a time; a name that is itself a link is replaced by where it leads.
+    const stack = link.split("/").slice(0, -1);
+    let queue = start.split("/");
+    let steps = 0;
+    let escaped = false;
+    while (queue.length > 0 && !escaped) {
+      const part = queue.shift()!;
+      if (part === "" || part === ".") continue;
+      if (part === "..") { if (stack.length === 0) escaped = true; else stack.pop(); continue; }
+      if (part.toLowerCase() === ".git") { escaped = true; continue; }
+      stack.push(part);
+      const here = stack.join("/");
+      if (!tree.has(here)) continue;
+      if (++steps > 40) { escaped = true; continue; }
+      const next = await targetOf(here);
+      if (next === null || next === "" || /[\0\\]/.test(next) || isAbsolute(next) || /^[A-Za-z]:/.test(next)) { escaped = true; continue; }
+      stack.pop();
+      queue = [...next.split("/"), ...queue];
+    }
+    if (escaped) return link;
+  }
+  return null;
+}
+
 /** Every check, in the quarantine, before any ref moves: null when the candidate may be imported; else the refusal. */
 async function quarantineChecks(read: Git, repo: string, source: Source, candidate: string): Promise<FlexibleImportRefusal | null> {
   const base = source.thread.baseSha;
   if (candidate === base) return refused("nothing-to-send");
   const lineage = await descends(read, repo, base, candidate);
   if (lineage !== null) return lineage;
-  // No merge commit between the base and the candidate: one would bring history from outside the thread.
-  const merges = await read(repo, ["rev-list", "--merges", "--max-count=1", `${base}..${candidate}`]);
+  // No merge commit between the base and the candidate: one would bring history from outside the thread, and a change
+  // made only inside a merge has no diff of its own. Refused here, before any per-commit check, never skipped.
+  const merges = await read(repo, ["rev-list", "--min-parents=2", "--max-count=1", `${base}..${candidate}`]);
   if (merges.code !== 0) return refused("unreadable");
   if (merges.stdout.trim() !== "") return refused("merge", `commit ${merges.stdout.trim().slice(0, 12)}`);
   const counted = await read(repo, ["rev-list", "--count", `${base}..${candidate}`]);
@@ -382,30 +451,51 @@ async function quarantineChecks(read: Git, repo: string, source: Source, candida
   const bytes = Number(disk.stdout.trim());
   if (disk.code !== 0 || !Number.isSafeInteger(bytes)) return refused("unreadable");
   if (bytes > FLEXIBLE_IMPORT_LIMITS.diskBytes) return refused("too-large", `${Math.round(bytes / 1024 / 1024)} MB`);
-  const entries = await changedEntries(read, repo, base, candidate);
-  if (!Array.isArray(entries)) return entries;
-  if (entries.length === 0) return refused("nothing-to-send");
-  const added = entries.filter(one => one.status !== "D");
-  const submodule = added.find(one => one.newMode === "160000");
-  if (submodule !== undefined) return refused("submodule", submodule.path);
-  // Placeholder bytes before the protected-name rule, so the words say what it is.
+  // The net change (what the terms show): bounded, every name importable.
+  const net = await changedEntries(read, repo, base, candidate);
+  if (!Array.isArray(net)) return net;
+  const netSubmodule = net.find(one => one.status !== "D" && one.newMode === "160000");
+  if (netSubmodule !== undefined) return refused("submodule", netSubmodule.path);
+  // Then EVERY commit between the base and the candidate, not just the net change: a later commit can't take back what
+  // an earlier one carries into the project's history (a key, a protected file, a link, a submodule).
+  // Belts: every commit's diff against its first parent (a merge, were one to get here, shows its own change), and the
+  // commits seen must be exactly the range's, in order, each with its own diff.
+  const range = await read(repo, ["rev-list", "--reverse", `${base}..${candidate}`], { maxBuffer: (FLEXIBLE_IMPORT_LIMITS.commits + 1) * 70 });
+  const inRange = range.code === 0 ? range.stdout.split("\n").filter(line => line !== "") : null;
+  if (inRange === null || inRange.length !== commits || inRange.some(one => !SHA.test(one))) return refused("unreadable", "its commits couldn't be listed");
+  const logged = await read(repo, ["log", "--reverse", "--no-renames", "--diff-merges=first-parent", "--ignore-submodules=none", "--raw", "-z", "--no-abbrev", "--format=commit:%H", `${base}..${candidate}`], { maxBuffer: 64 * 1024 * 1024 });
+  const perCommit = logged.code === 0 ? parseRawLog(logged.stdout) : null;
+  if (perCommit === null || perCommit.length !== inRange.length || perCommit.some((one, at) => one.commit !== inRange[at])) return refused("unreadable", "its commits couldn't be listed one by one");
   const placeholders = placeholderBlobs(source.format);
-  const placeholder = added.find(one => PLACEHOLDER_NAMES.has(one.path) && placeholders.has(one.newSha));
-  if (placeholder !== undefined) return refused("placeholder", placeholder.path);
-  const named = protectedChanges(entries.map(one => one.path));
-  if (named.length > 0) return refused("protected", named.slice(0, 3).join(", "));
-  const links = added.filter(one => one.newMode === "120000");
-  const linkedProtected = protectedLinks(links.map(one => one.path));
-  if (linkedProtected.length > 0) return refused("protected", linkedProtected.slice(0, 3).join(", "));
-  for (const link of links) {
-    const target = await read(repo, ["cat-file", "blob", link.newSha], { maxBuffer: 8192 });
-    if (target.code !== 0 || target.stdout.length > 4096 || linkLeadsOut(link.path, target.stdout)) return refused("symlink", link.path);
+  for (const { commit, entries } of perCommit) {
+    const at = `in commit ${commit.slice(0, 12)}`;
+    for (const one of entries) if (one.path === "" || Buffer.byteLength(one.path) > PROOF_LIMITS.changedPath || /[\x00-\x1f\x7f]/.test(one.path) || one.path.split("/").some(part => part === "" || part === "." || part === "..")) return refused("bad-path", at);
+    const added = entries.filter(one => one.status !== "D");
+    const submodule = added.find(one => one.newMode === "160000");
+    if (submodule !== undefined) return refused("submodule", `${submodule.path}, ${at}`);
+    // Placeholder bytes before the protected-name rule, so the words say what it is.
+    const placeholder = added.find(one => PLACEHOLDER_NAMES.has(one.path) && placeholders.has(one.newSha));
+    if (placeholder !== undefined) return refused("placeholder", `${placeholder.path}, ${at}`);
+    const named = protectedChanges(entries.map(one => one.path));
+    if (named.length > 0) return refused("protected", `${named.slice(0, 3).join(", ")}, ${at}`);
+    const links = added.filter(one => one.newMode === "120000");
+    const linkedProtected = protectedLinks(links.map(one => one.path));
+    if (linkedProtected.length > 0) return refused("protected", `${linkedProtected.slice(0, 3).join(", ")}, ${at}`);
+    if (links.length > 0) {
+      const escaping = await linkEscaping(read, repo, commit, links.map(one => one.path));
+      if (escaping !== null) return refused("symlink", `${escaping}, ${at}`);
+    }
   }
-  // The existing secret check on the diff (evidence.ts): only added lines count; documented placeholders aren't keys.
-  const patch = await read(repo, ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", base, candidate], { maxBuffer: FLEXIBLE_IMPORT_LIMITS.patchBytes });
-  if (patch.code !== 0) return refused(patch.stdout.length >= FLEXIBLE_IMPORT_LIMITS.patchBytes ? "too-large" : "unreadable", "its diff couldn't be read whole");
+  // The existing secret check (evidence.ts), on every commit's own diff: only added lines count; documented
+  // placeholders aren't keys.
+  const patch = await read(repo, ["log", "-p", "--reverse", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--diff-merges=first-parent", "--ignore-submodules=none", "--format=commit %H", `${base}..${candidate}`], { maxBuffer: FLEXIBLE_IMPORT_LIMITS.patchBytes });
+  if (patch.code !== 0) return refused(patch.stdout.length >= FLEXIBLE_IMPORT_LIMITS.patchBytes ? "too-large" : "unreadable", "its commits' diffs couldn't be read whole");
+  const patched = [...patch.stdout.matchAll(/^commit ([0-9a-f]{40}|[0-9a-f]{64})$/gm)].map(match => match[1]!);
+  if (patched.length !== inRange.length || patched.some((one, at) => one !== inRange[at])) return refused("unreadable", "its commits' diffs couldn't be read one by one");
   const hits = scanPatchForSecrets(patch.stdout);
   if (hits.length > 0) return refused("secret", hits.slice(0, 3).map(hit => `${hit.file}:${hit.fileLine} (${hit.name})`).join(", "));
+  // Only after every commit was checked: a history whose net change is empty still carried what it carried.
+  if (net.length === 0) return refused("nothing-to-send");
   return null;
 }
 
@@ -533,4 +623,36 @@ export async function flexibleTaskBranch(store: Store, input: { thread: string; 
   const done = input.make ? await build(project, ["update-ref", "--no-deref", "--create-reflog", "-m", "toolroll: Flexible check task", ref, input.at, "0".repeat(input.at.length)])
     : await build(project, ["update-ref", "--no-deref", "-d", ref, input.at]);
   return done.code === 0;
+}
+
+/**
+ * Settle an import a crash interrupted (the Ship's reconciler, under the thread's lock, for a send left `approved`): its
+ * import ref goes when it holds exactly this import's candidate, and the thread's branch goes back to what it held
+ * before (removed when it held nothing) when it holds exactly this candidate. Each by compare-and-swap; a ref someone
+ * else moved is left as it is and said.
+ */
+export async function settleInterruptedImport(store: Store, input: { thread: string; seq: number; candidate: string; branchBefore: string | null; runner?: Runner }):
+  Promise<{ ok: true; importRef: "removed" | "absent" | "moved"; branch: "restored" | "untouched" | "moved" } | FlexibleImportRefusal> {
+  if (!FLEXIBLE_AVAILABLE) return pre("not-available");
+  const thread = flexibleThread(store, input.thread);
+  if (thread === null) return pre("thread-unknown");
+  if (!SHA.test(input.candidate) || (input.branchBefore !== null && !SHA.test(input.branchBefore))) return refused("unreadable");
+  let project: string;
+  try { project = realpathSync(thread.repo); recordedCommonDir(project); } catch { return pre("repository-unusable"); }
+  const inner = input.runner ?? run;
+  const read = gitIn(inner, "read"), build = gitIn(inner, "build");
+  const value = async (ref: string) => { const out = await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", ref]); return out.code === 0 ? out.stdout.trim() : null; };
+  const importRef = flexibleImportRef(thread.id, input.seq);
+  const branch = `refs/heads/${flexibleThreadBranch(thread.id)}`;
+  const heldImport = await value(importRef);
+  let importState: "removed" | "absent" | "moved" = heldImport === null ? "absent" : "moved";
+  if (heldImport === input.candidate && (await build(project, ["update-ref", "--no-deref", "-d", importRef, input.candidate])).code === 0) importState = "removed";
+  const heldBranch = await value(branch);
+  let branchState: "restored" | "untouched" | "moved" = heldBranch === input.branchBefore ? "untouched" : "moved";
+  if (heldBranch === input.candidate && input.candidate !== input.branchBefore) {
+    const back = input.branchBefore === null ? await build(project, ["update-ref", "--no-deref", "-d", branch, input.candidate])
+      : await build(project, ["update-ref", "--no-deref", "-m", "toolroll: interrupted Flexible import put back", branch, input.branchBefore, input.candidate]);
+    if (back.code === 0) branchState = "restored";
+  }
+  return { ok: true, importRef: importState, branch: branchState };
 }

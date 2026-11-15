@@ -25,8 +25,8 @@ import { ackFlexibleAnswer, cancelFlexibleAnswer, decideFlexibleAnswer, decideFl
   recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer, streamAnswerSender, type FlexibleAnswerCatalog } from "./flexible-answers.js";
 import { PassThrough } from "node:stream";
 import * as upstreams from "./flexible-relay-upstreams.js";
-import { flexibleTaskBranch, importFlexibleCandidate, readFlexibleCandidate, removeFlexibleImportRefs } from "./flexible-import.js";
-import { completeAndMergeFlexible, flexibleShipsOf, flexibleShipTerms, mergeArmedFlexible, removeFlexibleImport, sendBackFlexible, sendFlexibleForChecks } from "./flexible-ship.js";
+import { flexibleTaskBranch, importFlexibleCandidate, readFlexibleCandidate, removeFlexibleImportRefs, settleInterruptedImport } from "./flexible-import.js";
+import { cancelFlexibleShip, flexibleArmedPass, flexibleShipsOf, flexibleShipTerms, mergeArmedFlexible, reconcileFlexibleShips, removeFlexibleImport, sendBackFlexible, shipFlexible } from "./flexible-ship.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
 const NOW = new Date();
@@ -170,7 +170,7 @@ describe("switched off", () => {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible answer'").get()!["n"]).toBe(0);
   });
 
-  test("Ship (F4): no import, no terms, no send, no merge, no send back and no removal; nothing written, no ref moved", async () => {
+  test("Ship (F4): no import, no terms, no Ship, no armed merge, no pass, no reconciling, no cancel, send back or removal; nothing written, no ref moved", async () => {
     const refused = { ok: false, reason: "not-available", message: FLEXIBLE_UNAVAILABLE };
     store.upsertProject(repo, "shop", NOW);
     execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "first"], { cwd: repo });
@@ -190,10 +190,15 @@ describe("switched off", () => {
     expect(await removeFlexibleImportRefs(store, { thread: id, seq: 1, candidate: sha, branchBefore: null })).toEqual(refused);
     expect(await flexibleTaskBranch(store, { thread: id, branch: `toolroll/flexible-${ship}`, at: sha, make: true })).toBe(false);
     expect(await flexibleShipTerms(store, { thread: id, by: "alex" })).toEqual(refused);
-    expect(await sendFlexibleForChecks(store, { thread: id, by: "alex", token: tokens["alex"]!, shownDigest: ship, shownKey: ship, now: NOW })).toEqual(refused);
+    expect(await settleInterruptedImport(store, { thread: id, seq: 1, candidate: sha, branchBefore: null })).toEqual(refused);
+    expect(await shipFlexible(store, { thread: id, by: "alex", token: tokens["alex"]!, shownDigest: ship, shownKey: ship, now: NOW })).toEqual(refused);
     expect(flexibleShipsOf(store, id)).toEqual(refused);
-    expect(await completeAndMergeFlexible(store, { taskId: `flexible-${ship}`, runId: 1, digest: "d".repeat(64), head: sha, by: "alex", token: tokens["alex"]!, root: join(dir, "evidence"), now: NOW })).toEqual(refused);
-    expect(await mergeArmedFlexible(store, { taskId: `flexible-${ship}` })).toEqual(refused);
+    expect(await mergeArmedFlexible(store, { taskId: `flexible-${ship}`, root: join(dir, "evidence") })).toEqual(refused);
+    // The watch loop's pass (the one caller outside the engine) and the reconciler refuse too: the planted Ship stays
+    // `approved`, its refs untouched.
+    expect(await flexibleArmedPass(store, { root: join(dir, "evidence") })).toEqual(refused);
+    expect(await reconcileFlexibleShips(store, { now: NOW })).toEqual(refused);
+    expect(cancelFlexibleShip(store, { taskId: `flexible-${ship}`, by, now: NOW })).toEqual(refused);
     expect(sendBackFlexible(store, { taskId: `flexible-${ship}`, by, feedback: "again", now: NOW })).toEqual(refused);
     expect(await removeFlexibleImport(store, { ship, by, now: NOW })).toEqual(refused);
     expect(refs()).toBe(refsBefore);
@@ -344,10 +349,14 @@ describe("the switch can't become a runtime override", () => {
         expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toMatch(/^  if \(!FLEXIBLE_AVAILABLE\) return (?:refuse\("not-available"\)|pre\("not-available"\)|false);$/);
       }
     };
-    gatedFirst("src/flexible-import.ts", ["readFlexibleCandidate", "importFlexibleCandidate", "removeFlexibleImportRefs", "flexibleTaskBranch"], ["linkLeadsOut"]);
-    gatedFirst("src/flexible-ship.ts", ["flexibleShipTerms", "sendFlexibleForChecks", "flexibleShipsOf", "completeAndMergeFlexible", "mergeArmedFlexible", "sendBackFlexible", "removeFlexibleImport"], ["flexibleShipSummary"]);
+    gatedFirst("src/flexible-import.ts", ["readFlexibleCandidate", "importFlexibleCandidate", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"], ["linkLeadsOut"]);
+    gatedFirst("src/flexible-ship.ts", ["flexibleShipTerms", "shipFlexible", "flexibleShipsOf", "mergeArmedFlexible", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport"], ["flexibleShipSummary"]);
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
-    for (const one of product.filter(engine("flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-ship\.js"/);
+    // The Ship's one caller outside the engine: the watch loop's pass, and nothing else of it.
+    for (const one of product.filter(engine("flexible-ship.ts"))) {
+      const named = [...one.text.matchAll(/import \{([^}]*)\} from "\.\.?\/flexible-ship\.js"/g)].flatMap(match => match[1]!.split(",").map(name => name.trim()).filter(Boolean));
+      expect(named, one.path).toEqual(one.path === join("src", "operate.ts") ? ["flexibleArmedPass"] : []);
+    }
     for (const one of product.filter(engine("flexible-refs.ts", "flexible-thread.ts", "flexible-import.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-refs\.js"/);
   });
 

@@ -1,3 +1,5 @@
+import { flexibleMergeRefusal } from "./flexible-merge-guard.js";
+import { flexibleArmedPass } from "./flexible-ship.js";
 import { runCardCommand } from "./card-cli.js";
 import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
@@ -7093,6 +7095,17 @@ async function runWatchLoop(args: {
       reconciliationReady = true;
       // Admission resumes now: a loop dozing while paused looks again at once.
       if (recovered) wakes.poke();
+      // Flexible Ships (flexible-ship.ts): settle interrupted imports, then complete each armed result once its check
+      // passed on the exact candidate and merge it. Refuses at once while Flexible isn't available in this build.
+      if (!stopping()) {
+        try {
+          const shipped = await flexibleArmedPass(store, { root: context.evidenceRoot, ...(context.publishExec === undefined ? {} : { exec: context.publishExec }) });
+          if (shipped.ok && shipped.merged > 0) progress(`watch: merged ${shipped.merged} Flexible result(s) whose checks passed`);
+          if (shipped.ok && shipped.cancelled > 0) progress(`watch: stopped ${shipped.cancelled} Flexible merge(s) whose terms no longer held`);
+        } catch (error) {
+          progress(`watch: the Flexible ship pass failed — ${describe(error)}; retrying on its next interval`);
+        }
+      }
       if (!stopping() && store.openedPublications().length > 0) {
         try {
           const checks = await observeChecks(store, {
@@ -8857,6 +8870,8 @@ async function publishCommand(
     if (acting === null || !verified?.ok) return refuseApprover(context, `publish ${action}`, verified, "authorizing a merge takes `--as <you> --token <t>` — who said yes is recorded, not asserted", acting?.name);
     const publication = store.openedPublications().find(one => one.prNumber === pr);
     if (publication === undefined) return fail(write, json, `publish ${action}`, "unknown", `no open publication holds PR #${pr}`, EXIT.refused);
+    const flexibleHold = flexibleMergeRefusal(store, store.refForId(publication.taskRef)?.externalId ?? null, action === "merge" ? "publish-merge" : "publish-refire");
+    if (flexibleHold !== null) return fail(write, json, `publish ${action}`, "flexible", flexibleHold, EXIT.refused);
     const intent = store.mergeIntentFor(publication.id);
     if (intent === null) return fail(write, json, `publish ${action}`, "no-intent", `PR #${pr} has no merge intent yet — the sweep writes one when a merge-capable grant covers it`, EXIT.refused);
     if (action === "merge") {
