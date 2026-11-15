@@ -251,6 +251,27 @@ describe("the secret scan (audit IV-7) — high confidence only", () => {
   });
 });
 
+describe("an AWS secret key, however its name is written", () => {
+  // Made up, assembled here: 40 characters of the shape.
+  const value = ["Wq7/", "Zt3+"].join("").repeat(5);
+  test.each([
+    ["shell", `AWS_SECRET_ACCESS_KEY=${value}`],
+    ["ini", `aws_secret_access_key = ${value}`],
+    ["JSON", `{ "aws_secret_access_key": "${value}" }`],
+    ["dict literal", `creds = {'aws_secret_access_key': '${value}'}`],
+    ["quoted YAML", `"aws_secret_access_key": "${value}"`],
+    ["single-quoted YAML", `'aws_secret_access_key': '${value}'`],
+    ["AWS CLI / STS JSON", `"SecretAccessKey": "${value}",`],
+  ])("%s", (_form, line) => {
+    expect(scanForSecrets(line).map(one => one.name)).toEqual(["aws-secret-key"]);
+    expect(scanPatchForSecrets(["diff --git a/x b/x", "@@ -0,0 +1 @@", `+${line}`].join("\n")).map(one => one.name)).toEqual(["aws-secret-key"]);
+  });
+  test("a name with no value of the shape, or AWS's own example value, is not one", () => {
+    expect(scanForSecrets("aws_secret_access_key = <your key here>")).toEqual([]);
+    expect(scanPatchForSecrets(["diff --git a/x b/x", "@@ -0,0 +1 @@", `+"SecretAccessKey": "${["wJalrXUtnFEMI/K7MDENG/bPxRfiCY", "EXAMPLEKEY"].join("")}"`].join("\n"))).toEqual([]);
+  });
+});
+
 describe("the diff secret scan: only real secrets on added lines", () => {
   // Key-shaped values are assembled here, never written out whole.
   const awsDocs = ["AKIA", "IOSFODNN7", "EXAMPLE"].join("");

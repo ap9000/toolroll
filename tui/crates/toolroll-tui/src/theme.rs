@@ -544,6 +544,44 @@ impl Theme {
         self.status(Role::Failed, Color::Red)
     }
 
+    /// Code in the Diff tab (syntax.rs classes): never a meaning colour (no blue, green or red, no amber). Keywords
+    /// and types are ink by weight, comments muted and italic, and strings and numbers one quiet violet (the
+    /// terminal's magenta at 16 colours); with colour off only weight and slant remain.
+    pub fn code(&self, token: crate::syntax::Token) -> Style {
+        use crate::syntax::Token;
+        let accent = || -> Style {
+            match self.depth {
+                Depth::Off => Style::default(),
+                Depth::Ansi16 => Style::default().fg(if self.dark {
+                    Color::LightMagenta
+                } else {
+                    Color::Magenta
+                }),
+                _ => {
+                    let c = match (self.name, self.dark) {
+                        (ThemeName::HighContrast, _) => Rgb(0xe2, 0xb6, 0xff),
+                        (_, true) => Rgb(0xc8, 0x9b, 0xff),
+                        (_, false) => Rgb(0x82, 0x50, 0xdf),
+                    };
+                    Style::default().fg(match self.depth {
+                        Depth::TrueColor => Color::Rgb(c.0, c.1, c.2),
+                        _ => Color::Indexed(c.ansi256()),
+                    })
+                }
+            }
+        };
+        match token {
+            Token::Plain => Style::default(),
+            Token::Keyword => Style::default().add_modifier(Modifier::BOLD),
+            Token::Type => self
+                .ink()
+                .remove_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::ITALIC),
+            Token::Comment => self.muted().add_modifier(Modifier::ITALIC),
+            Token::Text | Token::Number => accent(),
+        }
+    }
+
     /// The selected row.
     pub fn selected(&self) -> Style {
         if self.painted() {
@@ -665,6 +703,8 @@ pub fn ascii_of(c: char) -> Option<char> {
         '✕' => 'x',
         '○' => 'o',
         '⏎' => '>',
+        '⋯' => '~',
+        '▸' => '>',
         _ => return None,
     })
 }
@@ -714,6 +754,10 @@ pub fn failed() -> Style {
 }
 pub fn selected() -> Style {
     theme().selected()
+}
+/// A class of code (syntax.rs) in the Diff tab.
+pub fn code(token: crate::syntax::Token) -> Style {
+    theme().code(token)
 }
 
 // ---- the terminal's background (OSC 11) ----------------------------------------------------------------------------

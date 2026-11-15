@@ -320,6 +320,28 @@ impl Client {
         )
     }
 
+    /// Lines `from`..`from + count - 1` of a result's file at its head (context a hunk hides).
+    pub async fn diff_context(
+        &self,
+        task: &str,
+        run: i64,
+        file: i64,
+        from: i64,
+        count: i64,
+    ) -> Result<ResultDiffContext, ApiError> {
+        versioned(
+            self.get::<ResultDiffContext>(
+                &format!(
+                    "/t/{}/diff?run={run}&file={file}&from={from}&count={count}",
+                    encode(task)
+                ),
+                "the hidden lines",
+            )
+            .await?,
+            |r| r.version,
+        )
+    }
+
     /// One window of a run's live records (`file`: main or sub), from `cursor`.
     pub async fn live_window(
         &self,

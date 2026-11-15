@@ -102,7 +102,8 @@ test("a run with any required outcome false fails (accepted=false is no longer a
 test("the journey waits for the Accept dialog the app really draws", () => {
   const view = readFileSync(new URL("../tui/crates/toolroll-tui/src/view.rs", import.meta.url), "utf8");
   const journey = readFileSync(new URL("../scripts/tui-e2e.mjs", import.meta.url), "utf8");
-  expect(view).toContain('format!("Accept the result of build #{run}{files}?")');
+  // The dialog's heading (the changes are listed under it now, as "Changes"), and the journey's wait for it.
+  expect(view).toContain('format!("Accept the result of build #{run}?")');
   expect(journey).toContain("const DIALOG = /Accept the result of build #\\d+/;");
   expect(journey).not.toContain("Accept, with a note");
 });

@@ -365,9 +365,10 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   for (const table of ["knowledge_change", "project_identity_carry", "project_skill_change", "memory_gap", "memory_proposal", "memory_rejection", "memory_session", "memory_search", "mode_rail", "side_spend", "watch_episode", "worktree", "coordinator_proposal", "lead_commitment"]) del(table, "repo = ?", repo);
   // A builder watching the project keeps its lease until it stops; an ended one goes.
   del("watch_lease", "repo = ? AND expires_at <= ?", repo, now.toISOString());
-  // Its ended Flexible threads' records (projectRunning refuses while any thread is open): relay calls and grants, turns,
-  // launches, levels, threads.
+  // Its ended Flexible threads' records (projectRunning refuses while any thread is open): answers, relay calls and grants,
+  // turns, launches, levels, threads.
   const flexibleThreads = `thread IN (SELECT id FROM flexible_thread WHERE repo = ? AND state IN ('removed', 'failed'))`;
+  del("thread_decision", flexibleThreads, repo);
   del("thread_relay_call", flexibleThreads, repo);
   del("thread_relay_pending", flexibleThreads, repo);
   del("flexible_relay_grant", flexibleThreads, repo);

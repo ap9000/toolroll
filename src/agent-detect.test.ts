@@ -11,9 +11,9 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DETECT_TIMEOUT_MS, detectAgents, detectionLines, detectionReport, firstRunAgentLines, type AgentDetection } from "./agent-detect.js";
 import { agentsReadOf } from "./engine-reads.js";
 import { agentsReadSchema } from "./contracts/engine-api.js";
-import { createConnectionChecker } from "./provider-connection.js";
+import { createConnectionChecker, signInFacts } from "./provider-connection.js";
 import { openStore } from "./store.js";
-import { statusProbe } from "./status-probe.js";
+import { BACKGROUND_STATUS_TIMEOUT_MS, statusProbe } from "./status-probe.js";
 import { boundedAcl } from "./trusted-path.js";
 
 const TOKEN = "sk-ant-oat01-DETECTION-MUST-NEVER-ECHO-THIS";
@@ -387,6 +387,18 @@ describe("where a status command may never run, what it may be handed, and its d
     expect(Date.now() - started).toBeLessThan(300 + 400);
     expect(result.code === 126 || result.timedOut).toBe(true);
     expect(ranIt()).toBe(false);
+  });
+
+  test("ACL reads as slow as a busy computer's: past the 800 ms deadline the sign-in can't be concluded (unverified, never signed out); the console's background deadline answers it", async () => {
+    marking(bin);
+    const block = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    // The first ACL read of each resolution takes a second (synchronous, as macOS's `ls` is), the rest answer at once.
+    const slowAcl = (deadline: number) => { let first = true; return boundedAcl(deadline, (_path, ms) => { if (first) { first = false; block(Math.min(ms, 1_000)); } return { ok: true }; }); };
+    const asked = async (timeoutMs?: number) => signInFacts("claude", await statusProbe({ env: { PATH: bin, HOME: home }, aclFor: slowAcl, ...(timeoutMs === undefined ? {} : { timeoutMs }) })("claude", ["auth", "status", "--json"], { timeoutMs: 5_000 })).state;
+    expect(await asked()).toBe("unverified");
+    expect(ranIt()).toBe(false);
+    expect(await asked(BACKGROUND_STATUS_TIMEOUT_MS)).toBe("connected");
+    expect(ranIt()).toBe(true);
   });
 });
 
