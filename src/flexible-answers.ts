@@ -930,3 +930,27 @@ export function recordFlexibleProviderDecision(store: Store, input: { thread: st
     return { ok: true as const, decisionId };
   });
 }
+
+// ---- what a person's surface shows ------------------------------------------------------------------------------------------
+
+/** One request as the thread's own surface shows it to its owner (F3): the card exactly as recorded (its digest is what
+ * the person's answer must name), and where its answer stands. No token, no answer bytes. */
+export type FlexibleRequestView = { request: string; turn: string; connection: string; requestRef: string; kind: FlexibleRequestKind; card: FlexibleRequestCard; requestDigest: string;
+  state: FlexibleAnswerState; decision: FlexibleDecision | null; detail: string | null; createdAt: string };
+
+/** A thread's requests, newest last (at most `limit`, default 20): every one still open, then the latest that ended, of
+ * `turn` when given. Reads the coding catalog only; nothing moves. The caller admits the reader (the thread's owner). */
+export function flexibleRequestsOf(catalog: FlexibleAnswerCatalog, input: { thread: string; turn?: string; limit?: number }): { ok: true; requests: FlexibleRequestView[] } | FlexibleAnswerRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  const limit = input.limit ?? 20;
+  if (typeof input.thread !== "string" || !ID.test(input.thread) || (input.turn !== undefined && (typeof input.turn !== "string" || !ID.test(input.turn)))
+    || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) return refuse("invalid-request");
+  const rows = dbOf(catalog).prepare(`SELECT * FROM thread_request WHERE thread = ? AND (? IS NULL OR turn = ?)
+    ORDER BY (state IN ('pending', 'decided', 'sending', 'sent')) DESC, created_at DESC, id LIMIT ?`).all(input.thread, input.turn ?? null, input.turn ?? null, limit) as Record<string, unknown>[];
+  const requests = rows.map(raw => {
+    const row = readRequest(raw)!;
+    return { request: row.id, turn: row.turn, connection: row.connection, requestRef: row.requestRef, kind: row.kind, card: JSON.parse(row.card) as FlexibleRequestCard, requestDigest: row.requestDigest,
+      state: row.state, decision: raw["decision"] === null ? null : String(raw["decision"]) as FlexibleDecision, detail: raw["detail"] === null ? null : String(raw["detail"]), createdAt: String(raw["created_at"]) };
+  }).sort((a, b) => a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.request < b.request ? -1 : 1);
+  return { ok: true, requests };
+}

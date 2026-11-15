@@ -170,6 +170,13 @@ impl Loop {
                 let r = client.diff_file(&ask.task, ask.run, ask.file).await;
                 let _ = tx.send(Msg::DiffFile(ask, r));
             })),
+            Effect::FetchThreads => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Threads(client.threads().await));
+            })),
+            Effect::FetchThread { thread, cursor } => drop(tokio::spawn(async move {
+                let r = client.thread_window(&thread, cursor.as_deref()).await;
+                let _ = tx.send(Msg::Thread(thread, r));
+            })),
             Effect::Act { path, fields, done } => drop(tokio::spawn(async move {
                 let pairs: Vec<(&str, &str)> = fields
                     .iter()

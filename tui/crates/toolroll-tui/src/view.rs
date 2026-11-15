@@ -421,7 +421,10 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         .as_ref()
         .map(|q| 2 + q.options.len().min(9) as u16)
         .unwrap_or(0);
-    let input = matches!(app.mode, Mode::Steer(_) | Mode::Note(..) | Mode::NewTask(_));
+    let input = matches!(
+        app.mode,
+        Mode::Steer(_) | Mode::Note(..) | Mode::NewTask(_) | Mode::NewThread(_)
+    );
     let [tabs, head, content, qa, steps_row, input_row] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(2),
@@ -450,6 +453,16 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         spans.push(Span::styled(label.to_string(), style));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), tabs);
+    // A Flexible thread: its own panel under the tabs (thread.rs).
+    if let Some(it) = item.as_ref().filter(|i| i.thread) {
+        let rest = Rect {
+            y: area.y + 1,
+            height: area.height.saturating_sub(1),
+            ..area
+        };
+        crate::thread::draw_panel(f, app, it, rest);
+        return;
+    }
     let Some(item) = item else {
         let words = if app.loaded {
             "No tasks yet. Press n and describe a change you want made."
@@ -540,6 +553,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             Mode::Steer(t) => ("Steer: ", t),
             Mode::Note(NoteKind::SendBack(_), t) => ("Send back, saying what to change: ", t),
             Mode::NewTask(t) => ("New task: ", t),
+            Mode::NewThread(t) => ("New thread: ", t),
             _ => unreachable!(),
         };
         // The end of what's typed stays in view.
@@ -989,6 +1003,10 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } => return draw_build(f, app, area),
+        Mode::ConfirmThread(_) => match crate::thread::confirm_lines(app, area) {
+            Some(shown) => shown,
+            None => return,
+        },
         Mode::ConfirmAccept(pin) => {
             // What is shown is the pinned result: the same facts the act posts.
             let files = pin

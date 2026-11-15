@@ -340,6 +340,34 @@ impl Client {
         )
     }
 
+    /// The person's own Flexible threads (`Refused` while Flexible isn't available on the console).
+    pub async fn threads(&self) -> Result<LiveThreads, ApiError> {
+        versioned(
+            self.get::<LiveThreads>("/agents/live/threads", "your threads")
+                .await?,
+            |r| r.version,
+        )
+    }
+
+    /// One window of a Flexible thread's live session, with its facts, from `cursor`.
+    pub async fn thread_window(
+        &self,
+        thread: &str,
+        cursor: Option<&str>,
+    ) -> Result<LiveSessionWindow, ApiError> {
+        let q = cursor
+            .map(|c| format!("&cursor={}", encode(c)))
+            .unwrap_or_default();
+        versioned(
+            self.get::<LiveSessionWindow>(
+                &format!("/agents/live/thread/{}?file=main{q}", encode(thread)),
+                "the thread",
+            )
+            .await?,
+            |r| r.version,
+        )
+    }
+
     /// One act: the browser's form POST to `path` (the form token added), answered in place.
     pub async fn act(
         &self,

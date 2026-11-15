@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "threads": [
+    {
+      "id": "5b1e0c9a7d3f42e8a6c1b0d9e8f7a6b5",
+      "title": "Make the totals include tax",
+      "project": "shop",
+      "level": "full",
+      "live": true,
+      "waiting": 1,
+      "costUsd": 0.0412
+    },
+    {
+      "id": "0a9b8c7d6e5f40312a3b4c5d6e7f8091",
+      "title": "Thread 0a9b8c7d",
+      "project": "shop",
+      "level": null,
+      "live": false,
+      "waiting": 0,
+      "costUsd": null
+    }
+  ]
+}

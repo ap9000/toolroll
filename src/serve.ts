@@ -748,7 +748,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     server.on("close", () => clearInterval(timer));
   }
   {
-    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } };
+    // The engine API's upkeep rides this tick (engine-api.ts: a Flexible thread's answers past their deadlines; nothing
+    // while Flexible is off). Its handlers exist before the first tick: they are made while this server is built.
+    const flushBudget = () => { try { requestBudget.flush(); } catch { /* the next admit refuses if the database is unwell */ } engineHandlers.upkeep(); };
     const timer = setInterval(flushBudget, REQUEST_BUDGET_FLUSH_MS);
     timer.unref?.();
     server.on("close", () => { clearInterval(timer); flushBudget(); });
@@ -2223,7 +2225,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close())])
+    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close()), bounded(engineHandlers.close())])
       // The server always closes; a terminal whose processes couldn't be proved stopped is the close's error.
       .then(() => closeServer(error => callback?.(error ?? terminalClosing.problem ?? undefined))).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
@@ -2391,6 +2393,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });
+  const engineHandlers = createEngineHandlers(handlerRuntime);
   const flowsHandlers = createFlowsHandlers(handlerRuntime);
   const chatHandlers = createChatHandlers(handlerRuntime);
   const settingsHandlers = createSettingsHandlers(handlerRuntime);
@@ -2432,7 +2435,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
     ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
-    ...createWelcomeHandlers(handlerRuntime).registrations, ...createEngineHandlers(handlerRuntime).registrations,
+    ...createWelcomeHandlers(handlerRuntime).registrations, ...engineHandlers.registrations,
   ]);
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {

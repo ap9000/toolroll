@@ -159,6 +159,84 @@ pub struct LiveSessionWindow {
     pub live: bool,
     pub file: String,
     pub window: Window,
+    /// A Flexible thread's facts (its window only; a run's never has them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<ThreadFacts>,
+}
+
+// ---- Flexible threads (F3) ----------------------------------------------------------------------------------------
+
+/// One part of an agent's question: its id (what the answer names), its words, and the options offered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadPart {
+    pub id: String,
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+/// One request of a thread's agent as its owner is shown it: the card (its `digest` is what an answer names), where
+/// its answer stands (`state`), and whether it can be answered from this console now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadQuestion {
+    pub request: String,
+    pub kind: String,
+    pub title: String,
+    pub detail: Option<String>,
+    pub digest: String,
+    pub state: String,
+    pub answerable: bool,
+    pub parts: Vec<ThreadPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadAgent {
+    pub provider: String,
+    pub model: String,
+}
+
+/// The thread's current turn and its cost so far (`cost_usd` None until a call is charged; `cost_basis` how sure).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ThreadTurn {
+    pub seq: i64,
+    pub status: String,
+    pub cost_usd: Option<f64>,
+    pub cost_basis: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadFacts {
+    pub title: String,
+    pub project: Option<String>,
+    pub level: Option<String>,
+    pub agent: Option<ThreadAgent>,
+    pub turn: Option<ThreadTurn>,
+    pub questions: Vec<ThreadQuestion>,
+}
+
+/// One of the person's threads, as the work list shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ThreadRow {
+    pub id: String,
+    pub title: String,
+    pub project: Option<String>,
+    pub level: Option<String>,
+    pub live: bool,
+    pub waiting: i64,
+    pub cost_usd: Option<f64>,
+}
+
+/// `GET /agents/live/threads`: the person's own Flexible threads (refused while Flexible isn't available).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveThreads {
+    pub version: u32,
+    pub threads: Vec<ThreadRow>,
 }
 
 // ---- Work rows ------------------------------------------------------------------------------------------------

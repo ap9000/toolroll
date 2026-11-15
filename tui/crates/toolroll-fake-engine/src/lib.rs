@@ -77,6 +77,10 @@ pub struct State {
     pub redeemed: bool,
     /// Reads of each path (for "re-read on change" assertions).
     pub reads: HashMap<String, usize>,
+    /// The person's Flexible threads (GET /agents/live/threads); None: Flexible isn't available, as in this build.
+    pub threads: Option<Value>,
+    /// Each thread's LiveSession window (GET /agents/live/thread/<id>).
+    pub thread_windows: HashMap<String, Value>,
 }
 
 impl State {
@@ -392,7 +396,22 @@ pub fn scenario() -> State {
         session_ended: false,
         redeemed: false,
         reads: HashMap::new(),
+        threads: None,
+        thread_windows: HashMap::new(),
     }
+}
+
+/// The thread fixture's id (test/fixtures/engine-api/live-session-window-thread.json).
+pub const THREAD: &str = "5b1e0c9a7d3f42e8a6c1b0d9e8f7a6b5";
+
+/// The scenario with Flexible on: the threads list and the thread's window, from the contract's fixtures.
+pub fn scenario_with_threads() -> State {
+    let mut state = scenario();
+    state.threads = Some(fixture("live-threads.json"));
+    state
+        .thread_windows
+        .insert(THREAD.into(), fixture("live-session-window-thread.json"));
+    state
 }
 
 #[derive(Clone)]
@@ -424,6 +443,8 @@ impl FakeEngine {
             .route("/t/{task}/steps", get(steps))
             .route("/t/{task}/diff", get(diff))
             .route("/agents/live/run/{run}", get(live_window))
+            .route("/agents/live/threads", get(threads))
+            .route("/agents/live/thread/{thread}", get(thread_window))
             .route("/live", get(live_stream))
             .fallback(post(act))
             .with_state(shared);
@@ -621,6 +642,34 @@ async fn live_window(
     )
 }
 
+async fn threads(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = admitted(&s, &headers, "/agents/live/threads") {
+        return r;
+    }
+    match s.state.lock().unwrap().threads.clone() {
+        Some(list) => json_answer(200, list),
+        None => json_answer(404, json!({ "error": "not-available" })),
+    }
+}
+
+async fn thread_window(
+    AxState(s): AxState<Shared>,
+    Path(thread): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = admitted(&s, &headers, &format!("/agents/live/thread/{thread}")) {
+        return r;
+    }
+    let st = s.state.lock().unwrap();
+    if st.threads.is_none() {
+        return json_answer(404, json!({ "error": "not-available" }));
+    }
+    match st.thread_windows.get(&thread) {
+        Some(window) => json_answer(200, window.clone()),
+        None => json_answer(404, json!({ "error": "thread" })),
+    }
+}
+
 async fn live_stream(
     AxState(s): AxState<Shared>,
     Query(q): Query<Vec<(String, String)>>,
@@ -707,6 +756,20 @@ async fn act(
             200,
             json!({ "outcome": "done", "words": "Accepted. The task is complete." }),
         );
+    }
+    if path.starts_with("/agents/live/thread") {
+        if st.threads.is_none() {
+            return json_answer(
+                404,
+                json!({ "outcome": "refused", "words": "Flexible projects aren't available in this version. Nothing changed." }),
+            );
+        }
+        if path.ends_with("/answer") {
+            return json_answer(
+                200,
+                json!({ "outcome": "done", "words": "Sent to the agent." }),
+            );
+        }
     }
     if path.ends_with("/comment") {
         return json_answer(
