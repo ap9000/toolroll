@@ -32,6 +32,10 @@ export type RelayUpstream = {
    * own client tools). */
   refusedFields: readonly string[];
   clientToolTypes: readonly string[];
+  /** Content blocks a call may carry (in system, messages and nested tool results), each with the only `source` types
+   * it may have: inline data only. A block or source not listed (a URL, a stored file id, a server tool's result)
+   * would have the service fetch something itself, outside the thread's proxy, so it refuses the call. */
+  contentBlocks: Readonly<Record<string, readonly string[]>>;
   /** Models a call may name: the turn's own model, or a helper model the agent uses for small background requests. */
   models: RegExp;
   helperModels: RegExp;
@@ -69,6 +73,10 @@ export const FLEXIBLE_RELAY_UPSTREAMS: Readonly<{ claude: RelayUpstream }> = Obj
     ]),
     refusedFields: Object.freeze(["mcp_servers", "container"]),
     clientToolTypes: Object.freeze(["custom"]),
+    contentBlocks: Object.freeze({
+      text: Object.freeze([]), image: Object.freeze(["base64"]), document: Object.freeze(["base64", "text", "content"]),
+      tool_use: Object.freeze([]), tool_result: Object.freeze([]), thinking: Object.freeze([]), redacted_thinking: Object.freeze([]),
+    }),
     models: /^claude-(?:opus|sonnet|haiku|fable)-\d{1,2}(?:-\d{1,2})?(?:-\d{8})?$/,
     helperModels: /^claude-haiku-\d{1,2}(?:-\d{1,2})?(?:-\d{8})?$/,
     usage: "anthropic-messages",

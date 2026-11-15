@@ -84,7 +84,7 @@ export const FLEXIBLE_RELAY_CREDENTIAL = Object.freeze({ name: "flexible-claude-
 
 // ---- refusals the agent reads -----------------------------------------------------------------------------------------
 
-type CallReason = "credential-header" | "header" | "beta" | "route" | "too-many" | "no-turn" | "billing-mismatch" | "no-credential" | "body-too-large" | "body" | "model" | "max-tokens" | "server-tool";
+type CallReason = "credential-header" | "header" | "beta" | "route" | "too-many" | "no-turn" | "billing-mismatch" | "no-credential" | "body-too-large" | "body" | "model" | "max-tokens" | "server-tool" | "server-fetch";
 const CALL_WORDS: Readonly<Record<CallReason, { status: number; type: string; message: string }>> = Object.freeze({
   "credential-header": { status: 400, type: "invalid_request_error", message: "Toolroll's sign-in relay chooses the credential itself: a call can't carry its own key, sign-in or service override." },
   header: { status: 400, type: "invalid_request_error", message: "A request header isn't in a form Toolroll's sign-in relay accepts." },
@@ -99,6 +99,7 @@ const CALL_WORDS: Readonly<Record<CallReason, { status: number; type: string; me
   model: { status: 400, type: "invalid_request_error", message: "That model isn't one this turn may use." },
   "max-tokens": { status: 400, type: "invalid_request_error", message: "max_tokens is missing or larger than Toolroll's sign-in relay allows." },
   "server-tool": { status: 400, type: "invalid_request_error", message: "Server tools and connectors would reach the network outside this thread's proxy, so Toolroll's sign-in relay doesn't forward them." },
+  "server-fetch": { status: 400, type: "invalid_request_error", message: "That request asks the model service to fetch something itself (a URL or a stored file), outside this thread's proxy, so Toolroll's sign-in relay doesn't forward it. Send the content inline." },
 });
 const UNAUTHORIZED = "This relay token isn't authorized (it was never issued, its launch ended, or its thread was stopped).";
 const errorBody = (type: string, message: string) => JSON.stringify({ type: "error", error: { type, message } });
@@ -240,6 +241,98 @@ function anthropicMeter(route: "messages" | "count-tokens", streamed: boolean): 
   };
 }
 const USAGE_READERS: Readonly<Record<RelayUpstream["usage"], (route: "messages" | "count-tokens", streamed: boolean) => Meter>> = Object.freeze({ "anthropic-messages": anthropicMeter });
+
+// ---- the body: one reading, inline content only ----------------------------------------------------------------------
+
+const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const MAX_DEPTH = 64;
+/**
+ * Why a JSON text can't be read one way only, or null: a key repeated in one object (parsers disagree on which wins), a
+ * reserved key (`__proto__`, `constructor`, `prototype`), nesting past 64, or a top level that isn't an object. A
+ * scanner over the text itself, so it sees what JSON.parse would hide; malformed text is JSON.parse's to refuse.
+ */
+function jsonShapeProblem(text: string): string | null {
+  type Frame = { object: boolean; keys: Set<string>; expectKey: boolean };
+  const stack: Frame[] = [];
+  let at = 0, top = true;
+  const skipSpace = () => { while (at < text.length && /[\s]/.test(text[at]!)) at++; };
+  skipSpace();
+  if (text[at] !== "{") return "the request isn't one JSON object";
+  while (at < text.length) {
+    const c = text[at]!;
+    if (c === "{" || c === "[") {
+      if (!top && stack.length === 0) return "more than one JSON value";
+      top = false;
+      if (stack.length >= MAX_DEPTH) return "the request is nested too deeply";
+      stack.push({ object: c === "{", keys: new Set(), expectKey: c === "{" });
+      at++;
+    } else if (c === "}" || c === "]") {
+      stack.pop();
+      at++;
+    } else if (c === '"') {
+      const start = at++;
+      while (at < text.length && text[at] !== '"') at += text[at] === "\\" ? 2 : 1;
+      at++;
+      const frame = stack.at(-1);
+      if (frame?.object === true && frame.expectKey) {
+        let key: string;
+        try { key = JSON.parse(text.slice(start, at)) as string; } catch { return null; }
+        if (RESERVED_KEYS.has(key)) return `the reserved key ${key}`;
+        if (frame.keys.has(key)) return `the key ${key.slice(0, 40)} is repeated`;
+        frame.keys.add(key);
+        frame.expectKey = false;
+      }
+    } else if (c === ",") {
+      const frame = stack.at(-1);
+      if (frame?.object === true) frame.expectKey = true;
+      at++;
+    } else {
+      if (stack.length === 0 && !/\s/.test(c)) return "more than one JSON value";
+      at++;
+    }
+  }
+  return null;
+}
+
+/**
+ * Where a call would have the service fetch something itself, or null: every content block in `system`, each message's
+ * `content`, a tool result's `content` and a document's inline `content` must be a listed block type, and any `source`
+ * it has a listed (inline) type for that block. An allowlist: anything unknown refuses.
+ */
+function serverFetchIn(body: Record<string, unknown>, allowed: Readonly<Record<string, readonly string[]>>): string | null {
+  const blocks = (value: unknown, where: string, depth: number): string | null => {
+    if (typeof value === "string" || value === undefined) return null;
+    if (!Array.isArray(value)) return `${where} isn't text or a list of blocks`;
+    if (depth > 8) return `${where} is nested too deeply`;
+    for (const one of value) {
+      if (one === null || typeof one !== "object" || Array.isArray(one)) return `${where} has a block that isn't one`;
+      const block = one as Record<string, unknown>;
+      const type = typeof block["type"] === "string" ? block["type"] : "";
+      const sources = Object.hasOwn(allowed, type) ? allowed[type]! : null;
+      if (sources === null) return `${where} has a ${type.slice(0, 40) || "nameless"} block`;
+      if (block["file_id"] !== undefined) return `${where} names a stored file`;
+      if (block["source"] !== undefined) {
+        const source = block["source"];
+        if (source === null || typeof source !== "object" || Array.isArray(source)) return `${where} has a ${type} source that isn't one`;
+        const kind = typeof (source as Record<string, unknown>)["type"] === "string" ? (source as Record<string, unknown>)["type"] as string : "";
+        if (!sources.includes(kind)) return `${where} has a ${type} from a ${kind.slice(0, 40) || "nameless"} source`;
+        if (kind === "content") { const inner = blocks((source as Record<string, unknown>)["content"], `${where} ${type}`, depth + 1); if (inner !== null) return inner; }
+      }
+      if (type === "tool_result") { const inner = blocks(block["content"], `${where} tool result`, depth + 1); if (inner !== null) return inner; }
+    }
+    return null;
+  };
+  const system = blocks(body["system"], "system", 0);
+  if (system !== null) return system;
+  const messages = body["messages"];
+  if (messages !== undefined && !Array.isArray(messages)) return "messages isn't a list";
+  for (const message of (messages ?? []) as unknown[]) {
+    if (message === null || typeof message !== "object" || Array.isArray(message)) return "a message isn't one";
+    const inner = blocks((message as Record<string, unknown>)["content"], "a message", 0);
+    if (inner !== null) return inner;
+  }
+  return null;
+}
 
 // ---- the relay ---------------------------------------------------------------------------------------------------------
 
@@ -383,9 +476,14 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       if (tooLarge) { chunks.length = 0; response.once("finish", () => request.destroy()); refused("body-too-large", null, { connection: "close" }); return; }
       if (!ended) { release(); response.destroy(); return; }
       const body = Buffer.concat(chunks);
+      // One reading of the body, the one checked and the one sent: a key repeated anywhere (which another parser could
+      // read the other way), a reserved key or a top level that isn't an object refuses it.
       let parsed: Record<string, unknown>;
+      const text = body.toString("utf8");
+      const shape = jsonShapeProblem(text);
+      if (shape !== null) { refused("body", shape); return; }
       try {
-        const value = JSON.parse(body.toString("utf8")) as unknown;
+        const value = JSON.parse(text) as unknown;
         if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("not an object");
         parsed = value as Record<string, unknown>;
       } catch { refused("body"); return; }
@@ -405,6 +503,8 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       const serverTool = upstream.refusedFields.find(field => parsed[field] !== undefined)
         ?? (tools.some(tool => tool !== null && typeof tool === "object" && (tool as Record<string, unknown>)["type"] !== undefined && !upstream.clientToolTypes.includes(String((tool as Record<string, unknown>)["type"]))) ? "tools" : undefined);
       if (serverTool !== undefined) { refused("server-tool", `field ${serverTool}`); return; }
+      const fetched = serverFetchIn(parsed, upstream.contentBlocks);
+      if (fetched !== null) { refused("server-fetch", fetched); return; }
 
       // Toolroll's own credential, on the billing this turn was admitted for.
       const credential = credentialOf(state, upstream);
@@ -418,9 +518,11 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       const now = currentTurn(store, thread, authed, "claude");
       if (now === null || now.id !== turn.id) { refused("no-turn"); return; }
 
-      // Forward: the fixed origin, the exact route, headers built here, the credential added here.
+      // Forward: the fixed origin, the exact route, headers built here, the credential added here, and exactly the object
+      // that was checked (written again from it, never the agent's own bytes).
+      const sent = Buffer.from(JSON.stringify(parsed), "utf8");
       const target = new URL(`${route.path}${query === "" ? "" : `?${query}`}`, upstream.origin);
-      const headers: OutgoingHttpHeaders = { host: target.host, "content-type": "application/json", "content-length": String(body.length), "accept-encoding": "identity",
+      const headers: OutgoingHttpHeaders = { host: target.host, "content-type": "application/json", "content-length": String(sent.length), "accept-encoding": "identity",
         "anthropic-version": String(request.headers["anthropic-version"] ?? "2023-06-01") };
       for (const name of ["accept", "user-agent", "x-app"]) if (typeof request.headers[name] === "string") headers[name] = request.headers[name];
       const allBetas = [...new Set([...betas, ...auth.betas])];
@@ -429,7 +531,7 @@ export async function startFlexibleRelay(store: Store, input: { thread: string; 
       const routeKind = route.kind;
       const turnId = turn.id;
       // The call is recorded and charged before the agent sees its answer end: its next call finds this one on the record.
-      const live = await forward(target, headers, body, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed.digest, turnId,
+      const live = await forward(target, headers, sent, response, routeKind, streamed, upstream, secrets, one => { release(); calls.add(one); }, authed.digest, turnId,
         result => settle(authed, { turn: turnId, at, route: routeKind, model, streamed: result.streamed, status: result.status, reason: null, httpStatus: result.httpStatus,
           usage: result.usage, charge: result.charge, detail: result.detail }, secrets));
       calls.delete(live);

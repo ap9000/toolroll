@@ -376,6 +376,57 @@ describe("refusals: nothing is forwarded", () => {
   });
 });
 
+describe("the body: one reading, inline content only", () => {
+  test("a repeated key anywhere, a reserved key or a top level that isn't one object is refused; what is sent is exactly the checked object, written again", async () => {
+    const bodies = [
+      // The first model is the turn's; a parser that takes the last would send the other.
+      '{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[],"model":"claude-opus-4-1"}',
+      '{"model":"claude-sonnet-4-5","max_tokens":10,"max_tokens":999999,"messages":[]}',
+      '{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[{"role":"user","content":[{"type":"text","text":"a","type":"image"}]}]}',
+      '{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[],"m\\u006fdel":"claude-opus-4-1"}',
+      '{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[],"__proto__":{"model":"claude-opus-4-1"}}',
+      '{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[{"role":"user","content":"hi","constructor":1}]}',
+      '[{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[]}]',
+      '{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[]} {"model":"claude-opus-4-1"}',
+      `{"model":"claude-sonnet-4-5","max_tokens":10,"messages":[],"metadata":${"[".repeat(70)}${"]".repeat(70)}}`,
+    ];
+    for (const body of bodies) expect((await call({ body })).status, body.slice(0, 120)).toBe(400);
+    expect(seen).toHaveLength(0);
+    expect(calls().map(row => row["reason"])).toEqual(Array(bodies.length).fill("body"));
+    // Accepted: the upstream gets the checked object written again, not the agent's bytes (spacing, escapes and all).
+    const raw = '{ "model" : "claude-sonnet-4-5", "max_tokens" : 10, "messages" : [ { "role" : "user", "content" : "h\\u0069" } ] }';
+    expect((await call({ body: raw })).status).toBe(200);
+    expect(seen[0]!.body).toBe(JSON.stringify(JSON.parse(raw)));
+    expect(seen[0]!.headers["content-length"]).toBe(String(Buffer.byteLength(seen[0]!.body)));
+  });
+
+  test("content the service would fetch itself (a URL image or document, a stored file, a URL inside a tool result) is refused; inline content passes", async () => {
+    const user = (content: unknown) => ({ ...BODY, messages: [{ role: "user", content }] });
+    const refusedBodies = [
+      user([{ type: "image", source: { type: "url", url: "https://evil.example/x.png" } }]),
+      user([{ type: "document", source: { type: "url", url: "https://evil.example/x.pdf" } }]),
+      user([{ type: "document", source: { type: "file", file_id: "file_123" } }]),
+      user([{ type: "image", source: { type: "file", file_id: "file_123" } }]),
+      user([{ type: "container_upload", file_id: "file_123" }]),
+      user([{ type: "tool_result", tool_use_id: "t1", content: [{ type: "image", source: { type: "url", url: "https://evil.example/y.png" } }] }]),
+      user([{ type: "tool_result", tool_use_id: "t1", content: [{ type: "tool_result", tool_use_id: "t2", content: [{ type: "document", source: { type: "url", url: "https://evil.example/z" } }] }] }]),
+      user([{ type: "document", source: { type: "content", content: [{ type: "image", source: { type: "url", url: "https://evil.example/w.png" } }] } }]),
+      user([{ type: "web_fetch_tool_result", tool_use_id: "t1", content: {} }]),
+      user([{ type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" }, file_id: "file_1" }]),
+      { ...BODY, system: [{ type: "document", source: { type: "url", url: "https://evil.example/s" } }] },
+    ];
+    for (const body of refusedBodies) expect((await call({ body })).status, JSON.stringify(body).slice(0, 160)).toBe(400);
+    expect(seen).toHaveLength(0);
+    expect(calls().map(row => row["reason"])).toEqual(Array(refusedBodies.length).fill("server-fetch"));
+    // Inline: text, base64 image and document, a text document, a tool result with inline content, a system string.
+    const inline = { ...user([{ type: "text", text: "look" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } },
+      { type: "document", source: { type: "text", media_type: "text/plain", data: "notes" } },
+      { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "ok" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } }] }]), system: "be brief" };
+    expect((await call({ body: inline })).status).toBe(200);
+    expect(JSON.parse(seen[0]!.body)).toEqual(inline);
+  });
+});
+
 describe("the credential is never echoed", () => {
   test("an upstream error, a streamed answer and response headers that carry the key are redacted for the agent, the record and the log", async () => {
     script = (_request, response) => {
