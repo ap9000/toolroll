@@ -65,9 +65,14 @@ beforeEach(() => {
   raw = new DatabaseSync(catalogFile);
 });
 const children: ChildProcess[] = [];
-afterEach(() => {
-  // Only what this file started, by its exact pid.
-  for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null && child.pid !== undefined) { try { process.kill(child.pid, "SIGKILL"); } catch { /* gone */ } }
+afterEach(async () => {
+  // Only what this file started, by its exact pid; and gone before its folder is removed, so a straggler can never
+  // write (or make a database) there afterwards.
+  await Promise.all(children.splice(0).map(child => new Promise<void>(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) { resolve(); return; }
+    child.once("exit", () => resolve());
+    try { process.kill(child.pid, "SIGKILL"); } catch { resolve(); }
+  })));
   raw.close(); catalog.close(); store.close(); rmSync(dir, { recursive: true, force: true });
 });
 
@@ -103,8 +108,8 @@ function decided(over: Partial<Parameters<typeof decideFlexibleAnswer>[2]> = {})
 }
 const frame = (ref: string, answer: FlexibleAnswerPayload) => Buffer.from(JSON.stringify({ ref, answer }));
 /** Wait for a state transition (polled; never a fixed sleep standing in for one). */
-async function until(check: () => boolean, what: string): Promise<void> {
-  for (let i = 0; i < 1000 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 5));
+async function until(check: () => boolean, what: string, budgetMs = 5_000): Promise<void> {
+  for (let waited = 0; waited < budgetMs && !check(); waited += 5) await new Promise(resolve => setTimeout(resolve, 5));
   if (!check()) throw new Error(`never happened: ${what}`);
 }
 const attemptOf = (request: string) => store.handle.prepare("SELECT attempt_id FROM thread_decision WHERE request = ?").get(request)?.["attempt_id"] ?? null;
@@ -600,16 +605,25 @@ describe("crashes and restarts", () => {
     const runs = ["one", "two"].map(name => {
       const job = { file, request: asked.request, connection: L1, now: NOW.toISOString(), receiver: join(dir, `receiver-${name}.bin`), ready: join(dir, `ready-${name}`), go,
         modules: { store: new URL("./store.ts", import.meta.url).href, answers: new URL("./flexible-answers.ts", import.meta.url).href } };
-      const done = new Promise<{ ok: boolean; reason?: string; state?: string }>((resolve, reject) => {
-        execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", RACE_SEND, JSON.stringify(job)], { cwd: fileURLToPath(new URL("..", import.meta.url)),
+      let child: ChildProcess | undefined;
+      // Settled either way, so a child that fails fails this test with its own words (never an unhandled rejection).
+      const done = new Promise<{ result: { ok: boolean; reason?: string; state?: string } } | { error: Error }>(resolve => {
+        child = execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", RACE_SEND, JSON.stringify(job)], { cwd: fileURLToPath(new URL("..", import.meta.url)),
           env: checkedEnv(world.env), timeout: 60_000 },
-        (error, stdout, stderr) => error === null ? resolve(JSON.parse(stdout)) : reject(new Error(`${error.message}\n${stderr}`)));
+        (error, stdout, stderr) => resolve(error === null ? { result: JSON.parse(stdout) as { ok: boolean; reason?: string; state?: string } } : { error: new Error(`${error.message}\n${stderr}`) }));
       });
-      return { job, done };
+      children.push(child!);
+      let ended = false;
+      void done.then(() => { ended = true; });
+      return { job, done, ended: () => ended };
     });
-    await until(() => runs.every(one => existsSync(one.job.ready)), "both processes ready");
+    // Both ready, or one already ended (its error is reported below). A cold tsx start on a busy runner takes seconds:
+    // this waits on the processes themselves, within the test's own time limit, never a short guess.
+    await until(() => runs.every(one => existsSync(one.job.ready)) || runs.some(one => one.ended()), "both processes ready, or one ended", 75_000);
     writeFileSync(go, "");
-    const results = await Promise.all(runs.map(one => one.done));
+    const settled = await Promise.all(runs.map(one => one.done));
+    for (const one of settled) if ("error" in one) throw one.error;
+    const results = settled.map(one => (one as { result: { ok: boolean; reason?: string; state?: string } }).result);
     expect(results.filter(one => one.ok)).toEqual([{ ok: true, state: "sent", decisionId: asked.decisionId }]);
     expect(results.filter(one => !one.ok)).toEqual([expect.objectContaining({ ok: false, reason: "already-answered" })]);
     expect(runs.filter(one => existsSync(one.job.receiver))).toHaveLength(1);
@@ -841,6 +855,8 @@ const job = JSON.parse(process.argv.at(-1));
 const { register } = await import("node:module");
 register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
 const { existsSync, writeFileSync } = await import("node:fs");
+// The test's database must already be there: a process that finds none never makes one.
+if (!existsSync(job.file)) { process.stderr.write("no database at " + job.file); process.exit(3); }
 const { openStore } = await import(job.modules.store);
 const { openFlexibleAnswerCatalog, sendFlexibleAnswer } = await import(job.modules.answers);
 const store = openStore(job.file);
@@ -861,7 +877,8 @@ const CRASH = `
 const job = JSON.parse(process.argv.at(-1));
 const { register } = await import("node:module");
 register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
-const { writeFileSync } = await import("node:fs");
+const { existsSync, writeFileSync } = await import("node:fs");
+if (!existsSync(job.file)) { process.stderr.write("no database at " + job.file); process.exit(3); }
 const { openStore } = await import(job.modules.store);
 const { openFlexibleAnswerCatalog, sendFlexibleAnswer } = await import(job.modules.answers);
 const store = openStore(job.file);
