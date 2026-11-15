@@ -38,6 +38,10 @@ const COOKIE_ONLY_POSTS = [
   'settings.passwordless-send',
   // Easy-start C5: turning local mode off, an operator's step-up from a full browser session.
   'settings.local-mode-off',
+  // Solo or team: "It's just me", an operator's credential act from a full browser session.
+  'settings.just-me',
+  // Saving a credential (a provider key, the Telegram bot token, the mail account, a Google account): from a browser.
+  'settings.provider-key-send', 'settings.telegram-token-send', 'settings.email-send', 'settings.google-send',
   // Release approval: an approver's project switch, from a browser (automatic proves a typed password in the handler).
   'settings.release-approval-send',
   // Flexible projects: an approver's project switch, from a browser (turning on proves a typed password in the handler).
@@ -74,7 +78,8 @@ const PASSWORD_CEREMONIES = [
   '/settings/chat-approval/confirm', '/settings/chat-approval/save', '/settings/project/live-view', '/settings/project/fallback',
   '/control/instructions-approve', '/control/setup-approve', '/fleet/runner/register', '/fleet/runner/retire',
   '/mode/sign', '/mode/confirm', '/people/projects', '/people/invite', '/people/invite-revoke', '/people/revoke',
-  '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off',
+  '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off', '/settings/install-mode/solo',
+  '/settings/provider-key', '/settings/telegram-token', '/settings/email', '/settings/google',
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
   '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',
 ];

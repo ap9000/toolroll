@@ -1,5 +1,5 @@
 {
-  "digest": "1eac84cb1a4846cb7d9f8fb62171ddd31586c788f546bc677c6a8ec37aee52f0",
+  "digest": "6bb9db559fbb0afbd59f6c898f42d96b2b32994ee95ca2265721ec5821bb1563",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1664,13 +1664,29 @@
           "items": {
             "type": "string"
           }
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "solo",
+            "team"
+          ]
+        },
+        "defaultChain": {
+          "type": "string",
+          "enum": [
+            "just-code",
+            "plan-first"
+          ]
         }
       },
       "required": [
         "version",
         "toolroll",
         "contract",
-        "responses"
+        "responses",
+        "mode",
+        "defaultChain"
       ],
       "additionalProperties": false
     }

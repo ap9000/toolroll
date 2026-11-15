@@ -364,7 +364,9 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     // The digest the person read is required: approving with --yes alone could approve something they never saw.
     const given = text('digest');
     if (given === null) return fail('usage', `Approve exactly what you read: flows browser ${flow.id} on --yes --digest <the digest the preview showed>.`, EXIT.usage);
-    const signed = signFlowBrowser(store, { flow: flow.id, signer: who, proof: personMethod(flow.repo), sawDigest: given }, now);
+    // Browser use reaches the web from the flow: a credential act, a password typed now (never the remembered login).
+    const browserProof = proveCredential(store, acting.name, acting.token, flow.repo);
+    const signed = signFlowBrowser(store, { flow: flow.id, signer: who, proof: browserProof.ok ? browserProof.method : null, sawDigest: given }, now);
     if (!signed.ok) return refuse(flow.repo, 'refused', `${signed.message} Nothing was changed.`);
     record(flow.repo, 'accepted', `flow #${flow.id} browser on`);
     return ok({ applied: true, browser: { digest: signed.grant.digest, zones: signed.grant.zones, signedBy: signed.grant.signedBy } }, [

@@ -101,6 +101,7 @@ import { ACTIVITY_ONLY_KINDS } from "./needs-you.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { hashPassword, liveReleaseOf } from "./scope.js";
+import { declareNewInstallSolo } from "./install-mode.js";
 import { currentLocalOwner, LOCAL_MODE_CONFINES, LOCAL_OWNER_LAPSED, localModeOn, localOwnerInFlight, localOwnerStandsNow, type Authority, type LocalMode } from "./local-owner.js";
 import { nightlyDebtHold } from "./nightly-github.js";
 import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
@@ -22343,6 +22344,8 @@ export class Store {
       this.db
         .prepare("INSERT INTO approver (name, credential_hash, added_at, generation) VALUES (?, ?, ?, 1)")
         .run(name, credentialHash, now.toISOString());
+      // A new install's first account: solo, recorded in this same transaction (install-mode.ts).
+      declareNewInstallSolo(this, name, now);
       return { ok: true as const };
     });
   }
@@ -26845,6 +26848,8 @@ export function initLocalMode(store: Store, input: { owner: string; fenceAvailab
     if (Number(made.changes) !== 1) return { ok: false, reason: "has-accounts" };
     store.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, ?, 1, 1, ?, ?)").run(input.owner, stamp, stamp);
     store.recordAction({ at: stamp, actor: input.owner, repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new install with no account, started at its own terminal: the owner has no password yet" });
+    // A new install's first account: solo, recorded in this same transaction (install-mode.ts).
+    declareNewInstallSolo(store, input.owner, input.now);
     return { ok: true, owner: input.owner, generation: 1 };
   });
 }

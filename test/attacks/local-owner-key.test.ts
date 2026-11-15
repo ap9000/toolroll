@@ -8,6 +8,8 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { cookieOf, deliveredKey, KEY_REFUSED } from "../loopback-key-kit.js";
+/** File for a plan (Plan first): a solo install offers Build on its own terms otherwise (fast-start.ts SOLO_START_RULE). */
+const PLAN_FIRST = { "planning-policy": "choice", "plan-first": "1" } as const;
 
 let world: LocalWorld;
 beforeEach(async () => {
@@ -37,12 +39,12 @@ const filed = (title: string) => world.store.handle.prepare("SELECT COUNT(*) AS 
 test("an allowed act runs with the key, is refused without it, and a deny row stays refused with it", async () => {
   const { cookie, csrf, key } = await keyedLocalSession();
   // Without the key (a cookie holder on another port reads the CSRF token, never the key): refused, nothing filed.
-  const bare = await post("/tasks/add", cookie, { csrf, repo: world.repo, title: "No key" });
+  const bare = await post("/tasks/add", cookie, { csrf, repo: world.repo, ...PLAN_FIRST, title: "No key" });
   expect(bare.status).toBe(403);
   expect(bare.body).toMatch(KEY_REFUSED);
   expect(filed("No key")).toBe(0);
   // With the key: the local owner's own act runs.
-  const keyed = await post("/tasks/add", cookie, { csrf, repo: world.repo, title: "With key" }, key);
+  const keyed = await post("/tasks/add", cookie, { csrf, repo: world.repo, ...PLAN_FIRST, title: "With key" }, key);
   expect(keyed.headers["x-toolroll-refused"]).toBeUndefined();
   expect(keyed.status).toBe(303);
   expect(filed("With key")).toBe(1);
@@ -83,13 +85,13 @@ test("the key doesn't carry a session elsewhere: a keyed act through a proxy is 
   const { cookie, csrf, key } = await keyedLocalSession();
   for (const proxy of [{ "x-forwarded-for": "100.64.0.7" }, { forwarded: "for=100.64.0.7" }]) {
     const relayed = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": key, ...proxy },
-      new URLSearchParams({ csrf, repo: world.repo, title: "Relayed" }).toString());
+      new URLSearchParams({ csrf, repo: world.repo, ...PLAN_FIRST, title: "Relayed" }).toString());
     expect(relayed.status).toBe(403);
     expect(relayed.headers["x-toolroll-refused"]).toBe("local-owner-elsewhere");
   }
   expect(filed("Relayed")).toBe(0);
   // From this computer, the same keyed act runs.
-  expect((await post("/tasks/add", cookie, { csrf, repo: world.repo, title: "Here" }, key)).status).toBe(303);
+  expect((await post("/tasks/add", cookie, { csrf, repo: world.repo, ...PLAN_FIRST, title: "Here" }, key)).status).toBe(303);
   expect(filed("Here")).toBe(1);
 });
 

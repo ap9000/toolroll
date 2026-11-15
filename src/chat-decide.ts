@@ -42,6 +42,7 @@ import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./co
 import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
 import { discordPlain } from "./reply-shape.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
+import { soloChatSeatRefusal } from "./install-mode.js";
 
 export { permissionPlainWords };
 
@@ -745,6 +746,11 @@ function cardBody(shown: string): string {
  * token's own (person, chat, message); a spent, expired or foreign button acts on nothing.
  */
 export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: string; message: string; shown: string; repos: readonly string[]; root?: string; now: Date }): DecideTapOutcome | null {
+  // A solo install takes chat acts only from the owner's own paired chat identity, read here, in the tap's transaction.
+  if (input.token.startsWith("d:")) {
+    const solo = soloChatSeatRefusal(store, { provider: seat.channel, binding: seat.binding, approver: seat.approver });
+    if (solo !== null) return { ack: solo, ignored: true };
+  }
   const outcome = decideTapUnchecked(store, seat, input);
   if (outcome === null) return null;
   // Every card that carries a live button shows its whole text in one message, as this chat app will draw it: one that

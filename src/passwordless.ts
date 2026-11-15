@@ -25,7 +25,10 @@ export const passwordlessOn = (store: Store): boolean => passwordlessSetting(sto
 
 /** An operator's act (the caller proves it: on takes a typed password, off is one click). The ledger keeps before → after. */
 export function setPasswordless(store: Store, on: boolean, by: string, now: Date): { changed: boolean } {
-  if (passwordlessOn(store) === on) return { changed: false };
+  // Off is recorded even when nothing was ever set: an explicit off is what keeps a solo install asking for the password
+  // (install-mode.ts sessionStandsIn reads the newest entry).
+  const setting = passwordlessSetting(store);
+  if (setting.on === on && (on || setting.at !== null)) return { changed: false };
   store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: PASSWORDLESS_ACTION, outcome: on ? "on" : "off", source: "policy",
     detail: on ? "Passwordless on: signing in is the only password" : "Passwordless off: step-ups ask for the password again" });
   store.bumpWake();

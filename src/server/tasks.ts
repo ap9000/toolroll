@@ -77,6 +77,7 @@ parseResultTab,
 resultReturnTarget
 } from "../result-review.js";
 import { isAlive as runnerAlive } from "../runner.js";
+import { soloNow } from "../install-mode.js";
 import { passwordlessSessionFor,
 acceptanceLinesToInput,
 acceptanceToLines,
@@ -124,7 +125,7 @@ import { releaseSheetPage } from "./render-release.js";
 import { approvalFactsNow } from "./kit.js";
 import { localOwnerRefusal } from "../local-owner.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
-  const { identities, store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
+  const { identities, store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, authenticateCredential, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
   /** A row admitted the address but its path parameter does not parse: the console's unknown page. */
   function noPage(who: Who, response: ServerResponse): void {
@@ -814,7 +815,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           if (!pending) return fail(409, 'This request is no longer waiting for an answer.');
           const decision = body.get('decision');
           if (decision !== 'accept' && decision !== 'decline' && decision !== 'cancel') return fail(400, 'Choose an explicit decision for this request.');
-          if (pending.kind !== 'questions' && decision === 'accept' && !authenticateApprover(who, body.get('password') ?? '').ok) return fail(403, 'Enter your password to approve this additional access.');
+          // Additional access widens what the session reaches: a credential act, a password typed now, never the session.
+          if (pending.kind !== 'questions' && decision === 'accept' && !authenticateCredential(who, body.get('password') ?? '').ok) return fail(403, 'Enter your password to approve this additional access.');
           const answers: unknown = body.has('answers') ? JSON.parse(body.get('answers')!) : Object.fromEntries(pending.questions.map(q => [q.id, { answers: [body.get(`question:${q.id}`) ?? ''] }]));
           runtime.coding.answer(id, actor, token, decision, answers);
         }
@@ -922,7 +924,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // Anything else, or any doubt, is the ordinary filing below. `plain` is "Plan it first" from that form.
     if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
       && (qualityMode === null || qualityMode === "default") && (permissionMode === null || permissionMode === "auto")) {
-      const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who) }, now);
+      // "Read code before planning" on is the person choosing Plan first: never solo's Just code.
+      const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who),
+        planFirst: body.get("plan-first") === "1" }, now);
       // The terminal workbench's New task asks for the same offer as data (http.ts refusedInPlace's terminal act).
       if (fast.eligible && requestContext.getStore()?.terminalAct === true) return answerTermsInPlace(response, { preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) });
       if (fast.eligible) return sendScreen(response, 200, fastStartPage(chromeFor(project ?? null, "tasks"), { title: typed.trim(), repo, preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) }));
@@ -3058,7 +3062,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const startsOn = draft?.values?.get("repo") ?? project ?? chrome.projects?.[0]?.path ?? null;
     const found = startsOn === null ? null : runtime.firstTasks.get(startsOn)?.found ?? null;
     const ideas = found ?? (runtime.firstRunStepsNow(ctx.now) !== null && !store.hasAnyWork() ? firstTaskSuggestions({ issues: [], todos: [] }) : []);
-    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas, ctx.url.searchParams.get("from")?.slice(0, 300) ?? null));
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas, ctx.url.searchParams.get("from")?.slice(0, 300) ?? null, soloNow(store)));
   }
   /** What the password rule reads for this request (approval-password.ts), the same facts the approve forms read. */
   function fastPasswordFacts(who: Who): PasswordFacts {

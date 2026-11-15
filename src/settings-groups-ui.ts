@@ -207,10 +207,10 @@ function providerRecord(one: ProviderFacts): Html {
       one.connection === null ? "" : formRow("Sign-in", `${one.connection.words}${one.connection.facts ? ` · ${one.connection.facts}` : ""}`,
         html`<button class="k-btn k-btn-ghost k-btn-sm" type="submit" formaction="/settings/connection/check" formnovalidate><span class="k-face">Check again</span></button>`, "inline"),
       one.subscriptionCapable ? formRow("How it’s paid", `${one.usage} · ${one.envName}`, select({ name: "auth-mode", label: `How ${one.name} is paid`, current: one.mode, items: [["subscription", `${one.name} subscription`], ["api-key", "API key"]] })) : note(`${one.usage} · ${one.envName}`),
-      formRow(`${one.name} API key`, "Stored privately on this computer and never shown again. Saving a key needs no password; it isn’t a way into Toolroll.",
+      formRow(`${one.name} API key`, "Stored privately on this computer and never shown again.",
         html`<input class="k-input" id="key-${one.provider}" type="password" name="value" autocomplete="off" spellcheck="false" autocapitalize="none" data-so-secret data-1p-ignore data-lpignore="${SECRET_OPT_OUTS["data-lpignore"]}" data-bwignore data-form-type="other" aria-label="${one.name} API key" placeholder="${one.set ? "Paste to replace the stored key" : "Paste a key"}">`),
     ]) });
-  const remove = one.set ? kitSectionForm({ proof: "provider-key", action: "/settings/provider-key-clear", id: `provider-${one.provider}-clear`, hidden: { provider: one.provider }, save: { label: "Remove key", variant: "danger" },
+  const remove = one.set ? kitSectionForm({ proof: "provider-key-clear", action: "/settings/provider-key-clear", id: `provider-${one.provider}-clear`, hidden: { provider: one.provider }, save: { label: "Remove key", variant: "danger" },
     body: note("Runs that use this API key stop until you add one again.") }) : "";
   return settingsRecord({ title: html`${one.name} ${toneChip(one.tone, one.words)}`, sub: one.connection === null ? one.usage : `${one.connection.words}${one.connection.facts ? ` · ${one.connection.facts}` : ""}`,
     attrs: { "data-provider": one.provider }, more: disclose(`Manage ${one.name}`, joinHtml([form, remove])) });

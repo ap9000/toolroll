@@ -124,6 +124,7 @@ export const CONSOLE_FORMS = {
   sweep: formContract("POST /sweeps/<sweep>/cancel-rest", ["confirm", "snapshot"]),
   passwordless: formContract("POST /settings/passwordless", ["action", "password"]),
   localModeOff: formContract("POST /settings/local-mode/off", ["password"]),
+  justMe: formContract("POST /settings/install-mode/solo", ["password"]),
   releaseApproval: formContract("POST /settings/release-approval", ["repo", "action", "password"]),
   // Flexible projects (flexible.ts, slice F1): turn on (the shown terms' digest and a password), lower (max), turn off.
   projectFlexible: formContract("POST /settings/project/flexible", ["repo", "action", "max", "digest", "password"]),
@@ -194,10 +195,11 @@ export const CONSOLE_FORMS = {
   pullRequestsCheck: formContract("POST /settings/pull-requests/check", ["repo"]),
   connectionCheck: formContract("POST /settings/connection/check", ["provider", "auth-mode", "value", "return"]),
   modelsRefresh: formContract("POST /control/models-refresh", ["repo", "nonce", "fingerprint", "token", "provider", "model", "command", "seconds", "task"]),
-  providerKey: formContract("POST /settings/provider-key, /settings/provider-key-clear", ["provider", "auth-mode", "value"]),
-  telegramToken: formContract("POST /settings/telegram-token", ["token"]),
-  email: formContract("POST /settings/email, /settings/email-test, /settings/email-read-test", ["host", "port", "secure", "user", "from", "password", "imapHost", "imapPort"]),
-  google: formContract("POST /settings/google, /settings/google/disconnect", ["clientId", "clientSecret"]),
+  providerKey: formContract("POST /settings/provider-key, /settings/provider-key-clear", ["provider", "auth-mode", "value", "password"]),
+  telegramToken: formContract("POST /settings/telegram-token", ["token", "password"]),
+  // `password` is the mail server's; `token` is the person's own Toolroll password (the credential proof).
+  email: formContract("POST /settings/email, /settings/email-test, /settings/email-read-test", ["host", "port", "secure", "user", "from", "password", "imapHost", "imapPort", "token"]),
+  google: formContract("POST /settings/google, /settings/google/disconnect", ["clientId", "clientSecret", "password"]),
   projectsSelect: formContract("POST /projects/select", ["path", "return"]),
   projectsRemove: formContract("POST /projects/remove", ["repo"]),
   projectsOpen: formContract("POST /projects/open", ["path", "return", "via", "password"]),

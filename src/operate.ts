@@ -344,7 +344,7 @@ import { fileGithubItem, readGithubItem } from "./github-import.js";
 import { runRelease } from "./release.js";
 import { releaseAdapters } from "./release-adapters.js";
 import { routeChangeOf, routeLegacyPlans } from "./route-change.js";
-import { passwordlessOn } from "./passwordless.js";
+import { sessionStandsIn } from "./install-mode.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
 import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
@@ -8733,7 +8733,9 @@ async function publishCommand(
       return EXIT.refused;
     }
     const acting = await askCredentials(flags, context);
-    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token, repo);
+    // Letting Toolroll push this project to GitHub is a credential act (network reach): a password typed now, never the
+    // remembered login, solo or not.
+    const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token, repo);
     if (acting === null || !verified?.ok) return refuseApprover(context, "publish setup", verified, "turning on pull requests takes --as <you> --token <your password>", acting?.name);
     savePublishing(store, plan, acting.name, settings, clock());
     return succeed(write, json, "publish setup", { publishing: publishingOf(store, repo) }, () => ["Pull requests are on.", ...terms]);
@@ -8795,7 +8797,8 @@ async function publishCommand(
     }
 
     const acting = await askCredentials(flags, context);
-    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    // A standing grant to push is a credential act, as turning pull requests on is.
+    const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token);
     if (acting === null || !verified?.ok) return refuseApprover(context, "publish grant", verified, "granting takes --as <you> --token <your password> — pushing your repos is a person's yes", acting?.name);
     const { name: asWho, token } = acting;
 
@@ -14364,7 +14367,7 @@ async function newTaskCommand(positional: readonly string[], flags: Map<string, 
   if (context.principal !== undefined || machineActing()) return fail(write, json, command, "person-only", "Only a person starts a build this way. File it with `task add`.", EXIT.refused);
   if (local === null && (json || !personAtTerminal(context))) return fail(write, json, command, "person-only", "`task new` asks a person at a terminal. Use `task add` from a script or an agent.", EXIT.refused);
   const { name, token } = credentialsFrom(flags, context);
-  const passwordFree = token !== undefined && (local !== null || passwordlessOn(store));
+  const passwordFree = token !== undefined && (local !== null || sessionStandsIn(store));
   const facts: PasswordFacts = { passwordless: local === null && passwordFree, localOwner: local !== null, freshAt: null, returnTo: "/" };
   const buildNow = (preview: string, digest: string): FastBuild => fastStartBuild(store, { preview, digest, actor: name ?? "", via: local === null ? "cli" : "terminal-ui", password: facts,
     approveNow: (taskId, sawDigest, fast) => approve(store, taskId, name ?? "", clock(), sawDigest, token ?? "", {}, fast) }, clock());

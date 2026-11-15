@@ -15,6 +15,7 @@
 import { ADVANCED_PAGES } from "../advanced-view.js";
 import { accentNote, ACCENT_PRESETS } from "../accent-colors.js";
 import type { Authority } from "../local-owner.js";
+import { installModeLine, justMeAllowed, TEAM_FACT_WORDS, type InstallModeRead, type TeamFact } from "../install-mode.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { kitSectionForm } from "../settings-kit.js";
 import { evaluateRoutePolicy, holdsRole, type RoutePrincipal } from "./route-policy.js";
@@ -241,6 +242,8 @@ export type GeneralDeps = {
   readonly passwordless: () => boolean;
   /** Local mode as saved: on, or not. */
   readonly localModeOn: () => boolean;
+  /** The install's solo or team mode, as the server derives it now (install-mode.ts). */
+  readonly installMode: () => InstallModeRead;
 };
 
 const ACCENT_CHOICES = ACCENT_PRESETS.slice(0, 6);
@@ -376,6 +379,41 @@ function localModeSection(deps: GeneralDeps): SectionImpl<LocalSummary> {
   };
 }
 
+type InstallModeSummary = { mode: InstallModeRead["mode"]; facts: TeamFact[]; canSwitch: boolean; offered: boolean };
+/** Solo or team, in one line. An instance operator's full session is offered "It's just me" while only history (an
+ * install from before solo, a person since removed) says team; its change document asks for the password. */
+function installModeSection(deps: GeneralDeps): SectionImpl<InstallModeSummary> {
+  return {
+    loadSummary: ctx => {
+      const read = deps.installMode();
+      const canSwitch = ctx.can["just-me"] === true;
+      return { mode: read.mode, facts: read.facts, canSwitch, offered: canSwitch && justMeAllowed(read) };
+    },
+    render: ({ declaration, summary, attrs }) => {
+      const line = installModeLine(summary.mode);
+      return settingsSection({ id: "install-mode", title: line.label, attrs, lead: line.words,
+        ...(summary.offered ? { right: btn("It's just me", { sm: true, href: changeHref(declaration.changes[0]!) }) } : {}), body: html`` });
+    },
+    refusal: "An instance operator signed in with a password says it's just them.",
+    renderChange: ({ declaration, summary, problem }) => {
+      const home = sectionHref(declaration);
+      const title = "It's just me";
+      const blocked = summary === null ? [] : summary.facts.filter(fact => fact !== "existing-install" && !fact.endsWith("-added"));
+      const words = summary === null || summary.mode === "solo"
+        ? html`${infoLine("This install is solo.")}<div class="k-acts">${btn("Back to General", { href: home })}</div>`
+        : !summary.offered
+          ? html`${blocked.map(fact => notice(TEAM_FACT_WORDS[fact]))}<div class="k-acts">${btn("Back to General", { href: home })}</div>`
+          : joinHtml([
+            html`<p>Approvals and Accept then need only you signed in. Signing in, tokens and connecting things still ask for your password. If anyone joins, this install switches back to Team.</p>`,
+            problem === null ? "" : notice(problem),
+            kitSectionForm({ proof: "install-solo", action: "/settings/install-mode/solo", id: "just-me-form", native: true, save: { label: title }, confirm: title, body: html`` }),
+            html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
+          ]);
+      return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), words)}</div>` };
+    },
+  };
+}
+
 /** General's sections, by id (settings-section-table.ts says who sees each). */
 export function generalSections(deps: GeneralDeps): SectionImpls {
   return {
@@ -383,6 +421,7 @@ export function generalSections(deps: GeneralDeps): SectionImpls {
     "this-browser": thisBrowserSection(),
     "your-password": yourPasswordSection(deps),
     version: versionSection(deps),
+    "install-mode": installModeSection(deps),
     advanced: advancedSection(),
     "local-mode": localModeSection(deps),
   } as unknown as SectionImpls;

@@ -199,7 +199,7 @@ describe("a Google account", () => {
       const before = await alerts();
       expect(before).toContain(`<code class="k-mono" data-google-redirect>${base}/settings/google/callback</code>`);
       expect(before).toContain("Or sign in with a Google account");
-      const connect = await fetch(`${base}/settings/google`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, clientId: CLIENT, clientSecret: secret() }), redirect: "manual" });
+      const connect = await fetch(`${base}/settings/google`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, clientId: CLIENT, clientSecret: secret(), password }), redirect: "manual" });
       // A page that moves on to Google by itself: a form answered with another site's address is stopped by form-action 'self'.
       expect(connect.status).toBe(200);
       const going = await connect.text();

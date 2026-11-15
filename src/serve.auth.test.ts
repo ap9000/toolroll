@@ -490,7 +490,7 @@ describe("the settings card", () => {
     const bad = await fetch(`${base}/settings/telegram-token`, {
       method: "POST",
       headers: { cookie, origin: base },
-      body: new URLSearchParams({ token: "not a token", csrf }),
+      body: new URLSearchParams({ token: "not a token", csrf, password: approverToken }),
       redirect: "manual",
     });
     // Refused back to its section with the reason; nothing is stored.
@@ -502,7 +502,7 @@ describe("the settings card", () => {
     const saved = await fetch(`${base}/settings/telegram-token`, {
       method: "POST",
       headers: { cookie, origin: base },
-      body: new URLSearchParams({ token, csrf }),
+      body: new URLSearchParams({ token, csrf, password: approverToken }),
       redirect: "manual",
     });
     expect(saved.status).toBe(303);
@@ -576,7 +576,8 @@ describe("provider keys & auth mode, over HTTP", () => {
     fetch(`${base}/settings/provider-key`, {
       method: "POST",
       headers: { cookie, origin: base },
-      body: new URLSearchParams({ csrf, ...fields }),
+      // Saving a key (or how it's paid) is a credential act: the password typed now.
+      body: new URLSearchParams({ csrf, password: approverToken, ...fields }),
       redirect: "manual",
     });
 
