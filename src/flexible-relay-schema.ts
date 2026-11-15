@@ -12,8 +12,11 @@
  *   no credential, token or header is ever kept.
  * - `thread_relay_pending`: a call's reservation, written in the same transaction that re-checks its token and its turn,
  *   before anything is sent, and cleared in the same transaction that records and charges the call. One still there is
- *   a call whose charge was never recorded: the thread takes no new relay call while it is, and once its turn has ended
- *   a keyed turn's cost counts as unknown (F2e's hold) until the relay reconciles it (charged as unknown).
+ *   a call whose charge was never recorded. It names the relay that made it (another relay's is one that is gone) and
+ *   its route (a token count costs nothing). Its own relay retries the charge while its turn runs, and the thread
+ *   takes no new call meanwhile; anything else is reconciled from the record (on the relay's start, every tick and a
+ *   turn's end): charged as unknown, or as nothing for a token count. While one is there after its turn ended, a keyed
+ *   turn's cost counts as unknown (F2e's hold).
  */
 export const V166_SCHEMA = `
 CREATE TABLE IF NOT EXISTS thread_relay_call (
@@ -53,6 +56,8 @@ CREATE TABLE IF NOT EXISTS thread_relay_pending (
   turn          TEXT NOT NULL CHECK (length(turn) = 32 AND turn NOT GLOB '*[^0-9a-f]*'),
   launch        TEXT NOT NULL CHECK (length(launch) = 32 AND launch NOT GLOB '*[^0-9a-f]*'),
   holder        TEXT NOT NULL CHECK (length(holder) BETWEEN 1 AND 128),
+  relay         TEXT NOT NULL CHECK (length(relay) = 32 AND relay NOT GLOB '*[^0-9a-f]*'),
+  route         TEXT NOT NULL CHECK (route IN ('messages', 'count-tokens')),
   reserved_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS thread_relay_pending_thread ON thread_relay_pending (thread);

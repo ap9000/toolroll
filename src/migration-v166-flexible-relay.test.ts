@@ -70,9 +70,16 @@ describe("v166", () => {
     }
     expect(() => db.prepare("UPDATE thread_relay_call SET tokens_in = tokens_in + 1 WHERE id = 1").run()).toThrow(/written once/);
     // A reservation: what it names, written once, only ever cleared.
-    expect(() => db.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, reserved_at) VALUES (?, NULL, ?, 'h1', ?)").run(THREAD, LAUNCH, T0)).toThrow();
-    expect(() => db.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, reserved_at) VALUES ('x', ?, ?, 'h1', ?)").run(TURN, LAUNCH, T0)).toThrow();
-    db.prepare("INSERT INTO thread_relay_pending (thread, turn, launch, holder, reserved_at) VALUES (?, ?, ?, 'h1', ?)").run(THREAD, TURN, LAUNCH, T0);
+    const reserve = (over: Record<string, unknown> = {}) => {
+      const row = { thread: THREAD, turn: TURN, launch: LAUNCH, holder: "h1", relay: "e".repeat(32), route: "messages", reserved_at: T0, ...over };
+      return db.prepare(`INSERT INTO thread_relay_pending (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`).run(...(Object.values(row) as (string | number | null)[]));
+    };
+    expect(() => reserve({ turn: null })).toThrow();
+    expect(() => reserve({ thread: "x" })).toThrow();
+    expect(() => reserve({ relay: "not-a-relay" })).toThrow();
+    expect(() => reserve({ route: "complete" })).toThrow();
+    reserve();
+    reserve({ route: "count-tokens" });
     expect(() => db.prepare("UPDATE thread_relay_pending SET turn = ?").run("d".repeat(32))).toThrow(/only cleared/);
     db.prepare("DELETE FROM thread_relay_pending").run();
     store.close();
