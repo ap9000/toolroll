@@ -370,15 +370,21 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             "Reading your tasks…"
         };
-        f.render_widget(
-            Paragraph::new(
-                wrap(words, content.width as usize)
-                    .into_iter()
-                    .map(Line::raw)
-                    .collect::<Vec<_>>(),
-            ),
-            content,
-        );
+        let width = content.width as usize;
+        let mut lines: Vec<Line> = wrap(words, width).into_iter().map(Line::raw).collect();
+        // The first run's lines (the engine's agents read, the same words every screen shows): who the first task goes
+        // to, or one "Sign in to <Agent>: run …" per installed agent, or how to install one.
+        if let Some(agents) = app.agents.as_ref().filter(|_| app.loaded) {
+            lines.push(Line::raw(""));
+            for said in &agents.lines {
+                lines.extend(
+                    wrap(&clean(said), width)
+                        .into_iter()
+                        .map(|l| Line::from(Span::styled(l, ink()))),
+                );
+            }
+        }
+        f.render_widget(Paragraph::new(lines), content);
         return;
     };
     // Head: the task, then what's running it.
@@ -859,7 +865,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             lines.extend(
                 wrap(&clean(&q.text), w)
                     .into_iter()
-                    .map(|l| Line::from(Span::styled(l, dim()))),
+                    .map(|l| Line::from(Span::styled(l, ink()))),
             );
             lines.push(Line::raw(""));
             lines.extend(

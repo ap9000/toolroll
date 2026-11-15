@@ -10,6 +10,7 @@ import { hardenedGit } from "./teardown-git.js";
 import type { Runner } from "./backend.js";
 import { githubIssues } from "./issues.js";
 import { START_BUILDER_HREF } from "./needs-you.js";
+import { firstRunAgentLines, firstTaskOf, withNext, type DetectedAgent } from "./agent-detect.js";
 
 export const SIGN_IN_COMMAND = "claude auth login";
 export const SANDBOX_COMMAND = "npx toolroll demo";
@@ -261,10 +262,18 @@ export type WelcomeAgent = {
   optional: boolean;
 };
 export type WelcomeStarter = { label: string; draft: string; href: string };
+/** Another agent found on this computer (agent-detect.ts): Gemini CLI, OpenRouter or an ACP agent, installed. */
+export type WelcomeOtherAgent = Pick<DetectedAgent, "id" | "name" | "state" | "signIn" | "next" | "ready">;
 export type WelcomeModel = {
   agent: { done: boolean; checking: boolean; agents: WelcomeAgent[]; inUse: WelcomeAgentId | null;
     /** Tasks are built with another agent than the one in use (Settings → Models decides): say so, with where to change it. */
-    buildsWith: string | null };
+    buildsWith: string | null;
+    /** The other agents installed here, as the last detection saw them. */
+    others: WelcomeOtherAgent[];
+    /** The agent the first task goes to (agent-detect.ts firstTaskOf), by name; null when none can take it yet. */
+    firstTask: string | null;
+    /** The step's lines, the same on every screen (agent-detect.ts firstRunAgentLines). */
+    lines: string[] };
   project: { done: boolean; projects: { name: string; path: string }[];
     /** Where "Try a sample project" puts it; null when there is no project folder or it is already added. */
     sample: string | null;
@@ -289,6 +298,10 @@ export type WelcomeFacts = {
   hasTask: boolean;
   starters: readonly FirstTaskSuggestion[];
   platform: NodeJS.Platform;
+  /** This computer's other agents, as the last detection saw them (agent-detect.ts); absent or null when not looked for. */
+  others?: readonly DetectedAgent[] | null;
+  /** The provider a person chose for builds (Settings → Models), when one was chosen; null for the default. */
+  routed?: string | null;
 };
 
 const SIGNED_IN: ReadonlySet<SignInState> = new Set(["connected", "key-works", "key-present"]);
@@ -307,6 +320,14 @@ export function welcomeModel(facts: WelcomeFacts): WelcomeModel {
   const installed = agents.some(one => one.state === "signed-in" || one.state === "signed-out");
   for (const one of agents) one.optional = signedIn ? one.state !== "signed-in" : installed && one.state === "not-installed";
   const checking = !signedIn && agents.some(one => one.state === "checking");
+  // The step's words: the same lines every screen shows (agent-detect.ts), over these two and the others found here.
+  const others: WelcomeOtherAgent[] = (facts.others ?? []).filter(one => one.state !== "not-installed" && !WELCOME_AGENTS.some(own => own.id === one.id))
+    .map(one => ({ id: one.id, name: one.name, state: one.state, signIn: one.signIn, next: one.next, ready: one.ready }));
+  const rows = [...agents.map(one => withNext({ id: one.id, name: one.name, how: null, ready: false, next: null,
+    state: one.state === "checking" ? "unknown" as const : one.state, signIn: one.state === "signed-out" ? WELCOME_AGENTS.find(own => own.id === one.id)!.signIn : null }, facts.routed ?? null)), ...others];
+  const firstTask = firstTaskOf(rows, facts.routed ?? null);
+  const firstTaskName = firstTask === null ? null : rows.find(one => one.id === firstTask)?.name ?? null;
+  const lines = firstRunAgentLines(rows, firstTask, checking, facts.routed ?? null);
   const builds = facts.buildsOn === null ? null : WELCOME_AGENTS.find(one => one.id === facts.buildsOn)?.name ?? facts.buildsOn;
   const buildsWith = facts.inUse !== null && facts.buildsOn !== null && facts.buildsOn !== facts.inUse ? builds : null;
   const hasProject = facts.projects.length > 0;
@@ -316,13 +337,13 @@ export function welcomeModel(facts: WelcomeFacts): WelcomeModel {
   const taskOpen = hasProject;
   const starters = facts.starters.slice(0, 3).map(one => ({ label: one.label, draft: one.draft, href: `/tasks/new?text=${encodeURIComponent(one.draft)}` }));
   const model: Omit<WelcomeModel, "next" | "left"> = {
-    agent: { done: signedIn, checking, agents, inUse: facts.inUse, buildsWith },
+    agent: { done: firstTask !== null, checking, agents, inUse: facts.inUse, buildsWith, others, firstTask: firstTaskName, lines },
     project: { done: projectDone, projects: [...facts.projects], sample, notTakingWork: hasProject && !facts.ready },
     task: { done: facts.hasTask, open: taskOpen, starters: taskOpen ? starters : [] },
   };
   // The next step a page can move: the agent only when there is something to click (Use this one); its sign-in is a
   // command on the computer, so a project or the first task leads meanwhile.
-  const agentAct = !signedIn ? false : facts.inUse === null && agents.some(one => one.canUse);
+  const agentAct = firstTask === null ? false : facts.inUse === null && agents.some(one => one.canUse);
   const next = agentAct ? "agent" : !projectDone ? "project" : !facts.hasTask ? "task" : null;
   const left = [model.agent.done, model.project.done, model.task.done].filter(done => !done).length;
   return { ...model, next, left };

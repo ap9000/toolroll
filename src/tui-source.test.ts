@@ -133,6 +133,14 @@ describe("the terminal UI on a laptop database", () => {
   }, 60_000);
 });
 
+test("the classic screen's setup says who the first task goes to, in the same words as every other screen", async () => {
+  const source = createTuiSource({ databaseFile: file, operate: { now }, check });
+  try {
+    const setup = await source.setup();
+    expect(setup?.lines).toContain("   Your first task goes to Claude Code.");
+  } finally { source.close(); }
+});
+
 test("the screen closing while setup waits on the sign-in checks answers nothing, and opens nothing again", async () => {
   let go = (): void => {};
   const gate = new Promise<void>(resolve => { go = resolve; });

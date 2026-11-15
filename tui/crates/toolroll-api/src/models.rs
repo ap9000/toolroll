@@ -474,3 +474,41 @@ pub enum DefaultChain {
     JustCode,
     PlanFirst,
 }
+
+// ---- Agents on this computer ------------------------------------------------------------------------------------
+
+/// One supported coding agent as the console's last detection saw it (agent-detect.ts): facts only, never a credential.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRow {
+    pub id: String,
+    pub name: String,
+    /// signed-in | signed-out | unknown | not-installed
+    pub state: String,
+    pub how: Option<String>,
+    #[serde(rename = "signIn")]
+    pub sign_in: Option<String>,
+    pub ready: bool,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstTask {
+    pub id: String,
+    pub name: String,
+}
+
+/// `GET /engine/agents`: the agents on the console's computer, who the first task goes to, and the first run's lines
+/// (the same words every screen shows). `checked_at` None: not looked for yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsRead {
+    pub version: u32,
+    #[serde(rename = "checkedAt")]
+    pub checked_at: Option<String>,
+    pub agents: Vec<AgentRow>,
+    #[serde(rename = "firstTask")]
+    pub first_task: Option<FirstTask>,
+    pub lines: Vec<String>,
+}

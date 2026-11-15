@@ -111,7 +111,7 @@ describe("toolroll welcome", () => {
     const { code, out } = await run("welcome", [], { terminal: true, ask: async question => { asked.push(question); return asked.length === 1 ? "s" : "q"; } });
     expect(code).toBe(0);
     expect(out).toContain("1. Agent · To do");
-    expect(out).toContain("To sign in, run: claude auth login");
+    expect(out).toContain("Sign in to Claude Code: run `claude auth login`");
     expect(out).toContain("2. Project · To do");
     expect(asked).toHaveLength(2);
   });

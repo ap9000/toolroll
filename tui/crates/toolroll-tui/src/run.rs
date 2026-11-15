@@ -142,6 +142,9 @@ impl Loop {
             Effect::FetchWork => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Work(client.work_rows().await));
             })),
+            Effect::FetchAgents => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Agents(client.agents().await));
+            })),
             Effect::FetchSteps(task) => drop(tokio::spawn(async move {
                 let r = client.steps(&task).await;
                 let _ = tx.send(Msg::Steps(task, r));

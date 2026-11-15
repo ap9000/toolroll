@@ -10,10 +10,11 @@
 import { resolvePhaseAgent } from "../agentconfig.js";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { builderReadyFor, firstRunBuilderRepo } from "../dispatch.js";
-import { firstTaskSuggestions, SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, welcomeModel, withBuilderStep, type WelcomeAgent, type WelcomeAgentId, type WelcomeModel } from "../first-run.js";
+import { firstTaskSuggestions, SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, welcomeModel, withBuilderStep, type WelcomeAgent, type WelcomeAgentId, type WelcomeModel, type WelcomeOtherAgent } from "../first-run.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { START_BUILDER_HREF } from "../needs-you.js";
 import { addSampleProject } from "../sample-project.js";
+import { firstTaskRouted } from "../welcome-facts.js";
 import { resolveCeiling } from "../project.js";
 import { readProjectRegistryNow, type ProjectRegistry } from "../repos.js";
 import { type Chrome, refuse, screen, type Screen } from "./chrome.js";
@@ -23,6 +24,9 @@ import { redirect } from "./http.js";
 import { rereadBrowser } from "./live.js";
 import { btn, chip, codeLine, dock, note, notice, pageHeader, settingsRecord } from "./kit.js";
 import type { ServerRuntime } from "./runtime.js";
+import type { Who } from "./session.js";
+import { NO_AGENT_YET } from "../agent-detect.js";
+import type { Store } from "../store.js";
 
 /** Why the sample project wasn't added, as a fixed key in the address (never words from it). */
 export const SAMPLE_PROBLEMS = {
@@ -59,19 +63,42 @@ function agentRow(agent: WelcomeAgent, leads: boolean): Html {
   return settingsRecord({ title: agent.name, sub, action, attrs: { "data-agent": agent.id, "data-state": agent.state } });
 }
 
+const OTHER_WORDS: Record<WelcomeOtherAgent["state"], string> = { "signed-in": "Signed in", "signed-out": "Not signed in", unknown: "Installed", "not-installed": "Not installed" };
+/** A sentence whose `quoted` commands read as code. */
+const withCode = (text: string): Html => joinHtml(text.split("`").map((part, index) => index % 2 === 1 ? html`<code class="k-mono">${part}</code>` : html`${part}`));
+/** Another agent found on this computer (Gemini CLI, OpenRouter, an ACP agent): its state, then its sign-in command or
+ * what it still needs before it takes tasks. Nothing to click: those are commands or Settings → Models. */
+function otherRow(agent: WelcomeOtherAgent): Html {
+  const sub = agent.state !== "signed-in" && agent.signIn !== null
+    ? html`${OTHER_WORDS[agent.state]}. To sign in, run this on the computer running Toolroll:${codeLine(agent.signIn)}`
+    : agent.next !== null ? html`${OTHER_WORDS[agent.state]}. ${withCode(agent.next)}` : OTHER_WORDS[agent.state];
+  return settingsRecord({ title: agent.name, sub, action: "", attrs: { "data-agent": agent.id, "data-state": agent.state } });
+}
+
 /** The page body for one model, and the screen's one primary (for the phone dock). `problem`: why the sample project
  * wasn't added, from the address. `canAdd`: this person may add projects here. */
-export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean }): { body: Html; primary: Html | null } {
-  const lead = model.next;
+export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean; inventory?: AgentInventory }): { body: Html; primary: Html | null } {
   let primary: Html | null = null;
+  // Which agents this computer has is the installation's: an instance operator's session sees each one; another
+  // person's sees only who the first task goes to; a token sees neither (agentInventoryOf), and nothing on its page
+  // depends on a sign-in: the agent step never reads Done, the count of steps left and the leading step ignore it.
+  const inventory = options.inventory ?? "full";
+  const blind = inventory === "none";
+  const agentDone = blind ? false : model.agent.done;
+  const lead = !blind || model.next !== "agent" ? model.next : !model.project.done ? "project" : !model.task.done ? "task" : null;
+  const left = blind ? [false, model.project.done, model.task.done].filter(done => !done).length : model.left;
 
-  const agentLead = lead === "agent" ? model.agent.agents.find(one => one.canUse) ?? null : null;
+  const agentLead = lead === "agent" && inventory === "full" ? model.agent.agents.find(one => one.canUse) ?? null : null;
   if (agentLead !== null) primary = useForm(agentLead.id, btn(`Use ${agentLead.name}`, { variant: "primary", type: "submit" }));
-  const agentNote = model.agent.checking ? note("Checking for a signed-in agent on this computer…")
+  const firstTaskNote = model.agent.firstTask !== null ? note(`Your first task goes to ${model.agent.firstTask}.`) : "";
+  const agentNote = inventory === "none" ? ""
+    : inventory === "summary" ? model.agent.firstTask !== null ? firstTaskNote : note(model.agent.checking ? "Checking for a signed-in agent on this computer…" : NO_AGENT_YET)
+    : model.agent.checking ? note("Checking for a signed-in agent on this computer…")
     : !model.agent.done ? note("Sign in to one of these, then come back to this page.")
-      : model.agent.buildsWith !== null ? note(html`Tasks are built with ${model.agent.buildsWith}. <a class="k-link" href="/settings/models">Change</a>`) : "";
-  const agent = step("agent", 1, "Agent", model.agent.done, html`<p class="k-note">The AI coding agent that plans and builds your tasks.</p>\
-<div class="welcome-rows">${model.agent.agents.map(one => agentRow(one, agentLead?.id === one.id))}</div>${agentNote}`);
+      : model.agent.buildsWith !== null ? note(html`Tasks are built with ${model.agent.buildsWith}. <a class="k-link" href="/settings/models">Change</a>`)
+        : firstTaskNote;
+  const rows = inventory !== "full" ? "" : html`<div class="welcome-rows">${model.agent.agents.map(one => agentRow(one, agentLead?.id === one.id))}${model.agent.others.map(otherRow)}</div>`;
+  const agent = step("agent", 1, "Agent", agentDone, html`<p class="k-note">The AI coding agent that plans and builds your tasks.</p>${rows}${agentNote}`);
 
   const projects = model.project.projects;
   const listed = projects.slice(0, PROJECTS_SHOWN).map(one => settingsRecord({ title: one.name, sub: html`<span class="k-mono">${one.path}</span>`, attrs: { "data-project": "" } }));
@@ -99,7 +126,7 @@ ${listed.length === 0 ? "" : html`<div class="welcome-rows">${listed}</div>`}${m
   const taskLeads = lead === "task";
   if (taskLeads) primary = btn("Write a task", { variant: "primary", href: "/tasks/new" });
   // Filed before any agent is signed in: it waits for step 1, so the step reads Filed, never Done.
-  const waitsForAgent = model.task.done && !model.agent.done && !model.agent.checking;
+  const waitsForAgent = !blind && model.task.done && !model.agent.done && !model.agent.checking;
   const taskBody = model.task.done ? waitsForAgent ? html`<p class="k-note">It starts by itself once an agent is signed in (step 1).</p>`
     : html`<p class="k-note">Filed. Its plan waits for your approval in <a class="k-link" href="/">Work</a>.</p>`
     : !model.task.open ? html`<p class="k-note">Add a project first.</p>`
@@ -108,11 +135,20 @@ ${model.task.starters.length === 0 ? "" : html`<div class="k-ideas" aria-label="
 <div class="k-acts">${btn("Write a task", { sm: true, href: "/tasks/new", ...(taskLeads ? { variant: "primary" as const, docked: true } : {}) })}</div>`;
   const task = step("task", 3, "First task", model.task.done, taskBody, waitsForAgent);
 
-  const hello = html`<div class="k-hello"><h2>Get to your first result.</h2><p>${model.left === 0 ? "Setup is done." : `${plural(model.left, "step", "steps")} left.`}</p></div>`;
+  const hello = html`<div class="k-hello"><h2>Get to your first result.</h2><p>${left === 0 ? "Setup is done." : `${plural(left, "step", "steps")} left.`}</p></div>`;
   return { body: html`${hello}${agent}${project}${task}`, primary };
 }
 
-export function welcomePage(chrome: Chrome, model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean }): Screen {
+/** How much of this computer's agent inventory a caller sees: each agent (an instance operator's own session), only
+ * who the first task goes to (another person's session), or nothing (a token, or anything that isn't a person's
+ * session). The one policy /welcome and the engine's agents read share. */
+export type AgentInventory = "full" | "summary" | "none";
+export function agentInventoryOf(who: Who, store: Pick<Store, "isInstanceOperator">): AgentInventory {
+  if (who.via !== "cookie") return "none";
+  return store.isInstanceOperator(who.name) ? "full" : "summary";
+}
+
+export function welcomePage(chrome: Chrome, model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean; inventory?: AgentInventory }): Screen {
   const { body, primary } = welcomeBody(model, options);
   return screen("Welcome", html`${pageHeader("Welcome")}<div class="k-doc welcome" data-welcome>${body}</div>${dock(primary)}`, { chrome });
 }
@@ -137,8 +173,11 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
     const states = runtime.localSignIn?.states ?? null;
     const build = resolvePhaseAgent(store, "build", repo, {});
     const approver = who.via === "cookie" && who.role === "approver";
+    const routed = firstTaskRouted(store, repo);
     const model = welcomeModel({
       agents: { claude: states?.claude ?? null, codex: states?.codex ?? null },
+      // Every other agent the last detection found on this computer (agent-detect.ts), and who the first task goes to.
+      others: runtime.localAgents?.agents ?? null, routed,
       inUse: AGENT_OF[store.getChatConfig()?.provider ?? ""] ?? null,
       buildsOn: build.ok ? build.spec.provider : null,
       canChoose: approver,
@@ -148,7 +187,7 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
       starters, platform: options.platform ?? process.platform,
     });
     const asked = url.searchParams.get("sample");
-    return sendScreen(response, 200, welcomePage(chrome, model, { problem: isSampleProblem(asked) ? asked : null, canAdd: approver && !store.isDemo() }));
+    return sendScreen(response, 200, welcomePage(chrome, model, { problem: isSampleProblem(asked) ? asked : null, canAdd: approver && !store.isDemo(), inventory: agentInventoryOf(who, store) }));
   }
 
   /** Try a sample project: made in the project folder (or found again when it is ours), then added the way Projects

@@ -7592,7 +7592,13 @@ $ welcome --json → 0
       }
     ],
     "inUse": null,
-    "buildsWith": null
+    "buildsWith": null,
+    "others": [],
+    "firstTask": null,
+    "lines": [
+      "Sign in to Claude Code: run `claude auth login`",
+      "Sign in to Codex: run `codex login`"
+    ]
   },
   "project": {
     "done": false,

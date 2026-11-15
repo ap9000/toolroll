@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "checkedAt": "2026-11-15T09:12:04.118Z",
+  "agents": [
+    { "id": "claude", "name": "Claude Code", "state": "signed-out", "how": null, "signIn": "claude auth login", "ready": false, "next": null },
+    { "id": "codex", "name": "Codex", "state": "unknown", "how": null, "signIn": "codex login", "ready": false, "next": null },
+    { "id": "gemini", "name": "Gemini CLI", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "openrouter", "name": "OpenRouter", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "opencode", "name": "OpenCode", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "cursor", "name": "Cursor", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "cline", "name": "Cline", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "qwen", "name": "Qwen Code", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "goose", "name": "Goose", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null }
+  ],
+  "firstTask": null,
+  "lines": [
+    "Sign in to Claude Code: run `claude auth login`",
+    "Sign in to Codex: run `codex login` (its sign-in couldn't be checked)"
+  ]
+}

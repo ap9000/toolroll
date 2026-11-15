@@ -6,8 +6,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use std::collections::HashSet;
 use toolroll_api::{
-    ActOutcome, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, NeedRow, Question, ResultDiff,
-    ResultDiffFile, StepCards, Window, WorkRow, WorkRows,
+    ActOutcome, AgentsRead, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, NeedRow, Question,
+    ResultDiff, ResultDiffFile, StepCards, Window, WorkRow, WorkRows,
 };
 
 /// How the screen ended (the launcher reads it: tui-launch.ts TUI_EXIT).
@@ -184,6 +184,8 @@ pub struct LineCache {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     FetchWork,
+    /// The agents on this computer (GET /engine/agents), read while there are no tasks: the first run's lines.
+    FetchAgents,
     FetchSteps(String),
     FetchLive {
         run: i64,
@@ -227,6 +229,7 @@ pub struct FileAsk {
 #[derive(Debug, Clone)]
 pub enum Msg {
     Work(Result<WorkRows, ApiError>),
+    Agents(Result<AgentsRead, ApiError>),
     Steps(String, Result<StepCards, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
@@ -286,6 +289,9 @@ pub struct App {
     pub filing: String,
     pub fetching_live: bool,
     pub fetching_work: bool,
+    /// The agents on this computer (the first run's lines, shown while there are no tasks); None until read.
+    pub agents: Option<AgentsRead>,
+    pub fetching_agents: bool,
     pub work_again: bool,
     pub areas: Areas,
     /// The Live tab's lines for (transcript version, width): rebuilt only when either moves.
@@ -327,6 +333,8 @@ impl App {
             answer_shown: false,
             fetching_live: false,
             fetching_work: false,
+            agents: None,
+            fetching_agents: false,
             work_again: false,
             areas: Areas::default(),
             line_cache: None,
@@ -391,6 +399,16 @@ impl App {
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
         match msg {
             Msg::Work(Ok(rows)) => self.got_work(rows),
+            Msg::Agents(read) => {
+                self.fetching_agents = false;
+                match read {
+                    Ok(read) => self.agents = Some(read),
+                    // Only an ended session matters here: the lines are a first-run nicety, never a reason to stop.
+                    Err(ApiError::SessionEnded) => return self.failed(ApiError::SessionEnded),
+                    Err(_) => {}
+                }
+                vec![]
+            }
             Msg::Work(Err(e)) => {
                 self.fetching_work = false;
                 self.failed(e)
@@ -592,6 +610,8 @@ impl App {
         if std::mem::take(&mut self.work_again) {
             fx.extend(self.fetch_work());
         }
+        // No tasks yet: the first run's lines about this computer's agents (who the first task goes to, or how to sign in).
+        fx.extend(self.fetch_agents());
         fx
     }
 
@@ -698,10 +718,32 @@ impl App {
     }
 
     /// Every 250 ms: read on in a live build's records (well inside the one-second bar), subagents every 2 s.
+    /// Read the agents on this computer while there are no tasks (one read at a time).
+    fn fetch_agents(&mut self) -> Vec<Effect> {
+        if !self.loaded || !self.items.is_empty() || self.fetching_agents {
+            return vec![];
+        }
+        self.fetching_agents = true;
+        vec![Effect::FetchAgents]
+    }
+
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
         if matches!(self.mode, Mode::Fatal(..)) {
             return vec![];
+        }
+        // The console looks for agents in the background: until it has answered (or while nothing is signed in), ask
+        // again every few seconds, so a sign-in in another terminal shows up here.
+        if self.ticks.is_multiple_of(12)
+            && self
+                .agents
+                .as_ref()
+                .is_none_or(|a| a.checked_at.is_none() || a.first_task.is_none())
+        {
+            let fx = self.fetch_agents();
+            if !fx.is_empty() {
+                return fx;
+            }
         }
         if self.tab == Tab::Live || self.ticks.is_multiple_of(4) {
             return self.poll_live(self.ticks.is_multiple_of(8));
