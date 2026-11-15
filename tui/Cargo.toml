@@ -1,0 +1,26 @@
+# Terminal workbench DE-RISK SPIKE (solo-workbench plan, week 1). A prototype: not shipped, not wired into the CLI.
+[workspace]
+resolver = "2"
+members = ["crates/toolroll-tui", "crates/toolroll-tui-harness"]
+
+[workspace.package]
+version = "0.0.0-spike"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Shipped profile candidates (sizes measured in the spike's results.md).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release-s]
+inherits = "release"
+opt-level = "s"
+
+[profile.release-z]
+inherits = "release"
+opt-level = "z"
