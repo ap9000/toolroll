@@ -1977,13 +1977,13 @@ ${postForm("/settings/chat-approval/save", html`\
   async function notificationsMute(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.notificationsMute);
-    // Each person's own pings: a muted project stays in Tasks and the evening digest.
+    // Each person's own pings: a muted project stays in Work and the evening digest.
     const repo = body.get("repo") ?? "";
     const project = notificationProjects(store, who.name).find(one => one.repo === repo);
     if (project === undefined) return refuse(response, who, 400, "that project isn't one you can see", "/settings");
     const muted = body.get("pings") !== "on";
     store.setProjectMuted(who.name, repo, muted, now);
-    return redirect(response, `/settings/alerts?said=${encodeURIComponent(muted ? `${project.name} muted. It still shows in Tasks and your evening digest.` : `${project.name} pings you again.`)}#notifications`);
+    return redirect(response, `/settings/alerts?said=${encodeURIComponent(muted ? `${project.name} muted. It still shows in Work and your evening digest.` : `${project.name} pings you again.`)}#notifications`);
   }
   async function telegramDigestSave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;

@@ -1039,7 +1039,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
           <input type="hidden" name="return" value={view.archived.restore.returnTo} />
           <KButton type="submit" variant="primary" label="Restore" data-restore="" />
         </PostForm> : null}
-        terms={view.archived.restore !== null ? "Restoring puts it back in Tasks. Its history and results were kept." : "An approver can restore it."} />}
+        terms={view.archived.restore !== null ? "Restoring puts it back in Work. Its history and results were kept." : "An approver can restore it."} />}
       {outcomeFirst && <div className="k-sec so-task-outcome" data-task-outcome="">
         {statusBox("ready", true)}
         {resultBody}
@@ -1099,8 +1099,9 @@ export const ResultStatusAct = createContext<HTMLElement | null>(null);
  * the status's one act, so nothing the result warns about is under the act that completes it. Null anywhere else. */
 export const ResultStatusWarnings = createContext<HTMLElement | null>(null);
 
-/** A sentence whose `backticked` parts are commands to type (a sign-in's `claude auth login`): those parts as code. */
-function WithCode({ text }: { text: string }) {
+/** A sentence whose `backticked` parts are commands to type (a sign-in's `claude auth login`): those parts as code.
+ * The Work screen's rows and panel use it too, so a command never shows its backticks. */
+export function WithCode({ text }: { text: string }) {
   const parts = text.split(/`([^`\n]+)`/);
   return <>{parts.map((part, index) => index % 2 === 1 ? <code key={index} className="k-mono">{part}</code> : part === "" ? null : <span key={index}>{part}</span>)}</>;
 }

@@ -68,7 +68,7 @@ function resultCard(exchange: DemoExchange, result: DemoResultView | null): Html
   const actions = exchange.state === "ready"
     ? html`<div class="demo-actions">${postForm(`/chat/demo/${exchange.id}/complete`, html`<button type="submit" class="demo-primary">Complete</button>`)}<details class="demo-more"><summary>Request changes</summary>${
       postForm(`/chat/demo/${exchange.id}/revise`, html`<label for="demo-revise-${exchange.id}">What should change?</label><textarea id="demo-revise-${exchange.id}" name="note" rows="2" maxlength="500" required></textarea><button type="submit">Send back</button>`)}</details></div>`
-    : html`<p class="meta"><a href="${result.taskHref}">Open in Tasks</a></p>`;
+    : html`<p class="meta"><a href="${result.taskHref}">Open the task</a></p>`;
   return html`<section class="card demo-result" id="demo-${exchange.id}-work" aria-label="Result"><p class="demo-state">${status}<span class="meta">${exchange.plan.project}</span></p><h2>${exchange.plan.title}</h2><p>${exchange.plan.conclusion}</p><p class="meta">${summary}</p>${actions}${
     result.diff === null ? "" : html`<details class="demo-evidence"${exchange.state === "ready" ? html` open` : ""}><summary>Changes</summary><pre class="demo-diff">${diffHtml(result.diff)}</pre></details>`}${
     result.checkLog === null ? "" : html`<details class="demo-evidence"><summary>Check log</summary><pre class="demo-log">${result.checkLog}</pre></details>`}${

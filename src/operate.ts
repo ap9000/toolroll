@@ -204,6 +204,7 @@ import { verdictWords as proofVerdictWords, matrixWords, plainReasonWords, seman
 import { probeRepo } from "./probe.js";
 import {
   agentlessFirstRun,
+  buildersFor,
   diagnoseTaskDispatch,
   diagnosisIsDispatchable,
   NO_AGENT_TITLE,
@@ -9691,6 +9692,24 @@ async function addTask(
     if (!chosen.ok) return fail(write, json, "task add", "checks-fixed", chosen.message, EXIT.refused);
   }
   const link = consoleLinkFor(context, `/t/${encodeURIComponent(outcome.task.id)}`);
+  // Filed before any coding agent is signed in (dispatch.ts agentlessFirstRun: nothing routed, no agent signed in on
+  // the project's builders, the answer `task show` and the terminal app give once it is sent for a plan): said now,
+  // with the one command, so the task never just sits. Words only; a read that fails says nothing, and a remote caller
+  // is never told about this computer's agents.
+  let noAgent: string | null = null;
+  const filedRef = placedIn === undefined || remote !== null ? null : store.lookupRef(outcome.task.id);
+  if (filedRef !== null && filedRef.repo !== null) {
+    try {
+      const agentless = agentlessFirstRun(store, filedRef, true, buildersFor(store, filedRef.repo, now).alive.map(one => one.name));
+      if (agentless !== null) noAgent = `${NO_AGENT_TITLE}. Run \`${agentless.command}\` so it can be planned.`;
+    } catch { noAgent = null; }
+  }
+  // Nothing is planned until a plan is asked for, and filing from a shell never asks: `task add` carries no credential
+  // (a coding agent may run it) and a plan dispatches an agent that spends. So the reply says where to ask: one line,
+  // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
+  // Words only; who may ask is unchanged.
+  const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
+    ? "Next: open `toolroll` and press p on it to ask for its plan." : null;
   return succeed(
     write,
     json,
@@ -9701,8 +9720,14 @@ async function addTask(
       repo: placedIn === undefined ? null : resolve(placedIn),
       ...(checks === undefined ? {} : { checks }),
       ...(link === null ? {} : { links: { task: link } }),
+      ...(noAgent === null ? {} : { waiting: noAgent }),
+      ...(next === null ? {} : { next }),
     },
-    () => [`Queued ${outcome.task.id} — ${outcome.task.title}${flags.has("report") ? " (a scout task: it delivers a report)" : ""}${checks === undefined ? "" : ` · checks: ${CHECK_LEVEL_WORDS[checks]}`}`, ...(replaces === undefined ? [] : [`  It replaces ${replaces}.`]), ...(link === null ? [] : [`  ${link}`])],
+    () => [`Queued ${outcome.task.id} — ${outcome.task.title}${flags.has("report") ? " (a scout task: it delivers a report)" : ""}${checks === undefined ? "" : ` · checks: ${CHECK_LEVEL_WORDS[checks]}`}`, ...(replaces === undefined ? [] : [`  It replaces ${replaces}.`]), ...(noAgent === null ? [] : [`  ${noAgent}`]),
+      // No project named: it can't be planned until it has one (placement is never guessed from the folder).
+      ...(placedIn === undefined && remote === null ? ["  It has no project yet: choose one on its page in Toolroll, or file it with `--repo <folder>`."] : []),
+      ...(next === null ? [] : [`  ${next}`]),
+      ...(link === null ? [] : [`  ${link}`])],
   );
 }
 
@@ -10127,7 +10152,7 @@ function showTask(positional: readonly string[], context: Context): number {
             : [`  control: review #${detail.control.run} was stopped by ${detail.control.stop.requestedBy} — inspect its saved result and give feedback; separate model review has been removed`]),
     ...(detail.automaticReview === null ? reviewStatusLines(detail.review, latestFinished?.id ?? null) : buildReviewLines(detail.automaticReview)),
     ...(scope === null
-      ? ["  no scope — nothing will build this until one is written and approved"]
+      ? ["  no plan yet — nothing is built until one is written and approved"]
       : describeScope(scope, readiness, taskEvidenceWords(store, task.id, now))),
     ...planContractLines(store, context.evidenceRoot, id),
     // The route's standing (v47): sealed, proposed, legacy, or unreadable —

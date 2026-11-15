@@ -5,19 +5,18 @@
 
 import { DEFAULT_MAX_DEPTH } from "./scan.js";
 
-export const HELP = `toolroll — hand coding work to agents, approve each plan, accept what comes back Ready
+export const HELP = `Toolroll — your agents build. You decide.
 
-  toolroll                      start Toolroll here and open it in this terminal (--web: in the browser)
-                                In it: n new task · a approve its plan · c accept a Ready result
-                                       b send it back · Enter open a task · ? every key
-  toolroll repos add <folder>   add a project (in a repository, \`toolroll\` adds that one)
-  toolroll demo                 try it first: sample tasks, no model calls, no cost
-  toolroll update               update to the latest release (shows what changes first)
+  toolroll                     start here, in this terminal (--web: in the browser)
+                               keys: n new task · a approve · c accept · b send back · ? all
+  toolroll demo                try it first: sample tasks, no model calls, no cost
+  toolroll repos add <folder>  add another project
+  toolroll task add "<change>" --repo .
+                               add a task to this project from a shell
+  toolroll task show <id>      where a task is, and its result once it's Ready
+  toolroll update              update to the latest release
 
-  toolroll task add "<what should change>"   add a task from a shell; approve its plan in Toolroll
-  toolroll task show <id>                    where a task is, and its result once it's Ready
-
-More: toolroll task --help (every task command) · toolroll internals (everything else)`;
+More: toolroll task --help · toolroll internals (everything else)`;
 
 /** The scan's own usage: \`toolroll scan --help\`. Bare \`toolroll\` outside a repository, and \`toolroll <path...>\`, scan too. */
 export const SCAN_HELP = `toolroll scan [path...] — report what is in flight below a folder

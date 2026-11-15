@@ -802,7 +802,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
     }
     if (row.act === "not-now") {
       spend();
-      return { ack: "Okay, it waits.", edit: { text: `${body}\n\nNot now. It waits for you in Tasks.`,
+      return { ack: "Okay, it waits.", edit: { text: `${body}\n\nNot now. It waits for you in Work.`,
         rows: [[{ label: DECIDE_LABELS.edit, link: { label: DECIDE_LABELS.edit, path: chatControlHref("approval", row.taskId) } }]], tokens: [] } };
     }
     // A release card's Continue: the card again from the live records, its full terms as a file, then Approve.

@@ -189,7 +189,7 @@ export function boardBody(
     // A lane is a section that can fold (board pass): open when it holds
     // cards, folded when empty, so a phone reads the counts first and a
     // desktop column never spends its height on "nothing here".
-    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/">+${more} more in Tasks</a>` : null}</details>`;
+    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/">+${more} more in Work</a>` : null}</details>`;
   };
 
   // The card's facts: mono key–value pairs under the title (board pass) —
