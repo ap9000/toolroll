@@ -1343,10 +1343,12 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let w = (area.width as usize).saturating_sub(8).min(84);
             let notes = app.notes_of(&pin.task, pin.run);
             let label = |l: &str| Span::styled(format!("{l:<10}"), dim());
+            let run = pin.run;
+            // (scripts/tui-e2e.mjs waits for exactly this heading; src/tui-e2e-env.test.ts holds the two together.)
             let mut lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
-                    format!("Accept the result of build #{}?", pin.run),
+                    format!("Accept the result of build #{run}?"),
                     ink(),
                 )),
                 Line::raw(""),

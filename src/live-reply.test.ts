@@ -45,6 +45,12 @@ describe("live partials never show a password or key", () => {
     }
   });
 
+  // T2 review: the AWS secret-key partial withholds only the start of its names (or a name and its value), never every
+  // unfinished word that happens to start with "a" or "s".
+  test.each(["More soon", "Ask again", "something Sure", "access", "awaiting"])("an ordinary unfinished word shows once settled: %s", tail => {
+    expect(partialDisplay(`${LEAD} ${tail}`, false).kind).toBe("shown");
+  });
+
   test("around a multiline private-key header: every prefix is withheld or blocked past the header's start", () => {
     const block = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1b2c3d4\n";
     for (let cut = 1; cut <= block.length; cut += 1) {

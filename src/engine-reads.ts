@@ -23,6 +23,7 @@ import { revisionSourceOf } from "./result-review.js";
 import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
 import { detectionLines, NO_AGENT_YET, type AgentDetection } from "./agent-detect.js";
 import { scanPatchForSecrets } from "./evidence.js";
+import { fastCompletionProblem } from "./fast-start.js";
 import { viewedGitSync } from "./teardown-git.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
@@ -191,10 +192,15 @@ export function resultDiffFileOf(store: Store, evidenceRoot: string, taskId: str
 function acceptFactsOf(store: Store, assignment: AssignmentSnapshot, viewer: string | null, evidenceRoot: string): NonNullable<StepCards["review"]>["accept"] {
   const receipt = assignment.receipt!;
   const blockers = assignment.readiness?.blockers ?? [];
+  // Cheap first (wire budgets): only a project that protects something can need a second person, and only then are the
+  // result's changed files read (protectedResultProblem answers null at once for a project without rules, so this is
+  // the same answer as personCompletionRefusal's, without reading every build's file list for nothing).
+  const rules = assignment.repo === null ? null : store.approvalRules(assignment.repo);
+  const guarded = rules !== null && (rules.protectProject || rules.protectedPaths.length > 0);
   return {
     owed: owedAcceptance(receipt, blockers),
     blockers: blockers.map(one => one.message),
-    needs: personCompletionRefusal(store, receipt.taskId, receipt.runId, viewer, evidenceRoot),
+    needs: guarded ? personCompletionRefusal(store, receipt.taskId, receipt.runId, viewer, evidenceRoot) : fastCompletionProblem(store, receipt.taskId, receipt.runId, viewer),
   };
 }
 

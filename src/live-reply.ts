@@ -47,6 +47,12 @@ function opening(leads: readonly string[], body: string): string {
   return `(?:${[...alternatives].join("|")})`;
 }
 
+/** Every strict start of these names ("a", "aw", …), escaped, as alternatives. */
+function namePrefixes(names: readonly string[]): string {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&");
+  return [...new Set(names.flatMap(name => Array.from({ length: name.length - 1 }, (_, n) => escape(name.slice(0, n + 1)))))].join("|");
+}
+
 /**
  * The start of every `SECRET_PATTERNS` family (evidence.ts), checked against the end of the text written so far:
  * while any matches, the partial is withheld. Single-token families look at the unfinished last token; the families
@@ -71,8 +77,10 @@ const SECRET_STARTS: readonly RegExp[] = [
   /(?:^|[^A-Za-z0-9_])[MN][A-Za-z\d]*(?:\.[\w-]*(?:\.[\w-]*)?)?$/,
   // putty-private-key: "PuTTY-User-Key-File-3:", partway.
   new RegExp(String.raw`(?:^|[^A-Za-z0-9_])${opening(["PuTTY-User-Key-File-"], "[0-9:]")}$`),
-  // aws-secret-key: "aws_secret_access_key = value" or "SecretAccessKey": "value" (any case, name quoted or not), partway.
-  new RegExp(String.raw`(?:^|[^A-Za-z0-9])${opening(["aws_secret_access_key", "SecretAccessKey"], String.raw`[\s=:"']`)}\S*$`, "i"),
+  // aws-secret-key: "aws_secret_access_key = value" or "SecretAccessKey": "value" (any case, name quoted or not), partway:
+  // a last word that is the start of either name, or the whole name then its value so far. (Not "any word starting with
+  // a or s": an ordinary unfinished word like "soon" still shows once settled.)
+  new RegExp(String.raw`(?:^|[^A-Za-z0-9_])(?:${namePrefixes(["aws_secret_access_key", "SecretAccessKey"])}|(?:aws_secret_access_key|SecretAccessKey)["']?\s*(?:[=:]\s*["']?[A-Za-z0-9/+]*)?)$`, "i"),
   // password-in-url: "scheme://user:password@host", partway (a scheme and its colon are enough to wait).
   /(?:^|[^A-Za-z0-9+.-])[a-z][a-z0-9+.-]*:\S*$/i,
 ];
