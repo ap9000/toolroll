@@ -238,6 +238,8 @@ const TAB_SHOWN = `${TAB_MARK}   `;
 /** How much of a request a card shows whole; past either, it can't be allowed from a card. */
 export const FLEXIBLE_SCOPE_LINES = 200;
 export const FLEXIBLE_SCOPE_CHARS = 16_000;
+/** The most a card's detail may hold (F2d's card limit is 32,000): a whole card's detail is never cut to fit it. */
+const FLEXIBLE_DETAIL_CHARS = 30_000;
 const FILE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /**
@@ -247,6 +249,10 @@ const FILE_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
  * or characters a terminal can't show (cleaning would change what the person reads).
  */
 function scopeOf(tool: string, input: Record<string, unknown>): { lines: string[]; complete: boolean; why: string | null } {
+  const unshown = (raw: string[], why: string) => {
+    const preview = raw.slice(0, 10).map(line => cardText(line, 300));
+    return { lines: [...preview, ...(raw.length > 10 ? [`… and ${raw.length - 10} more lines`] : []), `This can't be allowed from here: ${why}. You can deny it.`], complete: false, why };
+  };
   const raw: string[] = [];
   const text = (value: unknown): string => typeof value === "string" ? value : JSON.stringify(value) ?? "";
   const rest = (skip: string[]) => {
@@ -268,14 +274,16 @@ function scopeOf(tool: string, input: Record<string, unknown>): { lines: string[
   // A tab is drawn as a visible mark (TAB_SHOWN), so the text read maps one to one onto the bytes sent; text that already
   // holds that mark beside a tab would be ambiguous, and any other character display would change is unshowable.
   const shown = raw.map(line => line.replace(/\t/g, TAB_SHOWN));
-  const why = raw.length > FLEXIBLE_SCOPE_LINES || raw.reduce((sum, line) => sum + line.length + 1, 0) > FLEXIBLE_SCOPE_CHARS ? "it is too long to show here"
+  // The caps count the text as shown (a tab drawn as its mark is longer than the tab), never the raw bytes.
+  const why = shown.length > FLEXIBLE_SCOPE_LINES || shown.reduce((sum, line) => sum + line.length + 1, 0) > FLEXIBLE_SCOPE_CHARS ? "it is too long to show here"
     : raw.some(line => liveSecretHit(line)) ? "part of it is shaped like a secret, so it isn't shown"
     : raw.some(line => line.includes("\t")) && raw.some(line => line.includes(TAB_MARK)) ? "its tabs couldn't be told apart from its own text"
     : shown.some(line => cleanLiveText(line) !== line) ? "it holds characters a terminal can't show"
     : null;
-  if (why === null) return { lines: shown, complete: true, why: null };
-  const preview = raw.slice(0, 10).map(line => cardText(line, 300));
-  return { lines: [...preview, ...(raw.length > 10 ? [`… and ${raw.length - 10} more lines`] : []), `This can't be allowed from here: ${why}. You can deny it.`], complete: false, why };
+  if (why !== null) return unshown(raw, why);
+  // Never cut a card that says it is whole: past the card's own detail cap it is shown as not whole instead.
+  if (shown.join("\n").length > FLEXIBLE_DETAIL_CHARS) return unshown(raw, "it is too long to show here");
+  return { lines: shown, complete: true, why: null };
 }
 
 /** The card a person is shown for an agent's request (Claude's stdio permission channel: `can_use_tool`), in Toolroll's
@@ -310,7 +318,10 @@ function cardOf(tool: string, input: Record<string, unknown>): { kind: FlexibleR
   const title = tool === "Bash" ? "Allow this command?" : FILE_TOOLS.includes(tool) ? "Allow this change to a file?"
     : tool === "WebFetch" || tool === "WebSearch" ? "Allow this lookup?" : `Allow the agent's ${bound.tool} step?`;
   const lines = toolShown ? scope.lines : [...scope.lines, "This can't be allowed from here: the agent's name for this step can't be shown as it is. You can deny it."];
-  return { kind: "permission", card: { title, detail: lines.join("\n").slice(0, 32_000), ...bound, complete: scope.complete && toolShown }, questions: [], inputDigest };
+  const detail = lines.join("\n");
+  // A detail past F2d's limit is never cut while the card says it is whole: it is cut only on a deny-only card.
+  const whole = scope.complete && toolShown && detail.length <= FLEXIBLE_DETAIL_CHARS;
+  return { kind: "permission", card: { title, detail: whole ? detail : detail.slice(0, FLEXIBLE_DETAIL_CHARS), ...bound, complete: whole }, questions: [], inputDigest };
 }
 
 /** An answer in Claude's stdio control form for the request it answers (`frame`: pure, run inside F2d's attempt). */

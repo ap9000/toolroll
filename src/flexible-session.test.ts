@@ -519,3 +519,27 @@ describe("Codex round 2: what is shown is what is sent", () => {
     expect(world.store.handle.prepare("SELECT state FROM flexible_thread_launch WHERE id = ?").get(tid(0xc3))!["state"]).toBe("live");
   });
 });
+
+describe("a card is never cut while it says it is whole", () => {
+  const tool = (id: string, name: string, input: Record<string, unknown>) => ({ type: "control_request", request_id: id, request: { subtype: "can_use_tool", tool_name: name, input, tool_use_id: `toolu-${id}` } });
+  test("input under the raw cap whose shown form (tabs drawn as marks) is over it is deny-only; so is one whose detail would pass 32,000 characters", async () => {
+    const agent = await attached();
+    // 5,000 tabs: under the 16,000-character cap as bytes, 20,000 characters once each is drawn as its mark.
+    agent.say(tool("r1", "Write", { file_path: "Makefile", content: `all:\n${"\t".repeat(5_000)}x` }),
+      tool("r2", "Bash", { command: Array.from({ length: 150 }, (_, n) => `echo ${String(n).padStart(3, "0")} ${"y".repeat(230)}`).join("\n") }));
+    await settled();
+    const questions = read().facts.questions;
+    expect(questions).toHaveLength(2);
+    for (const one of questions) {
+      expect(one, one.request).toMatchObject({ complete: false });
+      expect(one.detail!.length).toBeLessThanOrEqual(32_000);
+      expect(one.detail).toContain("This can't be allowed from here: it is too long to show here.");
+      expect(await answerFlexibleRequest(world.store, sessions, { held: () => true, thread: T1, request: one.request, shownDigest: one.digest, by: pat(), choice: { decision: "accept" }, clock: () => NOW }))
+        .toMatchObject({ ok: false, reason: "scope-unshown" });
+    }
+    expect(agent.sent).toEqual([]);
+    // Every whole card's detail is exactly the text it shows, never a cut of it.
+    const recorded = raw.prepare("SELECT card FROM thread_request").all().map(row => JSON.parse(String(row["card"])) as { complete: boolean; detail: string });
+    expect(recorded.filter(card => card.complete)).toEqual([]);
+  });
+});
