@@ -590,7 +590,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>modelsSave@112": 1,
     // Results routing (slice 2): Settings → Models → Suggested's step-up acts (accept, keep, suggestions on), last in
     // the handlers so the reviewed positions above stay as they were.
-    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@116><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@117><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@66": 1,
     "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@86": 1,
     "src/server/settings.ts#createSettingsHandlers@1>policySave@51": 1,
@@ -1001,8 +1001,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 1,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@117": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@120": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@118": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@121": 1,
+    // Solo or team: "It's just me" is a credential act from a full session, proved inside the declaration's transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>justMe@115>said:store.transact(_)@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).

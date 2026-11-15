@@ -203,8 +203,11 @@ export const ENGINE_REQUESTS = {
 /** Every refusal on these routes: one word a client can branch on. */
 export const engineRefusalSchema = z.object({ error: z.string() });
 /** `GET /engine/hello`: the handshake a client makes first. `contract` is the digest of every schema here
- * (engineContractDigest); a client built from another contract says so instead of misreading. */
-export const helloSchema = z.object({ version, toolroll: z.string(), contract: z.string().regex(/^[0-9a-f]{64}$/), responses: z.array(z.string()) });
+ * (engineContractDigest); a client built from another contract says so instead of misreading. `mode` is the install's
+ * solo or team mode as the server derives it now (install-mode.ts; a solo screen shows no team concepts), and
+ * `defaultChain` the steps a new task starts with there. Display only: every act derives the mode again. */
+export const helloSchema = z.object({ version, toolroll: z.string(), contract: z.string().regex(/^[0-9a-f]{64}$/), responses: z.array(z.string()),
+  mode: z.enum(["solo", "team"]), defaultChain: z.enum(["just-code", "plan-first"]) });
 
 export const ENGINE_RESPONSES = {
   liveSessionWindow: { route: "GET /agents/live/<kind>/<id>", schema: liveSessionWindowSchema },

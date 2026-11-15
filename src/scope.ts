@@ -2,7 +2,7 @@
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { cardShowsScope, cardTermsDigest } from "./chat-terms.js";
 import { mintSecret } from "./secret-mint.js";
-import { passwordlessOn } from "./passwordless.js";
+import { sessionStandsIn } from "./install-mode.js";
 import { routeChangeProblem } from "./route-change-check.js";
 import { issueImported } from "./task-source.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
@@ -1365,7 +1365,9 @@ export function proveAccountNow(store: Store, by: string, token: string, options
     // Passwordless (read live): the person's own live browser session is the proof. Only a browser request carries facts;
     // a CLI, a token, a chat bridge or detached work has none, and falls through to the rules below.
     // A credential act never takes this road, so its own proofs (a one-use provider re-check) are reached and spent.
-    if (options.credential !== true && facts != null && facts.actor === by && facts.live() && passwordlessOn(store)) return { ok: true, method: "session", at: now };
+    // Solo (install-mode.ts) stands in the same way, derived here, inside the caller's transaction: a second person added
+    // since the page was drawn makes this team, and the empty password then proves nothing.
+    if (options.credential !== true && facts != null && facts.actor === by && facts.live() && sessionStandsIn(store)) return { ok: true, method: "session", at: now };
     if (ssoNowAvailable(by, now)) {
       const at = facts!.ssoNow()!;
       const refund = facts!.consumeSsoNow();
@@ -1381,7 +1383,7 @@ export function proveAccountNow(store: Store, by: string, token: string, options
   if (activeRemote() !== null) return { ok: true, method: "remote-token", at: now };
   if (currentActor()?.lead === true && parseLeadToken(token) !== null) return { ok: true, method: "lead-token", at: now };
   const remembered = rememberedLogin.getStore()?.login;
-  if (remembered != null && remembered.name === by && remembered.token === token && passwordlessOn(store)) return { ok: true, method: "cli-login", at: now };
+  if (remembered != null && remembered.name === by && remembered.token === token && sessionStandsIn(store)) return { ok: true, method: "cli-login", at: now };
   if (facts != null && facts.actor === by) facts.stamp(now);
   return { ok: true, method: "password-now", at: now };
 }
@@ -1394,7 +1396,7 @@ export function proveAccountNow(store: Store, by: string, token: string, options
  * session. Read only — the act itself proves it again inside `proveAccountNow`. */
 export function passwordlessSessionFor(store: Store, by: string): boolean {
   const facts = freshFacts.getStore();
-  return facts != null && facts.actor === by && facts.live() && passwordlessOn(store);
+  return facts != null && facts.actor === by && facts.live() && sessionStandsIn(store);
 }
 
 /** Whether a proof is one a credential act accepts: a password typed now, or a one-use identity-provider re-check. */

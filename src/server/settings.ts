@@ -1,4 +1,5 @@
 import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
+import { declareJustMe, installModeNow, TEAM_FACT_WORDS } from "../install-mode.js";
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
@@ -2432,6 +2433,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.passwordless": passwordlessPage,
     "settings.passwordless-send": passwordlessSave,
     "settings.local-mode-off": localModeOff,
+    "settings.just-me": justMe,
     "settings.release-approval-send": releaseApprovalSave,
     "settings.project-flexible": projectFlexible,
     "settings.lead": leadPage,
@@ -2747,6 +2749,25 @@ ${postForm("/settings/chat-approval/save", html`\
     if (!turned.ok) return back("problem", turned.reason === "not-on" ? "Local mode is already off." : "Only an instance operator can turn off local mode.");
     return done("said", "Local mode is off. This computer's browser signs in with your password now.");
   }
+  // Solo or team (install-mode.ts): "It's just me". A credential act (a password typed now, or a one-use provider
+  // re-check; never a session) from a full session, proved and written in one transaction that re-reads every fact: a
+  // second person, a token for someone else or a chat-app user added meanwhile refuses it.
+  async function justMe(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.justMe);
+    const done = sayTo(response, "/settings/general?section=install-mode");
+    const back = sayTo(response, "/settings/change/just-me");
+    if (body.sent.getAll("password").length > 1) return back("problem", "That form was sent twice over. Nothing changed.");
+    if (who.authority !== "full") return back("problem", "Sign in with your password to do this.");
+    const said = store.transact(() => {
+      if (!authenticateCredential(who, body.get("password") ?? "").ok) return null;
+      return declareJustMe(store, who.name, now);
+    });
+    if (said === null) return back("problem", "Enter your Toolroll password to say it's just you.");
+    if (!said.ok) return back("problem", said.reason === "already-solo" ? "This install is already solo." : said.reason === "not-owner" ? "Only an instance operator can say this." : said.facts.map(fact => TEAM_FACT_WORDS[fact]).join(" "));
+    return done("said", "This install is solo now.");
+  }
   /** Settings → Models → Suggested: one project's offers, rules and switch; on the installation scope, every
    * project's offers and rules, each reviewed on its own project's page. */
   function suggestedView(repo: string | null, projects: readonly string[], asked: string | null, now: Date): SuggestedView {
@@ -2907,6 +2928,7 @@ ${postForm("/settings/chat-approval/save", html`\
     firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
     passwordless: () => passwordlessSetting(store).on,
     localModeOn: () => localModeOf(store)?.enabled === true,
+    installMode: () => installModeNow(store),
   });
   /** What Computers' sections read (settings plan F2), none of it from the request. */
   const computersDeps = {

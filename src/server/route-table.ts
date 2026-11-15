@@ -610,6 +610,9 @@ get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ..
 post("settings", "settings.passwordless-send", "/settings/passwordless", { callers: ["cookie"], ...operator("An instance operator sets Passwordless.", "/settings") });
 // Easy-start C5: turning local mode off: an instance operator's step-up from a full session (a local owner is refused).
 post("settings", "settings.local-mode-off", "/settings/local-mode/off", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator turns off local mode.", "/settings/general?section=local-mode") });
+// Solo or team (install-mode.ts): "It's just me", an instance operator's credential act from a full session (a local owner
+// is refused); the handler proves the password and re-reads every fact in one transaction.
+post("settings", "settings.just-me", "/settings/install-mode/solo", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator says it's just them.", "/settings/general?section=install-mode") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.
 post("settings", "settings.release-approval-send", "/settings/release-approval", { callers: ["cookie"], ...approver("An approver sets how releases are approved.", "/settings/approval") });

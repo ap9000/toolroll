@@ -77,6 +77,7 @@ parseResultTab,
 resultReturnTarget
 } from "../result-review.js";
 import { isAlive as runnerAlive } from "../runner.js";
+import { soloNow } from "../install-mode.js";
 import { passwordlessSessionFor,
 acceptanceLinesToInput,
 acceptanceToLines,
@@ -3050,7 +3051,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const startsOn = draft?.values?.get("repo") ?? project ?? chrome.projects?.[0]?.path ?? null;
     const found = startsOn === null ? null : runtime.firstTasks.get(startsOn)?.found ?? null;
     const ideas = found ?? (runtime.firstRunStepsNow(ctx.now) !== null && !store.hasAnyWork() ? firstTaskSuggestions({ issues: [], todos: [] }) : []);
-    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas, ctx.url.searchParams.get("from")?.slice(0, 300) ?? null));
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft, text, ideas, ctx.url.searchParams.get("from")?.slice(0, 300) ?? null, soloNow(store)));
   }
   /** What the password rule reads for this request (approval-password.ts), the same facts the approve forms read. */
   function fastPasswordFacts(who: Who): PasswordFacts {

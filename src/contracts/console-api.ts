@@ -124,6 +124,7 @@ export const CONSOLE_FORMS = {
   sweep: formContract("POST /sweeps/<sweep>/cancel-rest", ["confirm", "snapshot"]),
   passwordless: formContract("POST /settings/passwordless", ["action", "password"]),
   localModeOff: formContract("POST /settings/local-mode/off", ["password"]),
+  justMe: formContract("POST /settings/install-mode/solo", ["password"]),
   releaseApproval: formContract("POST /settings/release-approval", ["repo", "action", "password"]),
   // Flexible projects (flexible.ts, slice F1): turn on (the shown terms' digest and a password), lower (max), turn off.
   projectFlexible: formContract("POST /settings/project/flexible", ["repo", "action", "max", "digest", "password"]),

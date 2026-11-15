@@ -13,7 +13,7 @@
 import { isProtectedWork } from "./approval-policy.js";
 import { trialSealStandsSql } from "./approval-authority.js";
 import { currentLocalOwner, localOwnerInFlight, localOwnerStandsNow } from "./local-owner.js";
-import { passwordlessOn } from "./passwordless.js";
+import { sessionStandsIn } from "./install-mode.js";
 import { machineActing } from "./scope.js";
 import { NOT_COUNTED_REASONS, RECORD_STATES, REJECT_REASONS, REVISION_ORIGINS, type ExecClass, type IneligibleReason, type RevisionOrigin, type Selection } from "./contracts/route-results.js";
 import type { RecordValue } from "./route-results.js";
@@ -290,7 +290,7 @@ export function proveRuleDoor(store: Store, door: RuleDoor, act: RuleAct, repo: 
   if (person.method === "lead-token" || person.method === "remote-token") return { ok: false, reason: "lead-refused" };
   const account = store.accountOf(person.actor);
   const proof = spec.raising
-    ? RAISING_PROOFS.has(person.method) && ((person.method !== "session" && person.method !== "cli-login") || passwordlessOn(store))
+    ? RAISING_PROOFS.has(person.method) && ((person.method !== "session" && person.method !== "cli-login") || sessionStandsIn(store))
     : RAISING_PROOFS.has(person.method) || person.method === "local-owner";
   if (account === null || account.revokedAt !== null || account.generation !== person.generation || !store.isInstanceOperator(person.actor)
     || !store.accountCanAccess(person.actor, repo) || !person.live() || !proof) return { ok: false, reason: "authority" };

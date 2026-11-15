@@ -84,7 +84,8 @@ describe("with Advanced off, never hidden", () => {
 const OPERATOR: SectionPerson = { name: "alex", via: "cookie", role: "approver", authority: "full", operator: true, restricted: false, installation: true, passwordSet: true,
   principal: { caller: "cookie", capability: "act", viewer: false, token: false }, unscopedConsole: false, demo: false };
 const general = (advanced: boolean, options: { person?: SectionPerson; open?: boolean; localMode?: boolean } = {}) => render(advanced, () => joinHtml(renderArea("general",
-  generalSections({ updatesVersion: () => null, packageVersion: "0.0.0", firstResult: () => null, passwordless: () => false, localModeOn: () => options.localMode === true }),
+  generalSections({ updatesVersion: () => null, packageVersion: "0.0.0", firstResult: () => null, passwordless: () => false, localModeOn: () => options.localMode === true,
+    installMode: () => ({ mode: "solo", facts: [], declared: null }) }),
   { person: options.person ?? OPERATOR, project: null, now: new Date(), prefs: { theme: "system", accent: "#000000", advanced } },
   { section: options.open === true ? "advanced" : null, open: options.open === true }).sections));
 
