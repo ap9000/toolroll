@@ -21,6 +21,9 @@ import { flexibleThreadCodexProfile, flexibleThreadFence, flexibleThreadSpawn, p
 import { admitFlexibleTurn, beginFlexibleTurn, chargeFlexibleTurn, finishFlexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, setFlexibleInstallationCaps, withdrawFlexibleTurn, withdrawFlexibleTurnsAbove } from "./flexible-turns.js";
 import { flexibleAgentLaunch, lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, startFlexibleTurn } from "./flexible-agents.js";
 import { startFlexibleRelay } from "./flexible-relay.js";
+import { ackFlexibleAnswer, cancelFlexibleAnswer, decideFlexibleAnswer, decideFlexibleAnswerByPolicy, expireFlexibleAnswers, noteFlexibleToolActivity, openFlexibleAnswerCatalog,
+  recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer, streamAnswerSender, type FlexibleAnswerCatalog } from "./flexible-answers.js";
+import { PassThrough } from "node:stream";
 import * as upstreams from "./flexible-relay-upstreams.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
@@ -137,6 +140,34 @@ describe("switched off", () => {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_installation_caps").get()!["n"]).toBe(0);
   });
 
+  test("the answers to a thread's agent (F2d): no catalog opens, and nothing is recorded, decided, sent, cancelled, acknowledged or recovered", async () => {
+    const refused = { ok: false, reason: "not-available", message: FLEXIBLE_UNAVAILABLE };
+    const catalogFile = join(dir, "orders.db.coding.sqlite");
+    expect(openFlexibleAnswerCatalog(store)).toEqual(refused);
+    expect(existsSync(catalogFile)).toBe(false);
+    // A catalog handed in anyway is never touched, nor the connection.
+    const touched: string[] = [];
+    const catalog = new Proxy({}, { get: (_target, key) => { touched.push(String(key)); throw new Error("touched"); } }) as FlexibleAnswerCatalog;
+    const connection = { id: "a".repeat(32), frame: () => { touched.push("frame"); return new Uint8Array(1); }, send: async () => { touched.push("send"); return { written: 1, complete: true }; } };
+    const ids = { thread: "a".repeat(32), turn: "b".repeat(32), connection: "c".repeat(32), request: "d".repeat(32) };
+    const person = { kind: "person" as const, name: "alex", generation: store.accountOf("alex")!.generation };
+    expect(recordFlexibleRequest(store, catalog, { ...ids, holder: "h1", requestRef: "r1", kind: "permission", card: { title: "Allow?" } })).toEqual(refused);
+    expect(decideFlexibleAnswer(store, catalog, { request: ids.request, token: "0".repeat(64), shownDigest: "1".repeat(64), by: person, decision: "accept" })).toEqual(refused);
+    expect(decideFlexibleAnswerByPolicy(store, catalog, { request: ids.request, rule: "no-channel" })).toEqual(refused);
+    expect(await sendFlexibleAnswer(store, catalog, { request: ids.request, connection, holder: "h1" })).toEqual(refused);
+    expect(cancelFlexibleAnswer(store, catalog, { request: ids.request, by: person })).toEqual(refused);
+    expect(revokeFlexibleAnswers(store, catalog, { thread: ids.thread, reason: "x" })).toEqual(refused);
+    expect(ackFlexibleAnswer(store, catalog, { connection: ids.connection, requestRef: "r1" })).toEqual(refused);
+    expect(noteFlexibleToolActivity(store, catalog, { connection: ids.connection, turn: ids.turn, correlation: "t1" })).toEqual(refused);
+    expect(expireFlexibleAnswers(store, catalog)).toEqual(refused);
+    expect(recoverFlexibleAnswersOf(store, catalog, { holder: "h1" })).toEqual(refused);
+    expect(recordFlexibleProviderDecision(store, { ...ids, holder: "h1", requestRef: "r1", decision: "accept", provider: "claude" })).toEqual(refused);
+    expect(streamAnswerSender(new PassThrough())).toEqual(refused);
+    expect(touched).toEqual([]);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_decision").get()!["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible answer'").get()!["n"]).toBe(0);
+  });
+
   test.each([["show"], ["enable"], ["lower"], ["off"]])("the CLI refuses project flexible %s", async action => {
     const lines: string[] = [];
     const code = await runOperate("project", ["flexible", action, "--repo", repo, "--json", ...(action === "show" ? [] : ["--as", "alex", "--token", tokens["alex"]!]), ...(action === "lower" ? ["--max", "auto"] : [])],
@@ -195,7 +226,7 @@ describe("the switch can't become a runtime override", () => {
     const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
     const users = product.filter(one => code(one.text).includes("FLEXIBLE_AVAILABLE") && one.path !== join("src", "flexible-available.ts"));
     // server/engine-api.ts: the LiveSession's thread road refuses before anything is looked up while it is false.
-    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "flexible-turns.ts"), join("src", "flexible-agents.ts"), join("src", "flexible-relay.ts"), join("src", "operate.ts"), join("src", "server", "engine-api.ts"), join("src", "server", "settings.ts")].sort());
+    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "flexible-turns.ts"), join("src", "flexible-agents.ts"), join("src", "flexible-relay.ts"), join("src", "flexible-answers.ts"), join("src", "operate.ts"), join("src", "server", "engine-api.ts"), join("src", "server", "settings.ts")].sort());
     for (const one of users) {
       expect(one.text, one.path).toMatch(/import \{ FLEXIBLE_AVAILABLE \} from "\.\.?\/flexible-available\.js";/);
       expect(one.text, one.path).not.toMatch(/FLEXIBLE_AVAILABLE\s*(?:=(?!=)|\+\+|--)|export\s*\{[^}]*FLEXIBLE_AVAILABLE|as\s+FLEXIBLE_AVAILABLE/);
@@ -227,13 +258,15 @@ describe("the switch can't become a runtime override", () => {
     const engine = (...names: string[]) => (file: { path: string }) => !names.map(name => join("src", name)).includes(file.path);
     for (const one of product.filter(engine("flexible-thread.ts", "flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
     for (const one of product.filter(engine("flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-agents\.js"/);
-    for (const one of product.filter(engine("flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-launch\.js"/);
+    for (const one of product.filter(engine("flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts", "flexible-answers.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-launch\.js"/);
     // The sign-in relay (F2b): only the thread start uses it, and only the relay reads its list of services.
     for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
     for (const one of product.filter(engine("flexible-relay-upstreams.ts", "flexible-relay.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay-upstreams\.js"/);
     // The relay's cancellations: told by the writers that end a call's authority, heard by the relay; nothing else.
     for (const one of product.filter(engine("flexible-relay-cancel.ts", "flexible-relay.ts", "flexible-launch.ts", "flexible-turns.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay-cancel\.js"/);
     for (const one of product.filter(engine("flexible-custody.ts", "flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-custody\.js"/);
+    // The answers (F2d): read the turn and the launch it is bound to; nothing calls into them yet (F3 wires the thread view).
+    for (const one of product.filter(engine("flexible-answers.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-answers\.js"/);
     for (const one of product.filter(engine("flexible-levels.ts", "flexible-turns.ts", "flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-levels\.js"/);
     // The thread start (F2c): every entry point checks the constant first.
     const agents = readFileSync("src/flexible-agents.ts", "utf8");
@@ -250,12 +283,21 @@ describe("the switch can't become a runtime override", () => {
       const lines = turns.slice(turns.indexOf(`export function ${name}(`)).split("\n");
       expect(lines[lines.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
     }
-    for (const one of product.filter(engine("flexible-turns.ts", "flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-turns\.js"/);
+    for (const one of product.filter(engine("flexible-turns.ts", "flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts", "flexible-answers.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-turns\.js"/);
     // The sign-in relay (F2b): its one entry point checks the constant first; its other export only computes an address.
     const relay = readFileSync("src/flexible-relay.ts", "utf8");
     expect([...relay.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual(["relayUrlInside", "startFlexibleRelay"]);
     const lines = relay.slice(relay.indexOf("export async function startFlexibleRelay(")).split("\n");
     expect(lines[lines.findIndex(line => line.endsWith(" {")) + 1]).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
+    // The answers (F2d): every entry point checks the constant first, the catalog's opening included.
+    const answers = readFileSync("src/flexible-answers.ts", "utf8");
+    const answerEntries = ["openFlexibleAnswerCatalog", "streamAnswerSender", "recordFlexibleRequest", "decideFlexibleAnswer", "decideFlexibleAnswerByPolicy", "sendFlexibleAnswer", "cancelFlexibleAnswer",
+      "revokeFlexibleAnswers", "ackFlexibleAnswer", "noteFlexibleToolActivity", "expireFlexibleAnswers", "recoverFlexibleAnswersOf", "recordFlexibleProviderDecision"];
+    expect([...answers.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual([...answerEntries].sort());
+    for (const name of answerEntries) {
+      const body = answers.slice(answers.search(new RegExp(`^export (?:async )?function ${name}\\(`, "m"))).split("\n");
+      expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
+    }
   });
 
   test("the relay's upstream is a constant: one frozen list, the production origin fixed, no environment, mocked only by tests", () => {
