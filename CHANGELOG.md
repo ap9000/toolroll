@@ -6,7 +6,8 @@ tooling) go on the GitHub release, not here. Entries before 0.9.104 use the olde
 
 ## 0.9.109 — 2026-11-14
 
-One Work screen, pages several times faster on a busy install, and what the agent decided before you accept.
+One Work screen, pages several times faster on a busy install, a clearer first run, and what the agent decided
+before you accept.
 
 ### New
 
@@ -16,6 +17,9 @@ One Work screen, pages several times faster on a busy install, and what the agen
   and thinks is risky, and quotes the notes you and your teammates wrote for it.
 - **Settings → Computers** holds the computers that build: connect a builder, see each one, and add or retire one on
   its own password page.
+- **A first task with no coding agent signed in says so.** Filing from the terminal, the shell or the browser names
+  the one command to run; the welcome says the task is "Filed" until an agent picks it up.
+- **The shell says what comes next** after `toolroll task add`: open `toolroll` and press p to ask for the plan.
 
 ### Changed
 
