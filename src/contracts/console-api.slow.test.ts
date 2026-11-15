@@ -14,6 +14,7 @@ import type { Server } from "node:http";
 import { assertContract, roundTripLoss } from "./contract-test.js";
 import { parseContract } from "./contract.js";
 import { BODILESS_POSTS, CONSOLE_FORMS, CONSOLE_RESPONSES, checkResponse, formFields, readForm, type ConsoleFormName } from "./console-api.js";
+import { ENGINE_REQUESTS } from "./engine-api.js";
 import { openStore, type Store } from "../store.js";
 import { addApprover } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
@@ -90,7 +91,8 @@ describe("console form contracts", () => {
 });
 
 describe("the inventory", () => {
-  const routes = [...Object.values(CONSOLE_FORMS).map(one => one.route), ...BODILESS_POSTS];
+  // The engine API's JSON bodies (a terminal client's, never a browser form) are named by its own contract.
+  const routes = [...Object.values(CONSOLE_FORMS).map(one => one.route), ...BODILESS_POSTS, ...Object.values(ENGINE_REQUESTS).map(one => one.route)];
   const posts = ROUTES.filter(row => row.method === "POST");
   /** Each address a contract names: `a, b` lists and a trailing `x|y` or `<x|y>` choice. */
   const addresses = (route: string): string[] => route.replace(/^POST /, "").split(", ").flatMap(one => {

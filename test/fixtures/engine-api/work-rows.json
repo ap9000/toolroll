@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "project": null,
+  "projectName": "All projects",
+  "needsCount": 1,
+  "groups": [
+    {
+      "key": "review",
+      "label": "Review",
+      "count": 1
+    },
+    {
+      "key": "building",
+      "label": "Building",
+      "count": 2
+    }
+  ],
+  "rows": [
+    {
+      "id": "t-done",
+      "title": "Fix t-done",
+      "href": "/t/t-done",
+      "project": "shop",
+      "age": "95d ago",
+      "status": {
+        "label": "Needs you",
+        "tone": "attention",
+        "token": "assignment-needs-decision"
+      },
+      "word": {
+        "word": "Result",
+        "tone": "ask"
+      },
+      "ask": "review",
+      "chip": "Result",
+      "group": "review",
+      "rank": 0,
+      "detail": "A build is still running on this task.",
+      "problem": null,
+      "need": {
+        "id": "t-done",
+        "title": "Fix t-done",
+        "href": "/t/t-done",
+        "project": null,
+        "age": "95d ago",
+        "state": "needs",
+        "ask": "review",
+        "group": "review",
+        "reason": null,
+        "line": "A build is still running on this task.",
+        "action": {
+          "label": "Open result",
+          "href": "/t/t-done?tab=result&run=2"
+        },
+        "question": null
+      }
+    },
+    {
+      "id": "t-b",
+      "title": "Fix t-b",
+      "href": "/t/t-b",
+      "project": "billing",
+      "age": "95d ago",
+      "status": {
+        "label": "Building",
+        "tone": "live",
+        "token": "assignment-working"
+      },
+      "word": {
+        "word": "Building",
+        "tone": "live"
+      },
+      "ask": null,
+      "chip": null,
+      "group": "building",
+      "rank": 1,
+      "detail": "An agent is working on it.",
+      "problem": null,
+      "need": null
+    },
+    {
+      "id": "t-live",
+      "title": "Fix t-live",
+      "href": "/t/t-live",
+      "project": "shop",
+      "age": "95d ago",
+      "status": {
+        "label": "Building",
+        "tone": "live",
+        "token": "assignment-working"
+      },
+      "word": {
+        "word": "Building",
+        "tone": "live"
+      },
+      "ask": null,
+      "chip": null,
+      "group": "building",
+      "rank": 1,
+      "detail": "An agent is working on it.",
+      "problem": null,
+      "need": null
+    }
+  ],
+  "needs": [
+    {
+      "key": "review",
+      "label": "Review",
+      "count": 1,
+      "rows": []
+    }
+  ],
+  "next": null,
+  "room": "workspace"
+}

@@ -10,7 +10,7 @@
  * - what one live-room change costs today: the frames each open page's stream receives after one task moves, and the
  *   whole-workspace re-read each page then makes (live-bus.ts: rooms send a hint, the page reads itself again).
  * Bytes are pre-compression. Byte, row, statement and call counts are deterministic and gated; server time and memory
- * are reported, never gated.
+ * are reported, never gated, except the engine API's own reads (best of two, 300 ms).
  *
  * Raising a ceiling is deliberate: run with WIRE_WRITE_CEILINGS=1 to rewrite wire-ceilings.json from this run (measured
  * value plus the margin below), or edit the one number by hand, and commit it: the diff and the CI summary name it.
@@ -57,6 +57,8 @@ const rows: Row[] = [];
 const gate = (scenario: string, metric: string, unit: Exclude<Unit, "ms">, observed: number) => rows.push({ id: `${scenario} | ${metric}`, scenario, metric, unit, observed, gated: true });
 const info = (scenario: string, metric: string, unit: Unit, observed: number) => rows.push({ id: `${scenario} | ${metric}`, scenario, metric, unit, observed: Math.round(observed * 10) / 10, gated: false });
 
+/** The engine API's reads over their server-time bar (gated after the report is written). */
+const slowEngine: string[] = [];
 let root: string, store: Store, server: DecisionServer, world: WireWorld, port: number;
 let probe: ReturnType<typeof tallyRequests>;
 const cookies: Record<string, string> = {};
@@ -253,6 +255,42 @@ test("wire budgets: what the browser receives today stays within its committed c
   const samWork = opened["sam Work"]!.view;
   expect(samWork?.kind === "work" && samWork.list.rows.length > 0 && samWork.list.rows.every(row => row.project === null || row.project === world.samProject.split("/").pop())).toBe(true);
 
+  // ---- the engine API's reads (solo-workbench plan A0): what a terminal client reads instead of a page ----
+  // Cheap by design: each reads the fast reads it needs, never the page it mirrors (the Result document above is 2 MB).
+  // This console has no local runner, so the LiveSession read is its admission and an "off" window.
+  const resultRun = store.runsFor(store.lookupRef(`${world.resultTask}-r2`)!.id).find(run => run.role === "builder" && run.finishedAt !== null)!.id;
+  const task = encodeURIComponent(world.resultTask);
+  const engine: [string, string, string][] = [
+    ["alex", "operator", "/work/rows"],
+    ["sam", "project-limited viewer", "/work/rows"],
+    ["alex", "operator", `/t/${task}/steps`],
+    ["alex", "operator", `/t/${task}/diff`],
+    ["alex", "operator", `/t/${task}/diff?run=${resultRun}&file=0`],
+    ["alex", "operator", `/agents/live/run/${resultRun}?file=main`],
+  ];
+  const ENGINE_SERVER_MS = 300;
+  const ENGINE_NAMES: Record<string, string> = { "/work/rows": "work rows", steps: "step cards", diff: "result files", file: "one result file", live: "live session" };
+  for (const [who, label, path] of engine) {
+    const name = path === "/work/rows" ? ENGINE_NAMES[path]! : path.includes("file=0") ? ENGINE_NAMES["file"]! : path.endsWith("/diff") ? ENGINE_NAMES["diff"]! : path.endsWith("/steps") ? ENGINE_NAMES["steps"]! : ENGINE_NAMES["live"]!;
+    const scenario = `${label} · Engine · ${name}`;
+    bump();
+    const answer = await send(path, { cookie: cookies[who]!, accept: "application/json" });
+    expect(answer.status, `${scenario} (${answer.body.slice(0, 200)})`).toBe(200);
+    gate(scenario, "bytes", "bytes", wireBytes(answer.body));
+    gate(scenario, "SQL statements", "count", answer.tally.statements);
+    gate(scenario, "projection calls", "count", projectionTotal(answer.tally));
+    info(scenario, "server time", "ms", answer.ms);
+    // Server time, gated for the engine's own reads (the plan's 300 ms bar): the better of this read and one more, so a
+    // busy runner's one slow turn doesn't fail it. Work's rows are the Work projection's own cost (reported, not gated
+    // here: B2a gates Work's server time).
+    if (name !== ENGINE_NAMES["/work/rows"]) {
+      const again = await send(path, { cookie: cookies[who]!, accept: "application/json" });
+      const best = Math.min(answer.ms, again.ms);
+      info(scenario, "server time, better of two", "ms", best);
+      if (best > ENGINE_SERVER_MS) slowEngine.push(`${scenario}: ${Math.round(best)} ms (bar ${ENGINE_SERVER_MS} ms)`);
+    }
+  }
+
   // ---- one live-room change: four open pages, one task moves ----
   await liveChange(opened);
 
@@ -278,6 +316,7 @@ test("wire budgets: what the browser receives today stays within its committed c
   writeFileSync(OUT, `${JSON.stringify(report, null, 2)}\n`);
   console.log(formatReport(report, null));
   if (DEV_TASKS === undefined) expect(violationsOf(report)).toEqual([]);
+  expect(slowEngine, "the engine API's reads over their server-time bar").toEqual([]);
 }, 900_000);
 
 /** Today's margin over a measured value: bytes +5% (at least 512 B), counts +10% (at least 2). */

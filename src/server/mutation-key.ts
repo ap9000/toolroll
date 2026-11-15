@@ -14,7 +14,13 @@
  * saved key, so every restart mints a new epoch and every older key reads as "Toolroll restarted — reconnect".
  *
  * A protected loopback install: the console is bound to a loopback address only, with no --allow-host, no public URL
- * and no tailnet names. Everywhere else nothing here applies.
+ * and no tailnet names. Everywhere else nothing here applies to a browser.
+ *
+ * A terminal client (the engine API's link redemption, engine-api.ts) is the one exception: redeeming the local owner's
+ * one-time link from this computer, at the console's loopback address, it always gets a key, on any install (a tailnet
+ * machine's included), and its session always presents it. That only narrows: a browser session made on an install
+ * that isn't protected is given no key (issue() returns null there), so the rule "a local owner's session that holds a
+ * key presents it" never touches one.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -91,6 +97,9 @@ export type BrowserKeys = {
   /** Gives a session being made (or reconnected) a fresh key: its hash and this start's epoch go on the session, the key
    * comes back to deliver once. Null while not required, or off the canonical origin (that origin's storage would hold it). */
   issue(session: Pick<Session, "keyEpoch" | "keyHash">, request: IncomingMessage): string | null;
+  /** A terminal client's key (engine-api.ts redeemLink): issued whenever the key is on for this console and the request
+   * names one of its own loopback addresses on the served port, protected install or not. Null otherwise. */
+  issueForClient(session: Pick<Session, "keyEpoch" | "keyHash">, request: IncomingMessage): string | null;
   /** The no-store page that puts the key in this origin's storage and moves on to `to` (a same-site path). */
   deliver(response: ServerResponse, key: string, to: string, cookies?: readonly string[]): void;
 };
@@ -102,15 +111,28 @@ export function createBrowserKeys(deps: {
   /** On a protected loopback install (bound to loopback only, no --allow-host, no public URL, no tailnet names), read
    * per request: the console's one browser host (`127.0.0.1:<port>`, or `[::1]:<port>` for an IPv6-only bind). Else null. */
   protectedHost: () => string | null;
+  /** The console's own loopback hosts on its served port (`127.0.0.1:<port>`, `[::1]:<port>`), whatever else it serves. */
+  loopbackHosts?: () => readonly string[];
 }): BrowserKeys {
   const canonicalHost = (): string | null => deps.enabled ? deps.protectedHost() : null;
   const required = (): boolean => canonicalHost() !== null;
+  /** Whether this caller must present a key now: on a protected install every browser session; anywhere the key is on,
+   * a local owner's session that was given one (a terminal client's; never a browser's, which gets none off a protected
+   * install), so a cookie read on another port is never enough for it. */
+  const keyed = (who: Who): who is Extract<Who, { via: "cookie" }> =>
+    who.via === "cookie" && (required() || (deps.enabled && who.authority === "local-owner" && who.session.keyHash !== null));
+  const mint = (session: Pick<Session, "keyEpoch" | "keyHash">): string => {
+    const key = randomBytes(32).toString("hex");
+    session.keyHash = keyHashOf(key);
+    session.keyEpoch = deps.epoch;
+    return key;
+  };
   // A refused post comes back to Home (its own address may answer only posts); a page's notice, to that page.
   const reconnectOf = (who: Extract<Who, { via: "cookie" }>, back = "/"): Reconnect => who.authority === "full"
     ? { kind: "password", href: back === "/" ? "/login/rekey" : `/login/rekey?return=${encodeURIComponent(back)}` }
     : { kind: "command", command: "toolroll --web" };
   const stale = (who: Who, back?: string): Reconnect | null => {
-    if (!required() || who.via !== "cookie") return null;
+    if (!keyed(who)) return null;
     const session = who.session;
     return session.keyEpoch !== deps.epoch || session.keyHash === null ? reconnectOf(who, back) : null;
   };
@@ -118,7 +140,7 @@ export function createBrowserKeys(deps: {
     required,
     canonicalHost,
     check(who, request, body) {
-      if (!required() || who.via !== "cookie") return null;
+      if (!keyed(who)) return null;
       const local = who.authority !== "full";
       const reconnect = reconnectOf(who);
       if (stale(who) !== null) return { status: 409, message: local ? RESTARTED_LOCAL : RESTARTED, reconnect };
@@ -130,10 +152,12 @@ export function createBrowserKeys(deps: {
     issue(session, request) {
       const canonical = canonicalHost();
       if (canonical === null || request.headers.host !== canonical) return null;
-      const key = randomBytes(32).toString("hex");
-      session.keyHash = keyHashOf(key);
-      session.keyEpoch = deps.epoch;
-      return key;
+      return mint(session);
+    },
+    issueForClient(session, request) {
+      const host = request.headers.host;
+      if (!deps.enabled || typeof host !== "string" || !(deps.loopbackHosts?.() ?? []).includes(host)) return null;
+      return mint(session);
     },
     deliver(response, key, to, cookies = []) {
       const nonce = randomBytes(16).toString("base64");

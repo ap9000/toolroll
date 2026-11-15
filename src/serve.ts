@@ -65,6 +65,7 @@ import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
 import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
 import { withWorkReads } from "./work-reads.js";
+import { createEngineHandlers } from "./server/engine-api.js";
 import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
@@ -767,6 +768,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       if ((options.allowedHosts ?? []).length > 0 || publicOrigin !== null || tailnet.length > 0) return null;
       return address.address === "127.0.0.1" ? `127.0.0.1:${port}` : address.address === "::1" ? `[::1]:${port}` : null;
     },
+    // A terminal client's key (engine-api.ts): this console's own loopback names on its served port, whatever else it serves.
+    loopbackHosts: () => { const port = servedPort(); return port === null ? [] : [`127.0.0.1:${port}`, `[::1]:${port}`]; },
   });
   /** The exact command that starts this console again as it runs now, plus a listening address or one more allowed host. */
   const consoleCommand = (change: { host?: string; allow?: string }): string => {
@@ -2403,7 +2406,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     ...tasksHandlers.registrations, ...flowsHandlers.registrations, ...chatHandlers.registrations,
     ...settingsHandlers.registrations, ...peopleHandlers.registrations, ...pagesHandlers.registrations,
     ...remoteHandlers.registrations, ...liveHandlers.registrations, ...terminalHandlers.registrations, ...createSweepHandlers(handlerRuntime).registrations,
-    ...createWelcomeHandlers(handlerRuntime).registrations,
+    ...createWelcomeHandlers(handlerRuntime).registrations, ...createEngineHandlers(handlerRuntime).registrations,
   ]);
   /** The row's role, after admission and before its one handler. */
   function dispatchConsole(route: RouteDeclaration, ctx: HandlerContext): Promise<void> {

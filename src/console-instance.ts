@@ -114,6 +114,17 @@ export function runDirProblem(dir: string, uid = process.getuid?.() ?? -1, mustE
   if ((info.mode & 0o077) !== 0) return `${dir} is open to other users — Toolroll uses it only when it is yours alone (chmod 700)`;
   return null;
 }
+/**
+ * Whether this database's console can have a socket at all: a Unix socket path has a hard length limit, so a database
+ * deep in a long folder gets none, and nothing (`toolroll`, `toolroll open`, the terminal workbench) can find its
+ * console. Said plainly, with the fix, wherever it matters, never left as "no console is running". (The run folder stays
+ * beside the database, behind the agent fence: a short socket elsewhere would sit outside it.)
+ */
+export function instanceSocketTooLong(databaseFile: string): string | null {
+  const needs = Buffer.byteLength(join(instanceRunDir(databaseFile), "0123456789abcdef.sock"));
+  if (needs <= SOCKET_PATH_MAX) return null;
+  return `the database's folder is too deep for Toolroll's socket (${needs} of at most ${SOCKET_PATH_MAX} bytes), so nothing can find a console started on it — move it to a shorter folder (for example ~/.toolroll) or start with --db at a shorter path`;
+}
 /** A socket path that binds exactly (no truncation), named as a console names its own. */
 export function socketPathProblem(path: string): string | null {
   if (!SOCKET_NAME.test(basename(path))) return `${path} isn't a console socket`;
@@ -169,6 +180,8 @@ export function askSocket(socketPath: string, request: object, timeoutMs = 2_000
  * decision (`link` returns null unless local mode is on).
  */
 export async function openInstanceSocket(databaseFile: string, facts: HelloFacts, secret: () => string | null, link?: () => string | null): Promise<{ ok: true; name: string; close: () => void } | { ok: false; problem: string }> {
+  const tooLong = instanceSocketTooLong(databaseFile);
+  if (tooLong !== null) return { ok: false, problem: tooLong };
   const dir = instanceRunDir(databaseFile);
   const problem = prepareRunDir(dir);
   if (problem !== null) return { ok: false, problem };
@@ -340,6 +353,9 @@ export async function proveLiveConsole(databaseFile: string, store: Store, build
   const restart = "stop it and run `toolroll up` again";
   // No record: nothing is running here (a console that couldn't claim one isn't offered). One this build can't read
   // isn't "nothing": it is refused.
+  // A database too deep for a socket has no findable console: said as such, never as "nothing is running".
+  const tooLong = instanceSocketTooLong(databaseFile);
+  if (tooLong !== null) return { ok: false, state: "refused", message: tooLong };
   const read = readInstanceState(store);
   if (read.state === "none") return { ok: false, state: "none", message: "no console is running" };
   if (read.state === "invalid") return { ok: false, state: "refused", message: `the console's record can't be read — ${restart}` };

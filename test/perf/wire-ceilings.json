@@ -110,6 +110,24 @@
     "Live change · all four pages | full re-reads": 5,
     "Live change · all four pages | re-read bytes": 1254617,
     "Live change · all four pages | re-read SQL statements": 2324,
-    "Browser bundle · workspace.js | gzip bytes": 379570
+    "Browser bundle · workspace.js | gzip bytes": 379570,
+    "operator · Engine · work rows | bytes": 28363,
+    "operator · Engine · work rows | SQL statements": 218,
+    "operator · Engine · work rows | projection calls": 11,
+    "project-limited viewer · Engine · work rows | bytes": 27559,
+    "project-limited viewer · Engine · work rows | SQL statements": 393,
+    "project-limited viewer · Engine · work rows | projection calls": 8,
+    "operator · Engine · step cards | bytes": 1963,
+    "operator · Engine · step cards | SQL statements": 216,
+    "operator · Engine · step cards | projection calls": 3,
+    "operator · Engine · result files | bytes": 3743,
+    "operator · Engine · result files | SQL statements": 38,
+    "operator · Engine · result files | projection calls": 2,
+    "operator · Engine · one result file | bytes": 5966,
+    "operator · Engine · one result file | SQL statements": 38,
+    "operator · Engine · one result file | projection calls": 2,
+    "operator · Engine · live session | bytes": 675,
+    "operator · Engine · live session | SQL statements": 42,
+    "operator · Engine · live session | projection calls": 2
   }
 }

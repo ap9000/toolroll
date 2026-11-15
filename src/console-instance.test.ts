@@ -13,7 +13,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { connect as tcpConnect, createServer as createTcpServer, createServer as createSocketServer, type Server as NetServer } from "node:net";
 import { join } from "node:path";
-import { askSocket, claimInstance, recordLiveness, clearInstance, httpProof, INSTANCE_PATH, instanceHttpAnswer, instanceRunDir, openInstanceSocket, prepareRunDir, proveLiveConsole, readInstance, runDirProblem, socketPathProblem, socketProof } from "./console-instance.js";
+import { askSocket, claimInstance, recordLiveness, clearInstance, httpProof, INSTANCE_PATH, instanceHttpAnswer, instanceRunDir, instanceSocketTooLong, openInstanceSocket, prepareRunDir, proveLiveConsole, readInstance, runDirProblem, socketPathProblem, socketProof } from "./console-instance.js";
 import { createDecisionServer } from "./serve.js";
 import { openStore, type Store } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -278,4 +278,21 @@ describe("attaching", () => {
   test("with no record, nothing is running", async () => {
     expect(await proveLiveConsole(databaseFile, store, BUILD)).toEqual({ ok: false, state: "none", message: "no console is running" });
   });
+});
+
+test("a database too deep for a socket: the console says why nothing can find it, and so does every asker", async () => {
+  const deep = join(dir, "d".repeat(60), "e".repeat(60));
+  mkdirSync(deep, { recursive: true, mode: 0o700 });
+  const file = join(deep, "orders.db");
+  const words = /too deep for Toolroll's socket .* move it to a shorter folder/;
+  expect(instanceSocketTooLong(file)).toMatch(words);
+  expect(instanceSocketTooLong(databaseFile)).toBeNull();
+  // The console's start: no socket, and the reason is the fix, not a bare path.
+  const opened = await openInstanceSocket(file, { pid: process.pid, build: BUILD, database: file, port: 1 }, () => null);
+  expect(opened).toEqual({ ok: false, problem: expect.stringMatching(words) });
+  // `toolroll` / `toolroll open` / the terminal workbench: refused with the same words, never "no console is running".
+  const deepStore = openStore(":memory:");
+  try {
+    expect(await proveLiveConsole(file, deepStore, BUILD)).toEqual({ ok: false, state: "refused", message: expect.stringMatching(words) });
+  } finally { deepStore.close(); }
 });

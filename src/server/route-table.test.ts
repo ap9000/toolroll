@@ -23,6 +23,8 @@ const LIMITED_ACCESS = {
   'queue': 'collection', 'workbench': 'collection', 'tasks.archive': 'collection', 'n.task': 'unscoped',
   'people.page': 'unscoped', 'tasks': 'collection', 'tasks.new': 'collection', 'welcome': 'collection',
   'task.page': 'resource', 'task.evidence': 'resource',
+  // The engine API (solo-workbench plan A0): each read admitted as the page it mirrors (Work, the task page, the Live grid).
+  'work.rows': 'collection', 'task.steps': 'resource', 'task.diff': 'resource', 'agents.live.run': 'unscoped', 'agents.live.thread': 'unscoped', 'engine.hello': 'unscoped',
   // One-tap release approval: the sheet and the push's locator are each one task's own page, admitted by its project.
   'task.release': 'resource', 'release.locate': 'resource',
   'ledger.export': 'unscoped', 'runs': 'collection', 'menu': 'collection',

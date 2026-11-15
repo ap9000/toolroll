@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "task": {
+    "id": "t-done",
+    "root": "t-done",
+    "title": "Fix t-done",
+    "state": "done",
+    "project": "/home/dev/shop"
+  },
+  "chain": "just-code",
+  "headline": "Needs you",
+  "liveRun": null,
+  "cards": [
+    {
+      "key": "plan",
+      "label": "Plan",
+      "state": "done",
+      "mark": "done",
+      "sentence": "Plan written",
+      "at": null,
+      "needsYou": false,
+      "inChain": false,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "approve",
+      "label": "Approval",
+      "state": "done",
+      "mark": "done",
+      "sentence": "Approved by alex",
+      "at": "2026-08-11T22:00:00.000Z",
+      "needsYou": false,
+      "inChain": false,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "build",
+      "label": "Build",
+      "state": "done",
+      "mark": "done",
+      "sentence": "The build finished",
+      "at": "2026-11-15T04:43:27.072Z",
+      "needsYou": false,
+      "inChain": true,
+      "agent": {
+        "provider": "claude",
+        "model": "sonnet"
+      },
+      "startedAt": "2026-11-15T04:43:27.065Z",
+      "finishedAt": "2026-11-15T04:43:27.072Z",
+      "costUsd": null,
+      "runs": [
+        2
+      ]
+    },
+    {
+      "key": "checks",
+      "label": "Checks",
+      "state": "skipped",
+      "mark": "skipped",
+      "sentence": "The checks didn't run",
+      "at": null,
+      "needsYou": false,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    },
+    {
+      "key": "ready",
+      "label": "Ready",
+      "state": "stuck",
+      "mark": "needs",
+      "sentence": "",
+      "at": null,
+      "needsYou": true,
+      "inChain": true,
+      "agent": null,
+      "startedAt": null,
+      "finishedAt": null,
+      "costUsd": null,
+      "runs": []
+    }
+  ],
+  "room": "task:t-done"
+}
