@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "session": {
+    "kind": "run",
+    "id": 1,
+    "task": "t-live"
+  },
+  "room": "agent:1",
+  "live": true,
+  "file": "sub",
+  "window": {
+    "ok": false,
+    "reason": "missing"
+  }
+}

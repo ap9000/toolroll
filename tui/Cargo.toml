@@ -1,0 +1,41 @@
+# Toolroll's terminal workbench (solo-workbench plan T1): a thin client of the local Toolroll console.
+#   toolroll-api          the typed engine client (models from test/fixtures/engine-api, SSE, acts)
+#   toolroll-tui          the screen (the shipped binary)
+#   toolroll-fake-engine  a stand-in console serving the contract's fixtures (tests and the harness; never shipped)
+#   toolroll-tui-harness  measures the binary in a real PTY (never shipped)
+[workspace]
+resolver = "2"
+members = ["crates/toolroll-api", "crates/toolroll-tui", "crates/toolroll-fake-engine", "crates/toolroll-tui-harness"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync", "net", "io-util"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Loopback only (http://127.0.0.1:<port>): no TLS stack at all, so every target links without a C cross compiler.
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+
+# The shipped profile (sizes measured in the spike: "s" is 17% smaller than 3 and nearly as fast).
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release-s]
+inherits = "release"
+opt-level = "s"
+
+[profile.release-3]
+inherits = "release"
+opt-level = 3

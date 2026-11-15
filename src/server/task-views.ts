@@ -68,7 +68,7 @@ approvalOf,
 type Scope
 } from "../scope.js";
 import { oneLineOf,refuse,screen,withScript,type Chrome,type Screen } from "./chrome.js";
-import { chatResultHref,reviewHref,taskChatHref,taskHref,type ServeOptions } from "./http.js";
+import { chatResultHref,refusedInPlace,reviewHref,taskChatHref,taskHref,type ServeOptions } from "./http.js";
 import { decisionsFor,type TaskChatFocus } from "./render-chat.js";
 import { type ProjectPeek,type WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
@@ -867,6 +867,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     editPlan = false,
     extras: TaskPageExtras = {},
   ): void {
+    // A terminal client's act: the refusal's own words, in place (http.ts refusedInPlace).
+    if (problem !== null && refusedInPlace(response, status, problem)) return;
     const admittedFamily = runtime.familyOf(taskId);
     // A history that can't be read still shows the result the address named (the one result view): its own warning
     // says the history is unavailable, and its forms stay this result's.

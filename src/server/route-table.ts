@@ -238,6 +238,7 @@ export const EDGE_LOCAL: Readonly<Record<string, { local: "allow" | "deny"; why:
   "edge.desktop-health": { local: "allow", why: "public read" },
   "edge.login-page": { local: "allow", why: "before sign-in" },
   "edge.login-link": { local: "allow", why: "before sign-in: a one-time link" },
+  "edge.login-link-json": { local: "allow", why: "before sign-in: the same one-time local link, redeemed by a terminal client into the same local-owner session (engine-api.ts redeemLink)" },
   "edge.sso-start": { local: "allow", why: "before sign-in" },
   "edge.sso-callback": { local: "allow", why: "before sign-in" },
   "edge.sso-finish": { local: "allow", why: "before sign-in" },
@@ -316,6 +317,9 @@ edge("pages", "edge.font", "GET", "^\\/fonts\\/geist-(sans|mono)-(400|500|600)\\
 edge("pages", "edge.desktop-health", "GET", "/desktop/health");
 edge("people", "edge.login-page", "GET", "/login");
 edge("people", "edge.login-link", "GET", "^\\/login\\/once\\/[^/]+$", { sample: "/login/once/abc" });
+// The engine API (solo-workbench plan A0): the same one-time local link for a terminal client, as JSON with the session's
+// cookie, form token and mutation key. The handler proves everything (one time, never a browser, this computer only).
+edge("people", "edge.login-link-json", "POST", "/login/once");
 edge("people", "edge.sso-start", "GET", "/login/sso");
 edge("people", "edge.sso-callback", "GET", "/login/sso/callback", { callers: ["service"], proof: "adapter" });
 edge("people", "edge.sso-finish", "GET", "/login/sso/finish");
@@ -366,6 +370,10 @@ get("pages", "projects.map", "^\\/projects\\/[^/]+\\/map$", { limited: "unscoped
 // Its one action, "Make a task to fix it", posts the ordinary /tasks/add form.
 get("pages", "projects.flaky", "^\\/projects\\/[^/]+\\/flaky$", { limited: "unscoped", ...free, sample: "/projects/payments-api/flaky" });
 get("pages", "home", "/", { limited: "collection", ...free });
+// The engine API: Work's list as data (the same query keys, grouping and Needs-you facts), admitted as Work is.
+get("pages", "work.rows", "/work/rows", { limited: "collection", ...free });
+// The engine API's handshake: this build and the contract's digest, for any signed-in caller (it names no project).
+get("pages", "engine.hello", "/engine/hello", { limited: "unscoped", ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
 // Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
 const RETIRED = { limited: "collection", ...free, retired: true } as const;
@@ -403,6 +411,10 @@ get("pages", "agents", "/agents", { limited: "unscoped", ...free });
 // Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
 get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
+// The engine API's LiveSession (solo-workbench plan A0): one session's window, admitted exactly as the Live grid's reads.
+// A run now; a Flexible thread on the same road, refused while Flexible isn't available.
+get("pages", "agents.live.run", `^\\/agents\\/live\\/run\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/run/1" });
+get("pages", "agents.live.thread", "^\\/agents\\/live\\/thread\\/[0-9a-f]{32}$", { limited: "unscoped", callers: ["cookie"], ...free, sample: `/agents/live/thread/${"a".repeat(32)}` });
 // Terminals' address in the Agents area: a 302 to /term, admitted exactly as /term is (an operator's browser session).
 get("pages", "agents.terminals", "/agents/terminals", TERM);
 // Fleet is Settings → Computers now (settings plan F2) and System is part of Agents: GET aliases to
@@ -415,6 +427,9 @@ get("tasks", "welcome", "/welcome", { limited: "collection", ...free });
 post("tasks", "welcome.sample", "/welcome/sample", { callers: ["cookie"], project: "none", ...approver("An approver adds projects.", "/welcome") });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });
 get("tasks", "task.evidence", `^\\/t\\/${TASK}\\/evidence$`, { project: "task", limited: "resource", ...free, sample: "/t/one/evidence" });
+// The engine API: a task's step cards and its result's diff file by file, admitted as the task page is.
+get("tasks", "task.steps", `^\\/t\\/${TASK}\\/steps$`, { project: "task", limited: "resource", ...free, sample: "/t/one/steps" });
+get("tasks", "task.diff", `^\\/t\\/${TASK}\\/diff$`, { project: "task", limited: "resource", ...free, sample: "/t/one/diff" });
 // One-tap release approval (trusted-release-reports.md A6/A7): the sheet, and the push's opaque locator, which only
 // redirects to it once the plane's own state says the task ref is a release in the person's projects.
 get("tasks", "task.release", `^\\/t\\/${TASK}\\/release$`, { project: "task", limited: "resource", ...free, sample: "/t/one/release" });

@@ -1,0 +1,1616 @@
+{
+  "digest": "18fcd2f3216a83fb815abed88ce8c25d2698c624d62624a82bf7d32adb8d7a7d",
+  "version": 1,
+  "responses": {
+    "liveSessionWindow": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "session": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "run"
+                },
+                "id": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "task": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "task"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "thread"
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{32}$"
+                },
+                "task": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "kind",
+                "id",
+                "task"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "room": {
+          "type": "string"
+        },
+        "live": {
+          "type": "boolean"
+        },
+        "file": {
+          "type": "string",
+          "enum": [
+            "main",
+            "sub"
+          ]
+        },
+        "window": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "ok": {
+                  "type": "boolean",
+                  "const": true
+                },
+                "records": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "open"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string",
+                            "enum": [
+                              "base",
+                              "commands"
+                            ]
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "at",
+                          "detail"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "start"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "at"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "say"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "t": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "at",
+                          "t"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "step"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "target": {
+                            "type": "string"
+                          },
+                          "once": {
+                            "type": "boolean",
+                            "const": true
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "at",
+                          "id",
+                          "kind"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "done"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "ok": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          },
+                          "out": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "at",
+                          "id",
+                          "ok"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "cut"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "at"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "cap"
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "k"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "child"
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "parent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "via": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "desc": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "s",
+                          "parent"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "end"
+                          },
+                          "s": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "at": {
+                            "type": "string"
+                          },
+                          "ok": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "k",
+                          "s",
+                          "ok"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "k": {
+                            "type": "string",
+                            "const": "over"
+                          }
+                        },
+                        "required": [
+                          "k"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "cursor": {
+                  "type": "string"
+                },
+                "restarted": {
+                  "type": "boolean"
+                },
+                "earlier": {
+                  "type": "boolean"
+                },
+                "quarantined": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "skipped": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "more": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "ok",
+                "records",
+                "cursor",
+                "restarted",
+                "earlier",
+                "quarantined",
+                "skipped",
+                "more"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "ok": {
+                  "type": "boolean",
+                  "const": false
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "missing",
+                    "unavailable",
+                    "off"
+                  ]
+                }
+              },
+              "required": [
+                "ok",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "session",
+        "room",
+        "live",
+        "file",
+        "window"
+      ],
+      "additionalProperties": false
+    },
+    "workRows": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "needsCount": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "groups": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "count"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "href": {
+                "type": "string"
+              },
+              "project": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "age": {
+                "type": "string"
+              },
+              "status": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "tone": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "label",
+                  "tone",
+                  "token"
+                ],
+                "additionalProperties": false
+              },
+              "word": {
+                "type": "object",
+                "properties": {
+                  "word": {
+                    "type": "string"
+                  },
+                  "tone": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "word",
+                  "tone"
+                ],
+                "additionalProperties": false
+              },
+              "ask": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "chip": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "group": {
+                "type": "string"
+              },
+              "rank": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "problem": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "need": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "href": {
+                        "type": "string"
+                      },
+                      "project": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "age": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "needs",
+                          "running",
+                          "queued",
+                          "done"
+                        ]
+                      },
+                      "ask": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "release",
+                              "approve",
+                              "answer",
+                              "flow",
+                              "wrong",
+                              "review",
+                              "setup",
+                              "other"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "group": {
+                        "type": "string",
+                        "enum": [
+                          "decide",
+                          "review",
+                          "unblock"
+                        ]
+                      },
+                      "reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "line": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "action": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "label": {
+                                "type": "string"
+                              },
+                              "href": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "label",
+                              "href"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "question": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "recap": {
+                                "type": "string"
+                              },
+                              "options": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "consequence": {
+                                      "type": "string"
+                                    },
+                                    "recommended": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "label",
+                                    "consequence",
+                                    "recommended"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "text",
+                              "recap",
+                              "options"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "href",
+                      "project",
+                      "age",
+                      "state",
+                      "ask",
+                      "reason",
+                      "line",
+                      "action",
+                      "question"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "href",
+              "project",
+              "age",
+              "status",
+              "word",
+              "ask",
+              "chip",
+              "group",
+              "rank",
+              "detail",
+              "problem",
+              "need"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "needs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "enum": [
+                  "decide",
+                  "review",
+                  "unblock"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "href": {
+                      "type": "string"
+                    },
+                    "project": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "age": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "needs",
+                        "running",
+                        "queued",
+                        "done"
+                      ]
+                    },
+                    "ask": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "release",
+                            "approve",
+                            "answer",
+                            "flow",
+                            "wrong",
+                            "review",
+                            "setup",
+                            "other"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "group": {
+                      "type": "string",
+                      "enum": [
+                        "decide",
+                        "review",
+                        "unblock"
+                      ]
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "line": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "action": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "label": {
+                              "type": "string"
+                            },
+                            "href": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label",
+                            "href"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "question": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            "text": {
+                              "type": "string"
+                            },
+                            "recap": {
+                              "type": "string"
+                            },
+                            "options": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "label": {
+                                    "type": "string"
+                                  },
+                                  "consequence": {
+                                    "type": "string"
+                                  },
+                                  "recommended": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "label",
+                                  "consequence",
+                                  "recommended"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "text",
+                            "recap",
+                            "options"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "href",
+                    "project",
+                    "age",
+                    "state",
+                    "ask",
+                    "reason",
+                    "line",
+                    "action",
+                    "question"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "count",
+              "rows"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "room": {
+          "type": "string",
+          "const": "workspace"
+        }
+      },
+      "required": [
+        "version",
+        "project",
+        "projectName",
+        "needsCount",
+        "groups",
+        "rows",
+        "needs",
+        "next",
+        "room"
+      ],
+      "additionalProperties": false
+    },
+    "stepCards": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "task": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "root": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "project": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "root",
+            "title",
+            "state",
+            "project"
+          ],
+          "additionalProperties": false
+        },
+        "chain": {
+          "type": "string",
+          "enum": [
+            "plan-first",
+            "just-code"
+          ]
+        },
+        "headline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "liveRun": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cards": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string",
+                    "enum": [
+                      "plan",
+                      "approve",
+                      "build",
+                      "checks",
+                      "review",
+                      "ready"
+                    ]
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "done",
+                      "current",
+                      "stuck",
+                      "skipped",
+                      "todo"
+                    ]
+                  },
+                  "mark": {
+                    "type": "string",
+                    "enum": [
+                      "done",
+                      "needs",
+                      "live",
+                      "wait",
+                      "stuck",
+                      "skipped",
+                      "todo"
+                    ]
+                  },
+                  "sentence": {
+                    "type": "string"
+                  },
+                  "at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "needsYou": {
+                    "type": "boolean"
+                  },
+                  "inChain": {
+                    "type": "boolean"
+                  },
+                  "agent": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "provider": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "provider",
+                          "model"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "startedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "finishedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "costUsd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "runs": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    }
+                  }
+                },
+                "required": [
+                  "key",
+                  "label",
+                  "state",
+                  "mark",
+                  "sentence",
+                  "at",
+                  "needsYou",
+                  "inChain",
+                  "agent",
+                  "startedAt",
+                  "finishedAt",
+                  "costUsd",
+                  "runs"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "review": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "receipt": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "source": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "receipt",
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "room": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "task",
+        "chain",
+        "headline",
+        "liveRun",
+        "cards",
+        "review",
+        "room"
+      ],
+      "additionalProperties": false
+    },
+    "resultDiff": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "task": {
+          "type": "string"
+        },
+        "run": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "totals": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "files": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "additions": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "deletions": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "binary": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "filesTruncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "files",
+                "additions",
+                "deletions",
+                "binary",
+                "filesTruncated"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "file": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "path": {
+                "type": "string"
+              },
+              "oldPath": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "additions": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "deletions": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "binary": {
+                "type": "boolean"
+              },
+              "hunks": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "file",
+              "path",
+              "oldPath",
+              "additions",
+              "deletions",
+              "binary",
+              "hunks"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "patchTruncated": {
+          "type": "boolean"
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "task",
+        "run",
+        "totals",
+        "files",
+        "patchTruncated",
+        "problem"
+      ],
+      "additionalProperties": false
+    },
+    "resultDiffFile": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "task": {
+          "type": "string"
+        },
+        "run": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "file": {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "path": {
+              "type": "string"
+            },
+            "oldPath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "meta": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "hunks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "header": {
+                    "type": "string"
+                  },
+                  "lines": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "context",
+                            "addition",
+                            "deletion",
+                            "meta"
+                          ]
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "oldLine": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "newLine": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "text",
+                        "oldLine",
+                        "newLine"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "header",
+                  "lines"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "file",
+            "path",
+            "oldPath",
+            "meta",
+            "hunks"
+          ],
+          "additionalProperties": false
+        },
+        "linesTruncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "version",
+        "task",
+        "run",
+        "file",
+        "linesTruncated"
+      ],
+      "additionalProperties": false
+    },
+    "linkRedemption": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "account": {
+          "type": "string"
+        },
+        "cookie": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "required": [
+            "name",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        "csrf": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "epoch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "account",
+        "cookie",
+        "csrf",
+        "key",
+        "epoch"
+      ],
+      "additionalProperties": false
+    },
+    "refusal": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "hello": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "toolroll": {
+          "type": "string"
+        },
+        "contract": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "version",
+        "toolroll",
+        "contract",
+        "responses"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "requests": {
+    "linkRedemption": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -14,7 +14,13 @@
  * saved key, so every restart mints a new epoch and every older key reads as "Toolroll restarted — reconnect".
  *
  * A protected loopback install: the console is bound to a loopback address only, with no --allow-host, no public URL
- * and no tailnet names. Everywhere else nothing here applies.
+ * and no tailnet names. Everywhere else nothing here applies to a browser.
+ *
+ * A terminal client (the engine API's link redemption, engine-api.ts) is the one exception: redeeming the local owner's
+ * one-time link from this computer, at the console's loopback address, it always gets a key, on any install (a tailnet
+ * machine's included), and its session always presents it. The session row says so explicitly: its saved key epoch is
+ * written `terminal:<epoch>` (TERMINAL_EPOCH), by issueForClient alone. Browser sessions keep exactly their policy: a
+ * key only while the install is protected, whatever key they hold.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -22,6 +28,13 @@ import { html, htmlString, scriptElement } from "../html.js";
 import { HANDOFF_STYLE } from "./http.js";
 import type { Session, Who } from "./session.js";
 
+
+/** A terminal client's session saves its key epoch under this prefix: the persisted mark that it presents its key on any
+ * install. Only issueForClient writes it; no browser road does. */
+export const TERMINAL_EPOCH = "terminal:";
+const terminalSession = (session: Pick<Session, "keyEpoch">): boolean => typeof session.keyEpoch === "string" && session.keyEpoch.startsWith(TERMINAL_EPOCH);
+/** The console start a session's key was issued under, either way it was written. */
+const epochOf = (session: Pick<Session, "keyEpoch">): string | null => session.keyEpoch === null ? null : terminalSession(session) ? session.keyEpoch.slice(TERMINAL_EPOCH.length) : session.keyEpoch;
 
 /** The request header a fetch carries the key in. */
 export const KEY_HEADER = "x-toolroll-key";
@@ -91,6 +104,10 @@ export type BrowserKeys = {
   /** Gives a session being made (or reconnected) a fresh key: its hash and this start's epoch go on the session, the key
    * comes back to deliver once. Null while not required, or off the canonical origin (that origin's storage would hold it). */
   issue(session: Pick<Session, "keyEpoch" | "keyHash">, request: IncomingMessage): string | null;
+  /** A terminal client's key (engine-api.ts redeemLink): issued whenever the key is on for this console and the request
+   * names one of its own loopback addresses on the served port, protected install or not; the session is marked a
+   * terminal client's (TERMINAL_EPOCH). Null otherwise. */
+  issueForClient(session: Pick<Session, "keyEpoch" | "keyHash">, request: IncomingMessage): string | null;
   /** The no-store page that puts the key in this origin's storage and moves on to `to` (a same-site path). */
   deliver(response: ServerResponse, key: string, to: string, cookies?: readonly string[]): void;
 };
@@ -102,23 +119,36 @@ export function createBrowserKeys(deps: {
   /** On a protected loopback install (bound to loopback only, no --allow-host, no public URL, no tailnet names), read
    * per request: the console's one browser host (`127.0.0.1:<port>`, or `[::1]:<port>` for an IPv6-only bind). Else null. */
   protectedHost: () => string | null;
+  /** The port the console serves on (null before it listens): its own loopback hosts there (`127.0.0.1:<port>`,
+   * `[::1]:<port>`) are where a terminal client's key is issued, whatever else it serves. */
+  servedPort?: () => number | null;
 }): BrowserKeys {
   const canonicalHost = (): string | null => deps.enabled ? deps.protectedHost() : null;
   const required = (): boolean => canonicalHost() !== null;
+  /** Whether this caller must present a key now: on a protected install every browser session (as always); anywhere the
+   * key is on, a terminal client's session (its row says so), so a cookie read on another port is never enough for it. */
+  const keyed = (who: Who): who is Extract<Who, { via: "cookie" }> =>
+    who.via === "cookie" && (required() || (deps.enabled && terminalSession(who.session)));
+  const mint = (session: Pick<Session, "keyEpoch" | "keyHash">, terminal: boolean): string => {
+    const key = randomBytes(32).toString("hex");
+    session.keyHash = keyHashOf(key);
+    session.keyEpoch = terminal ? `${TERMINAL_EPOCH}${deps.epoch}` : deps.epoch;
+    return key;
+  };
   // A refused post comes back to Home (its own address may answer only posts); a page's notice, to that page.
   const reconnectOf = (who: Extract<Who, { via: "cookie" }>, back = "/"): Reconnect => who.authority === "full"
     ? { kind: "password", href: back === "/" ? "/login/rekey" : `/login/rekey?return=${encodeURIComponent(back)}` }
     : { kind: "command", command: "toolroll --web" };
   const stale = (who: Who, back?: string): Reconnect | null => {
-    if (!required() || who.via !== "cookie") return null;
+    if (!keyed(who)) return null;
     const session = who.session;
-    return session.keyEpoch !== deps.epoch || session.keyHash === null ? reconnectOf(who, back) : null;
+    return epochOf(session) !== deps.epoch || session.keyHash === null ? reconnectOf(who, back) : null;
   };
   return {
     required,
     canonicalHost,
     check(who, request, body) {
-      if (!required() || who.via !== "cookie") return null;
+      if (!keyed(who)) return null;
       const local = who.authority !== "full";
       const reconnect = reconnectOf(who);
       if (stale(who) !== null) return { status: 409, message: local ? RESTARTED_LOCAL : RESTARTED, reconnect };
@@ -130,10 +160,13 @@ export function createBrowserKeys(deps: {
     issue(session, request) {
       const canonical = canonicalHost();
       if (canonical === null || request.headers.host !== canonical) return null;
-      const key = randomBytes(32).toString("hex");
-      session.keyHash = keyHashOf(key);
-      session.keyEpoch = deps.epoch;
-      return key;
+      return mint(session, false);
+    },
+    issueForClient(session, request) {
+      const host = request.headers.host;
+      const port = deps.servedPort?.() ?? null;
+      if (!deps.enabled || port === null || (host !== `127.0.0.1:${port}` && host !== `[::1]:${port}`)) return null;
+      return mint(session, true);
     },
     deliver(response, key, to, cookies = []) {
       const nonce = randomBytes(16).toString("base64");

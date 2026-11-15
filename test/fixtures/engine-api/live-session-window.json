@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "session": {
+    "kind": "run",
+    "id": 1,
+    "task": "t-live"
+  },
+  "room": "agent:1",
+  "live": true,
+  "file": "main",
+  "window": {
+    "ok": true,
+    "records": [
+      {
+        "k": "open",
+        "at": "2026-11-15T04:43:27.052Z",
+        "detail": "base"
+      },
+      {
+        "k": "say",
+        "at": "2026-11-15T04:43:27.053Z",
+        "t": [
+          "reading the totals"
+        ]
+      },
+      {
+        "k": "step",
+        "at": "2026-11-15T04:43:27.053Z",
+        "id": "s1",
+        "kind": "delegate",
+        "target": "Check the tests"
+      },
+      {
+        "k": "done",
+        "at": "2026-11-15T04:43:27.054Z",
+        "id": "s1",
+        "ok": null
+      }
+    ],
+    "cursor": "eyJydW4iOjEsImdlbiI6IjE2Nzc3MjMxOjEyODExMTQ5NDM6MTc5NDcxNzgwNzA1MjQ0NDIyNCIsIm9mZiI6Mjk3LCJza2lwcGluZyI6ZmFsc2UsImluS2V5IjpmYWxzZSwidGFpbCI6Inx8fCIsInVua25vd24iOjB9.nopHwL13aS-PB9puP3PEuZrdMUbBOuLLbJRUQSJuCjs",
+    "restarted": false,
+    "earlier": false,
+    "quarantined": 0,
+    "skipped": 0,
+    "more": false
+  }
+}
