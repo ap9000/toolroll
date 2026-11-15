@@ -212,3 +212,31 @@ test("a release's terms are in the plan sheet, whole: what later ships without a
     expect(withFormToken("c", () => htmlString(approvalSheetHtml(inputOf({ surface }))))).not.toContain("data-approval-release");
   }
 });
+
+test("a revision whose plan can't be read as steps shows it all, in the open, with why", () => {
+  const scope = scopeOf({ goal: "Add subtract(a, b) next to add. — repair exactly the unmet criteria named below; a comment cannot widen the scope. Unmet: c1." });
+  const input = inputOf({ scope, planDocument: "WARNING: this changes production data.\nNo headings here.",
+    revision: { sourceTask: "t-0", sourceRun: 12, kind: "criterion-repair", lineage: null, comments: [] }, revisionSourceHref: "/r/12" });
+  const sheet = htmlString(planSheetHtml(input));
+  // Nothing of it inside the Full plan fold (there is none for a plan with no steps), and its text in view.
+  expect(sheet).not.toContain("data-plan-full");
+  expect(visibleText(sheet)).toContain("WARNING: this changes production data.");
+  expect(visibleText(sheet)).toContain("This plan couldn’t be read as steps, so it is shown as written.");
+});
+
+test("a revision leads with one sentence, and each limit it changes is a row under Before you approve, never folded", async () => {
+  const { approvalSummaryOf } = await import("../approval-summary.js");
+  const scope = scopeOf({ goal: "Add subtract(a, b) next to add. — repair exactly the unmet criteria named below; a comment cannot widen the scope. Unmet: c1." });
+  const summary = approvalSummaryOf(scope, { usual: null, rules: null, revision: { sourceTask: "t-0", sourceRun: 12, hadPlan: true, problem: null,
+    repair: { cap: null, remaining: null }, changed: [{ label: "network", was: "the agent's provider", now: "open — any host" }, { label: "writes", was: "only its checkout", now: "anywhere" }] } });
+  const input = inputOf({ scope, summary, revision: { sourceTask: "t-0", sourceRun: 12, kind: "criterion-repair", lineage: null, comments: [] }, revisionSourceHref: "/r/12" });
+  const host = document.createElement("div");
+  host.innerHTML = htmlString(planSheetHtml(input));
+  // One sentence: which build, and what it fixes.
+  expect(host.querySelector("[data-plan-revision]")!.textContent).toBe("Revises build #12: fixes subtract(a, b) returns a minus b.");
+  const before = host.querySelector('[data-plan-group="before"]')!;
+  const rows = [...before.querySelectorAll("[data-plan-revision-changes] .approval-row")].map(row => row.textContent);
+  expect(rows).toEqual(["Networkwas the agent's provider, now open — any host", "Writeswas only its checkout, now anywhere"]);
+  expect(before.closest("details")).toBeNull();
+  expect(before.textContent).toContain("Each extra attempt asks you first.");
+});

@@ -490,6 +490,26 @@ describe("c1: approving from chat follows the chat apps the signed mode names", 
   const approveButtons = (h: ChatHarness) => h.cards(h.member(0)).filter(card => card.buttons.some(button => button.label === "Review plan" && button.token !== undefined));
   const approved = (id: string) => { const scope = store.getScope(id)!; return scope.approvedDigest === scope.digest; };
 
+  // The terms diet (Codex r2 finding f): no card carries a key or a folder on this computer, on any app. An ordinary plan
+  // whose summary names a read-denied home folder (never its own words) reaches each app as its link only.
+  test("an ordinary plan card that would name a folder on this computer stays in Toolroll on every app", async () => {
+    const harnesses = CHAT_PROVIDERS.map(provider => CHAT_HARNESSES[provider](world()));
+    for (const h of harnesses) await pair(h, "alex", h.member(0));
+    store.setProjectSandbox(REPO, { readDeny: ["~/.ssh"], machLookup: [] }, "alex", now);
+    planWaiting("plan-private", "Refuse over-limit payouts");
+    for (const h of harnesses) await h.pass();
+    for (const h of harnesses) {
+      const card = approveButtons(h).find(one => one.text.includes("Refuse over-limit payouts"))!;
+      h.tap(card, /^Review plan$/, h.member(0));
+      await h.pass();
+      const after = current(h, h.member(0), card.message);
+      expect(after.text, h.provider).toContain("name a key or a folder on this computer");
+      expect(after.buttons.map(one => one.label), h.provider).not.toContain("Approve & start");
+      for (const one of h.cards(h.member(0))) expect(one.text, h.provider).not.toContain("~/.ssh");
+    }
+    expect(approved("plan-private")).toBe(false);
+  });
+
   // Owner's decision (56922b51): approving from chat is on for a person with the authority, unless they turn it off; a
   // mode no longer narrows which paired apps may approve. What still holds: the person's own "off" refuses on every app,
   // under any mode (3003a96a), and a yes armed before it does nothing after it.

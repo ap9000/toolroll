@@ -75,7 +75,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot }: StepRe
   const terms = scope === null || approved ? null : (() => {
     const summary = approvalSummaryOf(scope, summaryContextOf(store, current.id, scope, now));
     return { key: summary.key, revision: summary.revision,
-      rows: [...summary.decisions, ...(summary.why === null ? [] : [{ label: "Why model", words: summary.why }]), ...summary.differs].map(one => ({ label: one.label, words: one.words, lines: "lines" in one ? [...(one.lines ?? [])] : [] })),
+      rows: [...summary.revisionChanges, ...summary.decisions, ...(summary.why === null ? [] : [{ label: "Why model", words: summary.why }]), ...summary.differs].map(one => ({ label: one.label, words: one.words, lines: "lines" in one ? [...(one.lines ?? [])] : [] })),
       warnings: summary.warnings.map(one => one.words), usualLabel: summary.usualLabel, usual: summary.usual.map(one => ({ label: one.label, words: one.words })) };
   })();
   const cards: StepCard[] | null = rows === null ? null : rows.map(row => ({

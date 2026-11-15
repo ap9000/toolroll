@@ -377,7 +377,7 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
   return [
     `Plan ready: ${title(store, taskId)}`,
     ...(changed === null ? [] : [changed]),
-    ...(summary.revision === null ? [] : [summary.revision]),
+    ...(summary.revision === null ? [] : [summary.revision, ...summary.revisionChanges.map(one => `${one.label}: ${one.words}`)]),
     // Risks first, whole: never cut.
     ...summary.warnings.map(one => one.words),
     "",
@@ -398,6 +398,14 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
 /** The acts a card about this target can take in chat right now, or null when none can (the card keeps its own
  * link). Reads only; nothing is minted. */
 export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): DecideOffer | null {
+  const offer = decideOfferUnchecked(store, target, who, now, channel, root);
+  // A card's own words never carry a key or a folder on this computer (Codex r2 finding f): its link to Toolroll only.
+  if (offer === null || offer.text === null || !privateWords(offer.text)) return offer;
+  const link = decideFallbackLink(target);
+  return { text: `${title(store, target.taskId)}\n\n${PRIVATE_CARD}`, rows: link === null ? [] : [[link]] };
+}
+
+function decideOfferUnchecked(store: Store, target: DecideTarget, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): DecideOffer | null {
   const ref = store.lookupRef(target.taskId);
   if (ref === null || ref.repo === null || !who.repos.includes(ref.repo)) return null;
   switch (target.kind) {
@@ -749,8 +757,19 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
     const why = `This doesn't fit in one ${CHANNEL_NAMES[seat.channel]} message, so you approve it in Toolroll. Nothing was done.`;
     return { text: `${cardBody(input.shown).slice(0, 1_000)}\n\n${why}`, rows: target === null ? [] : linksFor(target), tokens: [] };
   };
-  return { ...outcome, ...(outcome.edit === undefined ? {} : { edit: fitted(outcome.edit) }), ...(outcome.unsent === undefined ? {} : { unsent: fitted(outcome.unsent) }) };
+  // And no card carries a key or a folder on this computer, whatever kind it is (Codex r2 finding f): the words, its
+  // buttons and all, stay in Toolroll, and the card says so with its link. The last gate before any chat app sends it.
+  const gated = (card: Card): Card => {
+    if (!privateWords(card.text)) return fitted(card);
+    dropDecideTokens(store, card.tokens, input.now);
+    const target = decideTargetOfToken(store, input.token);
+    return { text: `${target === null ? "" : `${title(store, target.taskId)}\n\n`}${PRIVATE_CARD} Nothing was done.`, rows: target === null ? [] : linksFor(target), tokens: [] };
+  };
+  return { ...outcome, ...(outcome.edit === undefined ? {} : { edit: gated(outcome.edit) }), ...(outcome.unsent === undefined ? {} : { unsent: gated(outcome.unsent) }) };
 }
+
+/** What a card says instead of words that name a key or a folder on this computer. */
+const PRIVATE_CARD = "Its words name a key or a folder on this computer, so you review it in Toolroll.";
 
 /** Whether a card's whole text fits one message of this chat app as the app draws it (its own escaping counted). */
 export function fitsOneMessage(text: string, channel: DecideChannel): boolean {
@@ -878,7 +897,7 @@ function decideTapUnchecked(store: Store, seat: DecideSeat, input: { token: stri
       const text = `${plan.whole ? `${name}\n\n${wholeTermsText(store, row.taskId, plan.scope, now)}` : planCardText(store, row.taskId, plan.scope, input.root, seat.channel)}\n\n${QUESTIONS.approve(name)} This approves exactly this plan.`;
       if (!fitsOneMessage(text, seat.channel) || (plan.whole && !shownAsWritten(text, seat.channel))) return stale(`This plan's ${TOO_LONG}, so you approve it in Toolroll.`);
       // Words shown whole are shown raw: a key or a folder on this computer anywhere in the card keeps it in Toolroll.
-      if (plan.whole && privateWords(text)) return stale("Its terms name a key or a folder on this computer, so you review it in Toolroll.");
+      if (privateWords(text)) return stale("Its terms name a key or a folder on this computer, so you review it in Toolroll.");
       return { ack: "Read the plan, then approve.", edit: { text,
         rows: [[{ label: DECIDE_LABELS.approve, token: yes }], [{ label: DECIDE_LABELS.edit, link: { label: DECIDE_LABELS.edit, path: chatControlHref("approval", row.taskId) } }, { label: DECIDE_LABELS["not-now"], token: later }]], tokens: [yes, later] } };
     }

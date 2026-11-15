@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover, canonicalChainJson, LIVE_CHAIN_VERSION, propose, type Scope } from "./scope.js";
+import { addApprover, canonicalChainJson, LIVE_CHAIN_VERSION, liveChainFromJson, propose, type Scope } from "./scope.js";
 import { runOperate } from "./operate.js";
 import { approvalSummaryFor, approvalSummaryOf, boundFieldsOf, describeScope, limitChanges, revisionWords, summaryContextOf, summaryFields, summaryLines, summaryText, type SummaryContext } from "./approval-summary.js";
 import { approvalFormDigest, approvalSheetParts, revisionLineageWords, type ApprovalSheetInput } from "./server/render-tasks.js";
@@ -198,10 +198,16 @@ describe("exact consent", () => {
     const wide = { ...base, network: { version: 1, mode: "open", hosts: [], loopback: "any" }, writes: "anywhere", checkAccess: "unsandboxed", machLookup: ["com.apple.trustd.agent"], timeoutSeconds: 7200 } as typeof base;
     const chained = { ...scope, proposedChainJson: canonicalChainJson([{ profile: base, authMode: "subscription" }, { profile: wide, authMode: "api-key" }], LIVE_CHAIN_VERSION) } as Scope;
     const text = summaryLines(approvalSummaryOf(chained, contextOf(scope))).join("\n");
-    expect(text).toContain("Fallback 2 differs from the first: network: open — any host, and every local service on this Mac; writes: anywhere outside Toolroll's fenced folders");
+    expect(text).toContain("Fallback 2 differs from the first: network: open — any host, and every local service on this Mac (the first: the agent's provider)");
+    expect(text).toContain("writes: anywhere outside Toolroll's fenced folders");
     expect(text).toContain("project checks: not sandboxed");
     expect(text).toContain("macOS services: also reaches these macOS services: com.apple.trustd.agent");
     expect(text).toContain("time limit: stops after 1000 turns or 120 min without progress");
+    // Compared raw, never through rounded words: one second more reads as the same "20 min", so the values are said.
+    const closer = { ...base, timeoutSeconds: base.timeoutSeconds + 1 } as typeof base;
+    expect(Math.round(closer.timeoutSeconds / 60)).toBe(Math.round(base.timeoutSeconds / 60));
+    const near = { ...scope, proposedChainJson: canonicalChainJson([{ profile: base, authMode: "subscription" }, { profile: closer, authMode: "subscription" }], LIVE_CHAIN_VERSION) } as Scope;
+    expect(summaryLines(approvalSummaryOf(near, contextOf(scope))).join("\n")).toContain(`Fallback 2 differs from the first: time limit: timeoutSeconds ${base.timeoutSeconds + 1} (the first: timeoutSeconds ${base.timeoutSeconds})`);
     // Said in the open, never in the usual settings' line.
     expect(text.split("\n").find(line => line.startsWith("  Usual"))).not.toMatch(/Fallback|not sandboxed/);
   });
@@ -243,15 +249,53 @@ describe("exact consent", () => {
     expect(approvalSummaryOf(scope, contextOf(scope)).key).not.toBe(before);
   });
 
-  test("a revision says exactly which limits changed from the build it revises, every effective one compared", () => {
+  // One case per effective limit, compared raw (Codex r2 findings 6 and 7): never through field labels or rounded words.
+  test("a revision says exactly which limits changed from the build it revises: every effective limit, on its raw value", () => {
     const source = file("t-source");
+    const p = source.profile!;
+    const changed = (next: Partial<Scope> & { profile?: typeof p }) => limitChanges(source, { ...source, ...next } as Scope);
+    const as = (profile: Partial<typeof p>) => ({ profile: { ...p, ...profile } as typeof p });
+    expect(limitChanges(source, source)).toEqual([]);
+    const cases: [string, Partial<Scope> & { profile?: typeof p }, { label: string; now: RegExp }][] = [
+      ["network", as({ network: { ...p.network!, hosts: [...p.network!.hosts, "api.stripe.com"] } }), { label: "network", now: /api\.stripe\.com/ }],
+      ["writes", as({ writes: "anywhere" }), { label: "writes", now: /^anywhere outside/ }],
+      ["read denies", as({ readDeny: ["~/.ssh"] }), { label: "reads", now: /except ~\/\.ssh/ }],
+      ["services", as({ machLookup: ["com.apple.trustd.agent"] }), { label: "macOS services", now: /com\.apple\.trustd\.agent/ }],
+      ["runtime", as({ timeoutSeconds: 7200 }), { label: "time limit", now: /120 min/ }],
+      ["repair", as({ repairModel: "opus" }), { label: "fixes", now: /^on opus/ }],
+      ["budget", { budgetMicrousd: 3_000_000 }, { label: "cost", now: /\$3\.00/ }],
+      ["checks level", { qualityMode: "strict" }, { label: "checks level", now: /Strict/ }],
+      ["check access", as({ checkAccess: "unsandboxed" }), { label: "project checks", now: /^not sandboxed$/ }],
+      ["tools", as({ permissionArgv: "bypassPermissions" } as Partial<typeof p>), { label: "tools", now: /full access/ }],
+    ];
+    for (const [name, next, want] of cases) {
+      const got = changed(next);
+      expect(got.map(one => one.label), name).toEqual([want.label]);
+      expect(got[0]!.now, name).toMatch(want.now);
+      expect(got[0]!.was, name).not.toBe(got[0]!.now);
+    }
+    // The exact boundary: 1200 and 1201 seconds read alike in words, so the exact values are said.
+    const at1200 = { ...source, profile: { ...p, timeoutSeconds: 1200 } } as Scope;
+    expect(limitChanges(at1200, { ...source, profile: { ...p, timeoutSeconds: 1201 } } as Scope)).toEqual([{ label: "time limit", was: "timeoutSeconds 1200", now: "timeoutSeconds 1201" }]);
+    // Each fallback entry's own effective profile, by its place: widened, added, or gone.
+    const chain = (second: typeof p | null) => ({ proposedChainJson: second === null ? null : canonicalChainJson([{ profile: p, authMode: "subscription" }, { profile: second, authMode: "subscription" }], LIVE_CHAIN_VERSION) });
+    const second = { ...p, model: "haiku" } as typeof p;
+    const withChain = { ...source, ...chain(second) } as Scope;
+    expect(liveChainFromJson(withChain.proposedChainJson ?? null)).not.toBeNull();
+    expect(limitChanges(withChain, withChain)).toEqual([]);
+    const widened = limitChanges(withChain, { ...source, ...chain({ ...second, writes: "anywhere", network: { version: 1, mode: "open", hosts: [], loopback: "proxy-only" } } as typeof p) } as Scope);
+    expect(widened.map(one => one.label)).toEqual(["fallback 2 network", "fallback 2 writes"]);
+    expect(widened[1]!.now).toMatch(/^anywhere outside/);
+    const fewer = limitChanges(withChain, source);
+    expect(fewer).toHaveLength(1);
+    expect(fewer[0]).toMatchObject({ label: "fallback 2", now: "none" });
+    // Said as one sentence and one row per limit: "Writes: was …, now …".
     store.setProjectWrites(REPO, "anywhere", "alex", at);
     const child = file("t-child");
-    expect(limitChanges(source, source)).toEqual([]);
-    expect(limitChanges(source, child)).toEqual(["writes: anywhere outside Toolroll's fenced folders (an approver's choice)"]);
-    const words = revisionWords({ sourceTask: "t-source", sourceRun: 9, hadPlan: true, changed: limitChanges(source, child), problem: null, repair: null });
-    expect(words).toBe("This revises build #9. Changed from that build: writes: anywhere outside Toolroll's fenced folders (an approver's choice).");
-    expect(words).not.toContain("keeps the same limits");
+    const facts = { sourceTask: "t-source", sourceRun: 9, hadPlan: true, changed: limitChanges(source, child), problem: null, repair: null };
+    expect(revisionWords(facts)).toBe("This revises build #9. One limit changes from that build: writes.");
+    expect(summaryLines(approvalSummaryOf(child, { ...contextOf(child), revision: facts })).join("\n"))
+      .toContain("  Changed      writes: was only its checkout, its caches and its temp folder, now anywhere outside Toolroll's fenced folders (an approver's choice)");
   });
 
   test("a scripted CLI yes without --terms approves nothing, and says the terms and the key to run it with", async () => {

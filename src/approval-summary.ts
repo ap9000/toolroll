@@ -41,6 +41,9 @@ export type SummaryNote = { words: string; fields: BoundField[] };
 export type ApprovalSummary = {
   /** One plain sentence for a revision ("This revises build #9. It keeps the same limits. …"), or null. */
   revision: string | null;
+  /** A revision's sentences apart (its lead, then notes), and each limit it changes from that build as a row. */
+  revisionNotes: string[];
+  revisionChanges: SummaryRow[];
   /** The decisions, always shown. */
   decisions: SummaryRow[];
   /** Why an earned rule chose this model ("so far" counts: explanation, not a term, and so outside `key`), or null. */
@@ -64,10 +67,11 @@ export type RevisionFacts = {
   sourceTask: string;
   sourceRun: number | null;
   hadPlan: boolean;
-  /** What changed from the source's limits, each in plain words ("writes: anywhere …"); [] when nothing did; null when
-   * the source's terms can't be read. Every effective limit is compared: checks level, budget, exclusions, paths,
-   * network, tools, writes, reads, project checks, macOS services, time and fix limits. */
-  changed: string[] | null;
+  /** What changed from the source's limits, each with what it was and is ("writes: was …, now …"); [] when nothing did;
+   * null when the source's terms can't be read. Every effective limit is compared on its raw value: checks level,
+   * budget, exclusions, paths, network, tools, writes, reads, project checks, macOS services, time and fix limits, and
+   * each fallback entry's own. */
+  changed: LimitChange[] | null;
   problem: string | null;
   repair: { cap: number | null; remaining: number | null } | null;
 };
@@ -161,45 +165,77 @@ function releaseAuthorityWords(release: { repo: string; branch: string; base: st
   return `Repository ${release.repo}, branch ${release.branch} into ${release.base}, check grant ${release.grant.id}, ${release.access === "sandboxed" ? "checks in the sandbox" : `checks outside the sandbox (${release.access})`}.`;
 }
 
-/** Every access and limit a profile has, in plain words, by name: what a fallback is compared on. */
-function accessWords(profile: ExecutionProfile): [string, string][] {
-  const terms = sandboxTermsWords(profile);
-  return [
-    ["network", lowerFirst(networkWords(profile.network ?? null, profile.provider).replace(/^Network: /, ""))],
-    ["tools", permissionPlainWords(profile) ?? "not known"],
-    ["writes", writesWords(profile.writes)],
-    ["reads", terms.reads],
-    ["project checks", checkAccessWords(profile.checkAccess ?? "sandboxed")],
-    ["macOS services", terms.mach ?? "none beyond the sandbox's"],
-    ["time limit", limitWords(profile)],
-    ["fixes", fixWords(profile)],
-  ];
+/** Every access and limit a profile has, by name: the raw fields it is compared on, and its plain words. Comparisons
+ * read the raw values, never the words (words round: 1200 and 1201 seconds both read "20 min"). */
+type AccessGroup = { name: string; fields: readonly string[]; words: (profile: ExecutionProfile) => string };
+const ACCESS_GROUPS: readonly AccessGroup[] = [
+  { name: "network", fields: ["network"], words: profile => lowerFirst(networkWords(profile.network ?? null, profile.provider).replace(/^Network: /, "")) },
+  { name: "tools", fields: PERMISSION_KEYS, words: profile => permissionPlainWords(profile) ?? "not known" },
+  { name: "writes", fields: ["writes"], words: profile => writesWords(profile.writes) },
+  { name: "reads", fields: ["fencePolicy", "readDeny"], words: profile => sandboxTermsWords(profile).reads },
+  { name: "project checks", fields: ["checkAccess"], words: profile => checkAccessWords(profile.checkAccess ?? "sandboxed") },
+  { name: "macOS services", fields: ["machLookup"], words: profile => sandboxTermsWords(profile).mach ?? "none beyond the sandbox's" },
+  { name: "time limit", fields: ["maxTurns", "timeoutSeconds", "timeoutKind", "idleTimeoutSeconds"], words: limitWords },
+  { name: "fixes", fields: ["repairModel", "repairMaxTurns", "repairTimeoutSeconds", "repairIdleTimeoutSeconds"], words: fixWords },
+];
+
+/** A limit that differs between two readings: its name, and what it was and is, in words — or, where the words would
+ * read alike (rounding), the exact values of each field that differs. */
+export type LimitChange = { label: string; was: string; now: string };
+
+const rawOf = (value: unknown): string => value === undefined ? "none" : typeof value === "string" ? value : JSON.stringify(value);
+/** The change between two values compared raw: null when equal; else words, or the exact values when the words match. */
+function changeOf(label: string, was: Record<string, unknown>, now: Record<string, unknown>, fields: readonly string[], words: (one: Record<string, unknown>) => string): LimitChange | null {
+  const differing = fields.filter(field => JSON.stringify(was[field] ?? null) !== JSON.stringify(now[field] ?? null));
+  if (differing.length === 0) return null;
+  const before = words(was), after = words(now);
+  if (before !== after) return { label, was: before, now: after };
+  return { label, was: differing.map(field => `${field} ${rawOf(was[field])}`).join(", "), now: differing.map(field => `${field} ${rawOf(now[field])}`).join(", ") };
 }
 
-/** Each fallback's access and limits that differ from the first agent's, said exactly. */
-function fallbackDifferences(scope: Scope): string[] {
-  const chain = liveChainFromJson(scope.proposedChainJson ?? null);
-  if (chain === null) return [];
-  const base = new Map(accessWords(chain[0]!.profile));
-  return chain.slice(1).map((entry, at) => {
-    const differs = accessWords(entry.profile).filter(([name, words]) => base.get(name) !== words);
-    return differs.length === 0 ? `Fallback ${at + 2} has the same access and limits as the first.`
-      : `Fallback ${at + 2} differs from the first: ${differs.map(([name, words]) => `${name}: ${words}`).join("; ")}.`;
+/** Every access and limit of `next` that differs from `before`'s, compared raw. */
+function profileChanges(before: ExecutionProfile, next: ExecutionProfile, prefix = ""): LimitChange[] {
+  return ACCESS_GROUPS.flatMap(group => {
+    const change = changeOf(`${prefix}${group.name}`, before as Record<string, unknown>, next as Record<string, unknown>, group.fields, one => group.words(one as ExecutionProfile));
+    return change === null ? [] : [change];
   });
 }
 
-/** The revision's one sentence. */
-export function revisionWords(facts: RevisionFacts): string {
-  const parts = [facts.sourceRun === null ? `This revises ${facts.sourceTask}.` : `This revises build #${facts.sourceRun}.`];
-  if (!facts.hadPlan) parts.push("The earlier version had no plan, so nothing was copied.");
-  else if (facts.changed !== null && facts.changed.length === 0) parts.push("It keeps the same limits.");
-  else if (facts.changed !== null) parts.push(`Changed from that build: ${facts.changed.join("; ")}.`);
+/** Each fallback's access and limits that differ from the first agent's, compared raw and said exactly. */
+function fallbackDifferences(scope: Scope): string[] {
+  const chain = liveChainFromJson(scope.proposedChainJson ?? null);
+  if (chain === null) return [];
+  return chain.slice(1).map((entry, at) => {
+    const differs = profileChanges(chain[0]!.profile, entry.profile);
+    return differs.length === 0 ? `Fallback ${at + 2} has the same access and limits as the first.`
+      : `Fallback ${at + 2} differs from the first: ${differs.map(one => `${one.label}: ${one.now} (the first: ${one.was})`).join("; ")}.`;
+  });
+}
+
+/** The revision's sentences: which build it revises, then (as notes) whether anything was copied, whether its limits
+ * changed, and what an extra attempt needs. Each changed limit is its own row (`revisionChanges`). */
+export function revisionParts(facts: RevisionFacts): { lead: string; notes: string[] } {
+  const notes: string[] = [];
+  if (!facts.hadPlan) notes.push("The earlier version had no plan, so nothing was copied.");
+  else if (facts.changed !== null && facts.changed.length === 0) notes.push("It keeps the same limits.");
+  else if (facts.changed !== null) notes.push(`${facts.changed.length === 1 ? "One limit changes" : `${facts.changed.length} limits change`} from that build: ${facts.changed.map(one => one.label).join(", ")}.`);
   if (facts.repair !== null && facts.problem === null) {
-    parts.push(facts.repair.cap !== null && (facts.repair.remaining ?? 0) > 0
+    notes.push(facts.repair.cap !== null && (facts.repair.remaining ?? 0) > 0
       ? `${plural(facts.repair.remaining!, "more attempt")} can run without asking you.`
       : "Each extra attempt asks you first.");
   }
-  return parts.join(" ");
+  return { lead: facts.sourceRun === null ? `This revises ${facts.sourceTask}.` : `This revises build #${facts.sourceRun}.`, notes };
+}
+
+/** The revision in one sentence run (the text surfaces). */
+export function revisionWords(facts: RevisionFacts): string {
+  const parts = revisionParts(facts);
+  return [parts.lead, ...parts.notes].join(" ");
+}
+
+/** Each limit a revision changes from the build it revises, as a row: "Network: was …, now …" (never folded). */
+export function revisionChangeRows(facts: RevisionFacts | null): SummaryRow[] {
+  return (facts?.changed ?? []).map(one => ({ label: `${one.label.charAt(0).toUpperCase()}${one.label.slice(1)}`, words: `was ${one.was}, now ${one.now}`, fields: [] }));
 }
 
 /**
@@ -295,14 +331,16 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
 
   // A revision.
   const revision = context.revision === null ? null : revisionWords(context.revision);
+  const revisionNotes = context.revision === null ? [] : revisionParts(context.revision).notes;
+  const revisionChanges = revisionChangeRows(context.revision);
   if (context.revision?.problem != null) warnings.push({ words: `Toolroll can’t check what this revises (${context.revision.problem}), so no fix runs on its own.`, fields: [] });
 
   const usualLabel = context.usual === null ? OTHER_LABEL : USUAL_LABEL;
   // The baseline the rows were compared with is bound too (its network included), so a change to it is a stale form even
   // where no row's words move.
-  const key = createHash("sha256").update(JSON.stringify({ v: 2, digest: scope.digest, revision, decisions, differs, warnings, usual, usualLabel, baseline: context.usual }), "utf8").digest("hex").slice(0, 32);
+  const key = createHash("sha256").update(JSON.stringify({ v: 2, digest: scope.digest, revision, revisionChanges, decisions, differs, warnings, usual, usualLabel, baseline: context.usual }), "utf8").digest("hex").slice(0, 32);
   const why = context.evidence == null || context.evidence === "" ? null : context.evidence.replace(/^Why this model: /, "");
-  return { revision, decisions, why, differs, warnings, usual, usualLabel, key };
+  return { revision, revisionNotes, revisionChanges, decisions, why, differs, warnings, usual, usualLabel, key };
 }
 
 /** Every bound field the summary states, in a row or a note. */
@@ -332,6 +370,7 @@ export function summaryLines(summary: ApprovalSummary): string[] {
   const row = (one: SummaryRow): string[] => [`${pad(one.label)}${one.words}`, ...(one.lines ?? []).map(line => `${indent}${line}`)];
   return [
     ...(summary.revision === null ? [] : [`${pad("Revision")}${summary.revision}`]),
+    ...summary.revisionChanges.map(one => `${pad("Changed")}${one.label.toLowerCase()}: ${one.words}`),
     ...summary.decisions.flatMap(row),
     ...(summary.why === null ? [] : [`${pad("Why model")}${summary.why}`]),
     ...summary.differs.flatMap(row),
@@ -343,7 +382,7 @@ export function summaryLines(summary: ApprovalSummary): string[] {
 /** The summary as plain text with no padding (a chat app's card). `omit` leaves out decisions the card says elsewhere. */
 export function summaryText(summary: ApprovalSummary, omit: (row: SummaryRow) => boolean = () => false): string {
   return [
-    ...(summary.revision === null ? [] : [summary.revision, ""]),
+    ...(summary.revision === null ? [] : [summary.revision, ...summary.revisionChanges.map(one => `${one.label}: ${one.words}`), ""]),
     ...summary.warnings.map(one => one.words),
     ...(summary.warnings.length === 0 ? [] : [""]),
     ...[...summary.decisions.filter(one => !omit(one)), ...(summary.why === null ? [] : [{ label: "Why model", words: summary.why }]), ...summary.differs].flatMap((one: Pick<SummaryRow, "label" | "words" | "lines">) => [`${one.label}: ${one.words}`, ...(one.lines ?? []).map(line => `  ${line}`)]),
@@ -384,18 +423,27 @@ export function usualSettingsOf(store: Store, repo: string | null, scope: Pick<S
   return resolved.ok ? { profile: resolved.profile, qualityMode } : null;
 }
 
-/** Every effective limit of `next` that differs from `before`'s, in plain words with its new value. */
-export function limitChanges(before: Scope, next: Scope): string[] {
-  const out: string[] = [];
-  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-  if ((before.qualityMode ?? "default") !== (next.qualityMode ?? "default")) out.push(`checks level: ${qualityModeTitle(next.qualityMode ?? "default")}`);
-  if (before.budgetMicrousd !== next.budgetMicrousd) out.push(`cost: ${next.budgetMicrousd === null ? "no cap" : `up to ${money(next.budgetMicrousd)} per attempt`}`);
-  if ((before.outOfScope ?? null) !== (next.outOfScope ?? null)) out.push(`won’t touch: ${next.outOfScope ?? "nothing ruled out"}`);
-  if (!same([...before.touches].sort(), [...next.touches].sort())) out.push(`files: ${next.touches.length === 0 ? "any file" : `only ${next.touches.join(", ")}`}`);
-  const was = before.profile ?? null, now = next.profile ?? null;
-  if (was === null || now === null) { if (was !== now) out.push("agent setup"); return out; }
-  const wasWords = new Map(accessWords(was));
-  for (const [name, words] of accessWords(now)) if (wasWords.get(name) !== words) out.push(`${name}: ${words}`);
+/** Every effective limit of `next` that differs from `before`'s, compared raw (never through rounded words). */
+export function limitChanges(before: Scope, next: Scope): LimitChange[] {
+  const out: LimitChange[] = [];
+  const scopeOf = (one: Scope): Record<string, unknown> => ({ qualityMode: one.qualityMode ?? "default", budgetMicrousd: one.budgetMicrousd, outOfScope: one.outOfScope ?? null, touches: [...one.touches].sort() });
+  const was = scopeOf(before), now = scopeOf(next);
+  const push = (change: LimitChange | null): void => { if (change !== null) out.push(change); };
+  push(changeOf("checks level", was, now, ["qualityMode"], one => qualityModeTitle(one["qualityMode"] as QualityMode)));
+  push(changeOf("cost", was, now, ["budgetMicrousd"], one => one["budgetMicrousd"] === null ? "no cap" : `up to ${money(one["budgetMicrousd"] as number)} per attempt`));
+  push(changeOf("won’t touch", was, now, ["outOfScope"], one => (one["outOfScope"] as string | null) ?? "nothing ruled out"));
+  push(changeOf("files", was, now, ["touches"], one => (one["touches"] as string[]).length === 0 ? "any file" : `only ${(one["touches"] as string[]).join(", ")}`));
+  const wasProfile = before.profile ?? null, nowProfile = next.profile ?? null;
+  if (wasProfile === null || nowProfile === null) { if (wasProfile !== nowProfile) out.push({ label: "agent setup", was: wasProfile === null ? "none" : "set", now: nowProfile === null ? "none" : "set" }); }
+  else out.push(...profileChanges(wasProfile, nowProfile));
+  // Each fallback entry's own effective profile, by place in the chain: an entry added or gone is a change too.
+  const wasChain = liveChainFromJson(before.proposedChainJson ?? null) ?? [], nowChain = liveChainFromJson(next.proposedChainJson ?? null) ?? [];
+  for (let at = 1; at < Math.max(wasChain.length, nowChain.length); at++) {
+    const one = wasChain[at], two = nowChain[at];
+    const name = (entry: typeof one): string => entry === undefined ? "none" : `${agentModelName(entry.profile.provider, entry.profile.model)}${entry.authMode === "api-key" ? " on an API key" : ""}`;
+    if (one === undefined || two === undefined || name(one) !== name(two)) { out.push({ label: `fallback ${at + 1}`, was: name(one), now: name(two) }); continue; }
+    out.push(...profileChanges(one.profile, two.profile, `fallback ${at + 1} `));
+  }
   return out;
 }
 

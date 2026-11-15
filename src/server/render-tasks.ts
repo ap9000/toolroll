@@ -505,6 +505,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     : row(one.label, html`<p>${one.words}</p>${(one.lines ?? []).length === 0 ? "" : html`<ul>${one.lines!.map(line => html`<li>${line}</li>`)}</ul>`}`);
   const rows = joinHtml([
       summary.revision === null ? "" : html`<p class="approval-revision-plain" data-terms-revision>${summary.revision}</p>`,
+      summary.revisionChanges.length === 0 ? "" : html`<dl class="approval-rows" data-terms-revision-changes>${summary.revisionChanges.map(termRow)}</dl>`,
       summaryWarningsHtml(summary),
       html`<dl class="approval-rows" data-terms-summary>`,
       ...summary.decisions.filter(one => !one.fields.includes("releaseTerms") && !one.fields.includes("releaseCheck")).map(one => one.label === "Goal" ? row("Goal", html`<p class="approval-goal">${one.words}</p>`) : termRow(one)),
@@ -539,7 +540,9 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const reportNote = input.deliverable === "report" ? html`<p class="approval-note">Read-only: it reports back and changes nothing in the repository.</p>` : "";
   // A revision leads with what changed, in one line: which build it revises, what it fixes, whether its limits moved,
   // and what an extra attempt needs (the summary's own sentence, approval-summary.ts revisionWords).
-  const revisionTail = summary.revision === null ? "" : summary.revision.replace(/^This revises [^.]+\.\s*/, "");
+  // The lead is one sentence: which build, and what it fixes. What else it says (its limits, what an extra attempt needs)
+  // and each limit it changes are said under Before you approve, never folded.
+  const revisionTail = "";
   const fixes = (text: string): string => /^[A-Z][a-z]/.test(text) ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text;
   const revisionLead = ((): string | null => {
     const tail = revisionTail === "" ? "" : ` ${revisionTail}`;
@@ -554,7 +557,7 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
       if (back !== null) return `Revises ${back[1]}.${tail}`;
       return `${sentence}${tail}`;
     }
-    return summary.revision === null ? null : summary.revision.replace(/^This revises/, "Revises");
+    return summary.revision === null ? null : summary.revision.replace(/^This revises ([^.]+\.).*$/s, "Revises $1");
   })();
   const revising = revisionLead !== null;
   // The signed goal, every word: the part a person wrote, then a machine-drafted repair's brief on its own line with
@@ -572,9 +575,11 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const leadHtml = joinHtml([
     html`<p class="${sheetLead.length > 180 ? "plan-sheet-lead plan-sheet-lead-long" : "plan-sheet-lead"}">${sheetLead}</p>`,
     approachRest === "" ? "" : html`<p class="plan-sheet-text">${approachRest}</p>`,
-    // An older plan that doesn't parse keeps its text, as written.
-    plan !== null && !plan.ok ? html`<pre class="recap plan-doc">${input.planDocument ?? ""}</pre>` : "",
   ]);
+  // A plan that can't be read as steps keeps its text, as written, in the open (a revision's Full plan fold never holds
+  // it: whatever it warns about must be seen before the yes).
+  const unparsedHtml = plan !== null && !plan.ok
+    ? html`<section class="plan-sheet-part" data-plan-unparsed><p class="plan-sheet-sub">This plan couldn’t be read as steps, so it is shown as written.</p><pre class="recap plan-doc">${input.planDocument ?? ""}</pre></section>` : html``;
   const stepsHtml = milestones.length === 0 ? html`` : part("Steps", html`<ol class="plan-sheet-steps">${milestones.map(one => html`<li><span>${one}</span></li>`)}</ol>`);
   // (b) Before you approve: every risk, every deviation and every risky access, said in the open (never folded).
   const riskyRows = [...summary.decisions.filter(one => one.risky === true && !one.fields.includes("releaseTerms") && !one.fields.includes("releaseCheck")), ...summary.differs];
@@ -582,6 +587,9 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
   const before = joinHtml([
     amendment,
     summaryWarningsHtml(summary),
+    // A revision: its notes, then each limit it changes from that build ("Network: was …, now …").
+    ...summary.revisionNotes.filter(one => summary.revisionChanges.length === 0 || !/ from that build: /.test(one)).map(one => html`<p data-plan-revision-note>${one}</p>`),
+    summary.revisionChanges.length === 0 ? "" : html`<dl class="approval-rows" data-plan-revision-changes>${summary.revisionChanges.map(termRow)}</dl>`,
     ...warnings.map(one => html`<p class="plan-sheet-warn" data-plan-warning>${one.charAt(0).toUpperCase()}${one.slice(1)}.</p>`),
     riskyRows.length === 0 ? "" : html`<dl class="approval-rows" data-terms-risky>${riskyRows.map(termRow)}</dl>`,
     (parsedPlan?.risks.length ?? 0) === 0 ? "" : html`<ul class="plan-sheet-list">${parsedPlan!.risks.map(one => html`<li>${one}</li>`)}</ul>`,
@@ -600,12 +608,13 @@ export function approvalSheetParts(input: ApprovalSheetInput): { lead: Html; row
     html`<section class="plan-group" data-plan-group="plan">`,
     revisionLead === null ? "" : html`<p class="approval-revision plan-sheet-revision" data-plan-revision>${revisionLead}</p>`,
     revising ? "" : leadHtml,
+    unparsedHtml,
     part("Goal", goalBody),
     comments === "" ? "" : part("Asked for changes", comments),
     releaseBody === "" ? "" : part("Release", releaseBody, html` data-plan-release`),
     revising ? "" : stepsHtml,
     part("Done when", doneWhenSheet),
-    revising && (!isEmptyHtml(leadHtml) || !isEmptyHtml(stepsHtml))
+    revising && parsedPlan !== null && (!isEmptyHtml(leadHtml) || !isEmptyHtml(stepsHtml))
       ? html`<details class="plan-sheet-full" data-plan-full><summary>Full plan</summary>${leadHtml}${stepsHtml}</details>` : "",
     html`</section>`,
     isEmptyHtml(before) ? "" : html`<section class="plan-group plan-group-before" data-plan-group="before"><h3 class="plan-sheet-h">Before you approve</h3><div class="plan-notice">${before}</div></section>`,

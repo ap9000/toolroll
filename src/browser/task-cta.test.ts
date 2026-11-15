@@ -206,7 +206,7 @@ test("while the plan is being edited nothing approves: no Approve, no dock, unti
   const editor = host.querySelector<HTMLDetailsElement>("#plan-editor")!;
   act(() => { editor.open = true; editor.dispatchEvent(new Event("toggle")); });
   expect(approves()).toHaveLength(0);
-  expect(host.textContent).toContain("You’re editing the plan.");
+  expect(host.textContent).toContain("You have unsaved changes to the plan.");
   expect(submitted).toEqual([]);
   act(() => { editor.open = false; editor.dispatchEvent(new Event("toggle")); });
   expect(approves().length).toBeGreaterThan(0);
@@ -398,4 +398,21 @@ test("what a person decides sits in the step that waits, on the page: open quest
   // A task with no road keeps them on the page all the same: never dropped.
   show(viewOf(cardOf("Needs you", null), { lead: [questions, pending] }), "no-road");
   expect(host.querySelectorAll("#task-questions form, #plan-revisions form")).toHaveLength(2);
+});
+
+test("an unsaved change in the plan's own text editor takes Approve away, with why, until it is saved or undone", () => {
+  const sheet = '<article data-plan-sheet><p id="plan-words">Goal</p></article>';
+  const planText = '<details id="plan-edit" open><summary>Edit plan</summary><form><textarea name="plan-document">Steps as drafted</textarea></form></details>';
+  const view = waiting({ ...approveOf({ passwordless: true, remembered: false }), sheetHtml: sheet, editorHtml: "", planHtml: sheet });
+  show({ ...view, plan: { lead: "Add subtract.", by: null, at: null, planning: false, key: "editor", html: planText } });
+  const buttons = () => [...host.querySelectorAll<HTMLButtonElement>("[data-task-approval] .k-slot-acts button")].map(one => one.textContent);
+  expect(buttons()).toContain("Approve and start");
+  const text = host.querySelector<HTMLTextAreaElement>('#plan-edit textarea[name="plan-document"]')!;
+  act(() => { text.value = "Steps as drafted, and one more"; text.dispatchEvent(new Event("input", { bubbles: true })); });
+  expect(buttons()).not.toContain("Approve and start");
+  expect(buttons()).toContain("Back to the edit");
+  expect(host.querySelector("[data-task-approval] .k-slot-terms")!.textContent).toContain("You have unsaved changes to the plan.");
+  // Undone: Approve is back.
+  act(() => { text.value = "Steps as drafted"; text.dispatchEvent(new Event("input", { bubbles: true })); });
+  expect(buttons()).toContain("Approve and start");
 });
