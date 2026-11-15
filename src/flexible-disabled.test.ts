@@ -25,6 +25,8 @@ import { ackFlexibleAnswer, cancelFlexibleAnswer, decideFlexibleAnswer, decideFl
   recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer, streamAnswerSender, type FlexibleAnswerCatalog } from "./flexible-answers.js";
 import { PassThrough } from "node:stream";
 import * as upstreams from "./flexible-relay-upstreams.js";
+import { flexibleTaskBranch, importFlexibleCandidate, readFlexibleCandidate, removeFlexibleImportRefs } from "./flexible-import.js";
+import { completeAndMergeFlexible, flexibleShipsOf, flexibleShipTerms, mergeArmedFlexible, removeFlexibleImport, sendBackFlexible, sendFlexibleForChecks } from "./flexible-ship.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
 const NOW = new Date();
@@ -168,6 +170,37 @@ describe("switched off", () => {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'flexible answer'").get()!["n"]).toBe(0);
   });
 
+  test("Ship (F4): no import, no terms, no send, no merge, no send back and no removal; nothing written, no ref moved", async () => {
+    const refused = { ok: false, reason: "not-available", message: FLEXIBLE_UNAVAILABLE };
+    store.upsertProject(repo, "shop", NOW);
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--allow-empty", "-qm", "first"], { cwd: repo });
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    // A thread and a sent send planted as if a later build had made them: still nothing moves.
+    const id = "a".repeat(32), ship = "b".repeat(32);
+    store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'alex', ?, 'ready')`)
+      .run(id, repo, sha, `refs/toolroll/threads/${id}/base`, join(dir, "threads", id), NOW.toISOString());
+    store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, state, state_at)
+      VALUES (?, ?, 1, ?, ?, ?, ?, ?, '{}', ?, ?, 'alex', 1, 'password-now', ?, 'approved', ?)`).run(ship, id, repo, sha, sha, `refs/toolroll/import/${id}/1`, `toolroll/code-${id}`, ship, "c".repeat(32), NOW.toISOString(), NOW.toISOString());
+    const refs = () => execFileSync("git", ["for-each-ref"], { cwd: repo, encoding: "utf8" });
+    const ships = () => store.handle.prepare("SELECT * FROM flexible_ship").all().map(row => ({ ...row }));
+    const [refsBefore, shipsBefore] = [refs(), ships()];
+    const by = { name: "alex", generation: store.accountOf("alex")!.generation };
+    expect(await readFlexibleCandidate(store, { thread: id })).toEqual(refused);
+    expect(await importFlexibleCandidate(store, { thread: id, seq: 1, expected: sha, branchBefore: null, by: "alex", now: NOW })).toEqual(refused);
+    expect(await removeFlexibleImportRefs(store, { thread: id, seq: 1, candidate: sha, branchBefore: null })).toEqual(refused);
+    expect(await flexibleTaskBranch(store, { thread: id, branch: `toolroll/flexible-${ship}`, at: sha, make: true })).toBe(false);
+    expect(await flexibleShipTerms(store, { thread: id, by: "alex" })).toEqual(refused);
+    expect(await sendFlexibleForChecks(store, { thread: id, by: "alex", token: tokens["alex"]!, shownDigest: ship, shownKey: ship, now: NOW })).toEqual(refused);
+    expect(flexibleShipsOf(store, id)).toEqual(refused);
+    expect(await completeAndMergeFlexible(store, { taskId: `flexible-${ship}`, runId: 1, digest: "d".repeat(64), head: sha, by: "alex", token: tokens["alex"]!, root: join(dir, "evidence"), now: NOW })).toEqual(refused);
+    expect(await mergeArmedFlexible(store, { taskId: `flexible-${ship}` })).toEqual(refused);
+    expect(sendBackFlexible(store, { taskId: `flexible-${ship}`, by, feedback: "again", now: NOW })).toEqual(refused);
+    expect(await removeFlexibleImport(store, { ship, by, now: NOW })).toEqual(refused);
+    expect(refs()).toBe(refsBefore);
+    expect(ships()).toEqual(shipsBefore);
+    expect(existsSync(join(dir, "threads"))).toBe(false);
+  });
+
   test.each([["show"], ["enable"], ["lower"], ["off"]])("the CLI refuses project flexible %s", async action => {
     const lines: string[] = [];
     const code = await runOperate("project", ["flexible", action, "--repo", repo, "--json", ...(action === "show" ? [] : ["--as", "alex", "--token", tokens["alex"]!]), ...(action === "lower" ? ["--max", "auto"] : [])],
@@ -226,7 +259,7 @@ describe("the switch can't become a runtime override", () => {
     const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
     const users = product.filter(one => code(one.text).includes("FLEXIBLE_AVAILABLE") && one.path !== join("src", "flexible-available.ts"));
     // server/engine-api.ts: the LiveSession's thread road refuses before anything is looked up while it is false.
-    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "flexible-turns.ts"), join("src", "flexible-agents.ts"), join("src", "flexible-relay.ts"), join("src", "flexible-answers.ts"), join("src", "operate.ts"), join("src", "server", "engine-api.ts"), join("src", "server", "settings.ts")].sort());
+    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "flexible-turns.ts"), join("src", "flexible-agents.ts"), join("src", "flexible-relay.ts"), join("src", "flexible-answers.ts"), join("src", "flexible-import.ts"), join("src", "flexible-ship.ts"), join("src", "operate.ts"), join("src", "server", "engine-api.ts"), join("src", "server", "settings.ts")].sort());
     for (const one of users) {
       expect(one.text, one.path).toMatch(/import \{ FLEXIBLE_AVAILABLE \} from "\.\.?\/flexible-available\.js";/);
       expect(one.text, one.path).not.toMatch(/FLEXIBLE_AVAILABLE\s*(?:=(?!=)|\+\+|--)|export\s*\{[^}]*FLEXIBLE_AVAILABLE|as\s+FLEXIBLE_AVAILABLE/);
@@ -256,9 +289,9 @@ describe("the switch can't become a runtime override", () => {
     // Nothing outside the thread engine (and its tests) calls into it yet: no route, CLI command, MCP tool or chat action.
     // The engine's own modules (F2c: the thread start, launches, custody and levels) import each other and nothing else does.
     const engine = (...names: string[]) => (file: { path: string }) => !names.map(name => join("src", name)).includes(file.path);
-    for (const one of product.filter(engine("flexible-thread.ts", "flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
+    for (const one of product.filter(engine("flexible-thread.ts", "flexible-agents.ts", "flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
     for (const one of product.filter(engine("flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-agents\.js"/);
-    for (const one of product.filter(engine("flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts", "flexible-answers.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-launch\.js"/);
+    for (const one of product.filter(engine("flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts", "flexible-answers.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-launch\.js"/);
     // The sign-in relay (F2b): only the thread start uses it, and only the relay reads its list of services.
     for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
     for (const one of product.filter(engine("flexible-relay-upstreams.ts", "flexible-relay.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay-upstreams\.js"/);
@@ -298,6 +331,24 @@ describe("the switch can't become a runtime override", () => {
       const body = answers.slice(answers.search(new RegExp(`^export (?:async )?function ${name}\\(`, "m"))).split("\n");
       expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
     }
+    // Ship (F4): the controlled import and the Ship's two presses, send back and removal. Every entry point checks the
+    // constant first; only the Ship calls the import, nothing calls the Ship yet, and the ref audit is the thread
+    // engine's and the import's alone.
+    /** Every exported function of `file` is a gated entry point (its first statement is the check) or a named pure one
+     * (a computation over its arguments: it reads and writes nothing). */
+    const gatedFirst = (file: string, gated: readonly string[], pure: readonly string[]) => {
+      const text = readFileSync(file, "utf8");
+      expect([...text.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort(), file).toEqual([...gated, ...pure].sort());
+      for (const name of gated) {
+        const body = text.slice(text.search(new RegExp(`^export (?:async )?function ${name}\\(`, "m"))).split("\n");
+        expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toMatch(/^  if \(!FLEXIBLE_AVAILABLE\) return (?:refuse\("not-available"\)|pre\("not-available"\)|false);$/);
+      }
+    };
+    gatedFirst("src/flexible-import.ts", ["readFlexibleCandidate", "importFlexibleCandidate", "removeFlexibleImportRefs", "flexibleTaskBranch"], ["linkLeadsOut"]);
+    gatedFirst("src/flexible-ship.ts", ["flexibleShipTerms", "sendFlexibleForChecks", "flexibleShipsOf", "completeAndMergeFlexible", "mergeArmedFlexible", "sendBackFlexible", "removeFlexibleImport"], ["flexibleShipSummary"]);
+    for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
+    for (const one of product.filter(engine("flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-ship\.js"/);
+    for (const one of product.filter(engine("flexible-refs.ts", "flexible-thread.ts", "flexible-import.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-refs\.js"/);
   });
 
   test("the relay's upstream is a constant: one frozen list, the production origin fixed, no environment, mocked only by tests", () => {

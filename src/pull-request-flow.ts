@@ -431,7 +431,10 @@ export async function mergePullRequest(
     /** Only a person merging by hand may skip waiting for the full check. */
     anyway?: boolean;
     /** An automatic pass's standing, read in the write that reserves the merge: false refuses ("halted") and merges nothing. */
-    proceed?: () => boolean },
+    proceed?: () => boolean;
+    /** The Flexible Ship whose Complete and merge authority this merge carries (flexible-ship.ts mergeArmedFlexible, the
+     * only caller that passes it, after re-proving that authority). A Flexible result merges by no other road. */
+    flexibleShip?: string },
 ): Promise<Result<{ commit: string | null }>> {
   const exec = input.exec ?? execRun;
   const clock = input.clock ?? (() => new Date());
@@ -445,6 +448,13 @@ export async function mergePullRequest(
   if (mergedTask !== null && belongsToRelease(store, mergedTask)) return refuse("release", "This result belongs to a release; it merges only through `toolroll release`.");
   // A release task the plane approved (or is checking) automatically (auto-approve-green.md) never merges here either.
   if (mergedTask !== null && autoReleaseSealed(store, mergedTask)) return refuse("release", "This result was approved automatically for a release; it merges only through `toolroll release`.");
+  // A result from a Flexible thread (the Flexible plan v2 §7) merges only through its own Complete and merge, after the
+  // required check passed on its exact commit: never `anyway`, never "merge when checks pass", a mode's automerge, a flow
+  // or a chat merge. Its provenance is immutable (filed as `flexible:<ship>`), so no road around this exists.
+  const flexibleVia = mergedTask === null ? null : store.filedViaOf(mergedTask);
+  if (flexibleVia?.startsWith("flexible:") === true && (input.anyway === true || input.flexibleShip === undefined || `flexible:${input.flexibleShip}` !== flexibleVia)) {
+    return refuse("flexible", "This result came from a Flexible thread. It merges only through Complete and merge, after its check passed on this exact commit.");
+  }
   // A fast start merges only after a person accepted it, and only a change that stayed small (fast-start.ts).
   const fastHold = mergedTask === null ? null : fastPublishProblem(store, mergedTask, input.runId);
   if (fastHold !== null) return refuse("fast-start", fastHold);

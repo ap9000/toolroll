@@ -1054,6 +1054,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Auto-approve green: `release auto-approve on`, a password typed now (reviewed new site).
     "src/release-cli.ts#<module>": 2,
     "src/release-cli.ts#runAuthorityCommand@9": 1,
+    // Flexible Ship (F4): Send for checks and Complete and merge take the thread owner's password typed now, never a
+    // remembered sign-in, a session or a machine's credential (reviewed new site; gated off by FLEXIBLE_AVAILABLE).
+    "src/flexible-ship.ts#<module>": 2,
+    "src/flexible-ship.ts#personNow@7": 1,
   },
   passwordlessSessionFor: {
     "src/chat-actions.ts#<module>": 2,

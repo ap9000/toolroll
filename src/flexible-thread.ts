@@ -11,7 +11,8 @@
  *   names the project's real `objects` folder, on branch `toolroll/code-<id>` at the recorded base. Its new objects
  *   land in its own `objects`. The only write to the project's repository is Toolroll's own create-only keep-ref
  *   (refs/toolroll/threads/<id>/base), so a person's `gc` can't prune the base; removing the thread removes it by
- *   compare-and-swap. Import into the project's repository is a later slice (F4), never the thread.
+ *   compare-and-swap. Import into the project's repository is Toolroll's own (flexible-import.ts, F4), never the
+ *   thread's.
  * - Every path comes from Toolroll's own records (the flexible_thread row, the store's project list, the database's
  *   folder), resolved with realpath and proven to be the real folders they were; the thread's folder is attacker input
  *   once a thread has run in it.
@@ -43,6 +44,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
 import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
 
@@ -269,9 +271,13 @@ export async function prepareFlexibleThread(store: Store, input: { repo: string;
     const checkout = await build(paths.repo, ["reset", "-q", "--hard", baseSha]);
     if (checkout.code !== 0) throw new Error("the thread's files couldn't be checked out");
     reserveProtectedNames(paths.repo);
+    // The project's refs as they are at the thread's start (the ref audit, flexible-refs.ts): each import compares with
+    // them. Detection only, so a read that fails leaves no snapshot and decides nothing.
+    const refs = await readProjectRefs(read, project);
     const ready = store.transact(() => {
       const moved = store.handle.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ? AND state = 'preparing'").run(id);
       if (Number(moved.changes) !== 1) return false;
+      if (refs !== null) saveRefSnapshot(store, id, refs, input.now);
       store.recordAction({ at: input.now.toISOString(), actor: input.by, repo: input.repo, taskId: null, runId: null, source: "policy", action: "flexible thread repository made", outcome: "ready",
         detail: `thread ${id} · base ${baseSha} · ${keepRef}` });
       return true;
