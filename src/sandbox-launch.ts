@@ -10,17 +10,32 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { checkLinuxDependencies, cleanupBwrapMountPoints, getLinuxDependencyStatus, initializeLinuxNetworkBridge, wrapCommandWithSandboxLinux, type LinuxNetworkBridgeContext } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { SANDBOX_LAUNCH_SPEC, shellQuote, withRuntimeTemp, type SandboxLaunchSpec } from "./sandbox-runtime.js";
+import { isLinuxSandboxTools, sandboxToolExclusions, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolExclusions } from "./sandbox-tools.js";
 
 const REFUSED = 126;
 /** The status a launch stopped before it ran ends with (128 + SIGTERM). */
 const STOPPED = 143;
 
+/** The runtime's options naming each program by its checked path: none is looked up by name. */
+const pathsOf = (tools: LinuxSandboxTools) => ({ bwrapPath: tools.bwrap.real, socatPath: tools.socat.real, seccompConfig: { applyPath: tools.seccomp.real } });
+
 /** Why the runtime can't sandbox here now (bubblewrap, socat or its seccomp helper gone), or null: asked again before
- * each attempt, never remembered from an earlier look. */
-function missing(): string | null {
-  const checked = checkLinuxDependencies();
+ * each attempt, never remembered from an earlier look. Every program is checked in full again at its path first. */
+function missing(tools: LinuxSandboxTools, exclusions: ToolExclusions): string | null {
+  const changed = verifyLinuxSandboxTools(tools, { exclusions });
+  if (changed !== null) return changed;
+  const paths = pathsOf(tools);
+  const checked = checkLinuxDependencies(paths);
   if (checked.errors.length > 0) return checked.errors.join("; ");
-  return getLinuxDependencyStatus().hasSeccompApply ? null : "the sandbox runtime's seccomp helper isn't available";
+  return getLinuxDependencyStatus(paths).hasSeccompApply ? null : "the sandbox runtime's seccomp helper isn't available";
+}
+
+/** The programs the launch was handed, each checked in full again here (sandbox-tools.ts): the parent's check is not
+ * taken on trust. Why not, or null. */
+function toolsProblem(spec: SandboxLaunchSpec): string | null {
+  const tools = (spec as { tools?: unknown }).tools;
+  if (!isLinuxSandboxTools(tools)) return "the sandbox's programs weren't given by checked paths";
+  return verifyLinuxSandboxTools(tools, { exclusions: sandboxToolExclusions(spec.terms, spec.cwd) });
 }
 
 async function main(): Promise<number> {
@@ -28,6 +43,14 @@ async function main(): Promise<number> {
   delete process.env[SANDBOX_LAUNCH_SPEC];
   if (raw === undefined) { process.stderr.write("toolroll sandbox: no launch was given\n"); return REFUSED; }
   const spec = JSON.parse(raw) as SandboxLaunchSpec;
+  const problem = toolsProblem(spec);
+  if (problem !== null) { process.stderr.write(`toolroll sandbox: nothing was started: ${problem}\n`); return REFUSED; }
+  const tools = spec.tools;
+  const exclusions = sandboxToolExclusions(spec.terms, spec.cwd);
+  // The launch keeps the environment it was given. This helper's own PATH is only `which`'s root-owned folder: the
+  // runtime still runs `which` by name to look up the shell it is handed by path, and its answer is checked below.
+  const launchEnv = { ...process.env };
+  process.env["PATH"] = tools.whichFolder;
   process.chdir(spec.cwd);
   // A stop at any point: what is running is passed it, and nothing starts after it.
   let stopping = false;
@@ -46,7 +69,10 @@ async function main(): Promise<number> {
     })));
   };
   try {
-    if (network.kind === "proxy") bridge = await initializeLinuxNetworkBridge(network.httpPort, network.socksPort ?? network.httpPort);
+    // The runtime's relay start waits for its two sockets about 600 ms in all (five looks, 0, 100, 200 and 300 ms apart)
+    // before it gives up. Its API (sandbox-runtime 0.0.79: httpProxyPort, socksProxyPort, socatPath) has no option to
+    // wait longer, so that wait is left as it is; socat goes by its trusted path.
+    if (network.kind === "proxy") bridge = await initializeLinuxNetworkBridge(network.httpPort, network.socksPort ?? network.httpPort, tools.socat.real);
     // The runtime reads the temp folder it gives the command when it builds it (withRuntimeTemp, sandbox-runtime.ts).
     if (spec.temp !== undefined) process.env["CLAUDE_CODE_TMPDIR"] = spec.temp;
     else withRuntimeTemp(undefined, () => undefined);
@@ -57,7 +83,7 @@ async function main(): Promise<number> {
     for (let attempt = 1; ; attempt++) {
       // Stopped during setup or between attempts: nothing starts.
       if (stopping) return STOPPED;
-      const gone = missing();
+      const gone = missing(tools, exclusions);
       if (gone !== null) throw new Error(`the sandbox can't be made here: ${gone}`);
       const command = await wrapCommandWithSandboxLinux({
         command: started,
@@ -69,11 +95,15 @@ async function main(): Promise<number> {
         }),
         readConfig: spec.terms.readConfig,
         writeConfig: spec.terms.writeConfig,
+        ...pathsOf(tools),
+        binShell: tools.bash.real,
+        ripgrepConfig: { command: tools.rg.real },
       });
       // bubblewrap, and the runtime's seccomp filter inside it: anything less is not this sandbox.
-      if (!/\bbwrap\b/.test(command) || !command.includes("apply-seccomp")) throw new Error("the sandbox runtime returned a command without its sandbox or its seccomp filter");
+      // Each by the path it was handed: the shell `which` answered with, the seccomp helper, bubblewrap itself.
+      if (!/\bbwrap\b/.test(command) || ![tools.bwrap.real, tools.seccomp.real, tools.bash.real].every(path => command.includes(path)) || !command.includes("apply-seccomp")) throw new Error("the sandbox runtime returned a command without its sandbox, its seccomp filter or the programs it was handed");
       if (stopping) return STOPPED;
-      const run = spawn("/bin/sh", ["-c", command], { stdio: ["inherit", "inherit", "pipe", "pipe"] });
+      const run = spawn("/bin/sh", ["-c", command], { stdio: ["inherit", "inherit", "pipe", "pipe"], env: launchEnv });
       child = run;
       let ran = false;
       const held: Buffer[] = [];

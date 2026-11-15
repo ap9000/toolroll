@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { checkLinuxDependencies, getLinuxDependencyStatus } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import type { FsReadRestrictionConfig, FsWriteRestrictionConfig } from "@anthropic-ai/sandbox-runtime";
+import { linuxSandboxTools, sandboxToolExclusions, type LinuxSandboxTools, type LinuxSandboxToolsVerdict, type ToolExclusions } from "./sandbox-tools.js";
 
 const require = createRequire(import.meta.url);
 
@@ -71,12 +72,17 @@ export function sandboxRuntimeProblem(platform: NodeJS.Platform = process.platfo
     // The programs it needs, named with the line that installs them (LINUX_SANDBOX_TOOLS), before anything else.
     const missing = missingLinuxSandboxTools();
     if (missing.length > 0) return `${toolWords(missing)} ${missing.length === 1 ? "is" : "are"} not installed (${linuxSandboxInstallLine(missing)})`;
-    const checked = checkLinuxDependencies();
+    // Each program the sandbox runs, by a path Toolroll trusts (never a PATH lookup): none, and no sandbox starts.
+    const resolved = linuxSandboxTools();
+    if (!resolved.ok) return resolved.why;
+    const { tools } = resolved;
+    const paths = { bwrapPath: tools.bwrap.real, socatPath: tools.socat.real, seccompConfig: { applyPath: tools.seccomp.real } };
+    const checked = checkLinuxDependencies(paths);
     if (checked.errors.length > 0) return checked.errors.join("; ");
-    if (!getLinuxDependencyStatus().hasSeccompApply) return "the sandbox runtime's seccomp helper isn't available for this processor";
+    if (!getLinuxDependencyStatus(paths).hasSeccompApply) return "the sandbox runtime's seccomp helper isn't available for this processor";
     // The runtime finds nested protected names (a subfolder's .git/hooks, .vscode, shell profiles) with ripgrep.
-    if (spawnSync("rg", ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return "ripgrep (rg) is not installed";
-    const probe = spawnSync("bwrap", ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: "ignore" });
+    if (spawnSync(tools.rg.real, ["--version"], { timeout: 5_000, stdio: "ignore" }).status !== 0) return `ripgrep (${tools.rg.real}) doesn't run`;
+    const probe = spawnSync(tools.bwrap.real, ["--ro-bind", "/", "/", "--unshare-pid", "--unshare-user", "--proc", "/proc", "--new-session", "--", "true"], { timeout: 5_000, stdio: "ignore" });
     return probe.status === 0 ? null : "bubblewrap can't start a sandbox here (unprivileged user namespaces may be off)";
   }
   return `the sandbox runtime has no sandbox for ${platform}`;
@@ -331,20 +337,24 @@ export const sandboxLaunchHelper = (): string => {
   return existsSync(beside) ? beside : fileURLToPath(new URL("../dist/sandbox-launch.js", import.meta.url));
 };
 
-/** What the Linux helper is given: the command, where it runs, and the terms. */
-export type SandboxLaunchSpec = { file: string; args: string[]; cwd: string; terms: SrtTerms; temp?: string };
+/** What the Linux helper is given: the command, where it runs, the terms, and the sandbox's own programs by their
+ * checked paths (sandbox-tools.ts), which the helper checks again in full before it uses them. */
+export type SandboxLaunchSpec = { file: string; args: string[]; cwd: string; terms: SrtTerms; tools: LinuxSandboxTools; temp?: string };
 
 /**
  * `file args` inside the runtime's sandbox, as a spawn: on macOS `/bin/sh -c <its command>` in a session of its own
  * (DETACH); on Linux the helper,
  * handed the launch in its environment (never its arguments, which other users can list).
  */
-export function srtSpawn(file: string, args: readonly string[], terms: SrtTerms, cwd: string = process.cwd(), temp?: string, platform: NodeJS.Platform = process.platform): { file: string; args: string[]; env: Record<string, string> } {
+export function srtSpawn(file: string, args: readonly string[], terms: SrtTerms, cwd: string = process.cwd(), temp?: string, platform: NodeJS.Platform = process.platform, tools: (exclusions: ToolExclusions) => LinuxSandboxToolsVerdict = linuxSandboxTools): { file: string; args: string[]; env: Record<string, string> } {
   if (platform === "darwin") {
     const command = srtMacosCommand(file, args, terms, cwd, temp);
     if (!command.includes(SANDBOX_EXEC)) throw new Error("the sandbox runtime returned the command unsandboxed");
     return { file: "/usr/bin/perl", args: [...DETACH, "/bin/sh", "-c", command], env: {} };
   }
-  const spec: SandboxLaunchSpec = { file, args: [...args], cwd, terms, ...(temp === undefined ? {} : { temp }) };
+  // The sandbox's programs by trusted path, none inside this launch's projects, worktrees or state: else nothing starts.
+  const resolved = tools(sandboxToolExclusions(terms, cwd));
+  if (!resolved.ok) throw new Error(resolved.why);
+  const spec: SandboxLaunchSpec = { file, args: [...args], cwd, terms, tools: resolved.tools, ...(temp === undefined ? {} : { temp }) };
   return { file: process.execPath, args: [sandboxLaunchHelper()], env: { [SANDBOX_LAUNCH_SPEC]: JSON.stringify(spec) } };
 }

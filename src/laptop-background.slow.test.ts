@@ -16,15 +16,18 @@ import { packageVersion } from "./monitoring.js";
 import { openStore } from "./store.js";
 import { shortTempDir } from "../test/short-temp.js";
 import { scriptedSupervisor } from "../test/laptop-supervisor.js";
+import { freePort } from "../test/free-port.js";
 
 const dist = fileURLToPath(new URL("../dist", import.meta.url));
-const PORT = 47000 + (process.pid % 1000);
+/** This test's own port, chosen at run time (test/free-port.ts). */
+let PORT: number;
 const platform = process.platform === "linux" ? "linux" : "darwin";
 
 let base: string, home: string, db: string, env: NodeJS.ProcessEnv;
 const children: ChildProcess[] = [];
 const output: string[] = [];
-beforeEach(() => {
+beforeEach(async () => {
+  PORT = await freePort();
   base = realpathSync(shortTempDir("so-bgs-"));
   home = join(base, "home");
   mkdirSync(home);

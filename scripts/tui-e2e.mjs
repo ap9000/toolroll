@@ -5,10 +5,11 @@
  * workbench its one-time sign-in on descriptor 3, and the person — this script, typing into a real pseudo-terminal —
  * files a task with `n`, watches the scripted provider build it, opens its changes, accepts it with `a`, and quits.
  *
- *   node scripts/tui-e2e.mjs --port <n> --out <empty folder> [--binary <toolroll-tui>] [--keep] [--no-model] [--browser]
+ *   node scripts/tui-e2e.mjs [--port <n>] --out <empty folder> [--binary <toolroll-tui>] [--keep] [--no-model] [--browser]
  *
  * Only the model is scripted (scripts/fixtures/scripted-provider.mjs). A throwaway HOME under --out, the database in a
- * short folder of this checkout (a socket path must fit), an explicit port (never 4180), stand-ins for every agent CLI,
+ * short folder of this checkout (a socket path must fit), a port of its own (--port, else one the system hands out;
+ * never 4180), stand-ins for every agent CLI,
  * the browser openers and the service supervisors on PATH, and an environment built from nothing: an allowlist, never a
  * copy of this process's environment (a copy once overwrote the throwaway HOME and PATH, and a build ran this
  * computer's own Claude Code under the person's own login). A pre-flight ABORTS the run, before anything starts, when
@@ -94,11 +95,22 @@ export function requiredOf(report, { modelFree, browser, raw, failure }) {
 const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) await main();
 
+/** A loopback port the system assigns (bound at 0, read back, released), never 4180. */
+async function freeLoopbackPort() {
+  const { createServer } = await import("node:net");
+  for (;;) {
+    const port = await new Promise((done, failed) => { const server = createServer(); server.once("error", failed); server.listen(0, "127.0.0.1", () => { const { port: got } = server.address(); server.close(() => done(got)); }); });
+    if (port !== 4180) return port;
+  }
+}
+
 async function main() {
   const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = process.argv.slice(2);
   const option = (name, fallback) => { const at = args.indexOf(name); return at === -1 ? fallback : args[at + 1]; };
-  const port = Number(option("--port", "4801"));
+  // No --port: one the system hands out at run time (never a fixed number another run could hold), never 4180.
+  const given = option("--port", null);
+  const port = given === null ? await freeLoopbackPort() : Number(given);
   if (!Number.isInteger(port) || port === 4180 || port < 1024) throw new Error("--port: a free port of your own, never 4180");
   const out = resolve(option("--out", ""));
   if (option("--out", "") === "" || (existsSync(out) && readdirSync(out).length > 0)) throw new Error("--out: an empty folder");

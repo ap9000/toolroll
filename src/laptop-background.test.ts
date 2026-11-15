@@ -16,16 +16,19 @@ import { runOperate } from "./operate.js";
 import type { AttachProof } from "./console-instance.js";
 import { fakePid } from "../test/fake-pid.js";
 import { scriptedSupervisor as scripted } from "../test/laptop-supervisor.js";
+import { freePort } from "../test/free-port.js";
 
 const T = new Date("2026-11-03T10:00:00.000Z");
 const HOST = "laptop-test-host";
-const PORT = 45000 + (process.pid % 2000);
+/** This test's own port, chosen at run time (test/free-port.ts). */
+let PORT: number;
 const UP = fakePid(1), CONSOLE = fakePid(2), WORKER = fakePid(3), OTHER = fakePid(4);
 const STARTED = "2026-11-03T09:00:00.000Z";
 const uid = typeof process.getuid === "function" ? process.getuid() : 501;
 
 let base: string, home: string, db: string, dist: string, store: Store;
-beforeEach(() => {
+beforeEach(async () => {
+  PORT = await freePort();
   base = realpathSync(mkdtempSync(join(tmpdir(), "so-bg-")));
   home = join(base, "home");
   mkdirSync(home);

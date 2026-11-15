@@ -313,11 +313,13 @@ async function runtimeIdentity() {
 export async function checkCheckoutGit({ provider, worktree, databaseFile, repository, home = homedir() }, execute = run) {
   if (!["claude", "codex", "gemini"].includes(provider)) return null;
   if (typeof worktree !== "string" || worktree === "") throw new Error("the builder did not retain its worktree for the Git fence check");
-  const { agentFence, taskBoundary, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, fenceGrants, codexFenceArgv, macosFenceAvailable, linuxFenceAvailable, sandboxedSpawn } = await import(join(root, "dist", "agent-fence.js"));
+  const { agentFence, taskBoundary, trustedWorktreeBinding, checkoutGitEnv, installDenied, HARDENED_GIT_ARGS, fenceGrants, codexFenceArgv, macosFenceAvailable, linuxFenceAvailable, sandboxedSpawn } = await import(join(root, "dist", "agent-fence.js"));
   const binding = trustedWorktreeBinding(repository, worktree);
   const boundary = taskBoundary({ worktree, provider, home, binding });
   const fence = agentFence({ databaseFile, worktree, home, boundary, binding });
-  const grants = fenceGrants({ databaseFile, worktree, boundary });
+  // As fenceFor makes them: Toolroll's own install write-denied, which the Linux fence needs before it runs a seccomp
+  // helper Toolroll's user owns (a user npm install).
+  const grants = installDenied(fenceGrants({ databaseFile, worktree, boundary }), worktree, home, binding?.main ?? null);
   const codexHome = provider === "codex" ? await mkdtemp(join(tmpdir(), "so-codex-canary-")) : null;
   try {
     let head = null;
