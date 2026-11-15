@@ -28,6 +28,7 @@
     "home": {"kind":"page","path":"/","note":"Work (S2a): the list and the selected task; ?view=order is the queue order page"},
     "work.rows": {"kind":"data","path":"/work/rows","what":"Work's list rows and Needs-you groups (JSON, the engine API)"},
     "engine.hello": {"kind":"data","path":"/engine/hello","what":"the engine API's handshake: build and contract digest (JSON)"},
+    "engine.agents": {"kind":"data","path":"/engine/agents","what":"the coding agents on this computer and who the first task goes to (JSON, the engine API)"},
     "search": {"kind":"page","path":"/search"},
     "inbox": {"kind":"alias","path":"/inbox","to":"/"},
     "work": {"kind":"alias","path":"/work","to":"/"},

@@ -37,6 +37,8 @@ const FIXTURES: &[(&str, &str)] = &[
     ("link-redemption.json", "linkRedemption"),
     ("refusal.json", "refusal"),
     ("hello.json", "hello"),
+    ("agents.json", "agents"),
+    ("agents-none-signed-in.json", "agents"),
 ];
 
 #[test]
@@ -82,6 +84,7 @@ fn every_fixture_round_trips_exactly() {
             "linkRedemption" => drop(round_trip::<LinkRedemption>(name)),
             "refusal" => drop(round_trip::<Refusal>(name)),
             "hello" => drop(round_trip::<Hello>(name)),
+            "agents" => drop(round_trip::<AgentsRead>(name)),
             other => panic!("no model for {other}"),
         }
     }

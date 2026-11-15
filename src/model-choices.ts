@@ -480,7 +480,11 @@ export function defaultAgentOf(provider: string): DefaultAgent | null {
  * (local mode on). Nothing else: every other change of models is Settings → Models'
  * operator step-up (applyModelChoices).
  */
-export type DefaultRoutingDoor = { kind: "local-owner" } | { kind: "first-start" };
+/** `detected`: the console's own sign-in check (agent-detect.ts) found this agent signed in and nothing was ever chosen
+ * here, on any install, a password one too: the first task goes to the agent the person has (A0b instant start). */
+export type DefaultRoutingDoor = { kind: "local-owner" } | { kind: "first-start" } | { kind: "detected" };
+/** The agent the detected door filled the models for, recorded once (installation_fact). */
+export const FIRST_TASK_AGENT_FACT = "first-task-agent";
 export type DefaultRoutingResult = { filled: true; rows: number } | { filled: false; reason: "authority" | "already-set" | "invalid"; problem: string };
 
 /**
@@ -497,7 +501,7 @@ export function fillDefaultRouting(store: Store, agent: DefaultAgent, actor: str
       if (local === null || !localOwnerInFlight(local) || local.act !== "choose-default-agent" || local.account !== actor || !localOwnerStandsNow(store, local)) {
         return refused("authority", "Only this computer's owner, choosing an agent now, starts its models.");
       }
-    } else if (!localModeOn(store)) {
+    } else if (door.kind === "first-start" && !localModeOn(store)) {
       // The first start's own choice (serve.ts leadByDefault): it may run inside whichever request asked this computer's
       // agents again, so it reads no principal; local mode on, and nothing set (below), is what admits it.
       return refused("authority", "Only a laptop install's first start chooses its models by itself.");
@@ -507,7 +511,7 @@ export function fillDefaultRouting(store: Store, agent: DefaultAgent, actor: str
     // Every automatic fill (the first-start door: the lead by default, a sign-in seen later) also needs models never
     // chosen here at all: no models generation, so models a person chose and then cleared stay cleared. Only the local
     // owner's own choice of an agent ("Use this one") may start them again.
-    if (door.kind === "first-start" && store.handle.prepare("SELECT 1 FROM models_generation LIMIT 1").get() !== undefined) {
+    if (door.kind !== "local-owner" && store.handle.prepare("SELECT 1 FROM models_generation LIMIT 1").get() !== undefined) {
       return refused("already-set", "Models were chosen here before.");
     }
     store.handle.exec("SAVEPOINT default_routing");
@@ -518,9 +522,11 @@ export function fillDefaultRouting(store: Store, agent: DefaultAgent, actor: str
         if (slot.tier === "routine") store.setPhaseConfig(INSTALLATION_SCOPE, slot.phase, to.provider, to.model, actor, now);
         else store.setPhaseTierConfig(INSTALLATION_SCOPE, slot.phase, slot.tier, to.provider, to.model, actor, now);
         store.recordAction({ at: now.toISOString(), actor, repo: null, taskId: null, runId: null, action: ACTION_OF(slot), outcome: "changed", source: "policy",
-          detail: `not set → ${pairWords(to)} (${AGENT_PRESETS[agent].label}, the default for the agent chosen)` });
+          detail: `not set → ${pairWords(to)} (${AGENT_PRESETS[agent].label}, ${door.kind === "detected" ? "the default for the agent found signed in on this computer" : "the default for the agent chosen"})` });
         rows++;
       }
+      // Recorded once: which agent this install's first task went to, found by the sign-in check.
+      if (door.kind === "detected") store.recordInstallationFact(FIRST_TASK_AGENT_FACT, agent, now);
       const checked = checkScope(store, null);
       if (checked.kind !== "ok") {
         store.handle.exec("ROLLBACK TO default_routing");

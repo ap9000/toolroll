@@ -59,7 +59,7 @@ import { flexibleDelegationAtUse, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexi
 import { flexibleLaunch } from "./flexible-launch.js";
 import { flexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { sqliteRuntime } from "./sqlite-runtime.js";
-import { macAcl, type AclVerdict } from "./tui-launch.js";
+import { platformAcl, type AclVerdict } from "./trusted-path.js";
 import type { Store } from "./store.js";
 
 export type FlexibleAnswerState = "pending" | "decided" | "sending" | "sent" | "delivered" | "not-sent" | "uncertain" | "withdrawn";
@@ -233,10 +233,10 @@ const dbOf = (catalog: FlexibleAnswerCatalog): DatabaseSync => {
 /**
  * Why `folder` (a real path) isn't a boundary only this user can change, or null: the folder itself is this user's own
  * (not root's, not another's), not group- or world-writable, and on macOS has no ACL entry allowing anyone a change
- * (tui-launch.ts macAcl, as trustedBinary checks a binary's folders); every folder above it is this user's or root's
+ * (trusted-path.ts platformAcl, as trustedBinary checks a binary's folders); every folder above it is this user's or root's
  * and not group- or world-writable unless sticky (/tmp). Unreadable refuses.
  */
-function folderBoundaryProblem(folder: string, acl: ((path: string) => AclVerdict) | null = process.platform === "darwin" ? macAcl : null): string | null {
+function folderBoundaryProblem(folder: string, acl: ((path: string) => AclVerdict) | null = platformAcl()): string | null {
   const uid = process.getuid?.();
   if (uid === undefined) return "who owns its folder can't be checked on this system";
   try {
