@@ -44,6 +44,8 @@ const EXEC_TIMEOUT_MS = 60_000;
 const CI_ACTOR = "toolroll";
 
 type Result<T> = ({ ok: true } & T) | { ok: false; reason: string; message: string };
+/** What GitHub said of a pull request: its base branch, its address and its head commit. */
+export type PullRequestSeen = { base: string | null; url: string | null; head: string | null };
 const refuse = (reason: string, message: string): { ok: false; reason: string; message: string } => ({ ok: false, reason, message });
 const firstLine = (text: string): string => text.split("\n").map(line => line.trim()).find(line => line !== "") ?? "";
 
@@ -435,13 +437,17 @@ export async function mergePullRequest(
     anyway?: boolean;
     /** An automatic pass's standing, read in the write that reserves the merge: false refuses ("halted") and merges nothing.
      * It is told what GitHub said of the pull request just before (its base branch and its address). */
-    proceed?: (seen: { base: string | null; url: string | null; head: string | null }) => boolean;
+    proceed?: (seen: PullRequestSeen) => boolean;
     /** The Flexible Ship whose armed merge this is (flexible-ship.ts mergeArmedFlexible, the only caller that passes it,
      * after re-proving that authority). A Flexible result merges by no other road. */
     flexibleShip?: string;
     /** The armed merge's reservation token for that Ship: checked again inside the transaction that reserves the merge. */
-    flexibleToken?: string },
-): Promise<Result<{ commit: string | null }>> {
+    flexibleToken?: string;
+    /** Where this merge may land, judged on GitHub's own view of the pull request (its base branch, address and head):
+     * words when it isn't the signed destination, else null. Required with `flexibleShip`: a MERGED answer counts as
+     * this merge only when it passes, whichever way GitHub reports it (already merged, or merged by this call). */
+    destination?: (seen: PullRequestSeen) => string | null },
+): Promise<Result<{ commit: string | null; seen?: PullRequestSeen }>> {
   const exec = input.exec ?? execRun;
   const clock = input.clock ?? (() => new Date());
   // The nightly check of main (release-once.md, part 3) is a check only: it never merges.
@@ -466,7 +472,9 @@ export async function mergePullRequest(
   const publication = store.publicationForRun(input.runId);
   const follow = publication === null ? null : followOf(store, publication.id);
   if (publication === null || follow === null || publication.prNumber === null) return refuse("no-pr", "This result has no open pull request to merge.");
-  if (follow.mergeCommit !== null) return { ok: true, commit: follow.mergeCommit || null };
+  // A Flexible merge always asks GitHub where it landed: a merge recorded earlier is never taken on trust.
+  if (input.flexibleShip !== undefined && input.destination === undefined) return refuse("flexible", "A Flexible merge must say where it may land.");
+  if (follow.mergeCommit !== null && input.destination === undefined) return { ok: true, commit: follow.mergeCommit || null };
   const ref = store.refById(publication.taskRef);
   const grant = ref?.repo == null ? null : store.publicationGrantFor(ref.repo);
   if (grant === null || grant.githubRepo !== publication.githubRepo) return refuse("off", "Pull requests are turned off for this project, so nothing merges.");
@@ -508,7 +516,14 @@ export async function mergePullRequest(
 
   const before = await view();
   if (before === null) return fail("unread", "GitHub couldn't be read just now. Try again.");
-  if (before.state === "MERGED") { record(before.commit, input.by); return { ok: true, commit: before.commit }; }
+  if (before.state === "MERGED") {
+    // Merged already: this merge's only when GitHub shows it landed where it may (never one merged elsewhere, into
+    // another branch or by someone else onto another head).
+    const landed = input.destination?.({ base: before.base, url: before.url, head: before.head }) ?? null;
+    if (landed !== null) return refuse("elsewhere", landed);
+    if (follow.mergeCommit === null) record(before.commit, input.by);
+    return { ok: true, commit: before.commit, ...(input.destination === undefined ? {} : { seen: { base: before.base, url: before.url, head: before.head } }) };
+  }
   if (before.state !== "OPEN") return fail("closed", "This pull request is closed on GitHub.");
   if (before.draft) return fail("draft", "This pull request is a draft. Mark it ready on GitHub first.");
   if (before.head !== publication.headSha) return fail("moved", "The pull request has commits that weren't part of the completed result, so it won't be merged from here.");
@@ -541,7 +556,12 @@ export async function mergePullRequest(
   } finally {
     store.handle.prepare("DELETE FROM merge_in_flight WHERE publication = ? AND token = ?").run(publication.id, token);
   }
-  if (after?.state === "MERGED") { record(after.commit, input.by); return { ok: true, commit: after.commit }; }
+  if (after?.state === "MERGED") {
+    const landed = input.destination?.({ base: after.base, url: after.url, head: after.head }) ?? null;
+    if (landed !== null) return refuse("elsewhere", landed);
+    record(after.commit, input.by);
+    return { ok: true, commit: after.commit, ...(input.destination === undefined ? {} : { seen: { base: after.base, url: after.url, head: after.head } }) };
+  }
   if (merged.code === 4) return fail("gh-signed-out", "The GitHub CLI isn't signed in on this computer. Run gh auth login, then merge again.");
   return fail("refused", `GitHub didn't merge it: ${plain(firstLine(merged.stderr) || "no reason given", 200)}`);
 }

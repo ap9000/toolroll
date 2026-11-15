@@ -54,7 +54,7 @@ import { validateTaskText } from "./task-text.js";
 import { taskBranch } from "./names.js";
 import { verifyApproverStanding } from "./principal.js";
 import { assignmentOf } from "./assignment.js";
-import { completeAndOpenPullRequest, mergePullRequest } from "./pull-request-flow.js";
+import { completeAndOpenPullRequest, mergePullRequest, type PullRequestSeen } from "./pull-request-flow.js";
 import type { PublishExec } from "./publish.js";
 import { fullCheckGate } from "./result-follow-ups.js";
 import { runCheckLevel } from "./check-levels.js";
@@ -544,12 +544,27 @@ export async function mergeArmedFlexible(store: Store, input: { taskId: string; 
   if (publication.prNumber === null) return { ok: true, state: "waiting", why: "its pull request isn't open yet" };
   const prNumber = publication.prNumber;
   const token = randomBytes(16).toString("hex");
+  // Where it may land, on GitHub's own view: the signed repository, base and number, on exactly the checked head.
+  const destination = (seen: PullRequestSeen): string | null =>
+    pullRequestElsewhere(found, seen, prNumber) ?? (seen.head !== found.mergeHead ? "its pull request on GitHub shows another commit than the one whose check passed" : null);
   inFlight.add(token);
   let merged: Awaited<ReturnType<typeof mergePullRequest>>;
   try {
-    merged = await mergePullRequest(store, { runId: newest.id, by: found.approvedBy, flexibleShip: found.id, flexibleToken: token, clock, ...(input.exec === undefined ? {} : { exec: input.exec }),
+    merged = await mergePullRequest(store, { runId: newest.id, by: found.approvedBy, flexibleShip: found.id, flexibleToken: token, clock, destination, ...(input.exec === undefined ? {} : { exec: input.exec }),
       proceed: seen => reserveMerge(store, { ship: found.id, token, runId: newest.id, root: input.root, now: clock(), seen, prNumber }) });
   } finally { inFlight.delete(token); }
+  // A merge GitHub shows somewhere else (another base or repository, another head, or merged by someone else there) is
+  // never this Ship's: it ends cancelled, said as it is, whether GitHub reported it before the call or after.
+  const landedElsewhere = merged.ok ? (merged.seen === undefined ? "GitHub didn't say where it merged" : destination(merged.seen)) : merged.reason === "elsewhere" ? merged.message : null;
+  if (landedElsewhere !== null) {
+    store.transact(() => {
+      const moved = store.handle.prepare("UPDATE flexible_ship SET state = 'cancelled', merge_token = NULL, merge_reserved_at = NULL, detail = ?, state_at = ? WHERE id = ? AND state IN ('completed', 'merging')")
+        .run(`${landedElsewhere} (GitHub reports it merged there, not as this Ship's merge)`.slice(0, 2000), clock().toISOString(), found.id);
+      if (Number(moved.changes) === 1) store.recordAction({ at: clock().toISOString(), actor: "toolroll", repo: found.repo, taskId: input.taskId, runId: newest.id, source: "policy",
+        action: "flexible merge cancelled", outcome: "merged-elsewhere", detail: `ship ${found.id} · ${landedElsewhere}`.slice(0, 2000) });
+    });
+    return refuse("cancelled", landedElsewhere);
+  }
   const after = rowOfTask(store, input.taskId);
   if (merged.ok) {
     store.transact(() => {

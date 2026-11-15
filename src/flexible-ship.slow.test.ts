@@ -89,9 +89,12 @@ async function shipped(files: Record<string, string> = { "a.txt": "one\n" }) {
 const rollup = [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://github.com/alex/shop/actions/runs/1/job/1" }];
 /** A scripted gh: the PR opens as #7 and reads open on `head` until merged, then merged. `during`: what happens while
  * GitHub is read (the first view of a merge) or while the merge call runs. */
-function github(head: string, during: { view?: () => void; merge?: () => void; mergeDies?: "before" | "after"; base?: string; baseAfterDeath?: string } = {}) {
+function github(head: string, during: { view?: () => void; merge?: () => void; mergeDies?: "before" | "after"; base?: string; baseAfterDeath?: string;
+  /** Already merged on GitHub before Toolroll's merge (into `base`, onto `mergedHead`). */ alreadyMerged?: boolean; mergedHead?: string;
+  /** The base GitHub shows once this merge call ran (retargeted during it). */ baseOnMerge?: string } = {}) {
   let died = false;
-  let merged = false;
+  let merged = during.alreadyMerged === true;
+  let mergedByCall = false;
   const calls: string[] = [];
   const exec: PublishExec = async (file, args) => {
     const line = [file, ...args].join(" ");
@@ -103,13 +106,14 @@ function github(head: string, during: { view?: () => void; merge?: () => void; m
       during.merge?.();
       if (during.mergeDies === "before") { died = true; throw new Error("the process died during the merge call"); }
       merged = true;
+      mergedByCall = true;
       if (during.mergeDies === "after") { died = true; throw new Error("the process died during the merge call"); }
       return ok();
     }
     if (line.startsWith("gh pr view")) {
       if (!merged && line.includes("statusCheckRollup")) { const hook = during.view; during.view = undefined; hook?.(); }
-      const base = died && during.baseAfterDeath !== undefined ? during.baseAfterDeath : during.base ?? "main";
-      return ok(JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: head, statusCheckRollup: rollup, mergeCommit: merged ? { oid: "c".repeat(40) } : null, baseRefName: base,
+      const base = died && during.baseAfterDeath !== undefined ? during.baseAfterDeath : mergedByCall && during.baseOnMerge !== undefined ? during.baseOnMerge : during.base ?? "main";
+      return ok(JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: during.alreadyMerged === true ? during.mergedHead ?? head : head, statusCheckRollup: rollup, mergeCommit: merged ? { oid: "c".repeat(40) } : null, baseRefName: base,
         url: "https://github.com/alex/shop/pull/7" }));
     }
     if (line.startsWith("gh api")) return { code: 1, stdout: "", stderr: "HTTP 404", timedOut: false, notFound: false };
@@ -421,6 +425,47 @@ describe("the armed merge", () => {
     expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("targets release") });
     expect(state(one.ship)).toBe("cancelled");
     expect(gh.merges()).toEqual([]);
+  });
+
+  test.each([
+    ["merged into another branch", { alreadyMerged: true, base: "release" }, "targets release"],
+    ["merged by someone else onto another head", { alreadyMerged: true, mergedHead: "d".repeat(40) }, "another commit"],
+  ] as const)("a pull request already %s is cancelled, never recorded as this Ship's merge", async (_name, how, words) => {
+    const one = await shipped();
+    built(one.taskId, one.candidate);
+    const opening = github(one.candidate);
+    expect(await step(one.taskId, opening.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: opening.exec, clock: () => NOW, evidenceRoot: root });
+    const gh = github(one.candidate, how);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining(words) });
+    expect(store.handle.prepare("SELECT state, detail FROM flexible_ship WHERE id = ?").get(one.ship)).toMatchObject({ state: "cancelled", detail: expect.stringContaining(words) });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action IN ('pull request merged', 'flexible merged')").get()!["n"]).toBe(0);
+    expect(gh.merges()).toEqual([]);
+  });
+
+  test("a merge recorded earlier is never taken on trust: GitHub is asked, and one that landed elsewhere is cancelled", async () => {
+    const one = await shipped();
+    built(one.taskId, one.candidate);
+    const opening = github(one.candidate);
+    expect(await step(one.taskId, opening.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: opening.exec, clock: () => NOW, evidenceRoot: root });
+    const publication = store.publicationForRun(store.runsFor(store.lookupRef(one.taskId)!.id).at(-1)!.id)!;
+    store.handle.prepare("UPDATE pull_request_follow SET merge_commit = ? WHERE publication = ?").run("e".repeat(40), publication.id);
+    const gh = github(one.candidate, { alreadyMerged: true, base: "release" });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("targets release") });
+    expect(state(one.ship)).toBe("cancelled");
+    expect(gh.calls.some(line => line.startsWith("gh pr view"))).toBe(true);
+  });
+
+  test("a pull request GitHub shows merged into another branch after this merge call (retargeted during it) is cancelled, not recorded as merged", async () => {
+    const one = await shipped();
+    const gh = github(one.candidate, { baseOnMerge: "release" });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("targets release") });
+    expect(state(one.ship)).toBe("cancelled");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action IN ('pull request merged', 'flexible merged')").get()!["n"]).toBe(0);
   });
 
   test("an uncertain merge whose pull request GitHub now shows retargeted is cancelled, never released or counted merged", async () => {
