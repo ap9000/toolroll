@@ -1,7 +1,7 @@
 /**
  * Flexible threads, slice F2c (the Flexible plan v2 §4 and §5, Codex round 2 items 3 and 10, enable gate 1): starting a
  * thread's agent for an admitted turn, each relay-tier agent wired to its Full-access level, lowering a thread's level
- * at runtime, and the sign-in relay stand-in that refuses every call until the real relay (F2b) lands.
+ * at runtime. The agent signs in only through its thread's sign-in relay (flexible-relay.ts, F2b).
  *
  * The rules this module keeps:
  * - Nothing here works while FLEXIBLE_AVAILABLE is false: every entry point refuses with `not-available` first.
@@ -12,20 +12,20 @@
  * - Full access removes the agent's own permission prompts inside the fence only (Codex round 2 item 3): the fence,
  *   the proxy-only network and the credential split are the same at every level. The agent signs in only through
  *   Toolroll's relay: its base URL and a per-launch relay token, never a key or the person's own sign-in.
- * - Until F2b, the relay is a stand-in that answers every request with a refusal and forwards nothing: no real model
- *   call can happen from a thread in this build.
+ * - The relay's port is the thread fence's second relay (the only loopback port it admits beside the run proxy), so the
+ *   agent reaches the relay and nothing else on this computer.
  * - A running agent is replaced only across a verified boundary: another level, agent or fence waits for the old one to
  *   be stopped and its whole tree's exit proved (flexible-launch.ts). Lowering stops a running agent above the new level
  *   at once; while any of its processes survive, the thread stays pending and no new turn starts.
  */
-import { lstatSync, mkdirSync, rmSync } from "node:fs";
-import { createServer, type Server } from "node:http";
-import { join } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel } from "./flexible.js";
 import { threadLevelAllowed, FLEXIBLE_PROVEN, type FlexibleProvenMatrix } from "./flexible-levels.js";
-import { defaultCustodyIO, issueRelayGrant, onLaunchStopped, relayGrantLive, revokeRelayGrant, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
+import { defaultCustodyIO, onLaunchStopped, unsettledLaunch, watchLaunch, type FlexibleAgentProvider } from "./flexible-launch.js";
+import { relayUrlInside, type FlexibleRelay, type FlexibleRelayEndpoint } from "./flexible-relay.js";
 import { startIdentityOf } from "./flexible-custody.js";
 import { flexibleFenceDigest, flexibleThread, flexibleThreadFence, flexibleThreadSpawn, stopFlexibleThreadAgent, withFlexibleThreadLock, type FlexibleThreadRefusal, type FlexibleThreadSpawnSeams } from "./flexible-thread.js";
 import { beginFlexibleTurn, finishFlexibleTurn, flexibleTurn, interruptFlexibleTurnsOf, withdrawFlexibleTurn, withdrawFlexibleTurnsAbove, type FlexibleClock, type FlexibleTurnRefusal } from "./flexible-turns.js";
@@ -45,56 +45,6 @@ const WORDS = Object.freeze({
   "stale-generation": "Your account changed since this started. Sign in again and retry. Nothing changed.",
 } as const);
 const refuse = (reason: keyof typeof WORDS, message: string = WORDS[reason]): FlexibleAgentRefusal => ({ ok: false, reason, message });
-
-// ---- the sign-in relay's stand-in (until F2b) -----------------------------------------------------------------------------
-
-/** Where a launch's agent signs in: the relay's base URL and this launch's relay token. `revoke` ends the token at once. */
-export type FlexibleRelayEndpoint = { url: string; token: string; revoke: () => void };
-/** The relay as the thread start uses it: where it listens, and a grant for one thread's turn. */
-export type FlexibleRelay = { url: string; issue: (grant: { thread: string; turn: string; launch: string }) => FlexibleRelayEndpoint };
-export const RELAY_STUB_REFUSAL = "Toolroll's sign-in relay isn't available in this version, so no model was called.";
-export const RELAY_NOT_AUTHORIZED = "This relay token isn't authorized (it was never issued, or its thread was stopped).";
-
-/** The relay stand-in: a loopback server that checks every call's token against the durable grants (flexible_relay_grant:
- * 401 when it isn't a live grant, revoked by any Toolroll process included), then refuses it anyway (503), and forwards
- * nothing anywhere (no upstream exists in it). */
-export type FlexibleRelayStub = FlexibleRelay & { refused: () => number; authorized: () => number; close: () => Promise<void> };
-export async function startFlexibleRelayStub(store: Store): Promise<FlexibleRelayStub | FlexibleAgentRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
-  let refused = 0, authorized = 0;
-  const said = (type: string, message: string) => JSON.stringify({ type: "error", error: { type, message } });
-  const tokenOf = (headers: import("node:http").IncomingHttpHeaders): string => {
-    const bearer = /^Bearer (\S+)$/.exec(String(headers.authorization ?? ""))?.[1];
-    return bearer ?? String(headers["x-api-key"] ?? headers["x-goog-api-key"] ?? "");
-  };
-  const server: Server = createServer((request, response) => {
-    refused++;
-    request.resume();
-    let live = false;
-    try { live = relayGrantLive(store, tokenOf(request.headers)); } catch { live = false; }
-    if (live) authorized++;
-    response.writeHead(live ? 503 : 401, { "content-type": "application/json", "cache-control": "no-store" })
-      .end(live ? said("relay_unavailable", RELAY_STUB_REFUSAL) : said("authentication_error", RELAY_NOT_AUTHORIZED));
-  });
-  // A tunnel gets nothing either. An upgrade request has no listener of its own (the console's terminals keep the one
-  // upgrade listener in the server): Node hands it to the request handler above, which refuses it like any call.
-  server.on("connect", (_request, socket) => { refused++; socket.on("error", () => {}); socket.end("HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n"); });
-  await new Promise<void>((done, failed) => { server.once("error", failed); server.listen(0, "127.0.0.1", () => done()); });
-  const address = server.address();
-  const port = typeof address === "object" && address !== null ? address.port : 0;
-  const url = `http://127.0.0.1:${port}`;
-  return {
-    url,
-    issue: grant => {
-      const token = issueRelayGrant(store, grant);
-      // Revoking an endpoint ends exactly its own grant, never another launch's.
-      return { url, token, revoke: () => { revokeRelayGrant(store, token); } };
-    },
-    refused: () => refused,
-    authorized: () => authorized,
-    close: () => new Promise(done => { server.closeAllConnections(); server.close(() => done()); }),
-  };
-}
 
 // ---- each agent at its level ---------------------------------------------------------------------------------------------
 
@@ -141,7 +91,8 @@ export type FlexibleTurnStartInput = {
   /** The launch's own run proxy: its port, credentials and environment, and how to close it (at once, when the agent is
    * stopped, or now, when the turn doesn't start a new launch). */
   network: { proxyPort: number; token: string; proxyEnv: Record<string, string>; close: () => void | Promise<void> };
-  /** The relay the agent signs in through (its stand-in until F2b): a grant is issued for this turn only if it launches. */
+  /** The thread's sign-in relay (flexible-relay.ts startFlexibleRelay): its port is the fence's second relay, and a grant
+   * is issued for this launch only if it launches. */
   relay: FlexibleRelay;
   storage: ProtectedStorage;
   proven?: FlexibleProvenMatrix; platform?: NodeJS.Platform; seams?: FlexibleThreadSpawnSeams;
@@ -195,7 +146,8 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   const withdraw = <R extends { message: string }>(refusal: R): R => { withdrawFlexibleTurn(store, { turn: turn.id, holder: input.holder, detail: refusal.message, ...clocked }); return refusal; };
   const allowed = threadLevelAllowed(store.orgPolicy(), turn.provider, turn.level, input.proven ?? FLEXIBLE_PROVEN);
   if (!allowed.ok) return withdraw(allowed);
-  const fenced = flexibleThreadFence(store, { id: turn.thread, network: { proxyPort: input.network.proxyPort, token: input.network.token }, storage: input.storage });
+  const network = { proxyPort: input.network.proxyPort, token: input.network.token, relayPort: input.relay.port };
+  const fenced = flexibleThreadFence(store, { id: turn.thread, network, storage: input.storage });
   if (!fenced.ok) return withdraw(fenced);
   // The thread's running agent takes the turn only if it is provably the same launch, in the same fence.
   const running = unsettledLaunch(store, turn.thread);
@@ -214,7 +166,11 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
     if (!stopped.ok) return withdraw(refuse("level-pending", `This thread's earlier agent couldn't be stopped (${stopped.why}), so no new one started.`));
   }
   const configHome = join(fenced.paths.cache, "provider", turn.id);
-  const agent = flexibleAgentLaunch(turn.provider, turn.level, { model: turn.model, relay: { url: input.relay.url, token: "0".repeat(57) }, configHome });
+  const platform = input.platform ?? process.platform;
+  // Inside the fence the relay is reached at its second-relay address (this computer's own port on a Mac, the runtime's
+  // relayed one on Linux), never the address it listens on out here.
+  const relayInside = relayUrlInside(input.relay.port, platform);
+  const agent = flexibleAgentLaunch(turn.provider, turn.level, { model: turn.model, relay: { url: relayInside, token: "0".repeat(57) }, configHome });
   if (!agent.ok) return withdraw(agent);
   // The turn's admission, checked again (terms row, day, every spend limit, its level): a refusal withdraws it and
   // nothing starts.
@@ -222,21 +178,28 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   if (!begun.ok) return begun;
   const endTurn = (detail: string) => finishFlexibleTurn(store, { turn: turn.id, holder: input.holder, outcome: "unknown", usage: { tokensIn: 0, tokensOut: 0, costUsd: 0 }, detail, ...clocked });
   // A fresh configuration folder for every launch, made by Toolroll: nothing an earlier launch wrote there loads again.
-  try { freshFolder(join(fenced.paths.cache, "provider"), configHome); }
-  catch { endTurn("the agent's configuration folder couldn't be made"); return { ok: false, reason: "setup-failed", message: "The agent's configuration folder couldn't be made, so it didn't start." }; }
+  // The thread's cache is the agent's to write: everything on the way to it is proved Toolroll's real folders first, and
+  // nothing is deleted through a link. A folder that isn't what Toolroll made refuses the turn; it is never repaired.
+  const providerProblem = freshProviderFolder(fenced.paths, configHome);
+  if (providerProblem !== null) {
+    endTurn(`the agent's configuration folder couldn't be made: ${providerProblem}`);
+    store.recordAction({ at: (input.clock ?? (() => new Date()))().toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: "flexible turn refused",
+      outcome: "refused", detail: `thread ${turn.thread} · turn ${turn.id} · ${providerProblem}` });
+    return { ok: false, reason: "setup-failed", message: "The agent's configuration folder isn't the one Toolroll made, so it didn't start. Nothing was removed." };
+  }
   // The relay grant is issued for exactly the launch once it has its id (its variables come with it); everything else
   // of the agent's environment is known now.
   let endpoint: FlexibleRelayEndpoint | null = null;
   const agentEnvFor = (launchId: string): Record<string, string> => {
     endpoint = input.relay.issue({ thread: turn.thread, turn: turn.id, launch: launchId });
-    const spec = flexibleAgentLaunch(turn.provider, turn.level, { model: turn.model, relay: endpoint, configHome });
+    const spec = flexibleAgentLaunch(turn.provider, turn.level, { model: turn.model, relay: { url: relayInside, token: endpoint.token }, configHome });
     if (!spec.ok) throw new Error(spec.message);
     return spec.spec.env;
   };
-  const spawned = await flexibleThreadSpawn(store, { id: turn.thread, network: { proxyPort: input.network.proxyPort, token: input.network.token }, storage: input.storage,
+  const spawned = await flexibleThreadSpawn(store, { id: turn.thread, network, storage: input.storage,
     proxyEnv: input.network.proxyEnv, agentEnvFor, launch: { provider: turn.provider, level: turn.level, turn: turn.id, holder: input.holder },
     beforeOpen: () => stillMayStart(store, turn.id, input.holder) },
-    agent.spec.file, agent.spec.args, input.platform ?? process.platform, input.seams ?? {});
+    agent.spec.file, agent.spec.args, platform, input.seams ?? {});
   const issued = endpoint as FlexibleRelayEndpoint | null;
   if (!spawned.ok) {
     // Nothing of the agent ran: its grant ends and the turn ends at no cost.
@@ -255,14 +218,47 @@ async function startLocked(store: Store, input: FlexibleTurnStartInput): Promise
   return { ok: true, launched: "started", launchId: spawned.launchId, pid: spawned.pid, child: spawned.child, stopWatching };
 }
 
-/** Make `folder` (inside `parent`) fresh: the parent is emptied and made again as a real folder (a link planted in its
- * place is removed as a link, never followed), then the folder is made exclusively. */
-function freshFolder(parent: string, folder: string): void {
-  rmSync(parent, { recursive: true, force: true });
-  mkdirSync(parent, { mode: 0o700 });
-  if (!lstatSync(parent).isDirectory() || lstatSync(parent).isSymbolicLink()) throw new Error("not a folder");
-  mkdirSync(folder, { mode: 0o700 });
+/** A real folder of this user's, not a link: lstat, never followed. */
+function ownRealFolder(path: string): boolean {
+  try {
+    const held = lstatSync(path);
+    return held.isDirectory() && !held.isSymbolicLink() && (process.getuid === undefined || held.uid === process.getuid());
+  } catch { return false; }
 }
+
+/** Remove `path` and what is in it without ever following a link: a link (or any file) is unlinked as itself, and only
+ * a real folder is entered. */
+function removeNoFollow(path: string): void {
+  const held = lstatSync(path);
+  if (!held.isDirectory() || held.isSymbolicLink()) { unlinkSync(path); return; }
+  for (const name of readdirSync(path)) removeNoFollow(join(path, name));
+  rmdirSync(path);
+}
+
+/**
+ * Make the launch's provider configuration home (`configHome`, inside `<cache>/provider`) fresh, or say why it can't be.
+ * The cache is writable by the thread's agent, so before anything is removed: every folder from the threads root down
+ * to the cache is a real folder of this user's (lstat, never followed), the cache's real path is exactly the recorded
+ * one, and `provider` is either absent or a real folder too. Then `provider` is removed without following any link
+ * inside it and made again exclusively. Anything else refuses (null is success); nothing outside is ever touched.
+ */
+function freshProviderFolder(paths: { root: string; folder: string; cache: string }, configHome: string): string | null {
+  const provider = join(paths.cache, "provider");
+  if (dirname(configHome) !== provider) return "its configuration folder isn't inside the thread's cache";
+  for (const folder of [paths.root, paths.folder, paths.cache]) if (!ownRealFolder(folder)) return `${basename(folder)} isn't a real folder of Toolroll's (a link or something else is there)`;
+  try { if (realpathSync(paths.cache) !== paths.cache) return "the thread's cache isn't where Toolroll put it"; } catch { return "the thread's cache can't be read"; }
+  try {
+    if (existsSync(provider) || isLink(provider)) {
+      if (!ownRealFolder(provider)) return "the cache's provider folder isn't a real folder (a link or something else is there)";
+      removeNoFollow(provider);
+    }
+    mkdirSync(provider, { mode: 0o700 });
+    if (!ownRealFolder(provider)) return "the cache's provider folder couldn't be made";
+    mkdirSync(configHome, { mode: 0o700 });
+    return null;
+  } catch { return "the cache's provider folder couldn't be made fresh"; }
+}
+const isLink = (path: string): boolean => { try { return lstatSync(path).isSymbolicLink(); } catch { return false; } };
 
 // ---- lowering a thread's level -----------------------------------------------------------------------------------------------
 

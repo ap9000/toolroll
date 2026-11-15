@@ -220,8 +220,8 @@ describe("limits at each level", () => {
     plant(REPO, { measuredMicrousdPerDay: 1_000_000 });
     const running = admitted({ billing: "api-key" });
     expect(beginFlexibleTurn(store, { turn: running, holder: "h1", clock: () => NOW })).toMatchObject({ ok: true });
-    expect(chargeFlexibleTurn(store, { turn: running, usage: { tokensIn: 100, tokensOut: 100, costUsd: 0.75 } })).toEqual({ ok: true, costMicrousd: 750_000 });
-    expect(chargeFlexibleTurn(store, { turn: running, usage: { tokensIn: 100, tokensOut: 100, costUsd: 0.75 } })).toEqual({ ok: true, costMicrousd: 750_000 });
+    expect(chargeFlexibleTurn(store, { turn: running, usage: { tokensIn: 100, tokensOut: 100, costUsd: 0.75 } })).toEqual({ ok: true, costMicrousd: 750_000, basis: "measured" });
+    expect(chargeFlexibleTurn(store, { turn: running, usage: { tokensIn: 100, tokensOut: 100, costUsd: 0.75 } })).toEqual({ ok: true, costMicrousd: 750_000, basis: "measured" });
     expect(finishFlexibleTurn(store, { turn: running, holder: "h1", outcome: "finished", usage: null, clock: () => NOW })).toMatchObject({ ok: true, turn: { costMicrousd: 1_500_000, costBasis: "measured", relayCalls: 2 } });
     expect(admit()).toMatchObject({ ok: false, reason: "cap-reached", cap: "project-dollars", resetsAt: MIDNIGHT, message: "This project's measured spend today reached its $1.00 limit. New turns can start after midnight UTC." });
     expect(admit({ clock: () => TOMORROW })).toMatchObject({ ok: true });

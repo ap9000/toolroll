@@ -7,15 +7,17 @@
  * then found and stopped (Linux: the launch's pid namespace ends it with the agent; macOS: found working in the thread's
  * folder); one that leaves the group, the folder and every open file after the holder saw it is found as a witness; a
  * turn started through startFlexibleTurn runs its agent (a stand-in `claude` on PATH, never the real one) at Full
- * access, signed in only through the relay's stand-in, which refuses; lowering the thread mid-turn stops it at once,
- * closes its proxy and its relay token, and interrupts its turn. No model is called.
+ * access, signed in only through its thread's sign-in relay, which it reaches from inside the fence (and which, holding
+ * no Claude sign-in here, sends nothing); lowering the thread mid-turn stops it at once, closes its proxy and its relay
+ * token, and interrupts its turn. No model is called.
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { flexibleThread, flexibleThreadSpawn, prepareFlexibleThread, stopFlexibleThreadAgent, type FlexibleThreadPaths } from "../../src/flexible-thread.js";
 import { flexibleLaunch, relayGrantLive, unsettledLaunch, watchLaunch } from "../../src/flexible-launch.js";
-import { lowerFlexibleThreadLevel, startFlexibleRelayStub, startFlexibleTurn, type FlexibleRelayStub } from "../../src/flexible-agents.js";
+import { lowerFlexibleThreadLevel, startFlexibleTurn } from "../../src/flexible-agents.js";
+import { relayUrlInside, startFlexibleRelay, type FlexibleRelayServer } from "../../src/flexible-relay.js";
 import { admitFlexibleTurn, flexibleTurn } from "../../src/flexible-turns.js";
 import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../../src/flexible.js";
 import { threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
@@ -138,15 +140,10 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
     expect(flexibleThread(world.store, id)!.livePid).toBeNull();
   }, 60_000);
 
-  describe("a turn's agent at Full access, signed in through the relay's stand-in, lowered mid-turn", () => {
-    let relay: FlexibleRelayStub, path: string | undefined;
-    beforeEach(async () => {
-      const made = await startFlexibleRelayStub(world.store);
-      if ("ok" in made) throw new Error(made.message);
-      relay = made;
-      path = process.env["PATH"];
-    });
-    afterEach(async () => { process.env["PATH"] = path; await relay.close(); });
+  describe("a turn's agent at Full access, signed in through its thread's relay, lowered mid-turn", () => {
+    let relay: FlexibleRelayServer | null = null, path: string | undefined;
+    beforeEach(() => { path = process.env["PATH"]; });
+    afterEach(async () => { process.env["PATH"] = path; await relay?.close(); relay = null; });
 
     test("native: the agent gets Full access inside the fence and only the relay's sign-in; lowering stops it, closes its network and interrupts its turn", async ctx => {
       needs(ctx, osFence());
@@ -166,13 +163,18 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
         'echo "token: $ANTHROPIC_AUTH_TOKEN"',
         'echo "config: $CLAUDE_CONFIG_DIR"',
         '[ -n "$ANTHROPIC_API_KEY$CLAUDE_CODE_OAUTH_TOKEN$OPENAI_API_KEY" ] && echo LEAKED-KEY',
-        '(curl -s -m 5 -o /dev/null -w "relay-status %{http_code}\\n" -X POST "$ANTHROPIC_BASE_URL/v1/messages" -d "{}" 2>/dev/null) || echo relay-unreachable',
+        'for c in codex gemini; do command -v $c >/dev/null 2>&1 && echo "REAL-CLI $c"; done',
+        '(curl -s -m 5 -o /dev/null -w "relay-status %{http_code}\\n" -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H "authorization: Bearer $ANTHROPIC_AUTH_TOKEN" -H "content-type: application/json" -d \'{"model":"claude-sonnet-4-5","max_tokens":1,"messages":[]}\' 2>/dev/null) || echo relay-unreachable',
         "echo ready",
         "sleep 60",
       ].join("\n"));
       chmodSync(join(bin, "claude"), 0o755);
-      process.env["PATH"] = `${bin}:${path ?? "/usr/bin:/bin"}`;
+      // Only the stand-in and the system's own folders: no real agent program can be found.
+      process.env["PATH"] = `${bin}:/usr/bin:/bin`;
       const { id, paths } = await thread();
+      const made = await startFlexibleRelay(world.store, { thread: id });
+      if ("ok" in made) throw new Error(made.message);
+      relay = made;
       const admitted = admitFlexibleTurn(world.store, { thread: id, starter: { name: "alex", generation: world.store.accountOf("alex")!.generation }, digest, level: "full", freshProof: false,
         provider: "claude", model: "claude-sonnet-4-5", billing: "subscription", requestKey: "m-1", holder: "attack" });
       if (!admitted.ok) throw new Error(admitted.message);
@@ -185,14 +187,16 @@ describe("attack: a Flexible thread's agent leaving processes behind", () => {
       const closed = new Promise(done => started.child.once("close", done));
       await until(() => out.includes("ready"), () => out);
       expect(out).toContain("--permission-mode bypassPermissions");
-      expect(out).toContain(`base: ${relay.url}`);
+      expect(out).toContain(`base: ${relayUrlInside(relay.port)}\n`);
       const token = /token: (tr-relay-[0-9a-f]{48})/.exec(out)?.[1] ?? "";
       expect(relayGrantLive(world.store, token)).toBe(true);
       expect(out).toContain(`config: ${join(paths.cache, "provider", admitted.turn)}\n`);
       expect(out).not.toContain("LEAKED-KEY");
-      // The fence lets it reach only its proxy (here a dead port): the relay's stand-in isn't even reached, and it would refuse.
-      expect(out).toMatch(/relay-status (000|503)|relay-unreachable/);
-      expect(relay.refused()).toBe(0);
+      expect(out).not.toContain("REAL-CLI");
+      // The fence lets it reach its proxy (here a dead port) and its relay, at the relay's second-relay address: the call
+      // is authorized and bound to the turn, and refused only because no Claude sign-in is kept here (nothing was sent).
+      expect(out).toContain("relay-status 503");
+      expect(world.store.handle.prepare("SELECT status, reason, turn FROM thread_relay_call").all().map(row => ({ ...row }))).toEqual([{ status: "refused", reason: "no-credential", turn: admitted.turn }]);
       expect(flexibleTurn(world.store, admitted.turn)!.status).toBe("running");
       const lowered = await lowerFlexibleThreadLevel(world.store, { thread: id, by: { name: "alex", generation: world.store.accountOf("alex")!.generation }, level: "supervised" });
       expect(lowered).toMatchObject({ ok: true, stopped: "stopped", message: "Lowered to Supervised; the current step was stopped." });
