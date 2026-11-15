@@ -136,6 +136,15 @@ export function Html({ html, className }: { html: string; className?: string }) 
   return <GuardedHtml html={html} immutable {...(className === undefined ? {} : { className })} />;
 }
 
+/** Reject: the task's own Cancel, which asks once more before anything is cancelled. Opens it and takes the focus there. */
+function openCancel(): void {
+  const fold = document.getElementById("cancel-task");
+  if (!(fold instanceof HTMLDetailsElement)) { window.location.hash = "cancel-task"; return; }
+  fold.open = true;
+  fold.scrollIntoView({ block: "start" });
+  fold.querySelector<HTMLElement>("summary")?.focus();
+}
+
 /** Retry itself, on the failed box: the task page's requeue (branch and workspace kept). The one suggestion of what to
  * change rides along as its own field, shown as Toolroll's; the person's own note starts empty (one-workspace S5: only
  * what they type is ever quoted as theirs). */
@@ -244,22 +253,35 @@ function RecheckStopped({ form, label }: { form: NonNullable<BrowserTaskView["re
 /** Whether the plan's in-place editor (#plan-editor, in the Plan tab) is open: while it is, what the page shows is not
  * what an approval would sign, so nothing approves until Save or Cancel. */
 const editorOpen = (): boolean => document.getElementById("plan-editor") instanceof HTMLDetailsElement && (document.getElementById("plan-editor") as HTMLDetailsElement).open;
+/** Whether any plan editor holds edits not yet saved: the in-place editor open, or the plan's own text editor
+ * (#plan-edit) changed from what the page loaded. Either way the page doesn't show what an approval would sign. */
+const planEditUnsaved = (): boolean => {
+  if (editorOpen()) return true;
+  const text = document.getElementById("plan-edit");
+  return text !== null && [...text.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>("textarea, input:not([type=hidden])")].some(field => field.value !== field.defaultValue);
+};
 function usePlanEditing(): boolean {
   const [editing, setEditing] = useState(false);
   useEffect(() => {
-    const read = () => setEditing(editorOpen());
+    const read = () => setEditing(planEditUnsaved());
     read();
-    // A details element's toggle doesn't bubble: listen in the capture phase for the editor anywhere on the page.
-    const onToggle = (event: Event) => { if ((event.target as Element | null)?.id === "plan-editor") read(); };
+    // A details element's toggle doesn't bubble: listen in the capture phase for either editor anywhere on the page, and
+    // for typing in the plan's text.
+    const onToggle = (event: Event) => { const id = (event.target as Element | null)?.id; if (id === "plan-editor" || id === "plan-edit") read(); };
+    const onInput = (event: Event) => { if ((event.target as Element | null)?.closest?.("#plan-edit, #plan-editor")) read(); };
     document.addEventListener("toggle", onToggle, true);
-    return () => document.removeEventListener("toggle", onToggle, true);
+    document.addEventListener("input", onInput, true);
+    return () => { document.removeEventListener("toggle", onToggle, true); document.removeEventListener("input", onInput, true); };
   }, []);
   return editing;
 }
 
-function ApprovalBox({ approve, latest, onEdit, reject = false, inRow = false }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null; reject?: boolean;
+function ApprovalBox({ approve, latest, onEdit, reject = false, inRow = false, sheet }: { approve: NonNullable<BrowserTaskView["approve"]>; latest: BrowserTaskView["approve"]; onEdit: (() => void) | null; reject?: boolean;
   /** In the Approval row, which carries the Needs-you chip and the one outline itself. */
-  inRow?: boolean }) {
+  inRow?: boolean;
+  /** The plan sheet the yes signs (server HTML, no form control): read between the heading and the acts, so the acts
+   * come after the evidence, in reading order and in the document. */
+  sheet?: string | undefined }) {
   const ref = useRef<HTMLFormElement>(null);
   const csrf = useContext(FormToken);
   const editing = usePlanEditing();
@@ -312,7 +334,7 @@ function ApprovalBox({ approve, latest, onEdit, reject = false, inRow = false }:
     return null;
   };
   // Belt and braces: a press that lands while the editor opened is refused in place, never sent.
-  const approveNow = (password: string | null) => editorOpen()
+  const approveNow = (password: string | null) => planEditUnsaved()
     ? Promise.resolve("Save or cancel your edit first: approving now would approve the plan as it was. Nothing changed.")
     : password === null && approvalAsk(approve.kind, facts) === "click" ? approveInPlace()
     : submitNative(ref.current, password);
@@ -321,14 +343,19 @@ function ApprovalBox({ approve, latest, onEdit, reject = false, inRow = false }:
     {Object.entries(approve.fields).map(([name, value]) => <input key={name} type="hidden" name={name} value={value} />)}
     <input type="hidden" name="token" value="" />
     <KSlots wait status={<>{!inRow && <KChip word="Needs you" tone="needs" />}<h2>{approve.heading}</h2></>} text={approve.text}
+      {...(sheet === undefined ? {} : { body: <Html html={sheet} className="so-task-plan" /> })}
       acts={answered !== null ? (answered.done ? null : <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />)
         : changed ? <KButton variant="primary" label="Reload" onClick={() => window.location.reload()} />
-        : editing ? <KButton label="Back to the edit" onClick={() => onEdit?.()} />
+        : editing ? <KButton label="Back to the edit" onClick={() => {
+          if (editorOpen()) { onEdit?.(); return; }
+          const text = document.getElementById("plan-edit");
+          if (text instanceof HTMLDetailsElement) { text.open = true; text.scrollIntoView({ block: "start" }); text.querySelector<HTMLElement>("textarea")?.focus(); }
+        }} />
         : <><KApprove kind={approve.kind} facts={facts} label={approve.label} docked terms={terms} text={approve.text} onApprove={approveNow} />
           {onEdit !== null && <KButton label="Request changes" onClick={onEdit} />}
-          {reject && <KLinkButton variant="ghost" label="Reject" href="#cancel-task" data-approval-reject="" />}</>}
+          {reject && <KButton variant="ghost" label="Reject…" title="Opens Cancel task, where you confirm it" data-approval-reject="" onClick={openCancel} />}</>}
       terms={answered !== null ? answered.words : changed ? "The plan changed since this page loaded. Reload to see the version you would approve."
-        : editing ? "You’re editing the plan. Save it (it then asks for approval again) or cancel the edit to approve this version." : terms} />
+        : editing ? "You have unsaved changes to the plan. Save them (it then asks for approval again) or cancel the edit to approve this version." : terms} />
     {/* On a phone the one primary lives in the dock: the same act, the same form. */}
     {live && <KDock><KApprove kind={approve.kind} facts={facts} label={approve.label} terms={terms} text={approve.text} onApprove={approveNow} /></KDock>}
   </PostForm>;
@@ -941,7 +968,7 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
     if (to.hash !== "") revealTarget(decodeURIComponent(to.hash.slice(1)), show);
   };
   const editPlan = approve === null ? null : () => { show({ row: "approve" }); revealTarget("plan-editor", show, true); };
-  const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono">{view.id}</span>{view.scout && <> · research only</>}
+  const meta = <>{view.project !== null && <>{view.project} · </>}<span className="k-mono so-task-id">{view.id}</span>{view.scout && <> · research only</>}
     {people.length > 0 && <> · <AlsoViewing people={people} /></>}</>;
   const record = view.audit ?? null;
   const needs = view.status?.status.headline === "Needs you" || view.status?.status.headline === "Ready for review";
@@ -993,8 +1020,12 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         if (approve !== null) return <div className="so-approval-step" key={`approve:${approve.fields["digest"] ?? ""}`} data-approval-step="">
           {/* Why the last yes wasn't taken reads first, above the form it answers. */}
           {leadCards(leadOf("approve").filter(block => block.key === "problem"))}
-          <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} inRow />
-          <div className="so-approval-sheet"><Html html={approve.planHtml} className="so-task-plan" /></div>
+          <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} inRow sheet={approve.sheetHtml} />
+          {approve.sheetHtml === undefined ? <div className="so-approval-sheet"><Html html={approve.planHtml} className="so-task-plan" /></div>
+            : approve.editorHtml !== undefined && <Html html={approve.editorHtml} className="so-task-plan so-approval-editor" />}
+          {/* No Plan row while this card holds the plan: what that row held (the plan's own editor, its notes) is here. */}
+          {rows !== null && !rows.some(one => one.key === "plan") && <>{leadCards(leadOf("plan"))}
+            {view.plan != null && view.plan.html !== "" && <Html key={view.plan.key} html={view.plan.html} className="so-task-plan so-approval-plan" />}</>}
           {leadCards(leadOf("approve").filter(block => block.key !== "problem"))}
         </div>;
         return <>{status}
@@ -1050,8 +1081,9 @@ export function TaskView({ view, chat = null, csrf = "", result }: { view: Brows
         ? <div className="so-task-steps" data-task-steps="folded"><KDisclose summary="Plan and steps" open={stepsOpen} onToggle={setStepsOpen}><KStepRows label="Steps" rows={items} onToggle={toggle} /></KDisclose></div>
         : <KStepRows label="Steps" rows={items} onToggle={toggle} /> : <>
         {/* No road (cancelled, or no status): the status block as it was, then what the task holds. */}
-        {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} />}
-        {approve !== null && <Html html={approve.planHtml} className="so-task-plan" />}
+        {approve !== null && <ApprovalBox approve={approve} latest={view.approve ?? null} onEdit={editPlan} reject={view.cancel !== null} sheet={approve.sheetHtml} />}
+        {approve !== null && (approve.sheetHtml === undefined ? <Html html={approve.planHtml} className="so-task-plan" />
+          : approve.editorHtml !== undefined && <Html html={approve.editorHtml} className="so-task-plan so-approval-editor" />)}
         {approve !== null ? null : view.status !== null ? <StatusBox view={view} card={view.status} csrf={csrf} approved={view.approved ?? null} unsent={!activity} /> : <Html html={view.statusHtml} />}
         {approvalHere && <Html key={approvalIdentity(view.approval)} html={view.approval} className="so-task-approval" />}
         {readyExtras(resultBody !== null)}

@@ -205,15 +205,14 @@ describe("the task page's step rows (stepRowsOf)", () => {
     expect(stepRowsOf(facts({ journey: null }))).toBeNull();
   });
 
-  test("waiting on the approval: the plan is one line pointing below, the approval is the one ink step, the rest say what will happen", () => {
+  test("waiting on the approval: its card holds the plan (no Plan row), the approval is the one ink step, the rest say what will happen", () => {
     const view = facts({ journey: taskRoad({ stage: "needs-you", need: "approval" }, false, false, {}), approve: { heading: "Plan ready" },
       plan: { lead: "Add subtract next to add.", by: "Claude Sonnet", at: "2026-11-10T23:28:00.000Z", planning: false },
       status: { status: { headline: "Needs you", sentence: "Approve the plan." }, attempts: [] } });
-    expect(rows(view)).toEqual(["plan:done:Written by Claude Sonnet · shown below", "approve:needs+:", "build:todo-:Starts when you approve",
+    expect(rows(view)).toEqual(["approve:needs+:", "build:todo-:Starts when you approve",
       "checks:todo-:The project's checks run on the result", "ready:todo-:A result for you to review"]);
-    const approval = stepRowsOf(view)![1]!;
+    const approval = stepRowsOf(view)![0]!;
     expect(approval).toMatchObject({ label: "Approval", needsYou: true, state: "current" });
-    expect(stepRowsOf(view)![0]!.at).toBe("2026-11-10T23:28:00.000Z");
   });
 
   test("a held task whose plan still waits for a yes: the road stops at Plan, and the Approval row is open with its form", () => {

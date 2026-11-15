@@ -25,6 +25,7 @@ import { sweepSchedule } from "./storage-sweep-schedule.js";
 import { lastSweep } from "./storage-sweep.js";
 import { saveProjectConcurrency } from "./project-concurrency.js";
 import { presented, OK, T0, AGENT_SAID, registerRunner, concludeDone, proveChangedPath } from "../test/tick-kit.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 describe("watch — the loop, zero tokens idle", () => {
   let base: string;
@@ -108,7 +109,7 @@ describe("watch — the loop, zero tokens idle", () => {
     await run(["task", "scope", id, "--goal", "add a guard on the payout path", "--acceptance", acceptance, ...budget]);
     await run(["task", "approve", id, "--json"]);
     const digest = payload().scope.digest as string;
-    await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "alex", "--token", approverToken]);
+    await run(["task", "approve", id, "--yes", "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approverToken]);
   };
 
   test("one watch drains a dependency chain without waiting for the next interval", async () => {

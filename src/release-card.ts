@@ -134,14 +134,22 @@ export function schemaLeaves(schema: unknown, prefix = ""): string[] {
 const valueAt = (terms: unknown, path: string): unknown => path.split(".").reduce<unknown>((at, key) => at !== null && typeof at === "object" ? (at as Record<string, unknown>)[key] : undefined, terms);
 
 /** Every signed term of `scope`, its release terms included, one line each. Reads only. */
-export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (profile: Scope["profile"]) => string | null }): TermLine[] {
+export function approvalTermsOf(store: Store, scope: Scope, words: CardWords): TermLine[] {
   const ref = store.lookupRef(scope.taskId);
   const repo = ref?.repo ?? null;
+  // In a chat app a project is its name (and its GitHub owner/name), never its folder on this computer (the terms diet:
+  // a chat card carries no local path). The web and the CLI keep the path. Words only: no digest reads these lines.
+  const where = (path: string): string => {
+    if (words.chat !== true) return text(path);
+    const remote = store.projectRemote(path);
+    const slug = remote === null ? null : releaseRemote(remote)?.slug ?? null;
+    return slug ?? text(projectName(path));
+  };
   const filer = store.taskFiler(scope.taskId);
   const profile = scope.profile ?? null;
   const scopeValues: Record<keyof typeof SCOPE_TERM_LABELS, string> = {
     title: said(store.getTask(scope.taskId)?.title),
-    project: repo === null ? NONE : `${text(projectName(repo))} (${text(repo)})`,
+    project: repo === null ? NONE : `${text(projectName(repo))} (${where(repo)})`,
     filedBy: filer === null ? NONE : filer.name === null ? filer.kind : `${text(filer.name)}${filer.kind === "person" ? "" : ` (${filer.kind})`}`,
     goal: said(scope.goal),
     // null (nothing excluded) and an empty exclusion are signed apart, and read apart.
@@ -173,7 +181,7 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
   if (terms === null && scope.releaseCheck != null) {
     const purpose = scope.releaseCheck;
     for (const path of schemaLeaves(releaseCheckPurposeSchema)) {
-      const value = path === "pr" ? `#${purpose.pr}` : path === "purpose" ? "a release check: every later commit asks again" : said(valueAt(purpose, path));
+      const value = path === "pr" ? `#${purpose.pr}` : path === "purpose" ? "a release check: every later commit asks again" : path === "repo" ? where(purpose.repo) : said(valueAt(purpose, path));
       lines.push({ key: `releaseCheck.${path}`, label: RELEASE_CHECK_LABELS[path] ?? path, value });
     }
     return lines;
@@ -184,7 +192,8 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
       // The whole project is protected, and the signed list is said too (it is part of what was signed).
       : path === "policy.protectedPaths" && terms.policy.protectProject ? `the whole project (listed: ${said(terms.policy.protectedPaths)})`
       // Absent (sealed before the setting existed) is off, said apart from a signed "no".
-      : path === "policy.unsandboxedCarry" && terms.policy.unsandboxedCarry === undefined ? "no (not set when sealed)" : said(valueAt(terms, path));
+      : path === "policy.unsandboxedCarry" && terms.policy.unsandboxedCarry === undefined ? "no (not set when sealed)"
+      : path === "repo" ? where(terms.repo) : said(valueAt(terms, path));
     lines.push({ key: `release.${path}`, label, value });
   }
   return lines;
@@ -419,7 +428,11 @@ function lastCheckWords(store: Store, repo: string | null, taskId: string): stri
   return words === null ? [] : [`Last check: ${words}.`];
 }
 
-export function releaseCardOf(store: Store, scope: Scope, formDigest: string, words: { profile: (profile: Scope["profile"]) => string | null }, read?: PullRequestReader): ReleaseCard {
+/** How a card words its terms: the agent's permissions, and whether it goes to a chat app (a project by name, never
+ * its local folder). */
+export type CardWords = { profile: (profile: Scope["profile"]) => string | null; chat?: boolean };
+
+export function releaseCardOf(store: Store, scope: Scope, formDigest: string, words: CardWords, read?: PullRequestReader): ReleaseCard {
   const terms = scope.releaseTerms ?? null;
   // Either sealed form (Codex round 2, finding 1): the identity both share, for the head lines and the change list.
   const identity = releaseSealOf(scope)?.identity ?? null;

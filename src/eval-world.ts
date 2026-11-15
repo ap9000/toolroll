@@ -74,8 +74,10 @@ export async function runEvalWorld(one: EvalCase, input: { worldDir: string; dat
       "--not", "Changing package or dependency files, or anything the goal doesn't ask for."]);
     const shown = await say(["task", "show", "work"]);
     const digest = (shown["scope"] as Record<string, unknown> | undefined)?.["digest"];
-    if (typeof digest !== "string") throw new Error("the world's task has no scope to approve");
-    await say(["task", "approve", "work", "--yes", "--digest", digest, ...auth]);
+    const terms = shown["approvalTerms"];
+    if (typeof digest !== "string" || typeof terms !== "string") throw new Error("the world's task has no scope to approve");
+    // The digest and the terms `task show` read: the yes names both, as a person's does.
+    await say(["task", "approve", "work", "--yes", "--digest", digest, "--terms", terms, ...auth]);
     writeNew(join(dirname(databaseFile), "worker-token"), String(registered["token"]), 0o600);
   } catch (error) {
     return { evalStage: "world-start", why: error instanceof Error ? error.message : String(error) };

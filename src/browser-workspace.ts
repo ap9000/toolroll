@@ -331,6 +331,8 @@ export type BrowserTaskView = {
     rememberedUntil: string | null; planHtml: string;
     /** The plan sheet alone (no editor, no form): what Home shows beside its Approve (live-pages-and-home.md B2.1). */
     sheetHtml?: string;
+    /** The in-place plan editor and its own form (outside the approval's form): what Request changes opens. */
+    editorHtml?: string;
     /** The terms line in words, when the rule isn't one of the kit's (easy-start C5: a laptop's own owner). */
     termsWords?: string } | null;
   /** Ship: the pull request's checks, each on one time axis (task ship's twin). Null: no checks read yet. */

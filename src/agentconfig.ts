@@ -143,6 +143,9 @@ export function resolveScopeProfile(
   ref: Pick<TaskRef, "agentProvider" | "agentModel"> | undefined,
   flags: PhaseFlags & { repairModel?: string | undefined; permissionMode?: UnattendedPermissionMode | undefined },
   platform: NodeJS.Platform = process.platform,
+  /** `walk: false` names no registries from the checkout (no folder walk): for a reading of the project's usual
+   * settings (approval-summary.ts), never for a profile that is sealed. */
+  options: { walk?: boolean } = {},
 ): ProfileResolution {
   const build = resolvePhaseAgent(store, "build", repo, flags, ref);
   if (!build.ok) return { ok: false, reason: "unknown-provider", problem: build.problem };
@@ -239,7 +242,7 @@ export function resolveScopeProfile(
           };
   // What the build may reach (egress.ts): resolved now, from the project's setting, the provider's own hosts and the
   // registries the repository's own HEAD names, and sealed with the rest of the profile.
-  const network = resolveNetwork(provider, repo === null ? PROJECT_NETWORK_DEFAULT : store.projectNetwork(repo), repo === null ? [] : repositoryEcosystems(repo));
+  const network = resolveNetwork(provider, repo === null ? PROJECT_NETWORK_DEFAULT : store.projectNetwork(repo), repo === null || options.walk === false ? [] : repositoryEcosystems(repo));
   // Where the build may write (writes-mode.ts): the project's setting, sealed likewise.
   const writes = repo === null ? WRITES_DEFAULT : store.projectWrites(repo);
   // How far its checks reach (check-access.ts): the project's setting as checks can get it (sign-ins, off for now,

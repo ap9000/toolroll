@@ -26,8 +26,9 @@ import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, signInLinkFrom, signInOpenerStandIn, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
+import { checkedEnv, ownRoot, flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, signInLinkFrom, signInOpenerStandIn, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+import { isolatedEnvironment } from "./isolated-env.mjs";
 /** The saved login `up` writes: in the reserved secrets folder, else (an older install) beside the database. */
 const savedLoginOf = state => existsSync(join(state, ".toolroll-secrets", "up-login.txt")) ? join(state, ".toolroll-secrets", "up-login.txt") : join(state, "up-login.txt");
 
@@ -460,8 +461,8 @@ await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
       .catch(async () => { throw new Error(`alex's own approval wasn't refused: ${(await page.locator("body").innerText()).slice(0, 300)}`); });
     if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by) throw new Error("alex approved their own task");
     await shot("approval-rules-refused");
-    const digest = cli(["task", "show", id]).scope.digest;
-    cli(["task", "approve", id, "--yes", "--digest", digest, "--as", "sam", "--token", w.passwords.sam]);
+    const shown = cli(["task", "show", id]);
+    cli(["task", "approve", id, "--yes", "--digest", shown.scope.digest, "--terms", shown.approvalTerms, "--as", "sam", "--token", w.passwords.sam]);
     if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by !== "sam") throw new Error("sam's approval didn't seal it");
     return { filedBy: "alex", approvedBy: "sam" };
   } finally {
@@ -619,7 +620,7 @@ await journey("console", SCRIPTED, "The command line answers: the task list, the
   const list = cli(["task", "list"]);
   const people = cli(["approver", "list"]);
   const verify = cli(["verify", "show", "--repo", repo], { json: false });
-  const help = execFileSync(process.execPath, [w.bin, "--help"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } });
+  const help = execFileSync(process.execPath, [w.bin, "--help"], { encoding: "utf8", env: checkedEnv(process.env, { NODE_OPTIONS: "" }) });
   if (list === null || typeof list !== "object") throw new Error("task list didn't answer as JSON");
   if (!JSON.stringify(people).includes("sam")) throw new Error(`the approvers: ${JSON.stringify(people).slice(0, 200)}`);
   if (!/npm test/.test(verify)) throw new Error(`the project's check: ${verify.slice(0, 200)}`);
@@ -989,8 +990,9 @@ await journey("builds", REAL_MODEL, "A build stops to ask a question the plan le
   const id = "round";
   cli(["task", "add", "Add a round2 function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add round2(x) to src/math.js (round to 2 decimal places) with a test in test/math.test.js. Whether an exact half rounds up or to the nearest even digit is the operator's call and is not decided yet: before writing any code, stop and ask the operator with two options (half up, half to even), then build what they choose.", "--acceptance", "round2 follows the operator's answer, with a test|check", ...auth]);
-  const digest = cli(["task", "show", id]).scope.digest;
-  cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+  const shown = cli(["task", "show", id]);
+  const digest = shown.scope.digest;
+  cli(["task", "approve", id, "--yes", "--digest", digest, "--terms", shown.approvalTerms, ...auth]);
   const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.question, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 600_000, everyMs: 5000 });
   await page.goto(`${base}/d/${asked.id}`);
   // The answer box: one choice per option (the recommended one picked), then Answer.
@@ -1025,8 +1027,9 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   );
   cli(["task", "add", "Add a divide function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add divide(a, b) to src/math.js, throwing on division by zero, with tests for both in test/math.test.js.", "--acceptance", "divide works and refuses zero|check", ...auth]);
-  const digest = cli(["task", "show", id]).scope.digest;
-  cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+  const shown = cli(["task", "show", id]);
+  const digest = shown.scope.digest;
+  cli(["task", "approve", id, "--yes", "--digest", digest, "--terms", shown.approvalTerms, ...auth]);
   // Running means its agent has started (a stop before that is a different case: nothing ran yet). Every launch now
   // checks the protected storage folders first, so the run's row comes a moment before its agent does.
   const running = await until("the build's agent to start", async () => {
@@ -1434,7 +1437,8 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
   );
   cli(["task", "add", "Add a modulo function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add modulo(a, b) to src/math.js with a test in test/math.test.js.", "--acceptance", "modulo works|check", ...auth]);
-  cli(["task", "approve", id, "--yes", "--digest", cli(["task", "show", id]).scope.digest, ...auth]);
+  const shownNow = cli(["task", "show", id]);
+  cli(["task", "approve", id, "--yes", "--digest", shownNow.scope.digest, "--terms", shownNow.approvalTerms, ...auth]);
   const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 180_000, everyMs: 500 });
   const list = `${base}/?view=needs-you`;
   const same = on => on.evaluate(() => window.__sameDocument === true).catch(() => false);
@@ -2859,8 +2863,9 @@ await journey("pages", SCRIPTED, "A running release check: a release stopped at 
     await panel(page).waitFor({ timeout: 15_000 });
     if (await panel(page).getAttribute("data-release") !== "failed" || !(await panel(page).innerText()).includes("Stopped at Approval")) problems.push(`before anything moved the panel read: ${(await panel(page).innerText()).slice(0, 200)}`);
     await shot("release-stopped-desktop");
-    const digest = cli(["task", "show", id]).scope.digest;
-    cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+    const shown = cli(["task", "show", id]);
+    const digest = shown.scope.digest;
+    cli(["task", "approve", id, "--yes", "--digest", digest, "--terms", shown.approvalTerms, ...auth]);
     const running = await until("the release's check to start", async () => {
       const one = latestBuild(id);
       return one && !one.finished_at && (rows(`SELECT status FROM run_check WHERE run = ${one.id}`).length === 0) && rows(`SELECT 1 AS hit FROM run_process WHERE run = ${one.id} AND exited_at IS NULL LIMIT 1`).length > 0 ? one : null;
@@ -2920,10 +2925,10 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
   const root = realpathSync(laptop ? makeTempRoot("tr-es-", { keep: flag("--keep"), parent: "/tmp" }) : makeTempRoot(`toolroll-onboarding-${name}-`, { keep: flag("--keep") }));
   const home = join(root, "home"), shop = join(root, "shop"), bin = join(root, "bin"), opened = join(root, "opened.html"), log = join(root, "terminal.log");
   for (const one of [home, shop, bin]) mkdirSync(one);
-  // The PATH a stranger's shell might have, minus every agent CLI: node and npm, git, the system's own tools.
-  symlinkSync(process.execPath, join(bin, "node"));
-  const npm = join(dirname(process.execPath), "npm");
-  if (existsSync(npm)) symlinkSync(realpathSync(npm), join(bin, "npm"));
+  // A stranger's computer (isolated-env.mjs): its home, temp and bin here, an allowlisted PATH (this bin, then approved
+  // tools: no agent CLI but the one a journey puts in this bin), recording openers and gh, refusing supervisors.
+  const computer = isolatedEnvironment({ root });
+  ownRoot(root);
   const signIn = () => {
     // This computer's Claude Code, with its own home and user (its sign-in lives in the user's keychain).
     const user = JSON.stringify(process.env.USER ?? "");
@@ -2953,10 +2958,10 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
   writeFileSync(join(shop, "README.md"), "# Shop\n\nA tiny shop library.\n");
   const git = (...args) => execFileSync("git", ["-C", shop, ...args], { stdio: "ignore" });
   git("init", "-q", "-b", "main"); git("add", "."); git("-c", "user.name=Sam Rivera", "-c", "user.email=sam@example.invalid", "commit", "-qm", "First version");
-  const env = { PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, USER: "sam", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: join(root, "tmp"),
+  const env = { ...computer.env, LANG: "en_US.UTF-8", TERM: "xterm-256color",
     TOOLROLL_BROWSER_COMMAND: join(bin, "open-browser"), TOOLROLL_NO_PLAN_PROBE: "1",
     GIT_AUTHOR_NAME: "Sam Rivera", GIT_AUTHOR_EMAIL: "sam@example.invalid", GIT_COMMITTER_NAME: "Sam Rivera", GIT_COMMITTER_EMAIL: "sam@example.invalid" };
-  mkdirSync(env.TMPDIR);
+  // Checked right before each process starts (spawnOwned → checkedEnv).
   const terminal = () => existsSync(log) ? readFileSync(log, "utf8").replace(/\r/g, "").replace(/\^D\x08\x08/g, "") : "";
   // A laptop install starts from the home folder (no repository: `up --laptop` uses ~/Projects), as bare `toolroll` would.
   const install = { root, home, shop, bin, terminal, signIn, env, log, opened, laptop, cwd: laptop ? home : shop, groups: [], stopped: false };
@@ -2984,7 +2989,7 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
     // person does once, from the terminal, before anything is filed.
     if (crewModels) {
       const [who, secret] = readFileSync(savedLoginOf(state), "utf8").trim().split(" ");
-      const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: { ...process.env, HOME: home } });
+      const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: checkedEnv(env) });
       for (const phase of ["plan", "build", "repair", "review"]) toolroll("config", "set", phase, "--provider", "claude", "--model", "sonnet");
       toolroll("verify", "set", "--repo", realpathSync(shop), "--command", "npm test", "--timeout-seconds", "120", "--yes");
       // Inside the plane's macOS check fence, as the world itself does (e2e-kit insideFence): this throwaway install's

@@ -69,7 +69,7 @@ export function sandboxOf(raw: { readDeny?: unknown; machLookup?: unknown }): Pr
 /** A read-deny entry as the path it names for a launch whose home folder is `home`. */
 export const readDenyPath = (one: string, home: string): string => one.startsWith("~/") ? `${home}/${one.slice(2)}` : one;
 
-/** What an approval's sandbox terms say, one line each, for every surface that asks for a yes (scope.ts describeScope,
+/** What an approval's sandbox terms say, one line each, for every surface that asks for a yes (approval-summary.ts describeScope,
  * the console's scope view): the fence policy and its read denies always, the macOS services when there are any. */
 export function sandboxTermsWords(profile: { fencePolicy?: 2; readDeny?: readonly string[]; machLookup?: readonly string[] }): { reads: string; mach: string | null } {
   const reads = profile.fencePolicy === 2

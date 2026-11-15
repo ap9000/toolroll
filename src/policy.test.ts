@@ -26,6 +26,7 @@ import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { flowFromSteps } from "./flows.js";
 import { setAuthMode } from "./keys.js";
 import { policyHtml } from "./policy-ui.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const T0 = new Date("2026-09-28T09:00:00.000Z");
 const REPO = "/repos/shop";
@@ -396,7 +397,7 @@ describe("the tick, against real git", () => {
     const digest = store.getScope("dedupe")!.digest;
     expect(store.getScope("dedupe")!.profile).toMatchObject({ permissionArgv: "bypassPermissions" });
     store.close();
-    await run(["task", "approve", "dedupe", "--as", "alex", "--token", token, "--digest", digest, "--yes", "--json"]);
+    await run(["task", "approve", "dedupe", "--as", "alex", "--token", token, "--digest", digest, ...termsArgs(db, "dedupe"), "--yes", "--json"]);
     expect(payload().ok).toBe(true);
 
     await run(["policy", "set", "--providers", "codex", "--as", "alex", "--token", token]);

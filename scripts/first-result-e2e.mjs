@@ -44,6 +44,7 @@ if (!process.argv.includes("--journeys")) process.argv.push("--journeys", "scrip
 const kit = await import("./e2e-kit.mjs");
 const { world, flag, option, until, sleep, spawnOwned, own, stopGroups, groupAlive, waitFor, here, SCRIPTED, REAL_MODEL, Skip, GiveUp, SKIPPED_FADE, REAL_TURN_MS } = kit;
 const { makeTempRoot } = await import("./suite-lifecycle.mjs");
+const { isolatedEnvironment } = await import("./isolated-env.mjs");
 const fr = await import("./first-result-kit.mjs");
 const { Screen, plainText, looksLikeStackTrace, createTrace, countsOf, splitsOf, totalOf, launchPlan, packageSource, realRunRefusal, PERSON_SECONDS } = fr;
 
@@ -100,7 +101,13 @@ if (!listing && nextPort !== null && (!Number.isInteger(nextPort) || nextPort < 
   console.error(`Not started: --port needs a port from 1024 to 65000 whose next 40 stay clear of 4180 (got ${PORT_GIVEN}).`);
   process.exit(2);
 }
-const withPort = typed => nextPort === null || !/^(?:toolroll|npx -y \S+)(?: --web)?$/.test(typed) ? typed : `${typed} --port ${nextPort++}`;
+/** Every bare start gets a port of its own, never 4180 (the person's own console): --port's next one, else a free one. */
+const withPort = async typed => {
+  if (!/^(?:toolroll|npx -y \S+)(?: --web)?$/.test(typed)) return typed;
+  let port = nextPort !== null ? nextPort++ : await kit.freePort();
+  while (port === 4180) port = await kit.freePort();
+  return `${typed} --port ${port}`;
+};
 const w = await world("first-result", {});
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const evidence = option("--evidence", join(here, "evidence", "first-result", `${stamp}-${scriptedRun ? "scripted" : "real"}`));
@@ -168,9 +175,11 @@ const installs = [];
 function newcomer(name, { agent = "signed-in", where = "repo" } = {}) {
   const root = realpathSync(makeTempRoot("tr-fr-", { keep: flag("--keep"), parent: "/tmp" }));
   const home = join(root, "home"), bin = join(root, "bin"), tmp = join(root, "tmp"), shop = join(home, "shop"), folder = join(home, "notes"), opened = join(root, "opened.html");
+  // A computer of its own (isolated-env.mjs): its home, temp and bin here, an allowlisted PATH (this bin, then approved
+  // tools), recording openers and gh, refusing supervisors; this journey's own stand-ins below replace some of them.
+  const computer = isolatedEnvironment({ root });
+  kit.ownRoot(root);
   for (const one of [home, bin, tmp]) mkdirSync(one, { recursive: true });
-  symlinkSync(process.execPath, join(bin, "node"));
-  for (const tool of ["npm", "npx"]) { const found = join(dirname(process.execPath), tool); if (existsSync(found)) symlinkSync(realpathSync(found), join(bin, tool)); }
   const exe = (file, text) => { writeFileSync(join(bin, file), text); chmodSync(join(bin, file), 0o755); };
   // This checkout's build as `toolroll` (a scripted run; a real run's comes from the package).
   if (install === "local") exe("toolroll", `#!/bin/sh\nexec ${shellWord(process.execPath)} ${shellWord(w.bin)} "$@"\n`);
@@ -193,13 +202,13 @@ function newcomer(name, { agent = "signed-in", where = "repo" } = {}) {
   // The frozen shop.
   mkdirSync(join(shop, "src"), { recursive: true }); mkdirSync(join(shop, "test"), { recursive: true });
   for (const [file, text] of Object.entries(SHOP_FILES)) writeFileSync(join(shop, file), text);
-  const git = (...args) => execFileSync("git", ["-C", shop, ...args], { encoding: "utf8", env: { ...process.env, ...SHOP_COMMIT_ENV } }).trim();
+  const git = (...args) => execFileSync("git", ["-C", shop, ...args], { encoding: "utf8", env: kit.checkedEnv(process.env, SHOP_COMMIT_ENV) }).trim();
   git("init", "-q", "-b", "main"); git("add", "."); git("commit", "-qm", "First version");
   const shopCommit = git("rev-parse", "HEAD");
   report.repo ??= `shop (${Object.keys(SHOP_FILES).length} files, one passing test), commit ${shopCommit.slice(0, 12)}`;
   if (where === "folder") { mkdirSync(folder); writeFileSync(join(folder, "todo.txt"), "Ideas for the shop.\n"); }
   const env = {
-    PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, USER: "sam", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: tmp,
+    ...computer.env, LANG: "en_US.UTF-8", TERM: "xterm-256color",
     TOOLROLL_BROWSER_COMMAND: join(bin, "open-browser"), TOOLROLL_SECRET_STORE: "files", TOOLROLL_STORAGE_SWEEP: "off",
     // A scripted run asks no plan-limit probe of the stand-in; a real run does what a newcomer's does.
     ...(scriptedRun ? { TOOLROLL_NO_PLAN_PROBE: "1" } : {}),
@@ -276,11 +285,12 @@ async function openTerminal(inst, label, command, { cwd = inst.cwd, rows = 40, c
   const dir = join(inst.root, `terminal-${label}`);
   mkdirSync(dir, { recursive: true });
   const fifo = join(dir, "keys"), log = join(dir, "screen.log"), pidFile = join(dir, "pid"), go = join(dir, "go");
-  execFileSync("mkfifo", [fifo]);
+  execFileSync("mkfifo", [fifo], { env: kit.checkedEnv() });
   // Read and write, so opening never waits for the other end.
   const keys = openSync(fifo, fsConstants.O_RDWR);
   const inner = `while [ ! -e ${shellWord(go)} ]; do sleep 0.05; done; exec ${command}`;
   const host = [PYTHON, PTY_HOST, String(rows), String(cols), fifo, log, pidFile, "/bin/sh", "-c", inner].map(shellWord).join(" ");
+  // Checked right before it starts (spawnOwned → checkedEnv): its own home, an allowlisted PATH.
   const shell = spawnOwned(`terminal ${label} (${inst.name})`, "/bin/sh", ["-c", `cd ${shellWord(cwd)} && exec ${host} > ${shellWord(join(dir, "host.log"))} 2>&1 < /dev/null &`], { stdio: "ignore", env: inst.env });
   inst.groups.push(shell.pid);
   await new Promise(done => { if (shell.exitCode !== null) done(); else shell.once("exit", done); });
@@ -347,12 +357,22 @@ function upOf(term) {
   return child === undefined ? null : Number(child[1]);
 }
 
+/** The install's own folder on the newcomer's PATH. Homebrew installs into this computer's own prefix, whose bin holds
+ * other programs too (agent CLIs among them): only its `toolroll` joins the PATH, through the newcomer's bin. */
+function joinPlanPath(inst, plan) {
+  if (plan.path.length === 0) return;
+  if (install !== "brew") { inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`; return; }
+  // A run-owned launcher (a link would point outside the world, which a newcomer's PATH never does).
+  const linked = join(inst.bin, "toolroll");
+  if (!existsSync(linked)) { writeFileSync(linked, `#!/bin/sh\nexec ${shellWord(join(plan.path[0], "toolroll"))} "$@"\n`); chmodSync(linked, 0o755); }
+}
+
 /** Start bare `toolroll` (or the plan's command) in this home and wait for its first screen. Marks installed/started. */
 async function startToolroll(inst, trace, { command = null, label = "first" } = {}) {
   const plan = launchPlan({ install, pkg, root: inst.root, localBin: w.bin, brewPrefix: inst.brewPrefix ?? null });
   Object.assign(inst.env, plan.env);
-  if (plan.path.length > 0) inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`;
-  const typed = withPort(command ?? plan.start);
+  joinPlanPath(inst, plan);
+  const typed = await withPort(command ?? plan.start);
   const term = await openTerminal(inst, label, typed);
   trace.interaction(`Type \`${typed}\` and press Return`, { surface: "terminal", keys: typed });
   if (plan.install === null && label === "first") trace.startClock();
@@ -400,7 +420,7 @@ function packageFacts(inst) {
     } else if (install === "npm") {
       found.version = JSON.parse(readFileSync(join(inst.root, "npm-prefix", "lib", "node_modules", "toolroll", "package.json"), "utf8")).version;
     } else if (install === "brew") {
-      found.version = execFileSync(join(inst.brewPrefix, "bin", "toolroll"), ["--version"], { encoding: "utf8", env: inst.env }).trim();
+      found.version = execFileSync(join(inst.brewPrefix, "bin", "toolroll"), ["--version"], { encoding: "utf8", env: kit.checkedEnv(inst.env) }).trim();
     }
   } catch { /* unread: the report says so */ }
   return found;
@@ -721,8 +741,8 @@ async function browserInRepo({ trace, criterion, note }) {
     await runInstallStep(inst, trace);
     const plan = launchPlan({ install, pkg, root: inst.root, localBin: w.bin, brewPrefix: inst.brewPrefix ?? null });
     Object.assign(inst.env, plan.env);
-    if (plan.path.length > 0) inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`;
-    const typed = withPort(`${plan.start} --web`);
+    joinPlanPath(inst, plan);
+    const typed = await withPort(`${plan.start} --web`);
     term = await openTerminal(inst, "web", typed);
     trace.interaction(`Type \`${typed}\` and press Return`, { surface: "terminal", keys: typed });
     if (plan.install === null) trace.startClock();
@@ -833,7 +853,7 @@ async function notARepository({ trace, criterion, note }) {
 
 /** A shell command in this home, as the person types it (no terminal: stdout is a pipe). Its output and exit status. */
 function shell(inst, args, cwd = inst.shop) {
-  try { return { code: 0, out: execFileSync(join(inst.bin, "toolroll"), args, { cwd, env: inst.env, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] }) }; }
+  try { return { code: 0, out: execFileSync(join(inst.bin, "toolroll"), args, { cwd, env: kit.checkedEnv(inst.env), encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] }) }; }
   catch (error) { return { code: error.status ?? 1, out: `${error.stdout ?? ""}${error.stderr ?? ""}` }; }
 }
 /** A criterion this journey proves: recorded, and the journey fails when it isn't met. */

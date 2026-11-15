@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover, describeScope, propose } from "./scope.js";
+import { addApprover, propose } from "./scope.js";
+import { describeScope } from "./approval-summary.js";
 import { runOperate, EXIT } from "./operate.js";
 import { checkAccessHere, checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, signInsAvailable, signInsUnavailableWords, widerThan } from "./check-access.js";
 import { resolveScopeProfile } from "./agentconfig.js";
@@ -122,8 +123,9 @@ describe("sealing (v132): the level is part of what is approved", () => {
     store.setProjectCheckAccess(REPO, "unsandboxed", "alex", new Date(), { may: "widen" });
     const wide = file("t-wide");
     expect(wide.profile?.checkAccess).toBe("unsandboxed");
-    expect(describeScope(wide).join("\n")).toMatch(/checks\s+not sandboxed/);
-    expect(describeScope(narrow).join("\n")).not.toMatch(/checks\s/);
+    // Checks past the sandbox are a risk: said in the open; sandboxed checks are a usual setting.
+    expect(describeScope(wide).join("\n")).toMatch(/^ {2}Note {9}Project checks: not sandboxed\.$/m);
+    expect(describeScope(narrow).join("\n")).not.toMatch(/Note .*Project checks/);
     // The same words under the other level are another digest: an approval of one is never an approval of the other.
     store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" });
     const again = propose(store, { taskId: "t-wide", goal: "Do the thing", touches: ["a.ts"], acceptance: [{ id: "c1", statement: "It works", how: null, evidence: ["manual-review"] }], now: new Date() });

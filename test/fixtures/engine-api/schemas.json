@@ -1,5 +1,5 @@
 {
-  "digest": "18fcd2f3216a83fb815abed88ce8c25d2698c624d62624a82bf7d32adb8d7a7d",
+  "digest": "1eac84cb1a4846cb7d9f8fb62171ddd31586c788f546bc677c6a8ec37aee52f0",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1172,6 +1172,83 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     }
+                  },
+                  "terms": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "revision": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "label": {
+                              "type": "string"
+                            },
+                            "words": {
+                              "type": "string"
+                            },
+                            "lines": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "required": [
+                            "label",
+                            "words",
+                            "lines"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "warnings": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "usualLabel": {
+                        "type": "string"
+                      },
+                      "usual": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "label": {
+                              "type": "string"
+                            },
+                            "words": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "label",
+                            "words"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "revision",
+                      "rows",
+                      "warnings",
+                      "usualLabel",
+                      "usual"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [

@@ -287,36 +287,32 @@ describe("the operations console", () => {
     expect(store.lookupRef(childId)).toMatchObject({ revisionOf: "t-strict", qualityMode: "strict", permissionMode: "auto" });
     plannerKeptTerms(store, childId);
 
-    // The task page: the approval card restates the terms, and the lineage
-    // says where they came from and what did not come along.
+    // The task page: the approval summary restates the child's ACTUAL terms (the terms diet): one plain revision
+    // sentence, the decisions, and the strict checks level as a difference from the project's usual one.
     const page = await (await fetch(url(target), { headers: { cookie } })).text();
-    const lineage = `revises t-strict (build #${run})`;
+    const lineage = `This revises build #${run}.`;
     expect(page).toContain(lineage);
-    expect(page).toContain("inherited terms, as they stand now: Strict / release quality · auto permissions · $2.00 attempt cap · its exclusions · 1 path limit · 2 criteria");
-    expect(page).toContain("never inherited: the source&#39;s approval, publication and merge grants");
-    expect(page).toContain("re-resolved for this approval: the agents route");
-    expect(page).toContain("Checks level: Strict / release · Auto permissions");
-    // Who builds in one line; what the yes allows, plainly, right above Approve.
-    expect(page).toContain('<p class="approval-who">Builder Claude Sonnet · Planner Claude Sonnet</p>');
-    expect(page).toMatch(/<p class="approval-allowing" data-approval-allowing>You’re allowing: file edits and routine commands; anything risky stops · up to \$2\.00 per attempt( · [^<]*)?<\/p><div class="approval-act"/);
+    expect(page).toMatch(/<dt>Checks<\/dt><dd><p>Strict \/ release/);
+    expect(page).toContain("<dt>Won’t touch</dt><dd><p>authentication</p>");
+    expect(page).toContain("<dt>May cost</dt><dd><p>up to $2.00 per attempt; the agent is stopped there</p>");
+    expect(page).toContain('<dt>Files</dt><dd><p>Only <code class="approval-path">src/payments/</code></p>');
+    // The installation's default moved since: the child's own tools are said as not the project's usual.
+    expect(page).toContain("<dt>Tools</dt><dd><p>file edits and routine commands; anything risky stops (not the project’s usual)</p>");
+    expect(page).not.toMatch(/inherited|re-resolved|repair chain|attempt cap/);
     expect(page).not.toContain("runaway breaker");
     expect(page).toContain("also refuse zero");
     const approveForm = /<form method="post" action="[^"]*\/approve" class="approve-form approval-sheet" id="approve"[^>]*>(.*?)<\/form>/s.exec(page)?.[1] ?? "";
-    // One sentence in view; the lineage and inherited terms in Details.
+    // The lead sentence, then the revision's plain sentence and the strict level, all in view before Approve.
     expect(approveForm).toContain(`<p class="approval-revision">Fixes what build #${run} missed: `);
-    const details = approveForm.slice(approveForm.indexOf('<details class="approval-details"'));
-    expect(details).toContain("Strict / release quality");
-    expect(details).toContain(lineage);
-    expect(details).toContain("never inherited");
-    expect(approveForm.slice(0, approveForm.indexOf('<details class="approval-details"'))).not.toContain("inherited");
+    const inView = approveForm.slice(0, approveForm.indexOf('<div class="approval-act"'));
+    expect(inView).toContain(lineage);
+    expect(inView).toMatch(/<dt>Checks<\/dt><dd><p>Strict \/ release/);
 
     // Chat: the same words, from the same projection.
     const chat = await (await fetch(url(`/chat?task=${encodeURIComponent(childId)}`), { headers: { cookie } })).text();
     expect(chat).toContain(lineage);
-    expect(chat).toContain("inherited terms, as they stand now: Strict / release quality");
-    expect(chat).toContain("never inherited: the source&#39;s approval");
+    expect(chat).toMatch(/<dt>Checks<\/dt><dd><p>Strict \/ release/);
     expect(chat).toContain("also refuse zero");
-    expect(chat).toContain("Checks level: Strict / release · Auto permissions");
 
     // The CI draft on a published run of the same source reads the same.
     const pub = store.createPublicationIntent(
@@ -337,10 +333,10 @@ describe("the operations console", () => {
     const ciPage = await (await fetch(url("/t/t-strict-v3"), { headers: { cookie } })).text();
     expect(ciPage).toContain("CI repair");
     expect(ciPage).toContain(lineage);
-    expect(ciPage).toContain("inherited terms, as they stand now: Strict / release quality · auto permissions · $2.00 attempt cap");
+    expect(ciPage).toMatch(/<dt>Checks<\/dt><dd><p>Strict \/ release/);
+    expect(ciPage).toContain("<dt>May cost</dt><dd><p>up to $2.00 per attempt; the agent is stopped there</p>");
     expect(ciPage).toContain(`<p class="approval-revision">Fixes the checks that failed in build #${run}.</p>`);
-    expect(ciPage).toContain("Checks level: Strict / release · Auto permissions");
-    expect(ciPage).not.toMatch(/<p class="approval-who">[^<]*Full access/);
+    expect(ciPage).not.toContain("tools: full access");
 
     // A batch drafted against a scope digest the source no longer carries
     // refuses in words and consumes nothing: the road's own seal re-reads
@@ -717,7 +713,9 @@ describe("the operations console", () => {
     // Approve, then edit with the right digest: approval visibly voids.
     const page = await (await fetch(url("/t/t-s"), { headers: { cookie } })).text();
     const nonce = /name="nonce" value="([0-9a-f]{32})"/.exec(page)?.[1] ?? "";
-    const approved = await post("/t/t-s/approve", cookie, { csrf, nonce, digest, token: approverToken });
+    // The form's own digest: the scope's with what the approval summary showed (approvalFormDigest).
+    const formDigest = /name="digest" value="([0-9a-f]+)"/.exec(page)?.[1] ?? "";
+    const approved = await post("/t/t-s/approve", cookie, { csrf, nonce, digest: formDigest, token: approverToken });
     expect(approved.status).toBe(303);
 
     const edited = await post("/t/t-s/scope", cookie, { csrf, acceptance: "c1: ok | manual-review", sawDigest: digest, goal: "wider goal", not: "", touches: "" });
@@ -873,7 +871,8 @@ describe("the operations console", () => {
     const cookie = await login();
     const csrf = await csrfFrom(cookie);
     await post("/t/t-a/scope", cookie, { csrf, acceptance: "c1: ok | manual-review", sawDigest: "", goal: "the goal", not: "", touches: "" });
-    const digest = store.getScope("t-a")?.digest ?? "";
+    // The form's own digest, as the page renders it: the scope's with the approval summary's key (approvalFormDigest).
+    const digest = /name="digest" value="([0-9a-f]+)"/.exec(await (await fetch(url("/t/t-a"), { headers: { cookie } })).text())?.[1] ?? "";
 
     const readNonce = async (): Promise<string> => {
       const html = await (await fetch(url("/t/t-a"), { headers: { cookie } })).text();
@@ -2354,7 +2353,7 @@ describe("Home — what waits on you, answered in place", () => {
     const approved = await fetch(url("/t/t-a/approve"), {
       method: "POST",
       headers: { cookie, origin: base },
-      body: new URLSearchParams({ csrf: csrf2, nonce, digest: store.getScope("t-a")?.digest as string, token: approverToken, return: "next" }),
+      body: new URLSearchParams({ csrf: csrf2, nonce, digest: /name="digest" value="([0-9a-f]+)"/.exec(second)?.[1] as string, token: approverToken, return: "next" }),
       redirect: "manual",
     });
     expect(approved.status).toBe(303);

@@ -73,7 +73,8 @@ async function fileAsAlex(cookie: string, title: string, touches: string[], goal
 async function approveAs(name: string, cookie: string, id: string): Promise<{ status: number; text: string }> {
   const html = await page(cookie, `/t/${id}`);
   const nonce = /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? "";
-  const answer = await post(cookie, `/t/${id}/approve`, { csrf: csrfOf(html), nonce, digest: store.getScope(id)?.digest ?? "", token: passwords[name]! });
+  // The form's own digest, as a browser posts it (approvalFormDigest).
+  const answer = await post(cookie, `/t/${id}/approve`, { csrf: csrfOf(html), nonce, digest: /name="digest" value="([0-9a-f]+)"/.exec(html)?.[1] ?? "", token: passwords[name]! });
   return { status: answer.status, text: await answer.text() };
 }
 

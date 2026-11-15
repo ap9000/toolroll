@@ -77,7 +77,7 @@ async function one(id,provider,wave) {
     ].join(';');
     await cli('file fixed scope',['task','scope','work','--goal',spec.goal,'--touches',spec.paths.join(','),'--acceptance',rubric,'--not','Changing tests or dependency definitions, external publication, or unrelated files.']);
     const preview=await cli('read scope',['task','show','work']);
-    await cli('approve exact fixture scope',['task','approve','work','--yes','--digest',preview.scope.digest,...auth]);
+    await cli('approve exact fixture scope',['task','approve','work','--yes','--digest',preview.scope.digest,'--terms',preview.approvalTerms,...auth]);
     await writeFile(join(dir,'runner-token'),registered.token,{mode:0o600});
     console.log(name+': starting unattended build and check');
     const start=Date.now();
