@@ -402,6 +402,29 @@ test("instant start: the first start finds the signed-in agent, files the first 
   expect(probes).toBe(checks);
 }, 20_000);
 
+test("a password install with nothing chosen: the first task goes to the agent found signed in, its models filled once and recorded", async () => {
+  signedIn = "codex";
+  await start({ leadByDefault: true });
+  await until(() => store.phaseConfig("installation", "build") !== null);
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "codex", model: "gpt-6-sol", updatedBy: "toolroll" });
+  const { FIRST_TASK_AGENT_FACT } = await import("./model-choices.js");
+  expect(store.installationFact(FIRST_TASK_AGENT_FACT)).toBe("codex");
+  const ledger = store.handle.prepare("SELECT detail FROM action_ledger WHERE actor = 'toolroll' AND detail LIKE '%found signed in on this computer%'").all();
+  expect(ledger.length).toBeGreaterThan(0);
+});
+
+test("a password install whose models were chosen and then cleared: the sign-in check fills nothing", async () => {
+  store.setPhaseConfig("installation", "build", "claude", "claude-sonnet-5-5", "alex", new Date());
+  expect(store.clearPhaseConfig("installation", "build")).toBe(true);
+  signedIn = "codex";
+  await start({ leadByDefault: true });
+  await until(() => store.getChatConfig() !== null);
+  await new Promise(done => setTimeout(done, 200));
+  for (const phase of ["plan", "build", "review"]) expect(store.phaseConfig("installation", phase), phase).toBeNull();
+  const { FIRST_TASK_AGENT_FACT } = await import("./model-choices.js");
+  expect(store.installationFact(FIRST_TASK_AGENT_FACT)).toBeNull();
+});
+
 test("a laptop install whose lead was already settled when no agent was signed in: the later sign-in fills its models from the background check, and the lead stays off", async () => {
   store.close();
   store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });

@@ -4,13 +4,14 @@
  * stand-in that prints a token. Every stand-in writes the arguments it was run with to a log, so the test sees exactly
  * which commands ran: only the two status commands, never a model call, never an ACP agent or Gemini CLI itself.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DETECT_TIMEOUT_MS, detectAgents, detectionLines, detectionReport, firstRunAgentLines, type AgentDetection } from "./agent-detect.js";
 import { agentsReadOf } from "./engine-reads.js";
 import { agentsReadSchema } from "./contracts/engine-api.js";
+import { createConnectionChecker } from "./provider-connection.js";
 
 const TOKEN = "sk-ant-oat01-DETECTION-MUST-NEVER-ECHO-THIS";
 const CODEX_TOKEN = "sk-proj-ALSO-NEVER-ECHOED-0123456789";
@@ -186,4 +187,111 @@ test("the engine's agents fixtures (the terminal workbench's snapshots read them
     const fixture = agentsReadSchema.parse(JSON.parse(readFileSync(new URL(`../test/fixtures/engine-api/${name}`, import.meta.url), "utf8")));
     expect(fixture.lines, name).toEqual(firstRunAgentLines(fixture.agents.map(one => ({ ...one, id: one.id as never })), fixture.firstTask?.id ?? null));
   }
+});
+
+describe("a status command runs only from a trusted install, with nothing of this process's environment", () => {
+  /** A Claude Code stand-in that leaves a mark when it runs. */
+  const marking = (folder: string): void => {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "claude"), `#!/bin/sh\n: > '${join(dir, "executed")}'\n${CLAUDE_SIGNED_IN}\n`);
+    chmodSync(join(folder, "claude"), 0o755);
+  };
+  const claudeOf = async (path: string, untrusted: readonly string[] = []) => {
+    const detection = await detectAgents({ env: { PATH: path, HOME: home }, home, timeoutMs: SLACK_MS, untrusted: () => untrusted });
+    return detection.agents.find(one => one.id === "claude")!.state;
+  };
+
+  test("found in a project folder (an absolute PATH entry): refused, nothing run", async () => {
+    const project = join(dir, "shop");
+    marking(join(project, "bin"));
+    expect(await claudeOf(join(project, "bin"), [project])).toBe("unknown");
+    expect(existsSync(join(dir, "executed"))).toBe(false);
+    // The same stand-in outside every project runs (the control).
+    expect(await claudeOf(join(project, "bin"))).toBe("signed-in");
+    expect(existsSync(join(dir, "executed"))).toBe(true);
+  });
+
+  test("a PATH folder inside a project, or one others can write, is refused even when it links to a trusted binary elsewhere", async () => {
+    // A trusted install outside every project; a link to it from a folder an agent (or anyone) could re-point.
+    marking(join(dir, "good"));
+    const project = join(dir, "shop");
+    mkdirSync(join(project, "bin"), { recursive: true });
+    symlinkSync(join(dir, "good", "claude"), join(project, "bin", "claude"));
+    expect(await claudeOf(join(project, "bin"), [project])).toBe("unknown");
+    const shared = join(dir, "shared-links");
+    mkdirSync(shared);
+    symlinkSync(join(dir, "good", "claude"), join(shared, "claude"));
+    chmodSync(shared, 0o777);
+    expect(await claudeOf(shared)).toBe("unknown");
+    expect(existsSync(join(dir, "executed"))).toBe(false);
+  });
+
+  test("found through a relative PATH entry: refused, nothing run (and no later match is tried instead)", async () => {
+    marking(join(dir, "rel"));
+    stub("claude", CLAUDE_SIGNED_IN);
+    expect(await claudeOf(`${relative(process.cwd(), join(dir, "rel"))}${delimiter}${bin}`)).toBe("unknown");
+    expect(existsSync(join(dir, "executed"))).toBe(false);
+    expect(ran()).toEqual([]);
+  });
+
+  test("a symlink into a folder others can write: refused, nothing run", async () => {
+    marking(join(dir, "open"));
+    chmodSync(join(dir, "open"), 0o777);
+    symlinkSync(join(dir, "open", "claude"), join(bin, "claude"));
+    expect(await claudeOf(bin)).toBe("unknown");
+    expect(existsSync(join(dir, "executed"))).toBe(false);
+  });
+
+  test("a group-writable PATH folder, or a group-writable binary: refused, nothing run", async () => {
+    const shared = join(dir, "shared", "bin");
+    marking(shared);
+    chmodSync(shared, 0o775);
+    expect(await claudeOf(shared)).toBe("unknown");
+    chmodSync(shared, 0o755);
+    chmodSync(join(shared, "claude"), 0o775);
+    expect(await claudeOf(shared)).toBe("unknown");
+    expect(existsSync(join(dir, "executed"))).toBe(false);
+    // Every sign-in check uses the same runner: the plain checker refuses it too.
+    const check = createConnectionChecker({ home, env: { PATH: shared, HOME: home } });
+    expect((await check("claude", true)).state).toBe("unverified");
+    expect(existsSync(join(dir, "executed"))).toBe(false);
+  });
+
+  test("its environment is built from nothing: no token, key, socket, loader or interpreter variable reaches it", async () => {
+    const canaries: Record<string, string> = {
+      GH_TOKEN: "canary-gh", AWS_SECRET_ACCESS_KEY: "canary-aws", SSH_AUTH_SOCK: "/home/me/canary.sock", NODE_OPTIONS: "--require /home/me/canary.js",
+      DYLD_INSERT_LIBRARIES: "/home/me/canary.dylib", LD_PRELOAD: "/home/me/canary.so", ANTHROPIC_API_KEY: "canary-anthropic", OPENAI_API_KEY: "canary-openai",
+      GEMINI_API_KEY: "canary-gemini", BASH_ENV: "/home/me/canary.sh",
+    };
+    const dump = join(dir, "env.txt");
+    stub("claude", `export -p > '${dump}'\n${CLAUDE_SIGNED_IN}`);
+    const saved = { ...process.env };
+    Object.assign(process.env, canaries);
+    try {
+      const detection = await detectAgents({ env: { ...process.env, PATH: bin, HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") }, home, timeoutMs: SLACK_MS });
+      expect(detection.agents.find(one => one.id === "claude")!.state).toBe("signed-in");
+    } finally {
+      for (const name of Object.keys(canaries)) { if (saved[name] === undefined) delete process.env[name]; else process.env[name] = saved[name]; }
+    }
+    const seen = readFileSync(dump, "utf8");
+    for (const [name, value] of Object.entries(canaries)) { expect(seen, name).not.toContain(name); expect(seen, name).not.toContain(value); }
+    // Its PATH: this test's trusted folder only (by its real path).
+    expect(seen).toMatch(new RegExp(`PATH=["']?${realpathSync(bin).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']?$`, "m"));
+    expect(seen).toContain("CLAUDE_CONFIG_DIR");
+  });
+
+  test("at the deadline the command and everything it started are ended, by its own process group", async () => {
+    const leader = join(dir, "leader.pid"), forked = join(dir, "forked.pid");
+    stub("claude", `echo $$ > '${leader}'\n/bin/sleep 30 &\necho $! > '${forked}'\nexec /bin/sleep 30`);
+    // A deadline long enough for a loaded runner to start the stand-in and its child before it passes.
+    const started = Date.now();
+    const detection = await detect({}, 1_500);
+    expect(Date.now() - started).toBeLessThan(1_500 + 1_000);
+    expect(detection.agents.find(one => one.id === "claude")!.state).toBe("unknown");
+    const pids = [leader, forked].map(file => Number(readFileSync(file, "utf8").trim()));
+    expect(pids.every(pid => Number.isSafeInteger(pid) && pid > 1)).toBe(true);
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 100 && pids.some(alive); i++) await new Promise(done => setTimeout(done, 20));
+    expect(pids.filter(alive)).toEqual([]);
+  });
 });

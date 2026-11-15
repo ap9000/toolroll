@@ -24,6 +24,9 @@ import { redirect } from "./http.js";
 import { rereadBrowser } from "./live.js";
 import { btn, chip, codeLine, dock, note, notice, pageHeader, settingsRecord } from "./kit.js";
 import type { ServerRuntime } from "./runtime.js";
+import type { Who } from "./session.js";
+import { NO_AGENT_YET } from "../agent-detect.js";
+import type { Store } from "../store.js";
 
 /** Why the sample project wasn't added, as a fixed key in the address (never words from it). */
 export const SAMPLE_PROBLEMS = {
@@ -74,18 +77,24 @@ function otherRow(agent: WelcomeOtherAgent): Html {
 
 /** The page body for one model, and the screen's one primary (for the phone dock). `problem`: why the sample project
  * wasn't added, from the address. `canAdd`: this person may add projects here. */
-export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean }): { body: Html; primary: Html | null } {
+export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean; inventory?: AgentInventory }): { body: Html; primary: Html | null } {
   const lead = model.next;
   let primary: Html | null = null;
+  // Which agents this computer has is the installation's: an instance operator's session sees each one; another
+  // person's sees only who the first task goes to; a token sees neither (agentInventoryOf).
+  const inventory = options.inventory ?? "full";
 
-  const agentLead = lead === "agent" ? model.agent.agents.find(one => one.canUse) ?? null : null;
+  const agentLead = lead === "agent" && inventory === "full" ? model.agent.agents.find(one => one.canUse) ?? null : null;
   if (agentLead !== null) primary = useForm(agentLead.id, btn(`Use ${agentLead.name}`, { variant: "primary", type: "submit" }));
-  const agentNote = model.agent.checking ? note("Checking for a signed-in agent on this computer…")
+  const firstTaskNote = model.agent.firstTask !== null ? note(`Your first task goes to ${model.agent.firstTask}.`) : "";
+  const agentNote = inventory === "none" ? ""
+    : inventory === "summary" ? model.agent.firstTask !== null ? firstTaskNote : note(model.agent.checking ? "Checking for a signed-in agent on this computer…" : NO_AGENT_YET)
+    : model.agent.checking ? note("Checking for a signed-in agent on this computer…")
     : !model.agent.done ? note("Sign in to one of these, then come back to this page.")
       : model.agent.buildsWith !== null ? note(html`Tasks are built with ${model.agent.buildsWith}. <a class="k-link" href="/settings/models">Change</a>`)
-        : model.agent.firstTask !== null ? note(`Your first task goes to ${model.agent.firstTask}.`) : "";
-  const agent = step("agent", 1, "Agent", model.agent.done, html`<p class="k-note">The AI coding agent that plans and builds your tasks.</p>\
-<div class="welcome-rows">${model.agent.agents.map(one => agentRow(one, agentLead?.id === one.id))}${model.agent.others.map(otherRow)}</div>${agentNote}`);
+        : firstTaskNote;
+  const rows = inventory !== "full" ? "" : html`<div class="welcome-rows">${model.agent.agents.map(one => agentRow(one, agentLead?.id === one.id))}${model.agent.others.map(otherRow)}</div>`;
+  const agent = step("agent", 1, "Agent", model.agent.done, html`<p class="k-note">The AI coding agent that plans and builds your tasks.</p>${rows}${agentNote}`);
 
   const projects = model.project.projects;
   const listed = projects.slice(0, PROJECTS_SHOWN).map(one => settingsRecord({ title: one.name, sub: html`<span class="k-mono">${one.path}</span>`, attrs: { "data-project": "" } }));
@@ -126,7 +135,16 @@ ${model.task.starters.length === 0 ? "" : html`<div class="k-ideas" aria-label="
   return { body: html`${hello}${agent}${project}${task}`, primary };
 }
 
-export function welcomePage(chrome: Chrome, model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean }): Screen {
+/** How much of this computer's agent inventory a caller sees: each agent (an instance operator's own session), only
+ * who the first task goes to (another person's session), or nothing (a token, or anything that isn't a person's
+ * session). The one policy /welcome and the engine's agents read share. */
+export type AgentInventory = "full" | "summary" | "none";
+export function agentInventoryOf(who: Who, store: Pick<Store, "isInstanceOperator">): AgentInventory {
+  if (who.via !== "cookie") return "none";
+  return store.isInstanceOperator(who.name) ? "full" : "summary";
+}
+
+export function welcomePage(chrome: Chrome, model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean; inventory?: AgentInventory }): Screen {
   const { body, primary } = welcomeBody(model, options);
   return screen("Welcome", html`${pageHeader("Welcome")}<div class="k-doc welcome" data-welcome>${body}</div>${dock(primary)}`, { chrome });
 }
@@ -165,7 +183,7 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
       starters, platform: options.platform ?? process.platform,
     });
     const asked = url.searchParams.get("sample");
-    return sendScreen(response, 200, welcomePage(chrome, model, { problem: isSampleProblem(asked) ? asked : null, canAdd: approver && !store.isDemo() }));
+    return sendScreen(response, 200, welcomePage(chrome, model, { problem: isSampleProblem(asked) ? asked : null, canAdd: approver && !store.isDemo(), inventory: agentInventoryOf(who, store) }));
   }
 
   /** Try a sample project: made in the project folder (or found again when it is ours), then added the way Projects

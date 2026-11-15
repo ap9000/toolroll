@@ -1,6 +1,7 @@
 /** Non-spending account checks. Only normalized facts leave this module. */
 import { homedir } from "node:os";
-import { run, type ExecResult } from "./exec.js";
+import { type ExecResult, type run } from "./exec.js";
+import { statusProbe } from "./status-probe.js";
 import { ALL_CREDENTIAL_ENV, inspectionOf, type ProviderId } from "./provider.js";
 import { isAcpProvider, type KeyedProviderId } from "./acp-agents.js";
 import { keyStatus, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, verifyProviderKey, type AuthMode, type KeyVerdict } from "./keys.js";
@@ -44,9 +45,10 @@ export function signInFacts(provider: ProviderId, result: ExecResult, now = new 
 }
 
 export function createConnectionChecker(options: { probe?: typeof run; home?: string; clock?: () => Date; env?: NodeJS.ProcessEnv; verify?: (provider: KeyedProviderId, key: string) => Promise<KeyVerdict> } = {}): ConnectionChecker {
-  const probe = options.probe ?? run;
-  const verify = options.verify ?? ((provider: KeyedProviderId, key: string) => verifyProviderKey(provider, key));
   const home = options.home ?? homedir();
+  // The status command runs only from a trusted install, bounded, with an environment built from nothing (status-probe.ts).
+  const probe = options.probe ?? statusProbe({ home, ...(options.env === undefined ? {} : { env: options.env }) });
+  const verify = options.verify ?? ((provider: KeyedProviderId, key: string) => verifyProviderKey(provider, key));
   const clock = options.clock ?? (() => new Date());
   const cache = new Map<ProviderId, { key: string; until: number; value: ProviderConnection }>();
   const pending = new Map<string, Promise<ProviderConnection>>();

@@ -9,7 +9,6 @@
 import { basename, dirname, join } from "node:path";
 import { resolvePhaseAgent } from "./agentconfig.js";
 import { builderReadyFor, firstRunBuilderRepo, modelsEverChosen } from "./dispatch.js";
-import { localModeOn } from "./local-owner.js";
 import { SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, GENERIC_FIRST_TASKS, welcomeModel, type WelcomeAgentId, type WelcomeModel } from "./first-run.js";
 import type { ConnectionChecker, ProviderConnection } from "./provider-connection.js";
 import { detectAgents, type AgentDetection, type DetectedState } from "./agent-detect.js";
@@ -33,7 +32,8 @@ export async function welcomeHere(store: Store, databaseFile: string, now: Date,
   const sample = root === null ? null : `${root.replace(/\/+$/, "")}/${SAMPLE_PROJECT_NAME}`;
   const build = resolvePhaseAgent(store, "build", repo, {});
   const routed = firstTaskRouted(store, repo);
-  const detection = await detectAgents({ ...(options.check === undefined ? {} : { check: options.check }), routed, clock: () => now, acpChecked: acpCheckedHere(store) });
+  const detection = await detectAgents({ ...(options.check === undefined ? {} : { check: options.check }), routed, clock: () => now, acpChecked: acpCheckedHere(store),
+    untrusted: () => agentWritableFolders(store, repos) });
   const stateOf = (id: WelcomeAgentId) => CONNECTION_OF[detection.agents.find(one => one.id === id)?.state ?? "unknown"];
   const model = welcomeModel({
     agents: { claude: stateOf("claude"), codex: stateOf("codex") },
@@ -54,14 +54,31 @@ export async function welcomeHere(store: Store, databaseFile: string, now: Date,
 
 /**
  * Where a first task's build goes, for agent-detect.ts: the provider chosen in Settings → Models (or the project's), when
- * one is; null when nothing is chosen and a laptop install's first start will choose the agent detection picks
- * (local mode on, models never chosen here: model-choices.ts fillDefaultRouting's first-start door); otherwise the
+ * one is; null when models were never chosen here, so the console's sign-in check fills them for the agent detection
+ * picks (model-choices.ts fillDefaultRouting's detected door, any install); otherwise (chosen, then cleared) the
  * built-in default, Claude Code, which is where the task really goes.
  */
 export function firstTaskRouted(store: Store, repo: string | null = null): string | null {
   const build = resolvePhaseAgent(store, "build", repo, {});
   if (build.ok && build.source !== "default") return build.spec.provider;
-  return localModeOn(store) && !modelsEverChosen(store) ? null : "claude";
+  return modelsEverChosen(store) ? "claude" : null;
+}
+
+/**
+ * Folders an agent can write, where no sign-in check may start a program (status-probe.ts): every project Toolroll
+ * knows, every worktree, and Toolroll's own state folder (worktrees, evidence). Read at each check, so a project added
+ * later counts.
+ */
+export function agentWritableFolders(store: Store, extra: readonly string[] = []): string[] {
+  const file = store.databaseFile();
+  return [...new Set([...extra, ...store.knownRepos(), ...store.listProjects().map(one => one.path), ...store.listWorktrees().map(one => one.path),
+    ...(file === null || file === ":memory:" ? [] : [dirname(file)])])];
+}
+
+/** The console's folders an agent can write, read at each check: agentWritableFolders and the projects the console
+ * was given (its own options, so no closure of the console's is needed). */
+export function writableFoldersOf(store: Store, given: { repo?: string | undefined; repos?: readonly string[] | undefined; currentRepos?: (() => readonly string[]) | undefined }): () => string[] {
+  return () => agentWritableFolders(store, [...(given.repo === undefined ? [] : [given.repo]), ...(given.repos ?? []), ...(given.currentRepos?.() ?? [])]);
 }
 
 /** Whether an ACP agent passed its one-time check on a runner of this installation (store.acpAttestationFor). */

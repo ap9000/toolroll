@@ -26,6 +26,7 @@ import { handlersOf } from "./handler-registry.js";
 import { matchTaskPath, respond } from "./http.js";
 import { rereadBrowser } from "./live.js";
 import { admitLink, saveLinkSession, spendLink } from "./link-redemption.js";
+import { agentInventoryOf } from "./welcome.js";
 import type { ServerRuntime } from "./runtime.js";
 import { SESSION_COOKIE, type Who } from "./session.js";
 
@@ -92,7 +93,10 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const { url, who, response } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
-    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents));
+    // The inventory policy /welcome shares (welcome.ts agentInventoryOf): each agent for an instance operator, who the
+    // first task goes to for anyone else's session.
+    const view = agentInventoryOf(who, store);
+    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary"));
   }
 
   /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions only, like the Live grid). */

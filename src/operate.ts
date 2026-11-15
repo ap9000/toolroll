@@ -5198,8 +5198,8 @@ async function agentsCommand(positional: readonly string[], flags: Map<string, s
     // first task goes to — the same lines the first-run screens show. Nothing here makes a model call or prints a token.
     const { detectAgents, detectionReport } = await import("./agent-detect.js");
     const { agentsReadOf } = await import("./engine-reads.js");
-    const { acpCheckedHere, firstTaskRouted } = await import("./welcome-facts.js");
-    const detection = await detectAgents({ routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store),
+    const { acpCheckedHere, agentWritableFolders, firstTaskRouted } = await import("./welcome-facts.js");
+    const detection = await detectAgents({ routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store), untrusted: () => agentWritableFolders(store),
       ...(context.easySeams?.check === undefined ? {} : { check: context.easySeams.check }) });
     const { version: _version, ...detected } = agentsReadOf(detection);
     if (json) { write(envelopeJson({ ok: true, command: "agents", detected: { ...detected, tookMs: detection.tookMs }, agents: rows })); return EXIT.ok; }

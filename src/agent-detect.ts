@@ -34,12 +34,12 @@ import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, type AcpProviderId } from 
 import { inspectAcpAgent } from "./acp-inspect.js";
 import { resolveExecutable } from "./attest.js";
 import type { ProviderId } from "./contracts/provider.js";
-import { run } from "./exec.js";
+import { statusProbe, STATUS_TIMEOUT_MS } from "./status-probe.js";
 import { keyStatus, OWN_KEY_ENV, readAuthMode } from "./keys.js";
 import { createConnectionChecker, type ConnectionChecker, type ProviderConnection } from "./provider-connection.js";
 
 /** How long one status command may take before it reads "unknown" (the whole detection stays under about a second). */
-export const DETECT_TIMEOUT_MS = 800;
+export const DETECT_TIMEOUT_MS = STATUS_TIMEOUT_MS;
 
 export type DetectedState = "signed-in" | "signed-out" | "unknown" | "not-installed";
 
@@ -134,6 +134,8 @@ export type DetectOptions = {
   routed?: string | null;
   /** Whether an ACP agent passed its one-time check on this computer (store.acpAttestationFor). */
   acpChecked?: (provider: AcpProviderId) => boolean;
+  /** Folders an agent can write (welcome-facts.ts agentWritableFolders): no status command there is run. */
+  untrusted?: () => readonly string[];
   clock?: () => Date;
 };
 
@@ -155,15 +157,11 @@ export async function detectAgents(options: DetectOptions = {}): Promise<AgentDe
   const clock = options.clock ?? (() => new Date());
   // Only absolute PATH folders: a relative one would make the answer depend on where this runs.
   const path = (env["PATH"] ?? "").split(delimiter).filter(one => one !== "" && isAbsolute(one)).join(delimiter);
+  // The status commands run only from a trusted install outside every project, bounded at the deadline, with an
+  // environment built from nothing (status-probe.ts).
   const check = options.check ?? createConnectionChecker({
     home, env: env as NodeJS.ProcessEnv, clock,
-    // The status command runs from the binary the resolver found, on this PATH, and is ended at the deadline.
-    probe: async (file, args, runOptions) => {
-      // Nothing off this PATH ever runs: a binary the resolver can't find is simply not installed.
-      const executable = resolveExecutable(file, path);
-      if (executable === null) return { code: 127, stdout: "", stderr: "", timedOut: false, notFound: true };
-      return run(executable, args, { ...runOptions, timeoutMs: Math.min(runOptions?.timeoutMs ?? timeoutMs, timeoutMs), env: { PATH: path } });
-    },
+    probe: statusProbe({ env, home, timeoutMs, ...(options.untrusted === undefined ? {} : { untrusted: options.untrusted }) }),
   });
   const routed = options.routed ?? null;
 
@@ -222,6 +220,10 @@ export function firstTaskOf(agents: readonly Pick<DetectedAgent, "id" | "ready">
   for (const id of FIRST_TASK_ORDER) if (agents.some(one => one.id === id && one.ready)) return id;
   return null;
 }
+
+/** What a person who doesn't see this computer's agents (server/welcome.ts agentInventoryOf) reads when none can take
+ * tasks yet. */
+export const NO_AGENT_YET = "No coding agent can take tasks on this computer yet.";
 
 /** The fields a line needs (a detected agent, or a welcome row). */
 export type AgentLineRow = Pick<DetectedAgent, "id" | "name" | "state" | "signIn" | "next">;

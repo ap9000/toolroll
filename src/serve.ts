@@ -156,7 +156,8 @@ rowVisible
 import { noteSignInProbe,signInNotices } from "./provider-auth.js";
 import { createConnectionChecker,type ProviderConnection } from "./provider-connection.js";
 import { detectAgents,type AgentDetection } from "./agent-detect.js";
-import { acpCheckedHere,firstTaskRouted } from "./welcome-facts.js";
+import { acpCheckedHere,firstTaskRouted,writableFoldersOf } from "./welcome-facts.js";
+import { statusProbe } from "./status-probe.js";
 import { ALL_CREDENTIAL_ENV,type ProviderId } from "./provider.js";
 import { hstsFor,LOOPBACK_PEERS,plainHttpRefusal,requestFromThisComputer,transportOf } from "./public-access.js";
 import { attachReadExecutor,defaultReadWorkers,ReadExecutor } from "./read-executor.js";
@@ -317,7 +318,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const workspaceIncarnation = randomBytes(16).toString('hex');
   const workspaceValidators = new WorkspaceValidatorCache();
   const providerHome = options.connectionHome ?? homedir();
-  const checkConnection = createConnectionChecker({ home: providerHome, clock, ...(options.connectionProbe === undefined ? {} : { probe: options.connectionProbe }) });
+  // Sign-in status commands only from a trusted install outside every project and worktree, bounded, with their own
+  // environment (status-probe.ts); tests pass their own probe.
+  const checkConnection = createConnectionChecker({ home: providerHome, clock,
+    probe: options.connectionProbe ?? statusProbe({ home: providerHome, untrusted: writableFoldersOf(store, options) }) });
   // Every sign-in check the console makes also answers a sign-in pause.
   // Whether this computer can fence agents: asked once as the console starts (a sandbox running /usr/bin/true), so
   // Settings → Project never starts a process (docs/plans/get-side-effects.md).
@@ -1243,13 +1247,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // off). From this computer's sign-in check only (the background pass, or a person's Check now), never a GET.
         if (options.leadByDefault === true && !store.isDemo()) fillRoutingOnSignIn(store, localSignIn.states, clock());
         // Instant start (agent-detect.ts): every other supported agent too, the same check answering Claude Code and Codex
-        // (its cache, just filled). The first task goes to the agent it picks: on a laptop install with nothing chosen
-        // yet, that agent's models are filled by the same first-start door (one transaction; never over a choice).
-        // In the background, so its deadline is the sign-in check's own (5 s); Claude Code's and Codex's answers are the
-        // ones just read above, from the check's cache.
-        localAgents = await detectAgents({ check: checkConnection, home: providerHome, clock, timeoutMs: 5_000, routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store) });
+        // (its cache, just filled). The first task goes to the agent it picks: on any install where models were never
+        // chosen or cleared, that agent's models are filled through the detected door (one transaction with the check
+        // that nothing is set; ledgered, and the agent recorded once), never over a choice.
+        // Claude Code's and Codex's answers are the ones just read above, from the check's cache.
+        localAgents = await detectAgents({ check: checkConnection, home: providerHome, clock, routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store) });
         const pick = localAgents.firstTask;
-        if ((pick === "claude" || pick === "codex") && options.leadByDefault === true && !store.isDemo()) fillDefaultRouting(store, pick, "toolroll", { kind: "first-start" }, clock());
+        if ((pick === "claude" || pick === "codex") && options.leadByDefault === true && !store.isDemo()) fillDefaultRouting(store, pick, "toolroll", { kind: "detected" }, clock());
       })
       .catch(() => {})
       .finally(() => { localSignInChecking = null; });
