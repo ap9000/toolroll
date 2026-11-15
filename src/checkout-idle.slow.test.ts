@@ -90,7 +90,9 @@ describe("what goes and what stays", () => {
     expect((await git(["rev-parse", "toolroll/review"])).stdout.trim()).toBe(review.head);
     const ledger = store.actionLedger({ repos: null }).filter(one => one.action === "checkout removed");
     expect(ledger.map(one => one.taskId).sort()).toEqual(["review", "unfinished"]);
-    expect(ledger[0]!.detail).toContain(`idle since ${T0.toISOString().slice(0, 10)}`);
+    // The store stamps its records on the real clock, a moment after T0: near midnight (UTC) the two can be different days.
+    const days = new Set([T0.toISOString().slice(0, 10), new Date().toISOString().slice(0, 10)]);
+    expect([...days].some(day => ledger[0]!.detail.includes(`idle since ${day}`)), ledger[0]!.detail).toBe(true);
   });
 
   test("anyone acting on the task, or on any version of it, starts the clock again; Toolroll's own bookkeeping doesn't", async () => {
