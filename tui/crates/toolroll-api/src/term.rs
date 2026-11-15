@@ -241,9 +241,10 @@ impl Client {
             protocols.set_sensitive(true);
             headers.insert("sec-websocket-protocol", protocols);
         }
+        // The console sends the screen as it is (with its scrollback) as one message of at most 8 Mi characters.
         let config = WebSocketConfig::default()
-            .max_message_size(Some(8 << 20))
-            .max_frame_size(Some(8 << 20));
+            .max_message_size(Some(32 << 20))
+            .max_frame_size(Some(32 << 20));
         let (ws, _) = match tokio_tungstenite::client_async_with_config(
             request,
             stream,
@@ -277,9 +278,12 @@ impl Client {
         let held = std::sync::Arc::new(Held::default());
         let budget = held.clone();
         tokio::spawn(async move {
+            // Until `hello`, the console sends only the screen as it is (one message it bounds) and then `hello`: read
+            // freely until then (the screen waits for `hello` before it parses, so blocking here would never end).
+            let mut hello_seen = false;
             loop {
                 // Over budget: typing still goes out, but nothing more is read until the screen lets go of some.
-                let can_read = budget.bytes() < OUTPUT_BUDGET;
+                let can_read = !hello_seen || budget.bytes() < OUTPUT_BUDGET;
                 tokio::select! {
                     _ = budget.freed.notified(), if !can_read => {}
                     out = send_rx.recv() => {
@@ -302,7 +306,10 @@ impl Client {
                         let event = match frame {
                             Some(Ok(Message::Binary(bytes))) => TermEvent::Output(Chunk::held(bytes.to_vec(), &budget)),
                             Some(Ok(Message::Text(text))) => match control_of(text.as_str()) {
-                                Some(e) => e,
+                                Some(e) => {
+                                    hello_seen |= matches!(e, TermEvent::Hello { .. });
+                                    e
+                                }
                                 None => continue,
                             },
                             Some(Ok(Message::Close(frame))) => {

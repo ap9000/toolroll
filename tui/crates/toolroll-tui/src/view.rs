@@ -1376,6 +1376,23 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(vec![Span::styled("Esc  ", ink()), Span::raw("Back")]),
             ],
         ),
+        Mode::ConfirmTakeOver { run, .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
+            let mut lines = vec![Line::raw("")];
+            lines.extend(
+                wrap(&crate::app::take_over_scope(*run), w)
+                    .into_iter()
+                    .map(|l| Line::from(Span::styled(l, ink()))),
+            );
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled("t  ", ink()),
+                Span::raw("to open,  "),
+                Span::styled("Esc  ", ink()),
+                Span::raw("to cancel"),
+            ]));
+            (" Take over ", lines)
+        }
         Mode::ConfirmStop(run) => (
             " Stop ",
             vec![
@@ -1868,7 +1885,7 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let typing = app.mode == Mode::TakeOver;
     let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
         let words = if item.is_task {
-            "Take over: a real terminal on this task's latest build, in a worktree of its own. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
+            "Take over: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
         } else {
             "This isn't a task. Press w to open it in the browser."
         };

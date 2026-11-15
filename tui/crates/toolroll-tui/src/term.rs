@@ -16,6 +16,10 @@ use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
 /// Lines above the screen kept for scrolling back (the console keeps the same for a page that attaches later).
 pub const SCROLLBACK_LINES: usize = 5000;
+/// The largest screen-as-it-was a pane holds while attaching (the console sends at most 8 Mi characters of it).
+pub const ATTACH_HOLD_MAX: usize = 32 << 20;
+/// Said when output can't be kept whole: the pane closes, and t attaches again.
+pub const TOO_MUCH: &str = "Too much output; reattach with t.";
 /// Pasted text larger than this is refused (the console takes 256 KiB a second at most).
 pub const PASTE_MAX_BYTES: usize = 200 * 1024;
 
@@ -45,8 +49,10 @@ pub struct Pane {
     pub id: Option<String>,
     pub link: Link,
     pub parser: vt100::Parser,
-    /// Output before `hello` (the screen as it was when attaching), parsed at the console's size once it says it.
-    held: Vec<u8>,
+    /// Output before `hello` (the screen as it was when attaching), parsed at the console's size once it says it. Held
+    /// as the chunks it came in, so it still counts against the connection's output budget.
+    held: Vec<toolroll_api::Chunk>,
+    held_bytes: usize,
     /// The size last sent to the console (cols, rows), and the pane's size last frame.
     pub sent: Option<(u16, u16)>,
     pub area: Rect,
@@ -80,6 +86,7 @@ impl Pane {
             link: Link::Opening,
             parser: vt100::Parser::new(24, 80, SCROLLBACK_LINES),
             held: Vec::new(),
+            held_bytes: 0,
             sent: None,
             area: Rect::default(),
             branch: String::new(),
@@ -98,15 +105,31 @@ impl Pane {
         self.id = Some(id);
         self.link = Link::Attaching;
         self.held.clear();
+        self.held_bytes = 0;
+    }
+
+    /// Terminal output as it arrived: held until `hello` while attaching, else parsed. False when the screen as it was
+    /// is larger than any the console sends (ATTACH_HOLD_MAX): nothing is dropped silently, the pane closes and says so.
+    pub fn take(&mut self, chunk: toolroll_api::Chunk) -> bool {
+        if self.link == Link::Attaching {
+            self.held_bytes += chunk.len();
+            if self.held_bytes > ATTACH_HOLD_MAX {
+                self.held.clear();
+                self.held_bytes = 0;
+                self.link = Link::Closed(TOO_MUCH.into());
+                return false;
+            }
+            self.held.push(chunk);
+            return true;
+        }
+        self.parser.process(&chunk);
+        true
     }
 
     /// Terminal output (only ever into the emulator).
     pub fn output(&mut self, bytes: &[u8]) {
         if self.link == Link::Attaching {
-            // The screen as it was can be large; held only up to what a screen and its scrollback could need.
-            if self.held.len() + bytes.len() <= 16 << 20 {
-                self.held.extend_from_slice(bytes);
-            }
+            let _ = self.take(bytes.to_vec().into());
             return;
         }
         self.parser.process(bytes);
@@ -116,8 +139,10 @@ impl Pane {
     /// sends this pane's own size, and the program redraws for it).
     pub fn hello(&mut self, cols: u16, rows: u16, ended: bool) {
         self.parser.screen_mut().set_size(rows.max(1), cols.max(1));
-        let held = std::mem::take(&mut self.held);
-        self.parser.process(&held);
+        for chunk in std::mem::take(&mut self.held) {
+            self.parser.process(&chunk);
+        }
+        self.held_bytes = 0;
         self.sent = Some((cols, rows));
         self.link = if ended {
             Link::Ended {

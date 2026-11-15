@@ -58,6 +58,9 @@ fn link() -> TermLink {
 /// `t` on the result waiting, the console's terminal attached, and its screen shown.
 fn taken_over() -> App {
     let mut app = app_on("t-done");
+    // The first t says what opening it means; the second opens it.
+    assert_eq!(app.key(key('t')), vec![]);
+    assert!(matches!(app.mode, Mode::ConfirmTakeOver { .. }));
     let fx = app.key(key('t'));
     assert_eq!(
         fx,
@@ -232,6 +235,7 @@ fn a_running_build_has_nothing_saved_to_take_over() {
 #[test]
 fn the_console_saying_no_or_closing_is_said_plainly() {
     let mut app = app_on("t-done");
+    app.key(key('t'));
     app.key(key('t'));
     app.update(Msg::TermOpened {
         task: "t-done".into(),
@@ -521,4 +525,72 @@ fn sequences_split_across_chunks_are_still_parsed_whole() {
     assert!(text.starts_with("red 日 end"), "{text:?}");
     assert!(!text.contains("ZXZp") && !text.contains("52;"), "{text:?}");
     assert_eq!(buf[(0, 0)].fg, ratatui::style::Color::Indexed(1));
+}
+
+#[test]
+fn nothing_starts_before_the_scope_is_confirmed() {
+    let mut app = app_on("t-done");
+    assert_eq!(app.key(key('t')), vec![]);
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("Opens your shell in a separate copy of build #2.")
+            && shown.contains("direnv"),
+        "{shown}"
+    );
+    insta::assert_snapshot!("take_over_confirm", shown);
+    // Any other key keeps the dialog; Esc opens nothing.
+    assert_eq!(app.key(key('x')), vec![]);
+    assert!(matches!(app.mode, Mode::ConfirmTakeOver { .. }));
+    assert_eq!(
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        vec![]
+    );
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(app.term.is_none());
+    // Confirmed once, the build's copy opens on t from then on (the yes is remembered for it).
+    app.key(key('t'));
+    assert!(matches!(
+        app.key(key('t')).as_slice(),
+        [Effect::TermOpen { .. }]
+    ));
+    app.update(Msg::TermOpened {
+        task: "t-done".into(),
+        run: fake::RESULT_RUN,
+        result: Err(ApiError::Refused("gone".into())),
+    });
+    assert!(matches!(
+        app.key(key('t')).as_slice(),
+        [Effect::TermOpen { .. }]
+    ));
+}
+
+#[test]
+fn the_screen_as_it_was_counts_and_is_never_dropped_silently() {
+    let mut pane = Pane::opening("t".into(), 1);
+    pane.attached(ID.into());
+    let piece = vec![b'x'; 1 << 20];
+    let mut ok = true;
+    for _ in 0..40 {
+        ok = pane.take(piece.clone().into());
+        if !ok {
+            break;
+        }
+    }
+    assert!(!ok, "a screen larger than any the console sends was held");
+    assert_eq!(pane.link, Link::Closed(toolroll_tui::term::TOO_MUCH.into()));
+    // The app lets go of the socket and says why.
+    let mut app = taken_over();
+    app.term.as_mut().unwrap().attached(ID.into());
+    let mut fx = vec![];
+    for _ in 0..40 {
+        fx = app.update(Msg::Term(
+            ID.into(),
+            TermEvent::Output(piece.clone().into()),
+        ));
+        if !fx.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(fx, vec![Effect::TermDetach(ID.into())]);
+    assert_eq!(app.status.as_ref().unwrap().1, toolroll_tui::term::TOO_MUCH);
 }

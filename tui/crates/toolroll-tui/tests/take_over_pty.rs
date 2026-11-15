@@ -177,6 +177,10 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     let mut run = Run::start(&engine, &scratch, 34, 120);
     // t-done (the result waiting): take over.
     run.press("j");
+    // The first t says what it opens; nothing starts until the second.
+    run.press("t");
+    run.wait_for("Opens your shell in a separate copy of build #2.", 5);
+    assert!(engine.acts().iter().all(|a| a.path != "/term/start"));
     run.press("t");
     let shown = run.wait_for("$ ", 10);
     assert!(
@@ -232,6 +236,8 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     }
     let mut run = Run::start(&engine, &scratch, 34, 120);
     run.press("j");
+    run.press("t");
+    run.wait_for("Opens your shell in a separate copy", 5);
     run.press("t");
     run.wait_for("$ echo hi", 10);
     let shown = run.wait_for("Typing", 5);

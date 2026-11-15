@@ -618,6 +618,10 @@ fn bench_term(args: &[String]) -> Result<()> {
     app.key(crossterm::event::KeyEvent::from(
         crossterm::event::KeyCode::Char('t'),
     ));
+    // Again, past the scope dialog.
+    app.key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('t'),
+    ));
     let id = toolroll_fake_engine::TERM_ID.to_string();
     app.update(Msg::TermOpened {
         task: "t-done".into(),
@@ -755,6 +759,9 @@ fn drive_term(args: &[String]) -> Result<()> {
     writer.write_all(b"j")?;
     writer.flush()?;
     wait_for(&screen, "build #2", 10)?;
+    writer.write_all(b"t")?;
+    writer.flush()?;
+    wait_for(&screen, "Opens your shell", 10)?;
     writer.write_all(b"t")?;
     writer.flush()?;
     wait_for(&screen, "Typing", 10)?;

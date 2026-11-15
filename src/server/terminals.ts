@@ -79,7 +79,11 @@ export function terminalHostFor(store: Store, options: Pick<ServeOptions, "termi
   const spawn = loadPtySpawn();
   if (spawn === null) return { host: null, problem: "This install has no terminal support (the optional @lydell/node-pty package didn't load). Reinstall Toolroll to add it." };
   const ledger = openTerminalLedger(store.raw());
-  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees"), ...(ledger === null ? {} : { ledger }) }), problem: null };
+  // A take-over's PATH leaves out every folder a build may write: the projects Toolroll knows and its own state folder
+  // (build worktrees, live copies, evidence); the console's own projects are added once its runtime exists
+  // (createTerminalHandlers).
+  const buildWritable = () => [dirname(database), ...store.knownRepos()];
+  return { host: new TerminalHost({ spawn, worktreeRoot: join(dirname(database), "live-worktrees"), buildWritable, ...(ledger === null ? {} : { ledger }) }), problem: null };
 }
 
 type Operator = Who & { via: "cookie" };
@@ -346,6 +350,10 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
         if (!stillProved()) return shut(4401, "signed out");
         ws.send(JSON.stringify(message));
       },
+      // T4 review: the host pauses the program while this socket is backed up, and closes it plainly (the same 4008
+      // a client says as "Too much output") when it can't be kept whole.
+      backlog: () => closed ? 0 : ws.bufferedAmount,
+      overflow: () => shut(4008, "fell behind"),
     };
     ws.on("message", (data, isBinary) => {
       if (closed) return;
@@ -373,6 +381,9 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     record("attach", who.name, terminal);
   }
 
+  // The console's projects are build-writable too: kept out of a take-over's PATH (live-terminal.ts trustedPath).
+  // (A stand-in host in a test may not have it.)
+  deps.host?.alsoBuildWritable?.(runtime.consoleProjects);
   deps.server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (!upgrade(request, socket, head)) socket.destroy();
   });

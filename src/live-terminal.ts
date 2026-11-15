@@ -46,6 +46,9 @@ export type Pty = {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(signal?: string): void;
+  /** Stop and start reading the program's output (flow control: the program blocks on a full terminal meanwhile). */
+  pause?(): void;
+  resume?(): void;
 };
 export type PtySpawn = (file: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; cols: number; rows: number }) => Pty;
 
@@ -83,6 +86,8 @@ export function loadPtySpawn(): PtySpawn | null {
         write: data => native.write(data),
         resize: (cols, rows) => native.resize(cols, rows),
         kill: signal => native.kill(signal),
+        pause: () => native.pause(),
+        resume: () => native.resume(),
       };
     };
   } catch {
@@ -118,11 +123,28 @@ export class ScreenMirror {
     this.serializer = new SerializeAddon();
     this.terminal.loadAddon(this.serializer);
   }
-  write(data: string): void { this.terminal.write(data); }
+  /** Bytes written and not yet parsed (xterm parses asynchronously): the host pauses the program while it grows. */
+  pending = 0;
+  /** Write output; false when xterm refused it (its own buffer overflowed: data was lost, every viewer is told). */
+  write(data: string): boolean {
+    const size = data.length;
+    this.pending += size;
+    try { this.terminal.write(data, () => { this.pending -= size; }); return true; }
+    catch { this.pending -= size; return false; }
+  }
   resize(cols: number, rows: number): void { try { this.terminal.resize(cols, rows); } catch { /* sizes are clamped before this */ } }
   /** The screen as of this call (after everything written before it), handed to `done` once parsed. */
   snapshot(done: (screen: string) => void): void {
-    this.terminal.write("", () => { let screen = ""; try { screen = this.serializer.serialize({ scrollback: this.lines }); } catch { screen = ""; } done(screen); });
+    // At most SNAPSHOT_MAX_CHARS: a screen with a deep, colourful scrollback is sent with less of it rather than without
+    // bound (the client takes one message of up to 16 MiB).
+    this.terminal.write("", () => {
+      let screen = "";
+      for (let lines = this.lines; ; lines = Math.floor(lines / 2)) {
+        try { screen = this.serializer.serialize({ scrollback: lines }); } catch { screen = ""; }
+        if (screen.length <= SNAPSHOT_MAX_CHARS || lines === 0) break;
+      }
+      done(screen.length <= SNAPSHOT_MAX_CHARS ? screen : "");
+    });
   }
   dispose(): void { try { this.terminal.dispose(); } catch { /* already */ } }
 }
@@ -131,7 +153,24 @@ export class ScreenMirror {
 export type TerminalViewer = {
   output(data: Buffer): void;
   control(message: TerminalControl): void;
+  /** Bytes sent to it and not yet taken by its connection (a socket's buffered amount): the program pauses past
+   * VIEWER_PAUSE_BYTES and resumes under VIEWER_RESUME_BYTES. */
+  backlog?(): number;
+  /** It can't be kept up to date (a holding queue or the screen mirror overflowed): close it, saying so plainly. */
+  overflow?(): void;
 };
+
+/** Flow control (T4 review): the program's output is paused while any viewer has this much unsent, while the screen
+ * mirror has this much unparsed, or while a page is attaching; it resumes once all are under the lower marks. */
+export const VIEWER_PAUSE_BYTES = 1024 * 1024;
+export const VIEWER_RESUME_BYTES = 256 * 1024;
+export const MIRROR_PAUSE_CHARS = 4 * 1024 * 1024;
+export const MIRROR_RESUME_CHARS = 1024 * 1024;
+/** Output held for a page while its screen is prepared: past this the page is closed ("Too much output") rather than
+ * the queue growing. */
+export const ATTACH_HOLD_BYTES = 4 * 1024 * 1024;
+/** The largest screen sent to a page that attaches (characters of the serialized screen and scrollback). */
+export const SNAPSHOT_MAX_CHARS = 8 * 1024 * 1024;
 export type TerminalControl =
   | { t: "hello"; cols: number; rows: number; program: TerminalProgram; ended: boolean }
   | { t: "exit"; code: number | null; signal: number | null }
@@ -186,6 +225,10 @@ type Session = TerminalSummary & {
   rows: number;
   /** What a page that attaches later is shown (ScreenMirror). */
   screen: ScreenMirror;
+  /** Flow control: the program's output is paused, re-checked by this timer; pages being attached. */
+  paused: boolean;
+  flowTimer: NodeJS.Timeout | null;
+  attaching: number;
   viewers: Set<TerminalViewer>;
   closing: Promise<void> | null;
   exited: Promise<void>;
@@ -228,6 +271,8 @@ export type TerminalHostOptions = {
   ledger?: TerminalLedger;
   /** The process table (tests stand a failing one in); null when it can't be read. */
   processes?: () => ProcessTable | null;
+  /** Every folder a build may write (registered projects, Toolroll's state folder): kept out of a take-over's PATH. */
+  buildWritable?: () => string[];
   /** Git for a take-over's own copy (copyAt); default the hardened runner. */
   copyGit?: (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
   /** Who else works in a worktree (tests stand theirs in); default worktreeResidents. */
@@ -240,10 +285,28 @@ export const COPY_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tfilemode = 
 /** What a take-over's shell starts with: the person's own identity, locale, shell and path, and nothing else of the
  * console's environment (its login shell reads the person's startup files from there). */
 export const TAKE_OVER_ENV = ["HOME", "USER", "LOGNAME", "SHELL", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TMPDIR", "TZ"] as const;
-export function takeOverEnvironment(from: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function takeOverEnvironment(from: NodeJS.ProcessEnv, buildWritable: readonly string[] = []): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of TAKE_OVER_ENV) if (typeof from[key] === "string") env[key] = from[key];
+  if (env["PATH"] !== undefined) env["PATH"] = trustedPath(env["PATH"], buildWritable);
   return env;
+}
+
+/**
+ * PATH for a take-over's shell: only absolute folders outside every build-writable root (each registered project and
+ * its worktrees, Toolroll's state folder with its build worktrees and live copies), compared both as written and as
+ * their real paths, so a program a build wrote is never what the person's `git` or `npm` turns out to be. Relative and
+ * empty entries (which mean the current folder) go too.
+ */
+export function trustedPath(path: string, buildWritable: readonly string[]): string {
+  const real = (p: string): string | null => { try { return realpathSync(p); } catch { return null; } };
+  const roots = buildWritable.flatMap(root => [root, real(root)]).filter((one): one is string => one !== null && one !== "");
+  const inside = (p: string) => roots.some(root => p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`));
+  return path.split(delimiter).filter(entry => {
+    if (entry === "" || !isAbsolute(entry) || entry.split("/").includes("..")) return false;
+    const resolved = real(entry);
+    return !inside(entry) && (resolved === null || !inside(resolved));
+  }).join(delimiter);
 }
 
 const clamp = (value: number, range: { min: number; max: number }) => Math.min(range.max, Math.max(range.min, Math.trunc(value)));
@@ -327,7 +390,8 @@ export class TerminalHost {
     if (this.sessions.size + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
     // A take-over's shell starts from a short list of the person's own settings, not the console's whole environment;
     // the person's login shell then reads its own startup files, as any new terminal does (the pane says so).
-    const env = { ...(from === null ? this.env() : takeOverEnvironment(this.env())), TERM: "xterm-256color", COLORTERM: "truecolor" };
+    const roots = [this.options.worktreeRoot, ...(this.options.buildWritable?.() ?? []), ...this.moreBuildWritable.flatMap(more => more())];
+    const env = { ...(from === null ? this.env() : takeOverEnvironment(this.env(), roots)), TERM: "xterm-256color", COLORTERM: "truecolor" };
     const command = this.options.programs?.[program] ?? defaultProgram(program, env);
     if (command === null) throw new TerminalError(`${program === "claude" ? "Claude Code" : "Codex"} isn't installed on this computer (\`${program}\` is not on PATH).`);
     const id = randomBytes(16).toString("hex");
@@ -373,7 +437,7 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), viewers: new Set(), closing: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }) };
       this.sessions.set(id, session);
       this.ledger.running(id);
@@ -382,11 +446,15 @@ export class TerminalHost {
       pty.onData(data => {
         this.noteSoon();
         const chunk = Buffer.from(data, "utf8");
-        session.screen.write(data);
+        // The mirror refused output (its buffer overflowed): what a page would be shown is no longer whole, so every
+        // page is closed plainly and reattaches.
+        if (!session.screen.write(data)) for (const viewer of session.viewers) { try { viewer.overflow?.(); } catch { /* gone */ } }
         for (const viewer of session.viewers) { try { viewer.output(chunk); } catch { /* the viewer's own close handles it */ } }
+        this.flow(session);
       });
       pty.onExit(({ exitCode, signal }) => {
         session.pty = null;
+        if (session.flowTimer !== null) { clearInterval(session.flowTimer); session.flowTimer = null; }
         session.exitedAt = Date.now();
         session.endedAt = this.clock().toISOString();
         session.exit = { code: exitCode ?? null, signal: signal || null };
@@ -408,31 +476,36 @@ export class TerminalHost {
    * A take-over's folder (T4): an independent repository of Toolroll's own at `revision`, never a worktree of the
    * project. A worktree's git folder lives in the project's shared `.git`, where a build can plant hooks and config that
    * the person's shell prompt (`git status`) would then run outside the fence. This one's `.git` is made here, from an
-   * empty template (no hooks folder, no info), with a config of Toolroll's few lines; its only link to the project is a
-   * read-only alternates entry naming the objects folder of Toolroll's own record of the project (recordedCommonDir,
-   * proven from disk, never a pointer a build wrote) — objects are data and run nothing. Every git here runs hardened
-   * (no system or global config, no hooks, no fsmonitor). The folder is in the console's state folder, which no build
-   * may write. Throws a TerminalError when it can't be made.
+   * empty template (no hooks folder, no info), with a config of Toolroll's few lines and no alternates: the recorded
+   * commit is fetched into its own object store from Toolroll's record of the project (recordedCommonDir, proven from
+   * disk, never a pointer a build wrote), `--depth 1`, with every object checked (fetch.fsckObjects; index-pack hashes
+   * each one), so a loose object a build rewrote under a valid name is refused, never checked out. A source that reads
+   * objects from elsewhere (alternates, http-alternates) is refused before any fetch. Every git here runs hardened (no
+   * system or global config, no hooks, no fsmonitor; command-line settings reach the source's upload-pack too). The
+   * folder is in the console's state folder, which no build may write. Throws a TerminalError when it can't be made.
    */
   private async copyAt(repo: string, folder: string, branch: string, revision: string): Promise<void> {
-    let objects: string;
-    try { objects = realpathSync(join(recordedCommonDir(repo), "objects")); } catch { throw new TerminalError("Toolroll couldn't read this project's own git folder, so it won't open a copy of the build."); }
+    let source: string;
+    try { source = realpathSync(recordedCommonDir(repo)); } catch { throw new TerminalError("Toolroll couldn't read this project's own git folder, so it won't open a copy of the build."); }
+    for (const borrowed of ["alternates", "http-alternates"]) {
+      if (existsSync(join(source, "objects", "info", borrowed))) throw new TerminalError("This project's git reads objects from another folder (alternates), so Toolroll won't copy a build from it.");
+    }
     const template = join(this.options.worktreeRoot, ".empty-template");
     mkdirSync(template, { recursive: true, mode: 0o700 });
     if (readdirSync(template).length > 0 || lstatSync(template).isSymbolicLink()) throw new TerminalError("Toolroll's terminal folder isn't as it left it.");
-    const git = async (cwd: string, args: string[]): Promise<ExecResult> => {
-      const result = await (this.options.copyGit ?? run)("git", [...TEARDOWN_FLAGS, ...args], { cwd, envAllowlist: ENV_ALLOWLIST, env: { ...ENV }, timeoutMs: 120_000, maxBuffer: 16 * 1024 * 1024 });
-      if (result.code !== 0) throw new TerminalError("Git couldn't make a copy of this build for the terminal.");
+    const git = async (cwd: string, args: string[], refused = "Git couldn't make a copy of this build for the terminal."): Promise<ExecResult> => {
+      const result = await (this.options.copyGit ?? run)("git", [...TEARDOWN_FLAGS, ...args], { cwd, envAllowlist: ENV_ALLOWLIST, env: { ...ENV }, timeoutMs: 300_000, maxBuffer: 16 * 1024 * 1024 });
+      if (result.code !== 0) throw new TerminalError(refused);
       return result;
     };
     mkdirSync(folder, { recursive: false, mode: 0o700 });
     try {
       await git(folder, ["init", "--quiet", `--template=${template}`, "-b", branch]);
-      const dotgit = join(folder, ".git");
       // Toolroll's lines only: whatever git init wrote is replaced.
-      writeFileSync(join(dotgit, "config"), COPY_CONFIG, { mode: 0o600 });
-      mkdirSync(join(dotgit, "objects", "info"), { recursive: true, mode: 0o700 });
-      writeFileSync(join(dotgit, "objects", "info", "alternates"), `${objects}\n`, { mode: 0o600 });
+      writeFileSync(join(folder, ".git", "config"), COPY_CONFIG, { mode: 0o600 });
+      await git(folder, ["-c", "protocol.file.allow=always", "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true", "-c", "uploadpack.allowAnySHA1InWant=true",
+        "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--depth", "1", "--", source, revision],
+        "This build's saved commit didn't copy whole (an object in the project's git isn't what its name says), so Toolroll won't open it.");
       await git(folder, ["reset", "--quiet", "--hard", revision]);
       const head = (await git(folder, ["rev-parse", "--verify", "HEAD^{commit}"])).stdout.trim();
       if (head !== revision) throw new TerminalError("The copy of this build isn't at its saved commit.");
@@ -451,13 +524,26 @@ export class TerminalHost {
     if (session === undefined) throw new TerminalError("No such terminal.");
     if (session.viewers.size >= MAX_VIEWERS) throw new TerminalError(`This terminal is open in ${MAX_VIEWERS} places already. Close one of them.`);
     const held: ({ output: Buffer } | { control: TerminalControl })[] = [];
-    let live = false;
+    let live = false, heldBytes = 0, attaching = true;
+    // The program is paused while the screen is prepared (flow), so little is held; past ATTACH_HOLD_BYTES the page is
+    // closed plainly instead of the queue growing.
+    const done = () => { if (attaching) { attaching = false; session.attaching -= 1; this.flow(session); } };
     const gate: TerminalViewer = {
-      output: data => { if (live) viewer.output(data); else held.push({ output: data }); },
+      output: data => {
+        if (live) return viewer.output(data);
+        heldBytes += data.byteLength;
+        if (heldBytes > ATTACH_HOLD_BYTES) { held.length = 0; session.viewers.delete(gate); done(); viewer.overflow?.(); return; }
+        held.push({ output: data });
+      },
       control: message => { if (live) viewer.control(message); else held.push({ control: message }); },
+      backlog: () => viewer.backlog?.() ?? 0,
+      overflow: () => viewer.overflow?.(),
     };
     session.viewers.add(gate);
+    session.attaching += 1;
+    this.flow(session);
     session.screen.snapshot(screen => {
+      done();
       if (!session.viewers.has(gate)) return;
       try {
         if (screen !== "") viewer.output(Buffer.from(screen, "utf8"));
@@ -468,8 +554,38 @@ export class TerminalHost {
       held.length = 0;
       live = true;
     });
-    return () => { session.viewers.delete(gate); };
+    return () => { session.viewers.delete(gate); done(); this.flow(session); };
   }
+
+  /**
+   * Flow control: pause the program's output while a page's connection is backed up, the screen mirror is behind, or a
+   * page is attaching; resume once every one is under its lower mark. While paused it is checked again every 25 ms.
+   */
+  private flow(session: Session): void {
+    const pty = session.pty;
+    if (pty === null) return;
+    const backlogs = [...session.viewers].map(one => { try { return one.backlog?.() ?? 0; } catch { return 0; } });
+    const over = session.attaching > 0 || session.screen.pending > MIRROR_PAUSE_CHARS || backlogs.some(n => n > VIEWER_PAUSE_BYTES);
+    const under = session.attaching === 0 && session.screen.pending <= MIRROR_RESUME_CHARS && backlogs.every(n => n <= VIEWER_RESUME_BYTES);
+    if (over && !session.paused) {
+      session.paused = true;
+      try { pty.pause?.(); } catch { /* it exited between */ }
+      session.flowTimer ??= setInterval(() => this.flow(session), 25);
+      session.flowTimer.unref?.();
+    } else if (under && session.paused) {
+      session.paused = false;
+      try { pty.resume?.(); } catch { /* it exited between */ }
+      if (session.flowTimer !== null) { clearInterval(session.flowTimer); session.flowTimer = null; }
+    }
+  }
+
+  private readonly moreBuildWritable: Array<() => readonly string[]> = [];
+  /** More folders a build may write, read at each take-over's start (the console adds its projects once it has them). */
+  alsoBuildWritable(roots: () => readonly string[]): void { this.moreBuildWritable.push(roots); }
+
+  /** Whether the program's output is paused now (flow control), and how much the screen mirror has unparsed. */
+  paused(id: string): boolean { return this.sessions.get(id)?.paused ?? false; }
+  mirrorPending(id: string): number { return this.sessions.get(id)?.screen.pending ?? 0; }
 
   /** How many pages are attached now. */
   viewerCount(id: string): number { return this.sessions.get(id)?.viewers.size ?? 0; }
@@ -663,16 +779,28 @@ export class TerminalHost {
     }
   }
 
-  /** Why a take-over's copy can't be removed (commits or changes of its own, or it can't be read), else null. */
+  /**
+   * Why a take-over's copy can't be removed, naming what would be lost; null when it holds nothing but the build's
+   * commit. Every ref (branches, tags, the stash), HEAD and every reflog entry is checked: any commit not reachable from
+   * the recorded base is the person's own work, and so is any change not committed. Unreadable is never "nothing".
+   */
   private async copyHasWork(folder: string, base: string): Promise<string | null> {
-    const keep = `This copy has work of its own (commits or changes), so it stays at ${folder}. Copy what you need out of it, then delete the folder.`;
     const read = async (args: string[]) => (this.options.copyGit ?? run)("git", [...TEARDOWN_FLAGS, ...args], { cwd: folder, envAllowlist: ENV_ALLOWLIST, env: { ...ENV }, timeoutMs: 60_000, maxBuffer: 16 * 1024 * 1024 });
+    const stays = (what: string) => `This copy holds ${what} that exist nowhere else, so it stays at ${folder}. Copy what you need out of it, then delete the folder.`;
     try {
-      const head = await read(["rev-parse", "--verify", "HEAD^{commit}"]);
+      const own = await read(["rev-list", "--all", "--reflog", "--not", base, "--"]);
       const status = await read(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all"]);
-      if (head.code !== 0 || status.code !== 0) return keep;
-      return head.stdout.trim() === base && status.stdout.trim() === "" ? null : keep;
-    } catch { return keep; }
+      if (own.code !== 0 || status.code !== 0) return stays("work (its git couldn't be read)");
+      const commits = own.stdout.split("\n").filter(line => /^[0-9a-f]{40,64}$/.test(line));
+      const lost: string[] = [];
+      if (commits.length > 0) {
+        const named = await read(["log", "--no-walk=unsorted", "--format=%h %s", ...commits.slice(0, 5), "--"]);
+        const list = named.code === 0 ? named.stdout.trim().split("\n").map(line => line.slice(0, 80)).join("; ") : commits.slice(0, 5).map(one => one.slice(0, 12)).join(", ");
+        lost.push(`${commits.length} commit${commits.length === 1 ? "" : "s"} (${list}${commits.length > 5 ? "; …" : ""})`);
+      }
+      if (status.stdout.trim() !== "") lost.push("changes not committed");
+      return lost.length === 0 ? null : stays(lost.join(" and "));
+    } catch { return stays("work (its git couldn't be read)"); }
   }
 
   /** Whether new sessions may start (false once the console is stopping). */

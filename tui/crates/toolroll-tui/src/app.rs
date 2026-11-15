@@ -191,6 +191,16 @@ pub enum Mode {
     /// Typing in the Terminal tab's terminal (T4, take over): every key, paste and mouse event in the pane goes to that
     /// one terminal, Ctrl-C included; only Ctrl-] comes back to the workbench.
     TakeOver,
+    /// What taking over this build opens, said before anything starts (TAKE_OVER_SCOPE): t opens it, Esc doesn't.
+    ConfirmTakeOver {
+        task: String,
+        run: i64,
+    },
+}
+
+/// What opening a take-over means, said before the first one on a build (its number goes after "build #").
+pub fn take_over_scope(run: i64) -> String {
+    format!("Opens your shell in a separate copy of build #{run}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
@@ -474,6 +484,8 @@ pub struct App {
     pub now: i64,
     /// The Terminal tab's terminal (T4): the selected task's take-over, when one is open.
     pub term: Option<Pane>,
+    /// The builds (task, build) whose take-over the person said yes to here (ConfirmTakeOver), each asked once.
+    pub confirmed: HashSet<(String, i64)>,
     ticks: u64,
     counter: u64,
 }
@@ -535,6 +547,7 @@ impl App {
             line_cache: None,
             now: 0,
             term: None,
+            confirmed: HashSet::new(),
             ticks: 0,
             counter: 0,
         }
@@ -997,6 +1010,7 @@ impl App {
             self.mode,
             Mode::ConfirmAnswer(_)
                 | Mode::ConfirmAccept(_)
+                | Mode::ConfirmTakeOver { .. }
                 | Mode::ConfirmStop(_)
                 | Mode::Note(..)
                 | Mode::SendBack(..)
@@ -1323,6 +1337,26 @@ impl App {
             }
             Mode::Normal => self.normal_key(key),
             Mode::TakeOver => vec![],
+            Mode::ConfirmTakeOver { task, run } => match key.code {
+                KeyCode::Char('t') => {
+                    self.mode = Mode::Normal;
+                    // Still the task on screen, and still its build to take over: else nothing opens.
+                    let still = self.selected_item().is_some_and(|i| i.id == task)
+                        && self.steps.as_ref().is_some_and(|s| s.live_run != Some(run));
+                    if !still {
+                        self.say(Tone::Refused, RESULT_CHANGED);
+                        return vec![];
+                    }
+                    self.confirmed.insert((task.clone(), run));
+                    self.open_take_over(task, run)
+                }
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Said, "Nothing opened.");
+                    vec![]
+                }
+                _ => vec![],
+            },
         }
     }
 
@@ -2884,13 +2918,16 @@ impl App {
             .next();
         let run = steps.review.as_ref().map(|r| r.run).or(newest_build);
         match run {
-            Some(run) if Some(run) != steps.live_run => {
-                let mut fx = self.drop_term();
-                self.term = Some(Pane::opening(item.id.clone(), run));
-                self.status = Some((Tone::Said, format!("Opening a terminal on build #{run}…")));
-                fx.push(Effect::TermOpen { task: item.id, run });
-                fx
+            // The first time on a build, what opening it means is said first, and nothing starts until t again.
+            Some(run)
+                if Some(run) != steps.live_run
+                    && !self.confirmed.contains(&(item.id.clone(), run)) =>
+            {
+                self.status = None;
+                self.mode = Mode::ConfirmTakeOver { task: item.id, run };
+                vec![]
             }
+            Some(run) if Some(run) != steps.live_run => self.open_take_over(item.id, run),
             _ if steps.live_run.is_some() => {
                 self.say(Tone::Refused, STILL_BUILDING);
                 vec![]
@@ -2903,6 +2940,16 @@ impl App {
                 vec![]
             }
         }
+    }
+
+    /// Open (or reattach to) the console's terminal on that build: a person's yes to it was given (ConfirmTakeOver).
+    fn open_take_over(&mut self, task: String, run: i64) -> Vec<Effect> {
+        let mut fx = self.drop_term();
+        self.term = Some(Pane::opening(task.clone(), run));
+        self.tab = Tab::Terminal;
+        self.status = Some((Tone::Said, format!("Opening a terminal on build #{run}…")));
+        fx.push(Effect::TermOpen { task, run });
+        fx
     }
 
     fn term_opened(
@@ -2958,10 +3005,16 @@ impl App {
         };
         let mut back = false;
         let mut said: Option<(Tone, String)> = None;
+        let mut detach: Option<String> = None;
         match event {
-            TermEvent::Output(bytes) => {
+            TermEvent::Output(chunk) => {
                 pane.input_full = false;
-                pane.output(&bytes[..]);
+                if !pane.take(chunk) {
+                    // Never dropped silently: the socket is let go of, and the pane says why.
+                    back = true;
+                    said = Some((Tone::Refused, crate::term::TOO_MUCH.into()));
+                    detach = Some(id.clone());
+                }
             }
             TermEvent::Hello { cols, rows, ended } => pane.hello(cols, rows, ended),
             TermEvent::Exit { code, signal } => {
@@ -2984,7 +3037,7 @@ impl App {
                 if !matches!(pane.link, Link::Ended { .. }) {
                     let words = match code {
                         Some(4401) => "This terminal is no longer yours to type in (signed out, or someone else joined this Toolroll).",
-                        Some(4008) => "Too much output; reattach with t.",
+                        Some(4008) => crate::term::TOO_MUCH,
                         Some(1008) => "Typing went faster than the terminal reads. Press t to attach again.",
                         Some(4429) => "This terminal is open in too many places. Close one, then press t.",
                         _ => "The terminal's connection closed. It keeps running in Toolroll — press t to attach again.",
@@ -3001,7 +3054,7 @@ impl App {
         if let Some((tone, words)) = said {
             self.say(tone, words);
         }
-        vec![]
+        detach.map(Effect::TermDetach).into_iter().collect()
     }
 
     /// Bytes for the terminal the pane shows (only while live).

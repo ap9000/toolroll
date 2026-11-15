@@ -13,7 +13,8 @@ import { enrollOwnerPassword } from "../../src/store.js";
 import { hashPassword } from "../../src/scope.js";
 import { networkInterfaces, tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { acquire, release } from "../../src/claim.js";
 import { register } from "../../src/runner.js";
 import { presented } from "../serve-kit.js";
@@ -205,15 +206,18 @@ const spawn = loadPtySpawn();
  * It never reaches a full session's terminal; a second person joining closes its open socket and refuses the rest.
  */
 describe.skipIf(spawn === null || process.platform === "win32")("terminals, as a local owner", () => {
-  let host: TerminalHost, head: string, run: number;
+  let host: TerminalHost, head: string, run: number, roots: string[] = [];
   const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
   beforeEach(async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-local-term-")));
     // The shell is the real default: the person's login shell (here bash -l, with SHELL unset and a HOME of the test's
     // own), started with the take-over's short environment. Only `claude` is a stand-in (cat).
     host = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live"), closeGraceMs: 300, programs: { claude: { file: "/bin/cat", args: [] } },
-      env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir, SECRET_TOKEN_FOR_TEST: "never-in-a-take-over" }) });
+      // The project's own tool folder on PATH, as a person's PATH may hold one: build-writable, so never the shell's.
+      env: () => ({ PATH: `${join(roots[0] ?? dir, "node_modules", ".bin")}:${process.env["PATH"] ?? ""}`, HOME: dir, SECRET_TOKEN_FOR_TEST: "never-in-a-take-over" }),
+      buildWritable: () => roots });
     world = await openLocalWorld({ terminalHost: host } as never);
+    roots = [world.repo];
     // The build's own commit, on a branch of the project (the project's HEAD stays where it was).
     const git = (...args: string[]) => execFileSync("git", ["-C", world.repo, "-c", "user.email=q@example.com", "-c", "user.name=q", ...args], { env: gitEnv, encoding: "utf8" }).trim();
     git("checkout", "-q", "-b", "build-one");
@@ -276,7 +280,8 @@ describe.skipIf(spawn === null || process.platform === "win32")("terminals, as a
     expect(readFileSync(join(copy, ".git", "config"), "utf8")).toBe(COPY_CONFIG);
     expect(existsSync(join(copy, ".git", "hooks")) ? readdirSync(join(copy, ".git", "hooks")) : []).toEqual([]);
     expect(lstatSync(join(copy, ".git")).isDirectory()).toBe(true);
-    expect(readFileSync(join(copy, ".git", "objects", "info", "alternates"), "utf8")).toBe(`${realpathSync(join(world.repo, ".git", "objects"))}\n`);
+    // Its objects are its own (fetched and checked), never borrowed from the project's.
+    expect(existsSync(join(copy, ".git", "objects", "info", "alternates"))).toBe(false);
     // A build plants a hook and a command in the project's shared git folder after the copy was made.
     const fired = join(world.root, "fired");
     const script = join(world.root, "evil.sh");
@@ -293,18 +298,61 @@ describe.skipIf(spawn === null || process.platform === "win32")("terminals, as a
     let seen = "";
     const done = new Promise<void>(resolve => ws.on("message", (data, binary) => { if (binary) { seen += String(data); if (/finished-2\b/.test(seen)) resolve(); } }));
     await new Promise(resolve => ws.on("open", resolve));
-    ws.send(JSON.stringify({ t: "in", d: "git status; git -c user.email=q@example.com -c user.name=q commit -q --allow-empty -m mine; env | grep -c SECRET_TOKEN_FOR_TEST; echo finished-$((1+1))\r" }));
+    ws.send(JSON.stringify({ t: "in", d: "git status; git -c user.email=q@example.com -c user.name=q commit -q --allow-empty -m mine; env | grep -c SECRET_TOKEN_FOR_TEST; echo \"<<$PATH>>\"; echo finished-$((1+1))\r" }));
     await done;
     ws.close();
     expect(existsSync(fired)).toBe(false);
     expect(seen).toMatch(/\r?\n0\r?\n/);
+    // The project's tool folder was taken off the shell's PATH.
+    const path = [...seen.matchAll(/<<([^<>\r\n]*)>>/g)].map(match => match[1]!).filter(one => one !== "$PATH").at(-1) ?? "";
+    expect(path).not.toBe("");
+    expect(path).not.toContain(world.repo);
     // The plant is real: git in the project itself runs it.
     execFileSync("git", ["-C", world.repo, "status"], { env: gitEnv });
     expect(readFileSync(fired, "utf8")).toContain("evil.sh");
     // The copy now holds a commit of the person's own: it isn't removed with the terminal.
     await host.close(id);
-    await expect(host.remove(id)).rejects.toThrow(/work of its own/);
+    await expect(host.remove(id)).rejects.toThrow(/1 commit \(\w+ mine\)/);
     expect(existsSync(copy)).toBe(true);
+  });
+
+  test("a copy whose own commit is on another branch, with HEAD detached back at the build, is not removed", async () => {
+    const { cookie, csrf } = await world.localSession();
+    const id = (await takeOver(cookie, csrf)).body.id!;
+    const copy = host.get(id)!.worktree;
+    const git = (...args: string[]) => execFileSync("git", ["-C", copy, "-c", "user.email=q@example.com", "-c", "user.name=q", ...args], { env: gitEnv, encoding: "utf8" }).trim();
+    git("switch", "-q", "-c", "side");
+    git("commit", "-q", "--allow-empty", "-m", "kept on a side branch");
+    git("switch", "-q", "--detach", head);
+    git("branch", "-q", "-D", "side");
+    await host.close(id);
+    // Only the reflog still holds it: removal names it and keeps the folder.
+    await expect(host.remove(id)).rejects.toThrow(/kept on a side branch/);
+    expect(existsSync(copy)).toBe(true);
+  });
+
+  test("a loose object the build rewrote under its valid name is refused, never checked out", async () => {
+    const { cookie, csrf } = await world.localSession();
+    // built.txt's blob, a loose object: a valid zlib stream, a blob header, the wrong content for its name.
+    const blob = execFileSync("git", ["-C", world.repo, "rev-parse", `${head}:built.txt`], { env: gitEnv, encoding: "utf8" }).trim();
+    const loose = join(world.repo, ".git", "objects", blob.slice(0, 2), blob.slice(2));
+    expect(existsSync(loose)).toBe(true);
+    const forged = Buffer.from("rm -rf ~ # swapped\n");
+    chmodSync(loose, 0o644);
+    writeFileSync(loose, deflateSync(Buffer.concat([Buffer.from(`blob ${forged.length}\0`), forged])));
+    const answer = await takeOver(cookie, csrf);
+    expect(answer.status).toBe(409);
+    expect(answer.body.error).toMatch(/didn't copy whole/);
+    expect(host.list("alex")).toEqual([]);
+  });
+
+  test("a project whose git borrows objects from elsewhere (alternates) is refused before anything is fetched", async () => {
+    const { cookie, csrf } = await world.localSession();
+    mkdirSync(join(world.repo, ".git", "objects", "info"), { recursive: true });
+    writeFileSync(join(world.repo, ".git", "objects", "info", "alternates"), `${join(world.root, "elsewhere")}\n`);
+    const answer = await takeOver(cookie, csrf);
+    expect(answer.status).toBe(409);
+    expect(answer.body.error).toMatch(/alternates/);
   });
 
   test("it names a task and its build, nothing else: a project, half a pair or a build of no result is refused", async () => {
