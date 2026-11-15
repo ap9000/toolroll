@@ -22,6 +22,7 @@
 import { recordTypedStart, typedStartCard, typedYes } from "./typed-start.js";
 import { telegramCardMessage } from "./card-render.js";
 import { flowDoneCard } from "./flow-result-card.js";
+import { guardTelegram, outboundPrivate, taskSubject, type OutboundSubject } from "./outbound-privacy.js";
 import { applyTelegramQuestionReply, applyTelegramQuestionTap, openQuestionOf, telegramQuestionButtons } from "./subagent-question.js";
 import { acceptanceEvidenceText } from "./chat-acceptance.js";
 import { verifyApproverStanding } from "./principal.js";
@@ -229,8 +230,10 @@ export type TelegramUpload = { field: "document" | "photo" | `shot${number}`; fi
 /** A release card's full terms (release-card.ts) as the document Telegram sends with it: text this process wrote. */
 export const termsUpload = (file: { name: string; text: string }): TelegramUpload => ({ field: "document", fileName: file.name, contentType: "text/plain", bytes: Buffer.from(file.text, "utf8") });
 
-export function createTransport(token: string, timeoutMs = 30_000): TelegramTransport {
-  return async (method, params, signal, upload, more) => {
+/** The real Bot API client. Every call passes the outbound privacy guard (outbound-privacy.ts) first: a message that
+ * names a key or a folder on this computer goes as its safe version, whichever part of Toolroll sent it. */
+export function createTransport(token: string, timeoutMs = 30_000, fetcher?: typeof fetch): TelegramTransport {
+  return guardTelegram(async (method, params, signal, upload, more) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const onAbort = () => controller.abort();
@@ -246,7 +249,7 @@ export function createTransport(token: string, timeoutMs = 30_000): TelegramTran
       const request: RequestInit = upload === undefined
         ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(params), signal: controller.signal }
         : { method: "POST", body: multipartOf(params, upload, ...(more ?? [])), signal: controller.signal };
-      const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, request);
+      const response = await (fetcher ?? fetch)(`https://api.telegram.org/bot${token}/${method}`, request);
       const body = (await response.json()) as { ok?: boolean; result?: unknown; description?: string; parameters?: { retry_after?: number } } | null;
       // A missing or malformed acknowledgement does not prove a send failed.
       // Only Telegram's explicit rejection is a definite failed delivery.
@@ -270,7 +273,7 @@ export function createTransport(token: string, timeoutMs = 30_000): TelegramTran
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
-  };
+  });
 }
 
 /**
@@ -904,8 +907,15 @@ async function deliverOutboxTo(
     // Once any part of this delivery has reached Telegram it is committed: a watch opening between its parts never
     // releases it (that would send the parts already accepted again). Every transport call below goes through `wire`.
     let sentAny = false;
+    // These rows' project, when they share one: a message whose words name a key or a folder on this computer goes as
+    // its safe version, which names the project (outbound-privacy.ts). The client's own guard stays under this one.
+    // Withheld whole when a row's own words, or its task's title, name one: the safe version goes even where the
+    // message would have hidden the folder or cut the words short.
+    const subject: OutboundSubject = { project: new Set(rows.map(row => row.project)).size === 1 ? rows[0]!.project : null,
+      withheld: rows.some(row => outboundPrivate([row.subject, row.body]) || taskSubject(store, row.taskId).withheld === true) };
+    const guarded = guardTelegram(transport, subject);
     const wire: TelegramTransport = async (...args) => {
-      const answer = await transport(...args);
+      const answer = await guarded(...args);
       if (answer.ok === true) sentAny = true;
       return answer;
     };

@@ -1,4 +1,5 @@
-import { ChatDeliveryError } from "./chat-delivery-state.js";
+import { ChatDeliveryError, withheldPart } from "./chat-delivery-state.js";
+import { guardSlack } from "./outbound-privacy.js";
 import {
   chmodSync,
   readFileSync,
@@ -71,11 +72,12 @@ const errors = new Set([
   "cant_update_message",
   "edit_window_closed",
 ]);
+/** The real Web API client. Every call passes the outbound privacy guard (outbound-privacy.ts) first. */
 export function slackApi(
   token: string,
   fetcher: typeof fetch = fetch,
 ): SlackApi {
-  return async (method, args = {}) => {
+  return guardSlack<SlackApi>(async (method, args = {}) => {
     if (!/^[a-zA-Z]+(?:\.[a-zA-Z]+){1,2}$/.test(method))
       throw new SlackError("Invalid Slack method");
     let response: Response;
@@ -123,7 +125,7 @@ export function slackApi(
         body.error === "internal_error" || body.error === "fatal_error",
       );
     return body;
-  };
+  }, withheldPart);
 }
 export const slackCredentialFile = (dir: string): string =>
   join(dir, "slack-connection.json");

@@ -24,7 +24,7 @@ import {
 } from "./chat-channel.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { renderReply } from "./reply-shape.js";
-import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, type ChatBinding, type ChatContent, type ChatEvent } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, withheldPart, type ChatBinding, type ChatContent, type ChatEvent } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readSlackBlockActions, readSlackButton, SLACK_LINK_ACTION } from "./contracts/slack-callback.js";
 import {
@@ -45,6 +45,7 @@ import {
 import { type Store } from "./store.js";
 import { isLiveMessage, liveSpacingOf, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
+import { guardSlack, taskSubject } from "./outbound-privacy.js";
 
 export type SlackChatOptions = {
   store: Store;
@@ -301,6 +302,8 @@ export async function deliverSlackPart(
     if (event.kind === "notice" && options.canNotify?.() === false)
       return false;
     const content = partContent(row.payload);
+    // Past here every call names this part's project if its words have to go as their safe version (outbound-privacy.ts).
+    options = { ...options, api: guardSlack(options.api, withheldPart, taskSubject(store, content.task ?? content.image?.taskId)) };
     const destination = content.channel ?? binding.channel;
     let text = content.text,
       buttons: Record<string, unknown>[] = [];

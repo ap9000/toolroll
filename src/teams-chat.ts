@@ -3,7 +3,7 @@
 import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
+import { ChatDeliveryError, ChatState, chatHash, chatRetryAt, partContent, withheldPart, type ChatContent, type ChatEvent, type ChatIdentity } from "./chat-delivery-state.js";
 import { isLiveMessage, liveSpacingOf, underCooldown, type ChatAckHooks, type ChatLiveTransport, type LiveReplies } from "./chat-live.js";
 import { channelAccess, chatObject as object, heldForWatch, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
@@ -16,6 +16,7 @@ import { chatResultHref } from "./chat-controls.js";
 import { TeamsError, type TeamsApi } from "./teams-api.js";
 import { readTeamsSubmit } from "./contracts/teams-callback.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
+import { guardTeams, taskSubject } from "./outbound-privacy.js";
 const TEAMS_GONE = "Teams refused the request (404)";
 const TEAMS_SLOW = "Teams asked to slow down";
 
@@ -166,6 +167,8 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     const repos = await channelAccess(shared, binding, session?.ceilingDigest);
     if (event.kind === "notice" && options.canNotify?.() === false) return false;
     const content = partContent(row.payload);
+    // Past here every call names this part's project if its words have to go as their safe version (outbound-privacy.ts).
+    options = { ...options, api: guardTeams(options.api, withheldPart, taskSubject(store, content.task ?? content.image?.taskId)) };
     const destination = content.channel ?? binding.channel;
     const serviceUrl = state.meta(identity.installation, serviceKey(destination));
     if (serviceUrl === null) throw new TeamsError("This Teams conversation has no known service address yet; send it a message first", 60_000);

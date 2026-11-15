@@ -253,13 +253,16 @@ describe("decisions finish in the chat app", () => {
     expect(script.acks().at(-1)).toBe("That button isn't for this chat.");
   });
 
-  test("terms diet: a tap whose prompt would name a folder on this computer opens no prompt, and the next message answers nothing", async () => {
+  test("terms diet: a card whose words would name a folder on this computer goes as its safe version, opens no prompt, and the next message answers nothing", async () => {
     const { run } = readyResult("guard-private", "Copy the guard from ~/notes/guard.ts");
     await pass();
-    const card = script.cardWith(BOB, /^Send back$/);
-    await tapIn(BOB, card.token(/^Send back$/), card.messageId);
-    // The card goes back to Toolroll: no "What should change?" asked, no prompt left open, no button live.
-    expect(script.current(BOB, card.messageId).text).toContain("name a key or a folder on this computer");
+    // Every message to the chat app passes the outbound privacy guard (outbound-privacy.ts): the card says only the
+    // project and where to look, with its link and no button that acts; the folder is in no call.
+    expect(JSON.stringify(script.calls)).not.toContain("~/notes");
+    const card = script.current(BOB, script.inChat(BOB).filter(call => call.method === "sendMessage").at(-1)!.messageId!);
+    expect(card.text).toBe("An update is ready in alpha. Open it in Toolroll.");
+    expect(card.rows.length).toBeGreaterThan(0);
+    expect(card.rows.every(one => one.callback_data === undefined && one.url?.startsWith(ORIGIN) === true)).toBe(true);
     expect(script.inChat(BOB).filter(call => call.method === "sendMessage").some(call => String(call.params["text"]).startsWith("What should change?"))).toBe(false);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_prompt WHERE consumed_at IS NULL").get()?.["n"]).toBe(0);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM chat_decide_action WHERE consumed_at IS NULL AND phase <> 'offer'").get()?.["n"]).toBe(0);
