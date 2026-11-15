@@ -27,7 +27,7 @@ import { shortTempDir } from "../test/short-temp.js";
 import { SOCKETS_TOO_DEEP } from "../test/inside-fence.js";
 import type { SignInOpener } from "./sign-in-page.js";
 import { termsArgs } from "../test/approval-terms.js";
-import { freePort, freePorts } from "../test/free-port.js";
+import { freePort, freePorts, listenedPort } from "../test/free-port.js";
 
 /** This test's own port, chosen at run time (test/free-port.ts); a test needing more asks freePorts for its own. */
 let PORT: number;
@@ -250,9 +250,8 @@ describe("toolroll up", () => {
   });
 
   test("a busy port refuses BEFORE anything mints — the world stays untouched", async () => {
-    const [p1] = await freePorts(1);
     const squatter = createServer();
-    await new Promise<void>(ready => squatter.listen(p1, "127.0.0.1", ready));
+    const p1 = await listenedPort(squatter);
     try {
       const code = await up([], p1);
       expect(code).toBe(3);
@@ -271,9 +270,8 @@ describe("toolroll up", () => {
   });
 
   test("a refused start with --project-root says the folder wasn't saved, and where to choose it (a service already runs)", async () => {
-    const [p22] = await freePorts(1);
     const squatter = createServer();
-    await new Promise<void>(ready => squatter.listen(p22, "127.0.0.1", ready));
+    const p22 = await listenedPort(squatter);
     try {
       expect(await up(["--project-root", base], p22)).toBe(3);
       expect(envelope()).toMatchObject({ ok: false, reason: "port-busy" });
@@ -926,10 +924,10 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("a NEW laptop install steps past a port another program holds, saves it, and keeps it; other installs never move", async () => {
-    const [p48, p49, p50] = await freePorts(3);
+    const [p49, p50] = await freePorts(2);
     // Something that isn't this database's console holds the first port (another Toolroll, the desktop app's).
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(p48, "127.0.0.1", () => resolve()));
+    const p48 = await listenedPort(foreign);
     try {
       const ports = [p48, p49, p50];
       const start = async (extra: string[] = []): Promise<number> => {
@@ -961,10 +959,10 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("an install not made by `up --laptop` keeps up's default port: a held port refuses, as before", async () => {
-    const [p51, p52, p53] = await freePorts(3);
+    const [p51, p53] = await freePorts(2);
     expect(await up([], p51)).toBe(0);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(p52, "127.0.0.1", () => resolve()));
+    const p52 = await listenedPort(foreign);
     try {
       lines = [];
       const code = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1500", "--json"], line => lines.push(line), {
@@ -1027,9 +1025,9 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("eight W2: a password-free install not made by `up --laptop` steps past a port another program holds, never past its own running console", async () => {
-    const [p70, p71] = await freePorts(2);
+    const [p71] = await freePorts(1);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(p70, "127.0.0.1", () => resolve()));
+    const p70 = await listenedPort(foreign);
     const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
     try {
       // A database `status` made first, started by a person at its terminal with no --port: the next free port.
@@ -1047,9 +1045,9 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test.skipIf(SOCKETS_TOO_DEEP)("eight W2: a laptop start never steps past a busy port while this database's own console runs", async () => {
-    const [p70, p72, p73] = await freePorts(3);
+    const [p72, p73] = await freePorts(2);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(p70, "127.0.0.1", () => resolve()));
+    const p70 = await listenedPort(foreign);
     const person = { terminal: true, env: {}, home: join(base, "home"), fenceAvailable: () => true };
     // The console's socket sits beside its database: a short folder keeps it within the OS limit.
     const short = shortTempDir("so-w2-");
@@ -1086,7 +1084,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("eight W2 (Codex #377 finding 2): a standalone `serve` running on an accountless database is never stepped past or made password-free", async () => {
-    const [p74, p75, p76, p77] = await freePorts(4);
+    const [p74, p75, p77] = await freePorts(3);
     const file = join(base, "served.db");
     expect(await runOperate("status", ["--json"], () => {}, { databaseFile: file })).toBe(0);
     const home = join(base, "home");
@@ -1119,7 +1117,7 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
       probe.close();
       // `serve` on a port not in line, another program holding the first one: still never stepped past to a second console.
       const foreign = createServer();
-      await new Promise<void>(resolve => foreign.listen(p76, "127.0.0.1", () => resolve()));
+      const p76 = await listenedPort(foreign);
       try {
         lines = [];
         const beside = await runOperate("up", ["--laptop", "--no-open", "--repo", repo, "--for", "1200"], line => lines.push(line), {
@@ -1143,12 +1141,12 @@ describe("start authority (easy-start C4): a laptop start, local mode's link, an
   });
 
   test("eight W2 (Codex #377 round 2, finding A): a stale console row blocks stepping while its port still listens, not once nothing does", async () => {
-    const [p80, p81, p82, p83] = await freePorts(4);
+    const [p82, p83] = await freePorts(2);
     const foreign = createServer();
-    await new Promise<void>(resolve => foreign.listen(p80, "127.0.0.1", () => resolve()));
+    const p80 = await listenedPort(foreign);
     // A console of this database that is paused: its row is old (no heartbeat), its port still answers.
     const paused = createServer();
-    await new Promise<void>(resolve => paused.listen(p81, "127.0.0.1", () => resolve()));
+    const p81 = await listenedPort(paused);
     const home = join(base, "home");
     const start = async (file: string): Promise<number> => {
       lines = [];

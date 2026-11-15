@@ -4,12 +4,14 @@
  * and the README name exactly these. Every PATH here is a temp folder of stubs.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkLinuxDependencies } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
-import { LINUX_SANDBOX_TOOLS, SANDBOX_LAUNCH_SPEC, linuxSandboxInstallLine, missingLinuxSandboxTools, resolveLinuxSandboxTools, sandboxRuntimeProblem, sandboxToolExclusions, srtSpawn, type SandboxLaunchSpec, type SrtTerms } from "./sandbox-runtime.js";
+import { LINUX_SANDBOX_TOOLS, SANDBOX_LAUNCH_SPEC, linuxSandboxInstallLine, missingLinuxSandboxTools, sandboxRuntimeProblem, srtSpawn, type SandboxLaunchSpec, type SrtTerms } from "./sandbox-runtime.js";
+import { resolveLinuxSandboxTools, sandboxToolExclusions, seccompHelperPath, verifyLinuxSandboxTools, type LinuxSandboxTools, type ToolTrust } from "./sandbox-tools.js";
+import { outsideTempDir } from "../test/short-temp.js";
 
 const root = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
 let bin: string;
@@ -62,68 +64,130 @@ describe("the Linux sandbox's programs: one list", () => {
   });
 });
 
-describe("the Linux sandbox's own programs: trusted paths, never PATH", () => {
-  const TOOLS = ["bwrap", "socat", "bash", "rg"] as const;
-  /** A folder of stand-ins for the four programs, made trusted (0755, this user's); `skip` names one left out. */
-  const folder = (name: string, skip: string[] = [], mode = 0o755): string => {
-    const dir = join(bin, name);
+describe("the Linux sandbox's own programs: root's own, by exact path, checked again at every launch", () => {
+  const SYSTEM = ["bwrap", "socat", "bash", "rg", "which"] as const;
+  const me = process.getuid?.() ?? 0;
+  /** This test's uid stands in for root (only root can make root's files), and for the owner of Toolroll's code. */
+  const standIn: ToolTrust = { root: [0, me], codeOwner: me };
+  let world: string;
+  beforeEach(() => { world = outsideTempDir("so-srt-root-"); chmodSync(world, 0o755); });
+  afterEach(() => { rmSync(world, { recursive: true, force: true }); });
+  /** A folder of stand-ins for the programs (0755, this user's); `skip` names ones left out. */
+  const folder = (name: string, skip: readonly string[] = [], mode = 0o755): string => {
+    const dir = join(world, name);
     mkdirSync(dir, { mode: 0o755 });
     chmodSync(dir, 0o755);
-    for (const tool of TOOLS.filter(one => !skip.includes(one))) { writeFileSync(join(dir, tool), "#!/bin/sh\nexit 0\n"); chmodSync(join(dir, tool), mode); }
+    for (const tool of SYSTEM.filter(one => !skip.includes(one))) { writeFileSync(join(dir, tool), "#!/bin/sh\nexit 0\n"); chmodSync(join(dir, tool), mode); }
     return realpathSync(dir);
   };
+  const helper = (dir: string): string => { writeFileSync(join(dir, "apply-seccomp"), "#!/bin/sh\nexit 0\n"); chmodSync(join(dir, "apply-seccomp"), 0o755); return join(dir, "apply-seccomp"); };
   const terms = (cwd: string): SrtTerms => ({ readConfig: { denyOnly: [] }, writeConfig: { allowOnly: ["/", cwd], denyWithinAllow: [] }, allowMachLookup: [], network: { kind: "open" } });
-  beforeEach(() => { chmodSync(bin, 0o755); });
+  const found = (verdict: ReturnType<typeof resolveLinuxSandboxTools>): LinuxSandboxTools => { if (!verdict.ok) throw new Error(verdict.why); return verdict.tools; };
 
-  test("an untrusted bwrap earlier on PATH is never used: the launch gets the trusted one by its absolute path", () => {
-    const trusted = folder("system");
+  test("an untrusted bwrap earlier on PATH, or listed first, is never used: the launch gets root's by exact path", () => {
+    const system = folder("system");
+    const seccomp = helper(system);
     const planted = folder("planted", [], 0o777);
-    process.env["PATH"] = `${planted}:${trusted}:${process.env["PATH"] ?? ""}`;
-    const resolved = resolveLinuxSandboxTools({ folders: [trusted] });
-    expect(resolved).toEqual({ ok: true, tools: Object.fromEntries(TOOLS.map(tool => [tool, join(trusted, tool)])) });
-    // Even listed first among the folders looked in, a copy others can change is passed over, never used.
-    expect(resolveLinuxSandboxTools({ folders: [planted, trusted] })).toEqual(resolved);
-    // And a launch is handed exactly those paths: what the helper gives the runtime as bwrapPath, socatPath, binShell
-    // and the ripgrep command.
-    const cwd = folder("project", TOOLS.slice());
-    const launch = srtSpawn("/bin/true", [], terms(cwd), cwd, undefined, "linux", exclusions => resolveLinuxSandboxTools({ folders: [planted, trusted], exclusions }));
+    process.env["PATH"] = `${planted}:${system}:${process.env["PATH"] ?? ""}`;
+    const tools = found(resolveLinuxSandboxTools({ ...standIn, folders: [planted, system], seccomp }));
+    for (const tool of SYSTEM) expect(tools[tool].real).toBe(join(system, tool));
+    expect(tools.whichFolder).toBe(system);
+    const cwd = folder("project", SYSTEM);
+    const launch = srtSpawn("/bin/true", [], terms(cwd), cwd, undefined, "linux", exclusions => resolveLinuxSandboxTools({ ...standIn, folders: [planted, system], seccomp, exclusions }));
     const spec = JSON.parse(launch.env[SANDBOX_LAUNCH_SPEC]!) as SandboxLaunchSpec;
-    expect(spec.tools).toEqual({ bwrap: join(trusted, "bwrap"), socat: join(trusted, "socat"), bash: join(trusted, "bash"), rg: join(trusted, "rg") });
+    expect(spec.tools.bwrap.real).toBe(join(system, "bwrap"));
     expect(JSON.stringify(spec.tools)).not.toContain(planted);
   });
 
-  test("a program reached through a link into the launch's project, worktree or state is never used", () => {
+  test("a program not owned by root (a user's own copy, as one in /usr/local/bin) is refused, and the person is told what to install", () => {
+    const users = folder("usr-local-bin");
+    const refused = resolveLinuxSandboxTools({ folders: [users], root: [0], codeOwner: me, seccomp: helper(users) });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.why).toContain(`${join(users, "bwrap")}: ${join(users, "bwrap")} isn't owned by root`);
+      expect(refused.why).toContain("install bubblewrap from your system package manager (sudo apt install bubblewrap; Fedora: sudo dnf install bubblewrap)");
+    }
+  });
+
+  test("ripgrep only in ~/.cargo/bin (on PATH) is never used: the person is told to install it from the system's package manager", () => {
+    const system = folder("system", ["rg"]);
+    process.env["PATH"] = `${folder("cargo-bin")}:${system}`;
+    expect(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) })).toEqual({ ok: false,
+      why: `ripgrep (rg) has no copy owned by root in ${system}: install ripgrep from your system package manager (sudo apt install ripgrep; Fedora: sudo dnf install ripgrep)` });
+  });
+
+  test("a cached program swapped or loosened between launches is refused on the next launch", () => {
+    const system = folder("system");
+    const seccomp = helper(system);
+    const tools = found(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp }));
+    expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp })).toBeNull();
+    // Another file in its place (same name, same owner, same mode): not the program that was checked.
+    unlinkSync(join(system, "bwrap"));
+    writeFileSync(join(system, "bwrap"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp })).toBe(`bwrap (${join(system, "bwrap")}) changed since it was checked`);
+    const work = folder("work", SYSTEM);
+    const launch = () => srtSpawn("/bin/true", [], terms(work), work, undefined, "linux", exclusions => {
+      const why = verifyLinuxSandboxTools(tools, { ...standIn, seccomp, exclusions });
+      return why === null ? { ok: true, tools } : { ok: false, why };
+    });
+    expect(launch).toThrow("changed since it was checked");
+    // Made writable by others: refused too.
+    const again = found(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp }));
+    chmodSync(join(system, "socat"), 0o777);
+    expect(verifyLinuxSandboxTools(again, { ...standIn, seccomp })).toMatch(/^socat .*others can change/);
+  });
+
+  test("a program reached through a link into the launch's checkout is refused", () => {
     const project = folder("project");
-    const linked = join(bin, "linked");
+    const linked = join(world, "linked");
     mkdirSync(linked, { mode: 0o755 });
-    for (const tool of TOOLS) symlinkSync(join(project, tool), join(linked, tool));
-    const refused = srtSpawn.bind(null, "/bin/true", [], terms(project), project, undefined, "linux", exclusions => resolveLinuxSandboxTools({ folders: [linked], exclusions }));
-    expect(refused).toThrow(/bubblewrap \(bwrap\) has no copy Toolroll can trust .*inside a project, worktree or Toolroll's own folder/);
-    expect(sandboxToolExclusions(terms(project), project)).not.toContain("/");
+    for (const tool of SYSTEM) symlinkSync(join(project, tool), join(linked, tool));
+    const refused = resolveLinuxSandboxTools({ ...standIn, folders: [linked], seccomp: helper(folder("pkg", SYSTEM)), exclusions: sandboxToolExclusions(terms(project), project) });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.why).toContain(`${join(project, "bwrap")} is inside a project, worktree or Toolroll's own folder`);
+  });
+
+  test("the seccomp helper is exactly Toolroll's own sandbox-runtime's: one planted on PATH or in a user npm folder is never used", () => {
+    const system = folder("system");
+    const planted = folder("npm-global", SYSTEM);
+    const fake = helper(planted);
+    mkdirSync(join(planted, "lib", "node_modules", "@anthropic-ai", "sandbox-runtime", "vendor", "seccomp", "x64"), { recursive: true });
+    process.env["PATH"] = `${planted}:${system}`;
+    process.env["npm_config_prefix"] = planted;
+    try {
+      const tools = found(resolveLinuxSandboxTools({ ...standIn, folders: [system] }));
+      expect(tools.seccomp.real).toBe(realpathSync(seccompHelperPath()!));
+      // Handed any other helper, however well kept, a launch refuses it.
+      const swapped = { ...tools, seccomp: found(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: fake })).seccomp };
+      expect(verifyLinuxSandboxTools(swapped, standIn)).toBe(`the seccomp helper (${fake}) isn't Toolroll's own sandbox-runtime's`);
+    } finally { delete process.env["npm_config_prefix"]; }
   });
 
   test("a missing program refuses with a plain reason, and nothing falls back to a PATH lookup", () => {
-    const trusted = folder("system", ["socat"]);
-    // socat is on PATH; it still isn't used, because it isn't in a folder the sandbox looks in.
-    const onPath = folder("on-path");
-    process.env["PATH"] = onPath;
-    const resolved = resolveLinuxSandboxTools({ folders: [trusted] });
-    expect(resolved).toEqual({ ok: false, why: `socat isn't installed in a system folder Toolroll trusts (${trusted})` });
-    expect(() => srtSpawn("/bin/true", [], terms(trusted), trusted, undefined, "linux", () => resolved)).toThrow(`socat isn't installed in a system folder Toolroll trusts (${trusted})`);
-    // A copy no one but root or this user may own is not trusted either: named, with why.
-    expect(resolveLinuxSandboxTools({ folders: [trusted], uid: undefined })).toEqual({ ok: false, why: expect.stringMatching(/^bubblewrap \(bwrap\) has no copy Toolroll can trust in .*who owns it can't be checked/) });
+    const system = folder("system", ["socat"]);
+    process.env["PATH"] = folder("on-path");
+    const resolved = resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) });
+    expect(resolved).toEqual({ ok: false, why: `socat has no copy owned by root in ${system}: install socat from your system package manager (sudo apt install socat; Fedora: sudo dnf install socat)` });
+    if (!resolved.ok) expect(() => srtSpawn("/bin/true", [], terms(system), system, undefined, "linux", () => resolved)).toThrow(resolved.why);
   });
 
-  test("the launch helper starts nothing when it isn't handed the programs by absolute paths", () => {
-    const cwd = folder("work", TOOLS.slice());
+  test("the launch helper checks the programs again itself: none, malformed or not root's, and nothing starts", () => {
+    const system = folder("system");
+    const tools = found(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: helper(system) }));
+    const cwd = folder("work", SYSTEM);
     const base: Omit<SandboxLaunchSpec, "tools"> = { file: "/bin/true", args: [], cwd, terms: terms(cwd) };
-    for (const tools of [undefined, { bwrap: "bwrap", socat: "/usr/bin/socat", bash: "/bin/bash", rg: "/usr/bin/rg" }]) {
+    for (const [given, said] of [
+      [undefined, "the sandbox's programs weren't given by checked paths"],
+      [{ ...tools, bwrap: { real: "bwrap", id: tools.bwrap.id } }, "the sandbox's programs weren't given by checked paths"],
+      // Well formed, but this user's files: the helper accepts only root's.
+      [tools, `bwrap (${join(system, "bwrap")}): ${join(system, "bwrap")} isn't owned by root`],
+    ] as const) {
       const ran = spawnSync(process.execPath, ["--import", "tsx", "src/sandbox-launch.ts"], {
         cwd: join(import.meta.dirname, ".."), encoding: "utf8", timeout: 30_000,
-        env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", [SANDBOX_LAUNCH_SPEC]: JSON.stringify(tools === undefined ? base : { ...base, tools }) },
+        env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", [SANDBOX_LAUNCH_SPEC]: JSON.stringify(given === undefined ? base : { ...base, tools: given }) },
       });
       expect(ran.status, ran.stderr).toBe(126);
-      expect(ran.stderr).toContain("toolroll sandbox: nothing was started: the sandbox's programs weren't given by trusted paths");
+      expect(ran.stderr).toContain(`toolroll sandbox: nothing was started: ${said}`);
     }
   });
 });

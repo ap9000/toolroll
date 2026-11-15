@@ -25,18 +25,19 @@ test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linu
   try {
     const marker = join(dir, "ran");
     const wrapped = sandboxedSpawn("/bin/sh", ["-c", `touch ${JSON.stringify(marker)}`], [join(dir, "denied")], NO_GRANTS, dir);
-    // The helper looks again for itself, at the trusted paths it was handed (never PATH): bubblewrap gone from its path
+    // The helper checks again for itself, at the exact paths it was handed (never PATH): bubblewrap gone from its path
     // is a machine without it.
     const spec = JSON.parse(wrapped.env[SANDBOX_LAUNCH_SPEC]!) as SandboxLaunchSpec;
-    const gone = { [SANDBOX_LAUNCH_SPEC]: JSON.stringify({ ...spec, tools: { ...spec.tools, bwrap: join(dir, "gone", "bwrap") } }) };
+    const gone = { [SANDBOX_LAUNCH_SPEC]: JSON.stringify({ ...spec, tools: { ...spec.tools, bwrap: { ...spec.tools.bwrap, real: join(dir, "gone", "bwrap") } } }) };
     const bare = spawnSync(wrapped.file, wrapped.args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...wrapped.env, ...gone } });
     expect(bare.status, bare.stderr).toBe(126);
-    expect(bare.stderr).toMatch(/can't be made here/);
+    expect(bare.stderr).toMatch(/nothing was started: bwrap .*isn't there/);
     expect(() => readFileSync(marker)).toThrow();
-    // A bubblewrap planted first on the launch's PATH is never the one that runs: the trusted one does.
+    // A bubblewrap planted first on the launch's PATH is never the one that runs: root's own does.
     const planted = join(dir, "planted");
     mkdirSync(planted);
-    writeFileSync(join(planted, "bwrap"), `#!/bin/sh\ntouch ${JSON.stringify(join(dir, "planted-ran"))}\nexit 0\n`, { mode: 0o755 });
+    // So is a `which`, a bash or a seccomp helper planted there: the helper's own lookups never see the launch's PATH.
+    for (const name of ["bwrap", "which", "bash", "apply-seccomp"]) writeFileSync(join(planted, name), `#!/bin/sh\ntouch ${JSON.stringify(join(dir, "planted-ran"))}\necho ${JSON.stringify(join(planted, "bash"))}\n`, { mode: 0o755 });
     const ok = spawnSync(wrapped.file, wrapped.args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...wrapped.env, PATH: `${planted}:${process.env["PATH"] ?? ""}` } });
     expect(ok.status, ok.stderr).toBe(0);
     expect(readFileSync(marker, "utf8")).toBe("");
