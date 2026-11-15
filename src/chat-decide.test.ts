@@ -24,6 +24,7 @@ import { runOperate } from "./operate.js";
 import { ALL_PROJECTS, setChatApproval } from "./chat-approval.js";
 import { readYouiyouxRequest } from "./contracts/youiyoux-request.js";
 import { fileYouiyouxRequest, noteYouiyouxFiled } from "./youiyoux-intake.js";
+import { scopeTermsText } from "./chat-terms.js";
 
 const T0 = new Date("2026-10-03T09:00:00.000Z");
 const BOT = "777000";
@@ -396,6 +397,21 @@ describe("decisions finish in the chat app", () => {
     expect(script.current(BOB, card.messageId).text).toMatch(/changed/);
   });
 
+  test("terms diet: a machine-written plan whose summary names a folder on this computer offers no Approve in chat", async () => {
+    sign("bob");
+    store.setProjectSandbox(REPO, { readDeny: ["~/.ssh"], machLookup: [] }, "alex", now);
+    const ref = planWaiting("plan-private", "Refuse over-limit payouts", { proposedVia: "scout" });
+    expect(scopeTermsText(store.getScope("plan-private")!)).not.toContain("~/.ssh");
+    planReady(ref, "plan-private");
+    await pass();
+    const card = script.cardWith(BOB, /^Review plan$/);
+    await tapIn(BOB, card.token(/^Review plan$/), card.messageId);
+    const after = script.current(BOB, card.messageId);
+    expect(after.text).not.toContain("~/.ssh");
+    expect(after.text).toContain("name a key or a folder on this computer");
+    expect(after.labels).not.toContain("Approve & start");
+  });
+
   test("c2: Not now leaves the plan waiting; a plan that changed after the card was sent acts on nothing", async () => {
     sign("bob");
     const ref = planWaiting("plan-6", "Refuse over-limit payouts");
@@ -712,6 +728,20 @@ describe("decisions finish in the chat app", () => {
       expect(store.getScope(calm)!.approvedAt).toBeNull();
       expect(proofs(calm)).toBe(0);
       expect(script.current(BOB, card.messageId).text).toContain("its terms changed since this card was sent");
+    });
+
+    test("terms diet: a folder named only in the summary beside the words keeps that task in Toolroll", async () => {
+      chatApprovalOn();
+      // The project hides a home folder from builds: its path is in the summary's reads line, never in the task's words.
+      store.setProjectSandbox(REPO, { readDeny: ["~/.ssh"], machLookup: [] }, "alex", now);
+      const calm = fileRequest("r-0000000012", "Calmer button");
+      expect(scopeTermsText(store.getScope(calm)!)).not.toContain("~/.ssh");
+      noteYouiyouxFiled(store, [calm], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Open in Toolroll$/);
+      expect(card.text).not.toContain("~/.ssh");
+      expect(card.text).toContain("Calmer button: its terms name a key or a folder on this computer");
+      expect(card.labels).toEqual(["Open in Toolroll ↗"]);
     });
 
     test("y3: a task whose full terms don't fit in one message, or would show a private folder, is named with its link, and Approve never covers it", async () => {

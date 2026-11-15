@@ -273,7 +273,9 @@ function requestsOffer(store: Store, taskId: string, who: VerifiedApprover, now:
     if (!plan.ok) { item.why = plan.why; continue; }
     if (passwordOnlySeal(plan.scope) || deployGateScope(plan.scope) || !LISTABLE_ID.test(item.taskId)) { item.why = "it needs your password in Toolroll"; continue; }
     // Shown whole means shown raw: words chat text otherwise hides (a key, a folder on this computer) stay in Toolroll.
-    if (privateWords(scopeTermsText(plan.scope))) { item.why = "its terms name a key or a folder on this computer"; continue; }
+    // Read on the exact words the card would carry (the whole terms and the summary beside them: fallbacks, hosts,
+    // release repositories), never on part of them.
+    if (privateWords(block(item))) { item.why = "its terms name a key or a folder on this computer"; continue; }
     // In order, each whole or not at all: one that doesn't fit beside the ones before it is named instead.
     item.listed = { taskId: item.taskId, digest: wholeCardDigest(store, item.taskId, plan.scope, now) };
     if (!shownWhole(compose(), channel)) { item.listed = null; item.why = TOO_LONG; }
@@ -875,6 +877,8 @@ function decideTapUnchecked(store: Store, seat: DecideSeat, input: { token: stri
       // say; any card's whole text must fit one message (applyDecideTap checks every card that carries a button).
       const text = `${plan.whole ? `${name}\n\n${wholeTermsText(store, row.taskId, plan.scope, now)}` : planCardText(store, row.taskId, plan.scope, input.root, seat.channel)}\n\n${QUESTIONS.approve(name)} This approves exactly this plan.`;
       if (!fitsOneMessage(text, seat.channel) || (plan.whole && !shownAsWritten(text, seat.channel))) return stale(`This plan's ${TOO_LONG}, so you approve it in Toolroll.`);
+      // Words shown whole are shown raw: a key or a folder on this computer anywhere in the card keeps it in Toolroll.
+      if (plan.whole && privateWords(text)) return stale("Its terms name a key or a folder on this computer, so you review it in Toolroll.");
       return { ack: "Read the plan, then approve.", edit: { text,
         rows: [[{ label: DECIDE_LABELS.approve, token: yes }], [{ label: DECIDE_LABELS.edit, link: { label: DECIDE_LABELS.edit, path: chatControlHref("approval", row.taskId) } }, { label: DECIDE_LABELS["not-now"], token: later }]], tokens: [yes, later] } };
     }
@@ -933,7 +937,7 @@ function decideTapUnchecked(store: Store, seat: DecideSeat, input: { token: stri
       // The one approval every road shares (scope.ts approve): the rules, two-person votes and the proof, as this person.
       // plan.digest matched this button's kept digest above (staleWhy), so these are the words its card showed.
       const words = wholeTermsText(store, row.taskId, plan.scope, now);
-      if (plan.whole && (plan.digest !== row.digest || !fitsOneMessage(words, seat.channel))) return notDone("this plan changed. Open it in Toolroll.");
+      if (plan.whole && (plan.digest !== row.digest || !fitsOneMessage(words, seat.channel) || privateWords(words))) return notDone("this plan changed. Open it in Toolroll.");
       const approved = approve(store, row.taskId, who.name, now, plan.scope.digest, "", {}, undefined, { modeDigest: plan.modeDigest, shown: plan.whole ? { expect: cardTermsDigest(words), terms: words } : null });
       if (!approved.ok && approved.reason === "second-approver") return done(gateWords({ verdict: "vote", have: approved.have, need: 2, already: approved.already }));
       if (!approved.ok) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
