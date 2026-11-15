@@ -239,5 +239,5 @@ export const needsWords = (n: number): string => n === 1 ? "1 item needs you" : 
 /** The not-found page's default words. */
 export const NOT_FOUND = {
   title: (path: string): string => `There’s no page at ${path}.`,
-  text: "It may have moved. Home has what needs you; Tasks has every task.",
+  text: "It may have moved. Work has every task and what needs you.",
 };

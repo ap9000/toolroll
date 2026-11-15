@@ -417,7 +417,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
 
   const role = dispatchRoleFor(store, ref.id, now);
   const scope = store.getScope(taskId);
-  if (ref.repo === null) return answer("needs-project", "waiting", "Needs a project", "Choose a project for this task so a builder can start it.", { action: "place-task", role });
+  if (ref.repo === null) return answer("needs-project", "waiting", "Needs a project", "Choose a project for this task so it can start.", { action: "place-task", role });
   if (role !== "planner") {
     if (scope === null) return answer("needs-scope", "waiting", "Needs a plan", "Write the plan, or ask the planner to draft it.", { action: "write-scope", role });
     if (scope.profileState === "unresolved") return answer("needs-agent-profile", "waiting", "Needs an agent profile", scope.unresolvedReason ?? "Choose an available provider and model.", { action: "select-agent", role });
@@ -502,18 +502,15 @@ export function withDispatchDiagnoses(store: Store, snapshot: ChatSnapshot, now:
   };
 }
 
-/** When a backed-off task tries again, as a person reads it: "in under a minute", "in 3 minutes", or a later day's
- * time in UTC (the console's own clock words, when-html.ts shortWhen). */
-export function retryWhenWords(until: string, now: Date): string {
+/** When a backed-off task tries again, as a person reads it: "in under a minute", "in 3 minutes", or later in this
+ * computer's own time, as a usage limit's reset reads (resetWhenWords): "at 16:40", "tomorrow at 09:00". */
+export function retryWhenWords(until: string, now: Date, zone: string = viewerZone()): string {
   const ms = Date.parse(until) - now.getTime();
   if (Number.isNaN(ms)) return "soon";
   if (ms <= 60_000) return "in under a minute";
   const minutes = Math.ceil(ms / 60_000);
   if (minutes < 60) return `in ${minutes} minutes`;
-  const at = shortWhen(until, now, "UTC", true);
-  if (/^\d/.test(at)) return `at ${at} UTC`;
-  if (at.startsWith("Tomorrow ")) return `tomorrow at ${at.slice("Tomorrow ".length)} UTC`;
-  return `on ${at} UTC`;
+  return resetWhenWords(until, now, zone);
 }
 
 // ---- a first run with no coding agent signed in (W1) ---------------------------------------------------------------

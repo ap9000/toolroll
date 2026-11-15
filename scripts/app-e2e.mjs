@@ -624,7 +624,7 @@ await journey("console", SCRIPTED, "The command line answers: the task list, the
   if (!JSON.stringify(people).includes("sam")) throw new Error(`the approvers: ${JSON.stringify(people).slice(0, 200)}`);
   if (!/npm test/.test(verify)) throw new Error(`the project's check: ${verify.slice(0, 200)}`);
   if (!/task/.test(help)) throw new Error("help doesn't mention tasks");
-  if (!/^toolroll — /.test(help) || !/toolroll task add/.test(help)) throw new Error(`help doesn't name the toolroll command: ${help.slice(0, 200)}`);
+  if (!/^Toolroll — /i.test(help) || !/toolroll task add/.test(help)) throw new Error(`help doesn't name the toolroll command: ${help.slice(0, 200)}`);
 });
 
 await journey("console", SCRIPTED, "Archive old tasks: Needs you → Archive old tasks shows each one and why → untick one, confirm with your password → it's gone from Needs you; Archived → Restore brings it back", [], async () => {

@@ -263,7 +263,7 @@ function reachSection(facts: SettingsFacts): Html {
   const projects = (chat.projects ?? []).length === 0 ? "" : joinHtml([
     ...chat.projects!.map(one => kitSectionForm({ proof: "notifications-mute", action: "/settings/notifications/mute", id: `mute-${one.repo.replace(/[^a-z0-9]+/gi, "-")}`, gate: true, hidden: { repo: one.repo },
       body: formRow(one.name, one.muted ? "Muted: no pings" : "Pings on", switchInput({ id: `pings-${one.repo.replace(/[^a-z0-9]+/gi, "-")}`, name: "pings", label: "Pings", on: !one.muted, attrs: { "aria-label": `Pings for ${one.name}` } }), "inline") })),
-    note("Muted projects still show in Tasks and the evening digest."),
+    note("Muted projects still show in Work and the evening digest."),
   ]);
   return settingsSection({ id: "notifications", title: "What reaches you", body: joinHtml([form, projects]) });
 }

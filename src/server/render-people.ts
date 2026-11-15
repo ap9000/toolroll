@@ -256,7 +256,7 @@ export function serverErrorPage(options: { updating: boolean; read: boolean; ref
     return shell("Toolroll is updating", outPage({
       brand: BRAND_HTML, title: "Toolroll is updating",
       sub: "Work that is running can finish. New work starts again after the update, usually within two minutes.",
-      body: html`<div class="k-acts">${options.retry === null ? "" : btn("Try again", { variant: "primary", href: options.retry })}${btn("Go to Home", { href: "/" })}</div>`,
+      body: html`<div class="k-acts">${options.retry === null ? "" : btn("Try again", { variant: "primary", href: options.retry })}${btn("Go to Work", { href: "/" })}</div>`,
     }), { nav: false });
   }
   return shell("Something went wrong", outPage({
@@ -265,7 +265,7 @@ export function serverErrorPage(options: { updating: boolean; read: boolean; ref
       : "Toolroll couldn't finish that. Open the page again to see what changed before you try again.",
     body: joinHtml([
       facts([["Reference", html`<span class="k-mono">${options.reference}</span>`], ["When", options.at.toISOString().slice(0, 16).replace("T", " ")]]),
-      html`<div class="k-acts">${options.retry === null ? "" : btn("Try again", { variant: "primary", href: options.retry })}${btn("Go to Home", { href: "/" })}</div>`,
+      html`<div class="k-acts">${options.retry === null ? "" : btn("Try again", { variant: "primary", href: options.retry })}${btn("Go to Work", { href: "/" })}</div>`,
     ]),
     foot: "If it keeps happening, the reference helps whoever runs this Toolroll find it in the log.",
   }), { nav: false });

@@ -23,6 +23,7 @@ import { HomeApproval, SELECTION_SETTLE_MS } from "./home-approval.js";
 import { AgentReport } from "./agent-report.js";
 import { ShellOverlay } from "../shell.js";
 import { RestoreAct, TaskBoard, ToolsMenu, usageSummary } from "./tasks-view.js";
+import { WithCode } from "./task-view.js";
 import "./home.css";
 import "./work.css";
 
@@ -232,7 +233,7 @@ export function WorkView({ view }: { view: BrowserWorkView }) {
                 choose(item.id);
               }}>
               <KRow href={item.href} chip={<KChip word={item.chip.word} tone={item.chip.tone} />} title={item.title} wait={item.home !== null}
-                desc={item.reason ?? item.home?.line ?? item.task?.detail ?? ""} meta={item.meta}
+                desc={<WithCode text={item.reason ?? item.home?.line ?? item.task?.detail ?? ""} />} meta={item.meta}
                 action={item.task?.tidy?.label === "Restore" ? <RestoreAct tidy={item.task.tidy} /> : <KLinkButton sm label={item.act} href={item.href} tabIndex={-1} />} />
             </div>)}
           </section>)}
@@ -275,7 +276,7 @@ function WorkPanel({ item, onDone, onSettled, onClose }: { item: Item; onDone: (
     {kicker(false)}
     <h2 className="so-open-t">{row.title}</h2>
     <p className="so-open-chip"><KChip word="Needs you" tone="needs" /><span>{ASK_CHIP[row.ask ?? "other"]}</span></p>
-    {row.line && <p className="so-open-x">{row.line}</p>}
+    {row.line && <p className="so-open-x"><WithCode text={row.line} /></p>}
     {row.action && <div className="k-acts"><KLinkButton variant="primary" label={row.action.label} href={row.action.href} /></div>}
   </>;
   if (row?.question) return <>{kicker(true)}<p className="so-open-of">{row.title}</p><Question key={row.question.id} row={row} /></>;
@@ -339,7 +340,7 @@ function TaskPanel({ item, kicker, onDone, onSettled }: { item: Item; kicker: Re
   return <div className="so-work-task" data-work-task={view.id}>
     {kicker}
     <h2 className="so-open-t">{view.title}</h2>
-    {state && <p className="so-open-chip" data-work-state><KChip word={state.headline} tone={toneOf(view)} /><span>{state.sentence}</span></p>}
+    {state && <p className="so-open-chip" data-work-state><KChip word={state.headline} tone={toneOf(view)} /><span><WithCode text={state.sentence} /></span></p>}
     {outcome && <p className="so-open-x" data-work-outcome>{outcome}</p>}
     {view.progress?.line && view.progress.line !== state?.sentence && <p className="so-open-x" data-work-progress>{view.progress.line}</p>}
     {caveats.length > CAVEATS_SHOWN

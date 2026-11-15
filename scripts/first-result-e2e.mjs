@@ -11,7 +11,7 @@
  * do a step today, the trace says so ("not possible in the terminal today") with what the person does instead, and the
  * journey does that.
  *
- *   node scripts/first-result-e2e.mjs [--journeys scripted] [--only <pattern>] [--keep]
+ *   node scripts/first-result-e2e.mjs [--journeys scripted] [--only <pattern>] [--keep] [--port <n>]
  *       Scripted (the default): this checkout's build (npm run build first), the models answering at once from
  *       scripts. Proves the driver, the step counts and the failure paths: no agent installed, an agent signed out,
  *       not in a git repository, a model error mid-build, and a restart (the console killed mid-build); and the plan
@@ -28,7 +28,9 @@
  * Every Toolroll a journey starts has a throwaway home, its tool secrets kept as files (never the login keychain), a
  * stand-in `tailscale` (so its console is a protected loopback install, as on a laptop with no tailnet), and a
  * `launchctl` and `systemctl` that refuse (it never installs a login item); the journey never answers yes to the
- * background question. A new laptop install picks the first free port from 4180 on, as a newcomer's does.
+ * background question. A new laptop install picks the first free port from 4180 on, as a newcomer's does; with
+ * --port <n>, each start is given its own port from n on instead (a run beside a Toolroll already on 4180 never
+ * touches it).
  */
 import { execFileSync, execFile } from "node:child_process";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
@@ -89,6 +91,16 @@ const roundedPriceFiles = () => ({
   "test/price.test.js": "import assert from \"node:assert/strict\";\nimport { test } from \"node:test\";\nimport { priceWithDiscount } from \"../src/price.js\";\n\ntest(\"takes the discount off the price\", () => {\n  assert.equal(priceWithDiscount(80, 25), 60);\n});\ntest(\"rounds to whole cents\", () => {\n  assert.equal(priceWithDiscount(9.99, 33), 6.69);\n});\n",
 });
 
+/** --port <n>: each bare start (`toolroll`, `toolroll --web`, `npx -y <pkg>`, the terminal's and the browser's) gets its
+ * own port from n on. It must be a port number, and never 4180, the default a real install listens on: the point of
+ * --port is to stay off it. */
+const PORT_GIVEN = option("--port", null);
+let nextPort = PORT_GIVEN === null ? null : Number(PORT_GIVEN);
+if (!listing && nextPort !== null && (!Number.isInteger(nextPort) || nextPort < 1024 || nextPort > 65_000 || (nextPort <= 4180 && nextPort + 40 > 4180))) {
+  console.error(`Not started: --port needs a port from 1024 to 65000 whose next 40 stay clear of 4180 (got ${PORT_GIVEN}).`);
+  process.exit(2);
+}
+const withPort = typed => nextPort === null || !/^(?:toolroll|npx -y \S+)(?: --web)?$/.test(typed) ? typed : `${typed} --port ${nextPort++}`;
 const w = await world("first-result", {});
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const evidence = option("--evidence", join(here, "evidence", "first-result", `${stamp}-${scriptedRun ? "scripted" : "real"}`));
@@ -294,7 +306,8 @@ async function openTerminal(inst, label, command, { cwd = inst.cwd, rows = 40, c
     press(key) {
       if (closed) throw new Error("the terminal is closed");
       const now = term.text();
-      if (/Keep Toolroll running in the background/.test(now) && key !== "n") throw new Error("a journey only ever answers n to the background question");
+      // The login-item question, in its words before and after eight W2: a journey only ever answers n.
+      if (/Keep Toolroll running in the background|Start Toolroll when you log in/.test(now) && key !== "n") throw new Error("a journey only ever answers n to the background question");
       if (/Quit Toolroll\?/.test(now) && key === "b") throw new Error("a journey never keeps Toolroll running in the background");
       writeSync(keys, key);
     },
@@ -315,6 +328,8 @@ const boxLines = (text, pattern) => text.split("\n").map(line => line.replace(/[
 async function quit(term) {
   if (!term.alive()) { term.close(); return; }
   try {
+    // The login-item question (asked after the first accepted result) is answered no before quitting.
+    if (/Keep Toolroll running in the background|Start Toolroll when you log in/.test(term.text())) { term.press("n"); await sleep(400); }
     term.press("\u001b"); await sleep(400);
     term.press("q");
     const asked = await until("the quit question", async () => /Quit Toolroll\?/.test(term.text()) || !term.alive(), { timeoutMs: 5_000, everyMs: 100 }).catch(() => false);
@@ -337,7 +352,7 @@ async function startToolroll(inst, trace, { command = null, label = "first" } = 
   const plan = launchPlan({ install, pkg, root: inst.root, localBin: w.bin, brewPrefix: inst.brewPrefix ?? null });
   Object.assign(inst.env, plan.env);
   if (plan.path.length > 0) inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`;
-  const typed = command ?? plan.start;
+  const typed = withPort(command ?? plan.start);
   const term = await openTerminal(inst, label, typed);
   trace.interaction(`Type \`${typed}\` and press Return`, { surface: "terminal", keys: typed });
   if (plan.install === null && label === "first") trace.startClock();
@@ -707,7 +722,7 @@ async function browserInRepo({ trace, criterion, note }) {
     const plan = launchPlan({ install, pkg, root: inst.root, localBin: w.bin, brewPrefix: inst.brewPrefix ?? null });
     Object.assign(inst.env, plan.env);
     if (plan.path.length > 0) inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`;
-    const typed = `${plan.start} --web`;
+    const typed = withPort(`${plan.start} --web`);
     term = await openTerminal(inst, "web", typed);
     trace.interaction(`Type \`${typed}\` and press Return`, { surface: "terminal", keys: typed });
     if (plan.install === null) trace.startClock();
@@ -809,6 +824,70 @@ async function notARepository({ trace, criterion, note }) {
     criterion("B1.6", "offers the sample project", /sample/i.test(shown), boxLines(shown, /Project ·|repos add|sample/i));
     const projects = readdirSync(inst.home).filter(one => one === "Projects");
     note(`up --laptop made ${projects.length > 0 ? "~/Projects" : "no projects folder"}; the folder it was started in was not added`);
+    return {};
+  } finally {
+    if (term !== null) await quit(term);
+    await inst.stop();
+  }
+}
+
+/** A shell command in this home, as the person types it (no terminal: stdout is a pipe). Its output and exit status. */
+function shell(inst, args, cwd = inst.shop) {
+  try { return { code: 0, out: execFileSync(join(inst.bin, "toolroll"), args, { cwd, env: inst.env, encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] }) }; }
+  catch (error) { return { code: error.status ?? 1, out: `${error.stdout ?? ""}${error.stderr ?? ""}` }; }
+}
+/** A criterion this journey proves: recorded, and the journey fails when it isn't met. */
+const must = (criterion, id, text, met, seen) => { criterion(id, text, met, seen); if (!met) throw new Error(`${text}: ${String(seen).slice(0, 600)}`); };
+
+/**
+ * The first task filed before any coding agent is installed: the terminal says so with the one command the moment it is
+ * filed, the task keeps saying it, and neither the shell's welcome nor its `task add` claims more (eight first-run 1).
+ */
+async function filedWithNoAgent({ trace, criterion }) {
+  const inst = newcomer("filed-no-agent", { agent: "none", where: "repo" });
+  let term = null;
+  try {
+    term = await startToolroll(inst, trace);
+    await term.waitFor(/not installed/, "the agent step to say not installed", { timeoutMs: 60_000 });
+    term.press("n");
+    await term.waitFor(/New task/, "the new task box");
+    trace.interaction("Press n and type the first task", { surface: "terminal", keys: TASK });
+    term.press(TASK);
+    await sleep(300);
+    term.press("\r");
+    const install = /npm install -g @anthropic-ai\/claude-code(?: &&|;) claude auth login/;
+    const filed = await term.waitFor(text => /Filed\. No coding agent is signed in\. Run `/.test(text.replace(/\s+/g, " ")), "the filing to say no agent is signed in", { timeoutMs: 60_000 });
+    trace.note("What the terminal says once the task is filed with no agent", { screen: filed });
+    const flat = filed.replace(/[│┌┐└┘─╭╮╰╯]/g, " ").replace(/\s+/g, " ");
+    must(criterion, "B1.6", "filing says no coding agent is signed in, with the command", install.test(flat) && /then it starts by itself/.test(flat), boxLines(filed, /Filed|No coding agent/));
+    must(criterion, "B1.6", "never claims planning is happening", !/Planning|inspecting|waits for your approval/.test(flat), boxLines(filed, /Planning|inspecting|approval/));
+    const welcome = shell(inst, ["welcome"]);
+    trace.note("`toolroll welcome` after filing", { screen: welcome.out });
+    must(criterion, "B1.6", "the welcome keeps the agent step and says the task is Filed, not Done", /1\. Agent · To do/.test(welcome.out) && /3\. First task · Filed/.test(welcome.out) && !/First task · Done/.test(welcome.out), welcome.out);
+    const added = shell(inst, ["task", "add", "Fix a typo in the README", "--repo", "."]);
+    trace.note("`toolroll task add` from the shell", { screen: added.out });
+    must(criterion, "B1.6", "the shell's task add says no coding agent is signed in, with the command", added.code === 0 && /No coding agent is signed in\. Run `/.test(added.out) && install.test(added.out), added.out);
+    return {};
+  } finally {
+    if (term !== null) await quit(term);
+    await inst.stop();
+  }
+}
+
+/**
+ * A command before the first bare `toolroll` (the README's `toolroll repos add`): it points at `toolroll`, and the first
+ * start is still password-free (eight first-run 2).
+ */
+async function reposAddFirst({ trace, criterion }) {
+  const inst = newcomer("repos-add-first", { agent: "signed-in", where: "repo" });
+  let term = null;
+  try {
+    const added = shell(inst, ["repos", "add", "."]);
+    trace.interaction("Type `toolroll repos add .` in the repository", { surface: "shell", keys: "toolroll repos add ." });
+    must(criterion, "B1.2", "repos add says to run toolroll", added.code === 0 && /run `toolroll`/.test(added.out) && !/toolroll up/.test(added.out), added.out);
+    term = await startToolroll(inst, trace);
+    const first = await term.waitFor(/Get to your first result|Nothing needs you/, "the first screen");
+    must(criterion, "B1.2", "the first start asks for no password", !/password/i.test(term.printed()), boxLines(first, /password/i) || first.slice(0, 600));
     return {};
   } finally {
     if (term !== null) await quit(term);
@@ -995,6 +1074,8 @@ await clockJourney("Terminal: a first result on the plan road", SCRIPTED, "The s
 await clockJourney("Browser: a first result in a git repository (for comparison)", SCRIPTED, ABOUT.browser, browserInRepo);
 await clockJourney("Failure: no agent installed", SCRIPTED, "Bare `toolroll` with no coding agent on the PATH: what the screen says, then how long until installing and signing in is noticed (B1.6).", trace => agentMissing(trace, "none"));
 await clockJourney("Failure: the agent is signed out", SCRIPTED, "Bare `toolroll` with Claude Code installed but signed out: what the screen says, then how long until signing in is noticed (B1.6).", trace => agentMissing(trace, "signed-out"));
+await clockJourney("Failure: a task filed before any agent is installed", SCRIPTED, "Bare `toolroll` with no coding agent: the first task filed anyway, what the terminal, `toolroll welcome` and `toolroll task add` say.", filedWithNoAgent);
+await clockJourney("Start: `toolroll repos add` before the first `toolroll`", SCRIPTED, "The README's `toolroll repos add` first, then bare `toolroll`: it points at `toolroll`, and the first start is password-free.", reposAddFirst);
 await clockJourney("Failure: not in a git repository", SCRIPTED, "Bare `toolroll` started in a plain folder (B1.6: offers the sample project).", notARepository);
 await clockJourney("Failure: a model error mid-build", SCRIPTED, "The build's model turn fails (529 Overloaded): what the screen says, and Retry (B1.6).", modelError);
 await clockJourney("Restart: the console killed mid-build", SCRIPTED, "The console process killed mid-build and the terminal closed; bare `toolroll` again: the same scope, no duplicate active build, Ready with no other act (B1.5).", restartRecovery);

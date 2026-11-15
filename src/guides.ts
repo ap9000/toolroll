@@ -349,7 +349,7 @@ ${AUTHORITY_LINE}
   which messaging service pages, the Telegram bot token, and the Telegram
   digest cadence (away mode). Notifications → Projects mutes one project's
   pings (\`toolroll notifications mute|unmute --repo <p>\`); it still shows
-  in Tasks and the evening digest.
+  in Work and the evening digest.
 - The rail is four rows — inbox · board · builds · projects — and a
   **more** group: portfolio, task list, fleet, system,
   requirements, people, operating mode, settings. On a phone the same
