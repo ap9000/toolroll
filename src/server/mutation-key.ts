@@ -111,8 +111,9 @@ export function createBrowserKeys(deps: {
   /** On a protected loopback install (bound to loopback only, no --allow-host, no public URL, no tailnet names), read
    * per request: the console's one browser host (`127.0.0.1:<port>`, or `[::1]:<port>` for an IPv6-only bind). Else null. */
   protectedHost: () => string | null;
-  /** The console's own loopback hosts on its served port (`127.0.0.1:<port>`, `[::1]:<port>`), whatever else it serves. */
-  loopbackHosts?: () => readonly string[];
+  /** The port the console serves on (null before it listens): its own loopback hosts there (`127.0.0.1:<port>`,
+   * `[::1]:<port>`) are where a terminal client's key is issued, whatever else it serves. */
+  servedPort?: () => number | null;
 }): BrowserKeys {
   const canonicalHost = (): string | null => deps.enabled ? deps.protectedHost() : null;
   const required = (): boolean => canonicalHost() !== null;
@@ -156,7 +157,8 @@ export function createBrowserKeys(deps: {
     },
     issueForClient(session, request) {
       const host = request.headers.host;
-      if (!deps.enabled || typeof host !== "string" || !(deps.loopbackHosts?.() ?? []).includes(host)) return null;
+      const port = deps.servedPort?.() ?? null;
+      if (!deps.enabled || port === null || (host !== `127.0.0.1:${port}` && host !== `[::1]:${port}`)) return null;
       return mint(session);
     },
     deliver(response, key, to, cookies = []) {

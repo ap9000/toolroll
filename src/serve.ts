@@ -769,7 +769,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       return address.address === "127.0.0.1" ? `127.0.0.1:${port}` : address.address === "::1" ? `[::1]:${port}` : null;
     },
     // A terminal client's key (engine-api.ts): this console's own loopback names on its served port, whatever else it serves.
-    loopbackHosts: () => { const port = servedPort(); return port === null ? [] : [`127.0.0.1:${port}`, `[::1]:${port}`]; },
+    servedPort,
   });
   /** The exact command that starts this console again as it runs now, plus a listening address or one more allowed host. */
   const consoleCommand = (change: { host?: string; allow?: string }): string => {

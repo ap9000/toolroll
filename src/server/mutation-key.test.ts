@@ -33,7 +33,7 @@ test("keyMatches compares hashes and refuses a missing or malformed one", () => 
 describe("check", () => {
   const session = (fields: Partial<Session>) => ({ keyEpoch: "e1", keyHash: keyHashOf(KEY), ...fields }) as Session;
   const browser = (fields: Partial<Session> = {}, authority: "full" | "local-owner" = "full"): Who => ({ via: "cookie", name: "alex", role: "approver", authority, session: session(fields) });
-  const keys = (enabled = true, host: string | null = "127.0.0.1:4180") => createBrowserKeys({ enabled, epoch: "e1", protectedHost: () => host, loopbackHosts: () => ["127.0.0.1:4180", "[::1]:4180"] });
+  const keys = (enabled = true, host: string | null = "127.0.0.1:4180") => createBrowserKeys({ enabled, epoch: "e1", protectedHost: () => host, servedPort: () => 4180 });
   test.each([
     ["the session's key", keys(), browser(), request({ "x-toolroll-key": KEY }), null],
     ["no key", keys(), browser(), request(), 403],
