@@ -1,5 +1,5 @@
 import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
-import { declareJustMe, installModeNow, TEAM_FACT_WORDS } from "../install-mode.js";
+import { declareJustMe, installModeNow, sessionStandsIn, TEAM_FACT_WORDS } from "../install-mode.js";
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
@@ -581,7 +581,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const setting = passwordlessSetting(store);
     const said = url.searchParams.get("said"), problem = url.searchParams.get("problem");
     const since = setting.at === null ? null : `${setting.on ? "on" : "off"} since ${new Date(setting.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, by ${setting.setBy ?? "someone"}`;
-    return sendScreen(response, 200, screen("Passwordless", passwordlessHtml({ on: setting.on, since, trade: PASSWORDLESS_TRADE, said, problem }), { chrome: chromeFor(project, "settings") }));
+    // On as it works now: set on, or a solo install its owner never turned off (install-mode.ts sessionStandsIn).
+    return sendScreen(response, 200, screen("Passwordless", passwordlessHtml({ on: sessionStandsIn(store), since, trade: PASSWORDLESS_TRADE, said, problem }), { chrome: chromeFor(project, "settings") }));
   }
   async function passwordlessSave(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
@@ -754,7 +755,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     const updates = minimal ? null : settingsUpdates(who.name, csrf);
     const lastBackup = operator ? store.backupRuns(1)[0] ?? null : null;
     const accounts = minimal || !operator ? null : store.accountFacts().filter(one => one.revokedAt === null);
-    const passwordless = minimal ? null : passwordlessSetting(store).on;
+    const passwordless = minimal ? null : sessionStandsIn(store);
     const facts: SettingsFacts = {
       name: who.name, approver: who.role === "approver", operator, browser: who.via === "cookie", installation: !minimal,
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem"),
@@ -2926,7 +2927,7 @@ ${postForm("/settings/chat-approval/save", html`\
     updatesVersion: name => settingsUpdates(name, "")?.current ?? null,
     packageVersion: PACKAGE_VERSION,
     firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
-    passwordless: () => passwordlessSetting(store).on,
+    passwordless: () => sessionStandsIn(store),
     localModeOn: () => localModeOf(store)?.enabled === true,
     installMode: () => installModeNow(store),
   });

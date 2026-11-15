@@ -16,6 +16,8 @@ import { cookieOf, deliveredKey } from "../loopback-key-kit.js";
 import { enrollOwnerPassword, localModeOf } from "../../src/store.js";
 import { approve, authenticateAccount, hashPassword } from "../../src/scope.js";
 import { asLocalOwner } from "../../src/local-owner.js";
+/** File for a plan (Plan first): a solo install offers Build on its own terms otherwise (fast-start.ts SOLO_START_RULE). */
+const PLAN_FIRST = { "planning-policy": "choice", "plan-first": "1" } as const;
 
 const PASSWORD = "correct horse battery";
 let world: LocalWorld;
@@ -118,7 +120,7 @@ describe("setting the first password", () => {
     // The fresh key acts for the fresh session; the old local key does not.
     const csrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: fresh })).body) as { csrf: string }).csrf;
     const post = (key: string) => world.send("/tasks/add", "POST", { cookie: fresh, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": key },
-      new URLSearchParams({ csrf, repo: world.repo, title: `Filed with ${key.slice(0, 4)}` }).toString());
+      new URLSearchParams({ csrf, repo: world.repo, ...PLAN_FIRST, title: `Filed with ${key.slice(0, 4)}` }).toString());
     expect((await post(localKey)).status).toBe(403);
     expect((await post(delivered.key)).status).toBe(303);
   });
@@ -290,7 +292,7 @@ test("local mode off from Settings: a full session's step-up, the generation mov
 test("provenance: a task the local owner files says so in its filing line; a full session's doesn't", async () => {
   world = await openLocalWorld();
   const local = await world.localSession();
-  expect((await world.post("/tasks/add", local.cookie, { csrf: local.csrf, repo: world.repo, title: "Fix the footer" })).status).toBe(303);
+  expect((await world.post("/tasks/add", local.cookie, { csrf: local.csrf, repo: world.repo, ...PLAN_FIRST, title: "Fix the footer" })).status).toBe(303);
   const line = (title: string) => {
     const id = String(world.store.handle.prepare("SELECT id FROM task WHERE title = ?").get(title)!["id"]);
     return world.store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE task_id = ? AND action = 'task filed'").get(id);
@@ -301,7 +303,7 @@ test("provenance: a task the local owner files says so in its filing line; a ful
   const set = await setPassword(local.cookie, { csrf: local.csrf, password: PASSWORD, again: PASSWORD });
   const full = cookieOf({ status: set.status, headers: set.headers, body: set.body });
   const csrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: full })).body) as { csrf: string }).csrf;
-  expect((await world.post("/tasks/add", full, { csrf, repo: world.repo, title: "Fix the header" })).status).toBe(303);
+  expect((await world.post("/tasks/add", full, { csrf, repo: world.repo, ...PLAN_FIRST, title: "Fix the header" })).status).toBe(303);
   expect(line("Fix the header")).toEqual({ actor: "alex", detail: null });
 });
 

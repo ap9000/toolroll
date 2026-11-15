@@ -17,7 +17,9 @@ import { fileTaskProposal } from "./proposal.js";
 import { fastAcceptance, fastStartRules } from "./fast-start.js";
 import { verifiedDatabaseBackup } from "./desktop-update.js";
 import { approvalPasswordField } from "./approval-password.js";
-import { declareJustMe, installModeNow, INSTALL_MODE_ACTION, justMeAllowed, sessionStandsIn, soloNow } from "./install-mode.js";
+import { declareJustMe, declareSoloOnUpgrade, installModeNow, INSTALL_MODE_ACTION, justMeAllowed, sessionStandsIn, SOLO_ON_UPGRADE_WORDS, soloNow } from "./install-mode.js";
+import { setPasswordless } from "./passwordless.js";
+import { createDecisionServer } from "./serve.js";
 
 const NOW = new Date("2026-11-15T10:00:00.000Z");
 const REPO = "/home/me/app";
@@ -59,10 +61,10 @@ const tokenFor = (account: string, by: string, access: "read" | "act" = "act") =
   store.createApiToken({ id: minted.id, account, name: `for ${account}`, secretHash: minted.hash, access, expiresAt: later(86_400_000).toISOString(), by }, NOW);
   return minted.id;
 };
-const chat = () => new ChatCore(store, "telegram");
+const chat = (app: "telegram" | "slack" = "telegram") => new ChatCore(store, app);
 /** A pairing through the real code path: the person mints a code, a chat-app member redeems it. */
-function pair(member: string, approver = "alex"): number {
-  const core = chat();
+function pair(member: string, approver = "alex", app: "telegram" | "slack" = "telegram"): number {
+  const core = chat(app);
   core.savePairing({ hash: `code-${member}`, installation: "bot-1", approver, generation: store.accountOf(approver)!.generation, by: approver }, NOW);
   const done = core.consumePairing({ hash: `code-${member}`, installation: "bot-1", team: "t", app: "a", member, channel: `dm-${member}`, event: null }, NOW);
   if (!done.ok) throw new Error(done.reason);
@@ -306,5 +308,121 @@ describe("solo never skips team rules", () => {
     expect(installModeNow.length).toBe(1);
     expect(soloNow.length).toBe(1);
     expect(sessionStandsIn.length).toBe(1);
+  });
+});
+
+describe("chat identities count across every chat app", () => {
+  test("a second identity on another app is a second person: team, and It's just me refuses while it's live", () => {
+    pair("alex-phone");
+    flipsInItsTransaction(() => { pair("U0SLACK", "alex", "slack"); }, "chat-person");
+    expect(declareJustMe(store, "alex", NOW)).toEqual({ ok: false, reason: "team", facts: ["chat-person"] });
+  });
+
+  test("a chat member speaking for anyone but the owner is team (a binding left from another version, its account gone)", () => {
+    flipsInItsTransaction(() => {
+      store.handle.prepare(`INSERT INTO chat_binding (provider, id, installation, team, app, member, channel, approver, generation, created)
+        VALUES ('slack', 1, 'app-1', 't', 'a', 'U0ROBIN', 'dm', 'robin', 1, ?)`).run(NOW.toISOString());
+    }, "chat-person");
+    expect(declareJustMe(store, "alex", NOW)).toEqual({ ok: false, reason: "team", facts: ["chat-person"] });
+  });
+});
+
+describe("an explicit Passwordless off wins over solo", () => {
+  test("off means a password, solo or not; on stands; nothing set leaves solo's session standing", () => {
+    expect(shortcut()).toBe(true);
+    expect(setPasswordless(store, false, "alex", NOW)).toEqual({ changed: true });
+    expect(soloNow(store)).toBe(true);
+    expect(freshFacts.run(liveSession(), () => sessionStandsIn(store))).toBe(false);
+    expect(shortcut()).toBe(false);
+    filed("off");
+    expect(approveEmpty("off")).toEqual({ ok: false, reason: "not-an-approver" });
+    expect(setPasswordless(store, false, "alex", NOW)).toEqual({ changed: false });
+    setPasswordless(store, true, "alex", later(1000));
+    expect(shortcut()).toBe(true);
+  });
+});
+
+describe("an upgraded laptop install that is provably one person becomes solo, once", () => {
+  /** A laptop install from before solo: local mode on, its owner, the ledger it kept, and no mode recorded. */
+  function laptopBefore(): Store {
+    const s = setup(openStore(":memory:"));
+    s.handle.prepare("INSERT INTO approver (name, credential_hash, added_at, generation, password_set) VALUES ('alex', 'unusable', ?, 1, 0)").run(NOW.toISOString());
+    s.handle.prepare("INSERT INTO local_mode (id, owner, generation, enabled, initialized_at, changed_at) VALUES (1, 'alex', 1, 1, ?, ?)").run(NOW.toISOString(), NOW.toISOString());
+    s.recordAction({ at: NOW.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: "local mode on", outcome: "initialized", source: "access", detail: "a new install" });
+    return s;
+  }
+  const rows = (s: Store) => Number(s.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = ?").get(INSTALL_MODE_ACTION)!["n"]);
+  let laptop: Store;
+  afterEach(() => laptop.close());
+
+  test("a clean one-person laptop install: solo, recorded as the automatic act; a second run writes nothing", () => {
+    laptop = laptopBefore();
+    // The owner's own token, lead and chat app are still one person.
+    const minted = mintApiToken();
+    laptop.createApiToken({ id: minted.id, account: "alex", name: "mine", secretHash: minted.hash, access: "act", expiresAt: later(86_400_000).toISOString(), by: "alex" }, NOW);
+    expect(installModeNow(laptop)).toMatchObject({ mode: "team", facts: ["existing-install"] });
+    expect(declareSoloOnUpgrade(laptop, NOW)).toBe(true);
+    expect(installModeNow(laptop)).toEqual({ mode: "solo", facts: [], declared: { by: "system", at: NOW.toISOString(), why: "upgrade" } });
+    expect(laptop.handle.prepare("SELECT detail FROM action_ledger WHERE action = 'install mode (automatic)'").get()!["detail"]).toBe(SOLO_ON_UPGRADE_WORDS);
+    expect(declareSoloOnUpgrade(laptop, later(1000))).toBe(false);
+    expect(rows(laptop)).toBe(1);
+  });
+
+  test("the console's start makes the upgrade", () => {
+    laptop = laptopBefore();
+    const dir = mkdtempSync(join(tmpdir(), "so-upgrade-")); dirs.push(dir);
+    const server = createDecisionServer({ store: laptop, evidenceRoot: join(dir, "evidence"), repo: join(dir, "main") });
+    server.close();
+    expect(installModeNow(laptop)).toMatchObject({ mode: "solo", declared: { why: "upgrade" } });
+  });
+
+  const PAST: [string, (s: Store) => void][] = [
+    ["a second person, since removed", s => { s.saveApprover("robin", hashPassword("robin-pw-1"), NOW); s.handle.prepare("UPDATE approver SET revoked_at = ?, revoked_by = 'alex' WHERE name = 'robin'").run(NOW.toISOString()); }],
+    ["an invitation, since revoked", s => { s.handle.prepare("INSERT INTO invite (token_hash, role, minted_by, minted_at, expires_at, revoked_at) VALUES ('h', 'viewer', 'alex', ?, ?, ?)").run(NOW.toISOString(), NOW.toISOString(), NOW.toISOString()); }],
+    ["a token for someone else, since revoked", s => { s.handle.prepare("INSERT INTO credential (id, kind, public_id, account, name, secret_hash, access, created_at, created_by, expires_at, revoked_at) VALUES ('t1', 'person', 't1', 'robin', 'x', ?, 'read', ?, 'alex', ?, ?)").run("0".repeat(64), NOW.toISOString(), NOW.toISOString(), NOW.toISOString()); }],
+    ["a token made by someone else", s => { s.handle.prepare("INSERT INTO credential (id, kind, public_id, account, name, secret_hash, access, created_at, created_by, expires_at) VALUES ('t2', 'person', 't2', 'alex', 'x', ?, 'act', ?, 'old-admin', ?)").run("0".repeat(64), NOW.toISOString(), later(86_400_000).toISOString()); }],
+    ["a second chat identity, since unpaired", s => {
+      for (const [id, member] of [[1, "alex-phone"], [2, "robin-phone"]] as const) s.handle.prepare(`INSERT INTO chat_binding (provider, id, installation, team, app, member, channel, approver, generation, created, revoked)
+        VALUES ('telegram', ?, 'bot-1', 't', 'a', ?, 'dm', 'alex', 1, ?, ?)`).run(id, member, NOW.toISOString(), NOW.toISOString());
+    }],
+    ["a chat group, since removed", s => {
+      s.handle.prepare(`INSERT INTO chat_binding (provider, id, installation, team, app, member, channel, approver, generation, created) VALUES ('telegram', 1, 'bot-1', 't', 'a', 'alex-phone', 'dm', 'alex', 1, ?)`).run(NOW.toISOString());
+      s.handle.exec("PRAGMA foreign_keys = OFF");
+      s.handle.prepare("INSERT INTO chat_room (provider, id, installation, chat, kind, conversation, binding, bound_by, bound, revoked) VALUES ('telegram', 1, 'bot-1', 'g', 'group', 'c1', 1, 'alex', ?, ?)").run(NOW.toISOString(), NOW.toISOString());
+      s.handle.exec("PRAGMA foreign_keys = ON");
+    }],
+    ["someone else's pairing code", s => { s.handle.prepare("INSERT INTO chat_pair (provider, hash, approver, generation, expires) VALUES ('telegram', 'h', 'robin', 1, ?)").run(NOW.toISOString()); }],
+    ["someone else's identity-provider sign-in", s => {
+      s.handle.exec("PRAGMA foreign_keys = OFF");
+      s.handle.prepare("INSERT INTO sso_identity (issuer, subject, account, email, created_at, last_seen_at) VALUES ('https://idp', 's', 'robin', NULL, ?, ?)").run(NOW.toISOString(), NOW.toISOString());
+      s.handle.exec("PRAGMA foreign_keys = ON");
+    }],
+    ["an access entry by someone else", s => { s.recordAction({ at: NOW.toISOString(), actor: "robin", repo: null, taskId: null, runId: null, action: "signed in", outcome: "ok", source: "access" }); }],
+    ["a ledger entry saying someone joined", s => { s.recordAction({ at: NOW.toISOString(), actor: "alex", repo: null, taskId: null, runId: null, action: "joined", outcome: "viewer", source: "access" }); }],
+  ];
+  test.each(PAST)("%s: stays team, writes nothing", (_name, past) => {
+    laptop = laptopBefore();
+    past(laptop);
+    expect(declareSoloOnUpgrade(laptop, NOW)).toBe(false);
+    expect(installModeNow(laptop).mode).toBe("team");
+    expect(rows(laptop)).toBe(0);
+  });
+
+  test("a server install (not local mode), or local mode turned off: stays team", () => {
+    laptop = setup(openStore(":memory:"));
+    expect(addApprover(laptop, "alex", NOW).ok).toBe(true);
+    expect(declareSoloOnUpgrade(laptop, NOW)).toBe(false);
+    expect(installModeNow(laptop).mode).toBe("team");
+    laptop.close();
+    laptop = laptopBefore();
+    laptop.handle.prepare("UPDATE local_mode SET enabled = 0").run();
+    expect(declareSoloOnUpgrade(laptop, NOW)).toBe(false);
+    expect(rows(laptop)).toBe(0);
+  });
+
+  test("anything unreadable stays team", () => {
+    laptop = laptopBefore();
+    const broken = { transact: (body: () => unknown) => body(), handle: { prepare: () => { throw new Error("gone"); } } } as unknown as Store;
+    expect(declareSoloOnUpgrade(broken, NOW)).toBe(false);
   });
 });

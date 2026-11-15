@@ -1703,7 +1703,7 @@ function startFromCard(store: Store, who: VerifiedApprover, proposal: number, dr
     proof = { chat: by.limits };
     // A typed yes (C5) is recorded beside the fast marker: which message was the yes. The executor's gate has proved it.
     const typed = options.typedStart;
-    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, typed === undefined ? fast : { ...fast, typed: { provider: typed.provider, event: typed.event } }, chat);
+    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, typed === undefined || fast === undefined ? fast : { ...fast, typed: { provider: typed.provider, event: typed.event } }, chat);
   } else if (options.authority === "local-owner" && currentLocalOwner() !== null) {
     proof = { password: { localOwner: true, passwordless: false, freshAt: null, returnTo: "/chat" } };
     approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, fast);

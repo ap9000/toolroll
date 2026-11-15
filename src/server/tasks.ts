@@ -923,7 +923,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // Anything else, or any doubt, is the ordinary filing below. `plain` is "Plan it first" from that form.
     if (who.via === "cookie" && body.get("plain") !== "1" && repo !== "" && goal === "" && notThis === "" && touchesGiven.length === 0 && !scout && id === "" && after === ""
       && (qualityMode === null || qualityMode === "default") && (permissionMode === null || permissionMode === "auto")) {
-      const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who) }, now);
+      // "Read code before planning" on is the person choosing Plan first: never solo's Just code.
+      const fast = await prepareFastStart(store, { actor: who.name, repo, title: typed.trim(), via: "console", ...(permissionMode === null ? {} : { permissionMode }), password: fastPasswordFacts(who),
+        planFirst: body.get("plan-first") === "1" }, now);
       // The terminal workbench's New task asks for the same offer as data (http.ts refusedInPlace's terminal act).
       if (fast.eligible && requestContext.getStore()?.terminalAct === true) return answerTermsInPlace(response, { preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) });
       if (fast.eligible) return sendScreen(response, 200, fastStartPage(chromeFor(project ?? null, "tasks"), { title: typed.trim(), repo, preview: fast.preview, digest: fast.digest, terms: fastTermsRows(store, fast.scope, repo) }));

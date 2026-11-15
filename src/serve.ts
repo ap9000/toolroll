@@ -176,7 +176,7 @@ import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
-import { sessionStandsIn } from './install-mode.js';
+import { declareSoloOnUpgrade, sessionStandsIn } from './install-mode.js';
 import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
 import { createFlowsHandlers } from './server/flows.js';
@@ -265,6 +265,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   });
 
   const { store, evidenceRoot } = options;
+  // An upgraded laptop install whose whole history is one person becomes solo, once, recorded (install-mode.ts).
+  declareSoloOnUpgrade(store, new Date());
   let coding = options.codingWorkspace ?? null;
   let codingProblem: string | undefined;
   if (coding === null && options.localRunner !== undefined && !store.isDemo()) {

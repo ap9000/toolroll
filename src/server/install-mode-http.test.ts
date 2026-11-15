@@ -52,7 +52,9 @@ async function drawn(id: string): Promise<{ nonce: string; digest: string; page:
   store.createTask({ id, title: id }, new Date());
   expect((await post(`/t/${id}/scope`, { acceptance: "c1: ok | manual-review", sawDigest: "", goal: `do ${id}`, not: "", touches: "" })).status).toBe(303);
   const page = await (await get(`/t/${id}`)).text();
-  return { nonce: /name="nonce" value="([0-9a-f]{32})"/.exec(page)?.[1] ?? "", digest: store.getScope(id)?.digest ?? "", page };
+  // The form's own digest: the scope, the plan and the summary key it showed (render-tasks.ts approvalFormDigest).
+  const form = /<form[^>]*action="\/t\/[^"]+\/approve"[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+  return { nonce: /name="nonce" value="([0-9a-f]{32})"/.exec(form)?.[1] ?? "", digest: /name="digest" value="([0-9a-f]+)"/.exec(form)?.[1] ?? "", page };
 }
 const approved = (id: string) => store.getScope(id)?.approvedAt != null;
 
@@ -65,7 +67,9 @@ describe("an existing install, then It's just me", () => {
     expect(await hello()).toMatchObject({ mode: "team", defaultChain: "plan-first" });
     // Team: the approve form's empty password proves nothing.
     const form = await drawn("team-one");
-    await post(`/t/team-one/approve`, { nonce: form.nonce, digest: form.digest, token: "" });
+    expect(form.digest).not.toBe("");
+    const pressed = await post(`/t/team-one/approve`, { nonce: form.nonce, digest: form.digest, token: "" });
+    expect([pressed.status, await pressed.text()]).toEqual([400, expect.stringContaining("approval requires your password")]);
     expect(approved("team-one")).toBe(false);
   });
 
@@ -75,12 +79,6 @@ describe("an existing install, then It's just me", () => {
     const wrong = await post("/settings/install-mode/solo", { password: "not-it" });
     expect(wrong.headers.get("location")).toMatch(/^\/settings\/change\/just-me\?problem=/);
     expect(installModeNow(store).mode).toBe("team");
-    // A credential act: even with Passwordless on, the session never stands in for the password here.
-    setPasswordless(store, true, "alex", new Date());
-    const session = await post("/settings/install-mode/solo", { password: "" });
-    expect(session.headers.get("location")).toMatch(/^\/settings\/change\/just-me\?problem=/);
-    expect(installModeNow(store).mode).toBe("team");
-    setPasswordless(store, false, "alex", new Date());
     const done = await post("/settings/install-mode/solo", { password });
     expect(done.headers.get("location")).toMatch(/^\/settings\/general\?section=install-mode&said=/);
     expect(installModeNow(store)).toMatchObject({ mode: "solo", declared: { by: "alex", why: "just-me" } });
@@ -105,7 +103,7 @@ describe("an existing install, then It's just me", () => {
     const form = await drawn("raced");
     store.saveApprover("robin", hashPassword("robin-pw-1"), new Date());
     const pressed = await post(`/t/raced/approve`, { nonce: form.nonce, digest: form.digest, token: "" });
-    expect(pressed.status).toBeGreaterThanOrEqual(400);
+    expect([pressed.status, await pressed.text()]).toEqual([400, expect.stringContaining("approval requires your password")]);
     expect(approved("raced")).toBe(false);
   });
 
@@ -113,7 +111,8 @@ describe("an existing install, then It's just me", () => {
     const claims = { "x-toolroll-mode": "solo", "x-toolroll-install-mode": "solo", cookie: `${cookie}; so-mode=solo; toolroll-mode=solo` };
     expect(await hello(claims)).toMatchObject({ mode: "team" });
     const form = await drawn("claimed");
-    await post(`/t/claimed/approve?mode=solo`, { nonce: form.nonce, digest: form.digest, token: "" }, claims);
+    const pressed = await post(`/t/claimed/approve?mode=solo`, { nonce: form.nonce, digest: form.digest, token: "" }, claims);
+    expect([pressed.status, await pressed.text()]).toEqual([400, expect.stringContaining("approval requires your password")]);
     expect(approved("claimed")).toBe(false);
   });
 
@@ -126,5 +125,12 @@ describe("an existing install, then It's just me", () => {
     const document = await (await get("/settings/change/just-me")).text();
     expect(document).toContain("Another person has an account here.");
     expect(document).not.toContain('action="/settings/install-mode/solo"');
+  });
+
+  test("It's just me is a credential act: even with Passwordless on, the session never stands in for the password", async () => {
+    setPasswordless(store, true, "alex", new Date());
+    const session = await post("/settings/install-mode/solo", { password: "" });
+    expect(decodeURIComponent(session.headers.get("location") ?? "").replace(/\+/g, " ")).toContain("Enter your Toolroll password");
+    expect(installModeNow(store).mode).toBe("team");
   });
 });
