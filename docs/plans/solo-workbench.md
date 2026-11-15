@@ -21,6 +21,16 @@ T3 Code or herdr. Consequences:
   (bubblewrap) attack rows green, and a kill switch, before the default flips. Each real-model F0 batch still needs the
   owner's explicit yes (it spends money).
 
+## Owner decision (2026-11-14, later): any agent, your own login — two tiers in Flexible
+Ordinary builds already run each agent on its own login and subscription (Claude Code, Codex, Gemini CLI, OpenRouter,
+ACP agents). Flexible supports agents in two tiers, and the screen says which tier each runs in, in one line:
+1. **Relay tier — the key never enters the agent.** The agent talks to a local Toolroll relay that holds the login
+   (bound to an admitted turn, charged per call, fixed upstream, no redirects, revocable, redacted logs). Claude Code
+   (setup-token), Codex/OpenAI, Gemini, OpenRouter, and agents built on them. Launch (week 7) ships this tier.
+2. **Own-login tier — for agents that can't use a relay.** Only that agent's own login file, read-only; network only to
+   its provider's hosts; no keychain, no other credentials, no other projects. Ships in the 1–2 weeks after launch, with
+   first-run conformance per installed agent (Copilot CLI, Amp, Droid, Pi, Cursor, Cline, Qwen, Goose, OpenCode…).
+
 ## Principles
 1. **One engine, two renderers, one keymap.** The Node engine owns state, PTYs, the fence, sanitising, auth and every
    write. The Rust TUI and the web are clients of one local API (never two runtimes — herdr-app's split is the warning).
