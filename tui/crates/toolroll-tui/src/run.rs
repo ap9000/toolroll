@@ -237,6 +237,19 @@ impl Loop {
                 let r = client.diff_file(&ask.task, ask.run, ask.file).await;
                 let _ = tx.send(Msg::DiffFile(ask, r));
             })),
+            Effect::FetchThreads => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Threads(client.threads().await));
+            })),
+            Effect::FetchThread {
+                thread,
+                cursor,
+                known,
+            } => drop(tokio::spawn(async move {
+                let r = client
+                    .thread_window(&thread, cursor.as_deref(), known.as_deref())
+                    .await;
+                let _ = tx.send(Msg::Thread(thread, r));
+            })),
             Effect::FetchContext(ask) => drop(tokio::spawn(async move {
                 let r = client
                     .diff_context(&ask.task, ask.run, ask.file, ask.from, ask.count)

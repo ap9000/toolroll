@@ -128,6 +128,11 @@ export const CONSOLE_FORMS = {
   releaseApproval: formContract("POST /settings/release-approval", ["repo", "action", "password"]),
   // Flexible projects (flexible.ts, slice F1): turn on (the shown terms' digest and a password), lower (max), turn off.
   projectFlexible: formContract("POST /settings/project/flexible", ["repo", "action", "max", "digest", "password"]),
+  // A thread's owner answers its agent's request: the request, the card digest they were shown (`card`), and the choice
+  // (a permission's accept or decline, or one question part and its answer's words). A new thread: its project, first
+  // message, model and the Flexible terms digest the person was shown (`terms`). Both refused while Flexible is off.
+  threadAnswer: formContract("POST /agents/live/thread/<id>/answer", ["request", "card", "decision", "question", "answer"]),
+  threadStart: formContract("POST /agents/live/thread", ["repo", "message", "model", "terms"]),
   // T4: a take-over names its task and build (task, run) instead of a project (repo).
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),

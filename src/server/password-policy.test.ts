@@ -26,6 +26,8 @@ const COOKIE_ONLY_POSTS = [
   // The lead queue: removing your own waiting message, from a browser.
   'chat.queued-remove',
   'agents.seen', 'agents.watch',
+  // A Flexible thread's owner answering its agent's request, and starting a thread (refused while Flexible is off).
+  'agents.live.thread.answer', 'agents.live.thread.start',
   // Settings → Advanced: the person's own view switch, from their own browser.
   'settings.advanced',
   'chat.send', 'chat.file', 'chat.ack-send',

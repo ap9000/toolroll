@@ -27,6 +27,8 @@ test("every route row is marked for the local owner; an allow names one of its a
   expect(LOCAL_MARKED_IDS.filter(id => !ids.has(id))).toEqual([]);
   // The console POSTs a local owner may make, pinned: adding one is a decision this test makes someone write down.
   expect(ROUTES.filter(row => row.stage === "console" && row.method === "POST" && row.local === "allow").map(row => `${row.id}=${row.localAct}`).sort()).toEqual([
+    // A Flexible thread's owner answers its agent's request, as a task's question is answered (F3; refused while Flexible is off).
+    "agents.live.thread.answer=answer-question",
     "agents.seen=mark-seen", "agents.watch=watch-agent", "chat.file=file-task", "chat.mate-end=lead-send", "chat.mate-follow=lead-send", "chat.mate-mint=lead-send",
     "chat.mate-stop=lead-send", "chat.proposal.confirm=lead-send", "chat.proposal.dismiss=lead-send", "chat.queued-remove=lead-send", "chat.send=lead-send",
     "decision.answer=answer-question", "projects.github-list=add-project", "projects.onboard-confirm=add-project", "projects.onboard-preview=add-project",
