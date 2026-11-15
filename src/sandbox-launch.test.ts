@@ -8,15 +8,15 @@ import { expect, test } from "vitest";
 import { linuxFenceAvailable, NO_GRANTS, sandboxedSpawn, toolrollInstall, type FenceGrants } from "./agent-fence.js";
 import { SANDBOX_LAUNCH_SPEC, type SandboxLaunchSpec } from "./sandbox-runtime.js";
 
-/** A launch that writes only its own folder, with Toolroll's install write-denied as every real launch's is: what a
- * seccomp helper Toolroll's user owns (this checkout's, on CI) is allowed to serve (sandbox-tools.ts). */
-const own = (dir: string): FenceGrants => ({ ...NO_GRANTS, writes: { subpaths: [dir], prefixes: [] }, readOnly: toolrollInstall(null, homedir()) });
+/** A launch that writes anywhere, with Toolroll's install write-denied as every real launch's is (fenceFor): a seccomp
+ * helper Toolroll's user owns (this checkout's, on CI) serves it only inside those denies (sandbox-tools.ts). */
+const own = (): FenceGrants => ({ ...NO_GRANTS, readOnly: toolrollInstall(null, homedir()) });
 
 test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linux: a launch runs exactly once, keeps its exit status, and never sees the start descriptor", () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-launch-")));
   try {
     const log = join(dir, "ran.log");
-    const wrapped = sandboxedSpawn("/bin/sh", ["-c", `echo once >> ${JSON.stringify(log)}; test -e /proc/self/fd/3 && echo fd3-open || echo fd3-closed; exit 7`], [join(dir, "denied")], own(dir), dir);
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c", `echo once >> ${JSON.stringify(log)}; test -e /proc/self/fd/3 && echo fd3-open || echo fd3-closed; exit 7`], [join(dir, "denied")], own(), dir);
     const result = spawnSync(wrapped.file, wrapped.args, { cwd: dir, encoding: "utf8", env: { ...process.env, ...wrapped.env } });
     expect(result.status, result.stderr).toBe(7);
     expect(result.stdout.trim()).toBe("fd3-closed");
@@ -28,7 +28,7 @@ test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linu
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-launch-")));
   try {
     const marker = join(dir, "ran");
-    const wrapped = sandboxedSpawn("/bin/sh", ["-c", `touch ${JSON.stringify(marker)}`], [join(dir, "denied")], own(dir), dir);
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c", `touch ${JSON.stringify(marker)}`], [join(dir, "denied")], own(), dir);
     // The helper checks again for itself, at the exact paths it was handed (never PATH): bubblewrap gone from its path
     // is a machine without it.
     const spec = JSON.parse(wrapped.env[SANDBOX_LAUNCH_SPEC]!) as SandboxLaunchSpec;
@@ -55,7 +55,7 @@ test.skipIf(process.platform !== "linux" || !linuxFenceAvailable())("native Linu
   try {
     for (const delay of [0, 30, 80, 150, 300, 600]) {
       const marker = join(dir, `ran-${delay}`);
-      const wrapped = sandboxedSpawn("/bin/sh", ["-c", `touch ${JSON.stringify(marker)}; sleep 5`], [join(dir, "denied")], own(dir), dir);
+      const wrapped = sandboxedSpawn("/bin/sh", ["-c", `touch ${JSON.stringify(marker)}; sleep 5`], [join(dir, "denied")], own(), dir);
       const child = spawn(wrapped.file, wrapped.args, { cwd: dir, env: { ...process.env, ...wrapped.env }, stdio: "ignore" });
       setTimeout(() => child.kill("SIGTERM"), delay);
       const status = await new Promise<number | null>(done => child.on("close", (code, signal) => done(code ?? (signal === null ? null : 143))));

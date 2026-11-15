@@ -11,10 +11,14 @@
  *   vendor/seccomp/<arch>/apply-seccomp, never `npm root -g`, a user npm folder or PATH. Its canonical target (through
  *   any vendor link) and every folder above it are owned by root or by the owner of Toolroll's own code, none of them
  *   group- or world-writable (no sticky pass). Root's own throughout, it serves any launch. Otherwise (a user's npm
- *   install, CI's checkout) its write protection must equal the code's: the launch may write neither its canonical
- *   target nor any folder above it (its write roots `/` and the literal ones included), and the fence's install-tree
- *   write denies (agent-fence.ts toolrollInstall) must cover that target. A launch that may write anywhere gets a
- *   root-owned helper or none: it refuses.
+ *   install, CI's checkout) its write protection must be the same as Toolroll's code's: its canonical target lies inside
+ *   the install-tree write denies that cover the code (agent-fence.ts toolrollInstall, the vendor link's target folder
+ *   included), and the launch may not write that target (its write roots `/` and the literal ones counted).
+ *
+ *   Shared residual, stated once for both: on a user-owned install, a launch that may write the install's parent
+ *   folders could swap Toolroll's code and its seccomp helper alike (rename a folder above the denied one and put
+ *   another in its place). The inode pinning below makes a swap after discovery refuse the next launch, but a fresh
+ *   discovery would take the new one. Use a root-owned install for write-anywhere builds.
  *
  * No system program may lie inside the launch's projects, worktrees or Toolroll's state. Discovery is cached; before each launch every path is canonicalized again and the whole check re-run, and its file must still be
  * the one discovered (device and inode): any change refuses that launch, and the next one discovers afresh.
@@ -113,7 +117,8 @@ function checkSystem(path: string, trust: Trust, exclusions: ToolExclusions): Ch
 /**
  * The full check of the seccomp helper at `path` for a launch with `exclusions` (see the header): its canonical target
  * and every folder above it owned by root or the code's owner, none group- or world-writable; and unless root's own
- * throughout, out of the launch's writes, target and folders alike, with the target inside one of its write denies.
+ * throughout, the target inside the launch's write denies (the install tree's) and not writable by it. Its folders
+ * above are held to no more than the code's are (the shared residual in the header).
  */
 export function checkSeccompHelper(path: string, exclusions: ToolExclusions, trust: ToolTrust = {}): Checked {
   const t = trustOf(trust);
@@ -122,10 +127,7 @@ export function checkSeccompHelper(path: string, exclusions: ToolExclusions, tru
   if (!checked.ok) return checked;
   const writes = exclusions.writes;
   if (writes !== undefined && !rootOwnedBinary(checked.real, t.acl, t.root).ok) {
-    for (let at = checked.real; ; at = dirname(at)) {
-      if (mayWrite(writes, at)) return { ok: false, why: `the launch may write ${at}${at === checked.real ? "" : `, above ${checked.real}`}, and the helper isn't root's own (a launch that may write there needs a root-owned helper)` };
-      if (dirname(at) === at) break;
-    }
+    if (mayWrite(writes, checked.real)) return { ok: false, why: `the launch may write ${checked.real}, and the helper isn't root's own` };
     if (!writes.deny.some(root => insideOrAt(checked.real, root))) return { ok: false, why: `the fence's install-tree write denies don't cover ${checked.real}` };
   }
   return identify(checked.real);

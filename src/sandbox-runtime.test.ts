@@ -4,7 +4,7 @@
  * and the README name exactly these. Every PATH here is a temp folder of stubs.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -223,14 +223,31 @@ describe("the Linux sandbox's own programs: root's own, by exact path, checked a
       expect(checkSeccompHelper(path, sandboxToolExclusions(writes([work], [root, dirname(target)]), work), usersOwn)).toMatchObject({ ok: true, tool: { real: target } });
     });
 
-    test("a launch that may write anywhere (`/`) gets a root-owned helper or none", () => {
+    test("a launch that may write anywhere (`/`) is served a user-owned helper only inside the install denies, as the code is", () => {
       const { root, helper: path, target } = pkg();
       const work = folder("work", SYSTEM);
-      const anywhere = sandboxToolExclusions(writes(["/", work], [root, dirname(target)]), work);
-      expect(anywhere.writes?.allow).toContain("/");
-      expect(checkSeccompHelper(path, anywhere, usersOwn)).toEqual({ ok: false, why: expect.stringContaining("needs a root-owned helper") });
-      // Root's own throughout (this test's uid standing in for root), the same helper serves it.
-      expect(checkSeccompHelper(path, anywhere, { root: [0, me], codeOwner: me })).toMatchObject({ ok: true });
+      const covered = sandboxToolExclusions(writes(["/", work], [root, dirname(target)]), work);
+      expect(covered.writes?.allow).toContain("/");
+      expect(checkSeccompHelper(path, covered, usersOwn)).toMatchObject({ ok: true, tool: { real: target } });
+      // The code covered but not the helper's target the vendor link leads to: writable, refused.
+      expect(checkSeccompHelper(path, sandboxToolExclusions(writes(["/", work], [root]), work), usersOwn)).toEqual({ ok: false, why: `the launch may write ${target}, and the helper isn't root's own` });
+    });
+
+    test("the install's folder renamed between launches, and another put in its place, refuses the next launch", () => {
+      const system = folder("system");
+      const { helper: path, target } = pkg();
+      const tools = found(resolveLinuxSandboxTools({ ...standIn, folders: [system], seccomp: path }));
+      expect(tools.seccomp.real).toBe(target);
+      expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp: path })).toBeNull();
+      const install = dirname(dirname(target));
+      renameSync(install, `${install}-moved`);
+      // Gone from where it was: the path no longer resolves.
+      expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp: path })).toMatch(/^seccomp .*isn't there/);
+      // Another install at the same path: the same canonical path, another file.
+      mkdirSync(join(install, "x64"), { recursive: true, mode: 0o755 });
+      for (const dir of [install, join(install, "x64")]) chmodSync(dir, 0o755);
+      helper(join(install, "x64"));
+      expect(verifyLinuxSandboxTools(tools, { ...standIn, seccomp: path })).toBe(`seccomp (${target}) changed since it was checked`);
     });
 
     test("no sticky pass: a helper below a sticky, world-writable folder is refused", () => {
