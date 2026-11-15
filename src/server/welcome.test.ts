@@ -11,8 +11,8 @@ const base: WelcomeFacts = {
   agents: { claude: "connected", codex: "signed-out" }, inUse: "claude", buildsOn: "claude", canChoose: true,
   projects: [], projectRoot: "/Users/sam/Projects", ready: false, hasTask: false, starters: GENERIC_FIRST_TASKS, platform: "darwin",
 };
-const render = (facts: Partial<WelcomeFacts> = {}, options: { problem?: SampleProblem | null; canAdd?: boolean } = {}) => {
-  const { body, primary } = withFormToken("t0k", () => welcomeBody(welcomeModel({ ...base, ...facts }), { canAdd: options.canAdd ?? true, problem: options.problem ?? null }));
+const render = (facts: Partial<WelcomeFacts> = {}, options: { problem?: SampleProblem | null; canAdd?: boolean; inventory?: "full" | "summary" | "none" } = {}) => {
+  const { body, primary } = withFormToken("t0k", () => welcomeBody(welcomeModel({ ...base, ...facts }), { canAdd: options.canAdd ?? true, problem: options.problem ?? null, ...(options.inventory === undefined ? {} : { inventory: options.inventory }) }));
   return { body: htmlString(body), primary: primary === null ? null : htmlString(primary) };
 };
 /** Words these screens never say: the product's inside terms. */
@@ -53,6 +53,46 @@ describe("the welcome page", () => {
     expect(out).toContain("claude auth login");
     expect(out).toContain("npm install -g @openai/codex &amp;&amp; codex login");
     expect(out).not.toContain("/settings/lead/on");
+  });
+
+  test("other agents found on this computer: listed with their sign-in command or what they still need, nothing to click; who the first task goes to", () => {
+    const others = [
+      { id: "gemini" as const, name: "Gemini CLI", state: "signed-out" as const, how: null, signIn: "gemini", ready: false, next: "To give it tasks, choose its models in Settings → Models." },
+      { id: "opencode" as const, name: "OpenCode", state: "signed-in" as const, how: "login file", signIn: null, ready: false, next: "To give it tasks, check it once: run `toolroll agents check opencode --model <model>`." },
+      { id: "cursor" as const, name: "Cursor", state: "not-installed" as const, how: null, signIn: null, ready: false, next: null },
+    ];
+    const { body } = render({ others });
+    expect(body).toContain('data-agent="gemini" data-state="signed-out"');
+    expect(body).toMatch(/data-agent="gemini"[\s\S]*?gemini<\/code>/);
+    expect(body).toContain("To give it tasks, check it once");
+    // Not installed: not listed. Only Claude Code and Codex have buttons.
+    expect(body).not.toContain('data-agent="cursor"');
+    expect(body.match(/name="agent" value="/g) ?? []).toHaveLength(0);
+    expect(words(body)).toContain("Your first task goes to Claude Code.");
+  });
+
+  test("this computer's agents are an instance operator's to see: anyone else reads who the first task goes to; a token reads neither", () => {
+    const facts = { agents: { claude: "connected" as const, codex: "connected" as const }, inUse: null };
+    const full = render(facts);
+    expect(full.body).toContain('data-agent="codex"');
+    const summary = render(facts, { inventory: "summary" });
+    expect(summary.body).not.toMatch(/data-agent=|\/settings\/lead\/on/);
+    expect(summary.primary ?? "").not.toContain("/settings/lead/on");
+    expect(words(summary.body)).toContain("Your first task goes to Claude Code.");
+    const nobody = render({ agents: { claude: "signed-out", codex: "not-installed" }, inUse: null }, { inventory: "summary" });
+    expect(words(nobody.body)).toContain("No coding agent can take tasks on this computer yet.");
+    expect(nobody.body).not.toContain("claude auth login");
+    const token = render(facts, { inventory: "none" });
+    expect(token.body).not.toMatch(/data-agent=|Claude Code|Codex/);
+  });
+
+  test("a token's page doesn't depend on any sign-in: byte for byte the same whether an agent is signed in or not", () => {
+    for (const [hasTask, projects] of [[false, []], [true, [{ name: "shop", path: "/Users/sam/Projects/shop" }]], [false, [{ name: "shop", path: "/Users/sam/Projects/shop" }]]] as const) {
+      const pages = (["connected", "signed-out", "not-installed", null] as const).map(state =>
+        render({ agents: { claude: state, codex: state === "connected" ? "connected" : "not-installed" }, inUse: null, hasTask, projects: [...projects] }, { inventory: "none" }));
+      for (const page of pages.slice(1)) { expect(page.body).toBe(pages[0]!.body); expect(page.primary).toBe(pages[0]!.primary); }
+      expect(pages[0]!.body).not.toMatch(/data-done="1"[^>]*data-step="agent"|data-step="agent" data-done="1"/);
+    }
   });
 
   test("the agent in use reads In use with no button; only the other signed-in one offers Use this one, as a secondary act", () => {
