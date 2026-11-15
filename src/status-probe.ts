@@ -5,8 +5,8 @@
  *
  * - Where nothing may run. Every folder an agent can write, derived here from Toolroll's own records at each check, so
  *   no caller can leave one out: every project the store knows (and the project registry beside it), every worktree,
- *   Toolroll's state folder, and the repository this process was started in. A database that exists but can't be read
- *   refuses every check.
+ *   Toolroll's state folder, and the repository this process was started in. A database or project registry that exists
+ *   but can't be read refuses every check.
  * - Which binary. The first match on PATH, as the person's shell would find it, and only if it is a trusted install:
  *   its PATH folder is absolute and trusted, and the binary's real path is a trusted file (trusted-path.ts: owned by
  *   this user or root, nothing above it writable by others, no ACL that lets anyone change it), neither inside a folder
@@ -16,9 +16,10 @@
  * - Checked again right before the start, with fresh ACL answers (nothing cached from the first check), and the exact
  *   real path is started.
  * - Its environment is built from nothing: PATH of trusted folders only, the user and locale names, and the location
- *   variables (HOME, TMPDIR, CLAUDE_CONFIG_DIR, CODEX_HOME) only when each names a folder owned by this user, not
- *   writable by others, with no ACL that lets anyone change it, outside every folder above; any other is left out (the
- *   CLI's own default applies). Its working folder is a fresh, empty folder of this check's own, removed after.
+ *   variables (HOME, TMPDIR, CLAUDE_CONFIG_DIR, CODEX_HOME) only when each names a folder owned by this user, trusted
+ *   all the way up (nothing writable by others, no ACL that lets anyone change it), outside every folder above as
+ *   written and as its real path; it is handed on as that checked real path. Any other is left out (the CLI's own
+ *   default applies). Its working folder is a fresh, empty folder of this check's own, removed after.
  * - Bounded: every step, the ACL reads included, sits inside one deadline; the command runs in a process group of its
  *   own, ended at the deadline by that group's exact id (SIGTERM, then SIGKILL), so anything it started goes with it;
  *   whatever its group still holds when it exits is ended too.
@@ -68,7 +69,7 @@ export function repositoryOf(dir: string): string | null {
 
 /**
  * Every folder an agent can write, from Toolroll's own records now (see the header): the store's projects and
- * worktrees, the registry's projects, the state folder, and the start repository, as real paths. Null when the
+ * worktrees, the registry's projects, the state folder, and the start repository, each as written and as its real path. Null when the
  * database exists but can't be read (every check then refuses).
  */
 export async function excludedFolders(source: { store?: ExclusionStore | undefined; databaseFile?: string | undefined }, extra: readonly string[] = []): Promise<string[] | null> {
@@ -80,8 +81,10 @@ export async function excludedFolders(source: { store?: ExclusionStore | undefin
   if (file !== null && file !== ":memory:") {
     found.push(dirname(file));
     const { readProjectRegistryNow } = await import("./repos.js");
+    // The registry beside the database: none yet reads as empty; one that can't be read or parsed refuses (fail closed).
     const registry = readProjectRegistryNow(join(dirname(file), "repos.json"));
-    if (!("error" in registry)) found.push(...registry.repos);
+    if ("error" in registry) return null;
+    found.push(...registry.repos);
     if (store === null && existsSync(file)) {
       opened = openStoreReadOnly(file);
       if (opened === null) return null;
@@ -93,7 +96,8 @@ export async function excludedFolders(source: { store?: ExclusionStore | undefin
   } catch { return null; } finally { opened?.close(); }
   const repo = repositoryOf(process.cwd());
   if (repo !== null) found.push(repo);
-  return [...new Set(found.flatMap(one => { const real = realOrNull(one); return real === null ? [] : [real]; }))];
+  // Each as written and as its real path: a path checked as written (a location variable) is compared with both.
+  return [...new Set(found.flatMap(one => { const real = realOrNull(one); return isAbsolute(one) ? [resolve(one), ...(real === null ? [] : [real])] : real === null ? [] : [real]; }))];
 }
 
 export type StatusTrust = {
@@ -171,18 +175,20 @@ export function trustedPathOf(trust: StatusTrust): string {
   return kept.join(delimiter);
 }
 
-/** A location variable's folder may be handed on: absolute, owned by this user, not writable by others, no ACL that lets
- * anyone change it, and outside every untrusted folder. */
+/**
+ * A location variable's folder, when it may be handed on: absolute, neither it (as written) nor its real path inside an
+ * untrusted folder, the folder owned by this user, and it and every folder above it trusted (trusted-path.ts
+ * trustedFolders: not writable by others, no ACL that lets anyone change it). What is handed on is the real path that
+ * was checked, never the value as written, so a symlink re-pointed after the check changes nothing.
+ */
 export function trustedLocation(value: string | undefined, trust: StatusTrust): string | null {
   if (value === undefined || value === "" || !isAbsolute(value) || trust.uid === undefined) return null;
+  const outside = (path: string): boolean => !trust.untrusted.some(root => inside(path, root));
+  if (!outside(resolve(value))) return null;
   const real = realOrNull(value);
-  if (real === null || trust.untrusted.some(root => inside(real, root))) return null;
-  try {
-    const seen = lstatSync(real);
-    if (!seen.isDirectory() || seen.uid !== trust.uid || (seen.mode & 0o022) !== 0) return null;
-  } catch { return null; }
-  const acl = trust.acl?.(real);
-  return acl === undefined || acl.ok ? value : null;
+  if (real === null || !outside(real)) return null;
+  try { if (lstatSync(real).uid !== trust.uid) return null; } catch { return null; }
+  return trustedFolders(real, trust.uid, trust.acl).ok ? real : null;
 }
 
 /** The status command's whole environment, built from nothing (see the header). */

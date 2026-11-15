@@ -389,3 +389,50 @@ describe("where a status command may never run, what it may be handed, and its d
     expect(ranIt()).toBe(false);
   });
 });
+
+describe("round 3: location variables are handed on as their checked real paths, and an unreadable registry refuses", () => {
+  const signedIn = (detection: AgentDetection) => detection.agents.find(one => one.id === "claude")!.state;
+
+  test("a symlinked CLAUDE_CONFIG_DIR is handed on as its real path; one under a folder others can write, or written inside a project, is left out", async () => {
+    const dump = join(dir, "seen.txt");
+    stub("claude", `export -p > '${dump}'\n${CLAUDE_SIGNED_IN}`);
+    const real = join(home, "claude-config");
+    mkdirSync(real);
+    const link = join(home, "claude-link");
+    symlinkSync(real, link);
+    expect(signedIn(await detectAgents({ env: { PATH: bin, HOME: home, CLAUDE_CONFIG_DIR: link }, home, timeoutMs: SLACK_MS }))).toBe("signed-in");
+    let seen = readFileSync(dump, "utf8");
+    expect(seen).toMatch(new RegExp(`CLAUDE_CONFIG_DIR=["']?${realpathSync(real).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']?$`, "m"));
+    expect(seen).not.toContain("claude-link");
+    // A folder owned by this user, but an ancestor others can write: left out.
+    const open = join(dir, "open-parent");
+    mkdirSync(join(open, "config"), { recursive: true });
+    chmodSync(open, 0o777);
+    await detectAgents({ env: { PATH: bin, HOME: home, CLAUDE_CONFIG_DIR: join(open, "config") }, home, timeoutMs: SLACK_MS });
+    seen = readFileSync(dump, "utf8");
+    expect(seen).not.toContain("CLAUDE_CONFIG_DIR");
+    // Written as a path inside a project (a link there pointing out to a trusted folder): left out.
+    const project = join(dir, "shop");
+    mkdirSync(project);
+    symlinkSync(real, join(project, "cfg"));
+    await detectAgents({ env: { PATH: bin, HOME: home, CLAUDE_CONFIG_DIR: join(project, "cfg") }, home, timeoutMs: SLACK_MS, untrusted: () => [project] });
+    seen = readFileSync(dump, "utf8");
+    expect(seen).not.toContain("CLAUDE_CONFIG_DIR");
+  });
+
+  test("a project registry that can't be read or parsed refuses every status check", async () => {
+    stub("claude", `: > '${join(dir, "executed")}'\n${CLAUDE_SIGNED_IN}`);
+    const state = join(dir, "state");
+    mkdirSync(state);
+    const database = join(state, "orders.db");
+    // No registry yet: fine.
+    expect(signedIn(await detectAgents({ env: { PATH: bin, HOME: home }, home, timeoutMs: SLACK_MS, databaseFile: database }))).toBe("signed-in");
+    rmSync(join(dir, "executed"));
+    for (const make of [() => writeFileSync(join(state, "repos.json"), "{ not json"), () => { writeFileSync(join(state, "repos.json"), JSON.stringify({ repos: [], roots: [] })); chmodSync(join(state, "repos.json"), 0o000); }]) {
+      make();
+      expect(signedIn(await detectAgents({ env: { PATH: bin, HOME: home }, home, timeoutMs: SLACK_MS, databaseFile: database }))).toBe("unknown");
+      expect(existsSync(join(dir, "executed"))).toBe(false);
+      rmSync(join(state, "repos.json"), { force: true });
+    }
+  });
+});
