@@ -1,5 +1,20 @@
 import { createHash } from "node:crypto";
 import type { Notification, Store } from "./store.js";
+import { envTwins } from "./names.js";
+import { outboundPrivate, safeWords } from "./outbound-privacy.js";
+
+/** What the operator's delivery command (`outbox deliver --cmd`) is handed for one notification. It may forward it
+ * anywhere (a chat, a pager, mail), so it gets what every outbound message gets (outbound-privacy.ts): words that name a
+ * key or a folder on this computer go as the safe version — the project's name and "Open it in Toolroll" — never as written. */
+export function notificationCommandEnv(row: Pick<Notification, "kind" | "subject" | "body" | "dedupeKey" | "project">): Record<string, string> {
+  const withheld = outboundPrivate([row.subject, row.body]);
+  return {
+    ...envTwins("KIND", row.kind),
+    ...envTwins("SUBJECT", withheld ? safeWords({ project: row.project }) : row.subject),
+    ...envTwins("BODY", withheld ? "" : row.body),
+    ...envTwins("DEDUPE_KEY", row.dedupeKey),
+  };
+}
 
 type Claim = Notification & { destination: string; generation: number };
 /** URLs and shell commands can contain secrets. Only a destination hash enters saved receipts. */
