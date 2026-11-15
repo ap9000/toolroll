@@ -399,8 +399,9 @@ export function planCardText(store: Store, taskId: string, scope: Scope, root?: 
  * link). Reads only; nothing is minted. */
 export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): DecideOffer | null {
   const offer = decideOfferUnchecked(store, target, who, now, channel, root);
-  // A card's own words never carry a key or a folder on this computer (Codex r2 finding f): its link to Toolroll only.
-  if (offer === null || offer.text === null || !privateWords(offer.text)) return offer;
+  // Nothing a card sends carries a key or a folder on this computer — its words, its full-terms file, its buttons — or
+  // it goes as its link to Toolroll only: no file, no buttons (Codex r2 finding f, and the full-terms file after it).
+  if (offer === null || !outboundPrivate(offerFields(offer))) return offer;
   const link = decideFallbackLink(target);
   return { text: `${title(store, target.taskId)}\n\n${PRIVATE_CARD}`, rows: link === null ? [] : [[link]] };
 }
@@ -757,16 +758,34 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
     const why = `This doesn't fit in one ${CHANNEL_NAMES[seat.channel]} message, so you approve it in Toolroll. Nothing was done.`;
     return { text: `${cardBody(input.shown).slice(0, 1_000)}\n\n${why}`, rows: target === null ? [] : linksFor(target), tokens: [] };
   };
-  // And no card carries a key or a folder on this computer, whatever kind it is (Codex r2 finding f): the words, its
-  // buttons and all, stay in Toolroll, and the card says so with its link. The last gate before any chat app sends it.
-  const gated = (card: Card): Card => {
-    if (!privateWords(card.text)) return fitted(card);
-    dropDecideTokens(store, card.tokens, input.now);
+  // And nothing a chat app is sent carries a key or a folder on this computer (Codex r2 finding f, and the full-terms
+  // file after it): every outbound field at once — the reply, the card, the card kept for an unsent file, the file
+  // itself and every button's words. Any match: no file, no buttons, every token dropped, only the link to Toolroll.
+  // The one gate every chat app's tap passes through (Telegram's bridge and chat-delivery for the others).
+  if (outboundPrivate(tapFields(outcome))) {
+    for (const card of [outcome.edit, outcome.unsent]) if (card !== undefined) dropDecideTokens(store, card.tokens, input.now);
     const target = decideTargetOfToken(store, input.token);
-    return { text: `${target === null ? "" : `${title(store, target.taskId)}\n\n`}${PRIVATE_CARD} Nothing was done.`, rows: target === null ? [] : linksFor(target), tokens: [] };
-  };
-  return { ...outcome, ...(outcome.edit === undefined ? {} : { edit: gated(outcome.edit) }), ...(outcome.unsent === undefined ? {} : { unsent: gated(outcome.unsent) }) };
+    // Only the words change: an act this tap already did (a merge to finish after it) still runs, and the card says where
+    // to see where it stands, never that nothing happened.
+    return { ack: "Review it in Toolroll.", ...(outcome.merge === undefined ? {} : { merge: outcome.merge }),
+      edit: { text: `${target === null ? "" : `${title(store, target.taskId)}\n\n`}${PRIVATE_CARD} Open it there to see where it stands.`,
+        rows: target === null ? [] : linksFor(target), tokens: [] } };
+  }
+  return { ...outcome, ...(outcome.edit === undefined ? {} : { edit: fitted(outcome.edit) }), ...(outcome.unsent === undefined ? {} : { unsent: fitted(outcome.unsent) }) };
 }
+
+/** Every word a tap's answer would send, from every field (a new field added to the outcome belongs here too). */
+function tapFields(outcome: DecideTapOutcome): string[] {
+  const cards = [outcome.edit, outcome.unsent].filter((one): one is NonNullable<typeof one> => one !== undefined);
+  return [outcome.ack, ...cards.flatMap(card => [card.text, ...card.rows.flat().map(button => "link" in button ? `${button.label} ${button.link.label}` : button.label)]),
+    ...(outcome.file === undefined ? [] : [outcome.file.name, outcome.file.text]), ...(outcome.prompt === undefined ? [] : [outcome.prompt.text])];
+}
+/** Every word an offer would send: its text, its file and every button's words. */
+function offerFields(offer: DecideOffer): string[] {
+  return [...(offer.text === null ? [] : [offer.text]), ...(offer.file === undefined ? [] : [offer.file.name, offer.file.text]),
+    ...offer.rows.flat().map(one => one.label ?? "")];
+}
+const outboundPrivate = (fields: readonly string[]): boolean => fields.some(privateWords);
 
 /** What a card says instead of words that name a key or a folder on this computer. */
 const PRIVATE_CARD = "Its words name a key or a folder on this computer, so you review it in Toolroll.";
