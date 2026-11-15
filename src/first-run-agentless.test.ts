@@ -93,14 +93,14 @@ describe("a first task filed from a shell with no coding agent signed in", () =>
 });
 
 describe("a task filed from a shell waits for its plan to be asked for, and the reply says how", () => {
-  test("filing asks for no plan; once a password exists the reply names `task plan`, and the terminal app's p", async () => {
+  const NEXT = "Next: open `toolroll` and press p on it to ask for its plan.";
+
+  test("filing asks for no plan; the reply points at the terminal app's p, which is offered", async () => {
     builder("ready");
-    const seeded = openStore(db);
-    try { if (!addApprover(seeded, "alex", T0).ok) throw Error("approver"); } finally { seeded.close(); }
     const added = await run(["task", "add", "Fix a typo in the README", "--id", "t-first", "--repo", repo]);
-    expect(added.out).toMatch(/^ {2}Next: ask for its plan with `toolroll task plan t-first` \(it asks for your password\), or press p on it in `toolroll`\.$/m);
+    expect(added.out).toMatch(new RegExp(`^ {2}${NEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
     const json = await run(["task", "add", "Fix another typo", "--id", "t-second", "--repo", repo, "--json"]);
-    expect(JSON.parse(json.out).next).toContain("toolroll task plan t-second");
+    expect(JSON.parse(json.out).next).toBe(NEXT);
     const store = openStore(db);
     try {
       // Filing never asked for a plan (no credential rode it), and the terminal app can ask: p is offered.
@@ -109,28 +109,47 @@ describe("a task filed from a shell waits for its plan to be asked for, and the 
     } finally { store.close(); }
   });
 
-  test("a password-free owner is pointed at the terminal app's p, never at a password", async () => {
+  test("`task add` needs no sign-in, so its reply is the same whatever accounts exist: none, a password-free owner, an approver with a password", async () => {
     builder("ready");
-    const store = openStore(db, { createdBy: "laptop" });
+    // Each reply with the task's own id and the run's time taken out: what is left must not vary with accounts.
+    const reply = async (id: string) => {
+      const text = await run(["task", "add", "Fix a typo in the README", "--id", id, "--repo", repo]);
+      const json = await run(["task", "add", "Fix a typo in the README", "--id", `${id}-j`, "--repo", repo, "--json"]);
+      const data = JSON.parse(json.out);
+      return { text: text.out.split(id).join("<id>"), json: JSON.stringify({ ...data, task: { ...data.task, id: "<id>" }, links: undefined }) };
+    };
+    // Each state in its own database (an install with a password never turns password-free, and the reverse).
+    const install = (name: string) => { db = join(dir, `${name}.db`); builder("ready"); return openStore(db, { createdBy: "laptop" }); };
+    install("none").close();
+    const none = await reply("t-none");
+    let store = install("local");
     try { if (!initLocalMode(store, { owner: "sam", fenceAvailable: true, now: T0 }).ok) throw Error("local mode"); } finally { store.close(); }
-    const added = await run(["task", "add", "Fix a typo in the README", "--id", "t-first", "--repo", repo]);
-    expect(added.out).toContain("  Next: open `toolroll` and press p on it to ask for its plan. You approve the plan before anything is built.");
-    expect(added.out).not.toMatch(/password/i);
+    const local = await reply("t-local");
+    store = install("password");
+    try { if (!addApprover(store, "alex", T0).ok) throw Error("approver"); } finally { store.close(); }
+    const withPassword = await reply("t-password");
+    expect(local).toEqual(none);
+    expect(withPassword).toEqual(none);
+    expect(none.text).toContain(NEXT);
+    expect(none.text + none.json).not.toMatch(/password|sign in|task plan/i);
   });
 
-  test("before the first start (no account yet) the reply points at `toolroll` and p, never a password", async () => {
-    builder("ready");
-    const added = await run(["task", "add", "Fix a typo in the README", "--id", "t-first", "--repo", repo]);
-    expect(added.out).toContain("  Next: open `toolroll` and press p on it to ask for its plan.");
-    expect(added.out).not.toMatch(/password/i);
-  });
-
-  test("nothing about a plan for a task already planned or with no project", async () => {
+  test("no plan line for a task already asked to plan (a mode that plans on filing), a scout report, or a task with no project", async () => {
     builder("ready");
     const loose = await run(["task", "add", "Fix a typo in the README", "--id", "t-loose"]);
     expect(loose.out).not.toContain("Next:");
     const report = await run(["task", "add", "Why does the login test flake?", "--id", "t-why", "--repo", repo, "--report"]);
     expect(report.out).not.toContain("Next:");
+    // Already planned: a plan is asked for on the task, then the same filing is sent again with its key (a retry
+    // replays the filing and reads the task as it is now): nothing is left to point at.
+    const first = await run(["task", "add", "Fix the login form", "--id", "t-planned", "--repo", repo, "--key", "k-planned"]);
+    expect(first.out).toContain("Next:");
+    const store = openStore(db);
+    try { expect(store.requestPlan(store.refFor("built-in", "t-planned").id, T0).ok).toBe(true); } finally { store.close(); }
+    const again = await run(["task", "add", "Fix the login form", "--id", "t-planned", "--repo", repo, "--key", "k-planned"]);
+    expect(again.code).toBe(0);
+    expect(again.out).toContain("Queued t-planned");
+    expect(again.out).not.toContain("Next:");
   });
 });
 

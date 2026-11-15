@@ -9705,18 +9705,11 @@ async function addTask(
     } catch { noAgent = null; }
   }
   // Nothing is planned until a plan is asked for, and filing from a shell never asks: `task add` carries no credential
-  // (a coding agent may run it) and a plan dispatches an agent that spends. So the reply says the one way to ask from
-  // here, with the authority it takes: `task plan`, which asks for an approver's password, once anyone has one; else the
-  // terminal app's p (a password-free owner's own road; before the first start, `toolroll` sets that owner up). Words
-  // only; who may ask is unchanged.
-  let next: string | null = null;
-  if (filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")) {
-    let passwordSet = false;
-    try { passwordSet = store.handle.prepare("SELECT 1 FROM approver WHERE password_set = 1 AND revoked_at IS NULL LIMIT 1").get() !== undefined; } catch { passwordSet = false; }
-    next = !passwordSet
-      ? "Next: open `toolroll` and press p on it to ask for its plan. You approve the plan before anything is built."
-      : `Next: ask for its plan with \`toolroll task plan ${outcome.task.id}\` (it asks for your password), or press p on it in \`toolroll\`.`;
-  }
+  // (a coding agent may run it) and a plan dispatches an agent that spends. So the reply says where to ask: one line,
+  // the same for everyone. `task add` is unauthenticated, so nothing about accounts or passwords may change its reply.
+  // Words only; who may ask is unchanged.
+  const next = filedRef !== null && filedRef.repo !== null && filedRef.plan === null && !flags.has("report")
+    ? "Next: open `toolroll` and press p on it to ask for its plan." : null;
   return succeed(
     write,
     json,
