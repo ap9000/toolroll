@@ -33,6 +33,8 @@ export type SettingsRetirement = { readonly to: string; readonly section: string
 export const SETTINGS_RETIRED: Readonly<Record<string, SettingsRetirement>> = {
   // Settings → Advanced (the switch and every advanced page) is General's Advanced section, opened.
   "settings.group-advanced": { to: "/settings/general", section: "advanced", keep: ["said", "problem"], open: true },
+  // Start a builder is Settings → Computers' "Connect a builder", for the same task's project when a link names one.
+  "start-builder": { to: "/settings/computers", section: "start", keep: ["task", "said", "problem"] },
 };
 /** Where a retired Settings page's link lands now. */
 export function settingsRetiredHref(retirement: SettingsRetirement, url: URL): string {

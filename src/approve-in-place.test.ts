@@ -76,8 +76,10 @@ const CASES: Case[] = [
   { name: "a spent nonce", outcome: "refused", status: 409, approved: false, words: /stale/,
     setup: async (alex, id) => {
       const plan = await filed(alex, id);
-      // Spent by an earlier send (refused for its digest): the nonce is gone either way.
-      expect((await alex.post(`/t/${id}/approve`, { nonce: plan.nonce, digest: "f".repeat(64) })).status).toBe(409);
+      // Spent by an earlier send of this exact form (its person, task and digest) whose password was wrong: the nonce is
+      // gone either way. A send that isn't the form's own (another digest, another person) leaves it for its owner.
+      expect((await alex.post(`/t/${id}/approve`, { nonce: plan.nonce, digest: plan.digest, token: "not-the-password" })).status).not.toBe(200);
+      expect(store.getScope(id)?.approvedBy ?? null).toBeNull();
       return { nonce: plan.nonce, digest: plan.digest };
     } },
   { name: "a plan that changed after the form was drawn (wrong digest)", outcome: "refused", status: 409, approved: false, words: /changed while this form was open/,

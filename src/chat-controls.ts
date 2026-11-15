@@ -17,7 +17,7 @@ export const CHAT_CONTROLS = {
   projects: { label: "Manage projects", href: "/projects" },
   flows: { label: "Open flows", href: "/flows" },
   recipes: { label: "Browse workflows", href: "/recipes" },
-  workers: { label: "Manage workers", href: "/fleet" },
+  workers: { label: "Manage computers", href: "/settings/computers?section=builders" },
   slack: { label: "Manage Slack", href: "/settings/slack" },
   discord: { label: "Manage Discord", href: "/settings/discord" },
   // Settings → Lead: the lead's name and persona, changed there by its person.

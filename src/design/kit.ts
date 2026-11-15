@@ -207,6 +207,7 @@ export const KIT_ICONS = {
   list: [path("M8 6h13"), path("M8 12h13"), path("M8 18h13"), path("M3 6h.01"), path("M3 12h.01"), path("M3 18h.01")],
   board: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M9 3v18"), path("M15 3v18")],
   panel: [["rect", { x: 3, y: 3, width: 18, height: 18, rx: 2 }], path("M15 3v18")],
+  server: [["rect", { x: 2, y: 2, width: 20, height: 8, rx: 2 }], ["rect", { x: 2, y: 14, width: 20, height: 8, rx: 2 }], path("M6 6h.01"), path("M6 18h.01")],
 } as const satisfies Record<string, readonly IconShape[]>;
 export type KitIcon = keyof typeof KIT_ICONS;
 
@@ -216,6 +217,8 @@ export type KitIcon = keyof typeof KIT_ICONS;
 export const SETTINGS_GROUPS: ReadonlyArray<readonly [label: string, slug: string, href: string]> = [
   ["General", "general", "/settings/general"],
   ["Agents and models", "agents", "/settings/agents"],
+  // Settings → Computers (settings plan F2): connect a builder, every computer that builds, register and retire.
+  ["Computers", "computers", "/settings/computers"],
   ["Chat apps and alerts", "alerts", "/settings/alerts"],
   ["Approvals and safety", "approval", "/settings/approval"],
   ["Projects", "projects", "/settings/projects"],
@@ -227,7 +230,7 @@ export const SETTINGS_GROUPS: ReadonlyArray<readonly [label: string, slug: strin
 
 /** Each group's icon on the Settings overview (wave D). */
 export const SETTINGS_GROUP_ICONS: Readonly<Record<string, KitIcon>> = {
-  general: "sun", agents: "cpu", alerts: "bell", approval: "shield", projects: "folder", access: "people", spend: "coin", system: "monitor",
+  general: "sun", agents: "cpu", computers: "server", alerts: "bell", approval: "shield", projects: "folder", access: "people", spend: "coin", system: "monitor",
 };
 
 /** How a Settings row says what waits on this person: "1 item needs you", "2 items need you". */
