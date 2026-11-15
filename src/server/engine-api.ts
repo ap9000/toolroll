@@ -196,10 +196,10 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     // Its key, always (a tailnet machine's included, where a browser gets none): the cookie alone, which any server on
     // another port of this computer receives, never acts for it. Only at this console's own loopback address.
     const key = runtime.browserKeys.issueForClient(fields, request);
-    if (key === null || fields.keyEpoch === null) return refused(403, "host", "not this console's own address");
+    if (key === null) return refused(403, "host", "not this console's own address");
     const id = randomBytes(32).toString("hex"), csrf = randomBytes(32).toString("hex");
     if (!saveLinkSession(runtime, request, admitted.held, "terminal", { id, csrf, keys: fields })) return refusal(response, 410, "used");
-    const body: LinkRedemption = { version: ENGINE_API_VERSION, account: admitted.held.account, cookie: { name: SESSION_COOKIE, value: id }, csrf, key, epoch: fields.keyEpoch };
+    const body: LinkRedemption = { version: ENGINE_API_VERSION, account: admitted.held.account, cookie: { name: SESSION_COOKIE, value: id }, csrf, key, epoch: runtime.keyEpoch };
     return sendChecked(response, 200, "linkRedemption", body);
   }
 

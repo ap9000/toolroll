@@ -5,7 +5,7 @@
     "root": "t-b",
     "title": "Fix t-b",
     "state": "queued",
-    "project": "/home/dev/billing"
+    "project": "/home/me/billing"
   },
   "chain": "plan-first",
   "headline": "Queued",

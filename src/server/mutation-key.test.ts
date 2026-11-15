@@ -44,14 +44,17 @@ describe("check", () => {
     ["not a protected install", keys(true, null), browser(), request(), null],
     ["the key turned off", keys(false), browser(), request(), null],
     ["an API token", keys(), { via: "bearer", name: "alex", role: "approver", generation: 1 } as Who, request(), null],
-    // Off a protected install (a tailnet machine): a local owner's session that was given a key (a terminal client's,
-    // engine-api.ts) still presents it; a browser's, which is given none there, and a full session are unchanged.
-    ["a keyed local owner off a protected install, with its key", keys(true, null), browser({}, "local-owner"), request({ "x-toolroll-key": KEY }), null],
-    ["a keyed local owner off a protected install, without it", keys(true, null), browser({}, "local-owner"), request(), 403],
-    ["a keyed local owner off a protected install, another key", keys(true, null), browser({}, "local-owner"), request({ "x-toolroll-key": OTHER }), 403],
-    ["a keyed local owner off a protected install, from an earlier start", keys(true, null), browser({ keyEpoch: "e0" }, "local-owner"), request({ "x-toolroll-key": KEY }), 409],
-    ["a local owner's browser session off a protected install (given no key)", keys(true, null), browser({ keyEpoch: null, keyHash: null }, "local-owner"), request(), null],
-    ["a keyed local owner with the key turned off", keys(false), browser({}, "local-owner"), request(), null],
+    // A terminal client's session (its row marked TERMINAL_EPOCH, engine-api.ts) presents its key on any install.
+    ["a terminal session on a protected install, with its key", keys(), browser({ keyEpoch: "terminal:e1" }, "local-owner"), request({ "x-toolroll-key": KEY }), null],
+    ["a terminal session off a protected install, with its key", keys(true, null), browser({ keyEpoch: "terminal:e1" }, "local-owner"), request({ "x-toolroll-key": KEY }), null],
+    ["a terminal session off a protected install, without it", keys(true, null), browser({ keyEpoch: "terminal:e1" }, "local-owner"), request(), 403],
+    ["a terminal session off a protected install, another key", keys(true, null), browser({ keyEpoch: "terminal:e1" }, "local-owner"), request({ "x-toolroll-key": OTHER }), 403],
+    ["a terminal session from an earlier start, off a protected install", keys(true, null), browser({ keyEpoch: "terminal:e0" }, "local-owner"), request({ "x-toolroll-key": KEY }), 409],
+    ["a terminal session with the key turned off", keys(false), browser({ keyEpoch: "terminal:e1" }, "local-owner"), request(), null],
+    // Browser sessions off a protected install, exactly as before: no key asked for, whatever key they still hold (one
+    // issued while the install was protected included).
+    ["a browser's local-owner session holding a key from a protected install", keys(true, null), browser({}, "local-owner"), request(), null],
+    ["a browser's local-owner session given no key", keys(true, null), browser({ keyEpoch: null, keyHash: null }, "local-owner"), request(), null],
   ])("%s", (_name, browserKeys, who, req, status) => { expect(browserKeys.check(who, req, null)?.status ?? null).toBe(status); });
 
   test("a refusal names how to reconnect: the password for a full session, the terminal for a local owner", () => {
@@ -73,7 +76,7 @@ describe("check", () => {
     for (const host of ["127.0.0.1:4180", "[::1]:4180"]) {
       const fields = { keyEpoch: null as string | null, keyHash: null as string | null };
       const key = keys(true, null).issueForClient(fields, request({}, host));
-      expect(fields).toEqual({ keyEpoch: "e1", keyHash: keyHashOf(key!) });
+      expect(fields).toEqual({ keyEpoch: "terminal:e1", keyHash: keyHashOf(key!) });
     }
     for (const host of ["localhost:4180", "box.tail1234.ts.net:4180", "127.0.0.1:4181"]) expect(keys(true, null).issueForClient({ keyEpoch: null, keyHash: null }, request({}, host)), host).toBeNull();
     expect(keys(false).issueForClient({ keyEpoch: null, keyHash: null }, request())).toBeNull();

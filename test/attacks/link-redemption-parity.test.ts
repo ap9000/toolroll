@@ -4,11 +4,12 @@
  * watcher, an identity-provider-only account, another device, a used link, local mode moved — with one intended
  * difference: the terminal road takes only a local owner's link.
  */
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../local-owner-world.js";
 import { setLocalModeOff } from "../../src/store.js";
+import { SIGN_IN_LINK_MS } from "../../src/server/session.js";
 
 let world: LocalWorld;
 beforeEach(async () => { world = await openLocalWorld({ browserKey: true }); }, LOCAL_WORLD_SETUP_MS);
@@ -69,4 +70,21 @@ test("the one intended difference: a full account's link signs a browser in, nev
   world.store.handle.prepare("UPDATE approver SET password_set = 1 WHERE name = 'alex'").run();
   expect(await present("browser", world.server.mintSignInLink("alex")!)).toBe("admit");
   expect(await present("terminal", world.server.mintSignInLink("alex")!)).toBe(403);
+});
+
+test("Codex A0 r1 #3: a valid link past its expiry is refused on both roads, makes no session, and is spent by trying", async () => {
+  for (const road of ["browser", "terminal"] as const) {
+    const link = world.server.mintLocalLink()!;
+    const realNow = Date.now.bind(Date);
+    // The console's clock for links (Date.now) moves past the link's ten minutes.
+    const later = vi.spyOn(Date, "now").mockImplementation(() => realNow() + SIGN_IN_LINK_MS + 1_000);
+    try {
+      expect(await present(road, link), road).toBe(410);
+    } finally { later.mockRestore(); }
+    expect(sessions(), road).toBe(0);
+    // Back within its time it would have been good: it was spent by the expired presentation, on either road.
+    expect(await present(road, link), road).toBe(410);
+    expect(await present(road === "browser" ? "terminal" : "browser", link), road).toBe(410);
+    expect(sessions(), road).toBe(0);
+  }
 });
