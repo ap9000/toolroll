@@ -45,8 +45,9 @@
  *   and turn.
  * - Uncertain is final: nothing is ever sent again automatically. A crash while decided, sending or sent recovers to
  *   uncertain, never to a resend; a pending request is withdrawn.
- * - The catalog is always `<database>.coding.sqlite` beside the store's own file (never a caller's path): no link
- *   anywhere along it, a regular file of this user's made 0600 without following links, outside the threads' folder.
+ * - The catalog is always `<database>.coding.sqlite` beside the store's own file (never a caller's path), inside a
+ *   folder boundary only this user outside the fence can change (openFlexibleAnswerCatalog): no link anywhere along it,
+ *   a regular file of this user's made 0600 without following links, outside the threads' folder.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { closeSync, constants as fsConstants, lstatSync, openSync, realpathSync } from "node:fs";
@@ -58,6 +59,7 @@ import { flexibleDelegationAtUse, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexi
 import { flexibleLaunch } from "./flexible-launch.js";
 import { flexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { sqliteRuntime } from "./sqlite-runtime.js";
+import { macAcl, type AclVerdict } from "./tui-launch.js";
 import type { Store } from "./store.js";
 
 export type FlexibleAnswerState = "pending" | "decided" | "sending" | "sent" | "delivered" | "not-sent" | "uncertain" | "withdrawn";
@@ -228,6 +230,32 @@ const dbOf = (catalog: FlexibleAnswerCatalog): DatabaseSync => {
   return db;
 };
 
+/**
+ * Why `folder` (a real path) isn't a boundary only this user can change, or null: the folder itself is this user's own
+ * (not root's, not another's), not group- or world-writable, and on macOS has no ACL entry allowing anyone a change
+ * (tui-launch.ts macAcl, as trustedBinary checks a binary's folders); every folder above it is this user's or root's
+ * and not group- or world-writable unless sticky (/tmp). Unreadable refuses.
+ */
+function folderBoundaryProblem(folder: string, acl: ((path: string) => AclVerdict) | null = process.platform === "darwin" ? macAcl : null): string | null {
+  const uid = process.getuid?.();
+  if (uid === undefined) return "who owns its folder can't be checked on this system";
+  try {
+    const held = lstatSync(folder);
+    if (!held.isDirectory() || held.isSymbolicLink()) return "its folder isn't a folder";
+    if (held.uid !== uid) return "its folder is owned by another user";
+    if ((held.mode & 0o022) !== 0) return "others can change its folder (group- or world-writable)";
+    const verdict = acl?.(folder);
+    if (verdict !== undefined && !verdict.ok) return `its folder's ACL ${verdict.why}`;
+    for (let last = folder, up = dirname(folder); up !== last; last = up, up = dirname(up)) {
+      const dir = lstatSync(up);
+      if (!dir.isDirectory()) return `${up} isn't a folder`;
+      if (dir.uid !== uid && dir.uid !== 0) return `${up} is owned by another user`;
+      if ((dir.mode & 0o022) !== 0 && (dir.mode & 0o1000) === 0) return `others can change ${up} (group- or world-writable)`;
+    }
+  } catch { return "its folder can't be checked"; }
+  return null;
+}
+
 /** Why `path` isn't a regular file of this user's that is itself (no link, one name), or null; absent is fine. */
 function fileProblem(path: string): string | null {
   let held;
@@ -241,11 +269,17 @@ function fileProblem(path: string): string | null {
 
 /**
  * Open the catalog's request side: always `<database>.coding.sqlite` beside the store's own file, never a path a caller
- * chose. Refused (`catalog-unsafe`) when the store has no file, when any folder on the way to it is reached through a
- * link (its real path must be the path itself), when it would sit inside the threads' folder (agent-writable), or when
- * the catalog or its journal files are anything but this user's own regular files. A missing catalog is made 0600 with
- * O_EXCL and O_NOFOLLOW; the file is checked again after SQLite opened it. Then the table is made if absent, and
- * refused if it is there in a shape this build can't name.
+ * chose. Refused (`catalog-unsafe`) when the store has no file; when its folder isn't the store's own state folder by
+ * real path (no link on the way: the store's file's real folder, and the folder's real path, are the folder itself);
+ * when that folder isn't a boundary only this user can change (folderBoundaryProblem: this user's, not group- or
+ * world-writable, no allow-write ACL); when it is inside a thread's folder (agent-writable); or when the catalog or its
+ * journal files (-wal, -shm, -journal) are anything but this user's own regular files with one name, before SQLite
+ * opens it and again after. A missing catalog is made 0600 with O_EXCL and O_NOFOLLOW.
+ *
+ * The residual, stated: node:sqlite opens by name and can't report the descriptor it opened, so the identity check
+ * (device and inode, before and after the open) reads the path, not SQLite's handle. Inside the boundary above, only
+ * this same user, outside every thread's fence (the fence denies the state folder but the thread's own subfolder), can
+ * swap an entry between those checks and the open: an attacker who can do that already owns Toolroll's state.
  */
 export function openFlexibleAnswerCatalog(store: Store): { ok: true; catalog: FlexibleAnswerCatalog } | FlexibleAnswerRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
@@ -256,6 +290,10 @@ export function openFlexibleAnswerCatalog(store: Store): { ok: true; catalog: Fl
   let real: string;
   try { real = realpathSync(folder); } catch { return unsafe("its folder can't be read"); }
   if (real !== folder) return unsafe("its folder is reached through a link");
+  try { if (dirname(realpathSync(database)) !== folder) return unsafe("it isn't in the store's own state folder"); } catch { return unsafe("the store's file can't be read"); }
+  if (/(^|\/)threads\/[0-9a-f]{32}(\/|$)/.test(folder)) return unsafe("it is inside a thread's folder");
+  const boundary = folderBoundaryProblem(folder);
+  if (boundary !== null) return unsafe(boundary);
   const threads = join(folder, "threads");
   const fromThreads = relative(threads, file);
   if (fromThreads === "" || (!fromThreads.startsWith("..") && !isAbsolute(fromThreads))) return unsafe("it is inside the threads' folder");
@@ -272,6 +310,11 @@ export function openFlexibleAnswerCatalog(store: Store): { ok: true; catalog: Fl
     const after = lstatSync(file);
     if (after.ino !== before.ino || after.dev !== before.dev || fileProblem(file) !== null) { db.close(); return unsafe("it changed while it was opened"); }
     db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;");
+    // The journal files SQLite has now opened or made: still this user's own regular files with one name.
+    for (const one of [`${file}-wal`, `${file}-shm`, `${file}-journal`]) {
+      const problem = fileProblem(one);
+      if (problem !== null) { db.close(); return unsafe(`${basename(one)}: ${problem}`); }
+    }
     db.exec(CATALOG_SCHEMA);
     const statements = CATALOG_SCHEMA.split(/;\s*\n(?=CREATE )/).map(squash).filter(one => one !== "");
     for (const [type, name] of CATALOG_OBJECTS) {
@@ -624,9 +667,12 @@ export async function sendFlexibleAnswer(store: Store, catalog: FlexibleAnswerCa
     const recorded = store.transact(() => {
       const at = clock().toISOString();
       const row = requestOf(catalog, input.request), decision = decisionOf(store, input.request);
-      if (row === null || decision === null || decision.attemptId !== attemptId || decision.state !== "sending") return false;
-      if (outcome === "sent") dbOf(catalog).prepare("UPDATE thread_request SET state = 'sent', sent_at = ? WHERE id = ? AND attempt_id = ? AND state = 'sending'").run(at, row.id, attemptId);
-      else dbOf(catalog).prepare("UPDATE thread_request SET state = 'uncertain', ended_at = ?, detail = ? WHERE id = ? AND attempt_id = ? AND state = 'sending'").run(at, "the send didn't finish", row.id, attemptId);
+      // Both stores must still hold exactly this attempt, still sending; the catalog's move must change exactly its row.
+      if (row === null || decision === null || decision.attemptId !== attemptId || decision.state !== "sending" || row.attemptId !== attemptId || row.state !== "sending") return false;
+      const moved = outcome === "sent"
+        ? dbOf(catalog).prepare("UPDATE thread_request SET state = 'sent', sent_at = ? WHERE id = ? AND attempt_id = ? AND state = 'sending'").run(at, row.id, attemptId)
+        : dbOf(catalog).prepare("UPDATE thread_request SET state = 'uncertain', ended_at = ?, detail = ? WHERE id = ? AND attempt_id = ? AND state = 'sending'").run(at, "the send didn't finish", row.id, attemptId);
+      if (Number(moved.changes) !== 1) return false;
       store.handle.prepare("UPDATE thread_decision SET state = ?, state_at = ?, detail = ? WHERE id = ? AND attempt_id = ? AND state = 'sending'")
         .run(outcome, at, outcome === "sent" ? null : result.written === null ? "the send didn't finish in time" : `${result.written} of ${bytes.length} bytes were handed over`, decision.id, attemptId);
       ledger(store, at, decision.source === "person" ? decision.by : "toolroll", decision.source === "person" ? "work" : "policy", outcome, { thread: row.thread, turn: row.turn, decisionId: decision.decisionId });

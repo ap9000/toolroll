@@ -148,8 +148,9 @@ export function aclVerdictOf(output: string): AclVerdict {
   return { ok: true };
 }
 
-/** The ACL of `path` on macOS: `/bin/ls -lde` by its absolute path (no PATH lookup), C locale; unreadable refuses. */
-function macAcl(path: string): AclVerdict {
+/** The ACL of `path` on macOS: `/bin/ls -lde` by its absolute path (no PATH lookup), C locale; unreadable refuses. Also
+ * flexible-answers.ts's check of the catalog's folder. */
+export function macAcl(path: string): AclVerdict {
   // A name with a control character could forge an entry line: refused before asking.
   if (/[\u0000-\u001f\u007f]/.test(path)) return { ok: false, why: "can't be read (a control character in the path)" };
   const ran = spawnSync("/bin/ls", ["-lde", "--", path], { encoding: "utf8", timeout: SELF_CHECK_MS, env: { LC_ALL: "C", PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "ignore"] });

@@ -9,8 +9,8 @@
  * process, no model.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,6 +102,12 @@ function decided(over: Partial<Parameters<typeof decideFlexibleAnswer>[2]> = {})
   return { ...asked, decisionId: made.decisionId };
 }
 const frame = (ref: string, answer: FlexibleAnswerPayload) => Buffer.from(JSON.stringify({ ref, answer }));
+/** Wait for a state transition (polled; never a fixed sleep standing in for one). */
+async function until(check: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 1000 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  if (!check()) throw new Error(`never happened: ${what}`);
+}
+const attemptOf = (request: string) => store.handle.prepare("SELECT attempt_id FROM thread_decision WHERE request = ?").get(request)?.["attempt_id"] ?? null;
 /** A scripted connection standing in for the agent launch: the receiver keeps every byte it was handed. */
 function scripted(id = L1, over: Partial<FlexibleAnswerConnection> = {}) {
   const received: Buffer[] = [], writes: { ref: string; answer: FlexibleAnswerPayload }[] = [];
@@ -544,6 +550,73 @@ describe("crashes and restarts", () => {
     expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
   });
 
+  test("the catalog moved to uncertain by another process between the send and its outcome: the sender says uncertain, and so do both stores", async () => {
+    const asked = decided();
+    const { connection, received } = scripted(L1, { send: async bytes => {
+      received.push(Buffer.from(bytes));
+      // Another process's reconciler, through its own connection to the catalog.
+      raw.prepare("UPDATE thread_request SET state = 'uncertain', ended_at = ?, detail = 'reconciled elsewhere' WHERE id = ?").run(NOW.toISOString(), asked.request);
+      return { written: bytes.length, complete: true };
+    } });
+    expect(await send(asked.request, connection)).toMatchObject({ ok: false, reason: "uncertain", state: "uncertain" });
+    expect(received).toHaveLength(1);
+    expect(states(asked.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+    expect(ledger().map(one => one["outcome"])).not.toContain("sent");
+  });
+
+  test("bytes of an uncertain answer that flush late never make it delivered, and its ack is never given to a newer answer", async () => {
+    const older = ask({ correlation: "toolu_late" });
+    expect(decideFlexibleAnswer(store, catalog, { request: older.request, token: older.token, shownDigest: older.requestDigest, by: pat(), decision: "accept", clock: () => NOW })).toMatchObject({ ok: true });
+    let flush: ((result: { written: number; complete: boolean }) => void) | undefined;
+    const late: FlexibleAnswerConnection = { id: L1, frame, send: () => new Promise(resolve => { flush = resolve; }) };
+    expect(await send(older.request, late, () => NOW, 50)).toMatchObject({ ok: false, state: "uncertain" });
+    // The transport finishes after all: nothing moves.
+    flush!({ written: 10, complete: true });
+    await Promise.resolve();
+    expect(states(older.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+    const olderRef = String(raw.prepare("SELECT request_ref FROM thread_request WHERE id = ?").get(older.request)!["request_ref"]);
+    expect(ackFlexibleAnswer(store, catalog, { connection: L1, requestRef: olderRef, clock: () => NOW })).toEqual({ ok: true, delivered: false });
+    // A newer answer on the same connection, the same tool: the older one's ack and the shared tool activity never deliver it.
+    const newer = ask({ correlation: "toolu_late" });
+    expect(decideFlexibleAnswer(store, catalog, { request: newer.request, token: newer.token, shownDigest: newer.requestDigest, by: pat(), decision: "accept", clock: () => NOW })).toMatchObject({ ok: true });
+    expect(await send(newer.request, scripted().connection)).toMatchObject({ ok: true, state: "sent" });
+    expect(ackFlexibleAnswer(store, catalog, { connection: L1, requestRef: olderRef, clock: () => NOW })).toEqual({ ok: true, delivered: false });
+    expect(noteFlexibleToolActivity(store, catalog, { connection: L1, turn, correlation: "toolu_late", clock: () => NOW })).toEqual({ ok: true, delivered: null, matched: 2 });
+    expect(states(newer.request)).toEqual({ catalog: "sent", main: "sent" });
+    expect(states(older.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+    // Its own ack does.
+    const newerRef = String(raw.prepare("SELECT request_ref FROM thread_request WHERE id = ?").get(newer.request)!["request_ref"]);
+    expect(ackFlexibleAnswer(store, catalog, { connection: L1, requestRef: newerRef, clock: () => NOW })).toEqual({ ok: true, delivered: true });
+    expect(states(older.request)).toEqual({ catalog: "uncertain", main: "uncertain" });
+  });
+
+  test("two processes, each with its own database connections, send the same answer at once: exactly one sends", async () => {
+    const asked = decided();
+    const root = join(dir, "world-race");
+    mkdirSync(root);
+    const world = isolatedEnvironment({ root, outer: process.env });
+    ownRoot(root);
+    const go = join(dir, "go");
+    const runs = ["one", "two"].map(name => {
+      const job = { file, request: asked.request, connection: L1, now: NOW.toISOString(), receiver: join(dir, `receiver-${name}.bin`), ready: join(dir, `ready-${name}`), go,
+        modules: { store: new URL("./store.ts", import.meta.url).href, answers: new URL("./flexible-answers.ts", import.meta.url).href } };
+      const done = new Promise<{ ok: boolean; reason?: string; state?: string }>((resolve, reject) => {
+        execFile(process.execPath, ["--import", "tsx", "--input-type=module", "-e", RACE_SEND, JSON.stringify(job)], { cwd: fileURLToPath(new URL("..", import.meta.url)),
+          env: checkedEnv(world.env), timeout: 60_000 },
+        (error, stdout, stderr) => error === null ? resolve(JSON.parse(stdout)) : reject(new Error(`${error.message}\n${stderr}`)));
+      });
+      return { job, done };
+    });
+    await until(() => runs.every(one => existsSync(one.job.ready)), "both processes ready");
+    writeFileSync(go, "");
+    const results = await Promise.all(runs.map(one => one.done));
+    expect(results.filter(one => one.ok)).toEqual([{ ok: true, state: "sent", decisionId: asked.decisionId }]);
+    expect(results.filter(one => !one.ok)).toEqual([expect.objectContaining({ ok: false, reason: "already-answered" })]);
+    expect(runs.filter(one => existsSync(one.job.receiver))).toHaveLength(1);
+    expect(states(asked.request)).toEqual({ catalog: "sent", main: "sent" });
+    expect(ledger().map(one => one["outcome"])).toEqual(["intended", "attempt", "sent"]);
+  }, 90_000);
+
   test("a real pipe nobody reads: the send stops at its deadline as uncertain, and another database writer is never blocked meanwhile", async () => {
     const reader = spawn("/bin/sleep", ["30"], { stdio: ["pipe", "ignore", "ignore"], env: {} });
     children.push(reader);
@@ -555,7 +628,9 @@ describe("crashes and restarts", () => {
     const began = Date.now();
     let settled = false;
     const sending = send(asked.request, connection, () => NOW, 1500).finally(() => { settled = true; });
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // The attempt is committed in both stores and the bytes are at the pipe: the send hasn't settled.
+    await until(() => attemptOf(asked.request) !== null, "the attempt committed");
+    expect(raw.prepare("SELECT attempt_id FROM thread_request WHERE id = ?").get(asked.request)!["attempt_id"]).toBe(attemptOf(asked.request));
     expect(settled).toBe(false);
     expect(states(asked.request)).toEqual({ catalog: "sending", main: "sending" });
     // A second connection to the database, as another Toolroll process would be: its write goes straight through.
@@ -570,6 +645,7 @@ describe("crashes and restarts", () => {
       // The answer on the wire is past cancelling.
       expect(cancelFlexibleAnswer(second, secondCatalog.catalog, { request: asked.request, by: pat(), clock: () => NOW })).toMatchObject({ ok: false, reason: "too-late" });
       expect(settled).toBe(false);
+      expect(states(asked.request)).toEqual({ catalog: "sending", main: "sending" });
     } finally { secondCatalog.catalog.close(); second.close(); }
     expect(await sending).toMatchObject({ ok: false, reason: "uncertain", state: "uncertain" });
     expect(Date.now() - began).toBeGreaterThanOrEqual(1400);
@@ -658,17 +734,77 @@ describe("the catalog's path", () => {
     fresh.store.close();
   });
 
-  test("a store reached through a linked folder is refused", () => {
-    const folder = join(dir, "real-state");
-    mkdirSync(folder);
-    symlinkSync(folder, join(dir, "linked-state"));
-    const linked = openStore(join(dir, "linked-state", "orders.db"));
-    const opened = openFlexibleAnswerCatalog(linked);
-    // SQLite may name the database by its real path; then the catalog is made there, never through the link.
-    if (linked.databaseFile() === join(dir, "linked-state", "orders.db")) expect(opened).toMatchObject({ ok: false, reason: "catalog-unsafe" });
-    else expect(opened.ok && opened.catalog.file).toBe(join(folder, "orders.db.coding.sqlite"));
+  test("a folder others can change is refused: group-writable, or another user's", () => {
+    const fresh = another();
+    chmodSync(fresh.folder, 0o770);
+    try { expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("others can change its folder") }); }
+    finally { chmodSync(fresh.folder, 0o700); }
+    expect(existsSync(fresh.catalogFile)).toBe(false);
+    // A folder above it others can change (and not sticky, as /tmp is).
+    chmodSync(dir, 0o770);
+    try { expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining(`others can change ${dir}`) }); }
+    finally { chmodSync(dir, 0o700); }
+    expect(existsSync(fresh.catalogFile)).toBe(false);
+    // Another user's folder (this process made to see itself as another user).
+    const me = process.getuid!();
+    const pretend = vi.spyOn(process, "getuid").mockReturnValue(me + 1000);
+    try { expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("its folder is owned by another user") }); }
+    finally { pretend.mockRestore(); }
+    expect(existsSync(fresh.catalogFile)).toBe(false);
+    const opened = openFlexibleAnswerCatalog(fresh.store);
+    expect(opened).toMatchObject({ ok: true });
     if (opened.ok) opened.catalog.close();
-    linked.close();
+    fresh.store.close();
+  });
+
+  test.skipIf(process.platform !== "darwin")("a folder whose ACL lets anyone add to it is refused (macOS)", () => {
+    const fresh = another();
+    expect(spawnSync("/bin/chmod", ["+a", "group:everyone allow add_file,write", fresh.folder]).status).toBe(0);
+    try { expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("its folder's ACL") }); }
+    finally { spawnSync("/bin/chmod", ["-N", fresh.folder]); }
+    expect(existsSync(fresh.catalogFile)).toBe(false);
+    fresh.store.close();
+  });
+
+  test("a state folder swapped for a link after the store opened is refused", () => {
+    const fresh = another();
+    renameSync(fresh.folder, `${fresh.folder}-moved`);
+    symlinkSync(`${fresh.folder}-moved`, fresh.folder);
+    expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("through a link") });
+    expect(existsSync(join(`${fresh.folder}-moved`, "orders.db.coding.sqlite"))).toBe(false);
+    fresh.store.close();
+  });
+
+  test("a store file swapped for a link to another folder after it opened is refused", () => {
+    const fresh = another();
+    const elsewhere = join(dir, "elsewhere-state");
+    mkdirSync(elsewhere, { mode: 0o700 });
+    renameSync(join(fresh.folder, "orders.db"), join(elsewhere, "orders.db"));
+    symlinkSync(join(elsewhere, "orders.db"), join(fresh.folder, "orders.db"));
+    expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("isn't in the store's own state folder") });
+    expect(existsSync(fresh.catalogFile)).toBe(false);
+    fresh.store.close();
+  });
+
+  test("a store inside a thread's folder gets no catalog", () => {
+    const folder = join(dir, "threads", "c".repeat(32), "state");
+    mkdirSync(folder, { recursive: true, mode: 0o700 });
+    const inThread = openStore(join(folder, "orders.db"));
+    expect(openFlexibleAnswerCatalog(inThread)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("inside a thread's folder") });
+    inThread.close();
+  });
+
+  test("a journal file that turns into a link while SQLite opens the catalog is refused after the open", () => {
+    const fresh = another();
+    const real = DatabaseSync.prototype.exec;
+    const spy = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql: string) {
+      const done = real.call(this, sql);
+      if (sql.startsWith("PRAGMA journal_mode=WAL") && !existsSync(`${fresh.catalogFile}-journal`)) symlinkSync(join(fresh.folder, "elsewhere-journal"), `${fresh.catalogFile}-journal`);
+      return done;
+    } as never);
+    try { expect(openFlexibleAnswerCatalog(fresh.store)).toMatchObject({ ok: false, reason: "catalog-unsafe", message: expect.stringContaining("orders.db.coding.sqlite-journal") }); }
+    finally { spy.mockRestore(); }
+    fresh.store.close();
   });
 });
 
@@ -691,6 +827,27 @@ describe("policy and the agent's own decisions", () => {
     expect(recordFlexibleProviderDecision(store, { thread: T1, turn, connection: L2, holder: "h1", requestRef: "toolu_6", decision: "accept", provider: "claude", clock: () => NOW })).toMatchObject({ ok: false, reason: "connection-changed" });
   });
 });
+
+/** One of two processes sending the same answer, each with its own database connections, started together: the
+ * build's constant replaced by a module hook. Its receiver is a file of its own. */
+const RACE_SEND = `
+const job = JSON.parse(process.argv.at(-1));
+const { register } = await import("node:module");
+register("data:text/javascript," + encodeURIComponent("export async function resolve(specifier, context, next) { if (/flexible-available\\\\.(js|ts)$/.test(specifier)) return { url: 'data:text/javascript,export const FLEXIBLE_AVAILABLE = true;', shortCircuit: true }; return next(specifier, context); }"));
+const { existsSync, writeFileSync } = await import("node:fs");
+const { openStore } = await import(job.modules.store);
+const { openFlexibleAnswerCatalog, sendFlexibleAnswer } = await import(job.modules.answers);
+const store = openStore(job.file);
+const opened = openFlexibleAnswerCatalog(store);
+writeFileSync(job.ready, "");
+while (!existsSync(job.go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+const result = await sendFlexibleAnswer(store, opened.catalog, { request: job.request, holder: "h1", clock: () => new Date(job.now), connection: { id: job.connection,
+  frame: (ref, answer) => Buffer.from(JSON.stringify({ ref, answer })),
+  send: async bytes => { writeFileSync(job.receiver, bytes); return { written: bytes.length, complete: true }; } } });
+opened.catalog.close();
+store.close();
+process.stdout.write(JSON.stringify(result));
+`;
 
 /** One holder process's send, with its own database handles: the build's constant replaced by a module hook (as
  * vi.mock does here). Its connection's send dies mid-send: after handing its bytes to the receiver (a file), or before. */
