@@ -17,6 +17,7 @@ import { runOperate, EXIT } from "./operate.js";
 import { createDecisionServer } from "./serve.js";
 import { ROUTES } from "./server/route-table.js";
 import { flexibleThreadCodexProfile, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread } from "./flexible-thread.js";
+import { admitFlexibleTurn, beginFlexibleTurn, chargeFlexibleTurn, finishFlexibleTurn, interruptFlexibleTurnsOf, setFlexibleInstallationCaps } from "./flexible-turns.js";
 import { enableFlexible, flexibleDelegationAtUse, flexibleDigestOf, flexibleSettingsView, flexibleTermsJson, FLEXIBLE_UNAVAILABLE, lowerFlexible, turnFlexibleOff, type FlexibleTerms } from "./flexible.js";
 
 const NOW = new Date();
@@ -87,6 +88,28 @@ describe("switched off", () => {
     expect(store.handle.prepare("SELECT state FROM flexible_thread WHERE id = ?").get(id)!["state"]).toBe("ready");
   });
 
+  test("turn admission refuses to admit, start, charge, finish or end a turn, and to set the installation's limits, and writes nothing", () => {
+    const refused = { ok: false, reason: "not-available", message: FLEXIBLE_UNAVAILABLE };
+    const digest = plant();
+    const id = "b".repeat(32);
+    store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'alex', ?, 'ready')`)
+      .run(id, repo, "a".repeat(40), `refs/toolroll/threads/${id}/base`, join(dir, "threads", id), NOW.toISOString());
+    expect(admitFlexibleTurn(store, { thread: id, starter: { name: "alex", generation: store.accountOf("alex")!.generation }, digest, level: "full", freshProof: true, provider: "claude",
+      model: "claude-sonnet-4-5", billing: "subscription", requestKey: "m-1", holder: "h1", now: NOW })).toEqual(refused);
+    // A turn planted as if a later build had admitted it: still nothing moves.
+    const turn = "c".repeat(32);
+    store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing, request_key, holder, admitted_at, utc_day, status)
+      VALUES (?, ?, 1, ?, 'alex', 1, 1, ?, 'full', 'claude', 'claude-sonnet-4-5', 'subscription', 'm-0', 'h1', ?, ?, 'admitted')`).run(turn, id, repo, digest, NOW.toISOString(), NOW.toISOString().slice(0, 10));
+    const before = store.handle.prepare("SELECT * FROM thread_turn").all().map(row => ({ ...row }));
+    expect(beginFlexibleTurn(store, { turn, holder: "h1", now: NOW })).toEqual(refused);
+    expect(chargeFlexibleTurn(store, { turn, usage: { tokensIn: 1, tokensOut: 1, costUsd: 1 } })).toEqual(refused);
+    expect(finishFlexibleTurn(store, { turn, holder: "h1", outcome: "finished", usage: null, now: NOW })).toEqual(refused);
+    expect(interruptFlexibleTurnsOf(store, { holder: "h1", now: NOW })).toEqual(refused);
+    expect(setFlexibleInstallationCaps(store, { by: "alex", caps: { liveThreads: 1, turnsPerDay: null, measuredMicrousdPerDay: null }, now: NOW })).toEqual(refused);
+    expect(store.handle.prepare("SELECT * FROM thread_turn").all().map(row => ({ ...row }))).toEqual(before);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_installation_caps").get()!["n"]).toBe(0);
+  });
+
   test.each([["show"], ["enable"], ["lower"], ["off"]])("the CLI refuses project flexible %s", async action => {
     const lines: string[] = [];
     const code = await runOperate("project", ["flexible", action, "--repo", repo, "--json", ...(action === "show" ? [] : ["--as", "alex", "--token", tokens["alex"]!]), ...(action === "lower" ? ["--max", "auto"] : [])],
@@ -144,7 +167,7 @@ describe("the switch can't become a runtime override", () => {
   test("product code only imports it by name: no assignment, no environment or config key, no re-export", () => {
     const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/[^\n]*/gm, "");
     const users = product.filter(one => code(one.text).includes("FLEXIBLE_AVAILABLE") && one.path !== join("src", "flexible-available.ts"));
-    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "operate.ts"), join("src", "server", "settings.ts")].sort());
+    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "flexible-turns.ts"), join("src", "operate.ts"), join("src", "server", "settings.ts")].sort());
     for (const one of users) {
       expect(one.text, one.path).toMatch(/import \{ FLEXIBLE_AVAILABLE \} from "\.\.?\/flexible-available\.js";/);
       expect(one.text, one.path).not.toMatch(/FLEXIBLE_AVAILABLE\s*(?:=(?!=)|\+\+|--)|export\s*\{[^}]*FLEXIBLE_AVAILABLE|as\s+FLEXIBLE_AVAILABLE/);
@@ -172,6 +195,17 @@ describe("the switch can't become a runtime override", () => {
     }
     // Nothing outside the thread engine (and its tests) calls into it yet: no route, CLI command, MCP tool or chat action.
     for (const one of product.filter(file => file.path !== join("src", "flexible-thread.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-thread\.js"/);
+    // Turn admission (F2e): every entry point that admits, starts, charges, finishes or ends a turn, or sets the
+    // installation's limits; and nothing outside it (and its tests) calls into it yet.
+    const turns = readFileSync("src/flexible-turns.ts", "utf8");
+    const writers = ["admitFlexibleTurn", "beginFlexibleTurn", "chargeFlexibleTurn", "finishFlexibleTurn", "interruptFlexibleTurnsOf", "setFlexibleInstallationCaps"];
+    expect([...turns.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual([...writers, "flexibleInstallationCaps", "flexibleTurn"].sort());
+    for (const name of writers) {
+      // The first statement of the body (the line after the signature's last line) is the check.
+      const lines = turns.slice(turns.indexOf(`export function ${name}(`)).split("\n");
+      expect(lines[lines.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
+    }
+    for (const one of product.filter(file => file.path !== join("src", "flexible-turns.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-turns\.js"/);
   });
 
   test("only a browser sign-in reaches the one Flexible route; no token, MCP tool or chat action names it", () => {
