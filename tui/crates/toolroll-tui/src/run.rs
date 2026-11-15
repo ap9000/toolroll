@@ -4,7 +4,6 @@
 //! kitty keyboard where the terminal offers it; mouse; bracketed paste; a panic hook that gives the terminal back.
 use crate::app::{App, Effect, Msg, EXIT_LEAVE};
 use crate::stats::Samples;
-use crate::text::clean;
 use crate::view;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
@@ -30,10 +29,15 @@ const FRAME_MIN: Duration = Duration::from_micros(8_333);
 type Term = Terminal<CrosstermBackend<BufWriter<Stdout>>>;
 
 static KITTY: AtomicBool = AtomicBool::new(false);
+/// The terminal's own title was kept (notify::TITLE_PUSH) and is given back on the way out.
+static TITLE: AtomicBool = AtomicBool::new(false);
 
 /// Give the terminal back: whatever state the screen left it in (also from the panic hook).
 pub fn restore() {
     let mut out = std::io::stdout();
+    if TITLE.swap(false, Ordering::SeqCst) {
+        let _ = out.write_all(crate::notify::TITLE_POP.as_bytes());
+    }
     if KITTY.swap(false, Ordering::SeqCst) {
         let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
     }
@@ -72,7 +76,12 @@ pub async fn run(client: Client, mut opts: Options) -> std::io::Result<i32> {
         prev(info);
     }));
     terminal::enable_raw_mode()?;
+    // Settings, the terminal's colours and background (asked before anything else reads the keyboard), and where
+    // notifications go.
+    let prefs = crate::settings::start(&crate::settings::Env::from_process());
     let mut stdout = std::io::stdout();
+    stdout.write_all(crate::notify::TITLE_PUSH.as_bytes())?;
+    TITLE.store(true, Ordering::SeqCst);
     crossterm::execute!(
         stdout,
         EnterAlternateScreen,
@@ -88,7 +97,7 @@ pub async fn run(client: Client, mut opts: Options) -> std::io::Result<i32> {
     }
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 18, std::io::stdout()));
     let mut term: Term = Terminal::new(backend)?;
-    let result = event_loop(&mut term, client, &mut opts).await;
+    let result = event_loop(&mut term, client, &mut opts, prefs).await;
     drop(term);
     restore();
     result
@@ -194,14 +203,12 @@ impl Loop {
                 }
             },
             Effect::Notify(words) => {
-                // A bell and a desktop notification (OSC 9), between frames: one per ask.
-                let words: String = clean(&words)
-                    .chars()
-                    .filter(|c| *c != ';')
-                    .take(200)
-                    .collect();
+                // A desktop notification and the bell, as the settings say, between frames (notify.rs builds the
+                // bytes, from our own constants and words).
+                let bytes =
+                    crate::notify::sequence(&words, app.prefs.reach, app.prefs.settings.bell);
                 let out = term.backend_mut();
-                let _ = write!(out, "\x07\x1b]9;{words}\x07");
+                let _ = out.write_all(bytes.as_bytes());
                 let _ = out.flush();
             }
             Effect::Exit(code) => return Some(code),
@@ -210,7 +217,12 @@ impl Loop {
     }
 }
 
-async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std::io::Result<i32> {
+async fn event_loop(
+    term: &mut Term,
+    client: Client,
+    opts: &mut Options,
+    prefs: crate::settings::Prefs,
+) -> std::io::Result<i32> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let mut lp = Loop {
         client: client.clone(),
@@ -241,6 +253,10 @@ async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std:
     }
     let mut app = App::new(opts.owned, opts.project.clone());
     app.now = now_secs();
+    app.status = prefs.first_warning().map(|w| (crate::app::Tone::Said, w));
+    app.split = prefs.settings.list_width();
+    app.prefs = prefs;
+    let mut titled: Option<i64> = None;
     // The workspace room, for as long as the screen is open.
     let workspace = lp.spawn_live(vec!["workspace".into()]);
     let mut pending: Vec<Effect> = vec![Effect::FetchWork];
@@ -315,6 +331,13 @@ async fn event_loop(term: &mut Term, client: Client, opts: &mut Options) -> std:
             Some(msg) = rx.recv() => {
                 pending.extend(app.update(msg));
                 dirty = true;
+                // The window title: how many wait on you (our words and a number, nothing else).
+                if app.loaded && titled != Some(app.needs_count) {
+                    titled = Some(app.needs_count);
+                    let out = term.backend_mut();
+                    let _ = out.write_all(crate::notify::title_sequence(app.needs_count).as_bytes());
+                    let _ = out.flush();
+                }
             }
         }
     }

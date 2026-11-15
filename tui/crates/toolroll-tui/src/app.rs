@@ -4,7 +4,6 @@
 use crate::text::clean;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use std::collections::HashSet;
 use toolroll_api::{
     ActOutcome, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, NeedRow, Question, ResultDiff,
     ResultDiffFile, StepCards, Window, WorkRow, WorkRows,
@@ -74,6 +73,9 @@ pub struct Item {
     pub detail: String,
     pub tone: String,
     pub paused: bool,
+    /// Work's age words ("3m ago") and the project's name, for the list's columns.
+    pub age: String,
+    pub project: Option<String>,
     pub need: Option<NeedRow>,
     /// A task row (false: an ask that is no task, opened in the browser).
     pub is_task: bool,
@@ -145,6 +147,8 @@ pub enum Mode {
     /// Accept the result: a plain completion of the receipt read (no acceptance of anything not shown here).
     ConfirmAccept(ReviewPin),
     Help,
+    /// The settings in use and their file (settings.rs): read-only, but `t` changes the theme for the session.
+    Settings,
     Quit,
     /// Nothing more can happen here: the words, and the exit code a key ends with.
     Fatal(String, i32),
@@ -279,7 +283,12 @@ pub struct App {
     pub owned: bool,
     /// Where a new task goes (the launcher's repository).
     pub project: Option<String>,
-    seen_needs: HashSet<(String, String)>,
+    /// Settings, theme and where notifications go (settings.rs); the loop sets them at start.
+    pub prefs: crate::settings::Prefs,
+    /// What the work list said last, to notify each change once (notify.rs).
+    pub notifier: crate::notify::Notifier,
+    /// Agents and costs learnt from steps, for the list's columns.
+    pub facts: crate::settings::RowFacts,
     /// The question, the chosen answer and its consequence were all drawn whole (view.rs): Enter may send it.
     pub answer_shown: bool,
     /// The title of the task New task is filing (kept for Build's "plan it first").
@@ -322,7 +331,9 @@ impl App {
             dragging: false,
             owned,
             project,
-            seen_needs: HashSet::new(),
+            prefs: crate::settings::Prefs::default(),
+            notifier: crate::notify::Notifier::default(),
+            facts: crate::settings::RowFacts::default(),
             filing: String::new(),
             answer_shown: false,
             fetching_live: false,
@@ -400,6 +411,7 @@ impl App {
                     return vec![];
                 }
                 let before = self.transcript_run();
+                self.facts.learn(&steps);
                 self.steps = Some(steps);
                 self.check_pins();
                 let mut fx = vec![];
@@ -549,28 +561,13 @@ impl App {
         self.items = items_of(&rows);
         self.check_pins();
         let mut fx = vec![];
-        // One notification per ask: a pair (task, what it asks) seen for the first time after the first read.
-        let now: HashSet<(String, String)> = self
-            .items
-            .iter()
-            .filter(|i| i.section == Section::NeedsYou)
-            .map(|i| (i.id.clone(), i.word.clone()))
-            .collect();
-        if self.loaded {
-            for item in self.items.iter().filter(|i| i.section == Section::NeedsYou) {
-                if !self
-                    .seen_needs
-                    .contains(&(item.id.clone(), item.word.clone()))
-                {
-                    fx.push(Effect::Notify(format!(
-                        "Toolroll: {} — {}",
-                        item.title,
-                        item.word.to_lowercase()
-                    )));
-                }
-            }
-        }
-        self.seen_needs.extend(now);
+        // Each change once (a task starts waiting on you, finishes or fails), in our own words (notify.rs).
+        let notify = self.prefs.settings.notify;
+        fx.extend(
+            self.notifier
+                .observe(&self.items, notify, self.now)
+                .map(Effect::Notify),
+        );
         let first = !self.loaded;
         self.loaded = true;
         // Keep the same task selected when it is still listed.
@@ -700,13 +697,19 @@ impl App {
     /// Every 250 ms: read on in a live build's records (well inside the one-second bar), subagents every 2 s.
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
+        let gathered = self
+            .notifier
+            .tick(&self.items, self.now)
+            .map(Effect::Notify);
         if matches!(self.mode, Mode::Fatal(..)) {
-            return vec![];
+            return gathered.into_iter().collect();
         }
+        let mut fx = vec![];
         if self.tab == Tab::Live || self.ticks.is_multiple_of(4) {
-            return self.poll_live(self.ticks.is_multiple_of(8));
+            fx = self.poll_live(self.ticks.is_multiple_of(8));
         }
-        vec![]
+        fx.extend(gathered);
+        fx
     }
 
     /// The rooms that say when what's on screen changed.
@@ -791,7 +794,20 @@ impl App {
         match self.mode.clone() {
             Mode::Fatal(_, code) => vec![Effect::Exit(code)],
             Mode::Help => {
-                self.mode = Mode::Normal;
+                self.mode = if key.code == KeyCode::Char('s') {
+                    Mode::Settings
+                } else {
+                    Mode::Normal
+                };
+                vec![]
+            }
+            Mode::Settings => {
+                if key.code == KeyCode::Char('t') {
+                    self.prefs.cycle_theme();
+                    self.line_cache = None;
+                } else {
+                    self.mode = Mode::Normal;
+                }
                 vec![]
             }
             Mode::Quit => match key.code {
@@ -1652,6 +1668,8 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         tone: r.status.tone.clone(),
         paused: r.status.label.to_lowercase().contains("paused")
             || r.word.word.to_lowercase().contains("paused"),
+        age: clean(&r.age),
+        project: r.project.as_deref().map(clean),
         need: r.need.clone(),
         is_task: true,
     };
@@ -1693,6 +1711,8 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 detail: clean(n.line.as_deref().or(n.reason.as_deref()).unwrap_or("")),
                 tone: "attention".into(),
                 paused: false,
+                age: clean(&n.age),
+                project: n.project.as_deref().map(clean),
                 need: Some(n.clone()),
                 is_task: false,
             });
