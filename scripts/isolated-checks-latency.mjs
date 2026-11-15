@@ -155,7 +155,7 @@ await import(${JSON.stringify(pathToFileURL(fixture).href)});
   const idle = summary(await sample(() => Date.now() > idleEnd));
 
   const shown = cli(["task", "show", "latency-bench"]);
-  cli(["task", "approve", "latency-bench", "--yes", "--digest", shown.scope.digest, ...auth]);
+  cli(["task", "approve", "latency-bench", "--yes", "--digest", shown.scope.digest, "--terms", shown.approvalTerms, ...auth]);
   const reader = new DatabaseSync(db, { readOnly: true });
   const progress = () => reader.prepare(`SELECT run_check.final AS final, run_check.line AS line FROM run_check JOIN run ON run.id = run_check.run JOIN task_ref ON task_ref.id = run.task_ref
     WHERE task_ref.external_id = 'latency-bench' AND run_check.snapshot IS NOT NULL ORDER BY run_check.run DESC LIMIT 1`).get();

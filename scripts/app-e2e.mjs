@@ -460,8 +460,8 @@ await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
       .catch(async () => { throw new Error(`alex's own approval wasn't refused: ${(await page.locator("body").innerText()).slice(0, 300)}`); });
     if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by) throw new Error("alex approved their own task");
     await shot("approval-rules-refused");
-    const digest = cli(["task", "show", id]).scope.digest;
-    cli(["task", "approve", id, "--yes", "--digest", digest, "--as", "sam", "--token", w.passwords.sam]);
+    const shown = cli(["task", "show", id]);
+    cli(["task", "approve", id, "--yes", "--digest", shown.scope.digest, "--terms", shown.approvalTerms, "--as", "sam", "--token", w.passwords.sam]);
     if (rows(`SELECT approved_by FROM task_scope WHERE task_id = '${id}'`)[0]?.approved_by !== "sam") throw new Error("sam's approval didn't seal it");
     return { filedBy: "alex", approvedBy: "sam" };
   } finally {
@@ -989,8 +989,9 @@ await journey("builds", REAL_MODEL, "A build stops to ask a question the plan le
   const id = "round";
   cli(["task", "add", "Add a round2 function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add round2(x) to src/math.js (round to 2 decimal places) with a test in test/math.test.js. Whether an exact half rounds up or to the nearest even digit is the operator's call and is not decided yet: before writing any code, stop and ask the operator with two options (half up, half to even), then build what they choose.", "--acceptance", "round2 follows the operator's answer, with a test|check", ...auth]);
-  const digest = cli(["task", "show", id]).scope.digest;
-  cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+  const shown = cli(["task", "show", id]);
+  const digest = shown.scope.digest;
+  cli(["task", "approve", id, "--yes", "--digest", digest, "--terms", shown.approvalTerms, ...auth]);
   const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.question, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 600_000, everyMs: 5000 });
   await page.goto(`${base}/d/${asked.id}`);
   // The answer box: one choice per option (the recommended one picked), then Answer.
@@ -1025,8 +1026,9 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   );
   cli(["task", "add", "Add a divide function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add divide(a, b) to src/math.js, throwing on division by zero, with tests for both in test/math.test.js.", "--acceptance", "divide works and refuses zero|check", ...auth]);
-  const digest = cli(["task", "show", id]).scope.digest;
-  cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+  const shown = cli(["task", "show", id]);
+  const digest = shown.scope.digest;
+  cli(["task", "approve", id, "--yes", "--digest", digest, "--terms", shown.approvalTerms, ...auth]);
   // Running means its agent has started (a stop before that is a different case: nothing ran yet). Every launch now
   // checks the protected storage folders first, so the run's row comes a moment before its agent does.
   const running = await until("the build's agent to start", async () => {
@@ -1434,7 +1436,8 @@ await journey("pages", SCRIPTED, "A task with an open question opens in place, o
   );
   cli(["task", "add", "Add a modulo function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add modulo(a, b) to src/math.js with a test in test/math.test.js.", "--acceptance", "modulo works|check", ...auth]);
-  cli(["task", "approve", id, "--yes", "--digest", cli(["task", "show", id]).scope.digest, ...auth]);
+  const shownNow = cli(["task", "show", id]);
+  cli(["task", "approve", id, "--yes", "--digest", shownNow.scope.digest, "--terms", shownNow.approvalTerms, ...auth]);
   const asked = await until("the builder's question", async () => rows(`SELECT d.id, d.run FROM decision d JOIN run r ON r.id = d.run JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND d.state = 'open'`)[0], { timeoutMs: 180_000, everyMs: 500 });
   const list = `${base}/?view=needs-you`;
   const same = on => on.evaluate(() => window.__sameDocument === true).catch(() => false);
@@ -2859,8 +2862,9 @@ await journey("pages", SCRIPTED, "A running release check: a release stopped at 
     await panel(page).waitFor({ timeout: 15_000 });
     if (await panel(page).getAttribute("data-release") !== "failed" || !(await panel(page).innerText()).includes("Stopped at Approval")) problems.push(`before anything moved the panel read: ${(await panel(page).innerText()).slice(0, 200)}`);
     await shot("release-stopped-desktop");
-    const digest = cli(["task", "show", id]).scope.digest;
-    cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
+    const shown = cli(["task", "show", id]);
+    const digest = shown.scope.digest;
+    cli(["task", "approve", id, "--yes", "--digest", digest, "--terms", shown.approvalTerms, ...auth]);
     const running = await until("the release's check to start", async () => {
       const one = latestBuild(id);
       return one && !one.finished_at && (rows(`SELECT status FROM run_check WHERE run = ${one.id}`).length === 0) && rows(`SELECT 1 AS hit FROM run_process WHERE run = ${one.id} AND exited_at IS NULL LIMIT 1`).length > 0 ? one : null;

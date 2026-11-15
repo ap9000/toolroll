@@ -10102,6 +10102,8 @@ function showTask(positional: readonly string[], context: Context): number {
     // Operator steering (v120), in the task page's words: read (and when), waiting, or for the next attempt.
     steering: store.listSteerNotes(ref.id).map(one => ({ id: one.id, author: one.author, createdAt: one.createdAt, note: one.note,
       standing: steerStandingOf(one, steeringLive), words: steerStandingWords(one, steeringLive, utcMinute) })),
+    // The approval summary's key for the terms this shows (approval-summary.ts): what `task approve --terms` names.
+    approvalTerms: scope === null ? null : approvalSummaryOf(scope, summaryContextOf(store, id, scope, now)).key,
   };
 
   return succeed(write, json, "task show", detail, () => [
