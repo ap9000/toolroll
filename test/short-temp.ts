@@ -18,9 +18,10 @@ export function shortTempDir(prefix: string): string {
 }
 
 /**
- * A folder outside the temp folder, as homes and checkouts are (a Linux build's /tmp is its own): in the person's home,
- * or, where this may not write there (inside the plane's macOS check fence, where /tmp is shared anyway), in this test
- * file's own home (test/setup-state.ts).
+ * A folder outside the temp folder, as homes and checkouts are (a Linux build's /tmp is its own): in this run's fake
+ * outer home (TOOLROLL_TEST_OUTER_HOME: run-owned, in the checkout's ignored .test-outer folder, test/temp-root.ts),
+ * outside every sandbox grant a test makes; or, where this may not write there (inside the plane's macOS check fence),
+ * in this test file's own home (test/setup-state.ts). Never the person's home.
  */
 export function outsideTempDir(prefix: string): string {
   const outer = process.env["TOOLROLL_TEST_OUTER_HOME"];

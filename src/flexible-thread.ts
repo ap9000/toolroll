@@ -370,9 +370,11 @@ export function threadCredentialPaths(home: string, env: Readonly<Record<string,
 }
 
 /** What a thread's launch needs that the fence doesn't make: the run's own proxy (always: an open-network project's
- * proxy admits every host, the sandbox still allows nothing else), and the storage check, awaited. The fence is the
- * same whatever agent runs in it: no provider's own sign-in is exempt. */
-export type FlexibleThreadLaunchInput = { id: string; network: { proxyPort: number; token: string }; storage: ProtectedStorage };
+ * proxy admits every host, the sandbox still allows nothing else), the thread's sign-in relay port when its agent signs
+ * in through one (flexible-relay.ts: the sandbox runtime's second relay, the one slot a build's tool broker uses; a
+ * thread has no broker), and the storage check, awaited. The fence is the same whatever agent runs in it: no provider's
+ * own sign-in is exempt. */
+export type FlexibleThreadLaunchInput = { id: string; network: { proxyPort: number; token: string; relayPort?: number }; storage: ProtectedStorage };
 
 /** The thread's folder as Toolroll made it: every folder the real one it was (no link anywhere from the threads root
  * down), its repository a plain one (its own `.git` folder, no commondir), its alternates exactly the project's real
@@ -412,6 +414,7 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const network = input.network;
   if (!Number.isSafeInteger(network.proxyPort) || network.proxyPort < 1 || network.proxyPort > 65_535 || typeof network.token !== "string" || network.token === "") return refuse("network-required");
+  if (network.relayPort !== undefined && (!Number.isSafeInteger(network.relayPort) || network.relayPort < 1 || network.relayPort > 65_535 || network.relayPort === network.proxyPort)) return refuse("network-required");
   const databaseFile = store.databaseFile();
   const state = stateFolderOf(store);
   if (state === null || databaseFile === null) return refuse("no-state-folder");
@@ -445,7 +448,7 @@ export function flexibleThreadFence(store: Store, input: FlexibleThreadLaunchInp
     storage: input.storage, databaseFile, worktree: paths.folder, boundary, binding: null, runFolders: runFolders(null), poolRoots, home, policy: 2,
     extra: [project, ...others, ...stateDenies],
     writes: { writes: { subpaths: [paths.repo, paths.tmp, paths.cache], prefixes: [] }, readOnly: threadReadOnly(paths) },
-    network: { mode: "allowlist", proxyPort: network.proxyPort, brokerPorts: [], loopback: "proxy-only", socketRoots: [], token: network.token },
+    network: { mode: "allowlist", proxyPort: network.proxyPort, brokerPorts: network.relayPort === undefined ? [] : [network.relayPort], loopback: "proxy-only", socketRoots: [], token: network.token },
   });
   // No keychain (a build's agent alone keeps it, and a thread is never one); every pool unread, other threads among them;
   // the project's objects read back inside its denied repository, as one exact grant (never its .git around it).

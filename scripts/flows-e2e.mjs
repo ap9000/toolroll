@@ -32,7 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { flag, keyedHeaders, kitSave, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
+import { checkedEnv, flag, keyedHeaders, kitSave, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
 
 /** The groups, in the order they're listed, with how many journeys each has (the first-run setup included), how many of
  * those are real-model, and how many scripted ones every group shares (checked at the end of every run). */
@@ -535,9 +535,13 @@ await journey("triggers", SCRIPTED, "A webhook trigger makes a card from a poste
   if ((await flowView(checksFlow)).cards.filter(one => one.title === "Deploy failed on web-2").length !== 1) throw new Error("the same delivery made a second card");
 });
 
-await journey("triggers", SCRIPTED, "A GitHub trigger checks a real repository with gh (Check now)", ["A failing script sends the card back, and Insights show where and why"], async () => {
-  // gh needs its sign-in; inside a release check's fence that folder is (rightly) out of reach.
-  if (spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status !== 0) throw new Skip("gh can't run signed in here (inside a check's fence its sign-in is out of reach)");
+await journey("triggers", SCRIPTED, "A GitHub trigger checks a repository through gh (Check now), with gh scripted", ["A failing script sends the card back, and Insights show where and why"], async () => {
+  // gh is the world's scripted stand-in (isolated-env.mjs): it answers the calls a trigger makes and records them, and
+  // never reaches anyone's GitHub login. The person's own gh is not on this world's PATH.
+  // A real-model run keeps the person's own computer, gh included: only with --live-gh (off by default; the owner says
+  // when), which checks a real repository through the person's own gh login.
+  if (!w.scripted && !flag("--live-gh")) throw new Skip("live gh lane: off unless --live-gh (it uses the person's own GitHub login)");
+  if (spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000, env: checkedEnv() }).status !== 0) throw new Error(w.scripted ? "the world's gh stand-in didn't answer" : "gh isn't signed in (--live-gh)");
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "github"); await type(form, "Repository", "ap9000/standing-orders"); await pick(form, "Watch", "checks"); });
   const row = page.locator("[data-trigger-row]", { hasText: "Failed checks on main" });
   await row.locator("button", { hasText: "Check now" }).click();

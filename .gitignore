@@ -32,3 +32,6 @@ output/
 !/.youi/screens/
 /.youi/screens/*
 !/.youi/screens/screens.json
+
+# A test run's fake outer home (test/temp-root.ts), removed with the run
+/.test-outer/
