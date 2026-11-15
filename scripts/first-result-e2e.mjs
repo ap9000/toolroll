@@ -44,6 +44,7 @@ if (!process.argv.includes("--journeys")) process.argv.push("--journeys", "scrip
 const kit = await import("./e2e-kit.mjs");
 const { world, flag, option, until, sleep, spawnOwned, own, stopGroups, groupAlive, waitFor, here, SCRIPTED, REAL_MODEL, Skip, GiveUp, SKIPPED_FADE, REAL_TURN_MS } = kit;
 const { makeTempRoot } = await import("./suite-lifecycle.mjs");
+const { assertIsolated } = await import("./isolated-env.mjs");
 const fr = await import("./first-result-kit.mjs");
 const { Screen, plainText, looksLikeStackTrace, createTrace, countsOf, splitsOf, totalOf, launchPlan, packageSource, realRunRefusal, PERSON_SECONDS } = fr;
 
@@ -281,6 +282,8 @@ async function openTerminal(inst, label, command, { cwd = inst.cwd, rows = 40, c
   const keys = openSync(fifo, fsConstants.O_RDWR);
   const inner = `while [ ! -e ${shellWord(go)} ]; do sleep 0.05; done; exec ${command}`;
   const host = [PYTHON, PTY_HOST, String(rows), String(cols), fifo, log, pidFile, "/bin/sh", "-c", inner].map(shellWord).join(" ");
+  // The newcomer's computer, exactly as it starts: its own home, and no agent CLI but the one this journey put in its bin.
+  assertIsolated(inst.env, { root: inst.root, allowed: [inst.bin] });
   const shell = spawnOwned(`terminal ${label} (${inst.name})`, "/bin/sh", ["-c", `cd ${shellWord(cwd)} && exec ${host} > ${shellWord(join(dir, "host.log"))} 2>&1 < /dev/null &`], { stdio: "ignore", env: inst.env });
   inst.groups.push(shell.pid);
   await new Promise(done => { if (shell.exitCode !== null) done(); else shell.once("exit", done); });
@@ -347,11 +350,20 @@ function upOf(term) {
   return child === undefined ? null : Number(child[1]);
 }
 
+/** The install's own folder on the newcomer's PATH. Homebrew installs into this computer's own prefix, whose bin holds
+ * other programs too (agent CLIs among them): only its `toolroll` joins the PATH, through the newcomer's bin. */
+function joinPlanPath(inst, plan) {
+  if (plan.path.length === 0) return;
+  if (install !== "brew") { inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`; return; }
+  const linked = join(inst.bin, "toolroll");
+  if (!existsSync(linked)) symlinkSync(join(plan.path[0], "toolroll"), linked);
+}
+
 /** Start bare `toolroll` (or the plan's command) in this home and wait for its first screen. Marks installed/started. */
 async function startToolroll(inst, trace, { command = null, label = "first" } = {}) {
   const plan = launchPlan({ install, pkg, root: inst.root, localBin: w.bin, brewPrefix: inst.brewPrefix ?? null });
   Object.assign(inst.env, plan.env);
-  if (plan.path.length > 0) inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`;
+  joinPlanPath(inst, plan);
   const typed = withPort(command ?? plan.start);
   const term = await openTerminal(inst, label, typed);
   trace.interaction(`Type \`${typed}\` and press Return`, { surface: "terminal", keys: typed });
@@ -721,7 +733,7 @@ async function browserInRepo({ trace, criterion, note }) {
     await runInstallStep(inst, trace);
     const plan = launchPlan({ install, pkg, root: inst.root, localBin: w.bin, brewPrefix: inst.brewPrefix ?? null });
     Object.assign(inst.env, plan.env);
-    if (plan.path.length > 0) inst.env.PATH = `${plan.path.join(":")}:${inst.env.PATH}`;
+    joinPlanPath(inst, plan);
     const typed = withPort(`${plan.start} --web`);
     term = await openTerminal(inst, "web", typed);
     trace.interaction(`Type \`${typed}\` and press Return`, { surface: "terminal", keys: typed });

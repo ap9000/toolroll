@@ -28,6 +28,7 @@ import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
 import { flag, keyedHeaders, kitSave, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, signInLinkFrom, signInOpenerStandIn, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+import { assertIsolated } from "./isolated-env.mjs";
 /** The saved login `up` writes: in the reserved secrets folder, else (an older install) beside the database. */
 const savedLoginOf = state => existsSync(join(state, ".toolroll-secrets", "up-login.txt")) ? join(state, ".toolroll-secrets", "up-login.txt") : join(state, "up-login.txt");
 
@@ -2957,6 +2958,8 @@ async function freshInstall(name, { claude, crewModels = false, laptop = false }
     TOOLROLL_BROWSER_COMMAND: join(bin, "open-browser"), TOOLROLL_NO_PLAN_PROBE: "1",
     GIT_AUTHOR_NAME: "Sam Rivera", GIT_AUTHOR_EMAIL: "sam@example.invalid", GIT_COMMITTER_NAME: "Sam Rivera", GIT_COMMITTER_EMAIL: "sam@example.invalid" };
   mkdirSync(env.TMPDIR);
+  // A stranger's computer: its own home, and no agent CLI but the one a journey puts in its bin.
+  assertIsolated(env, { root, allowed: [bin] });
   const terminal = () => existsSync(log) ? readFileSync(log, "utf8").replace(/\r/g, "").replace(/\^D\x08\x08/g, "") : "";
   // A laptop install starts from the home folder (no repository: `up --laptop` uses ~/Projects), as bare `toolroll` would.
   const install = { root, home, shop, bin, terminal, signIn, env, log, opened, laptop, cwd: laptop ? home : shop, groups: [], stopped: false };

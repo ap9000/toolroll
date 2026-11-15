@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { countingProvider, scriptedProvider, turnsOf } from "./fixtures/scripted-provider.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+import { assertIsolated, isolatedEnvironment, openedLines, personHomes, realHomeGuard } from "./isolated-env.mjs";
 import { result as checkResult } from "./check-results.mjs";
 
 // Every Toolroll an end-to-end run starts keeps tool secrets as files in its own temporary state folder, never in the
@@ -203,6 +204,7 @@ export const SKIPPED_FADE = /Transition was aborted because of invalid state/;
 export const BROWSER_CHECK = "No browser errors on any page";
 /** The check a scripted run also ends with: every model call it made had a scripted answer. */
 export const PROVIDER_CHECK = "Every model call was scripted";
+export const ISOLATION_CHECK = "Nothing outside this run's own home was touched";
 
 /**
  * Every journey says what it tests. SCRIPTED: Toolroll's own behaviour (approvals, results, flows moving cards, chat
@@ -314,11 +316,32 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   // The models: a scripted run answers from the journeys' scripts; any other run uses the real CLIs, each call counted.
   // First on the PATH of everything this run starts: the CLI, the console, the worker, a demo, a fresh install.
   const provider = journeys === "scripted" ? scriptedProvider(join(root, "provider")) : countingProvider(join(root, "provider"));
-  process.env.PATH = `${provider.bin}${delimiter}${process.env.PATH ?? ""}`;
-  // Everything this run starts reads the world's own config folder, never the person's (their saved central profile
-  // would send the CLI elsewhere, and inside a check's fence it can't even be looked at); gh keeps its sign-in.
-  process.env.GH_CONFIG_DIR ??= join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "gh");
-  process.env.XDG_CONFIG_HOME = join(root, "config");
+  // gh keeps its sign-in (a scripted journey checks a real repository with it).
+  const ghConfig = process.env.GH_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "gh");
+  // A scripted run is a throwaway computer (isolated-env.mjs): this process's environment is replaced by one built from
+  // nothing, so everything it starts — the CLI, the console, the worker, a demo, a fresh install, and the agents those
+  // start — has this world's HOME, XDG folders and PATH, finds no agent CLI but the scripted stand-ins, and hands any
+  // page to a recording browser opener. What a build that escaped would leave in the person's real home is listed now
+  // and again at the end (ISOLATION_CHECK). A real-model run keeps the person's home: the real CLIs sign in from it.
+  let isolation = null, homeGuard = null;
+  const person = personHomes();
+  if (provider.mode === "scripted") {
+    isolation = isolatedEnvironment({ root, first: [provider.bin], set: {
+      GH_CONFIG_DIR: ghConfig, XDG_CONFIG_HOME: join(root, "config"),
+      // The run's own temp folder (a suite's root: short, so the console's socket paths fit), else this world's.
+      ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR, TMP: process.env.TMPDIR, TEMP: process.env.TMPDIR } : {}),
+    } });
+    assertIsolated(isolation.env, { root, allowed: [provider.bin], homes: person });
+    homeGuard = realHomeGuard({ root, repos: [repo], homes: person });
+    for (const name of Object.keys(process.env)) delete process.env[name];
+    Object.assign(process.env, isolation.env);
+  } else {
+    process.env.PATH = `${provider.bin}${delimiter}${process.env.PATH ?? ""}`;
+    process.env.GH_CONFIG_DIR = ghConfig;
+    // Everything this run starts reads the world's own config folder, never the person's (their saved central profile
+    // would send the CLI elsewhere, and inside a check's fence it can't even be looked at).
+    process.env.XDG_CONFIG_HOME = join(root, "config");
+  }
 
   const cli = (argv, { ok = [0], json = true, env = {} } = {}) => {
     try {
@@ -414,7 +437,10 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   ]);
   writeFileSync(join(state, "runner-token"), runner.token, { mode: 0o600 });
 
-  const port = await freePort();
+  // --console-port: this world's console port (a range of the caller's own), else any free one. (--port is a script's
+  // own: first-result-e2e.mjs gives it to the newcomer's Toolroll.)
+  const port = Number(option("--console-port", "0")) || await freePort();
+  if (port === 4180) throw new Error("--console-port: never 4180, the person's own console");
   const base = `http://127.0.0.1:${port}`;
   const logs = { serve: createWriteStream(join(out, "serve.log")), watch: createWriteStream(join(out, "watch.log")) };
   processesIn(out);
@@ -510,6 +536,19 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
     if (provider.mode === "scripted") await check(PROVIDER_CHECK, [], async () => {
       const wrong = provider.journal().filter(one => one.turn && !one.ok && !one.intended);
       if (wrong.length > 0) throw new Error(wrong.slice(0, 3).map(one => `${one.provider} ${one.role}: ${one.error}`).join(" | "));
+    }, { always: true });
+    // A scripted run's builds stayed in this world: its environment still is one (nothing put the person's HOME or PATH
+    // back), no real model turn was taken, and nothing named after this world appeared in the person's real home.
+    if (isolation !== null) await check(ISOLATION_CHECK, [], async () => {
+      const wrong = [];
+      const left = homeGuard.check();
+      if (left.length > 0) wrong.push(`this run left ${left.length} folder${left.length === 1 ? "" : "s"} in the person's real home: ${left.slice(0, 5).join(", ")}`);
+      const real = turnsOf(provider.journal()).real;
+      if (real > 0) wrong.push(`${real} real model turn${real === 1 ? "" : "s"} in a scripted run`);
+      try { assertIsolated(process.env, { root, allowed: [provider.bin], homes: person }); } catch (error) { wrong.push(error.message); }
+      if (wrong.length > 0) throw new Error(wrong.join(" | "));
+      const opened = openedLines(isolation.opened);
+      return opened.length === 0 ? undefined : { browserOpenerHanded: opened.length };
     }, { always: true });
     const journal = provider.journal();
     writeFileSync(join(out, "model-calls.jsonl"), journal.map(one => JSON.stringify(one)).join("\n") + (journal.length > 0 ? "\n" : ""));
