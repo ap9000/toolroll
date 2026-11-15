@@ -1707,7 +1707,8 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
     await page.waitForSelector("#email-form #email-host");
     await page.fill("#email-host", "127.0.0.1"); await page.fill("#email-port", "3025"); await page.fill("#email-from", "support@shop.example");
     await page.fill("#email-password", "mail-pass"); await page.fill("#email-imap", "127.0.0.1"); await page.fill("#email-imap-port", "993");
-    if (!(await kitSave(page, page.locator("#email-form")))) throw new Error("Save email had nothing to save");
+    // Saving the mail account is a credential act: alex's password, typed in the save's popover.
+    if (!(await kitSave(page, page.locator("#email-form"), { password: w.passwords.alex }))) throw new Error("Save email had nothing to save");
     await page.locator("#email details.k-disclose:has(#email-form)").evaluate(el => { el.open = true; });
     await Promise.all([page.waitForNavigation(), page.click('#email button:has-text("Check the inbox")')]);
     // What it said comes back on the page's address (and as a toast).

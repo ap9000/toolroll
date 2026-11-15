@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import type { ChatProvider } from "./contracts/chat-tables.js";
 import type { Database, Statement, Store } from "./store.js";
 import type { ChatMessageFixedOutcome } from "./chat-message-states.js";
+import { soloChatSeatRefusal } from "./install-mode.js";
 
 /** The result a waiting event is dropped with when its chat is disconnected (kept only when it had none). */
 const REVOKED: ChatMessageFixedOutcome = "revoked";
@@ -113,12 +114,15 @@ export class ChatCore {
     return this.bindings(installation)[0] ?? null;
   }
 
-  /** Unrevoked, and its person still an approver, unrevoked, at the generation it was paired under. */
+  /** Unrevoked, and its person still an approver, unrevoked, at the generation it was paired under; on a solo install,
+   * also the owner's own paired chat identity (install-mode.ts soloChatSeatRefusal). Every chat act and delivery reads
+   * liveness through here, inside its own transaction, so a chat act on a solo install stands only from that identity. */
   live(binding: Pick<ChatBinding, "id" | "approver" | "generation">): boolean {
     const current = this.bindingById(binding.id);
     const account = this.store.accountOf(binding.approver);
     return current !== null && current.approver === binding.approver && current.generation === binding.generation &&
-      account?.role === "approver" && account.revokedAt === null && account.generation === binding.generation;
+      account?.role === "approver" && account.revokedAt === null && account.generation === binding.generation
+      && soloChatSeatRefusal(this.store, { provider: this.provider, binding: binding.id, approver: binding.approver }) === null;
   }
 
   /** Every live binding of an installation, oldest first. */

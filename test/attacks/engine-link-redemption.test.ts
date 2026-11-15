@@ -12,6 +12,8 @@ import { linkRedemptionSchema } from "../../src/contracts/engine-api.js";
 import { keyHashOf } from "../../src/server/mutation-key.js";
 import { createDecisionServer } from "../../src/serve.js";
 import { setLocalModeOff } from "../../src/store.js";
+/** File for a plan (Plan first): a solo install offers Build on its own terms otherwise (fast-start.ts SOLO_START_RULE). */
+const PLAN_FIRST = { "planning-policy": "choice", "plan-first": "1" } as const;
 
 let world: LocalWorld;
 beforeEach(async () => { world = await openLocalWorld({ browserKey: true }); }, LOCAL_WORLD_SETUP_MS);
@@ -42,7 +44,7 @@ test("a local owner's link becomes the local-owner session, its cookie, form tok
   // It works: a read, and the local owner's own act with the form token and the key; without the key it is refused.
   const cookie = `${body.cookie.name}=${body.cookie.value}`;
   expect((await world.send("/work/rows", "GET", { cookie })).status).toBe(200);
-  const form = (title: string) => new URLSearchParams({ csrf: body.csrf, repo: world.repo, title }).toString();
+  const form = (title: string) => new URLSearchParams({ csrf: body.csrf, repo: world.repo, ...PLAN_FIRST, title }).toString();
   const bare = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded" }, form("No key"));
   expect(bare.status).toBe(403);
   const keyed = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key }, form("With key"));
@@ -138,7 +140,7 @@ test("bound to this console start: after a restart (a new key epoch) the redeeme
       const sent = request({ host: "127.0.0.1", port, path: "/tasks/add", method: "POST", headers: { host: `127.0.0.1:${port}`, cookie, origin: `http://127.0.0.1:${port}`,
         "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key } }, response => { response.resume(); resolve(response.statusCode!); });
       sent.on("error", reject);
-      sent.end(new URLSearchParams({ csrf: body.csrf, repo: world.repo, title: "After restart" }).toString());
+      sent.end(new URLSearchParams({ csrf: body.csrf, repo: world.repo, ...PLAN_FIRST, title: "After restart" }).toString());
     });
     expect(status).toBe(409);
   } finally {
@@ -160,7 +162,7 @@ test("a tailnet machine: no browser key there (unchanged), yet the terminal clie
   await world.close();
   world = await openLocalWorld({ browserKey: true, tailnetNames: async () => ["box.tail1234.ts.net"] });
   await new Promise(resolve => setTimeout(resolve, 20)); // the names are read once, at start
-  const form = (csrf: string, title: string) => new URLSearchParams({ csrf, repo: world.repo, title }).toString();
+  const form = (csrf: string, title: string) => new URLSearchParams({ csrf, repo: world.repo, ...PLAN_FIRST, title }).toString();
   const post = (cookie: string, body: string, key?: string) => world.send("/tasks/add", "POST",
     { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", ...(key === undefined ? {} : { "x-toolroll-key": key }) }, body);
   // The browser's road, as today: no key delivered, none kept, and its form posts without one.
@@ -196,7 +198,7 @@ async function addTask(port: number, cookie: string, csrf: string, title: string
     const sent = request({ host: "127.0.0.1", port, path: "/tasks/add", method: "POST", headers: { host: `127.0.0.1:${port}`, cookie, origin: `http://127.0.0.1:${port}`,
       "content-type": "application/x-www-form-urlencoded", ...(key === undefined ? {} : { "x-toolroll-key": key }) } }, response => { response.resume(); resolve(response.statusCode!); });
     sent.on("error", reject);
-    sent.end(new URLSearchParams({ csrf, repo: world.repo, title }).toString());
+    sent.end(new URLSearchParams({ csrf, repo: world.repo, ...PLAN_FIRST, title }).toString());
   });
 }
 

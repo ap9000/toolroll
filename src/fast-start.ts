@@ -38,9 +38,22 @@ import { classifyTask, filingSizer, heuristicSizing } from "./task-sizing.js";
 import { issueImported } from "./task-source.js";
 import { titleWithin } from "./task-text.js";
 import { viewedGitSync } from "./teardown-git.js";
+import { soloNow } from "./install-mode.js";
+import { withLocalAct } from "./local-owner.js";
 
 /** The constants, in one place, versioned together in every marker. */
 export const FAST_START_RULE = "small-v1";
+/**
+ * Solo's "Just code" (docs/plans/solo-workbench.md, owner decision: until Flexible ships, solo's default chain is "Just
+ * code", no plan approval). On a solo install a person's own filing of any size, with Plan first not chosen, is their
+ * approval of exactly the terms the form showed: every rule below except the small-change ones, an ordinary person
+ * approval (no fast marker, so none of the small change's backstops), the mode derived again inside the filing's
+ * transaction, and the digest and summary key it approved recorded with it.
+ */
+export const SOLO_START_RULE = "solo-v1";
+export const SOLO_START_ACTION = "solo start";
+/** Which rule a form's start is under. */
+export type StartRule = "small" | "solo";
 export const FAST_WINDOW_MS = 30 * 60_000;
 export const FAST_MAX_FILES = 3;
 export const FAST_MAX_LINES = 150;
@@ -51,7 +64,7 @@ export const FAST_PREVIEW_MS = 15 * 60_000;
  * token or an agent has no entry here. */
 export type FastVia = "console" | "terminal-ui" | "cli" | "chat";
 
-export type FastRefusal = "setting" | "size" | "classifier" | "plan" | "quality" | "rules" | "protected" | "password" | "release" | "trial" | "chain" | "monthly" | "policy" | "agents" | "machine" | "mode" | "limit";
+export type FastRefusal = "setting" | "size" | "classifier" | "plan" | "quality" | "rules" | "protected" | "password" | "release" | "trial" | "chain" | "monthly" | "policy" | "agents" | "machine" | "mode" | "limit" | "team";
 const FAST_WORDS: Readonly<Record<FastRefusal, string>> = {
   setting: "Small tasks don't start right away in this project.",
   size: "This looks bigger than a small change.",
@@ -70,6 +83,7 @@ const FAST_WORDS: Readonly<Record<FastRefusal, string>> = {
   machine: "Only a person starts work this way.",
   mode: "This project's mode approves it.",
   limit: "This is more than your chat approval setting allows.",
+  team: "Someone else uses this install now, so this needs its plan approved.",
 };
 export const fastRefusalWords = (reason: FastRefusal): string => FAST_WORDS[reason];
 
@@ -107,29 +121,32 @@ export type PasswordFacts = Pick<ApprovalPasswordFacts, "passwordless" | "localO
 export type FastProof = { password: PasswordFacts } | { chat: ChatApprovalLimits };
 
 /** Every person surface's eligibility: the rules, then a machine is refused. */
-export function fastStartEligible(store: Store, input: FastInput & { taskId: string; sizing: TaskSizing } & ({ password: PasswordFacts } | { proof: FastProof }), now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
+export function fastStartEligible(store: Store, input: FastInput & { taskId: string; sizing: TaskSizing; rule?: StartRule } & ({ password: PasswordFacts } | { proof: FastProof }), now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
   if (machineActing()) return { ok: false, reason: "machine" };
   return fastStartRules(store, { ...input, proof: "proof" in input ? input.proof : { password: input.password } }, now);
 }
 
 /** The rules alone, the same for every surface: only the person-proof step has two forms (FastProof). A preview reads
  * these as any caller; Build reads them again behind the machine check (fastStartEligible). */
-export function fastStartRules(store: Store, input: FastInput & { taskId: string; sizing: TaskSizing; proof: FastProof }, now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
+export function fastStartRules(store: Store, input: FastInput & { taskId: string; sizing: TaskSizing; proof: FastProof; rule?: StartRule }, now: Date): { ok: true; scope: Scope } | { ok: false; reason: FastRefusal } {
   const no = (reason: FastRefusal) => ({ ok: false as const, reason });
+  const solo = input.rule === "solo";
+  // Solo's "Just code" stands on the install being solo now, derived here (inside the filing's transaction at Build).
+  if (solo && ("chat" in input.proof || !soloNow(store))) return no("team");
   if (!fastStartOn(store, input.repo)) return no("setting");
   const account = store.accountOf(input.actor);
   if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(input.actor, input.repo)) return no("rules");
-  // The description decides "small"; the classifier can only confirm it, and silence is no.
-  if (heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return no("size");
-  if (input.sizing.source !== "classifier") return no("classifier");
-  if (input.sizing.size !== "small" || input.sizing.risky) return no("size");
+  // The description decides "small"; the classifier can only confirm it, and silence is no. (Solo's Just code is any size.)
+  if (!solo && heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return no("size");
+  if (!solo && input.sizing.source !== "classifier") return no("classifier");
+  if (!solo && (input.sizing.size !== "small" || input.sizing.risky)) return no("size");
   const scope = store.getScope(input.taskId);
   if (scope === null) return no("plan");
   if (issueImported(store, input.taskId)) return no("plan");
   if (scope.profileState === "unresolved" || scope.profile == null) return no("agents");
   const route = routeFromJson(scope.proposedRouteJson ?? null);
   if (route === null) return no("agents");
-  if (!makesNoPlan(input.sizing, route.risk)) return no("plan");
+  if (!solo && !makesNoPlan(input.sizing, route.risk)) return no("plan");
   if ((scope.qualityMode ?? "default") !== "default") return no("quality");
   if (scope.proposedChainJson != null) return no("chain");
   const rules = store.approvalRules(input.repo);
@@ -178,11 +195,13 @@ function withTermsKey<T extends { ok: boolean }>(store: Store, read: T, taskId: 
   const scope = store.getScope(taskId);
   return { ...read, termsKey: scope === null ? "" : approvalSummaryOf(scope, summaryContextOf(store, taskId, scope, now)).key };
 }
-/** The preview row's digest column: the scope's digest, then the summary key the form showed. */
-const previewDigest = (scope: string, terms: string): string => `${scope} ${terms}`;
-function previewParts(value: unknown): { scope: string; terms: string | null } {
-  const [scope, terms] = String(value ?? "").split(" ");
-  return { scope: scope ?? "", terms: terms === undefined || terms === "" ? null : terms };
+/** The preview row's digest column: the scope's digest, then the summary key the form showed, then (solo's Just code
+ * only) its rule. A small start's row reads exactly as before. */
+const previewDigest = (scope: string, terms: string, rule: StartRule = "small"): string => rule === "solo" ? `${scope} ${terms} ${SOLO_START_RULE}` : `${scope} ${terms}`;
+function previewParts(value: unknown): { scope: string; terms: string | null; rule: StartRule | null } {
+  const [scope, terms, rule, ...rest] = String(value ?? "").split(" ");
+  return { scope: scope ?? "", terms: terms === undefined || terms === "" ? null : terms,
+    rule: rest.length > 0 ? null : rule === undefined ? "small" : rule === SOLO_START_RULE ? "solo" : null };
 }
 
 export type FastPreview =
@@ -194,27 +213,35 @@ export type FastPreview =
  * transaction that's rolled back. The filing's words and the classifier's answer are kept (fast_preview), so Build
  * files exactly this, whatever is posted.
  */
-export async function prepareFastStart(store: Store, input: FastInput & { via: Exclude<FastVia, "chat">; password: PasswordFacts }, now: Date): Promise<FastPreview> {
+export async function prepareFastStart(store: Store, input: FastInput & { via: Exclude<FastVia, "chat">; password: PasswordFacts; /** The person chose Plan first: never solo's Just code. */ planFirst?: boolean }, now: Date): Promise<FastPreview> {
   if (machineActing()) return { eligible: false, reason: "machine" };
   // A chat start is prepared in the lead's turn (prepareChatStart), bound to it.
   if ((input.via as FastVia) === "chat") return { eligible: false, reason: "rules" };
   if (!fastStartOn(store, input.repo)) return { eligible: false, reason: "setting" };
-  if (heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return { eligible: false, reason: "size" };
+  const small = heuristicSizing({ title: input.title, goal: input.title }).size === "small";
+  // Solo's Just code (SOLO_START_RULE): any size, unless the person chose Plan first. Read for the form only; Build
+  // derives the mode again inside its own transaction.
+  const solo = input.planFirst !== true && soloNow(store);
+  if (!small && !solo) return { eligible: false, reason: "size" };
   // A mode that auto-approves filings comes first: its own road, its own seal.
   const mode = store.activeMode(input.repo, now);
   if (mode !== null && /"autoApproveFiling":true/.test(mode.termsJson)) return { eligible: false, reason: "mode" };
   const sizer = filingSizer();
-  const sizing = await classifyTask({ title: input.title, goal: input.title }, sizer.sizer, sizer.budget);
+  const sizing = small ? await classifyTask({ title: input.title, goal: input.title }, sizer.sizer, sizer.budget) : heuristicSizing({ title: input.title, goal: input.title });
   const taskId = `task-${randomBytes(8).toString("hex")}`;
-  const read = dryRun(store, () => {
+  const readUnder = (rule: StartRule) => dryRun(store, () => {
     const filed = fileIt(store, taskId, { ...input, sizing }, now);
     if (!filed.ok) return { ok: false as const, reason: "plan" as const };
-    return withTermsKey(store, fastStartEligible(store, { ...input, taskId, sizing }, now), taskId, now);
+    return withTermsKey(store, fastStartEligible(store, { ...input, taskId, sizing, rule }, now), taskId, now);
   });
+  // A small change keeps the small start (and its backstops); on a solo install anything else is Just code.
+  let rule: StartRule = small ? "small" : "solo";
+  let read = readUnder(rule);
+  if (!read.ok && rule === "small" && solo && (read.reason === "size" || read.reason === "classifier" || read.reason === "plan")) read = readUnder(rule = "solo");
   if (!read.ok) return { eligible: false, reason: read.reason };
   const preview = randomBytes(16).toString("hex");
   store.handle.prepare(`INSERT INTO fast_preview (id, actor, via, task_id, repo, title, permission, sizing_json, digest, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(preview, input.actor, input.via, taskId, input.repo, input.title, input.permissionMode ?? null, JSON.stringify(sizing), previewDigest(read.scope.digest, read.termsKey), now.toISOString(), new Date(now.getTime() + FAST_PREVIEW_MS).toISOString());
+    .run(preview, input.actor, input.via, taskId, input.repo, input.title, input.permissionMode ?? null, JSON.stringify(sizing), previewDigest(read.scope.digest, read.termsKey, rule), now.toISOString(), new Date(now.getTime() + FAST_PREVIEW_MS).toISOString());
   return { eligible: true, preview, digest: read.scope.digest, scope: read.scope, taskId };
 }
 
@@ -223,7 +250,7 @@ export type FastBuild =
   | { ok: false; reason: "gone" | "changed" | FastRefusal; message: string };
 
 /** Approve inside the filing: `approveNow` is the surface's own call to approve() (web: its freshness and re-check). */
-export type FastApprove = (taskId: string, sawDigest: string, fast: { rule: string; at: string }) => ApproveResult;
+export type FastApprove = (taskId: string, sawDigest: string, fast: { rule: string; at: string } | undefined) => ApproveResult;
 
 /**
  * Build: file and approve in one transaction. Every check is made here, on the rows written here; anything refused
@@ -252,21 +279,35 @@ export function fastStartBuild(store: Store, input: { preview: string; digest: s
       const filing = { actor: input.actor, repo: String(row["repo"]), title: String(row["title"]), ...(row["permission"] === null ? {} : { permissionMode: row["permission"] as "auto" | "bypassPermissions" }) };
       const filed = fileIt(store, taskId, { ...filing, via: input.via, sizing }, now);
       if (!filed.ok) return refuse({ ok: false, reason: "changed", message: filed.message });
-      const eligible = fastStartEligible(store, { ...filing, taskId, sizing, proof }, now);
+      const shown = previewParts(row["digest"]);
+      if (shown.rule === null) return refuse({ ok: false, reason: "gone", message: "This form has expired. Start again." });
+      const rule = shown.rule;
+      const eligible = fastStartEligible(store, { ...filing, taskId, sizing, proof, rule }, now);
       if (!eligible.ok) return refuse({ ok: false, reason: eligible.reason, message: FAST_WORDS[eligible.reason] });
       // The terms the form showed, as the approval summary said them (its key, kept with the preview): the project's usual
       // settings or anything else it showed changed since, and Build approves nothing.
-      const shownKey = previewParts(row["digest"]).terms;
+      const shownKey = shown.terms;
       const filedScope = store.getScope(taskId);
       if (shownKey === null || filedScope === null || approvalSummaryOf(filedScope, summaryContextOf(store, taskId, filedScope, now)).key !== shownKey)
         return refuse({ ok: false, reason: "changed", message: "This changed since you read it. Read it again." });
       const at = now.toISOString();
-      // approve() compares the digest the person saw with the plan just filed: changed terms refuse "changed".
-      const approved = input.approveNow(taskId, input.digest, { rule: FAST_START_RULE, at });
+      // approve() compares the digest the person saw with the plan just filed: changed terms refuse "changed". Solo's Just
+      // code is an ordinary person approval (no fast marker): pressing Build on these terms is approving this plan, so a
+      // local owner's press is its approve-plan act (approve() reads localApprovalEligible again).
+      const approved = rule === "solo"
+        ? withLocalAct("approve-plan", () => input.approveNow(taskId, input.digest, undefined))
+        : input.approveNow(taskId, input.digest, { rule: FAST_START_RULE, at });
       if (!approved.ok && approved.reason === "changed") return refuse({ ok: false, reason: "changed", message: "This changed since you read it. Read it again." });
       // Chat has no password: a refusal there says the rule, not "takes your password".
       if (!approved.ok) return refuse(input.via === "chat" ? { ok: false, reason: "rules", message: approved.reason === "policy" ? approved.message : FAST_WORDS.rules } : { ok: false, reason: "password", message: FAST_WORDS.password });
       store.handle.prepare("UPDATE fast_preview SET consumed_at = ? WHERE id = ?").run(at, input.preview);
+      if (rule === "solo") {
+        // What this filing approved, exactly: the scope digest and the summary key the form showed.
+        store.recordAction({ at, actor: input.actor, repo: filing.repo, taskId, runId: null, action: SOLO_START_ACTION, outcome: "approved", source: "request",
+          detail: JSON.stringify({ v: 1, rule: SOLO_START_RULE, digest: input.digest, terms: shownKey, via: input.via }) });
+        store.bumpWake();
+        return { ok: true as const, taskId };
+      }
       store.handle.prepare("UPDATE task_ref SET fast_start_at = ?, fast_start_until = ? WHERE backend = ? AND external_id = ?").run(at, new Date(now.getTime() + FAST_WINDOW_MS).toISOString(), BUILT_IN, taskId);
       store.bumpWake();
       return { ok: true as const, taskId };

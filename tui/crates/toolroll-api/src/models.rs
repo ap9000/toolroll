@@ -451,4 +451,26 @@ pub struct Hello {
     pub toolroll: String,
     pub contract: String,
     pub responses: Vec<String>,
+    /// The install's solo or team mode as the engine derives it now (display only: every act derives it again). A solo
+    /// screen shows no team concepts.
+    pub mode: InstallMode,
+    /// The steps a new task starts with on this install.
+    #[serde(rename = "defaultChain")]
+    pub default_chain: DefaultChain,
+}
+
+/// Solo (one person on their own install) or team (install-mode.ts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstallMode {
+    Solo,
+    Team,
+}
+
+/// The chain a new task starts with: straight to code (solo) or plan first (team).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DefaultChain {
+    JustCode,
+    PlanFirst,
 }

@@ -16,6 +16,8 @@ import { cookieOf, deliveredKey } from "../loopback-key-kit.js";
 import { enrollOwnerPassword, localModeOf } from "../../src/store.js";
 import { approve, authenticateAccount, hashPassword } from "../../src/scope.js";
 import { asLocalOwner } from "../../src/local-owner.js";
+/** File for a plan (Plan first): a solo install offers Build on its own terms otherwise (fast-start.ts SOLO_START_RULE). */
+const PLAN_FIRST = { "planning-policy": "choice", "plan-first": "1" } as const;
 
 const PASSWORD = "correct horse battery";
 let world: LocalWorld;
@@ -29,6 +31,11 @@ async function formOf(cookie: string, path = "/password/set"): Promise<{ status:
 const setPassword = (cookie: string, fields: Record<string, string>, key?: string) =>
   world.send("/password/set", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", ...(key === undefined ? {} : { "x-toolroll-key": key }) },
     new URLSearchParams(fields).toString());
+/** A second person (a viewer) joins: the install is team, and step-ups take a password typed again (install-mode.ts). */
+const teamNow = () => {
+  world.store.saveApprover("vera", hashPassword("vera-password-1"), LOCAL_T0);
+  world.store.handle.prepare("UPDATE approver SET role = 'viewer' WHERE name = 'vera'").run();
+};
 const signedIn = async (cookie: string) => (await world.send("/chat?format=workspace", "GET", { cookie })).status === 200;
 
 describe("setting the first password", () => {
@@ -113,7 +120,7 @@ describe("setting the first password", () => {
     // The fresh key acts for the fresh session; the old local key does not.
     const csrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: fresh })).body) as { csrf: string }).csrf;
     const post = (key: string) => world.send("/tasks/add", "POST", { cookie: fresh, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": key },
-      new URLSearchParams({ csrf, repo: world.repo, title: `Filed with ${key.slice(0, 4)}` }).toString());
+      new URLSearchParams({ csrf, repo: world.repo, ...PLAN_FIRST, title: `Filed with ${key.slice(0, 4)}` }).toString());
     expect((await post(localKey)).status).toBe(403);
     expect((await post(delivered.key)).status).toBe(303);
   });
@@ -219,7 +226,9 @@ describe("adding from GitHub", () => {
     expect(existsSync(join(world.root, "fresh-thing", ".git"))).toBe(true);
     expect(added("fresh-thing")).toBe(true);
 
-    // After a password is set, a full session's clone still takes it, typed again.
+    // After a password is set, a full session's clone still takes it, typed again, under team rules (a solo install's own
+    // session stands in instead: install-mode.test.ts).
+    teamNow();
     const set = await setPassword(local.cookie, { csrf: local.csrf, password: PASSWORD, again: PASSWORD });
     const full = cookieOf({ status: set.status, headers: set.headers, body: set.body });
     const csrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: full })).body) as { csrf: string }).csrf;
@@ -255,6 +264,8 @@ test("local mode off from Settings: a full session's step-up, the generation mov
   expect((await world.post("/settings/local-mode/off", local.cookie, { csrf: local.csrf, password: "" })).headers["x-toolroll-refused"]).toBe("local-owner");
   expect(localModeOf(world.store)).toMatchObject({ enabled: true, generation: 1 });
 
+  // Under team rules the step-up takes the password typed (a solo install's own session stands in: install-mode.test.ts).
+  teamNow();
   const set = await setPassword(local.cookie, { csrf: local.csrf, password: PASSWORD, again: PASSWORD });
   const full = cookieOf({ status: set.status, headers: set.headers, body: set.body });
   // Its switch is on General, and its form on its own change document (settings plan F0).
@@ -281,7 +292,7 @@ test("local mode off from Settings: a full session's step-up, the generation mov
 test("provenance: a task the local owner files says so in its filing line; a full session's doesn't", async () => {
   world = await openLocalWorld();
   const local = await world.localSession();
-  expect((await world.post("/tasks/add", local.cookie, { csrf: local.csrf, repo: world.repo, title: "Fix the footer" })).status).toBe(303);
+  expect((await world.post("/tasks/add", local.cookie, { csrf: local.csrf, repo: world.repo, ...PLAN_FIRST, title: "Fix the footer" })).status).toBe(303);
   const line = (title: string) => {
     const id = String(world.store.handle.prepare("SELECT id FROM task WHERE title = ?").get(title)!["id"]);
     return world.store.handle.prepare("SELECT actor, detail FROM action_ledger WHERE task_id = ? AND action = 'task filed'").get(id);
@@ -292,7 +303,7 @@ test("provenance: a task the local owner files says so in its filing line; a ful
   const set = await setPassword(local.cookie, { csrf: local.csrf, password: PASSWORD, again: PASSWORD });
   const full = cookieOf({ status: set.status, headers: set.headers, body: set.body });
   const csrf = (JSON.parse((await world.send("/chat?format=workspace", "GET", { cookie: full })).body) as { csrf: string }).csrf;
-  expect((await world.post("/tasks/add", full, { csrf, repo: world.repo, title: "Fix the header" })).status).toBe(303);
+  expect((await world.post("/tasks/add", full, { csrf, repo: world.repo, ...PLAN_FIRST, title: "Fix the header" })).status).toBe(303);
   expect(line("Fix the header")).toEqual({ actor: "alex", detail: null });
 });
 
@@ -347,7 +358,8 @@ describe("step-up forms for an owner with no password", () => {
       expect(body, path).toContain("Set a password to do this.");
       expect(body, path).toContain('href="/password/set?next=%2Fsettings%2Fmodels"');
     }
-    // A full session (the password now set) types it as before.
+    // A full session (the password now set) types it as before, under team rules (install-mode.ts).
+    teamNow();
     const set = await setPassword(cookie, { csrf, password: PASSWORD, again: PASSWORD });
     const full = cookieOf({ status: set.status, headers: set.headers, body: set.body });
     const page = await world.send("/settings/models", "GET", { cookie: full });

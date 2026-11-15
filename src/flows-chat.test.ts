@@ -8,7 +8,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover } from "./scope.js";
+import { addApprover, freshFacts, type FreshFacts } from "./scope.js";
+import { setPasswordless } from "./passwordless.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { FLOW_TEMPLATES, flowFromSteps, flowTerms } from "./flows.js";
 import { advanceFlows, flowDefinitionOf } from "./flow-engine.js";
@@ -332,9 +333,23 @@ describe("the lead builds and runs a flow", () => {
     expect(() => mintSharedActionReview(store, who, asked, root, now)).toThrow("This action changed. Ask for a fresh proposal.");
     expect(live()).toEqual([]);
     const fresh = proposalOf(lead("propose_flow", { operation: "allow_browser", flow }));
+    // A credential act (it widens what the flow reaches): the secure screen's empty password is refused, even from the
+    // person's own session; a password typed now allows it, recorded as that.
     const review = mintSharedActionReview(store, who, fresh, root, now);
-    expect(confirmLeadProposal(store, who, fresh, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: true, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` });
-    expect(live()).toEqual([{ signed_by: "operator", proof: "session" }]);
+    expect(confirmLeadProposal(store, who, fresh, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: review.nonce, password: "" } })).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(live()).toEqual([]);
+    // Not even where the session stands in for ordinary step-ups (Passwordless on, or a solo install): its own live
+    // browser session is no credential proof.
+    setPasswordless(store, true, "operator", now);
+    const session: FreshFacts = { actor: "operator", local: true, allowlisted: false, live: () => true, passwordAt: () => null, ssoReauthAt: () => null, ssoNow: () => null,
+      consumeSsoNow: () => () => {}, floor: () => 0, stamp: () => {} };
+    const onSession = mintSharedActionReview(store, who, fresh, root, now);
+    expect(freshFacts.run(session, () => confirmLeadProposal(store, who, fresh, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: onSession.nonce, password: "" } }))).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(live()).toEqual([]);
+    setPasswordless(store, false, "operator", now);
+    const typed = mintSharedActionReview(store, who, fresh, root, now);
+    expect(confirmLeadProposal(store, who, fresh, now, { authority: "full", via: "web", person: true, confirm: true, evidenceRoot: root, actionReview: { nonce: typed.nonce, password } })).toMatchObject({ ok: true, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` });
+    expect(live()).toEqual([{ signed_by: "operator", proof: "password-now" }]);
     expect((lead("get_flows", { flow }) as { body: { browser: string } }).body.browser).toMatch(/^allowed/);
     expect(lead("propose_flow", { operation: "allow_browser", flow })).toMatchObject({ ok: false });
     // Turning it off lowers authority: an ordinary card.
@@ -344,7 +359,7 @@ describe("the lead builds and runs a flow", () => {
     expect(live()).toEqual([]);
   });
 
-  test("browser use from a linked chat: a person's own off refuses it, and a yes is recorded as a chat yes", () => {
+  test("browser use from a linked chat: never a chat yes (a credential act takes the password in the secure screen)", () => {
     const saved = saveScript(store, repo, { name: "journeys", about: "Runs the journeys", body: "node journeys.mjs", timeoutMinutes: 2 }, "operator", now);
     if (!saved.ok) throw Error(saved.message);
     const flow = store.createFlow({ repo, name: "Nightly", by: "operator", definitionJson: JSON.stringify(flowFromSteps([{ id: "run", title: "Run journeys", kind: "check", script: "journeys", browser: true }], null)) }, now);
@@ -356,8 +371,8 @@ describe("the lead builds and runs a flow", () => {
     expect(live()).toEqual([]);
     expect(setChatApproval(store, { approver: "operator", scope: repo, enabled: true, via: "test" }, now).ok).toBe(true);
     const again = proposalOf(lead("propose_flow", { operation: "allow_browser", flow }));
-    expect(tap(again)).toMatchObject({ ok: true });
-    expect(live()).toEqual([{ signed_by: "operator", proof: "chat" }]);
+    expect(tap(again)).toMatchObject({ ok: false, reason: "needs-confirm" });
+    expect(live()).toEqual([]);
   });
 
   test("browser use: a project-limited account can't allow it from chat, as on the flow page", () => {

@@ -611,7 +611,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
         return saved.ok ? settle(saved.base === null ? "Public address cleared." : "Public address saved.") : answer(400, { ok: false, said: saved.message });
       }
       if (body.get("remove") === "yes") { removeLinearKey(dir); return settle("Linear key removed."); }
-      if (!authenticateApprover(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: "Enter your Toolroll password to save a key." });
+      // Saving an API key is a credential act: a password typed now, never the session.
+      if (!authenticateCredential(who, body.get("password") ?? "").ok) return answer(403, { ok: false, said: "Enter your Toolroll password to save a key." });
       const saved = saveLinearKey(dir, body.get("key") ?? "");
       return saved.ok ? settle("Linear key saved on this computer.") : answer(400, { ok: false, said: saved.message });
     }
@@ -630,7 +631,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (action === "browser") {
       // A person's own step-up (a lead's or remote run's token never gets here: route table), then signFlowBrowser
       // re-reads the flow, its zones and scripts in its one write and refuses unless they are the digest the panel showed.
-      const proved = authenticateApprover(who, body.get("password") ?? "", flow.repo);
+      // Browser use reaches the web from the flow: a credential act (network reach), a password typed now.
+      const proved = authenticateCredential(who, body.get("password") ?? "", flow.repo);
       if (!proved.ok) return answer(403, { ok: false, said: "That password isn't right. Nothing was approved." });
       const signed = signFlowBrowser(store, { flow: flow.id, signer: who.name, proof: proved.method, sawDigest: body.get("digest") ?? "", console: { generation: who.via === "cookie" ? who.session.generation : -1 } }, now);
       return signed.ok ? settle(`Browser allowed. ${signed.grant.zones.length === 1 ? "Its script" : "Its scripts"} can start Chromium now.`) : answer(409, { ok: false, said: signed.message });

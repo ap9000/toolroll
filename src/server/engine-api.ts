@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
 import { checkEngineResponse, ENGINE_API_VERSION, ENGINE_RESPONSES, engineContractDigest, linkRedemptionRequestSchema, type EngineResponseName, type LinkRedemption, type LiveSessionWindow } from "../contracts/engine-api.js";
 import { FLEXIBLE_AVAILABLE } from "../flexible-available.js";
+import { defaultChainOf, installModeNow } from "../install-mode.js";
 import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
@@ -83,7 +84,8 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const { url, response } = ctx;
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
     contract ??= engineContractDigest();
-    return sendChecked(response, 200, "hello", { version: ENGINE_API_VERSION, toolroll: packageVersion(), contract, responses: Object.keys(ENGINE_RESPONSES) });
+    const mode = installModeNow(store).mode;
+    return sendChecked(response, 200, "hello", { version: ENGINE_API_VERSION, toolroll: packageVersion(), contract, responses: Object.keys(ENGINE_RESPONSES), mode, defaultChain: defaultChainOf(mode) });
   }
 
   /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions only, like the Live grid). */

@@ -277,7 +277,8 @@ createInterface({ input: process.stdin }).on("line", line => {
     await page.goto(`${base}/settings/alerts#email`);
     await page.waitForSelector("#email-form #email-host");
     await page.fill("#email-host", "127.0.0.1"); await page.fill("#email-port", String(mail.port)); await page.fill("#email-from", "team@shop.example");
-    if (!(await kitSave(page, page.locator("#email-form")))) throw new Error("Save email had nothing to save");
+    // Saving the mail account is a credential act: alex's password, typed in the save's popover.
+    if (!(await kitSave(page, page.locator("#email-form"), { password: alexPassword }))) throw new Error("Save email had nothing to save");
     await page.locator("#email details.k-disclose:has(#email-form)").evaluate(el => { el.open = true; });
     await Promise.all([page.waitForNavigation(), page.click('#email button:has-text("Send a test email")')]);
     await until("the test email", async () => mail.received.length === 1, { timeoutMs: 15_000, everyMs: 500 });

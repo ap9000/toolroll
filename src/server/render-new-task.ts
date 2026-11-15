@@ -52,15 +52,18 @@ export function newTaskPage(
   suggestions: ReadonlyArray<{ label: string; draft: string }> = [],
   /** A link the lead or a person put in the address (GET ?from=). */
   fromLink: string | null = null,
+  /** The install is solo (install-mode.ts, read by the server): the form starts on "Just code", no planning step. */
+  solo = false,
 ): Screen {
   const head = html`${phoneHeader("New task", { back: "/" })}`;
-  const header = docHeader({ title: "New task", back: ["/", "Work"], meta: "Nothing is built until you approve its plan.", same: true });
+  const header = docHeader({ title: "New task", back: ["/", "Work"], meta: solo ? "Small changes build when you press Build. Anything bigger waits for your yes." : "Nothing is built until you approve its plan.", same: true });
   const items = projectItems(projects, project);
   const values = prefill?.values;
   // No project to choose from: the task names its folder (the server proves it), and adding a project is one link away.
   const typed = items.length === 0;
   const chosen = values?.get("repo") ?? project ?? items[0]?.[0] ?? "";
-  const planOn = values === undefined || values.get("plan-first") === "1";
+  // Solo starts on "Just code" (no planning step); team plans first. A refused form keeps what it posted.
+  const planOn = values === undefined ? !solo : values.get("plan-first") === "1";
   const quality = values?.get("quality-mode") ?? qualityDefault;
   const after = values?.get("after") ?? "";
   const permission = values?.get("permission-mode") === "bypassPermissions" ? "bypassPermissions" : values?.get("permission-mode") === "auto" ? "auto" : permissionDefault;

@@ -103,6 +103,11 @@ export const SETTINGS_SECTIONS: readonly SectionDeclaration[] = Object.freeze([
     read: ["password-holder"], scope: { passwordless: ["installation"] }, act: {}, changes: [], opens: false, scripts: [], oldIds: [] },
   { id: "version", area: "general", title: "Version", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
     read: [], scope: { "updates-version": ["installation"], "package-version": ["operator"] }, act: { updates: ["operator"] }, changes: [], opens: false, scripts: [], oldIds: [] },
+  // Solo or team (install-mode.ts): the one line, for everyone signed in; "It's just me" is an instance operator's
+  // credential act from a full session, on its own change document.
+  { id: "install-mode", area: "general", title: "Solo or team", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
+    read: [], scope: {}, act: { "just-me": ["full-session", "operator"] }, changes: [{ id: "just-me", act: "just-me", proof: "install-solo" }],
+    opens: false, scripts: [], oldIds: [] },
   // Settings → Advanced retired to here (F0): the person's own switch, and every advanced page on request.
   { id: "advanced", area: "general", title: "Show advanced features", pinnedFrom: "settings.group-advanced", policy: GROUP_PAGE,
     read: [], scope: { "operator-pages": ["operator"] }, act: { switch: ["cookie-session"] }, changes: [], opens: true, scripts: [], oldIds: ["show-advanced"] },
