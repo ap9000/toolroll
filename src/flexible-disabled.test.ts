@@ -179,8 +179,8 @@ describe("switched off", () => {
     const id = "a".repeat(32), ship = "b".repeat(32);
     store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'alex', ?, 'ready')`)
       .run(id, repo, sha, `refs/toolroll/threads/${id}/base`, join(dir, "threads", id), NOW.toISOString());
-    store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, state, state_at)
-      VALUES (?, ?, 1, ?, ?, ?, ?, ?, '{}', ?, ?, 'alex', 1, 'password-now', ?, 'approved', ?)`).run(ship, id, repo, sha, sha, `refs/toolroll/import/${id}/1`, `toolroll/code-${id}`, ship, "c".repeat(32), NOW.toISOString(), NOW.toISOString());
+    store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, delegation_id, state, state_at)
+      VALUES (?, ?, 1, ?, ?, ?, ?, ?, '{}', ?, ?, 'alex', 1, 'password-now', ?, 1, 'approved', ?)`).run(ship, id, repo, sha, sha, `refs/toolroll/import/${id}/1`, `toolroll/code-${id}`, ship, "c".repeat(32), NOW.toISOString(), NOW.toISOString());
     const refs = () => execFileSync("git", ["for-each-ref"], { cwd: repo, encoding: "utf8" });
     const ships = () => store.handle.prepare("SELECT * FROM flexible_ship").all().map(row => ({ ...row }));
     const [refsBefore, shipsBefore] = [refs(), ships()];
@@ -349,7 +349,7 @@ describe("the switch can't become a runtime override", () => {
         expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toMatch(/^  if \(!FLEXIBLE_AVAILABLE\) return (?:refuse\("not-available"\)|pre\("not-available"\)|false);$/);
       }
     };
-    gatedFirst("src/flexible-import.ts", ["readFlexibleCandidate", "importFlexibleCandidate", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"], ["linkLeadsOut"]);
+    gatedFirst("src/flexible-import.ts", ["readFlexibleCandidate", "importFlexibleCandidate", "removeFlexibleImportRefs", "flexibleTaskBranch", "settleInterruptedImport"], ["linkLeadsOut", "foldName"]);
     gatedFirst("src/flexible-ship.ts", ["flexibleShipTerms", "shipFlexible", "flexibleShipsOf", "mergeArmedFlexible", "reconcileFlexibleShips", "flexibleArmedPass", "cancelFlexibleShip", "sendBackFlexible", "removeFlexibleImport"], ["flexibleShipSummary"]);
     for (const one of product.filter(engine("flexible-import.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-import\.js"/);
     // The Ship's one caller outside the engine: the watch loop's pass, and nothing else of it.

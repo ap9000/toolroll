@@ -37,7 +37,7 @@ const insert = (db: { prepare: DatabaseSync["prepare"] }, over: Record<string, u
   const thread = (over["thread"] as string | undefined) ?? THREAD;
   const row = { id: seq.toString(16).padStart(32, "0"), thread, seq, repo: "/projects/shop", base_sha: "1".repeat(40), candidate: "2".repeat(40), import_ref: `refs/toolroll/import/${thread}/${seq}`,
     branch: `toolroll/code-${thread}`, branch_before: null, terms_json: "{}", digest: seq.toString(16).padStart(32, "0"), summary_key: "e".repeat(32), approved_by: "alex", approved_generation: 1,
-    proof: "password-now", approved_at: T0, state: "approved", state_at: T0, ...over };
+    proof: "password-now", approved_at: T0, delegation_id: 1, state: "approved", state_at: T0, ...over };
   db.prepare(`INSERT INTO flexible_ship (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`).run(...(Object.values(row) as (string | number | null)[]));
   return row.id;
 };
@@ -75,7 +75,7 @@ describe("v168", () => {
     const db = store.handle;
     const id = insert(db, { seq: 5 });
     for (const [column, value] of [["candidate", "3".repeat(40)], ["terms_json", "{\"x\":1}"], ["digest", "8".repeat(32)], ["summary_key", "7".repeat(32)], ["approved_by", "sam"], ["approved_generation", 2],
-      ["branch_before", "4".repeat(40)], ["seq", 6]] as const) {
+      ["branch_before", "4".repeat(40)], ["seq", 6], ["delegation_id", 2]] as const) {
       expect(() => db.prepare(`UPDATE flexible_ship SET ${column} = ? WHERE id = ?`).run(value, id), column).toThrow();
     }
     const move = (state: string, extra = "", ...values: (string | number)[]) => db.prepare(`UPDATE flexible_ship SET state = ?${extra} WHERE id = ?`).run(state, ...values, id);
@@ -89,8 +89,16 @@ describe("v168", () => {
     expect(() => db.prepare("UPDATE flexible_ship SET task_id = 'other' WHERE id = ?").run(id)).toThrow(/only moves forward/);
     expect(() => move("merged")).toThrow(/only moves forward/); // never merged before its checked head is completed
     expect(() => move("completed")).toThrow(); // a completed Ship names the checked head
-    move("completed", ", merge_head = ?, merge_at = ?", "5".repeat(40), T0);
+    expect(() => move("completed", ", merge_head = ?, merge_at = ?", "5".repeat(40), T0)).toThrow(); // and the check's receipt
+    move("completed", ", merge_head = ?, merge_at = ?, check_receipt = 'receipt'", "5".repeat(40), T0);
     expect(() => db.prepare("UPDATE flexible_ship SET merge_head = ? WHERE id = ?").run("6".repeat(40), id)).toThrow(/only moves forward/);
+    expect(() => db.prepare("UPDATE flexible_ship SET check_receipt = 'other' WHERE id = ?").run(id)).toThrow(/only moves forward/);
+    expect(() => move("merging")).toThrow(); // a reservation names its token
+    move("merging", ", merge_token = ?, merge_reserved_at = ?", "a".repeat(32), T0);
+    expect(() => db.prepare("UPDATE flexible_ship SET merge_token = ? WHERE id = ?").run("b".repeat(32), id)).toThrow(/only moves forward/); // held as taken
+    expect(() => move("sent-back", ", feedback = 'x', merge_token = NULL, merge_reserved_at = NULL")).toThrow(/only moves forward/); // too late to send back
+    expect(() => move("completed")).toThrow(); // released only with its token cleared
+    move("completed", ", merge_token = NULL, merge_reserved_at = NULL"); // released: the call didn't merge
     move("cancelled");
     for (const to of ["armed", "completed", "merged", "imported"]) expect(() => move(to), to).toThrow(/only moves forward/); // cancelled is final
     const crashed = insert(db, { seq: 7 });

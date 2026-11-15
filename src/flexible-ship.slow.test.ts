@@ -85,8 +85,9 @@ async function shipped(files: Record<string, string> = { "a.txt": "one\n" }) {
 }
 
 const rollup = [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://github.com/alex/shop/actions/runs/1/job/1" }];
-/** A scripted gh: the PR opens as #7 and reads open on `head` until merged, then merged. */
-function github(head: string) {
+/** A scripted gh: the PR opens as #7 and reads open on `head` until merged, then merged. `during`: what happens while
+ * GitHub is read (the first view of a merge) or while the merge call runs. */
+function github(head: string, during: { view?: () => void; merge?: () => void; mergeDies?: "before" | "after" } = {}) {
   let merged = false;
   const calls: string[] = [];
   const exec: PublishExec = async (file, args) => {
@@ -95,8 +96,17 @@ function github(head: string) {
     const ok = (stdout = "") => ({ code: 0, stdout, stderr: "", timedOut: false, notFound: false });
     if (line.startsWith("gh pr list")) return ok("[]");
     if (line.startsWith("gh pr create")) return ok("https://github.com/alex/shop/pull/7\n");
-    if (line.startsWith("gh pr merge")) { merged = true; return ok(); }
-    if (line.startsWith("gh pr view")) return ok(JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: head, statusCheckRollup: rollup, mergeCommit: merged ? { oid: "c".repeat(40) } : null, baseRefName: "main" }));
+    if (line.startsWith("gh pr merge")) {
+      during.merge?.();
+      if (during.mergeDies === "before") throw new Error("the process died during the merge call");
+      merged = true;
+      if (during.mergeDies === "after") throw new Error("the process died during the merge call");
+      return ok();
+    }
+    if (line.startsWith("gh pr view")) {
+      if (!merged && line.includes("statusCheckRollup")) { const hook = during.view; during.view = undefined; hook?.(); }
+      return ok(JSON.stringify({ state: merged ? "MERGED" : "OPEN", isDraft: false, headRefOid: head, statusCheckRollup: rollup, mergeCommit: merged ? { oid: "c".repeat(40) } : null, baseRefName: "main" }));
+    }
     if (line.startsWith("gh api")) return { code: 1, stdout: "", stderr: "HTTP 404", timedOut: false, notFound: false };
     return ok();
   };
@@ -120,7 +130,7 @@ function built(taskId: string, head: string, status: "passed" | "failed" = "pass
   store.recordRunCheck(runId, { status, exitCode: status === "passed" ? 0 : 1, suites: [] }, NOW);
   return runId;
 }
-const pass = (exec?: PublishExec) => flexibleArmedPass(store, { root, clock: () => NOW, ...(exec === undefined ? {} : { exec }) });
+const pass = (exec?: PublishExec, at = NOW) => flexibleArmedPass(store, { root, clock: () => at, ...(exec === undefined ? {} : { exec }) });
 const step = (taskId: string, exec?: PublishExec) => mergeArmedFlexible(store, { taskId, root, clock: () => NOW, ...(exec === undefined ? {} : { exec }) });
 const actions = (taskId: string) => store.handle.prepare("SELECT action FROM action_ledger WHERE (task_id = ? OR action = 'flexible ship approved') AND action LIKE 'flexible%' ORDER BY id").all(taskId).map(row => row["action"]);
 
@@ -231,7 +241,7 @@ describe("the armed merge", () => {
     expect(gh.merges()).toEqual([`gh pr merge 7 --repo alex/shop --squash --match-head-commit ${candidate} --delete-branch`]);
     expect(state(ship)).toBe("merged");
     // The press and the merge are recorded apart.
-    expect(actions(taskId)).toEqual(["flexible ship approved", "flexible ship armed", "flexible ship completed", "flexible merged"]);
+    expect(actions(taskId)).toEqual(["flexible ship approved", "flexible ship armed", "flexible ship completed", "flexible merge reserved", "flexible merged"]);
   });
 
   test("a red check never merges: no completion, no pull request, no merge, however often the pass runs", async () => {
@@ -256,7 +266,7 @@ describe("the armed merge", () => {
     expect(await step(two.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
     await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
     built(two.taskId, world.first); // a newer run, another head
-    expect(await step(two.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("head changed") });
+    expect(await step(two.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("shipped commit itself") });
     expect(state(two.ship)).toBe("cancelled");
     expect(gh.merges()).toEqual([]);
   });
@@ -264,10 +274,11 @@ describe("the armed merge", () => {
   test("revocation cancels: the person's account changed since the press", async () => {
     const one = await shipped();
     built(one.taskId, one.candidate);
+    // A rotation moves the person's generation and lapses the Flexible terms they signed, which ends the Ship in the same
+    // transaction; the pass finds nothing to complete.
     store.saveApprover("alex", "rotated-credential-hash", NOW);
-    // A rotation moves the person's generation (and lapses the Flexible terms they signed): either ends the merge.
-    expect(await step(one.taskId)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringMatching(/account changed|authority ended/) });
     expect(state(one.ship)).toBe("cancelled");
+    expect(await step(one.taskId)).toMatchObject({ ok: false, reason: "wrong-state" });
     expect(store.pendingPublications()).toEqual([]);
   });
 
@@ -275,8 +286,9 @@ describe("the armed merge", () => {
     const one = await shipped();
     built(one.taskId, one.candidate);
     expect(turnFlexibleOff(store, { repo: world.project, by: "sam", now: NOW })).toMatchObject({ ok: true, changed: true });
-    expect(await pass()).toMatchObject({ ok: true, cancelled: 1, completed: 0 });
-    expect(state(one.ship)).toBe("cancelled");
+    expect(state(one.ship)).toBe("cancelled"); // in the same transaction
+    expect(await pass()).toMatchObject({ ok: true, cancelled: 0, completed: 0 });
+    expect(store.pendingPublications()).toEqual([]);
   });
 
   test("the person can cancel; nobody else can; nothing merges after", async () => {
@@ -311,6 +323,115 @@ describe("the armed merge", () => {
     expect(gh.merges()).toEqual([]);
   });
 
+  test("only the shipped commit itself: a result with identical files but different parents is cancelled, never completed", async () => {
+    const { candidate, taskId, ship } = await shipped();
+    const twin = tgit(world.project, "commit-tree", `${candidate}^{tree}`, "-p", world.second, "-m", "same files, another history");
+    expect(tgit(world.project, "rev-parse", `${twin}^{tree}`)).toBe(tgit(world.project, "rev-parse", `${candidate}^{tree}`));
+    built(taskId, twin);
+    expect(await step(taskId)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("shipped commit itself") });
+    expect(state(ship)).toBe("cancelled");
+    expect(store.pendingPublications()).toEqual([]);
+  });
+
+  test("a cancel that lands while GitHub is read before the merge refuses the merge", async () => {
+    const one = await shipped();
+    const gh = github(one.candidate, { view: () => { expect(cancelFlexibleShip(store, { taskId: one.taskId, by: { name: "alex", generation: store.accountOf("alex")!.generation }, now: NOW })).toEqual({ ok: true }); } });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled" });
+    expect(state(one.ship)).toBe("cancelled");
+    expect(gh.merges()).toEqual([]);
+  });
+
+  test("Flexible turned off while GitHub is read before the merge refuses it", async () => {
+    const off = await shipped();
+    const gh = github(off.candidate, { view: () => { turnFlexibleOff(store, { repo: world.project, by: "sam", now: NOW }); } });
+    built(off.taskId, off.candidate);
+    expect(await step(off.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(off.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled" });
+    expect(state(off.ship)).toBe("cancelled");
+    expect(gh.merges()).toEqual([]);
+  });
+
+  test("the person's account changing while GitHub is read before the merge refuses it", async () => {
+    const one = await shipped();
+    const gh = github(one.candidate, { view: () => { store.saveApprover("alex", "rotated-credential-hash", NOW); } });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled" });
+    expect(state(one.ship)).toBe("cancelled");
+    expect(gh.merges()).toEqual([]);
+  });
+
+  test("once the merge holds its reservation, a cancel is too late and the merge completes", async () => {
+    let answer: unknown;
+    const holder: { taskId?: string } = {};
+    const one = await shipped();
+    holder.taskId = one.taskId;
+    const gh = github(one.candidate, { merge: () => { answer = cancelFlexibleShip(store, { taskId: holder.taskId!, by: { name: "alex", generation: store.accountOf("alex")!.generation }, now: NOW }); } });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "merged" });
+    expect(answer).toMatchObject({ ok: false, reason: "merging" });
+    expect(state(one.ship)).toBe("merged");
+  });
+
+  test("a merge whose outcome is uncertain (the process died in the call) is settled from GitHub: merged, or released and merged later", async () => {
+    const one = await shipped();
+    const dies = github(one.candidate, { mergeDies: "after" });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, dies.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: dies.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await pass(dies.exec)).toMatchObject({ ok: true, merged: 0 });
+    expect(state(one.ship)).toBe("merging");
+    expect(await pass(dies.exec)).toMatchObject({ ok: true, reconciled: 0 }); // within the window: never read back early
+    expect(await pass(dies.exec, new Date(NOW.getTime() + 16 * 60_000))).toMatchObject({ ok: true, reconciled: 1 });
+    expect(state(one.ship)).toBe("merged");
+  });
+
+  test("an uncertain merge GitHub shows didn't happen is released, and merges on a later pass once everything still holds", async () => {
+    const one = await shipped();
+    const gh = github(one.candidate, { mergeDies: "before" });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    await pass(gh.exec);
+    expect(state(one.ship)).toBe("merging");
+    const later = new Date(NOW.getTime() + 16 * 60_000);
+    const healthy = github(one.candidate);
+    expect(await pass(healthy.exec, later)).toMatchObject({ ok: true, reconciled: 1, merged: 1 });
+    expect(state(one.ship)).toBe("merged");
+  });
+
+  test("turning Flexible off cancels armed Ships in the same act, and turning it on again doesn't bring them back", async () => {
+    const one = await shipped();
+    built(one.taskId, one.candidate);
+    expect(turnFlexibleOff(store, { repo: world.project, by: "sam", now: NOW })).toMatchObject({ ok: true, changed: true });
+    expect(state(one.ship)).toBe("cancelled");
+    const proposed = proposedFlexibleTerms(store, world.project, "alex");
+    if (!proposed.ok) throw new Error(proposed.message);
+    expect(enableFlexible(store, { repo: world.project, by: "alex", proof: "password-now", shownDigest: proposed.digest, now: NOW })).toMatchObject({ ok: true });
+    expect(await pass()).toMatchObject({ ok: true, completed: 0, merged: 0 });
+    expect(state(one.ship)).toBe("cancelled");
+    expect(store.pendingPublications()).toEqual([]);
+  });
+
+  test("where it merges and which check counts are signed: a changed merge method or check command cancels", async () => {
+    const one = await shipped();
+    built(one.taskId, one.candidate);
+    savePublishing(store, { repo: world.project, githubRepo: "alex/shop", remote: "origin", base: "main", account: "alex" }, "alex", { mergeMethod: "rebase", mergeWhenGreen: true }, NOW);
+    expect(await step(one.taskId)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("where it merges") });
+    savePublishing(store, { repo: world.project, githubRepo: "alex/shop", remote: "origin", base: "main", account: "alex" }, "alex", { mergeMethod: "squash", mergeWhenGreen: true }, NOW);
+    const two = await shipped({ "a.txt": "two\n" });
+    built(two.taskId, two.candidate);
+    store.setVerifyCommand({ repo: world.project, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    expect(await step(two.taskId)).toMatchObject({ ok: false, reason: "cancelled", message: expect.stringContaining("check command changed") });
+  });
+
   test("send back reopens the thread with the feedback; the next Ship is a new import, n+1, from exactly the last one", async () => {
     const first = await shipped();
     expect(sendBackFlexible(store, { taskId: first.taskId, by: { name: "sam", generation: store.accountOf("sam")!.generation }, feedback: "Rename it.", now: NOW })).toMatchObject({ ok: false, reason: "not-owner" });
@@ -331,8 +452,8 @@ describe("the armed merge", () => {
 });
 
 describe("crashes and removal", () => {
-  const plantApproved = (id: string, candidate: string) => store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, state, state_at)
-    VALUES (?, ?, 1, ?, ?, ?, ?, ?, '{}', ?, ?, 'alex', 1, 'password-now', ?, 'approved', ?)`).run(id, thread.id, world.project, world.second, candidate, flexibleImportRef(thread.id, 1), `toolroll/code-${thread.id}`, id, "e".repeat(32), NOW.toISOString(), NOW.toISOString());
+  const plantApproved = (id: string, candidate: string) => store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, delegation_id, state, state_at)
+    VALUES (?, ?, 1, ?, ?, ?, ?, ?, '{}', ?, ?, 'alex', 1, 'password-now', ?, 1, 'approved', ?)`).run(id, thread.id, world.project, world.second, candidate, flexibleImportRef(thread.id, 1), `toolroll/code-${thread.id}`, id, "e".repeat(32), NOW.toISOString(), NOW.toISOString());
 
   test("a Ship a crash left mid-import is settled on restart: its refs put back by compare-and-swap, failed, and shippable again", async () => {
     const before = projectRefs();

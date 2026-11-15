@@ -37,7 +37,7 @@
  *   it could read history beyond its base (flexible-ship.ts HISTORY_WORDS).
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
@@ -55,7 +55,8 @@ import type { Runner } from "./worktree.js";
 
 /** What the quarantine found, each said in words: the import is refused (`import-refused`) and no ref moved. */
 export type FlexibleImportCheck = "candidate-unreadable" | "candidate-changed" | "nothing-to-send" | "not-descendant" | "merge" | "too-large" | "bad-path"
-  | "submodule" | "placeholder" | "protected" | "symlink" | "secret" | "unreadable" | "import-exists" | "branch-moved" | "default-branch" | "fetch-failed";
+  | "submodule" | "placeholder" | "protected" | "symlink" | "secret" | "unreadable" | "import-exists" | "branch-moved" | "default-branch" | "fetch-failed"
+  | "ambiguous" | "timed-out";
 export type FlexibleImportRefusal =
   | { ok: false; reason: "not-available" | "thread-unknown" | "thread-not-ready" | "not-a-project" | "repository-unusable" | "thread-folder-changed"; message: string }
   | { ok: false; reason: "import-refused"; check: FlexibleImportCheck; message: string };
@@ -87,6 +88,8 @@ const CHECK_WORDS: Readonly<Record<FlexibleImportCheck, string>> = Object.freeze
   "branch-moved": `The thread's branch in your repository was changed by someone else. ${NOTHING}`,
   "default-branch": `The thread's branch is your repository's checked-out branch. ${NOTHING}`,
   "fetch-failed": `Git refused the thread's commits: they failed its object checks or took too long. ${NOTHING}`,
+  "ambiguous": `Two names in the change are the same name on a computer that ignores case or accents. ${NOTHING}`,
+  "timed-out": `Checking the change took longer than Toolroll allows for one import. ${NOTHING}`,
 });
 const pre = (reason: keyof typeof PRE_WORDS, detail?: string): FlexibleImportRefusal =>
   ({ ok: false, reason, message: detail === undefined ? PRE_WORDS[reason] : `${PRE_WORDS[reason]} (${detail})` });
@@ -107,9 +110,17 @@ export const FLEXIBLE_IMPORT_LIMITS = Object.freeze({
   patchBytes: 64 * 1024 * 1024,
   /** The fetch into the project's repository. */
   fetchMs: 120_000,
-  /** Entries in the thread's objects folder walked for links. */
+  /** Entries in the thread's objects folder walked for links, counted as they are read. */
   objectEntries: 500_000,
+  /** Everything new, uncompressed, summed object by object. */
+  inflatedBytes: 512 * 1024 * 1024,
+  /** Entries in one commit's whole tree, as listed for names and links (bounded while it is listed). */
+  treeEntries: 200_000,
+  /** The whole import: every check and the fetch, one deadline. */
+  importMs: 300_000,
 });
+export type FlexibleImportLimits = { readonly [K in keyof typeof FLEXIBLE_IMPORT_LIMITS]: number };
+const limitsOf = (over: Partial<FlexibleImportLimits> | undefined): FlexibleImportLimits => ({ ...FLEXIBLE_IMPORT_LIMITS, ...(over ?? {}) });
 
 // ---- paths ------------------------------------------------------------------------------------------------------------
 
@@ -139,15 +150,35 @@ function stateFolderOf(store: Store): string | null {
 
 // ---- git --------------------------------------------------------------------------------------------------------------
 
-type Git = (cwd: string, args: readonly string[], options?: { maxBuffer?: number; timeoutMs?: number }) => Promise<ExecResult>;
+type Git = (cwd: string, args: readonly string[], options?: { maxBuffer?: number; timeoutMs?: number; stdin?: string }) => Promise<ExecResult>;
+/** The import's one deadline passed (every check and the fetch share it). */
+class DeadlinePassed extends Error {}
 /** Fixed on every import git call, ahead of its own arguments: no replace refs, and no commit graph or multi-pack index
  * trusted (one in the thread's objects folder could lie about parents). */
 const IMPORT_FLAGS: readonly string[] = ["--no-replace-objects", "-c", "core.commitGraph=false", "-c", "core.multiPackIndex=false"];
 /** The shared hardened runner (teardown-git.ts), bound to the repository it runs in: the quarantine or the project. */
-function gitIn(inner: Runner, mode: "build" | "read"): Git {
-  return async (cwd, args, options = {}) => hardenedGit(inner, mode, { repo: cwd })("git", [...IMPORT_FLAGS, ...args],
-    { cwd, timeoutMs: options.timeoutMs ?? 60_000, ...(options.maxBuffer === undefined ? {} : { maxBuffer: options.maxBuffer }) });
+function gitIn(inner: Runner, mode: "build" | "read", deadline = Number.POSITIVE_INFINITY): Git {
+  return async (cwd, args, options = {}) => {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new DeadlinePassed("the import's time ran out");
+    const ran = await hardenedGit(inner, mode, { repo: cwd })("git", [...IMPORT_FLAGS, ...args],
+      { cwd, timeoutMs: Math.max(1, Math.min(options.timeoutMs ?? 60_000, left)), ...(options.maxBuffer === undefined ? {} : { maxBuffer: options.maxBuffer }),
+        ...(options.stdin === undefined ? {} : { stdin: options.stdin, processGroup: true }) });
+    if (ran.timedOut && Date.now() >= deadline) throw new DeadlinePassed("the import's time ran out");
+    return ran;
+  };
 }
+
+// ---- names as a filesystem sees them ------------------------------------------------------------------------------
+
+/** Characters HFS+ ignores in a name (git's own protectHFS list). */
+const HFS_IGNORABLE = /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g;
+/** One path component as a case-insensitive, normalising filesystem (macOS, Windows) sees it: NFC, no characters HFS+
+ * ignores, lower case, no trailing dots or spaces (Windows drops them). Two names that fold alike are one name there. */
+export function foldName(part: string): string {
+  return part.normalize("NFC").replace(HFS_IGNORABLE, "").toLowerCase().replace(/[. ]+$/, "");
+}
+const foldPath = (path: string): string => path.split("/").map(foldName).join("/");
 
 // ---- the thread's side, read as plain bytes ---------------------------------------------------------------------------
 
@@ -157,7 +188,7 @@ type Source = { thread: FlexibleThreadRow; project: string; objects: string; pat
  * `.git` folder, no commondir, no reftable), its objects folder a real folder whose alternates name exactly the
  * project's objects and nothing over HTTP, and nothing in it a link or anything but a file or folder (a link would lead
  * the quarantine to another project's objects). */
-function threadObjectsProblem(paths: FlexibleThreadPaths, recorded: string, objects: string): string | null {
+function threadObjectsProblem(paths: FlexibleThreadPaths, recorded: string, objects: string, limits: FlexibleImportLimits): string | null {
   if (recorded !== paths.folder) return "its record names another folder";
   if (!ownFolder(paths.root) || !ownFolder(paths.folder)) return "its folder isn't a private folder of yours";
   const gitdir = join(paths.repo, ".git");
@@ -171,11 +202,22 @@ function threadObjectsProblem(paths: FlexibleThreadPaths, recorded: string, obje
     if (!held.isFile() || held.isSymbolicLink() || readFileSync(alternates, "utf8") !== `${objects}\n`) return "its alternates changed";
   } catch { return "its alternates can't be read"; }
   if (existsSync(join(threadObjects, "info", "http-alternates"))) return "it borrows objects over the network";
-  let entries: import("node:fs").Dirent[];
-  try { entries = readdirSync(threadObjects, { recursive: true, withFileTypes: true }) as import("node:fs").Dirent[]; } catch { return "its objects can't be listed"; }
-  if (entries.length > FLEXIBLE_IMPORT_LIMITS.objectEntries) return "it holds too many object files";
-  const odd = entries.find(one => !one.isFile() && !one.isDirectory());
-  if (odd !== undefined) return `its objects folder has a link or special file (${join(odd.parentPath, odd.name).slice(threadObjects.length + 1)})`;
+  // Walked one entry at a time, counting as it goes: a folder too big to list is refused before it is listed whole.
+  let seen = 0;
+  const folders = [threadObjects];
+  while (folders.length > 0) {
+    const folder = folders.pop()!;
+    let handle: import("node:fs").Dir;
+    try { handle = opendirSync(folder); } catch { return "its objects can't be listed"; }
+    try {
+      for (let one = handle.readSync(); one !== null; one = handle.readSync()) {
+        if (++seen > limits.objectEntries) return "it holds too many object files";
+        if (one.isDirectory()) folders.push(join(folder, one.name));
+        else if (!one.isFile()) return `its objects folder has a link or special file (${join(folder, one.name).slice(threadObjects.length + 1)})`;
+      }
+    } catch { return "its objects can't be listed"; }
+    finally { handle.closeSync(); }
+  }
   return null;
 }
 
@@ -218,7 +260,7 @@ function threadBranchTip(paths: FlexibleThreadPaths, id: string): string | null 
 
 /** The thread and its project, from Toolroll's records, proven: ready, its project registered and a plain repository,
  * the thread's folder and objects the ones Toolroll made. */
-function sourceOf(store: Store, id: string): Source | FlexibleImportRefusal {
+function sourceOf(store: Store, id: string, limits: FlexibleImportLimits): Source | FlexibleImportRefusal {
   const thread = flexibleThread(store, id);
   if (thread === null) return pre("thread-unknown");
   if (thread.state !== "ready") return pre("thread-not-ready");
@@ -234,7 +276,7 @@ function sourceOf(store: Store, id: string): Source | FlexibleImportRefusal {
     objects = realpathSync(join(common, "objects"));
   } catch { return pre("repository-unusable"); }
   const paths = flexibleThreadPaths(state, thread.id);
-  const problem = threadObjectsProblem(paths, thread.folder, objects);
+  const problem = threadObjectsProblem(paths, thread.folder, objects, limits);
   if (problem !== null) return pre("thread-folder-changed", problem);
   return { thread, project, objects, paths, threadObjects: realpathSync(join(paths.repo, ".git", "objects")), format: thread.baseSha.length === 64 ? "sha256" : "sha1" };
 }
@@ -301,15 +343,16 @@ async function changedEntries(read: Git, repo: string, base: string, candidate: 
 /** The thread's committed candidate and its changed files, read in a quarantine (nothing of the thread's runs, and no
  * ref moves anywhere): what the Ship terms show. Refuses as the import would for a candidate that isn't a commit
  * descending from the base. */
-export async function readFlexibleCandidate(store: Store, input: { thread: string; runner?: Runner }):
+export async function readFlexibleCandidate(store: Store, input: { thread: string; runner?: Runner; limits?: Partial<FlexibleImportLimits> }):
   Promise<{ ok: true; candidate: string; base: string; changedPaths: string[] } | FlexibleImportRefusal> {
   if (!FLEXIBLE_AVAILABLE) return pre("not-available");
-  const source = sourceOf(store, input.thread);
+  const limits = limitsOf(input.limits);
+  const source = sourceOf(store, input.thread, limits);
   if ("ok" in source) return source;
   const candidate = threadBranchTip(source.paths, source.thread.id);
   if (candidate === null || candidate.length !== source.thread.baseSha.length) return refused("candidate-unreadable");
   if (candidate === source.thread.baseSha) return refused("nothing-to-send");
-  const read = gitIn(input.runner ?? run, "read");
+  const read = gitIn(input.runner ?? run, "read", Date.now() + limits.importMs);
   return guarded(() => withQuarantine(source, async repo => {
     const lineage = await descends(read, repo, source.thread.baseSha, candidate);
     if (lineage !== null) return lineage;
@@ -323,7 +366,10 @@ export async function readFlexibleCandidate(store: Store, input: { thread: strin
 /** Anything unexpected while working in the quarantine (a folder that can't be made, a read that throws) is a plain
  * refusal, never an exception that leaves a send half-recorded. */
 async function guarded<T>(work: () => Promise<T>): Promise<T | FlexibleImportRefusal> {
-  try { return await work(); } catch (error) { return refused("unreadable", error instanceof Error ? error.message.slice(0, 200) : undefined); }
+  try { return await work(); } catch (error) {
+    if (error instanceof DeadlinePassed) return refused("timed-out");
+    return refused("unreadable", error instanceof Error ? error.message.slice(0, 200) : undefined);
+  }
 }
 
 async function descends(read: Git, repo: string, base: string, candidate: string): Promise<FlexibleImportRefusal | null> {
@@ -353,7 +399,7 @@ export function linkLeadsOut(path: string, target: string): boolean {
   for (const part of target.split("/")) {
     if (part === "" || part === ".") continue;
     if (part === "..") { if (parts.length === 0) return true; parts.pop(); continue; }
-    if (part.toLowerCase() === ".git") return true;
+    if (foldName(part) === ".git") return true;
     parts.push(part);
   }
   return false;
@@ -378,28 +424,47 @@ function parseRawLog(stdout: string): { commit: string; entries: DiffEntry[] }[]
   return commits;
 }
 
-/** The first of `links` (paths of links in `commit`'s tree) that leads out of the tree or into a `.git`, resolved
- * against that tree and following every link on the way (links already there and links the same change adds), or
- * null when none does. A chain longer than 40 steps, or a target that can't be read, counts as leading out. */
-async function linkEscaping(read: Git, repo: string, commit: string, links: readonly string[]): Promise<string | null> {
-  const listed = await read(repo, ["ls-tree", "-r", "-z", "--full-tree", commit], { maxBuffer: 64 * 1024 * 1024 });
-  if (listed.code !== 0) return links[0] ?? null;
-  const tree = new Map<string, string>();
-  for (const entry of listed.stdout.split("\0")) {
-    const found = /^120000 blob ([0-9a-f]{40,64})\t(.+)$/s.exec(entry);
-    if (found !== null) tree.set(found[2]!, found[1]!);
+type TreeEntry = { path: string; mode: string; sha: string };
+
+/**
+ * One commit's whole tree (folders included), keyed by each path as a case-insensitive, normalising filesystem sees it
+ * (foldName), listed with a bound on its size while it is listed. Refuses two entries that are one name there (`a` and
+ * `A`, an NFC and an NFD spelling): such a tree checks out as something else than what was checked.
+ */
+async function treeOf(read: Git, repo: string, commit: string, limits: FlexibleImportLimits): Promise<Map<string, TreeEntry> | FlexibleImportRefusal> {
+  const listed = await read(repo, ["ls-tree", "-r", "-t", "-z", "--full-tree", commit], { maxBuffer: limits.treeEntries * 160 });
+  if (listed.code !== 0) return listed.stdout.length >= limits.treeEntries * 150 ? refused("too-large", "its tree has too many entries") : refused("unreadable", "its tree couldn't be listed");
+  const tree = new Map<string, TreeEntry>();
+  const entries = listed.stdout.split("\0").filter(one => one !== "");
+  if (entries.length > limits.treeEntries) return refused("too-large", "its tree has too many entries");
+  for (const entry of entries) {
+    const found = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t(.+)$/s.exec(entry);
+    if (found === null) return refused("unreadable", "its tree couldn't be read");
+    const path = found[4]!, folded = foldPath(path);
+    const other = tree.get(folded);
+    if (other !== undefined && other.path !== path) return refused("ambiguous", `${other.path} and ${path}, in commit ${commit.slice(0, 12)}`);
+    tree.set(folded, { path, mode: found[1]!, sha: found[3]! });
   }
+  return tree;
+}
+
+/** The first of `links` (paths of links in a commit's tree) that leads out of the tree or into a `.git`, resolved
+ * against that tree and following every link on the way (links already there and links the same change adds), each
+ * name looked up as a case-insensitive, normalising filesystem would; or null when none does. A name that matches only
+ * when folded (`EXT` for `ext`), a chain longer than 40 steps, or a target that can't be read, counts as leading out. */
+async function linkEscaping(read: Git, repo: string, tree: ReadonlyMap<string, TreeEntry>, links: readonly string[]): Promise<string | null> {
   const targets = new Map<string, string | null>();
-  const targetOf = async (path: string): Promise<string | null> => {
-    if (!targets.has(path)) {
-      const blob = await read(repo, ["cat-file", "blob", tree.get(path)!], { maxBuffer: 8192 });
-      targets.set(path, blob.code !== 0 || blob.stdout.length > 4096 ? null : blob.stdout);
+  const targetOf = async (entry: TreeEntry): Promise<string | null> => {
+    if (!targets.has(entry.sha)) {
+      const blob = await read(repo, ["cat-file", "blob", entry.sha], { maxBuffer: 8192 });
+      targets.set(entry.sha, blob.code !== 0 || blob.stdout.length > 4096 ? null : blob.stdout);
     }
-    return targets.get(path)!;
+    return targets.get(entry.sha)!;
   };
   for (const link of links) {
-    if (!tree.has(link)) return link;
-    const start = await targetOf(link);
+    const entry = tree.get(foldPath(link));
+    if (entry === undefined || entry.path !== link || entry.mode !== "120000") return link;
+    const start = await targetOf(entry);
     if (start === null || linkLeadsOut(link, start)) return link;
     // Walk the resolved path one name at a time; a name that is itself a link is replaced by where it leads.
     const stack = link.split("/").slice(0, -1);
@@ -410,12 +475,17 @@ async function linkEscaping(read: Git, repo: string, commit: string, links: read
       const part = queue.shift()!;
       if (part === "" || part === ".") continue;
       if (part === "..") { if (stack.length === 0) escaped = true; else stack.pop(); continue; }
-      if (part.toLowerCase() === ".git") { escaped = true; continue; }
+      if (foldName(part) === ".git") { escaped = true; continue; }
       stack.push(part);
       const here = stack.join("/");
-      if (!tree.has(here)) continue;
+      const found = tree.get(foldPath(here));
+      if (found === undefined) continue;
+      // Only the same name when folded: on a case-insensitive or normalising filesystem it's that entry, so a check of
+      // the spelling as written would be a check of something else.
+      if (found.path !== here) { escaped = true; continue; }
+      if (found.mode !== "120000") continue;
       if (++steps > 40) { escaped = true; continue; }
-      const next = await targetOf(here);
+      const next = await targetOf(found);
       if (next === null || next === "" || /[\0\\]/.test(next) || isAbsolute(next) || /^[A-Za-z]:/.test(next)) { escaped = true; continue; }
       stack.pop();
       queue = [...next.split("/"), ...queue];
@@ -426,7 +496,7 @@ async function linkEscaping(read: Git, repo: string, commit: string, links: read
 }
 
 /** Every check, in the quarantine, before any ref moves: null when the candidate may be imported; else the refusal. */
-async function quarantineChecks(read: Git, repo: string, source: Source, candidate: string): Promise<FlexibleImportRefusal | null> {
+async function quarantineChecks(read: Git, repo: string, source: Source, candidate: string, limits: FlexibleImportLimits): Promise<FlexibleImportRefusal | null> {
   const base = source.thread.baseSha;
   if (candidate === base) return refused("nothing-to-send");
   const lineage = await descends(read, repo, base, candidate);
@@ -439,18 +509,28 @@ async function quarantineChecks(read: Git, repo: string, source: Source, candida
   const counted = await read(repo, ["rev-list", "--count", `${base}..${candidate}`]);
   const commits = Number(counted.stdout.trim());
   if (counted.code !== 0 || !Number.isSafeInteger(commits)) return refused("unreadable");
-  if (commits > FLEXIBLE_IMPORT_LIMITS.commits) return refused("too-large", `${commits} commits`);
-  // Every new object, and no file past the per-file limit (rev-list names an omitted one with a leading ~).
-  const objects = await read(repo, ["rev-list", "--objects", "--no-object-names", `--filter=blob:limit=${FLEXIBLE_IMPORT_LIMITS.blobBytes}`, "--filter-print-omitted", `${base}..${candidate}`],
-    { maxBuffer: (FLEXIBLE_IMPORT_LIMITS.objects + 1) * 70 });
-  if (objects.code !== 0) return refused(objects.stdout.length > FLEXIBLE_IMPORT_LIMITS.objects * 60 ? "too-large" : "unreadable");
+  if (commits > limits.commits) return refused("too-large", `${commits} commits`);
+  // Every new object, and no file past the per-file limit (rev-list names an omitted one with a leading ~). The listing
+  // is bounded while it runs: past the object limit its output overflows and git is stopped.
+  const objects = await read(repo, ["rev-list", "--objects", "--no-object-names", `--filter=blob:limit=${limits.blobBytes}`, "--filter-print-omitted", `${base}..${candidate}`],
+    { maxBuffer: (limits.objects + 1) * 70 });
+  if (objects.code !== 0) return refused(objects.stdout.length >= limits.objects * 41 ? "too-large" : "unreadable", "too many objects, or they couldn't be listed");
   const listed = objects.stdout.split("\n").filter(line => line !== "");
-  if (listed.some(line => line.startsWith("~"))) return refused("too-large", "a file is over 16 MB");
-  if (listed.length > FLEXIBLE_IMPORT_LIMITS.objects) return refused("too-large", `${listed.length} objects`);
+  if (listed.some(line => line.startsWith("~"))) return refused("too-large", `a file is over ${Math.round(limits.blobBytes / 1024 / 1024)} MB`);
+  if (listed.length > limits.objects) return refused("too-large", `${listed.length} objects`);
+  if (listed.some(line => !SHA.test(line))) return refused("unreadable");
+  // Their sizes uncompressed, summed: a small pack can inflate to far more.
+  if (listed.length > 0) {
+    const sized = await read(repo, ["cat-file", "--batch-check=%(objectsize)"], { stdin: `${listed.join("\n")}\n`, maxBuffer: (listed.length + 1) * 24 });
+    const sizes = sized.code === 0 ? sized.stdout.split("\n").filter(line => line !== "") : null;
+    if (sizes === null || sizes.length !== listed.length || sizes.some(one => !/^\d{1,15}$/.test(one))) return refused("unreadable", "its objects' sizes couldn't be read");
+    const inflated = sizes.reduce((sum, one) => sum + Number(one), 0);
+    if (inflated > limits.inflatedBytes) return refused("too-large", `${Math.round(inflated / 1024 / 1024)} MB uncompressed`);
+  }
   const disk = await read(repo, ["rev-list", "--objects", "--disk-usage", `${base}..${candidate}`]);
   const bytes = Number(disk.stdout.trim());
   if (disk.code !== 0 || !Number.isSafeInteger(bytes)) return refused("unreadable");
-  if (bytes > FLEXIBLE_IMPORT_LIMITS.diskBytes) return refused("too-large", `${Math.round(bytes / 1024 / 1024)} MB`);
+  if (bytes > limits.diskBytes) return refused("too-large", `${Math.round(bytes / 1024 / 1024)} MB`);
   // The net change (what the terms show): bounded, every name importable.
   const net = await changedEntries(read, repo, base, candidate);
   if (!Array.isArray(net)) return net;
@@ -460,7 +540,7 @@ async function quarantineChecks(read: Git, repo: string, source: Source, candida
   // an earlier one carries into the project's history (a key, a protected file, a link, a submodule).
   // Belts: every commit's diff against its first parent (a merge, were one to get here, shows its own change), and the
   // commits seen must be exactly the range's, in order, each with its own diff.
-  const range = await read(repo, ["rev-list", "--reverse", `${base}..${candidate}`], { maxBuffer: (FLEXIBLE_IMPORT_LIMITS.commits + 1) * 70 });
+  const range = await read(repo, ["rev-list", "--reverse", `${base}..${candidate}`], { maxBuffer: (limits.commits + 1) * 70 });
   const inRange = range.code === 0 ? range.stdout.split("\n").filter(line => line !== "") : null;
   if (inRange === null || inRange.length !== commits || inRange.some(one => !SHA.test(one))) return refused("unreadable", "its commits couldn't be listed");
   const logged = await read(repo, ["log", "--reverse", "--no-renames", "--diff-merges=first-parent", "--ignore-submodules=none", "--raw", "-z", "--no-abbrev", "--format=commit:%H", `${base}..${candidate}`], { maxBuffer: 64 * 1024 * 1024 });
@@ -476,24 +556,32 @@ async function quarantineChecks(read: Git, repo: string, source: Source, candida
     // Placeholder bytes before the protected-name rule, so the words say what it is.
     const placeholder = added.find(one => PLACEHOLDER_NAMES.has(one.path) && placeholders.has(one.newSha));
     if (placeholder !== undefined) return refused("placeholder", `${placeholder.path}, ${at}`);
-    const named = protectedChanges(entries.map(one => one.path));
+    // Names as a case-insensitive, normalising filesystem sees them: `.GIT`, `.git.` and `.Git<zero-width>` are `.git`.
+    const gitNamed = entries.find(one => one.path.split("/").some(part => foldName(part) === ".git"));
+    if (gitNamed !== undefined) return refused("protected", `${gitNamed.path}, ${at}`);
+    const named = protectedChanges(entries.map(one => foldPath(one.path)));
     if (named.length > 0) return refused("protected", `${named.slice(0, 3).join(", ")}, ${at}`);
     const links = added.filter(one => one.newMode === "120000");
-    const linkedProtected = protectedLinks(links.map(one => one.path));
+    const linkedProtected = protectedLinks(links.map(one => foldPath(one.path)));
     if (linkedProtected.length > 0) return refused("protected", `${linkedProtected.slice(0, 3).join(", ")}, ${at}`);
     if (links.length > 0) {
-      const escaping = await linkEscaping(read, repo, commit, links.map(one => one.path));
+      const tree = await treeOf(read, repo, commit, limits);
+      if (!(tree instanceof Map)) return tree;
+      const escaping = await linkEscaping(read, repo, tree, links.map(one => one.path));
       if (escaping !== null) return refused("symlink", `${escaping}, ${at}`);
     }
   }
   // The existing secret check (evidence.ts), on every commit's own diff: only added lines count; documented
   // placeholders aren't keys.
-  const patch = await read(repo, ["log", "-p", "--reverse", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--diff-merges=first-parent", "--ignore-submodules=none", "--format=commit %H", `${base}..${candidate}`], { maxBuffer: FLEXIBLE_IMPORT_LIMITS.patchBytes });
-  if (patch.code !== 0) return refused(patch.stdout.length >= FLEXIBLE_IMPORT_LIMITS.patchBytes ? "too-large" : "unreadable", "its commits' diffs couldn't be read whole");
+  const patch = await read(repo, ["log", "-p", "--reverse", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--diff-merges=first-parent", "--ignore-submodules=none", "--format=commit %H", `${base}..${candidate}`], { maxBuffer: limits.patchBytes });
+  if (patch.code !== 0) return refused(patch.stdout.length >= limits.patchBytes ? "too-large" : "unreadable", "its commits' diffs couldn't be read whole");
   const patched = [...patch.stdout.matchAll(/^commit ([0-9a-f]{40}|[0-9a-f]{64})$/gm)].map(match => match[1]!);
   if (patched.length !== inRange.length || patched.some((one, at) => one !== inRange[at])) return refused("unreadable", "its commits' diffs couldn't be read one by one");
   const hits = scanPatchForSecrets(patch.stdout);
   if (hits.length > 0) return refused("secret", hits.slice(0, 3).map(hit => `${hit.file}:${hit.fileLine} (${hit.name})`).join(", "));
+  // The candidate's whole tree, as it will be checked out: no two names that are one name on macOS or Windows.
+  const whole = await treeOf(read, repo, candidate, limits);
+  if (!(whole instanceof Map)) return whole;
   // Only after every commit was checked: a history whose net change is empty still carried what it carried.
   if (net.length === 0) return refused("nothing-to-send");
   return null;
@@ -512,7 +600,9 @@ export type FlexibleImported = { ok: true; candidate: string; importRef: string;
  * the candidate the person's terms named: a branch that moved since is refused. Runs under the thread's lock; the
  * thread's agent must not be running (the Ship checks that first). A refusal leaves every ref of the project's as it was.
  */
-export async function importFlexibleCandidate(store: Store, input: { thread: string; seq: number; expected: string; branchBefore: string | null; by: string; now: Date; runner?: Runner }):
+export async function importFlexibleCandidate(store: Store, input: { thread: string; seq: number; expected: string; branchBefore: string | null; by: string; now: Date; runner?: Runner;
+  /** A test seam (a parameter, never a setting): tighter limits than FLEXIBLE_IMPORT_LIMITS. */
+  limits?: Partial<FlexibleImportLimits> }):
   Promise<FlexibleImported | FlexibleImportRefusal> {
   if (!FLEXIBLE_AVAILABLE) return pre("not-available");
   const locked = await withFlexibleThreadLock(input.thread, () => guarded(() => importLocked(store, input)));
@@ -520,12 +610,15 @@ export async function importFlexibleCandidate(store: Store, input: { thread: str
   return locked as FlexibleImported | FlexibleImportRefusal;
 }
 
-async function importLocked(store: Store, input: { thread: string; seq: number; expected: string; branchBefore: string | null; by: string; now: Date; runner?: Runner }): Promise<FlexibleImported | FlexibleImportRefusal> {
+async function importLocked(store: Store, input: { thread: string; seq: number; expected: string; branchBefore: string | null; by: string; now: Date; runner?: Runner; limits?: Partial<FlexibleImportLimits> }): Promise<FlexibleImported | FlexibleImportRefusal> {
+  const limits = limitsOf(input.limits);
+  // One deadline for the whole import: every check in the quarantine and the fetch.
+  const deadline = Date.now() + limits.importMs;
   if (!Number.isSafeInteger(input.seq) || input.seq < 1 || !SHA.test(input.expected) || (input.branchBefore !== null && !SHA.test(input.branchBefore))) return refused("unreadable", "the import's own terms aren't valid");
-  const source = sourceOf(store, input.thread);
+  const source = sourceOf(store, input.thread, limits);
   if ("ok" in source) return source;
   const inner = input.runner ?? run;
-  const read = gitIn(inner, "read"), build = gitIn(inner, "build");
+  const read = gitIn(inner, "read", deadline), build = gitIn(inner, "build", deadline);
   const candidate = threadBranchTip(source.paths, source.thread.id);
   if (candidate === null || candidate.length !== source.thread.baseSha.length) return refused("candidate-unreadable");
   if (candidate !== input.expected) return refused("candidate-changed");
@@ -533,7 +626,7 @@ async function importLocked(store: Store, input: { thread: string; seq: number; 
   const branch = flexibleThreadBranch(source.thread.id);
   const zero = "0".repeat(candidate.length);
   return withQuarantine(source, async repo => {
-    const problem = await quarantineChecks(read, repo, source, candidate);
+    const problem = await quarantineChecks(read, repo, source, candidate, limits);
     if (problem !== null) return problem;
     // The project's side, read before anything is written there: the import's ref must be new, the thread's branch
     // must hold exactly what the previous import left, and it must not be the project's checked-out branch.
@@ -551,20 +644,26 @@ async function importLocked(store: Store, input: { thread: string; seq: number; 
     const named = await build(repo, ["update-ref", "--no-deref", "refs/heads/candidate", candidate, zero]);
     if (named.code !== 0) return refused("unreadable", "the quarantine couldn't name the candidate");
     // The first write to the project's repository: a create-only ref, objects checked as they arrive, nothing else.
-    const fetched = await build(source.project, ["-c", "protocol.file.allow=always", "-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true", "-c", "fetch.writeCommitGraph=false",
-      "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-gc", `--negotiation-tip=${source.thread.baseSha}`, "--", repo, `refs/heads/candidate:${importRef}`],
-      { timeoutMs: FLEXIBLE_IMPORT_LIMITS.fetchMs });
-    const landed = await read(source.project, ["rev-parse", "--verify", "--quiet", "--end-of-options", importRef]);
-    if (fetched.code !== 0 || landed.code !== 0 || landed.stdout.trim() !== candidate) {
-      if (landed.code === 0) await build(source.project, ["update-ref", "--no-deref", "-d", importRef, landed.stdout.trim()]);
-      return refused("fetch-failed");
+    // From the fetch on, the writes and clean-ups always finish (no deadline cuts them off half way): a fetch the deadline
+    // stopped is read back and taken away like a failed one.
+    const settle = gitIn(inner, "read"), finish = gitIn(inner, "build");
+    let fetched: ExecResult | null = null;
+    try {
+      fetched = await build(source.project, ["-c", "protocol.file.allow=always", "-c", "transfer.fsckObjects=true", "-c", "fetch.fsckObjects=true", "-c", "fetch.writeCommitGraph=false",
+        "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-gc", `--negotiation-tip=${source.thread.baseSha}`, "--", repo, `refs/heads/candidate:${importRef}`],
+        { timeoutMs: limits.fetchMs });
+    } catch (error) { if (!(error instanceof DeadlinePassed)) throw error; }
+    const landed = await settle(source.project, ["rev-parse", "--verify", "--quiet", "--end-of-options", importRef]);
+    if (fetched === null || fetched.code !== 0 || landed.code !== 0 || landed.stdout.trim() !== candidate) {
+      if (landed.code === 0) await finish(source.project, ["update-ref", "--no-deref", "-d", importRef, landed.stdout.trim()]);
+      return refused(fetched === null ? "timed-out" : "fetch-failed");
     }
-    const moved = await build(source.project, ["update-ref", "--no-deref", "-m", `toolroll: Flexible import ${input.seq}`, `refs/heads/${branch}`, candidate, input.branchBefore ?? zero]);
+    const moved = await finish(source.project, ["update-ref", "--no-deref", "-m", `toolroll: Flexible import ${input.seq}`, `refs/heads/${branch}`, candidate, input.branchBefore ?? zero]);
     if (moved.code !== 0) {
-      await build(source.project, ["update-ref", "--no-deref", "-d", importRef, candidate]);
+      await finish(source.project, ["update-ref", "--no-deref", "-d", importRef, candidate]);
       return refused("branch-moved");
     }
-    const after = await readProjectRefs(read, source.project);
+    const after = await readProjectRefs(settle, source.project);
     store.transact(() => {
       if (after !== null) saveRefSnapshot(store, source.thread.id, after, input.now);
       if (refsChanged !== null && refsChanged.length > 0) {

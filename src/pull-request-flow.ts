@@ -437,7 +437,9 @@ export async function mergePullRequest(
     proceed?: () => boolean;
     /** The Flexible Ship whose armed merge this is (flexible-ship.ts mergeArmedFlexible, the only caller that passes it,
      * after re-proving that authority). A Flexible result merges by no other road. */
-    flexibleShip?: string },
+    flexibleShip?: string;
+    /** The armed merge's reservation token for that Ship: checked again inside the transaction that reserves the merge. */
+    flexibleToken?: string },
 ): Promise<Result<{ commit: string | null }>> {
   const exec = input.exec ?? execRun;
   const clock = input.clock ?? (() => new Date());
@@ -454,7 +456,8 @@ export async function mergePullRequest(
   // A result from a Flexible thread (the Flexible plan v2 §7) merges only through its own armed Ship, after the required
   // check passed on its exact commit: never `anyway`, never "merge when checks pass", a mode's automerge, a flow or a
   // chat merge (flexible-merge-guard.ts, asked on every merge road).
-  const flexibleHold = flexibleMergeRefusal(store, mergedTask, "pull-request", { ...(input.flexibleShip === undefined ? {} : { ship: input.flexibleShip }), ...(input.anyway === true ? { anyway: true } : {}) });
+  const flexibleAuthority = { ...(input.flexibleShip === undefined ? {} : { ship: input.flexibleShip }), ...(input.flexibleToken === undefined ? {} : { token: input.flexibleToken }), ...(input.anyway === true ? { anyway: true } : {}) };
+  const flexibleHold = flexibleMergeRefusal(store, mergedTask, "pull-request", flexibleAuthority);
   if (flexibleHold !== null) return refuse("flexible", flexibleHold);
   // A fast start merges only after a person accepted it, and only a change that stayed small (fast-start.ts).
   const fastHold = mergedTask === null ? null : fastPublishProblem(store, mergedTask, input.runId);
@@ -515,6 +518,9 @@ export async function mergePullRequest(
   const token = randomUUID();
   const reserved = store.transact((): "ok" | "archived" | "merging" | "deleting" | "halted" => {
     if (input.proceed?.() === false) return "halted";
+    // A Flexible result: its Ship reserved (merging) under exactly this token, in this same transaction (the armed
+    // merge's `proceed` takes the reservation); a cancel or revocation that landed first leaves nothing to merge.
+    if (flexibleMergeRefusal(store, mergedTask, "pull-request", flexibleAuthority, "reserve") !== null) return "halted";
     if (refArchived(store, publication.taskRef)) return "archived";
     if (store.handle.prepare("SELECT 1 FROM hold WHERE task_ref = ? AND owner_id LIKE 'project-delete:%' AND (until IS NULL OR until > ?)").get(publication.taskRef, clock().toISOString()) !== undefined) return "deleting";
     if (store.handle.prepare("SELECT 1 FROM merge_in_flight WHERE publication = ? AND at > ?").get(publication.id, new Date(clock().getTime() - 15 * 60_000).toISOString()) !== undefined) return "merging";

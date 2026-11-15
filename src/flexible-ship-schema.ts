@@ -13,12 +13,19 @@
  *                                              it, putting refs back), or wrote its refs)
  *     imported → armed | removed               (its check task was filed and sealed and the merge armed, or the import
  *                                              was taken away)
- *     armed → completed | cancelled | sent-back (the check passed on the exact candidate: completed and its pull
- *                                              request owed; or the merge's authority ended; or a person sent it back)
- *     completed → merged | cancelled | sent-back
+ *     armed → completed | cancelled | sent-back (the check passed on the exact candidate commit: completed and its
+ *                                              pull request owed; or the merge's authority ended; or a person sent it back)
+ *     completed → merging | cancelled | sent-back | merged (the merge's durable reservation, taken in one transaction
+ *                                              that re-proves everything right before the merge call, so cancel and
+ *                                              revocation serialise against it; or found already merged on GitHub)
+ *     merging → merged | completed | cancelled (the call's outcome, read back from GitHub when uncertain: merged; not
+ *                                              merged and still open on the same commit, released; or closed or moved)
  *   refused, failed, removed, merged, cancelled and sent-back are final: nothing is ever resurrected or re-armed.
- *   `task_id` and `scope_digest` (the verify-only task and the scope its seal bound) are set once, on `armed`; the
- *   checked head the merge is bound to (`merge_head`, `merge_at`) once, on `completed`.
+ *   `delegation_id` is the project's Flexible terms row (flexible_terms.id) the press was made under: ending that row
+ *   cancels the Ship in the same transaction, and a later row never revives it. `task_id` and `scope_digest` (the
+ *   verify-only task and the scope its seal bound) are set once, on `armed`; the checked head and the check's sealed
+ *   receipt digest the merge is bound to (`merge_head`, `merge_at`, `check_receipt`) once, on `completed`; the
+ *   reservation (`merge_token`, `merge_reserved_at`) is held exactly while `merging`.
  * - `flexible_ref_snapshot`: the project's refs as Toolroll last read them for a thread (at its start, and at each
  *   import), so an import can say when a ref outside refs/toolroll/ changed while the thread ran. Detection only: it
  *   decides nothing.
@@ -44,7 +51,8 @@ CREATE TABLE IF NOT EXISTS flexible_ship (
   approved_generation INTEGER NOT NULL,
   proof               TEXT NOT NULL CHECK (proof IN ('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'local-owner')),
   approved_at         TEXT NOT NULL,
-  state               TEXT NOT NULL CHECK (state IN ('approved', 'refused', 'failed', 'imported', 'removed', 'armed', 'completed', 'merged', 'cancelled', 'sent-back')),
+  delegation_id       INTEGER NOT NULL,
+  state               TEXT NOT NULL CHECK (state IN ('approved', 'refused', 'failed', 'imported', 'removed', 'armed', 'completed', 'merging', 'merged', 'cancelled', 'sent-back')),
   reason              TEXT CHECK (reason IS NULL OR (length(reason) BETWEEN 1 AND 40 AND reason NOT GLOB '*[^a-z-]*')),
   detail              TEXT CHECK (detail IS NULL OR length(detail) <= 2000),
   task_id             TEXT CHECK (task_id IS NULL OR length(task_id) BETWEEN 1 AND 200),
@@ -52,12 +60,16 @@ CREATE TABLE IF NOT EXISTS flexible_ship (
   feedback            TEXT CHECK (feedback IS NULL OR length(feedback) BETWEEN 1 AND 20000),
   merge_head          TEXT CHECK (merge_head IS NULL OR (${SHA("merge_head")})),
   merge_at            TEXT,
+  check_receipt       TEXT CHECK (check_receipt IS NULL OR length(check_receipt) BETWEEN 1 AND 128),
+  merge_token         TEXT CHECK (merge_token IS NULL OR (${HEX32("merge_token")})),
+  merge_reserved_at   TEXT,
   state_at            TEXT NOT NULL,
   UNIQUE (thread, seq),
   CHECK ((task_id IS NULL) = (scope_digest IS NULL)),
-  CHECK ((task_id IS NOT NULL) = (state IN ('armed', 'completed', 'merged', 'cancelled', 'sent-back'))),
-  CHECK ((merge_head IS NULL) = (merge_at IS NULL)),
-  CHECK (state NOT IN ('completed', 'merged') OR merge_head IS NOT NULL),
+  CHECK ((task_id IS NOT NULL) = (state IN ('armed', 'completed', 'merging', 'merged', 'cancelled', 'sent-back'))),
+  CHECK ((merge_head IS NULL) = (merge_at IS NULL) AND (merge_head IS NULL) = (check_receipt IS NULL)),
+  CHECK (state NOT IN ('completed', 'merging', 'merged') OR merge_head IS NOT NULL),
+  CHECK ((state = 'merging') = (merge_token IS NOT NULL) AND (merge_token IS NULL) = (merge_reserved_at IS NULL)),
   CHECK ((feedback IS NOT NULL) = (state = 'sent-back')),
   CHECK (state NOT IN ('refused', 'failed') OR reason IS NOT NULL)
 );
@@ -73,14 +85,17 @@ WHEN NEW.id IS NOT OLD.id OR NEW.thread IS NOT OLD.thread OR NEW.seq IS NOT OLD.
   OR NEW.candidate IS NOT OLD.candidate OR NEW.import_ref IS NOT OLD.import_ref OR NEW.branch IS NOT OLD.branch OR NEW.branch_before IS NOT OLD.branch_before
   OR NEW.terms_json IS NOT OLD.terms_json OR NEW.digest IS NOT OLD.digest OR NEW.summary_key IS NOT OLD.summary_key OR NEW.approved_by IS NOT OLD.approved_by
   OR NEW.approved_generation IS NOT OLD.approved_generation OR NEW.proof IS NOT OLD.proof OR NEW.approved_at IS NOT OLD.approved_at
+  OR NEW.delegation_id IS NOT OLD.delegation_id
   OR (OLD.task_id IS NOT NULL AND (NEW.task_id IS NOT OLD.task_id OR NEW.scope_digest IS NOT OLD.scope_digest))
-  OR (OLD.merge_head IS NOT NULL AND (NEW.merge_head IS NOT OLD.merge_head OR NEW.merge_at IS NOT OLD.merge_at))
+  OR (OLD.merge_head IS NOT NULL AND (NEW.merge_head IS NOT OLD.merge_head OR NEW.merge_at IS NOT OLD.merge_at OR NEW.check_receipt IS NOT OLD.check_receipt))
+  OR (OLD.state = 'merging' AND NEW.state = 'merging' AND (NEW.merge_token IS NOT OLD.merge_token OR NEW.merge_reserved_at IS NOT OLD.merge_reserved_at))
   OR (OLD.feedback IS NOT NULL AND NEW.feedback IS NOT OLD.feedback)
   OR OLD.state IN ('refused', 'failed', 'removed', 'merged', 'cancelled', 'sent-back')
   OR (OLD.state = 'approved' AND NEW.state NOT IN ('approved', 'refused', 'failed', 'imported'))
   OR (OLD.state = 'imported' AND NEW.state NOT IN ('imported', 'armed', 'removed'))
   OR (OLD.state = 'armed' AND NEW.state NOT IN ('armed', 'completed', 'cancelled', 'sent-back'))
-  OR (OLD.state = 'completed' AND NEW.state NOT IN ('completed', 'merged', 'cancelled', 'sent-back'))
+  OR (OLD.state = 'completed' AND NEW.state NOT IN ('completed', 'merging', 'merged', 'cancelled', 'sent-back'))
+  OR (OLD.state = 'merging' AND NEW.state NOT IN ('merging', 'merged', 'completed', 'cancelled'))
 BEGIN
   SELECT RAISE(ABORT, 'a Flexible ship is written once and its state only moves forward');
 END;

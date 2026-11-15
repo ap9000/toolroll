@@ -38,7 +38,7 @@
  * (Codex round 2, required change 7). fileAndSeal below files the same verify-only task (its scope's prepared candidate,
  * planning skipped, the same out-of-scope words) from the import instead, and seals it in the same transaction.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE, flexibleNetworkOf, flexibleStanding, flexibleTwoPerson, type FlexibleNetwork } from "./flexible.js";
@@ -60,6 +60,8 @@ import { fullCheckGate } from "./result-follow-ups.js";
 import { runCheckLevel } from "./check-levels.js";
 import { FLEXIBLE_FILED_PREFIX } from "./flexible-merge-guard.js";
 import { run } from "./exec.js";
+import { verificationEvidence } from "./verification-evidence.js";
+import { readVerificationView } from "./contracts/verification-view.js";
 import { hardenedGit } from "./teardown-git.js";
 import type { Store } from "./store.js";
 import type { Runner } from "./worktree.js";
@@ -99,8 +101,13 @@ export type FlexibleShipTerms = {
   outOfScope: string;
   /** The project's check command, as approved (its digest), run on the exact commit with no way to skip it. */
   check: { command: string; digest: string };
-  /** The press is the merge's authority: Toolroll merges only once that check passes on the exact candidate. */
+  /** The press is the merge's authority: Toolroll merges only once that check passes on the exact candidate commit. */
   merge: "when-checks-pass";
+  /** Where it merges and what Toolroll may do there, from the project's publication grant as signed: any change
+   * cancels the merge. */
+  github: { repo: string; remote: string; base: string; method: "squash" | "merge" | "rebase"; capabilities: string[]; draft: boolean };
+  /** The project's Flexible terms the press was made under (their digest): ending them ends the Ship. */
+  delegation: string;
   network: FlexibleNetwork;
   /** The disclosure is a term: the thread could read history beyond its base. */
   history: "beyond-base";
@@ -126,6 +133,8 @@ export function flexibleShipSummary(terms: FlexibleShipTerms, digest: string): A
     { label: "Done when", words: terms.acceptance.map(one => one.statement).join(" "), fields: ["acceptance"] },
     { label: "Checks", words: `${terms.check.command} runs on this exact commit. It can't be skipped.`, fields: ["ship.check"] },
     { label: "Merges", words: MERGE_WORDS, fields: ["ship.merge"] },
+    { label: "Merges into", words: `${terms.github.repo}, branch ${terms.github.base}, by ${terms.github.method}`,
+      lines: [`Toolroll may ${terms.github.capabilities.map(one => one.replace(/-/g, " ")).join(", ")} there${terms.github.draft ? ", as a draft" : ""}, through ${terms.github.remote}.`], fields: ["ship.github"] },
     { label: "Further changes", words: "Need a new Ship.", fields: ["outOfScope"] },
   ];
   const warnings: SummaryNote[] = [{ words: HISTORY_WORDS, fields: ["ship.history"] },
@@ -137,7 +146,7 @@ export function flexibleShipSummary(terms: FlexibleShipTerms, digest: string): A
 
 export type FlexibleShipReason = "not-available" | "thread-unknown" | "not-owner" | "not-an-approver" | "stale-generation" | "two-person" | "not-flexible"
   | "no-check" | "thread-running" | "invalid-request" | "changed" | "machine-proof" | "proof-refused" | "handoff-failed" | "approval-refused"
-  | "not-found" | "wrong-state" | "cancelled";
+  | "not-found" | "wrong-state" | "cancelled" | "no-publishing" | "merging";
 export type FlexibleShipRefusal = { ok: false; reason: FlexibleShipReason; message: string };
 
 const WORDS: Readonly<Record<FlexibleShipReason, string>> = Object.freeze({
@@ -159,6 +168,8 @@ const WORDS: Readonly<Record<FlexibleShipReason, string>> = Object.freeze({
   "not-found": "There's no such Ship.",
   "wrong-state": "This Ship can't do that now.",
   "cancelled": "The merge was stopped for good.",
+  "no-publishing": "This project can't publish pull requests, so a Flexible thread's work can't merge from it. Set up pull requests first. Nothing changed.",
+  "merging": "Too late: the merge is already happening. Its outcome is read back from GitHub.",
 });
 const refuse = (reason: FlexibleShipReason, detail?: string): FlexibleShipRefusal =>
   ({ ok: false, reason, message: detail === undefined ? WORDS[reason] : `${WORDS[reason]} (${detail})` });
@@ -168,14 +179,14 @@ const refuse = (reason: FlexibleShipReason, detail?: string): FlexibleShipRefusa
 /** The thread's owner acting now, from Toolroll's records: an active approver of the project, the thread's owner, the
  * project not two-person, its Flexible terms live. Their current generation, or why not. Read inside the caller's
  * transaction. */
-function ownerStanding(store: Store, thread: FlexibleThreadRow, by: string): { generation: number } | FlexibleShipRefusal {
+function ownerStanding(store: Store, thread: FlexibleThreadRow, by: string): { generation: number; termsId: number; termsDigest: string } | FlexibleShipRefusal {
   if (thread.createdBy !== by) return refuse("not-owner");
   const account = store.accountOf(by);
   if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(by, thread.repo)) return refuse("not-an-approver");
   if (flexibleTwoPerson(store, thread.repo)) return refuse("two-person");
   const standing = flexibleStanding(store, thread.repo);
   if (standing.state !== "on") return refuse("not-flexible", standing.state);
-  return { generation: account.generation };
+  return { generation: account.generation, termsId: standing.id, termsDigest: standing.digest };
 }
 
 /** The person, proved as an ordinary approval proves them (scope.ts authenticateApprover: a password, a remembered
@@ -199,6 +210,14 @@ function branchHeld(store: Store, thread: string): string | null {
 }
 const nextSeq = (store: Store, thread: string): number => Number(store.handle.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM flexible_ship WHERE thread = ?").get(thread)!["n"]);
 
+/** Where the project's pull requests go and what Toolroll may do there, from its live publication grant; null when it
+ * can't push and open pull requests. */
+function destinationOf(store: Store, repo: string): FlexibleShipTerms["github"] | null {
+  const grant = store.publicationGrantFor(repo);
+  if (grant === null || !grant.capabilities.includes("push-branch") || !grant.capabilities.includes("open-pr")) return null;
+  return { repo: grant.githubRepo, remote: grant.remote, base: grant.base, method: grant.mergeMethod ?? "squash", capabilities: [...grant.capabilities].sort(), draft: grant.draft };
+}
+
 // ---- the terms, and the one press -------------------------------------------------------------------------------------
 
 export type FlexibleShipText = { title?: string; goal?: string; acceptance?: unknown };
@@ -221,6 +240,8 @@ export async function flexibleShipTerms(store: Store, input: { thread: string; b
   if (validateTaskText({ title, goal }) !== null || goal === "") return refuse("invalid-request");
   const parsed = parseAcceptanceCriteria(input.text?.acceptance ?? DEFAULT_ACCEPTANCE);
   if (parsed.problems.length > 0 || parsed.criteria.length === 0) return refuse("invalid-request");
+  const destination = destinationOf(store, thread.repo);
+  if (destination === null) return refuse("no-publishing");
   const read = await readFlexibleCandidate(store, { thread: thread.id, ...(input.runner === undefined ? {} : { runner: input.runner }) });
   if (!read.ok) return read;
   const seq = nextSeq(store, thread.id);
@@ -228,7 +249,7 @@ export async function flexibleShipTerms(store: Store, input: { thread: string; b
     kind: "flexible-ship", version: FLEXIBLE_SHIP_VERSION, thread: thread.id, repo: thread.repo, owner: input.by, ownerGeneration: standing.generation, seq,
     base: read.base, candidate: read.candidate, branch: flexibleThreadBranch(thread.id), importRef: flexibleImportRef(thread.id, seq), changedPaths: read.changedPaths,
     title, goal, acceptance: parsed.criteria, outOfScope: SHIP_OUT_OF_SCOPE, check: { command: check.command, digest: check.digest }, merge: "when-checks-pass",
-    network: flexibleNetworkOf(store, thread.repo), history: "beyond-base",
+    github: destination, delegation: standing.termsDigest, network: flexibleNetworkOf(store, thread.repo), history: "beyond-base",
   };
   const digest = flexibleShipDigestOf(terms);
   return { ok: true, terms, digest, summary: flexibleShipSummary(terms, digest) };
@@ -273,11 +294,12 @@ async function shipLocked(store: Store, input: { thread: string; by: string; tok
     const standing = ownerStanding(store, thread, input.by);
     if ("ok" in standing) return standing;
     if (standing.generation !== terms.ownerGeneration) return refuse("stale-generation");
+    if (standing.termsDigest !== terms.delegation) return refuse("changed");
     if (nextSeq(store, thread.id) !== terms.seq || store.handle.prepare("SELECT 1 FROM flexible_ship WHERE id = ?").get(digest) !== undefined) return refuse("changed");
     const branchBefore = branchHeld(store, thread.id);
-    store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, branch_before, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, state, state_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`).run(digest, thread.id, terms.seq, thread.repo, terms.base, terms.candidate, terms.importRef, terms.branch, branchBefore,
-      canonicalJson(terms), digest, shown.summary.key, input.by, standing.generation, method, now, now);
+    store.handle.prepare(`INSERT INTO flexible_ship (id, thread, seq, repo, base_sha, candidate, import_ref, branch, branch_before, terms_json, digest, summary_key, approved_by, approved_generation, proof, approved_at, delegation_id, state, state_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?)`).run(digest, thread.id, terms.seq, thread.repo, terms.base, terms.candidate, terms.importRef, terms.branch, branchBefore,
+      canonicalJson(terms), digest, shown.summary.key, input.by, standing.generation, method, now, standing.termsId, now);
     store.recordAction({ at: now, actor: input.by, repo: thread.repo, taskId: null, runId: null, source: "work", action: "flexible ship approved", outcome: "flexible-ship",
       detail: `thread ${thread.id} · ship ${terms.seq} · terms ${digest} · candidate ${terms.candidate} · ${method} · generation ${standing.generation}` });
     return { branchBefore };
@@ -350,7 +372,7 @@ async function fileAndSeal(store: Store, input: { terms: FlexibleShipTerms; dige
 
 export type FlexibleShipRow = { id: string; thread: string; seq: number; repo: string; base: string; candidate: string; importRef: string; branch: string; branchBefore: string | null;
   terms: FlexibleShipTerms; approvedBy: string; approvedGeneration: number; state: string; reason: string | null; detail: string | null; taskId: string | null; scopeDigest: string | null;
-  feedback: string | null; mergeHead: string | null; stateAt: string };
+  feedback: string | null; mergeHead: string | null; checkReceipt: string | null; mergeToken: string | null; mergeReservedAt: string | null; delegationId: number; stateAt: string };
 
 /** A Ship, read exactly: its terms canonical and hashing to its digest, which is its id; its fixed columns the terms'
  * own. Null for anything else (never a guess). */
@@ -364,7 +386,8 @@ function readRow(row: Record<string, unknown> | undefined): FlexibleShipRow | nu
   const text = (key: string) => (row[key] === null || row[key] === undefined ? null : String(row[key]));
   return { id: String(row["id"]), thread: terms.thread, seq: terms.seq, repo: terms.repo, base: terms.base, candidate: terms.candidate, importRef: terms.importRef, branch: terms.branch,
     branchBefore: text("branch_before"), terms, approvedBy: String(row["approved_by"]), approvedGeneration: Number(row["approved_generation"]), state: String(row["state"]), reason: text("reason"),
-    detail: text("detail"), taskId: text("task_id"), scopeDigest: text("scope_digest"), feedback: text("feedback"), mergeHead: text("merge_head"), stateAt: String(row["state_at"]) };
+    detail: text("detail"), taskId: text("task_id"), scopeDigest: text("scope_digest"), feedback: text("feedback"), mergeHead: text("merge_head"), checkReceipt: text("check_receipt"),
+    mergeToken: text("merge_token"), mergeReservedAt: text("merge_reserved_at"), delegationId: Number(row["delegation_id"]), stateAt: String(row["state_at"]) };
 }
 
 /** Every Ship of a thread, newest first: what the thread's Ship view shows (an imported Ship with no task among them). */
@@ -390,8 +413,14 @@ function shipOfTask(store: Store, taskId: string): FlexibleShipRow | null {
 
 // ---- the armed merge ----------------------------------------------------------------------------------------------------
 
-/** End an armed (or completed) Ship for good, with why. */
-function cancelArmed(store: Store, ship: FlexibleShipRow, why: string, now: Date, actor = "toolroll"): boolean {
+/** Reservations this process holds while its merge call runs: never read back as uncertain while they're here. */
+const inFlight = new Set<string>();
+/** A reservation older than this, held by no merge running here, is uncertain: its outcome is read back from GitHub
+ * (pull-request-flow.ts holds its own merge reservation for the same window). */
+export const FLEXIBLE_STALE_MERGE_MS = 15 * 60_000;
+
+/** End an armed (or completed) Ship for good, with why. Never a reserved one: that merge is past stopping. */
+function cancelArmed(store: Store, ship: Pick<FlexibleShipRow, "id" | "repo" | "taskId">, why: string, now: Date, actor = "toolroll"): boolean {
   return store.transact(() => {
     const moved = store.handle.prepare("UPDATE flexible_ship SET state = 'cancelled', detail = ?, state_at = ? WHERE id = ? AND state IN ('armed', 'completed')").run(why.slice(0, 2000), now.toISOString(), ship.id);
     if (Number(moved.changes) !== 1) return false;
@@ -400,95 +429,206 @@ function cancelArmed(store: Store, ship: FlexibleShipRow, why: string, now: Date
   });
 }
 
+/**
+ * Why the press's authority no longer holds for `ship`, or null. Read from Toolroll's records only, inside the caller's
+ * transaction: the owner still an approver of the project, at the generation they shipped with, under exactly the
+ * Flexible terms they shipped under (not a later row: a revoked delegation never comes back); the project not
+ * two-person; the task's sealed scope unchanged and the task not cancelled; where it merges and what Toolroll may do
+ * there exactly as signed; the project's check command exactly the signed one.
+ */
+function authorityProblem(store: Store, ship: FlexibleShipRow): string | null {
+  const thread = flexibleThread(store, ship.thread);
+  if (thread === null) return "its thread is gone";
+  const standing = ownerStanding(store, thread, ship.approvedBy);
+  if ("ok" in standing) return `the person's authority ended: ${standing.message}`;
+  if (standing.generation !== ship.approvedGeneration) return "the person's account changed since they shipped it";
+  if (standing.termsId !== ship.delegationId || standing.termsDigest !== ship.terms.delegation) return "the project's Flexible terms it was shipped under ended";
+  if (ship.taskId === null || shipOfTask(store, ship.taskId) === null) return "its task's sealed terms no longer hold";
+  if (store.getTask(ship.taskId)?.state === "cancelled") return "its task was cancelled";
+  const destination = destinationOf(store, ship.repo);
+  if (destination === null || canonicalJson(destination) !== canonicalJson(ship.terms.github)) return "where it merges, or what Toolroll may do there, changed since it was shipped";
+  if (store.liveVerifyCommand(ship.repo)?.digest !== ship.terms.check.digest) return "the project's check command changed since it was shipped";
+  return null;
+}
+
+/** The newest builder run of a task, or null. */
+function newestRun(store: Store, taskId: string) {
+  const ref = store.lookupRef(taskId);
+  const runs = ref === null ? [] : store.runsFor(ref.id).filter(one => one.role !== "reviewer");
+  return runs.reduce<typeof runs[number] | null>((best, one) => (best === null || one.id > best.id ? one : best), null);
+}
+
+/** The digest of `runId`'s sealed check receipt (verification-evidence.ts) when it is the signed check command, on
+ * exactly the shipped commit, passed; else null. The full check gate (fullCheckGate) must be clear too. */
+function passingCheck(store: Store, root: string, runId: number, ship: FlexibleShipRow, now: Date): string | null {
+  if (runCheckLevel(store, runId) === null || fullCheckGate(store, runId, now).state !== "clear") return null;
+  const evidence = verificationEvidence(store, root, runId);
+  if (!evidence.ok || evidence.bytes === null) return null;
+  const view = readVerificationView(evidence.bytes);
+  if (!view.ok) return null;
+  const result = view.value.result as { exitCode?: unknown };
+  return view.value.head === ship.candidate && view.value.command.digest === ship.terms.check.digest && result.exitCode === 0 ? evidence.digest : null;
+}
+
 export type FlexibleArmedStep = { ok: true; state: "waiting" | "completed" | "merged"; why?: string } | FlexibleShipRefusal;
 
 /**
- * One step of an armed Ship's merge (the watch loop's pass runs it): re-prove the press's authority, then complete
- * the exact checked result and owe its pull request, or merge that head. Waits (and says why) while the result isn't
+ * One step of an armed Ship's merge (the watch loop's pass runs it). Waits (and says why) while the result isn't
  * built or checked yet, its check didn't pass, or its pull request isn't open; never merges on a failed or missing
- * check. Ends the Ship for good when the authority lapsed, the head isn't the candidate's or changed since completion,
- * the base moved out from under it, or the task was cancelled.
+ * check. Ends the Ship for good when its authority lapsed (authorityProblem), the result isn't the shipped commit
+ * itself (another commit, even with identical files, needs a new Ship), the head changed after completion, or the
+ * base moved out from under it.
+ *
+ * Armed: once the newest result IS the candidate commit and its signed check passed on it, complete it and owe its
+ * pull request to exactly the signed destination, binding the check's receipt. Completed: merge, through
+ * mergePullRequest, whose own reservation transaction takes this Ship's reservation (completed → merging) after
+ * re-proving everything, immediately before the call to GitHub. A cancel or revocation that lands first ends the Ship
+ * and the merge refuses; once reserved, the outcome is recorded, or read back from GitHub when it's uncertain.
  */
 export async function mergeArmedFlexible(store: Store, input: { taskId: string; root: string; exec?: PublishExec; clock?: () => Date; runner?: Runner }): Promise<FlexibleArmedStep> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const clock = input.clock ?? (() => new Date());
   const found = rowOfTask(store, input.taskId);
   if (found === null) return refuse("not-found");
+  if (found.state === "merging") return { ok: true, state: "waiting", why: "its merge is under way; its outcome is read back from GitHub" };
   if (found.state !== "armed" && found.state !== "completed") return refuse("wrong-state", found.state);
   const stop = (why: string): FlexibleShipRefusal => { cancelArmed(store, found, why, clock()); return refuse("cancelled", why); };
-  const ship = shipOfTask(store, input.taskId);
-  if (ship === null) return stop("its task's sealed terms no longer hold");
-  // The press's authority, re-proved: the owner still an approver of the project at the generation they shipped with,
-  // the project's Flexible terms live, not two-person; the task not cancelled.
-  const thread = flexibleThread(store, ship.thread);
-  if (thread === null) return stop("its thread is gone");
-  const standing = ownerStanding(store, thread, ship.approvedBy);
-  if ("ok" in standing) return stop(`the person's authority ended: ${standing.message}`);
-  if (standing.generation !== ship.approvedGeneration) return stop("the person's account changed since they shipped it");
-  if (store.getTask(input.taskId)?.state === "cancelled") return stop("its task was cancelled");
-  const grant = store.publicationGrantFor(ship.repo);
-  if (grant === null) return { ok: true, state: "waiting", why: "pull requests aren't set up for this project" };
+  const lapsed = authorityProblem(store, found);
+  if (lapsed !== null) return stop(lapsed);
   // The base still under the branch it merges into: a base rewritten out from under it is an incompatible move.
   let project: string;
-  try { project = realpathSync(ship.repo); } catch { return { ok: true, state: "waiting", why: "the project can't be read" }; }
+  try { project = realpathSync(found.repo); } catch { return { ok: true, state: "waiting", why: "the project can't be read" }; }
   const read = hardenedGit(input.runner ?? run, "read", { repo: project });
-  const git = (args: string[]) => read("git", ["--no-replace-objects", ...args], { cwd: project, timeoutMs: 30_000 });
-  const based = await git(["merge-base", "--is-ancestor", ship.base, `refs/heads/${grant.base}`]);
-  if (based.code === 1) return stop(`its starting commit is no longer on ${grant.base}`);
-  if (based.code !== 0) return { ok: true, state: "waiting", why: `${grant.base} couldn't be read` };
-  const ref = store.lookupRef(input.taskId);
-  const runs = ref === null ? [] : store.runsFor(ref.id).filter(one => one.role !== "reviewer");
-  const newest = runs.reduce<typeof runs[number] | null>((best, one) => (best === null || one.id > best.id ? one : best), null);
+  const based = await read("git", ["--no-replace-objects", "merge-base", "--is-ancestor", found.base, `refs/heads/${found.terms.github.base}`], { cwd: project, timeoutMs: 30_000 });
+  if (based.code === 1) return stop(`its starting commit is no longer on ${found.terms.github.base}`);
+  if (based.code !== 0) return { ok: true, state: "waiting", why: `${found.terms.github.base} couldn't be read` };
+  const newest = newestRun(store, input.taskId);
   if (newest === null || newest.headRevision === null || newest.finishedAt == null) return { ok: true, state: "waiting", why: "its check task hasn't finished" };
   const head = newest.headRevision;
-  // Green, on exactly this commit: the check level recorded, the project's check command set, the full check passed.
-  const green = runCheckLevel(store, newest.id) !== null && store.liveVerifyCommand(ship.repo) !== null && fullCheckGate(store, newest.id, clock()).state === "clear";
-  if (ship.state === "armed") {
-    const tree = async (rev: string) => { const out = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${rev}^{tree}`]); return out.code === 0 ? out.stdout.trim() : null; };
-    const [built, imported] = [await tree(head), await tree(ship.candidate)];
-    if (built === null || imported === null) return { ok: true, state: "waiting", why: "its commit couldn't be read" };
-    if (built !== imported) return stop("the result isn't exactly the shipped candidate");
-    if (!green) return { ok: true, state: "waiting", why: "the check hasn't passed on this exact commit" };
-    const receipt = assignmentOf(store, input.taskId, clock(), { principal: "operator", repos: [ship.repo] }, input.root)?.receipt ?? null;
+  // The exact commit the person shipped, never another with the same files.
+  if (head !== found.candidate) return stop("the result isn't the shipped commit itself; another commit, even with identical files, needs a new Ship");
+  const check = passingCheck(store, input.root, newest.id, found, clock());
+  if (found.state === "armed") {
+    if (check === null) return { ok: true, state: "waiting", why: "the check hasn't passed on this exact commit" };
+    const receipt = assignmentOf(store, input.taskId, clock(), { principal: "operator", repos: [found.repo] }, input.root)?.receipt ?? null;
     if (receipt === null || receipt.runId !== newest.id || (receipt.head !== null && receipt.head !== head)) return { ok: true, state: "waiting", why: "its result isn't ready to complete yet" };
     try {
       store.transact(() => {
-        const again = shipOfTask(store, input.taskId);
+        const again = rowOfTask(store, input.taskId);
         if (again === null || again.state !== "armed") throw new ShipStop(refuse("wrong-state"));
-        const now = store.accountOf(again.approvedBy);
-        if (now === null || now.generation !== again.approvedGeneration) throw new ShipStop(refuse("stale-generation"));
+        const problem = authorityProblem(store, again);
+        if (problem !== null) { cancelArmed(store, again, problem, clock()); throw new ShipStop(refuse("cancelled", problem)); }
         const who = verifyApproverStanding(store, again.approvedBy, again.approvedGeneration, [again.repo]);
         if (!who.ok) throw new ShipStop(refuse("not-an-approver"));
         const opened = completeAndOpenPullRequest(store, { taskId: input.taskId, digest: receipt.digest, runId: newest.id, who: who.who, root: input.root }, clock());
         if (!opened.ok) throw new ShipStop(refuse("wrong-state", opened.message));
-        if (opened.publication.headSha !== head) throw new ShipStop(refuse("wrong-state", "its pull request names another commit"));
+        if (opened.publication.headSha !== head || opened.publication.githubRepo !== again.terms.github.repo || opened.publication.base !== again.terms.github.base) {
+          throw new ShipStop(refuse("wrong-state", "its pull request would go somewhere other than the shipped commit and destination"));
+        }
         const at = clock().toISOString();
-        store.handle.prepare("UPDATE flexible_ship SET state = 'completed', merge_head = ?, merge_at = ?, state_at = ? WHERE id = ? AND state = 'armed'").run(head, at, at, again.id);
+        store.handle.prepare("UPDATE flexible_ship SET state = 'completed', merge_head = ?, merge_at = ?, check_receipt = ?, state_at = ? WHERE id = ? AND state = 'armed'").run(head, at, check, at, again.id);
         store.recordAction({ at, actor: again.approvedBy, repo: again.repo, taskId: input.taskId, runId: newest.id, source: "work", action: "flexible ship completed", outcome: head,
-          detail: `ship ${again.id} · checked head ${head} · pull request owed` });
+          detail: `ship ${again.id} · checked head ${head} · check receipt ${check} · pull request owed to ${again.terms.github.repo} ${again.terms.github.base}` });
       });
     } catch (error) {
-      if (error instanceof ShipStop) return { ok: true, state: "waiting", why: error.refusal.message };
+      if (error instanceof ShipStop) return error.refusal.reason === "cancelled" ? error.refusal : { ok: true, state: "waiting", why: error.refusal.message };
       throw error;
     }
     return { ok: true, state: "completed" };
   }
-  // Completed: merge exactly the checked head, through its pull request, while everything still stands.
+  // Completed: merge exactly the checked head, through its pull request to the signed destination.
   const publication = store.publicationForRun(newest.id);
-  if (head !== ship.mergeHead || publication === null || publication.headSha !== ship.mergeHead) return stop("the result's head changed since its check passed");
-  if (!green) return { ok: true, state: "waiting", why: "the check no longer stands on this exact commit" };
+  if (head !== found.mergeHead || publication === null || publication.headSha !== found.mergeHead) return stop("the result's head changed since its check passed");
+  if (publication.githubRepo !== found.terms.github.repo || publication.base !== found.terms.github.base) return stop("its pull request goes somewhere other than the signed destination");
+  if (check === null || check !== found.checkReceipt) return { ok: true, state: "waiting", why: "the check no longer stands on this exact commit" };
   if (publication.prNumber === null) return { ok: true, state: "waiting", why: "its pull request isn't open yet" };
-  const merged = await mergePullRequest(store, { runId: newest.id, by: ship.approvedBy, flexibleShip: ship.id, ...(input.exec === undefined ? {} : { exec: input.exec }), clock });
-  if (!merged.ok) {
-    if (merged.reason === "moved" || merged.reason === "closed") return stop(merged.message);
-    return { ok: true, state: "waiting", why: merged.message };
+  const token = randomBytes(16).toString("hex");
+  inFlight.add(token);
+  let merged: Awaited<ReturnType<typeof mergePullRequest>>;
+  try {
+    merged = await mergePullRequest(store, { runId: newest.id, by: found.approvedBy, flexibleShip: found.id, flexibleToken: token, clock, ...(input.exec === undefined ? {} : { exec: input.exec }),
+      proceed: () => reserveMerge(store, { ship: found.id, token, runId: newest.id, root: input.root, now: clock() }) });
+  } finally { inFlight.delete(token); }
+  const after = rowOfTask(store, input.taskId);
+  if (merged.ok) {
+    store.transact(() => {
+      store.handle.prepare("UPDATE flexible_ship SET state = 'merged', merge_token = NULL, merge_reserved_at = NULL, state_at = ? WHERE id = ? AND state IN ('merging', 'completed')").run(clock().toISOString(), found.id);
+      store.recordAction({ at: clock().toISOString(), actor: found.approvedBy, repo: found.repo, taskId: input.taskId, runId: newest.id, source: "work", action: "flexible merged", outcome: merged.commit ?? "merged",
+        detail: `ship ${found.id} · head ${head}${after?.state === "completed" ? " · found already merged on GitHub" : ""}` });
+    });
+    return { ok: true, state: "merged" };
   }
+  if (after?.state === "cancelled") return refuse("cancelled", after.detail ?? merged.message);
+  // Reserved, and the call didn't merge (or said so unclearly): GitHub says what happened.
+  if (after?.state === "merging" && after.mergeToken === token) return settleMerging(store, after, input.exec, clock);
+  return { ok: true, state: "waiting", why: merged.message };
+}
+
+/**
+ * The reservation (completed → merging), taken INSIDE mergePullRequest's own reservation transaction, immediately
+ * before its call to GitHub: the Ship still completed (not cancelled), its authority re-proved (authorityProblem), the
+ * newest result still the shipped commit and the checked head, the signed check's receipt the one bound at
+ * completion. A lapsed authority cancels the Ship in this same transaction; anything else waits. True when reserved.
+ */
+function reserveMerge(store: Store, input: { ship: string; token: string; runId: number; root: string; now: Date }): boolean {
+  const ship = readRow(store.handle.prepare("SELECT * FROM flexible_ship WHERE id = ?").get(input.ship) as Record<string, unknown> | undefined);
+  if (ship === null || ship.state !== "completed" || ship.taskId === null) return false;
+  const problem = authorityProblem(store, ship);
+  if (problem !== null) { cancelArmed(store, ship, problem, input.now); return false; }
+  const newest = newestRun(store, ship.taskId);
+  if (newest === null || newest.id !== input.runId || newest.headRevision !== ship.candidate || ship.mergeHead !== ship.candidate) return false;
+  if (passingCheck(store, input.root, newest.id, ship, input.now) !== ship.checkReceipt) return false;
+  const at = input.now.toISOString();
+  const moved = store.handle.prepare("UPDATE flexible_ship SET state = 'merging', merge_token = ?, merge_reserved_at = ?, state_at = ? WHERE id = ? AND state = 'completed'").run(input.token, at, at, ship.id);
+  if (Number(moved.changes) !== 1) return false;
+  store.recordAction({ at, actor: ship.approvedBy, repo: ship.repo, taskId: ship.taskId, runId: newest.id, source: "work", action: "flexible merge reserved", outcome: ship.candidate, detail: `ship ${ship.id}` });
+  return true;
+}
+
+/**
+ * A reserved merge's outcome, read back from GitHub (the call returned unclearly, or the process died during it): merged
+ * there → merged; still open on the shipped commit → released (completed: the next step re-proves everything before it
+ * reserves again); closed, or moved to another commit → cancelled. Unreadable: left reserved, read again later.
+ */
+async function settleMerging(store: Store, ship: FlexibleShipRow, exec: PublishExec | undefined, clock: () => Date): Promise<FlexibleArmedStep> {
+  const newest = ship.taskId === null ? null : newestRun(store, ship.taskId);
+  const publication = newest === null ? null : store.publicationForRun(newest.id);
+  if (publication === null || publication.prNumber === null) return { ok: true, state: "waiting", why: "its merge's outcome can't be read yet" };
+  const viewed = await (exec ?? run)("gh", ["pr", "view", String(publication.prNumber), "--repo", ship.terms.github.repo, "--json", "state,headRefOid,mergeCommit"], { timeoutMs: 60_000 });
+  let state = "", headOid: string | null = null, commit: string | null = null;
+  try {
+    const payload = JSON.parse(viewed.stdout) as { state?: unknown; headRefOid?: unknown; mergeCommit?: { oid?: unknown } | null };
+    state = String(payload.state ?? "").toUpperCase();
+    headOid = typeof payload.headRefOid === "string" ? payload.headRefOid : null;
+    commit = typeof payload.mergeCommit?.oid === "string" ? payload.mergeCommit.oid : null;
+  } catch { state = ""; }
+  if (viewed.code !== 0 || state === "") return { ok: true, state: "waiting", why: "GitHub couldn't be read to settle the merge" };
+  const at = clock().toISOString();
+  const outcome: "merged" | "completed" | "cancelled" = state === "MERGED" ? "merged" : state === "OPEN" && headOid === ship.mergeHead ? "completed" : "cancelled";
   store.transact(() => {
-    store.handle.prepare("UPDATE flexible_ship SET state = 'merged', state_at = ? WHERE id = ? AND state = 'completed'").run(clock().toISOString(), ship.id);
-    store.recordAction({ at: clock().toISOString(), actor: ship.approvedBy, repo: ship.repo, taskId: input.taskId, runId: newest.id, source: "work", action: "flexible merged", outcome: merged.commit ?? "merged",
-      detail: `ship ${ship.id} · head ${head}` });
+    const moved = store.handle.prepare(`UPDATE flexible_ship SET state = ?, merge_token = NULL, merge_reserved_at = NULL, state_at = ?${outcome === "cancelled" ? ", detail = ?" : ""} WHERE id = ? AND state = 'merging' AND merge_token = ?`)
+      .run(...(outcome === "cancelled" ? [outcome, at, `its pull request is ${state.toLowerCase()} on GitHub${headOid !== ship.mergeHead ? " on another commit" : ""}`, ship.id, ship.mergeToken] : [outcome, at, ship.id, ship.mergeToken]));
+    if (Number(moved.changes) !== 1) return;
+    store.recordAction({ at, actor: "toolroll", repo: ship.repo, taskId: ship.taskId, runId: newest?.id ?? null, source: "policy", action: outcome === "merged" ? "flexible merged" : outcome === "completed" ? "flexible merge released" : "flexible merge cancelled",
+      outcome: outcome === "merged" ? commit ?? "merged" : outcome, detail: `ship ${ship.id} · read back from GitHub: ${state.toLowerCase()}` });
   });
-  return { ok: true, state: "merged" };
+  if (outcome === "merged") return { ok: true, state: "merged" };
+  if (outcome === "completed") return { ok: true, state: "waiting", why: "the merge didn't happen; it will be tried again once everything still holds" };
+  return refuse("cancelled", `its pull request is ${state.toLowerCase()} on GitHub`);
+}
+
+/** Reserved merges whose outcome is uncertain (held by no merge running here, past the window), settled from GitHub. */
+async function settleUncertainMerges(store: Store, exec: PublishExec | undefined, clock: () => Date): Promise<number> {
+  const before = new Date(clock().getTime() - FLEXIBLE_STALE_MERGE_MS).toISOString();
+  const rows = store.handle.prepare("SELECT * FROM flexible_ship WHERE state = 'merging' AND merge_reserved_at < ?").all(before) as Record<string, unknown>[];
+  let settled = 0;
+  for (const raw of rows) {
+    const ship = readRow(raw);
+    if (ship === null || ship.mergeToken === null || inFlight.has(ship.mergeToken)) continue;
+    const step = await settleMerging(store, ship, exec, clock);
+    if (!step.ok || step.state !== "waiting" || rowOfTask(store, ship.taskId!)?.state !== "merging") settled++;
+  }
+  return settled;
 }
 
 /**
@@ -535,10 +675,14 @@ export async function flexibleArmedPass(store: Store, input: { root: string; exe
   const clock = input.clock ?? (() => new Date());
   const runner = input.runner === undefined ? {} : { runner: input.runner };
   const reconciled = await reconcileFlexibleShips(store, { now: clock(), ...runner });
-  const report: FlexibleArmedReport = { ok: true, reconciled: reconciled.ok ? reconciled.settled : 0, completed: 0, merged: 0, cancelled: 0, waiting: 0 };
+  const uncertain = await settleUncertainMerges(store, input.exec, clock);
+  const report: FlexibleArmedReport = { ok: true, reconciled: (reconciled.ok ? reconciled.settled : 0) + uncertain, completed: 0, merged: 0, cancelled: 0, waiting: 0 };
   const tasks = store.handle.prepare("SELECT task_id FROM flexible_ship WHERE state IN ('armed', 'completed') ORDER BY approved_at").all().map(row => String(row["task_id"]));
   for (const taskId of tasks) {
-    const step = await mergeArmedFlexible(store, { taskId, root: input.root, clock, ...runner, ...(input.exec === undefined ? {} : { exec: input.exec }) });
+    let step: FlexibleArmedStep;
+    // One Ship's failure (a merge call that threw leaves its reservation for settleUncertainMerges) never stops the rest.
+    try { step = await mergeArmedFlexible(store, { taskId, root: input.root, clock, ...runner, ...(input.exec === undefined ? {} : { exec: input.exec }) }); }
+    catch { report.waiting++; continue; }
     if (!step.ok) { if (step.reason === "cancelled") report.cancelled++; continue; }
     report[step.state]++;
   }
@@ -551,8 +695,9 @@ export async function flexibleArmedPass(store: Store, input: { root: string; exe
 function ownersShip(store: Store, taskId: string, by: { name: string; generation: number }): FlexibleShipRow | FlexibleShipRefusal {
   const ship = shipOfTask(store, taskId) ?? rowOfTask(store, taskId);
   if (ship === null) return refuse("not-found");
-  if (ship.state !== "armed" && ship.state !== "completed") return refuse("wrong-state", ship.state);
   if (ship.approvedBy !== by.name) return refuse("not-owner");
+  if (ship.state === "merging") return refuse("merging");
+  if (ship.state !== "armed" && ship.state !== "completed") return refuse("wrong-state", ship.state);
   const account = store.accountOf(by.name);
   if (account === null || account.revokedAt !== null || account.generation !== by.generation) return refuse("stale-generation");
   return ship;

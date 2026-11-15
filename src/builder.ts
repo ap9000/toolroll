@@ -2251,7 +2251,7 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   const made = finishesKeptWork
     ? await keptWorkResult(captured, baseRevision, handoff.conclusion)
     : await commit(git, worktree, branch, taskId, scope as Scope, handoff.conclusion, scope?.candidate ?? null,
-      words => store.addRunNote(request.runId, "Toolroll", words, clock()));
+      words => store.addRunNote(request.runId, "Toolroll", words, clock()), store.filedViaOf(taskId)?.startsWith("flexible:") === true);
   if (made.ok && made.parked === undefined && made.committed) {
     const newHead = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
     if (newHead.code === 0) {
@@ -4148,6 +4148,8 @@ async function commit(
   summary: string,
   preparedCandidate: string | null = null,
   notice?: (words: string) => void,
+  /** A Flexible Ship's check task (flexible-ship.ts): its result is the shipped commit itself, never a new one. */
+  adoptCandidate = false,
 ): Promise<BuildResult> {
   const status = await git(GIT, ["--no-optional-locks", "status", "--porcelain"], { cwd: worktree });
   if (status.code !== 0) {
@@ -4214,6 +4216,13 @@ async function commit(
     if (exact.code !== 0) return { ok: false, reason: "commit-failure", message: exact.code === 1
       ? "The staged files no longer match the approved prepared candidate. The checkout is preserved; nothing was committed."
       : "The staged prepared candidate could not be verified. The checkout is preserved; nothing was committed." };
+  }
+
+  // A Flexible Ship's check runs on, and later merges, exactly the commit the person shipped (flexible-ship.ts): after
+  // every check above, the branch moves to that commit itself instead of a new one carrying its files.
+  if (adoptCandidate && preparedCandidate !== null) {
+    const adopted = await adoptPreparedCommit(git, worktree, preparedCandidate);
+    return adopted.ok ? { ok: true, committed: true, branch, summary } : { ok: false, reason: "commit-failure", message: adopted.message };
   }
 
   // The subject comes from the agreed goal, not from the agent's own prose.
@@ -4297,4 +4306,23 @@ function firstSentence(goal: string, limit: number): string {
   const cut = sentence.slice(0, limit);
   const lastSpace = cut.lastIndexOf(" ");
   return `${lastSpace > 20 ? cut.slice(0, lastSpace) : cut}…`;
+}
+
+/**
+ * Move a checkout's branch to a prepared candidate commit itself (a Flexible Ship's check task): only when the candidate
+ * descends from the branch's current commit, and only when its files are exactly what is staged; afterwards HEAD is the
+ * candidate and nothing is left staged or changed. Never a new commit, never a rewrite of the branch's history.
+ */
+export async function adoptPreparedCommit(git: Runner, worktree: string, candidate: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(candidate)) return { ok: false, message: "The shipped commit isn't an exact commit id. Nothing was committed." };
+  const descends = await git(GIT, ["--no-optional-locks", "merge-base", "--is-ancestor", "HEAD", candidate], { cwd: worktree });
+  if (descends.code !== 0) return { ok: false, message: "The shipped commit doesn't build on this branch's commit. The checkout is preserved; nothing was committed." };
+  const staged = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--quiet", candidate, "--"], { cwd: worktree });
+  if (staged.code !== 0) return { ok: false, message: "The staged files aren't exactly the shipped commit's. The checkout is preserved; nothing was committed." };
+  const moved = await git(GIT, ["reset", "--soft", "-q", candidate], { cwd: worktree });
+  if (moved.code !== 0) return { ok: false, message: `${firstLine(moved.stderr) || "The branch couldn't be moved to the shipped commit"}. The checkout is preserved.` };
+  const head = await git(GIT, ["--no-optional-locks", "rev-parse", "HEAD"], { cwd: worktree });
+  const clean = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--quiet", "HEAD", "--"], { cwd: worktree });
+  if (head.code !== 0 || head.stdout.trim() !== candidate || clean.code !== 0) return { ok: false, message: "The branch didn't land exactly on the shipped commit. The checkout is preserved." };
+  return { ok: true };
 }

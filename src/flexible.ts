@@ -301,7 +301,18 @@ const levelsWords = (terms: FlexibleTerms) => `max ${terms.max}, password-free $
 function endRow(store: Store, id: number, reason: "off" | "lowered" | "replaced" | "lapsed", by: string, detail: string | null, now: Date): boolean {
   const ended = store.handle.prepare("UPDATE flexible_terms SET ended_at = ?, ended_by = ?, end_reason = ?, end_detail = ? WHERE id = ? AND ended_at IS NULL")
     .run(now.toISOString(), by, reason, detail, id);
-  return Number(ended.changes) === 1;
+  if (Number(ended.changes) !== 1) return false;
+  // Every Ship armed under these terms (flexible-ship.ts) ends with them, in this same transaction, for good: a later
+  // row (Flexible turned on again, or lowered terms) never revives a merge pressed under this one. A merge already
+  // reserved (merging) is past stopping; its outcome is read back from GitHub.
+  const ships = store.handle.prepare("SELECT id, repo, task_id FROM flexible_ship WHERE delegation_id = ? AND state IN ('armed', 'completed')").all(id);
+  for (const ship of ships) {
+    store.handle.prepare("UPDATE flexible_ship SET state = 'cancelled', detail = ?, state_at = ? WHERE id = ? AND state IN ('armed', 'completed')")
+      .run(`the project's Flexible terms it was shipped under ended (${reason})`, now.toISOString(), String(ship["id"]));
+    store.recordAction({ at: now.toISOString(), actor: by, repo: String(ship["repo"]), taskId: ship["task_id"] === null ? null : String(ship["task_id"]), runId: null, source: "policy",
+      action: "flexible merge cancelled", outcome: "cancelled", detail: `ship ${String(ship["id"])} · the Flexible terms ended (${reason})` });
+  }
+  return true;
 }
 
 function insertRow(store: Store, row: { repo: string; terms: FlexibleTerms; signedJson: string; signedDigest: string; signedBy: string; signedAt: string; proof: "password-now" | "sso-now"; changedBy: string; derivedFrom: number | null }, now: Date): number {
