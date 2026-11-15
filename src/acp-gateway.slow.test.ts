@@ -238,20 +238,40 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
   test("a cancel mid-prompt is answered cancelled, is not a success, and what was alive at the cancel is gone after", async () => {
     check();
     let witnessed: { pid: number; group: number }[] = [];
+    const slowPid = join(worktree, "slow.pid");
+    // (On Linux the pid the agent wrote is its sandbox's own process view's, not this host's.)
+    const promptChild = (): number | null => process.platform === "linux" || !existsSync(slowPid) ? null : Number(readFileSync(slowPid, "utf8"));
     const result = await run("slow", { onControl: control => {
-      // Cancel only once a live descendant is seen, from the plane's own reading of the agent's tree.
+      // Cancel only mid-prompt, once the prompt's own child is running and the plane's own reading of the agent's tree
+      // shows it. The agent writes slow.pid after it starts that child, while handling the prompt. Never before: in the
+      // launch's first moments a reading can show the launch shell's own short-lived children (a process listing isn't
+      // atomic: it takes ids and parents first and each command name after, so the root can read as the agent while its
+      // rows are still the shell's), and a cancel before the prompt is in flight sends nothing at all.
       const poll = setInterval(() => {
+        if (!existsSync(slowPid)) return;
         const live = control.liveDescendants();
-        if (live !== null && live.length > 0) { witnessed = live; clearInterval(poll); control.cancel(); }
+        if (live === null || live.length === 0) return;
+        const child = promptChild();
+        if (child !== null && !live.some(one => one.pid === child)) return;
+        witnessed = live; clearInterval(poll); control.cancel();
       }, 100);
       setTimeout(() => clearInterval(poll), 20_000).unref();
     } });
     expect(witnessed.length).toBeGreaterThan(0);
-    // (On Linux the pid the agent wrote is its sandbox's own process view's, not this host's.)
-    if (process.platform !== "linux") expect(witnessed.map(one => one.pid)).toContain(Number(readFileSync(join(worktree, "slow.pid"), "utf8")));
-    expect(result.kind === "ran" ? result.outcome.code : -1).not.toBe(0);
+    const child = promptChild();
+    if (child !== null) expect(witnessed.map(one => one.pid)).toContain(child);
     expect(agentLog()).toContain("session/cancel");
+    if (result.kind !== "ran") throw new Error(JSON.stringify(result));
+    expect(result.outcome.acp?.stop).toBe("cancelled");
+    expect(result.outcome.code).not.toBe(0);
+    // Every process alive at the cancel is gone, and nothing started in their groups since (a late child) is alive.
     for (const { pid } of witnessed) expect(() => process.kill(pid, 0)).toThrow();
+    const groups = new Set(witnessed.map(one => one.group));
+    const survivors = execFileSync("/bin/ps", ["-axo", "pid=,pgid=,stat="], { encoding: "utf8" }).split("\n").flatMap(line => {
+      const parts = /^\s*(\d+)\s+(\d+)\s+(\S+)/.exec(line);
+      return parts !== null && groups.has(Number(parts[2])) && !parts[3]!.startsWith("Z") ? [Number(parts[1])] : [];
+    });
+    expect(survivors).toEqual([]);
   });
 });
 

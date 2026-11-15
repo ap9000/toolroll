@@ -1,0 +1,28 @@
+---
+source: crates/toolroll-tui/tests/look.rs
+expression: shown
+---
+┌ Toolroll · shop ───────────────────────────────────────────────────────────────────── 2 need you ┐
+│Needs you 2                         │Live · Steps · Diff · Terminal                               │
+│● Fix the login redirect    Question│Upgrade the test runner                                      │
+│  The agent asked a question.       │claude sonnet · Building now · 4m 12s · $0.31 · build #7     │
+│● Add CSV export              Result│  Started.                                                   │
+│  Ready for you to check.           │  Reading the test setup before switching runners.           │
+│                                    │✓ Edited vitest.config.ts  +14 −3                            │
+│Working 2                           │✓ Asked a helper: Check the CSV export edge cases            │
+│◐ Upgrade the test runner   Building│  ┌ Helper: Check the CSV export edge cases                  │
+│  An agent is working on it.        │  │  Empty rows export as a header line only.                │
+│◐ Rate-limit middleware     Planning│  │· Read src/export.ts                                      │
+│  An agent is planning it.          │  └ Helper finished                                          │
+│                                    │✓ Ran npm test  212 passed (3.1 s)                           │
+│Done today 1                        │  Tests pass on the new runner. Removing the old config next.│
+│✓ Bump dependencies         Complete│                                                             │
+│  Accepted.                         │                                                             │
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │                                                             │
+│                                    │Steps  Plan ✓ · Approval ✓ · Build ◐ 4m 12s · Checks · Ready │
+│                                                                                                  │
+│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  ? help  q quit     │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘

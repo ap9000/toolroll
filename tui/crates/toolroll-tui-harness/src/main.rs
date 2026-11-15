@@ -280,6 +280,10 @@ fn drive(args: &[String]) -> Result<()> {
     }
     c.env("TERM", "xterm-256color");
     c.env("TR_LINK_FILE", &link_file);
+    // A home of its own: the binary reads its settings from there, never from the person's.
+    std::fs::create_dir_all(scratch.join("home"))?;
+    c.env("HOME", scratch.join("home"));
+    c.env("XDG_CONFIG_HOME", scratch.join("home").join(".config"));
     let mut child = pty.slave.spawn_command(c)?;
     drop(pty.slave);
     let mut reader = pty.master.try_clone_reader()?;

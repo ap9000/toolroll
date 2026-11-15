@@ -2,9 +2,12 @@
 //! the browser's own form POST through toolroll-api, and the session lives in memory only.
 pub mod app;
 pub mod guard;
+pub mod notify;
 pub mod run;
+pub mod settings;
 pub mod stats;
 pub mod text;
+pub mod theme;
 pub mod transcript;
 pub mod view;
 
