@@ -37,7 +37,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
-import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel, type FlexibleRefusalReason, type FlexibleTerms } from "./flexible.js";
+import { threadLevelAllowed } from "./flexible-levels.js";
+import { flexibleDelegationAtUse, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel, type FlexibleLevel, type FlexibleRefusalReason, type FlexibleTerms } from "./flexible.js";
 import { budgetHoldWords, budgetLabel, budgetStates, canPrice, countsToward, monthOf, priceWork, spendItems, type Billing, type SpendItem } from "./spend.js";
 import type { Store } from "./store.js";
 
@@ -88,12 +89,12 @@ export type FlexibleCap = "project-threads" | "project-turns" | "person-turns" |
   | "mode-runs" | "mode-dollars" | "plan" | "budget";
 export type FlexibleTurnRefusalReason = "not-available" | "invalid-request" | "thread-unknown" | "thread-not-ready" | "not-owner" | "already-sent" | "turn-in-progress"
   | "level-pending" | "cap-reached" | "spend-unknown" | "turn-unknown" | "turn-not-admitted" | "turn-not-running" | "held-elsewhere" | "not-an-operator"
-  | "request-changed" | "turn-expired";
+  | "request-changed" | "turn-expired" | "level-unavailable";
 export type FlexibleTurnRefusal = { ok: false; reason: FlexibleTurnRefusalReason | FlexibleRefusalReason; message: string;
   /** For `cap-reached` and `spend-unknown`: the limit, and when it has room again (null: when a running turn ends). */
   cap?: FlexibleCap; resetsAt?: string | null };
 
-const WORDS: Readonly<Record<Exclude<FlexibleTurnRefusalReason, "cap-reached" | "spend-unknown" | "level-pending">, string>> = Object.freeze({
+const WORDS: Readonly<Record<Exclude<FlexibleTurnRefusalReason, "cap-reached" | "spend-unknown" | "level-pending" | "level-unavailable">, string>> = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
   "invalid-request": "That turn request isn't one Toolroll can read. Nothing was started.",
   "thread-unknown": "There's no such thread.",
@@ -295,12 +296,28 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
       }
     }
     if (store.handle.prepare("SELECT 1 AS hit FROM thread_turn WHERE thread = ? AND status IN ('admitted', 'running')").get(input.thread) !== undefined) return refuse("turn-in-progress");
-    // The thread's agent was started for its last turn's level: another level waits for the restart (F2c's boundary).
-    const last = store.handle.prepare("SELECT level FROM thread_turn WHERE thread = ? AND status <> 'withdrawn' ORDER BY seq DESC LIMIT 1").get(input.thread);
-    if (thread["live_pid"] !== null && last !== undefined && last["level"] !== input.level) {
-      const was = isFlexibleLevel(last["level"]) ? FLEXIBLE_LEVEL_WORDS[last["level"]] : "another level";
-      return { ok: false as const, reason: "level-pending" as const, message: `This thread's agent is still running at ${was}. Stop it, and its next turn starts at ${FLEXIBLE_LEVEL_WORDS[input.level]}.` };
+    // The level the thread's agent runs at is its live launch's (F2c, flexible_thread_launch), never a guess from the
+    // last turn: another level or agent waits for the boundary, and so does an agent some of whose processes may still
+    // run (custody unresolved: Codex round 2 item 10, no replacement while it is).
+    const launch = store.handle.prepare("SELECT level, provider, state FROM flexible_thread_launch WHERE thread = ? AND state <> 'exited'").get(input.thread);
+    if (launch !== undefined) {
+      if (launch["state"] !== "live") {
+        return { ok: false as const, reason: "level-pending" as const, message: "Some of this thread's agent's processes are still being stopped, so no new turn starts until they have. Try again in a moment." };
+      }
+      if (launch["level"] !== input.level || launch["provider"] !== input.provider) {
+        const was = isFlexibleLevel(launch["level"]) ? FLEXIBLE_LEVEL_WORDS[launch["level"]] : "another level";
+        return { ok: false as const, reason: "level-pending" as const, message: `This thread's agent is still running at ${was}. Stop it, and its next turn starts at ${FLEXIBLE_LEVEL_WORDS[input.level]}.` };
+      }
     }
+    // A thread its owner lowered: a turn above that level raises it, and a raise needs a fresh proof (§5).
+    const chosen = store.handle.prepare("SELECT level FROM flexible_thread_level WHERE thread = ?").get(input.thread);
+    const chosenLevel = chosen !== undefined && isFlexibleLevel(chosen["level"]) ? chosen["level"] : null;
+    if (chosenLevel !== null && FLEXIBLE_LEVELS.indexOf(input.level) > FLEXIBLE_LEVELS.indexOf(chosenLevel) && input.freshProof !== true) {
+      return { ok: false as const, reason: "proof-required" as const, message: `This thread was lowered to ${FLEXIBLE_LEVEL_WORDS[chosenLevel]}. Raising it to ${FLEXIBLE_LEVEL_WORDS[input.level]} needs your password.` };
+    }
+    // Only a level proven for this agent, under the organisation's ceiling (flexible-levels.ts).
+    const allowed = threadLevelAllowed(store.orgPolicy(), input.provider, input.level);
+    if (!allowed.ok) return allowed;
 
     const limits = countsRefusal(store, repo, input.starter.name, delegation.terms, now) ?? spendRefusal(store, repo, input.starter.name, input.provider, input.billing, delegation.terms, now, false);
     if (limits !== null) return limits;
@@ -316,6 +333,9 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
     store.handle.prepare(`INSERT INTO thread_turn (id, thread, seq, repo, owner, owner_generation, terms_id, terms_digest, level, provider, model, billing, request_key, holder, admitted_at, utc_day, rail_reserved, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'admitted')`).run(id, input.thread, seq, repo, input.starter.name, input.starter.generation, delegation.termsId, delegation.digest,
       input.level, input.provider, input.model, input.billing, input.requestKey, input.holder, at, day, railReserved);
+    if (chosenLevel !== null && FLEXIBLE_LEVELS.indexOf(input.level) > FLEXIBLE_LEVELS.indexOf(chosenLevel)) {
+      store.handle.prepare("UPDATE flexible_thread_level SET level = ?, set_by = ?, set_at = ? WHERE thread = ?").run(input.level, input.starter.name, at, input.thread);
+    }
     store.recordAction({ at, actor: input.starter.name, repo, taskId: null, runId: null, source: "policy", action: "flexible turn admitted", outcome: "admitted",
       detail: `thread ${input.thread} · turn ${seq} · ${input.level} · ${input.provider} ${input.model} · ${input.billing} · terms ${delegation.digest}` });
     return { ok: true as const, turn: id, seq, replayed: false };
@@ -539,5 +559,48 @@ export function setFlexibleInstallationCaps(store: Store, input: { by: string; c
     const words = (one: FlexibleInstallationCaps) => `threads ${one.liveThreads ?? "none"}, turns a day ${one.turnsPerDay ?? "none"}, dollars a day ${one.measuredMicrousdPerDay === null ? "none" : dollars(one.measuredMicrousdPerDay)}`;
     store.recordAction({ at, actor: input.by, repo: null, taskId: null, runId: null, source: "policy", action: "flexible installation limits changed", outcome: "changed", detail: `${words(before)} → ${words(caps)}` });
     return { ok: true as const, caps: { liveThreads: caps.liveThreads, turnsPerDay: caps.turnsPerDay, measuredMicrousdPerDay: caps.measuredMicrousdPerDay } };
+  });
+}
+
+// ---- F2c: the thread start's own steps ---------------------------------------------------------------------------------------
+
+/**
+ * Withdraw an admitted turn the thread start won't run (its agent or level isn't offered now, its agent couldn't be
+ * matched to the one running): it counts toward nothing and gives back an active mode's start. Only its holder may.
+ */
+export function withdrawFlexibleTurn(store: Store, input: { turn: string; holder: string; detail: string; clock?: FlexibleClock }): { ok: true } | FlexibleTurnRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
+  return store.transact((): { ok: true } | FlexibleTurnRefusal => {
+    const at = timeOf(input.clock).toISOString();
+    const turn = flexibleTurn(store, input.turn);
+    if (turn === null) return refuse("turn-unknown");
+    if (turn.status !== "admitted") return refuse("turn-not-admitted");
+    if (turn.holder !== input.holder) return refuse("held-elsewhere");
+    withdrawTurn(store, turn, input.detail, at);
+    return { ok: true as const };
+  });
+}
+
+/**
+ * A thread's agent was stopped and its exit verified, whole tree (F2c's process custody, flexible-launch.ts settleLaunch:
+ * the proof interruptFlexibleTurnsOf trusts its caller for, here for one thread). Its running turn is interrupted (it
+ * still counts; a keyed one's cost becomes unknown), and a turn waiting to start is withdrawn. Called inside the
+ * transaction that records the verified exit.
+ */
+export function interruptFlexibleThreadTurns(store: Store, input: { thread: string; detail: string; clock?: FlexibleClock }): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (typeof input.thread !== "string" || typeof input.detail !== "string" || !clockOk(input.clock)) return refuse("invalid-request");
+  return store.transact((): { ok: true; withdrawn: number; interrupted: number } | FlexibleTurnRefusal => {
+    const at = timeOf(input.clock).toISOString();
+    let withdrawn = 0, interrupted = 0;
+    for (const row of store.handle.prepare("SELECT * FROM thread_turn WHERE thread = ? AND status IN ('admitted', 'running')").all(input.thread)) {
+      const turn = readTurn(row as Record<string, unknown>)!;
+      if (turn.status === "admitted") { withdrawTurn(store, turn, input.detail, at); withdrawn++; continue; }
+      const basis: FlexibleCostBasis = turn.billing === "subscription" ? turn.costBasis ?? "unknown" : "unknown";
+      store.handle.prepare("UPDATE thread_turn SET status = 'interrupted', ended_at = ?, end_detail = ?, cost_basis = ? WHERE id = ? AND status = 'running'").run(at, input.detail.slice(0, 2000), basis, turn.id);
+      interrupted++;
+    }
+    return { ok: true as const, withdrawn, interrupted };
   });
 }

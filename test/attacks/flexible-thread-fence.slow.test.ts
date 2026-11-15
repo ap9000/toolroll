@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { fenceFor, runFolders, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
-import { flexibleThread, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, type FlexibleThreadPaths } from "../../src/flexible-thread.js";
+import { flexibleThread, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent, type FlexibleThreadPaths } from "../../src/flexible-thread.js";
 import { objectsInventory, tgit, threadWorld, type ThreadWorld } from "../flexible-thread-world.js";
 import { marker, needs, osFence, q, seatbelt, underSandbox, underSandboxAsync, write } from "./harness.js";
 
@@ -58,22 +58,24 @@ async function thread(): Promise<{ id: string; paths: FlexibleThreadPaths }> {
 }
 
 type Ran = { status: number | null; stdout: string; stderr: string };
-/** `script` in /bin/sh as a thread's agent, started by flexibleThreadSpawn exactly as a caller starts one (its own
- * process group), with `done` settling when it ends. */
+const LAUNCH = { provider: "claude", level: "full", turn: null, holder: "attack" } as const;
+/** `script` in /bin/sh as a thread's agent, started by flexibleThreadSpawn (which spawns it itself, its own process
+ * group, behind the start gate), with `done` settling when it ends and the launch's custody settled (every process it
+ * left found and stopped, the exit verified), so the thread can launch again. */
 async function startInThread(id: string, script: string, proxyPort = 1): Promise<{ pid: number; done: Promise<Ran> }> {
-  let done: Promise<Ran> | null = null;
-  const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort, token: "run-token" }, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", script], spec => {
-    const child = spawn(spec.file, spec.args, { cwd: spec.cwd, env: spec.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
-    done = new Promise(settle => {
-      let stdout = "", stderr = "";
-      child.stdout!.on("data", chunk => { stdout += chunk; });
-      child.stderr!.on("data", chunk => { stderr += chunk; });
-      child.on("close", status => settle({ status, stdout, stderr }));
-    });
-    return child.pid ?? 0;
-  });
+  const launch = await flexibleThreadSpawn(world.store, { id, network: { proxyPort, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", script]);
   if (!launch.ok) throw new Error(launch.message);
-  return { pid: launch.pid, done: done! };
+  const child = launch.child;
+  child.stdin!.end(); // nothing more on its input: the gate line was all
+  const done = new Promise<Ran>(settle => {
+    let stdout = "", stderr = "";
+    child.stdout!.on("data", chunk => { stdout += chunk; });
+    child.stderr!.on("data", chunk => { stderr += chunk; });
+    child.on("close", status => {
+      void stopFlexibleThreadAgent(world.store, { id, reason: "test launch ended" }).finally(() => settle({ status, stdout, stderr }));
+    });
+  });
+  return { pid: launch.pid, done };
 }
 const inThread = async (id: string, script: string, proxyPort = 1): Promise<Ran> => (await startInThread(id, script, proxyPort)).done;
 /** Until `test` holds, a tenth of a second at a time (at most ten seconds). */
@@ -440,22 +442,25 @@ describe("attack: a Flexible thread leaving its fence", () => {
 
   test("native: a launch whose registration fails stops the agent it started and leaves nothing on the record", async ctx => {
     needs(ctx, osFence());
-    const { id } = await thread();
-    let started: { pid: number; closed: Promise<unknown> } | null = null;
-    const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "sleep 30"], spec => {
-      const child = spawn(spec.file, spec.args, { cwd: spec.cwd, env: spec.env, stdio: "ignore", detached: true });
-      started = { pid: child.pid!, closed: new Promise(done => child.once("close", done)) };
-      // The registration's write throws (as a full disk or a damaged database would).
-      world.store.handle.exec("CREATE TRIGGER flexible_thread_block BEFORE UPDATE OF live_pid ON flexible_thread BEGIN SELECT RAISE(ABORT, 'blocked'); END");
-      return child.pid!;
-    });
-    expect(refused).toMatchObject({ ok: false, reason: "containment" });
-    const ran = started as { pid: number; closed: Promise<unknown> } | null;
-    expect(ran).not.toBeNull();
-    await ran!.closed; // stopped, not left running
-    expect(() => process.kill(-ran!.pid, 0)).toThrow();
+    const { id, paths } = await thread();
+    let pid = 0;
+    const ran = join(paths.tmp, "agent-ran"); // a place the agent may write
+    // The registration's write throws (as a full disk or a damaged database would), after the spawn.
+    const refused = await flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", `echo ran > ${q(ran)}; sleep 30`],
+      process.platform, { afterSpawn: spawned => {
+        pid = spawned;
+        // A slow registration (a busy disk): long enough for the agent to have run had nothing held it back.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+        world.store.handle.exec("CREATE TRIGGER flexible_thread_block BEFORE UPDATE OF live_pid ON flexible_thread BEGIN SELECT RAISE(ABORT, 'blocked'); END");
+      } });
+    expect(refused).toMatchObject({ ok: false, reason: "containment", message: expect.stringContaining("stopped before it ran") });
+    expect(pid).toBeGreaterThan(1);
+    await until(() => { try { process.kill(-pid, 0); return false; } catch { return true; } }); // the group is gone
+    await new Promise(done => setTimeout(done, 300));
+    expect(existsSync(ran)).toBe(false); // the agent itself never ran: its gate never opened
     world.store.handle.exec("DROP TRIGGER flexible_thread_block");
     expect(flexibleThread(world.store, id)).toMatchObject({ state: "ready", livePid: null });
+    expect(world.store.handle.prepare("SELECT state, leader_pid FROM flexible_thread_launch").all().map(row => ({ ...row }))).toEqual([{ state: "exited", leader_pid: null }]);
   }, 60_000);
 
   test("native: a removal waits for a launch under way and then refuses while its agent runs; a launch after a removal never starts", async ctx => {
@@ -469,15 +474,14 @@ describe("attack: a Flexible thread leaving its fence", () => {
     expect(flexibleThread(world.store, id)).toMatchObject({ state: "ready", livePid: pid });
     expect(existsSync(paths.repo)).toBe(true);
     process.kill(-pid, "SIGKILL");
-    // Ended and reaped (a leader not yet reaped still answers as a process).
+    // Ended and reaped (a leader not yet reaped still answers as a process), and its custody settled.
     await done;
     // Called first, the removal holds the lock: the launch after it finds the thread gone and starts nothing.
     const removed = removeFlexibleThread(world.store, { id, by: "alex", now: NOW });
-    let started = false;
-    const late = flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {} }, "/bin/sh", ["-c", "echo ran"], () => { started = true; return 1; });
+    const late = flexibleThreadSpawn(world.store, { id, network: { proxyPort: 1, token: "run-token" }, storage: STORAGE, proxyEnv: {}, launch: LAUNCH }, "/bin/sh", ["-c", "echo ran"]);
     expect(await removed).toEqual({ ok: true, keepRef: "removed" });
     expect(await late).toMatchObject({ ok: false, reason: "thread-not-ready" });
-    expect(started).toBe(false);
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread_launch WHERE state <> 'exited'").get()!["n"]).toBe(0);
     expect(existsSync(paths.folder)).toBe(false);
   }, 60_000);
 });

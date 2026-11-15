@@ -119,11 +119,34 @@ describe("admission", () => {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn").get()!["n"]).toBe(0);
   });
 
-  test("a different level waits while the thread's agent is still running at the old one", () => {
+  test("a different level or agent waits while the thread's agent still runs at the old one, and every turn waits while its custody is unresolved (F2c)", () => {
     turn({ level: "full" });
+    // A live pid alone is no longer read as the agent's level: only a launch record is.
     store.handle.prepare("UPDATE flexible_thread SET live_pid = 4242, live_since = ? WHERE id = ?").run(NOW.toISOString(), T1);
+    const launch = (state: string) => store.handle.prepare(`INSERT INTO flexible_thread_launch (id, thread, provider, level, fence_digest, holder, host, marker, leader_pid, leader_start, state, started_at)
+      VALUES (?, ?, 'claude', 'full', ?, 'h1', 'here', ?, 4242, 't1', ?, ?)`).run("e".repeat(32), T1, "f".repeat(32), "9".repeat(32), state, NOW.toISOString());
+    launch("live");
     expect(admit({ level: "auto" })).toMatchObject({ ok: false, reason: "level-pending", message: expect.stringContaining("still running at Full access") });
+    expect(admit({ provider: "codex" })).toMatchObject({ ok: false, reason: "level-pending" });
     expect(admit({ level: "full" })).toMatchObject({ ok: true });
+    store.handle.prepare("DELETE FROM thread_turn WHERE status = 'admitted'").run();
+    store.handle.prepare("UPDATE flexible_thread_launch SET state = 'unresolved'").run();
+    expect(admit({ level: "full" })).toMatchObject({ ok: false, reason: "level-pending", message: expect.stringContaining("still being stopped") });
+  });
+
+  test("only a level proven for the agent is admitted (threadLevelAllowed): Claude at Full access; Supervised, Auto and Codex aren't", () => {
+    expect(admit({ level: "supervised" })).toMatchObject({ ok: false, reason: "level-unavailable", message: expect.stringContaining("Claude threads can't run at Supervised") });
+    expect(admit({ level: "auto" })).toMatchObject({ ok: false, reason: "level-unavailable" });
+    expect(admit({ provider: "codex" })).toMatchObject({ ok: false, reason: "level-unavailable", message: expect.stringContaining("Codex") });
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn").get()!["n"]).toBe(0);
+    expect(admit()).toMatchObject({ ok: true });
+  });
+
+  test("a thread its owner lowered: a turn above that level needs a fresh proof, and then raises it", () => {
+    store.handle.prepare("INSERT INTO flexible_thread_level (thread, level, set_by, set_at) VALUES (?, 'supervised', 'pat', ?)").run(T1, NOW.toISOString());
+    expect(admit({ level: "full", freshProof: false })).toMatchObject({ ok: false, reason: "proof-required", message: "This thread was lowered to Supervised. Raising it to Full access needs your password." });
+    expect(admit({ level: "full", freshProof: true })).toMatchObject({ ok: true });
+    expect(store.handle.prepare("SELECT level FROM flexible_thread_level WHERE thread = ?").get(T1)!["level"]).toBe("full");
   });
 
   test("the defaults are far past one person's normal day: thirty turns across three threads all start", () => {
