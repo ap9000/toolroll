@@ -917,6 +917,11 @@ export function stepRowsOf(view: StepRowFacts): StepRow[] | null {
     const opens = step.state !== "todo" || (step.key === "ready" && hasResult) || (step.key === "build" && hasHistory) || approvalHere;
     return { key: step.key, label: step.label, state: step.state, mark, sentence: said.sentence, at: said.at, needsYou, opens, open: here || approvalHere };
   });
+  // While this person's approval is open, its card holds the plan: a written plan's own row would only say "shown below".
+  if (view.approve != null) {
+    const at = rows.findIndex(row => row.key === "plan" && (row.state === "done" || row.state === "skipped"));
+    if (at !== -1) rows.splice(at, 1);
+  }
   // A finished road whose task still waits on this person (a result to review): the last step it reached is theirs.
   const waitsOnViewer = headline === "Ready for review" || headline === "Needs you";
   if (waitsOnViewer && !rows.some(row => row.state === "current" || row.state === "stuck")) {

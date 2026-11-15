@@ -368,9 +368,11 @@ describe("Toolroll proves a build stopped itself, end to end", () => {
     expect(task.approval).toContain("Approve and retry");
     expect(task.approval).toContain(`name="rebuild" value="${run}"`);
     expect(task.status?.action).toBeNull();
-    // The page keys this region by what it is, read from the server's own markup.
-    expect(approvalIdentity(task.approval)).toBe(`open:${store.getScope(id)!.digest}`);
     const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(task.approval)?.[1] ?? "";
+    // The page keys this region by what it is, read from the server's own markup: the form's own digest (the scope's
+    // with the approval summary's key, approvalFormDigest).
+    expect(approvalIdentity(task.approval)).toBe(`open:${field("digest")}`);
+    expect(field("digest")).not.toBe("");
     const yes = await post(`/t/${id}/approve`, { csrf: csrfOf(html), nonce: field("nonce"), digest: field("digest"), token: password, rebuild: String(run) });
     expect(yes.status).toBe(303);
     expect(store.getTask(id)?.state).toBe("queued");

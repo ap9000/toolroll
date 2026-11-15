@@ -2127,7 +2127,9 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(edited.status).toBe(303);
     const after = await status(cookie, "?task=a");
     expect(after["approval"]).not.toBe(oldDigest);
-    expect(after["approval"]).toBe(store.getScope("a")!.digest);
+    // The status names the new form's digest (the new scope's with the approval summary's key; checked against the fresh
+    // page's form below).
+    expect(after["approval"]).toMatch(/^[0-9a-f]{32,64}$/);
     // The old form, submitted anyway: refused, nothing approved.
     const stale = await post(cookie, "/t/a/approve", { csrf, nonce: oldNonce, digest: oldDigest, token: approverToken, return: "/chat?task=a" });
     expect(stale.status).toBe(303);

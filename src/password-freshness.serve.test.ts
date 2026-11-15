@@ -47,7 +47,8 @@ async function signedIn() {
     store.createTask({ id, title: id }, new Date());
     expect((await post(`/t/${id}/scope`, { acceptance: "c1: ok | manual-review", sawDigest: "", goal: `do ${id}`, not: "", touches: "" })).status).toBe(303);
     const page = await (await fetch(`${base}/t/${id}`, { headers: { cookie } })).text();
-    return { digest: store.getScope(id)?.digest ?? "", nonce: nonceOf(page), page };
+    // The form's own digest, as a browser posts it: the scope's with the approval summary's key (approvalFormDigest).
+    return { digest: /name="digest" value="([0-9a-f]+)"/.exec(page)?.[1] ?? "", nonce: nonceOf(page), page };
   };
   return { cookie, post, filed };
 }
@@ -129,7 +130,8 @@ test("a protected-work vote records how its person was proved, bound to the dige
   await post("/t/t-vote/approve", { nonce: plan.nonce, digest: plan.digest, token: password });
   const row = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = 't-vote' AND action = ?").get(APPROVAL_PROOF);
   expect(row?.["outcome"]).toBe("password-now");
-  expect(String(row?.["detail"])).toContain(`digest ${plan.digest}`);
+  // The proof binds the scope's own digest (the form posted the scope's with the summary's key).
+  expect(String(row?.["detail"])).toContain(`digest ${store.getScope("t-vote")!.digest}`);
 });
 
 test("a protected-work yes whose seal is refused leaves nothing behind: no vote, no proof", async () => {

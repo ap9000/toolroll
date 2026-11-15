@@ -20,6 +20,7 @@ import { flowFromSteps, validateFlowDefinition } from "./flows.js";
 import { saveScript } from "./flow-scripts.js";
 import { alone, flowHousekeeping, moveCards, type FlowIo } from "./flow-cadence.js";
 import { NO_OS_FENCE } from "../test/inside-fence.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const OK: ExecResult = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const AGENT_SAID = JSON.stringify({ result: "Added the guard." });
@@ -81,7 +82,7 @@ describe("the builder moves flow cards while it builds", () => {
     for (const id of build) {
       await run(["task", "approve", id, "--json"]);
       const digest = payload().scope.digest as string;
-      await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "alex", "--token", approverToken]);
+      await run(["task", "approve", id, "--yes", "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approverToken]);
     }
     return runnerToken;
   };

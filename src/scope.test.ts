@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { openStore, type Store } from "./store.js";
-import { propose, approve, addApprover, approvalOf, authenticateApprover, digestOf, describeScope, profileDigestOf, profileFromJson, canonicalProfileJson, chainDigestOf, chainFromJson, canonicalChainJson, scopeAuthorityOf, MAX_TIMER_SECONDS } from "./scope.js";
+import { propose, approve, addApprover, approvalOf, authenticateApprover, digestOf, profileDigestOf, profileFromJson, canonicalProfileJson, chainDigestOf, chainFromJson, canonicalChainJson, scopeAuthorityOf, MAX_TIMER_SECONDS } from "./scope.js";
+import { describeScope } from "./approval-summary.js";
 import { routeDigestOf, routeFromJson } from "./phase-routing.js";
 import { proveApprovedProfile } from "./builder.js";
 import { register } from "./runner.js";
@@ -786,12 +787,12 @@ describe("the phase route is a signed term (v47): the digest binds it, the seal 
     const refiled = edited.scope!;
     expect(refiled.riskLevel).toBe("routine");
     expect(approvalOf(refiled)).toMatchObject({ approved: false, reason: "changed" });
-    // The words in the approval card say the route and its reasons.
+    // The words in the approval card say who does what (the approval summary's Agent row), and the size.
     const words = describeScope(refiled);
     // A large change lifts planning and building to the strong tier.
-    expect(words.some(line => line.includes("build  claude · opus  [recommended · strong]"))).toBe(true);
-    expect(words.some(line => line.includes("a large change — planning and building use the strongest configured agent"))).toBe(true);
-    expect(words.some(line => /review codex|strongest configured reviewer/.test(line))).toBe(false);
+    expect(words.some(line => /^ {2}Agent {8}.*Opus.* builds/.test(line))).toBe(true);
+    expect(words.some(line => line.includes("large change: strongest agents plan and build"))).toBe(true);
+    expect(words.some(line => /Codex[^;]* reviews|strongest configured reviewer/.test(line))).toBe(false);
   });
 
   test("the seal refuses a routed row whose working profile and route disagree, or whose route is gone — nothing is approved that cannot be restated exactly", () => {
@@ -1100,7 +1101,8 @@ describe("a prepared candidate is signed into the scope (v69)", () => {
     expect(digestOf({ ...base, candidate: "a".repeat(40) })).not.toBe(digestOf({ ...base, candidate: "b".repeat(40) }));
   });
   test("propose stores it and describeScope names it", async () => {
-    const { propose, describeScope } = await import("./scope.js");
+    const { propose } = await import("./scope.js");
+    const { describeScope } = await import("./approval-summary.js");
     const { openStore } = await import("./store.js");
     const store = openStore(":memory:");
     try {
@@ -1108,7 +1110,7 @@ describe("a prepared candidate is signed into the scope (v69)", () => {
       const scope = propose(store, { taskId: "t-c", goal: "Install commit", candidate: "c".repeat(40), now: new Date("2026-09-19T00:00:00.000Z") });
       expect(scope.candidate).toBe("c".repeat(40));
       expect(store.getScope("t-c")?.candidate).toBe("c".repeat(40));
-      expect(describeScope(store.getScope("t-c")!).some(line => line.includes("commit       " + "c".repeat(7)))).toBe(true);
+      expect(describeScope(store.getScope("t-c")!).some(line => line.includes("Commit       " + "c".repeat(40) + ", checked out as it is; no agent runs"))).toBe(true);
     } finally { store.close(); }
   });
 });

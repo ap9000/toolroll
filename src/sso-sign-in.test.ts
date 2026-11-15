@@ -194,8 +194,9 @@ test("someone who signs in only with the provider approves a task on an explicit
   const csrf = csrfOf(await (await fetch(`${base}/?view=all`, { headers: { cookie } })).text());
   const post = (path: string, fields: Record<string, string>) => fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, redirect: "manual", body: new URLSearchParams({ csrf, ...fields }) });
   expect((await post("/t/t-sso/scope", { acceptance: "c1: ok | manual-review", sawDigest: "", goal: "the goal", not: "", touches: "" })).status).toBe(303);
-  const digest = store.getScope("t-sso")?.digest ?? "";
   const page = async () => (await fetch(`${base}/t/t-sso`, { headers: { cookie } })).text();
+  // The form's own digest, as a browser posts it (approvalFormDigest: the scope's with the approval summary's key).
+  const digest = /name="digest" value="([0-9a-f]+)"/.exec(await page())?.[1] ?? "";
   const nonceOf = (html: string) => /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? "";
   // Signed in moments ago: an empty password approves nothing.
   expect((await post("/t/t-sso/approve", { nonce: nonceOf(await page()), digest, token: "" })).status).toBe(400);

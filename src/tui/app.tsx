@@ -262,7 +262,7 @@ export function App({ source, session, onExit, pollMs = 1_000 }: AppProps) {
       }
       case "approve": {
         if (key.escape || input === "n") { setScreen({ kind: "main" }); setMessage("Nothing approved."); return; }
-        if (input === "y") { const { task } = screen; void act({ kind: "approve", id: task.id, digest: task.plan!.digest }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
+        if (input === "y") { const { task } = screen; void act({ kind: "approve", id: task.id, digest: task.plan!.digest, ...(task.plan!.terms === undefined ? {} : { terms: task.plan!.terms }) }).then(ok => { if (ok) setScreen({ kind: "main" }); }); }
         return;
       }
       case "retry": {

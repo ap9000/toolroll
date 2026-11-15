@@ -29,6 +29,7 @@ import { changeLearning, learningContext, learningView } from "./project-learnin
 import { decodePlanContractRecord, decodePlannerSource, PLANNER_SOURCE_LIMITS } from "./planner-source.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { PLAN_MODEL_SCHEMA } from "./contracts/plan.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const OK = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const T0 = new Date("2026-08-12T22:00:00.000Z");
@@ -318,7 +319,7 @@ describe("planning mode, against real git", () => {
     const digest = approving.getScope("limiter")?.digest as string;
     approving.close();
     await run(
-      ["task", "approve", "limiter", "--as", "alex", "--token", approverToken, "--digest", digest, "--yes", "--json"],
+      ["task", "approve", "limiter", "--as", "alex", "--token", approverToken, "--digest", digest, ...termsArgs(db, "limiter"), "--yes", "--json"],
       planningAgent,
       new Date(T0.getTime() + 4 * 60_000),
     );
@@ -1378,7 +1379,7 @@ describe("the filed contract reaches planning and survives it", () => {
     await web.close();
 
     // The ordinary approval binds exactly the filed digest.
-    await run(["task", "approve", "dark", "--as", "alex", "--token", approverToken, "--digest", filedDigest, "--yes", "--json"], replying([]), new Date(T0.getTime() + 60_000));
+    await run(["task", "approve", "dark", "--as", "alex", "--token", approverToken, "--digest", filedDigest, ...termsArgs(db, "dark"), "--yes", "--json"], replying([]), new Date(T0.getTime() + 60_000));
     expect(payload().ok).toBe(true);
     withStore(store => expect(store.getScope("dark")).toMatchObject({ approvedDigest: filedDigest, digest: filedDigest, acceptance: rubric }));
   });
@@ -1477,9 +1478,9 @@ describe("the filed contract reaches planning and survives it", () => {
 
     // Approving the filed digest refuses (it is not what is on the row);
     // approving the amended digest binds exactly the amended terms.
-    await run(["task", "approve", "dark", "--as", "alex", "--token", approverToken, "--digest", filedDigest, "--yes", "--json"], replying([]), new Date(T0.getTime() + 60_000));
+    await run(["task", "approve", "dark", "--as", "alex", "--token", approverToken, "--digest", filedDigest, ...termsArgs(db, "dark"), "--yes", "--json"], replying([]), new Date(T0.getTime() + 60_000));
     expect(payload().ok).toBe(false);
-    await run(["task", "approve", "dark", "--as", "alex", "--token", approverToken, "--digest", amendedDigest, "--yes", "--json"], replying([]), new Date(T0.getTime() + 60_000));
+    await run(["task", "approve", "dark", "--as", "alex", "--token", approverToken, "--digest", amendedDigest, ...termsArgs(db, "dark"), "--yes", "--json"], replying([]), new Date(T0.getTime() + 60_000));
     expect(payload().ok).toBe(true);
     withStore(store => expect(store.getScope("dark")).toMatchObject({ approvedDigest: amendedDigest, acceptance: amended.acceptance }));
   });

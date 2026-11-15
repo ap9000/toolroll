@@ -333,8 +333,8 @@ which only ever proposes.
 toolroll task add "Give outbound webhooks a bounded retry policy" --id retries --repo .
 toolroll task scope retries --goal "Exponential backoff, dead-letter after 24h, no payload changes" \
   --acceptance "A failing webhook retries with exponential backoff and dead-letters after 24h.|check"
-toolroll task show retries --json          # the scope's digest is what you sign
-toolroll task approve retries --as you --digest <digest> --yes   # asks for your password
+toolroll task show retries --json          # the scope's digest and approvalTerms are what you sign
+toolroll task approve retries --as you --digest <digest> --terms <approvalTerms> --yes   # asks for your password
 
 toolroll peek                               # one pane per live agent; q leaves
 toolroll decide <id> --choose <option>      # answer a parked decision

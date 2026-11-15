@@ -356,8 +356,9 @@ await journey("build", REAL_MODEL, "A card goes all the way through with a real 
     const plan = rows(`SELECT plan FROM task_ref WHERE external_id = '${filed}'`)[0]?.plan ?? null;
     return task.scope !== null && task.scope.digest !== task.scope.approvedDigest && plan !== "requested" ? task : null;
   }, { timeoutMs: 8 * 60_000, everyMs: 4000 });
-  const scope = cli(["task", "show", filed]).scope;
-  cli(["task", "approve", filed, "--yes", "--digest", scope.digest, ...auth]);
+  const shownFiled = cli(["task", "show", filed]);
+  const scope = shownFiled.scope;
+  cli(["task", "approve", filed, "--yes", "--digest", scope.digest, "--terms", shownFiled.approvalTerms, ...auth]);
   say("      approved; the worker builds it with Claude");
   await until("the card to reach the review zone", async () => {
     const card = (await flowView(flowId)).cards.find(one => one.id === buildCard);

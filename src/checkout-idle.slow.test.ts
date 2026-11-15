@@ -19,6 +19,7 @@ import { checkoutIdle, openStore, setCheckoutIdle, type Store } from "./store.js
 import { WorktreePool } from "./worktree.js";
 import type { Runner } from "./builder.js";
 import { AGENT_SAID, OK, concludeDone, registerRunner } from "../test/tick-kit.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const DAY = 86_400_000;
 // Near the real clock: a few of the store's own records stamp it, and every look here is ahead of them.
@@ -337,7 +338,7 @@ describe("after an idle folder is removed, every act still works", () => {
     await run(["task", "add", "the work", "--id", id, "--repo", repo]);
     await run(["task", "scope", id, "--goal", "add a guard on the payout path", "--acceptance", "It is fixed and verified.|manual-review"]);
     await run(["task", "approve", id, "--json"]);
-    await run(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, "--as", "alex", "--token", approver]);
+    await run(["task", "approve", id, "--yes", "--digest", payload().scope.digest as string, ...termsArgs(db, id), "--as", "alex", "--token", approver]);
     return { runner, approver };
   };
   const tick = (token: string, now: Date, agent: Runner = building) => run(["tick", "--runner", "builder-1", "--token", token, "--repo", repo, "--pool", pool, "--json"], now, agent);

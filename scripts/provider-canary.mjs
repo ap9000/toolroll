@@ -488,7 +488,7 @@ async function main() {
           throw new Error("the unchanged plan did not receive the exact signed mode approval");
         }
       } else await cli("approve the exact planned scope", [
-        "task", "approve", TASK_ID, "--yes", "--digest", digest,
+        "task", "approve", TASK_ID, "--yes", "--digest", digest, "--terms", afterPlan.approvalTerms,
         "--as", "canary", "--token", password,
       ]);
 

@@ -24,6 +24,7 @@ import type { Runner } from "./builder.js";
 import { AUTH_TRIAL_MS, authPauseOf, pauseForAuth } from "./provider-auth.js";
 import { workIndexPage } from "./work-index.js";
 import { OK, T0, AGENT_SAID, registerRunner, concludeDone, proveChangedPath } from "../test/tick-kit.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 describe("tick, against real git", () => {
   let base: string;
@@ -106,7 +107,7 @@ describe("tick, against real git", () => {
     const digest = payload().scope.digest as string;
     await run([
       "task", "approve", id, "--yes",
-      "--digest", digest, "--as", "alex", "--token", approverToken,
+      "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approverToken,
     ]);
   };
 
@@ -356,7 +357,7 @@ describe("tick, against real git", () => {
     await run(["task", "approve", "t-heal", "--json"]);
     const digest = payload().scope.digest as string;
     await run([
-      "task", "approve", "t-heal", "--yes", "--digest", digest,
+      "task", "approve", "t-heal", "--yes", "--digest", digest, ...termsArgs(db, "t-heal"),
       "--as", "alex", "--token", approverToken,
     ]);
 
@@ -817,7 +818,7 @@ describe("fill one gap, three tasks start — the M2 sentence, executable", () =
       const digest = payload().scope.digest as string;
       await run([
         "task", "approve", id, "--yes",
-        "--digest", digest, "--as", "alex", "--token", approverToken,
+        "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approverToken,
       ]);
       await run(["task", "require", id, "--cap", "other:granted"]);
     }
@@ -896,7 +897,7 @@ describe("gaps", () => {
     const digest = payload().scope.digest as string;
     await run([
       "task", "approve", id, "--yes",
-      "--digest", digest, "--as", "alex", "--token", approverToken,
+      "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", approverToken,
     ]);
     await run(["task", "require", id, "--cap", caps]);
   };

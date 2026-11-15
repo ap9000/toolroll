@@ -73,7 +73,8 @@ async function approvedBuild(): Promise<{ id: string; run: number }> {
   const sam = await signIn("sam");
   const html = await page(sam, `/t/${made.id}`);
   const nonce = /name="nonce" value="([0-9a-f]{32})"/.exec(html)?.[1] ?? "";
-  const approved = await post(sam, `/t/${made.id}/approve`, { csrf: csrfOf(html), nonce, digest: store.getScope(made.id)?.digest ?? "", token: passwords["sam"]! });
+  // The form's own digest, as a browser posts it (approvalFormDigest).
+  const approved = await post(sam, `/t/${made.id}/approve`, { csrf: csrfOf(html), nonce, digest: /name="digest" value="([0-9a-f]+)"/.exec(html)?.[1] ?? "", token: passwords["sam"]! });
   expect(approved.status).toBe(303);
   const now = new Date();
   const ref = store.lookupRef(made.id)!.id;

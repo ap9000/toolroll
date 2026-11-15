@@ -14,6 +14,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { runOperate, EXIT } from "./operate.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 
 /** The exact route authority a fixture PRESENTS at admission (v48 authority repair): the
@@ -950,7 +951,7 @@ describe("agreeing to a scope from the command line", () => {
     const digest = await scopeIt();
 
     expect(
-      await run(["task", "approve", "pay", "--yes", "--digest", digest, "--as", "alex", "--token", approverToken]),
+      await run(["task", "approve", "pay", "--yes", "--digest", digest, ...termsArgs(db, "pay"), "--as", "alex", "--token", approverToken]),
     ).toBe(EXIT.ok);
 
     await run(["task", "show", "pay", "--json"]);
@@ -962,7 +963,7 @@ describe("agreeing to a scope from the command line", () => {
     await run(["task", "scope", "pay", "--goal", "rewrite the billing model", "--acceptance", "It is fixed and verified.|manual-review"]);
 
     const code = await run([
-      "task", "approve", "pay", "--yes", "--digest", stale,
+      "task", "approve", "pay", "--yes", "--digest", stale, ...termsArgs(db, "pay"),
       "--as", "alex", "--token", approverToken, "--json",
     ]);
 
@@ -2057,10 +2058,10 @@ describe("explainable phase routing from the command line (v47)", () => {
     await run(["config", "set", "build", "--tier", "light", "--provider", "claude", "--model", "haiku", "--as", "alex", "--token", token]);
     await run(["task", "add", "Fix the Save label", "--id", "copy", "--repo", ROUTED_REPO]);
     expect(await run(["task", "scope", "copy", "--goal", "Change one line to say Save", "--acceptance", "The button says Save|check"])).toBe(EXIT.ok);
-    expect(text()).toContain("size         Small change: fast model, no plan");
-    expect(text()).toContain("build  claude · haiku");
+    // The approval summary's Agent row names who builds and the size, plainly.
+    expect(text()).toMatch(/^ {2}Agent {8}.*Haiku builds.*\(small change: fast model, no plan\)$/m);
     await run(["task", "show", "copy"]);
-    expect(text()).toContain("size         Small change: fast model, no plan");
+    expect(text()).toContain("(small change: fast model, no plan)");
     const store = openStore(db);
     let digest: string;
     try {
@@ -2072,7 +2073,7 @@ describe("explainable phase routing from the command line (v47)", () => {
       expect(route.size).toMatchObject({ size: "small", source: "heuristic" });
       expect(legOf(route, "build")).toMatchObject({ model: "haiku", tier: "light" });
     } finally { store.close(); }
-    expect(await run(["task", "approve", "copy", "--yes", "--digest", digest!, "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
+    expect(await run(["task", "approve", "copy", "--yes", "--digest", digest!, ...termsArgs(db, "copy"), "--as", "alex", "--token", token, "--json"])).toBe(EXIT.ok);
     await run(["task", "show", "copy", "--json"]);
     expect(payload().approval.approved).toBe(true);
     const approved = routeFromJson(payload().scope.approvedRouteJson)!;
@@ -2234,12 +2235,13 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(await run(["task", "route", "payouts", "--size", "medium", "--risky", "yes", "--as", "alex", "--token", token])).toBe(0);
     expect(text()).toContain("route        risky · stronger configured agents");
     await run(["task", "show", "payouts"]);
-    expect(text()).toContain("route        risky · stronger configured agents");
+    // The approval summary says the risky size in its Agent row (the route's own words stay on `task route`).
+    expect(text()).toMatch(/^ {2}Agent {8}.*\(risky change: strongest agents plan and build\)$/m);
     const store = openStore(db);
     try { store.setPlanState(store.refFor("built-in", "payouts").id, "drafted"); }
     finally { store.close(); }
     await run(["task", "approve", "payouts"]);
-    expect(text()).toContain("route        risky · stronger configured agents");
+    expect(text()).toMatch(/^ {2}Agent {8}.*\(risky change: strongest agents plan and build\)$/m);
     await run(["task", "show", "payouts", "--json"]);
     expect(payload().route).toMatchObject({ risk: "routine", riskTitle: "Risky", size: { risky: true } });
   });
@@ -2276,7 +2278,7 @@ describe("explainable phase routing from the command line (v47)", () => {
     // the approval sealed under the previous route goes stale.
     await run(["task", "show", "payouts", "--json"]);
     const digest = payload().scope.digest as string;
-    expect(await run(["task", "approve", "payouts", "--as", "alex", "--token", token, "--digest", digest, "--yes", "--json"])).toBe(0);
+    expect(await run(["task", "approve", "payouts", "--as", "alex", "--token", token, "--digest", digest, ...termsArgs(db, "payouts"), "--yes", "--json"])).toBe(0);
     await run(["task", "route", "payouts", "--json"]);
     expect(payload().source).toBe("approved");
     // The digest-CAS: an edit against a digest you never read is refused.
@@ -2297,7 +2299,7 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(payload().route.legs.find((leg: { phase: string }) => leg.phase === "build")).toMatchObject({ provider: "claude", chosen: "recommended" });
     // Re-approval seals the current route.
     await run(["task", "show", "payouts", "--json"]);
-    expect(await run(["task", "approve", "payouts", "--as", "alex", "--token", token, "--digest", payload().scope.digest, "--yes", "--json"])).toBe(0);
+    expect(await run(["task", "approve", "payouts", "--as", "alex", "--token", token, "--digest", payload().scope.digest, ...termsArgs(db, "payouts"), "--yes", "--json"])).toBe(0);
     await run(["task", "route", "payouts", "--json"]);
     expect(payload().source).toBe("approved");
   });
@@ -2315,7 +2317,7 @@ describe("explainable phase routing from the command line (v47)", () => {
     expect(store.refFor("built-in", "payouts").plan).toBe("requested");
     const digest = store.getScope("payouts")!.digest;
     store.close();
-    expect(await run(["task", "approve", "payouts", "--as", "alex", "--token", token, "--digest", digest, "--yes", "--json"])).toBe(3);
+    expect(await run(["task", "approve", "payouts", "--as", "alex", "--token", token, "--digest", digest, ...termsArgs(db, "payouts"), "--yes", "--json"])).toBe(3);
     expect(payload()).toMatchObject({ ok: false, reason: "planning" });
   });
 

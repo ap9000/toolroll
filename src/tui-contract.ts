@@ -32,7 +32,9 @@ export type TuiTask = {
   readonly status: string;
   readonly detail: string;
   /** The plan waiting for approval: its exact digest (what the yes binds) and every line of it. Null: none waits. */
-  readonly plan: { readonly digest: string; readonly lines: readonly string[] } | null;
+  readonly plan: { readonly digest: string; readonly lines: readonly string[];
+    /** The approval summary's key for exactly these lines (approval-summary.ts): the yes refuses if they changed. */
+    readonly terms?: string } | null;
   readonly liveRunId: number | null;
   /** A finished result that can be marked Complete or sent back with a revision. */
   readonly hasResult: boolean;
@@ -66,7 +68,7 @@ export type TuiAct =
   | { readonly kind: "new"; readonly text: string; readonly repo: string | null }
   /** Build: the terms the person just read (fast-start.ts). */
   | { readonly kind: "build"; readonly preview: string; readonly digest: string }
-  | { readonly kind: "approve"; readonly id: string; readonly digest: string }
+  | { readonly kind: "approve"; readonly id: string; readonly digest: string; readonly terms?: string }
   | { readonly kind: "stop"; readonly id: string; readonly runId: number }
   /** Send back: exactly the build the screen read when b was pressed (the command refuses it once a newer one is current). */
   | { readonly kind: "revise"; readonly id: string; readonly text: string; readonly runId: number }

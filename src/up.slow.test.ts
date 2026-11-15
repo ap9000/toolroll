@@ -26,6 +26,7 @@ import { underAgent } from "./prompt.js";
 import { shortTempDir } from "../test/short-temp.js";
 import { SOCKETS_TOO_DEEP } from "../test/inside-fence.js";
 import type { SignInOpener } from "./sign-in-page.js";
+import { termsArgs } from "../test/approval-terms.js";
 
 const PORT = 41000 + (process.pid % 2000);
 
@@ -746,7 +747,7 @@ describe("toolroll up", () => {
     expect(await runOperate("task", ["scope", "t-remembered", "--goal", "a goal", "--acceptance", "It is fixed and verified.|manual-review", "--json"], line => lines.push(line), { databaseFile: db }), lines.join("\n")).toBe(0);
     const digest = String((envelope()["scope"] as Record<string, unknown>)["digest"]);
     lines = [];
-    expect(await runOperate("task", ["approve", "t-remembered", "--yes", "--digest", digest, "--json"], line => lines.push(line), { databaseFile: db }), lines.join("\n")).toBe(0);
+    expect(await runOperate("task", ["approve", "t-remembered", "--yes", "--digest", digest, ...termsArgs(db, "t-remembered"), "--json"], line => lines.push(line), { databaseFile: db }), lines.join("\n")).toBe(0);
     expect(envelope()).toMatchObject({ ok: true, command: "task approve" });
     // Under a signed hands-off mode, the remembered login is the mode's
     // signer for the CLI's scope filing too: the scope seals escalated

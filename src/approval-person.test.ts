@@ -35,6 +35,7 @@ import { planInChat } from "./chat-decide.js";
 import { taskWaitSnapshot } from "./lead-status.js";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../scripts/deploy-candidate.mjs";
+import { termsArgs } from "../test/approval-terms.js";
 
 const NOW = new Date("2026-10-24T12:00:00.000Z");
 const REPO = "/repo/approval-person";
@@ -113,17 +114,17 @@ describe("the lead's token through the real CLI", () => {
     const lead = await leadToken();
     const digest = filed("t-lead");
     vi.stubEnv("TOOLROLL_LEAD_TOKEN", lead);
-    expect(await run(["task", "approve", "t-lead", "--yes", "--digest", digest, "--json"])).toBe(EXIT.refused);
+    expect(await run(["task", "approve", "t-lead", "--yes", "--digest", digest, ...termsArgs(db, "t-lead"), "--json"])).toBe(EXIT.refused);
     expect(payload()).toMatchObject({ ok: false, reason: "machine-proof", message: expect.stringContaining("only a person can approve this") });
     // --token names the same credential.
     vi.unstubAllEnvs();
-    expect(await run(["task", "approve", "t-lead", "--yes", "--digest", digest, "--token", lead, "--json"])).toBe(EXIT.refused);
+    expect(await run(["task", "approve", "t-lead", "--yes", "--digest", digest, ...termsArgs(db, "t-lead"), "--token", lead, "--json"])).toBe(EXIT.refused);
     expect(payload()).toMatchObject({ reason: "machine-proof" });
     expect(store.getScope("t-lead")!.approvedAt).toBeNull();
     expect(store.approvalVotes("t-lead")).toEqual([]);
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE task_id = 't-lead' AND action = ?").get(APPROVAL_PROOF)!["n"]).toBe(0);
     // The person's own password still approves it.
-    expect(await run(["task", "approve", "t-lead", "--yes", "--digest", digest, "--as", "alex", "--token", passwords["alex"]!, "--json"])).toBe(EXIT.ok);
+    expect(await run(["task", "approve", "t-lead", "--yes", "--digest", digest, ...termsArgs(db, "t-lead"), "--as", "alex", "--token", passwords["alex"]!, "--json"])).toBe(EXIT.ok);
     expect(personApprovalOf(store, "t-lead")).toMatchObject({ ok: true, by: "alex", method: "password-now" });
   });
 
@@ -309,7 +310,7 @@ describe("standing orders and old seals", () => {
     filed("t-page"); legacySeal("t-page", "lead-token");
     expect(store.getScope("t-page")!.approvalBasis).toBe("lead");
     expect(approvalOf(store.getScope("t-page")).approved).toBe(false);
-    expect(await run(["task", "approve", "t-page", "--yes", "--digest", store.getScope("t-page")!.digest, "--as", "alex", "--token", passwords["alex"]!, "--json"], new Date(NOW.getTime() + 60_000))).toBe(EXIT.ok);
+    expect(await run(["task", "approve", "t-page", "--yes", "--digest", store.getScope("t-page")!.digest, ...termsArgs(db, "t-page"), "--as", "alex", "--token", passwords["alex"]!, "--json"], new Date(NOW.getTime() + 60_000))).toBe(EXIT.ok);
     expect(approvalOf(store.getScope("t-page")).approved).toBe(true);
     expect(personApprovalOf(store, "t-page")).toMatchObject({ ok: true });
     expect(scopeApprovedForDispatch(store, store.refFor("built-in", "t-page").id, NOW)).toBe(true);
@@ -324,18 +325,18 @@ describe("protected work counts only people", () => {
       // Before the fix: alex's lead token voted, through the person's road.
       store.handle.prepare("INSERT INTO scope_approval_vote (task_id, digest, approver, at) VALUES (?, ?, 'alex', ?)").run(id, digest, NOW.toISOString());
       if (proof !== null) store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: id, runId: null, action: APPROVAL_PROOF, outcome: proof, source: "work", detail: approvalProofDetail(NOW.getTime(), 1, digest) });
-      expect(await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "sam", "--token", passwords["sam"]!, "--json"])).toBe(EXIT.refused);
+      expect(await run(["task", "approve", id, "--yes", "--digest", digest, ...termsArgs(db, id), "--as", "sam", "--token", passwords["sam"]!, "--json"])).toBe(EXIT.refused);
       expect(payload()).toMatchObject({ reason: "second-approver" });
       expect(store.getScope(id)!.approvedAt).toBeNull();
       // alex's own password yes replaces the machine's row and makes the second person.
-      expect(await run(["task", "approve", id, "--yes", "--digest", digest, "--as", "alex", "--token", passwords["alex"]!, "--json"])).toBe(EXIT.ok);
+      expect(await run(["task", "approve", id, "--yes", "--digest", digest, ...termsArgs(db, id), "--as", "alex", "--token", passwords["alex"]!, "--json"])).toBe(EXIT.ok);
       expect(store.handle.prepare("SELECT proof FROM scope_approval_vote WHERE task_id = ? AND approver = 'alex'").get(id)).toEqual({ proof: "password-now" });
     }
     // A vote recorded with its proof counts: alex then sam, both by password, seals.
     const digest = filed("v-people");
-    expect(await run(["task", "approve", "v-people", "--yes", "--digest", digest, "--as", "alex", "--token", passwords["alex"]!, "--json"])).toBe(EXIT.refused);
+    expect(await run(["task", "approve", "v-people", "--yes", "--digest", digest, ...termsArgs(db, "v-people"), "--as", "alex", "--token", passwords["alex"]!, "--json"])).toBe(EXIT.refused);
     expect(store.handle.prepare("SELECT proof FROM scope_approval_vote WHERE task_id = 'v-people'").get()).toEqual({ proof: "password-now" });
-    expect(await run(["task", "approve", "v-people", "--yes", "--digest", digest, "--as", "sam", "--token", passwords["sam"]!, "--json"])).toBe(EXIT.ok);
+    expect(await run(["task", "approve", "v-people", "--yes", "--digest", digest, ...termsArgs(db, "v-people"), "--as", "sam", "--token", passwords["sam"]!, "--json"])).toBe(EXIT.ok);
   });
 });
 

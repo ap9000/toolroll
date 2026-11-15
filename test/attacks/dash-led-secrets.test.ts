@@ -10,6 +10,7 @@ import { runReleaseCommand } from "../../src/release-cli.js";
 import { runOperate } from "../../src/operate.js";
 import { autoPublishHeld, holdAutoPublish } from "../../src/release-auto.js";
 import { mintSecret } from "../../src/secret-mint.js";
+import { termsArgs } from "../approval-terms.js";
 
 let fixture: ReleaseFixture | null = null;
 afterEach(() => { fixture?.close(); fixture = null; });
@@ -27,9 +28,9 @@ describe("a secret that starts with \"--\"", () => {
   test("approves a task through `task approve`, as the next argument and as --token=<value>", async () => {
     const f = (fixture = releaseFixture({ approve: false, password: DASHED }));
     const digest = f.store.getScope(f.taskId)!.digest;
-    expect((await operate(f, "task", ["approve", f.taskId, "--digest", digest, "--as", "alex", "--token", "--wrong-but-dashed", "--yes", "--json"])).code).not.toBe(0);
+    expect((await operate(f, "task", ["approve", f.taskId, "--digest", digest, ...termsArgs(f.databaseFile, f.taskId), "--as", "alex", "--token", "--wrong-but-dashed", "--yes", "--json"])).code).not.toBe(0);
     expect(f.store.getScope(f.taskId)!.approvedAt ?? null).toBeNull();
-    const yes = await operate(f, "task", ["approve", f.taskId, "--digest", digest, "--as", "alex", "--token", DASHED, "--yes", "--json"]);
+    const yes = await operate(f, "task", ["approve", f.taskId, "--digest", digest, ...termsArgs(f.databaseFile, f.taskId), "--as", "alex", "--token", DASHED, "--yes", "--json"]);
     expect(yes.code, yes.out).toBe(0);
     expect(f.store.getScope(f.taskId)!.approvedBy).toBe("alex");
   });
@@ -37,7 +38,7 @@ describe("a secret that starts with \"--\"", () => {
   test("--token=<value> carries it too", async () => {
     const f = (fixture = releaseFixture({ approve: false, password: DASHED }));
     const digest = f.store.getScope(f.taskId)!.digest;
-    const yes = await operate(f, "task", ["approve", f.taskId, "--digest", digest, "--as", "alex", `--token=${DASHED}`, "--yes", "--json"]);
+    const yes = await operate(f, "task", ["approve", f.taskId, "--digest", digest, ...termsArgs(f.databaseFile, f.taskId), "--as", "alex", `--token=${DASHED}`, "--yes", "--json"]);
     expect(yes.code, yes.out).toBe(0);
   });
 
