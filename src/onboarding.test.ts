@@ -22,7 +22,10 @@ const answer = (stdout: string, code = 0): ExecResult => ({ code, stdout, stderr
 const notInstalled: ExecResult = { code: -1, stdout: "", stderr: "", timedOut: false, notFound: true };
 /** Who is signed in on this pretend computer: "claude", "codex", or nobody. */
 let signedIn: "claude" | "codex" | null = null;
+/** How many sign-in checks ran: a page or engine read never starts one. */
+let probes = 0;
 const probe = async (file: string): Promise<ExecResult> => {
+  probes++;
   if (file === "claude") return signedIn === "claude" ? answer(JSON.stringify({ loggedIn: true, authMethod: "claude.ai", subscriptionType: "max" })) : notInstalled;
   if (file === "codex") return signedIn === "codex" ? answer("Logged in using ChatGPT\n") : notInstalled;
   return notInstalled;
@@ -41,6 +44,7 @@ async function start(extra: Partial<Parameters<typeof createDecisionServer>[0]> 
 
 beforeEach(() => {
   signedIn = null;
+  probes = 0;
   dir = mkdtempSync(join(tmpdir(), "toolroll-onboarding-"));
   mkdirSync(join(dir, "shop")); mkdirSync(join(dir, "home")); mkdirSync(join(dir, "evidence"));
   writeFileSync(join(dir, "shop", "README.md"), "# Shop\n");
@@ -364,6 +368,38 @@ test("a laptop install: choosing the agent starts its models on that agent's def
   const models = await fetch(`${base}/settings/models/apply`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf, preset: "opus" }) });
   expect(models.status).toBe(403);
   expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "claude", model: "claude-sonnet-5-5" });
+}, 20_000);
+
+test("instant start: the first start finds the signed-in agent, files the first task to it, and every screen says so; a read starts no check", async () => {
+  store.close();
+  store = openStore(join(dir, "laptop.db"), { createdBy: "laptop" });
+  expect(initLocalMode(store, { owner: "alex", fenceAvailable: true, now: new Date() }).ok).toBe(true);
+  // Only Codex is signed in on this computer (Claude Code isn't installed): the first task goes to Codex.
+  signedIn = "codex";
+  await start({ leadByDefault: true });
+  await until(() => store.phaseConfig("installation", "build") !== null);
+  expect(store.phaseConfig("installation", "build")).toMatchObject({ provider: "codex" });
+  const cookie = cookieOf((await raw(server.mintLocalLink()!)).headers);
+  const read = async (path: string) => (await fetch(`${base}${path}`, { headers: { cookie, accept: "application/json" } }));
+  const { agentsReadSchema } = await import("./contracts/engine-api.js");
+  // The detection answers just after the first start's fill (the same check pass): wait for its answer, not a window.
+  let agents = agentsReadSchema.parse(await (await read("/engine/agents")).json());
+  for (let i = 0; i < 100 && agents.checkedAt === null; i++) {
+    await new Promise(done => setTimeout(done, 20));
+    agents = agentsReadSchema.parse(await (await read("/engine/agents")).json());
+  }
+  const checks = probes;
+  expect(agents.firstTask).toEqual({ id: "codex", name: "Codex" });
+  expect(agents.lines).toEqual(["Your first task goes to Codex."]);
+  expect(agents.agents.find(one => one.id === "claude")?.state).toBe("not-installed");
+  expect(agents.checkedAt).not.toBeNull();
+  // The welcome says the same, in its own words.
+  const welcome = await (await read("/welcome")).text();
+  expect(welcome).toContain("Your first task goes to Codex.");
+  // Reads only: no sign-in check ran for any of them (docs/plans/get-side-effects.md).
+  await read("/engine/agents");
+  await read("/welcome");
+  expect(probes).toBe(checks);
 }, 20_000);
 
 test("a laptop install whose lead was already settled when no agent was signed in: the later sign-in fills its models from the background check, and the lead stays off", async () => {

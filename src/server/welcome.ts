@@ -10,10 +10,11 @@
 import { resolvePhaseAgent } from "../agentconfig.js";
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { builderReadyFor, firstRunBuilderRepo } from "../dispatch.js";
-import { firstTaskSuggestions, SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, welcomeModel, withBuilderStep, type WelcomeAgent, type WelcomeAgentId, type WelcomeModel } from "../first-run.js";
+import { firstTaskSuggestions, SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, welcomeModel, withBuilderStep, type WelcomeAgent, type WelcomeAgentId, type WelcomeModel, type WelcomeOtherAgent } from "../first-run.js";
 import { html, joinHtml, postForm, type Html } from "../html.js";
 import { START_BUILDER_HREF } from "../needs-you.js";
 import { addSampleProject } from "../sample-project.js";
+import { firstTaskRouted } from "../welcome-facts.js";
 import { resolveCeiling } from "../project.js";
 import { readProjectRegistryNow, type ProjectRegistry } from "../repos.js";
 import { type Chrome, refuse, screen, type Screen } from "./chrome.js";
@@ -59,6 +60,18 @@ function agentRow(agent: WelcomeAgent, leads: boolean): Html {
   return settingsRecord({ title: agent.name, sub, action, attrs: { "data-agent": agent.id, "data-state": agent.state } });
 }
 
+const OTHER_WORDS: Record<WelcomeOtherAgent["state"], string> = { "signed-in": "Signed in", "signed-out": "Not signed in", unknown: "Installed", "not-installed": "Not installed" };
+/** A sentence whose `quoted` commands read as code. */
+const withCode = (text: string): Html => joinHtml(text.split("`").map((part, index) => index % 2 === 1 ? html`<code class="k-mono">${part}</code>` : html`${part}`));
+/** Another agent found on this computer (Gemini CLI, OpenRouter, an ACP agent): its state, then its sign-in command or
+ * what it still needs before it takes tasks. Nothing to click: those are commands or Settings → Models. */
+function otherRow(agent: WelcomeOtherAgent): Html {
+  const sub = agent.state !== "signed-in" && agent.signIn !== null
+    ? html`${OTHER_WORDS[agent.state]}. To sign in, run this on the computer running Toolroll:${codeLine(agent.signIn)}`
+    : agent.next !== null ? html`${OTHER_WORDS[agent.state]}. ${withCode(agent.next)}` : OTHER_WORDS[agent.state];
+  return settingsRecord({ title: agent.name, sub, action: "", attrs: { "data-agent": agent.id, "data-state": agent.state } });
+}
+
 /** The page body for one model, and the screen's one primary (for the phone dock). `problem`: why the sample project
  * wasn't added, from the address. `canAdd`: this person may add projects here. */
 export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProblem | null; canAdd: boolean }): { body: Html; primary: Html | null } {
@@ -69,9 +82,10 @@ export function welcomeBody(model: WelcomeModel, options: { problem?: SampleProb
   if (agentLead !== null) primary = useForm(agentLead.id, btn(`Use ${agentLead.name}`, { variant: "primary", type: "submit" }));
   const agentNote = model.agent.checking ? note("Checking for a signed-in agent on this computer…")
     : !model.agent.done ? note("Sign in to one of these, then come back to this page.")
-      : model.agent.buildsWith !== null ? note(html`Tasks are built with ${model.agent.buildsWith}. <a class="k-link" href="/settings/models">Change</a>`) : "";
+      : model.agent.buildsWith !== null ? note(html`Tasks are built with ${model.agent.buildsWith}. <a class="k-link" href="/settings/models">Change</a>`)
+        : model.agent.firstTask !== null ? note(`Your first task goes to ${model.agent.firstTask}.`) : "";
   const agent = step("agent", 1, "Agent", model.agent.done, html`<p class="k-note">The AI coding agent that plans and builds your tasks.</p>\
-<div class="welcome-rows">${model.agent.agents.map(one => agentRow(one, agentLead?.id === one.id))}</div>${agentNote}`);
+<div class="welcome-rows">${model.agent.agents.map(one => agentRow(one, agentLead?.id === one.id))}${model.agent.others.map(otherRow)}</div>${agentNote}`);
 
   const projects = model.project.projects;
   const listed = projects.slice(0, PROJECTS_SHOWN).map(one => settingsRecord({ title: one.name, sub: html`<span class="k-mono">${one.path}</span>`, attrs: { "data-project": "" } }));
@@ -137,8 +151,11 @@ export function createWelcomeHandlers(runtime: ServerRuntime) {
     const states = runtime.localSignIn?.states ?? null;
     const build = resolvePhaseAgent(store, "build", repo, {});
     const approver = who.via === "cookie" && who.role === "approver";
+    const routed = firstTaskRouted(store, repo);
     const model = welcomeModel({
       agents: { claude: states?.claude ?? null, codex: states?.codex ?? null },
+      // Every other agent the last detection found on this computer (agent-detect.ts), and who the first task goes to.
+      others: runtime.localAgents?.agents ?? null, routed,
       inUse: AGENT_OF[store.getChatConfig()?.provider ?? ""] ?? null,
       buildsOn: build.ok ? build.spec.provider : null,
       canChoose: approver,

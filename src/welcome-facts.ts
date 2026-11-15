@@ -8,28 +8,36 @@
  */
 import { basename, dirname, join } from "node:path";
 import { resolvePhaseAgent } from "./agentconfig.js";
-import { builderReadyFor, firstRunBuilderRepo } from "./dispatch.js";
+import { builderReadyFor, firstRunBuilderRepo, modelsEverChosen } from "./dispatch.js";
+import { localModeOn } from "./local-owner.js";
 import { SAMPLE_FIRST_TASKS, SAMPLE_PROJECT_NAME, GENERIC_FIRST_TASKS, welcomeModel, type WelcomeAgentId, type WelcomeModel } from "./first-run.js";
-import { createConnectionChecker, type ConnectionChecker } from "./provider-connection.js";
+import type { ConnectionChecker, ProviderConnection } from "./provider-connection.js";
+import { detectAgents, type AgentDetection, type DetectedState } from "./agent-detect.js";
 import { loadProjectRegistry } from "./repos.js";
 import type { Store } from "./store.js";
 
 const AGENT_OF: Readonly<Record<string, WelcomeAgentId>> = { "claude-subscription": "claude", "codex-subscription": "codex" };
 
-export type WelcomeHere = { model: WelcomeModel; projects: readonly string[] };
+export type WelcomeHere = { model: WelcomeModel; projects: readonly string[]; detection: AgentDetection };
 
-/** The welcome model for this computer now. `check`: the agent sign-in check (tests pass their own). */
+/** A detected sign-in as the welcome's two agents read it (provider-connection.ts states). */
+const CONNECTION_OF: Readonly<Record<DetectedState, ProviderConnection["state"]>> = { "signed-in": "connected", "signed-out": "signed-out", unknown: "unverified", "not-installed": "not-installed" };
+
+/** The welcome model for this computer now: every agent looked for at once (agent-detect.ts). `check`: Claude Code's and
+ * Codex's sign-in check (tests pass their own). */
 export async function welcomeHere(store: Store, databaseFile: string, now: Date, options: { check?: ConnectionChecker; platform?: NodeJS.Platform } = {}): Promise<WelcomeHere> {
   const registry = await loadProjectRegistry(join(dirname(databaseFile), "repos.json"));
   const repos = "error" in registry ? [] : registry.repos;
   const root = "error" in registry ? null : registry.roots[0] ?? null;
-  const check = options.check ?? createConnectionChecker();
-  const states = await Promise.all((["claude", "codex"] as const).map(one => check(one).then(value => value.state, () => "unverified" as const)));
   const repo = firstRunBuilderRepo(store, null, () => true, repos);
   const sample = root === null ? null : `${root.replace(/\/+$/, "")}/${SAMPLE_PROJECT_NAME}`;
   const build = resolvePhaseAgent(store, "build", repo, {});
+  const routed = firstTaskRouted(store, repo);
+  const detection = await detectAgents({ ...(options.check === undefined ? {} : { check: options.check }), routed, clock: () => now, acpChecked: acpCheckedHere(store) });
+  const stateOf = (id: WelcomeAgentId) => CONNECTION_OF[detection.agents.find(one => one.id === id)?.state ?? "unknown"];
   const model = welcomeModel({
-    agents: { claude: states[0] ?? null, codex: states[1] ?? null },
+    agents: { claude: stateOf("claude"), codex: stateOf("codex") },
+    others: detection.agents, routed,
     inUse: AGENT_OF[store.getChatConfig()?.provider ?? ""] ?? null,
     buildsOn: build.ok ? build.spec.provider : null,
     // Choosing the agent is the console's act ("Use this one"); these screens show the step and its sign-in command.
@@ -41,7 +49,25 @@ export async function welcomeHere(store: Store, databaseFile: string, now: Date,
     starters: repo !== null && repo === sample ? SAMPLE_FIRST_TASKS : GENERIC_FIRST_TASKS,
     platform: options.platform ?? process.platform,
   });
-  return { model, projects: repos };
+  return { model, projects: repos, detection };
+}
+
+/**
+ * Where a first task's build goes, for agent-detect.ts: the provider chosen in Settings → Models (or the project's), when
+ * one is; null when nothing is chosen and a laptop install's first start will choose the agent detection picks
+ * (local mode on, models never chosen here: model-choices.ts fillDefaultRouting's first-start door); otherwise the
+ * built-in default, Claude Code, which is where the task really goes.
+ */
+export function firstTaskRouted(store: Store, repo: string | null = null): string | null {
+  const build = resolvePhaseAgent(store, "build", repo, {});
+  if (build.ok && build.source !== "default") return build.spec.provider;
+  return localModeOn(store) && !modelsEverChosen(store) ? null : "claude";
+}
+
+/** Whether an ACP agent passed its one-time check on a runner of this installation (store.acpAttestationFor). */
+export function acpCheckedHere(store: Store): (provider: import("./acp-agents.js").AcpProviderId) => boolean {
+  const runners = store.listRunners().filter(one => one.retiredAt === null).map(one => one.name);
+  return provider => runners.some(name => store.acpAttestationFor(provider, name) !== null);
 }
 
 export type WelcomeStepKey = "agent" | "project" | "task";
@@ -57,15 +83,9 @@ export function welcomeStepLines(model: WelcomeModel, key: WelcomeStepKey, sampl
   const lines: string[] = [];
   if (key === "agent") {
     lines.push(`1. Agent · ${mark(model.agent.done)}`);
-    // One agent is enough: with none further along than another, it says so once; otherwise the others read "(optional)",
-    // and once one is signed in their sign-in commands are left out.
-    const optionalOnes = model.agent.agents.some(agent => agent.optional);
-    if (!model.agent.done && !model.agent.checking && !optionalOnes && model.agent.agents.length > 1) lines.push("   You need one of these:");
-    for (const agent of model.agent.agents) {
-      const state = agent.state === "signed-in" ? "signed in" : agent.state === "checking" ? "checking" : agent.state === "not-installed" ? "not installed" : "not signed in";
-      lines.push(`   ${agent.name}${agent.optional ? " (optional)" : ""}: ${state}${agent.inUse ? " (in use)" : ""}`);
-      if (agent.command !== null && !(agent.optional && model.agent.done)) lines.push(`     To sign in, run: ${agent.command}`);
-    }
+    // Who the first task goes to; else one "Sign in to <Agent>: run …" per installed agent; else how to install one
+    // (agent-detect.ts firstRunAgentLines, the same lines every screen shows).
+    for (const line of model.agent.lines) lines.push(`   ${line}`);
   } else if (key === "project") {
     lines.push(`2. Project · ${mark(model.project.done)}`);
     for (const one of model.project.projects.slice(0, 3)) lines.push(`   ${one.name}  ${one.path}`);

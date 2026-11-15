@@ -22,7 +22,7 @@ import * as reads from "../engine-reads.js";
 import * as fast from "../fast-start.js";
 import * as newTask from "./render-new-task.js";
 import * as mainRead from "../live-main-read.js";
-import { engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { agentsReadSchema, engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
 
 // Every loader a spy around the real one: a refused caller must cause none of them.
 vi.mock("../engine-reads.js", async importOriginal => {
@@ -121,7 +121,7 @@ afterAll(async () => {
 });
 
 const THREAD = `/agents/live/thread/${"a".repeat(32)}`;
-const paths = () => ({ hello: "/engine/hello", work: "/work/rows", steps: "/t/t-done/steps", diff: "/t/t-done/diff", file: `/t/t-done/diff?run=${resultRun}&file=0`, live: `/agents/live/run/${liveRun}?file=main`, thread: THREAD });
+const paths = () => ({ hello: "/engine/hello", agents: "/engine/agents", work: "/work/rows", steps: "/t/t-done/steps", diff: "/t/t-done/diff", file: `/t/t-done/diff?run=${resultRun}&file=0`, live: `/agents/live/run/${liveRun}?file=main`, thread: THREAD });
 type Route = keyof ReturnType<typeof paths>;
 async function read(persona: string, path: string): Promise<{ status: number; body: unknown }> {
   const headers: Record<string, string> = persona === "token" ? { authorization: `Bearer ${readToken}` } : { cookie: cookies[persona]! };
@@ -135,11 +135,11 @@ async function read(persona: string, path: string): Promise<{ status: number; bo
 /** Who reads what, written out by hand from the pages each route mirrors: Work and the task page admit any signed-in
  * caller with the project (a token too); the Live grid's reads are a browser session's only; a thread is refused for now. */
 const ADMITTED: Record<string, Record<Route, number>> = {
-  operator: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  approver: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  viewer: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
-  "project-limited": { hello: 200, work: 200, steps: 404, diff: 404, file: 404, live: 404, thread: 404 },
-  token: { hello: 200, work: 200, steps: 200, diff: 200, file: 200, live: 403, thread: 403 },
+  operator: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  approver: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  viewer: { hello: 200, agents: 200, work: 200, steps: 200, diff: 200, file: 200, live: 200, thread: 404 },
+  "project-limited": { hello: 200, agents: 200, work: 200, steps: 404, diff: 404, file: 404, live: 404, thread: 404 },
+  token: { hello: 200, agents: 403, work: 200, steps: 200, diff: 200, file: 200, live: 403, thread: 403 },
 };
 
 describe("each engine read admits per persona as the page it mirrors; a refusal reads nothing", () => {
@@ -201,6 +201,9 @@ describe("every answer is its contract's shape", () => {
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {
     // The handshake first: this build's contract, the one the fixtures and schemas.json hold.
     expect(helloSchema.parse((await read("operator", "/engine/hello")).body)).toMatchObject({ version: 1, contract: engineContractDigest() });
+    // This console has no background checks: nothing has looked for agents, and the read never looks itself.
+    expect(agentsReadSchema.parse((await read("operator", "/engine/agents")).body)).toEqual({ version: 1, checkedAt: null, agents: [], firstTask: null, lines: ["Looking for agents on this computer…"] });
+    expect((await read("operator", "/engine/agents?fresh=1")).status).toBe(400);
     workRowsSchema.parse((await read("operator", "/work/rows")).body);
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body);
     expect(steps).toMatchObject({ task: { id: "t-done" }, room: "task:t-done" });

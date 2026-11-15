@@ -17,6 +17,9 @@ async fn signs_in_once_and_reads_the_contract() {
     );
     let rows = client.work_rows().await.unwrap();
     assert_eq!(rows.rows.len(), 5);
+    let agents = client.agents().await.unwrap();
+    assert_eq!(agents.first_task.as_ref().unwrap().id, "claude");
+    assert_eq!(agents.lines, vec!["Your first task goes to Claude Code."]);
     let steps = client.steps("t-done").await.unwrap();
     assert_eq!(steps.review.as_ref().unwrap().run, 2);
     let diff = client.diff("t-done", None).await.unwrap();

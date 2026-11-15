@@ -55,6 +55,22 @@ describe("the welcome page", () => {
     expect(out).not.toContain("/settings/lead/on");
   });
 
+  test("other agents found on this computer: listed with their sign-in command or what they still need, nothing to click; who the first task goes to", () => {
+    const others = [
+      { id: "gemini" as const, name: "Gemini CLI", state: "signed-out" as const, how: null, signIn: "gemini", ready: false, next: "To give it tasks, choose its models in Settings → Models." },
+      { id: "opencode" as const, name: "OpenCode", state: "signed-in" as const, how: "login file", signIn: null, ready: false, next: "To give it tasks, check it once: run `toolroll agents check opencode --model <model>`." },
+      { id: "cursor" as const, name: "Cursor", state: "not-installed" as const, how: null, signIn: null, ready: false, next: null },
+    ];
+    const { body } = render({ others });
+    expect(body).toContain('data-agent="gemini" data-state="signed-out"');
+    expect(body).toMatch(/data-agent="gemini"[\s\S]*?gemini<\/code>/);
+    expect(body).toContain("To give it tasks, check it once");
+    // Not installed: not listed. Only Claude Code and Codex have buttons.
+    expect(body).not.toContain('data-agent="cursor"');
+    expect(body.match(/name="agent" value="/g) ?? []).toHaveLength(0);
+    expect(words(body)).toContain("Your first task goes to Claude Code.");
+  });
+
   test("the agent in use reads In use with no button; only the other signed-in one offers Use this one, as a secondary act", () => {
     const { body, primary } = render({ agents: { claude: "connected", codex: "connected" }, inUse: "claude" });
     const claude = /data-agent="claude"[\s\S]*?(?=data-agent="codex")/.exec(body)![0];

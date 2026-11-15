@@ -155,6 +155,8 @@ rowVisible
 } from "./project.js";
 import { noteSignInProbe,signInNotices } from "./provider-auth.js";
 import { createConnectionChecker,type ProviderConnection } from "./provider-connection.js";
+import { detectAgents,type AgentDetection } from "./agent-detect.js";
+import { acpCheckedHere,firstTaskRouted } from "./welcome-facts.js";
 import { ALL_CREDENTIAL_ENV,type ProviderId } from "./provider.js";
 import { hstsFor,LOOPBACK_PEERS,plainHttpRefusal,requestFromThisComputer,transportOf } from "./public-access.js";
 import { attachReadExecutor,defaultReadWorkers,ReadExecutor } from "./read-executor.js";
@@ -1225,18 +1227,29 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   }
   let localSignIn: { at: number; signedIn: boolean; states: Record<"claude" | "codex", ProviderConnection["state"] | "unverified"> } | null = null;
   let localSignInChecking: Promise<void> | null = null;
+  /** Every supported agent on this computer, as the last detection saw them (agent-detect.ts): what the welcome and the
+   * engine's agents read show. Null until the first detection answers. */
+  let localAgents: AgentDetection | null = null;
   let leadRecheckedAt = 0;
   /** Ask this computer's agent CLIs again (no model, nothing spent); `fresh` skips their 30-second cache. */
   function checkLocalAgents(fresh = false): Promise<void> {
     if (localSignInChecking !== null) return localSignInChecking;
     localSignInChecking = Promise.all((["claude", "codex"] as const).map(one => connectionCheck(one, fresh).then(value => value.state, () => "unverified" as const)))
-      .then(([claude, codex]) => {
+      .then(async ([claude, codex]) => {
         localSignIn = { at: Date.now(), signedIn: [claude, codex].some(state => state === "connected" || state === "key-works" || state === "key-present"), states: { claude: claude!, codex: codex! } };
         leadByDefault();
         // Models for an agent signed in after the first start (model-choices.ts fillRoutingOnSignIn): the first start's
         // policy and door, only while no models were ever chosen here, never touching the lead (one turned off stays
         // off). From this computer's sign-in check only (the background pass, or a person's Check now), never a GET.
         if (options.leadByDefault === true && !store.isDemo()) fillRoutingOnSignIn(store, localSignIn.states, clock());
+        // Instant start (agent-detect.ts): every other supported agent too, the same check answering Claude Code and Codex
+        // (its cache, just filled). The first task goes to the agent it picks: on a laptop install with nothing chosen
+        // yet, that agent's models are filled by the same first-start door (one transaction; never over a choice).
+        // In the background, so its deadline is the sign-in check's own (5 s); Claude Code's and Codex's answers are the
+        // ones just read above, from the check's cache.
+        localAgents = await detectAgents({ check: checkConnection, home: providerHome, clock, timeoutMs: 5_000, routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store) });
+        const pick = localAgents.firstTask;
+        if ((pick === "claude" || pick === "codex") && options.leadByDefault === true && !store.isDemo()) fillDefaultRouting(store, pick, "toolroll", { kind: "first-start" }, clock());
       })
       .catch(() => {})
       .finally(() => { localSignInChecking = null; });
@@ -2366,6 +2379,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get keyEpoch(): ServerRuntime['keyEpoch'] { return keyEpoch; },
     get browserKeys(): ServerRuntime['browserKeys'] { return browserKeys; },
     get outsideAdmissions(): ServerRuntime['outsideAdmissions'] { return outsideAdmissions; },
+    get localAgents(): ServerRuntime['localAgents'] { return localAgents; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });

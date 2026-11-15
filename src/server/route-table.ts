@@ -374,6 +374,9 @@ get("pages", "home", "/", { limited: "collection", ...free });
 get("pages", "work.rows", "/work/rows", { limited: "collection", ...free });
 // The engine API's handshake: this build and the contract's digest, for any signed-in caller (it names no project).
 get("pages", "engine.hello", "/engine/hello", { limited: "unscoped", ...free });
+// The engine API's agents read (A0b instant start): the console's last look at this computer's coding agents, for a
+// browser or terminal session (the welcome's same facts; the background checks look, this read never starts a process).
+get("pages", "engine.agents", "/engine/agents", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
 // Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
 const RETIRED = { limited: "collection", ...free, retired: true } as const;

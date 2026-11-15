@@ -5171,11 +5171,12 @@ async function providersCommand(
  * write them already owns the machine's spend.
  */
 /**
- * `toolroll agents …` — the coding agents Toolroll runs over ACP (acp-agents.ts): what is installed here, which are
- * checked on which runner, and how each checked model is billed. An agent runs only once its conformance check passed
- * on that runner (acp-check.ts); asking for one, or declaring a model billed by the agent's own plan, takes a password.
+ * `toolroll agents …` — every coding agent on this computer (agent-detect.ts: installed, signed in, who the first task
+ * goes to), then the ones Toolroll runs over ACP (acp-agents.ts): which are checked on which runner, and how each
+ * checked model is billed. An agent runs only once its conformance check passed on that runner (acp-check.ts); asking
+ * for one, or declaring a model billed by the agent's own plan, takes a password.
  *
- *   agents                                        each agent: installed, checked, billing
+ *   agents                                        each agent: installed, signed in; the first task; checks, billing
  *   agents check <agent> --model <m> [--runner r] ask the runner's watch to check it (password)
  *   agents revoke <agent> [--runner r]            the agent stops running there
  *   agents billing <agent> <model> plan|metered [--runner r]
@@ -5193,7 +5194,18 @@ async function agentsCommand(positional: readonly string[], flags: Map<string, s
       const latest = store.acpChecksFor(id, 1)[0] ?? null;
       return { provider: id, name: ACP_AGENTS[id].name, installed: seen.found ? seen.realpath : null, checked, latestCheck: latest === null ? null : { id: latest.id, state: latest.state, model: latest.model, result: latest.result } };
     });
-    if (json) { write(envelopeJson({ ok: true, command: "agents", agents: rows })); return EXIT.ok; }
+    // Instant start (agent-detect.ts): every supported agent on this computer, whether it is signed in, and who the
+    // first task goes to — the same lines the first-run screens show. Nothing here makes a model call or prints a token.
+    const { detectAgents, detectionReport } = await import("./agent-detect.js");
+    const { agentsReadOf } = await import("./engine-reads.js");
+    const { acpCheckedHere, firstTaskRouted } = await import("./welcome-facts.js");
+    const detection = await detectAgents({ routed: firstTaskRouted(store), acpChecked: acpCheckedHere(store),
+      ...(context.easySeams?.check === undefined ? {} : { check: context.easySeams.check }) });
+    const { version: _version, ...detected } = agentsReadOf(detection);
+    if (json) { write(envelopeJson({ ok: true, command: "agents", detected: { ...detected, tookMs: detection.tookMs }, agents: rows })); return EXIT.ok; }
+    for (const line of detectionReport(detection)) write(line);
+    write("");
+    write("Checks (agents that run over ACP)");
     for (const row of rows) {
       write(`  ${row.name.padEnd(10)} ${row.installed === null ? "not installed" : row.installed}`);
       for (const one of row.checked) write(`             checked on ${one.runner}: ${one.agent.name} ${one.agent.version}, ${one.models.length} models (${one.at.slice(0, 10)})`);

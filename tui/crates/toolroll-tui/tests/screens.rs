@@ -141,6 +141,33 @@ fn empty() {
     insta::assert_snapshot!(screen(&mut app, 120, 30));
 }
 
+/// The first run (A0b): with no tasks, the screen reads this computer's agents once and shows the engine's own lines.
+#[test]
+fn empty_first_run_agent_lines() {
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    app.now = NOW;
+    let fx = app.update(Msg::Work(Ok(parse(fake::empty_work()))));
+    assert!(fx.contains(&Effect::FetchAgents), "{fx:?}");
+    // One read at a time: a second empty list doesn't ask again while the first is out.
+    let again = app.update(Msg::Work(Ok(parse(fake::empty_work()))));
+    assert!(!again.contains(&Effect::FetchAgents));
+    app.update(Msg::Agents(Ok(parse(fake::fixture("agents.json")))));
+    insta::assert_snapshot!("empty_first_task", screen(&mut app, 120, 30));
+    app.update(Msg::Agents(Ok(parse(fake::fixture(
+        "agents-none-signed-in.json",
+    )))));
+    insta::assert_snapshot!("empty_sign_in", screen(&mut app, 120, 30));
+    // A failed read keeps what was shown; only an ended session stops the screen.
+    app.update(Msg::Agents(Err(ApiError::Refused(
+        "Couldn't read this computer's agents (status 500).".into(),
+    ))));
+    assert!(app.agents.is_some() && !matches!(app.mode, Mode::Fatal(..)));
+    // With tasks listed, the agents aren't read.
+    let mut busy = App::new(false, None);
+    let fx = busy.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    assert!(!fx.contains(&Effect::FetchAgents));
+}
+
 #[test]
 fn reading() {
     let mut app = App::new(false, None);

@@ -20,7 +20,8 @@ import { taskWorkSummaryOf, type WorkSummaryAccess } from "./work-summary.js";
 import { terminalDiffView } from "./result-evidence-readers.js";
 import { parseReviewDiff } from "./server/render-results.js";
 import { revisionSourceOf } from "./result-review.js";
-import { ENGINE_API_VERSION, type ResultDiff, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
+import { detectionLines, type AgentDetection } from "./agent-detect.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
@@ -178,4 +179,13 @@ export function resultDiffFileOf(store: Store, evidenceRoot: string, taskId: str
   const one = parsed.files[0];
   if (one === undefined) return null;
   return { version: ENGINE_API_VERSION, task: taskId, run: run.id, file: { file, path: one.path, oldPath: one.oldPath, meta: one.meta, hunks: one.hunks }, linesTruncated: parsed.linesTruncated };
+}
+
+/** `GET /engine/agents`: the last detection of this computer's agents (agent-detect.ts) as the contract says it; null
+ * (not looked for yet) reads as no agents and the "looking" line. */
+export function agentsReadOf(detection: AgentDetection | null): AgentsRead {
+  const agents = (detection?.agents ?? []).map(one => ({ id: one.id, name: one.name, state: one.state, how: one.how, signIn: one.signIn, ready: one.ready, next: one.next }));
+  const first = detection?.firstTask ?? null;
+  return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents,
+    firstTask: first === null ? null : { id: first, name: agents.find(one => one.id === first)?.name ?? first }, lines: detectionLines(detection) };
 }

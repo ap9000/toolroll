@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "checkedAt": "2026-11-15T09:12:04.118Z",
+  "agents": [
+    { "id": "claude", "name": "Claude Code", "state": "signed-in", "how": "Claude account", "signIn": null, "ready": true, "next": null },
+    { "id": "codex", "name": "Codex", "state": "signed-out", "how": null, "signIn": "codex login", "ready": false, "next": null },
+    { "id": "gemini", "name": "Gemini CLI", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "openrouter", "name": "OpenRouter", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "opencode", "name": "OpenCode", "state": "signed-in", "how": "login file", "signIn": null, "ready": false, "next": "To give it tasks, check it once: run `toolroll agents check opencode --model <model>`." },
+    { "id": "cursor", "name": "Cursor", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "cline", "name": "Cline", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "qwen", "name": "Qwen Code", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
+    { "id": "goose", "name": "Goose", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null }
+  ],
+  "firstTask": { "id": "claude", "name": "Claude Code" },
+  "lines": ["Your first task goes to Claude Code."]
+}

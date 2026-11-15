@@ -1,0 +1,271 @@
+/**
+ * Instant start (solo-workbench plan v2, A0b): which coding agents this computer has, whether each is signed in, and
+ * which one the first task goes to. Asked on a first run and on demand (`toolroll agents`, the terminal screens, the
+ * console's background checks); a page or an engine read only shows the last answer.
+ *
+ * What is looked at, per agent, and nothing more (cheap, offline, read only; never a model call):
+ *
+ *   Claude Code   `claude` on PATH; its own `claude auth status --json` (provider-connection.ts, the welcome's check), or
+ *                 on an API key, whether a key is set (Toolroll's key file or the key's environment variable)
+ *   Codex         `codex` on PATH; its own `codex login status`, or on an API key, whether a key is set
+ *   Gemini CLI    `gemini` on PATH; on an API key (Toolroll's default for it), whether a key is set; on its own Google
+ *                 login, whether ~/.gemini/oauth_creds.json exists
+ *   OpenRouter    whether an OpenRouter key is set, with `codex` on PATH (it runs through Codex); else not set up
+ *   OpenCode      `opencode` on PATH (acp-inspect.ts: looked at, never run); whether its auth.json exists
+ *   Qwen Code     `qwen` on PATH; whether ~/.qwen/oauth_creds.json exists
+ *   Goose         `goose` on PATH; whether its config.yaml exists (written by `goose configure`)
+ *   Cursor, Cline on PATH only: no offline sign-in check is known, so their sign-in reads "unknown"
+ *
+ * A login file is only stat()ed: never opened, so no token is ever read. A status command's output is read only by
+ * signInFacts, which keeps fixed words (signed in or not, and how); nothing it printed is kept, shown or logged. Every
+ * binary is found through the PATH-only resolvers (attest.ts resolveExecutable, acp-inspect.ts inspectAcpAgent), never
+ * by searching install folders. The two status commands run in parallel, each with a short deadline: one that hangs
+ * reads "unknown", and the whole answer comes back within about that deadline.
+ *
+ * The first task (preference order): an agent a person chose in Settings → Models, when it can take tasks now;
+ * otherwise Claude Code, then Codex — the two Toolroll can start with no further choice (each has a default set of
+ * models, model-choices.ts AGENT_PRESETS). Gemini CLI and OpenRouter need their models chosen first, and an ACP agent
+ * needs its one-time check (acp-check.ts) and its models; their lines say so.
+ */
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, isAbsolute, join } from "node:path";
+import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
+import { inspectAcpAgent } from "./acp-inspect.js";
+import { resolveExecutable } from "./attest.js";
+import type { ProviderId } from "./contracts/provider.js";
+import { run } from "./exec.js";
+import { keyStatus, OWN_KEY_ENV, readAuthMode } from "./keys.js";
+import { createConnectionChecker, type ConnectionChecker, type ProviderConnection } from "./provider-connection.js";
+
+/** How long one status command may take before it reads "unknown" (the whole detection stays under about a second). */
+export const DETECT_TIMEOUT_MS = 800;
+
+export type DetectedState = "signed-in" | "signed-out" | "unknown" | "not-installed";
+
+export type DetectedAgent = {
+  id: ProviderId;
+  name: string;
+  state: DetectedState;
+  /** How it is signed in, in fixed words ("Claude account", "API key", "login file"); null when it isn't. */
+  how: string | null;
+  /** What the person runs to sign it in; null when it is signed in or not installed. */
+  signIn: string | null;
+  /** It can take a task now, with nothing else to choose. */
+  ready: boolean;
+  /** What it still needs before it takes tasks, in one sentence; null when nothing (or when it isn't installed). */
+  next: string | null;
+};
+
+export type AgentDetection = {
+  agents: DetectedAgent[];
+  /** The agent the first task goes to (preference order above), or null when none can take it yet. */
+  firstTask: ProviderId | null;
+  /** Where builds go when that isn't the pick (DetectOptions.routed), as asked. */
+  routed: string | null;
+  checkedAt: string;
+  /** How long the detection took. */
+  tookMs: number;
+};
+
+type LoginCheck =
+  /** The connection checker: its own status command on a sign-in, key presence on an API key. */
+  | { kind: "checker" }
+  | { kind: "gemini" }
+  | { kind: "key" }
+  /** A login file's presence (stat only), from the home folder and environment. */
+  | { kind: "file"; path: (home: string, env: Env) => string; how: string }
+  | { kind: "none" };
+
+type Env = Readonly<Record<string, string | undefined>>;
+type Row = { id: ProviderId; name: string; binary: string; signIn: string; install: string | null; login: LoginCheck };
+
+/** Under an XDG base folder when the environment names an absolute one, else the usual folder in the home. */
+const xdg = (env: Env, name: string, home: string, fallback: string): string => {
+  const value = env[name];
+  return value !== undefined && isAbsolute(value) ? value : join(home, fallback);
+};
+
+const ACP_LOGIN: Readonly<Record<AcpProviderId, LoginCheck>> = {
+  opencode: { kind: "file", path: (home, env) => join(xdg(env, "XDG_DATA_HOME", home, join(".local", "share")), "opencode", "auth.json"), how: "login file" },
+  qwen: { kind: "file", path: home => join(home, ".qwen", "oauth_creds.json"), how: "login file" },
+  goose: { kind: "file", path: (home, env) => join(xdg(env, "XDG_CONFIG_HOME", home, ".config"), "goose", "config.yaml"), how: "set up" },
+  cursor: { kind: "none" },
+  cline: { kind: "none" },
+};
+
+/** Every agent Toolroll supports, in preference order. */
+export const DETECTED_AGENTS: readonly Row[] = [
+  { id: "claude", name: "Claude Code", binary: "claude", signIn: "claude auth login", install: "npm install -g @anthropic-ai/claude-code", login: { kind: "checker" } },
+  { id: "codex", name: "Codex", binary: "codex", signIn: "codex login", install: "npm install -g @openai/codex", login: { kind: "checker" } },
+  { id: "gemini", name: "Gemini CLI", binary: "gemini", signIn: "gemini", install: null, login: { kind: "gemini" } },
+  { id: "openrouter", name: "OpenRouter", binary: "codex", signIn: "toolroll keys set openrouter --key-file <file>", install: null, login: { kind: "key" } },
+  ...ACP_PROVIDER_IDS.map((id): Row => ({ id, name: ACP_AGENTS[id].name, binary: ACP_AGENTS[id].binary, signIn: ACP_AGENTS[id].signIn, install: null, login: ACP_LOGIN[id] })),
+];
+/** The agents Toolroll can give a first task with nothing else to choose, in order. */
+export const FIRST_TASK_ORDER: readonly ProviderId[] = ["claude", "codex"];
+const GEMINI_KEY_SIGN_IN = "toolroll keys set gemini --key-file <file>";
+const CHOOSE_MODELS = "To give it tasks, choose its models in Settings → Models.";
+const CHOOSE_AGENT = "To give it tasks, choose it in Settings → Models.";
+
+/** A regular, non-empty file is there: stat only, never opened. */
+function present(file: string): boolean {
+  try { const seen = statSync(file); return seen.isFile() && seen.size > 0; } catch { return false; }
+}
+
+/** A key is set for this provider: Toolroll's own key file, or one of the key's environment variables (presence only). */
+function keySet(provider: "gemini" | "openrouter", home: string, env: Env): boolean {
+  return keyStatus(provider, home).set || OWN_KEY_ENV[provider].some(name => (env[name] ?? "") !== "");
+}
+
+const SIGNED_IN: ReadonlySet<ProviderConnection["state"]> = new Set(["connected", "key-present", "key-works"]);
+const SIGNED_OUT: ReadonlySet<ProviderConnection["state"]> = new Set(["signed-out", "missing-key", "key-refused"]);
+/** Answers the checker gives without running the agent (an API key): whether the agent is installed is the PATH's to say. */
+const KEY_ANSWERS: ReadonlySet<ProviderConnection["state"]> = new Set(["key-present", "key-works", "key-refused", "missing-key"]);
+
+export type DetectOptions = {
+  env?: Env;
+  home?: string;
+  /** Claude Code's and Codex's sign-in check (the console passes its own, cached one). */
+  check?: ConnectionChecker;
+  timeoutMs?: number;
+  /** Where a first task's build goes when that isn't up to this detection (welcome-facts.ts firstTaskRouted): the
+   * provider chosen in Settings → Models, or the built-in default; null when the first start fills the pick. */
+  routed?: string | null;
+  /** Whether an ACP agent passed its one-time check on this computer (store.acpAttestationFor). */
+  acpChecked?: (provider: AcpProviderId) => boolean;
+  clock?: () => Date;
+};
+
+/** Settle with `fallback` once `ms` pass, whatever `work` does. */
+function within<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    timer.unref?.();
+    work.then(value => { clearTimeout(timer); resolve(value); }, () => { clearTimeout(timer); resolve(fallback); });
+  });
+}
+
+/** Look for every supported agent on this computer, all at once. */
+export async function detectAgents(options: DetectOptions = {}): Promise<AgentDetection> {
+  const started = Date.now();
+  const env = options.env ?? process.env;
+  const home = options.home ?? env["HOME"] ?? homedir();
+  const timeoutMs = options.timeoutMs ?? DETECT_TIMEOUT_MS;
+  const clock = options.clock ?? (() => new Date());
+  // Only absolute PATH folders: a relative one would make the answer depend on where this runs.
+  const path = (env["PATH"] ?? "").split(delimiter).filter(one => one !== "" && isAbsolute(one)).join(delimiter);
+  const check = options.check ?? createConnectionChecker({
+    home, env: env as NodeJS.ProcessEnv, clock,
+    // The status command runs from the binary the resolver found, on this PATH, and is ended at the deadline.
+    probe: async (file, args, runOptions) => {
+      // Nothing off this PATH ever runs: a binary the resolver can't find is simply not installed.
+      const executable = resolveExecutable(file, path);
+      if (executable === null) return { code: 127, stdout: "", stderr: "", timedOut: false, notFound: true };
+      return run(executable, args, { ...runOptions, timeoutMs: Math.min(runOptions?.timeoutMs ?? timeoutMs, timeoutMs), env: { PATH: path } });
+    },
+  });
+  const routed = options.routed ?? null;
+
+  const one = async (row: Row): Promise<DetectedAgent> => {
+    const base = { id: row.id, name: row.name };
+    const out = (state: DetectedState, how: string | null = null): DetectedAgent =>
+      ({ ...base, state, how, signIn: state === "signed-out" || state === "unknown" ? row.signIn : null, ready: false, next: null });
+    if (isAcpProvider(row.id)) {
+      if (!inspectAcpAgent(row.id, { PATH: path }).found) return out("not-installed");
+      const login = row.login;
+      return login.kind === "file" ? present(login.path(home, env)) ? out("signed-in", login.how) : out("signed-out") : out("unknown");
+    }
+    const resolved = resolveExecutable(row.binary, path);
+    // OpenRouter is there when its key is (it runs through Codex, so Codex must be too); without either, it isn't set up.
+    if (row.login.kind === "key") return resolved !== null && keySet("openrouter", home, env) ? out("signed-in", "API key") : out("not-installed");
+    if (row.login.kind === "gemini") {
+      if (resolved === null) return out("not-installed");
+      if (readAuthMode("gemini", home) === "api-key") return keySet("gemini", home, env) ? out("signed-in", "API key") : { ...out("signed-out"), signIn: GEMINI_KEY_SIGN_IN };
+      return present(join(home, ".gemini", "oauth_creds.json")) ? out("signed-in", "Google account") : out("signed-out");
+    }
+    // Claude Code and Codex: their own status command, or key presence on an API key.
+    const answer = await within(check(row.id).then(value => value as ProviderConnection | null), timeoutMs, null);
+    if (answer === null) return out(resolved === null ? "not-installed" : "unknown");
+    if (answer.state === "not-installed" || (KEY_ANSWERS.has(answer.state) && resolved === null)) return out("not-installed");
+    if (SIGNED_IN.has(answer.state)) return out("signed-in", KEY_ANSWERS.has(answer.state) ? "API key" : answer.method ?? "signed in");
+    return out(SIGNED_OUT.has(answer.state) ? "signed-out" : "unknown");
+  };
+
+  const seen = await Promise.all(DETECTED_AGENTS.map(row => one(row).catch(() => ({ id: row.id, name: row.name, state: "unknown" as const, how: null, signIn: row.signIn, ready: false, next: null }))));
+  const agents = seen.map(agent => withNext(agent, routed, options.acpChecked));
+  return { agents, firstTask: firstTaskOf(agents, routed), routed, checkedAt: clock().toISOString(), tookMs: Date.now() - started };
+}
+
+/** Whether it can take a task now, and what it still needs otherwise. */
+export function withNext(agent: DetectedAgent, routed: string | null, acpChecked?: (provider: AcpProviderId) => boolean): DetectedAgent {
+  if (agent.state === "not-installed") return agent;
+  // Claude Code and Codex take tasks once signed in, unless another agent was chosen for builds.
+  if (FIRST_TASK_ORDER.includes(agent.id)) {
+    const ready = agent.state === "signed-in" && (routed === null || routed === agent.id);
+    return { ...agent, ready, next: agent.state === "signed-in" && !ready ? CHOOSE_AGENT : null };
+  }
+  if (isAcpProvider(agent.id)) {
+    const checked = acpChecked?.(agent.id) ?? false;
+    const ready = checked && routed === agent.id && agent.state !== "signed-out";
+    const next = ready ? null : !checked ? `To give it tasks, check it once: run \`toolroll agents check ${agent.id} --model <model>\`.` : routed !== agent.id ? CHOOSE_MODELS : null;
+    return { ...agent, ready, next };
+  }
+  const ready = agent.state === "signed-in" && routed === agent.id;
+  return { ...agent, ready, next: ready ? null : CHOOSE_MODELS };
+}
+
+/** The agent a first task goes to: the one its build is routed to when it can take tasks now (none, when it can't: the
+ * task would wait for it), else the first of Claude Code and Codex that is signed in. */
+export function firstTaskOf(agents: readonly Pick<DetectedAgent, "id" | "ready">[], routed: string | null): ProviderId | null {
+  if (routed !== null) return agents.find(one => one.id === routed && one.ready)?.id ?? null;
+  for (const id of FIRST_TASK_ORDER) if (agents.some(one => one.id === id && one.ready)) return id;
+  return null;
+}
+
+/** The fields a line needs (a detected agent, or a welcome row). */
+export type AgentLineRow = Pick<DetectedAgent, "id" | "name" | "state" | "signIn" | "next">;
+
+const nameOf = (id: string): string => DETECTED_AGENTS.find(one => one.id === id)?.name ?? id;
+
+/**
+ * The first run's lines about agents, the same on every screen (the terminal workbench, the classic screen, the web's
+ * welcome, `toolroll agents`, `toolroll welcome`): who the first task goes to; else one "Sign in to <Agent>: run …" line
+ * per installed agent (and what a signed-in one still needs); else how to install one.
+ */
+export function firstRunAgentLines(rows: readonly AgentLineRow[], firstTask: string | null, checking = false, routed: string | null = null): string[] {
+  if (firstTask !== null) return [`Your first task goes to ${nameOf(firstTask)}.`];
+  if (checking) return ["Looking for agents on this computer…"];
+  const installed = rows.filter(one => one.state !== "not-installed");
+  const install = ["Install one:", ...DETECTED_AGENTS.filter(one => one.install !== null).map(one => `  ${one.name}: run \`${one.install} && ${one.signIn}\``)];
+  if (installed.length === 0) return install;
+  const lines: string[] = [];
+  // Tasks go to an agent that isn't here (chosen in Settings → Models, or the built-in default): said first.
+  const target = routed === null ? null : DETECTED_AGENTS.find(one => one.id === routed) ?? null;
+  if (target !== null && !installed.some(one => one.id === target.id)) {
+    lines.push(`Your tasks go to ${target.name}, which isn't installed here.${target.install === null ? "" : ` Install it: run \`${target.install} && ${target.signIn}\``}`);
+  }
+  for (const one of installed) {
+    if (one.state === "signed-in") { if (one.next !== null) lines.push(`${one.name} is signed in. ${one.next}`); continue; }
+    if (one.signIn !== null) lines.push(`Sign in to ${one.name}: run \`${one.signIn}\`${one.state === "unknown" ? " (its sign-in couldn't be checked)" : ""}`);
+  }
+  return lines.length > 0 ? lines : install;
+}
+
+/** The lines for a detection: firstRunAgentLines over its agents. */
+export function detectionLines(detection: AgentDetection | null): string[] {
+  return detection === null ? firstRunAgentLines([], null, true) : firstRunAgentLines(detection.agents, detection.firstTask, false, detection.routed);
+}
+
+const STATE_WORDS: Readonly<Record<DetectedState, string>> = { "signed-in": "signed in", "signed-out": "not signed in", unknown: "installed, sign-in unknown", "not-installed": "not installed" };
+
+/** `toolroll agents`: every agent and its state, then the first-run lines. */
+export function detectionReport(detection: AgentDetection): string[] {
+  const width = Math.max(...detection.agents.map(one => one.name.length));
+  return [
+    "Agents on this computer",
+    ...detection.agents.map(one => `  ${one.name.padEnd(width)}  ${STATE_WORDS[one.state]}${one.state === "signed-in" && one.how !== null ? ` (${one.how})` : ""}`),
+    "",
+    ...detectionLines(detection),
+  ];
+}

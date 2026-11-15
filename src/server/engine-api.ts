@@ -20,7 +20,7 @@ import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
 import { readMainWindow, type MainWindow } from "../live-main-read.js";
 import { runLiveCommands, type Run } from "../store.js";
-import { resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
+import { agentsReadOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
 import type { EdgeContext, HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
 import { matchTaskPath, respond } from "./http.js";
@@ -84,6 +84,15 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
     contract ??= engineContractDigest();
     return sendChecked(response, 200, "hello", { version: ENGINE_API_VERSION, toolroll: packageVersion(), contract, responses: Object.keys(ENGINE_RESPONSES) });
+  }
+
+  /** GET /engine/agents: the coding agents on this computer, as the console's last detection saw them (its background
+   * checks look; this read never starts a process), and who the first task goes to. Browser sessions only, like Live. */
+  async function agents(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    if (who.via !== "cookie") return refusal(response, 403, "session");
+    if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
+    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents));
   }
 
   /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions only, like the Live grid). */
@@ -205,7 +214,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
 
   return {
     registrations: [
-      ...handlersOf("pages", { "engine.hello": hello, "agents.live.run": liveRun, "agents.live.thread": liveThread }),
+      ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "agents.live.run": liveRun, "agents.live.thread": liveThread }),
       ...handlersOf("tasks", { "task.steps": taskSteps, "task.diff": taskDiff }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),
     ],
