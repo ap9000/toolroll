@@ -14,6 +14,8 @@ import { hashPassword } from "../../src/scope.js";
 import { networkInterfaces } from "node:os";
 import { request as httpRequest } from "node:http";
 import { LOCAL_OWNER_ELSEWHERE } from "../../src/local-owner.js";
+/** File for a plan (Plan first): a solo install offers Build on its own terms otherwise (fast-start.ts SOLO_START_RULE). */
+const PLAN_FIRST = { "planning-policy": "choice", "plan-first": "1" } as const;
 
 let world: LocalWorld;
 afterEach(async () => { await world.close(); });
@@ -39,7 +41,7 @@ describe("the console's rows, as a local owner", () => {
 
   test("an allowed act runs as the local owner: a task filed", async () => {
     const { cookie, csrf } = await world.localSession();
-    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, title: "Fix the footer" });
+    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, ...PLAN_FIRST, title: "Fix the footer" });
     expect(filed.headers["x-toolroll-refused"]).toBeUndefined();
     expect(filed.status).toBe(303);
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE title = 'Fix the footer'").get()?.["n"]).toBe(1);
@@ -56,7 +58,7 @@ describe("the console's rows, as a local owner", () => {
   test("a direct POST longer than a title (the belt) is filed with a whole-word title and an ellipsis", async () => {
     const { cookie, csrf } = await world.localSession();
     const words = "Format prices with a currency symbol everywhere they are shown, including the README's examples, the error messages and every test name that mentions an amount, without changing what any function returns";
-    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, title: words });
+    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, ...PLAN_FIRST, title: words });
     expect(filed.status).toBe(303);
     const title = String(world.store.handle.prepare("SELECT title FROM task ORDER BY rowid DESC LIMIT 1").get()?.["title"]);
     expect(title).toBe("Format prices with a currency symbol everywhere they are shown, including the README's examples, the error messages and every test name that mentions an amount, without changing what any function…");
@@ -75,7 +77,7 @@ describe("the console's rows, as a local owner", () => {
   test("local mode turned off mid-session: the cookie no longer signs in, and nothing it sends acts", async () => {
     const { cookie, csrf } = await world.localSession();
     world.store.handle.prepare("UPDATE local_mode SET enabled = 0, generation = generation + 1 WHERE id = 1").run();
-    const answer = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, title: "After off", goal: "Should not file." });
+    const answer = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, ...PLAN_FIRST, title: "After off", goal: "Should not file." });
     expect(answer.status).toBe(401);
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE title = 'After off'").get()?.["n"]).toBe(0);
   });
@@ -149,7 +151,7 @@ describe("a local owner's session from anywhere but this computer", () => {
     expect(world.store.accountOf("alex")!.passwordSet).toBe(false);
     // The same session from this computer: reads and the owner's own act run.
     expect((await world.send("/chat", "GET", { cookie })).status).toBe(200);
-    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, title: "From here" });
+    const filed = await world.post("/tasks/add", cookie, { csrf, repo: world.repo, ...PLAN_FIRST, title: "From here" });
     expect(filed.status).toBe(303);
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM task WHERE title = 'From here'").get()?.["n"]).toBe(1);
   });

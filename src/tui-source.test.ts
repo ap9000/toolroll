@@ -82,6 +82,9 @@ describe("the terminal UI on a laptop database", () => {
       app.stdin.write("Add a dark mode toggle");
       await shows("Add a dark mode toggle");
       app.stdin.write("\r");
+      // A solo install offers Build on these exact terms (Just code); p plans it first instead, the ordinary filing.
+      await shows("Build approves exactly this:");
+      app.stdin.write("p");
       await shows("Filed.");
       await shows("Add a dark mode toggle");
     } finally { close(); }

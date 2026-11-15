@@ -111,7 +111,7 @@ test("with it on, adding a webhook trigger (an address) still takes a typed pass
   expect(await add({ kind: "schedule", schedule: "daily 09:00", title: "Standup" })).toMatchObject({ body: { ok: true } });
 });
 
-test("the three widening actions take a password (an ordinary step-up: with Passwordless on, the session does)", async () => {
+test("the three widening actions take a password (with Passwordless on, the session does for the ordinary two; Full access stays a credential act)", async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));
   // Settings → Unattended permissions answers only on a console with chat settings.
   server = createDecisionServer({ store, evidenceRoot: home, repos: [home], terminalHost: null, configDir: home, telegramTokenFile: join(home, "telegram-token") } as Parameters<typeof createDecisionServer>[0]);
@@ -143,10 +143,11 @@ test("the three widening actions take a password (an ordinary step-up: with Pass
   // Back to Auto narrows: no password.
   await post(cookie, "/settings/permission-default", { csrf, "permission-mode": "auto" });
   expect(store.permissionDefault().mode).toBe("auto");
-  // Passwordless on: the signed-in session is the step-up.
+  // Passwordless on: the signed-in session is the step-up for the ordinary widenings; Full access widens where builds
+  // write, a credential act (install-mode.ts, Codex round 1 of the solo slice), so it still takes the password typed.
   await post(cookie, "/settings/passwordless", { csrf, action: "on", password });
-  await widen.fullAccess();
-  expect(store.permissionDefault().mode).toBe("bypassPermissions");
+  expect((await widen.fullAccess()).location).toMatch(/Enter your Toolroll password to start new tasks with Full access/);
+  expect(store.permissionDefault().mode).toBe("auto");
   expect((await widen.kitGithub()).location).not.toMatch(/Enter your Toolroll password/);
 });
 

@@ -54,6 +54,7 @@ import {
 import { passwordlessSessionFor,
   approve,
   authenticateApprover,
+  proveCredential,
   scopeAuthorityOf,
   machineActing,
   type ExecutionProfile,
@@ -90,6 +91,7 @@ import { answerSubagentQuestion } from "./subagent-work.js";
 import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleLoosens, ruleWords, setToolRules } from "./subagent-tools.js";
 import { aboutYouOf, checkAboutYouLine, saveAboutYou, withAboutYouLine } from "./lead-about.js";
 import { CHAT_ACTION_FIELDS, readChatActionRequest, readSharedAction, SHARED_ACTION_VERSION, type ChatActionOperation, type SharedAction } from "./contracts/chat-actions.js";
+import { soloChatSeatRefusal } from "./install-mode.js";
 
 export { CHAT_ACTION_FIELDS, type SharedAction };
 
@@ -216,6 +218,9 @@ export const CHAT_ACTIONS = {
   // exactly the fast start rules. Only the lead's turn loop drafts one (propose_start); a person's own yes starts it.
   task_start: { label: "Start work", protected: true, password: false },
 } as const;
+/** Shared actions that add what builds run or reach (a tool, a flow's browser): credential acts. Their secure screen
+ * takes a password typed now or a one-use identity-provider re-check, never the session (solo or Passwordless). */
+const CREDENTIAL_ACTIONS: ReadonlySet<string> = new Set(["tool_add", "flow_browser"]);
 export type ChatAction = keyof typeof CHAT_ACTIONS;
 // Every action has a schema (contracts/chat-actions.ts) and every schema an action: a mismatch fails to compile.
 const SAME_ACTIONS: [ChatAction, ChatActionOperation] extends [ChatActionOperation, ChatAction] ? true : never = true;
@@ -1361,6 +1366,11 @@ export function executeSharedAction(
   // A lead's or remote token reaches the same web door: an approval needs a person's own session (or tap, above).
   if (APPROVAL_ACTIONS.has(live.operation) && options.via === "web" && options.authority !== "local-owner" && options.person !== true)
     return refuse("needs-confirm", "Approve this yourself, in your signed-in chat.");
+  // The proof the secure screen took, for an act that records it (a flow's browser): null when none was asked.
+  let reviewProof: string | null = null;
+  // A credential act is never confirmed without the secure screen's credential proof, whatever road it came by.
+  if (CREDENTIAL_ACTIONS.has(live.operation) && (challenged || options.via !== "web" || !options.review || options.confirm !== true))
+    return refuse("needs-confirm", "Confirm with your password in the secure screen.");
   if (sharedActionNeedsReview(payload) && !challenged) {
     if (options.via !== "web" || !options.review || options.confirm !== true)
       return refuse(
@@ -1381,8 +1391,11 @@ export function executeSharedAction(
         "needs-confirm",
         "This confirmation expired or was already used. Open the review again.",
       );
-    const proved = config.password ? authenticateApprover(store, who.name, options.review.password, payload.repo) : null;
-    if (config.password && proved?.ok !== true)
+    const credential = CREDENTIAL_ACTIONS.has(live.operation);
+    const proved = credential ? proveCredential(store, who.name, options.review.password, payload.repo)
+      : config.password ? authenticateApprover(store, who.name, options.review.password, payload.repo) : null;
+    if (proved?.ok === true) reviewProof = proved.method;
+    if ((credential || config.password) && proved?.ok !== true)
       return refuse(
         "needs-confirm",
         "Confirm with your password in the secure screen.",
@@ -1451,7 +1464,8 @@ export function executeSharedAction(
         // signFlowBrowser re-reads the account's generation and reach in its transaction (it may have narrowed since).
         const by = approvalBy(store, who, repo, now, options, drafted);
         if (by.ok === false) throw Error(by.why);
-        const signed = signFlowBrowser(store, { flow, signer: actor, proof: options.via === "web" ? "session" : "chat", sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
+        // The proof is the secure screen's credential proof (a password typed now, or a one-use re-check), never a session.
+        const signed = signFlowBrowser(store, { flow, signer: actor, proof: reviewProof, sawDigest: String(payload.state["digest"] ?? ""), console: { generation: who.generation } }, now);
         if (!signed.ok) throw Error(signed.message);
         return { ok: true as const, taskId: null, said: "Browser allowed. Its browser zones can start Chromium now.", href: `/flows/${flow}` };
       }
@@ -1703,7 +1717,7 @@ function startFromCard(store: Store, who: VerifiedApprover, proposal: number, dr
     proof = { chat: by.limits };
     // A typed yes (C5) is recorded beside the fast marker: which message was the yes. The executor's gate has proved it.
     const typed = options.typedStart;
-    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, typed === undefined ? fast : { ...fast, typed: { provider: typed.provider, event: typed.event } }, chat);
+    approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, typed === undefined || fast === undefined ? fast : { ...fast, typed: { provider: typed.provider, event: typed.event } }, chat);
   } else if (options.authority === "local-owner" && currentLocalOwner() !== null) {
     proof = { password: { localOwner: true, passwordless: false, freshAt: null, returnTo: "/chat" } };
     approveNow = (taskId, saw, fast) => approve(store, taskId, who.name, now, saw, "", {}, fast);
@@ -1747,6 +1761,9 @@ function approvalBy(store: Store, who: VerifiedApprover, repo: string, now: Date
     const allowed = effectiveChatApproval(store, repo, who.name);
     return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.setting.digest, shown } } : { ok: false, why: allowed.why };
   }
+  // A solo install takes a chat yes only from the owner's own paired chat identity (read in the confirm's transaction).
+  const solo = soloChatSeatRefusal(store, { provider: options.via, binding: options.binding, approver: who.name });
+  if (solo !== null) return { ok: false, why: solo };
   const allowed = chatApproveMode(store, repo, who.name, now, options.via);
   return allowed.ok ? { ok: true, limits: allowed.limits, chat: { modeDigest: allowed.digest, shown } } : allowed;
 }

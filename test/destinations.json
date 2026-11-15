@@ -6,7 +6,7 @@
     "destinations = page rows + mixed rows. It must stay at or under ceiling.destinations: a slice that removes a page lowers the ceiling in the same change. Ceremonies are counted apart and are never in-place pages.",
     "src/server/destinations.test.ts fails when a route row has no entry here (declare new pages), when an entry names no row, and when a demo or an operator console answers a row differently from its kind."
   ],
-  "ceiling": {"destinations":77,"ceremonies":6},
+  "ceiling": {"destinations":77,"ceremonies":7},
   "routes": {
     "code.page": {"kind":"page","path":"/code"},
     "code.session": {"kind":"page","path":"/code/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -142,6 +142,7 @@
     "settings.change.register-computer": {"kind":"ceremony","path":"/settings/change/register-computer","why":"registering a computer: a credential proof (a password typed now) and a one-use form token, its worker token shown once on the answer; a settings change document"},
     "settings.change.retire-computer": {"kind":"ceremony","path":"/settings/change/retire-computer","why":"retiring a computer: a password step-up on its own document (a settings change document: never in place, no script)"},
     "settings.change.local-mode": {"kind":"ceremony","path":"/settings/change/local-mode","why":"turning local mode off: an instance operator's password step-up on its own document (a settings change document: never in place, no script)"},
+    "settings.change.just-me": {"kind":"ceremony","path":"/settings/change/just-me","why":"It's just me: an instance operator's credential act (a password typed now) on its own document (a settings change document: never in place, no script)"},
     "health": {"kind":"data","path":"/health","what":"server health (text)"},
     "metrics": {"kind":"data","path":"/metrics","what":"metrics (text)"},
     "push.key": {"kind":"data","path":"/push/key","what":"the push public key (JSON)"},

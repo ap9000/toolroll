@@ -26,7 +26,7 @@ import { openTerminalLedger } from "../terminal-catalog.js";
 import { loadPtySpawn, MAX_FRAME_BYTES, TerminalHost, MAX_VIEWERS, parseTerminalFrame, TERMINAL_PROGRAMS, TerminalError, type TerminalProgram, type TerminalSummary, type TerminalViewer } from "../live-terminal.js";
 import type { LiveBus } from "../live-bus.js";
 import { logEvent } from "../log.js";
-import { passwordlessOn } from "../passwordless.js";
+import { sessionStandsIn } from "../install-mode.js";
 import { projectName, rowVisible } from "../project.js";
 import { transportOf, type Transport } from "../public-access.js";
 import type { Store } from "../store.js";
@@ -109,7 +109,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const id = TERMINAL_ID.exec(url.pathname)?.[1] ?? "";
     const nonce = randomBytes(16).toString("base64");
     const host = request.headers.host ?? "";
-    const document = html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#0C0E12"><meta name="apple-mobile-web-app-capable" content="yes"><title>Terminals — Toolroll</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/assets/terminal.css"></head><body><div id="so-term"></div><div id="so-term-boot" hidden data-csrf="${(who as Operator).session.csrf}" data-session="${id}" data-passwordless="${passwordlessOn(store) ? "1" : ""}"></div><script type="module" src="/assets/terminal.js" nonce="${nonce}"></script></body></html>`;
+    const document = html`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"><meta name="theme-color" content="#0C0E12"><meta name="apple-mobile-web-app-capable" content="yes"><title>Terminals — Toolroll</title><link rel="icon" href="/icon.svg"><link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/assets/terminal.css"></head><body><div id="so-term"></div><div id="so-term-boot" hidden data-csrf="${(who as Operator).session.csrf}" data-session="${id}" data-passwordless="${sessionStandsIn(store) ? "1" : ""}"></div><script type="module" src="/assets/terminal.js" nonce="${nonce}"></script></body></html>`;
     response.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
       // The socket is this page's own host: named outright, since older WebKit doesn't read 'self' as ws:/wss:.
@@ -144,12 +144,16 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       const stopped = store.sessionPolicyRefusal(program, null, "live terminals");
       if (stopped !== null) return json(ctx, 403, { ok: false, error: stopped });
     }
-    if (!runtime.authenticateApprover(who, body.get("password") ?? "").ok) return json(ctx, 403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
+    const proved = runtime.authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return json(ctx, 403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
     // The same session, still an operator of the same generation, and the project still theirs: asked right before the
-    // program starts (after the slow worktree work) and again once it has.
+    // program starts (after the slow worktree work) and again once it has. A start the session alone proved (solo or
+    // Passwordless, install-mode.ts) also needs the session to stand in still: a person who joined, or Passwordless
+    // turned off, during the preparation refuses it.
     const stillAllowed = (): string | null => {
       const again = rereadBrowser(runtime, ctx.request, who);
       if (again === null || operatorOf(again) === null) return "Your access changed. Sign in again.";
+      if (proved.method === "session" && !sessionStandsIn(store)) return "This install's sign-in rules changed. Enter your Toolroll password to start a terminal.";
       return projectAllowed(who.name, repo) && runtime.consoleProjects().includes(repo) ? null : "That project is no longer available to your account.";
     };
     try {

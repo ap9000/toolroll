@@ -109,10 +109,13 @@ const READS: Record<string, readonly string[]> = {
   "your-password": ["operator", "installation approver", "project-limited approver", "viewer", "API token", "read-only token"],
   // Its facts are scoped (installation data, or the package's own version for an operator), so everyone is admitted.
   version: Object.keys(PERSONAS),
+  // Solo or team: one line for everyone signed in (install-mode.ts); only its change document is an operator's.
+  "install-mode": Object.keys(PERSONAS),
   advanced: Object.keys(PERSONAS),
   "local-mode": ["operator", "installation approver", "project-limited approver", "viewer", "local owner"],
 };
-const DEPS: GeneralDeps = { updatesVersion: () => "9.9.9", packageVersion: "9.9.9", firstResult: () => null, passwordless: () => true, localModeOn: () => true };
+const DEPS: GeneralDeps = { updatesVersion: () => "9.9.9", packageVersion: "9.9.9", firstResult: () => null, passwordless: () => true, localModeOn: () => true,
+  installMode: () => ({ mode: "team", facts: ["existing-install"], declared: null }) };
 
 /** Every loader of every section a spy around the real one. */
 function spied(impls: SectionImpls) {

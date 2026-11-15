@@ -613,6 +613,9 @@ get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ..
 post("settings", "settings.passwordless-send", "/settings/passwordless", { callers: ["cookie"], ...operator("An instance operator sets Passwordless.", "/settings") });
 // Easy-start C5: turning local mode off: an instance operator's step-up from a full session (a local owner is refused).
 post("settings", "settings.local-mode-off", "/settings/local-mode/off", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator turns off local mode.", "/settings/general?section=local-mode") });
+// Solo or team (install-mode.ts): "It's just me", an instance operator's credential act from a full session (a local owner
+// is refused); the handler proves the password and re-reads every fact in one transaction.
+post("settings", "settings.just-me", "/settings/install-mode/solo", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator says it's just them.", "/settings/general?section=install-mode") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.
 post("settings", "settings.release-approval-send", "/settings/release-approval", { callers: ["cookie"], ...approver("An approver sets how releases are approved.", "/settings/approval") });
@@ -676,8 +679,13 @@ post("settings", "settings.telegram-retry", "/settings/telegram/retry", { limite
 for (const one of ["confirm", "save", "off"]) post("settings", `settings.chat-approval-${one}`, `/settings/chat-approval/${one}`, { limited: "self", callers: ["cookie"], ...(one === "save" ? { scope: "step-up" as const } : {}), ...approver("An approver turns on approving from their own chat.", "/settings") });
 post("settings", "settings.telegram-pair", "/settings/telegram/pair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
 post("settings", "settings.telegram-unpair", "/settings/telegram/unpair", { limited: "self", scope: "step-up", ...approver("An approver can pair their own phone.", "/settings") });
-for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key", "provider-key-clear", "telegram-token", "email", "email-test", "email-read-test", "google", "google/disconnect"]) {
+for (const one of ["messaging", "permission-default", "quality-default", "notifications", "notifications/mute", "telegram-digest", "provider-key-clear", "email-test", "email-read-test", "google/disconnect"]) {
   post("settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`);
+}
+// Saving a credential (an AI provider key, the Telegram bot token, the mail account, a Google account): a credential act
+// from a browser (the handler proves a password typed now, or a one-use provider re-check; never a session or a token).
+for (const one of ["provider-key", "telegram-token", "email", "google"]) {
+  post("settings", `settings.${one}-send`, `/settings/${one}`, { callers: ["cookie"], scope: "step-up" });
 }
 post("pages", "projects.github-list", "/projects/github", { callers: ["cookie"], ...anyApprover("your login can watch — adding projects is an approver's act") });
 post("pages", "projects.select", "/projects/select", { project: "form-path", limited: "unscoped", viewer: true });

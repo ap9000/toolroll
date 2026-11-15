@@ -1,4 +1,5 @@
 import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
+import { declareJustMe, installModeNow, sessionStandsIn, TEAM_FACT_WORDS } from "../install-mode.js";
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
@@ -580,7 +581,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const setting = passwordlessSetting(store);
     const said = url.searchParams.get("said"), problem = url.searchParams.get("problem");
     const since = setting.at === null ? null : `${setting.on ? "on" : "off"} since ${new Date(setting.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, by ${setting.setBy ?? "someone"}`;
-    return sendScreen(response, 200, screen("Passwordless", passwordlessHtml({ on: setting.on, since, trade: PASSWORDLESS_TRADE, said, problem }), { chrome: chromeFor(project, "settings") }));
+    // On as it works now: set on, or a solo install its owner never turned off (install-mode.ts sessionStandsIn).
+    return sendScreen(response, 200, screen("Passwordless", passwordlessHtml({ on: sessionStandsIn(store), since, trade: PASSWORDLESS_TRADE, said, problem }), { chrome: chromeFor(project, "settings") }));
   }
   async function passwordlessSave(ctx: HandlerContext): Promise<void> {
     const { response, now, posted } = ctx;
@@ -753,7 +755,7 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     const updates = minimal ? null : settingsUpdates(who.name, csrf);
     const lastBackup = operator ? store.backupRuns(1)[0] ?? null : null;
     const accounts = minimal || !operator ? null : store.accountFacts().filter(one => one.revokedAt === null);
-    const passwordless = minimal ? null : passwordlessSetting(store).on;
+    const passwordless = minimal ? null : sessionStandsIn(store);
     const facts: SettingsFacts = {
       name: who.name, approver: who.role === "approver", operator, browser: who.via === "cookie", installation: !minimal,
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem"),
@@ -1176,10 +1178,16 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver sets up pull requests.", "/projects");
     const back = sayTo(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}`);
     const act = body.get("act");
-    if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to change pull requests.");
+    // Turning pull requests on lets Toolroll push this project to GitHub: a credential act (network reach), never the
+    // session; settings and turning off are ordinary step-ups.
+    const provedGeneration = store.accountOf(who.name)?.generation ?? -1;
+    if (!(act === "on" ? authenticateCredential(who, body.get("password") ?? "", repo) : authenticateApprover(who, body.get("password") ?? "", repo)).ok) return back("problem", "Enter your Toolroll password to change pull requests.");
     if (act === "on") {
       const checked = await checkPublishing(repo, options.publishExec === undefined ? {} : { exec: options.publishExec });
       if (!checked.ok) return back("problem", checked.message);
+      // After the wait: the account that typed the password still stands as it did.
+      const account = store.accountOf(who.name);
+      if (account === null || account.revokedAt !== null || account.role !== "approver" || account.generation !== provedGeneration || !store.accountCanAccess(who.name, repo)) return back("problem", "Your access changed meanwhile. Nothing changed.");
       if (checked.plan.githubRepo !== body.get("github") || checked.plan.base !== body.get("base")) return back("problem", "GitHub answered differently from what you saw. Check the details again.");
       savePublishing(store, checked.plan, who.name, {}, now);
       return back("said", "Pull requests are on.");
@@ -1359,7 +1367,8 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     const body = readForm(posted, CONSOLE_FORMS.monitoring);
     if (!options.configDir) return refuse(response, who, 403, "An instance operator sets up monitoring.", "/settings");
     const back = sayTo(response, "/settings/monitoring");
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change monitoring.");
+    // Where alerts go (addresses, and secrets in their headers): a credential act, never the session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change monitoring.");
     const before = readMonitoring(options.configDir);
     // Never into Toolroll's own folder, a project or the build checkouts: an agent could read the stream there.
     const saved = saveMonitoring(options.configDir, { webhook: body.get("webhook") ?? "", folder: body.get("folder") ?? "", tracesEndpoint: body.get("traces") ?? "",
@@ -1408,7 +1417,12 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
       if (connectionsOf(store, repo).find(one => one.id === service.id)?.state !== "connected") return back(`${service.label} isn't connected to ${projectName(repo)}.`);
       if (connectionsOf(store, target).find(one => one.id === service.id)?.state !== "open") return back(`${projectName(target)} already has ${service.label}.`);
     }
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("Enter your Toolroll password to connect a tool.");
+    // Connecting a tool stores a sign-in for it: a credential act (a password typed now, never the session, solo or not).
+    // The generation is the one the password was checked against, read before it and before any wait: a rotation in
+    // between refuses here, and one later refuses at the callback (standing() compares this exact generation).
+    const provedGeneration = store.accountOf(who.name)?.generation ?? -1;
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("Enter your Toolroll password to connect a tool.");
+    if ((store.accountOf(who.name)?.generation ?? -2) !== provedGeneration) return back("Your sign-in changed. Connect again.");
     // An app on this computer: added like a common tool and tested; one that can't be reached isn't kept.
     if (local !== null) {
       const had = projectToolsOf(store, repo).find(one => one.name === local.id);
@@ -1432,12 +1446,15 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     const readOnly = also === null && body.get("access") === "read";
     const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template, readOnly }, options.connectFetch ?? fetch);
     if (!started.ok) return back(started.said);
+    // After the wait: the account still stands at the generation the password proved, or nothing is started.
+    const standing = store.accountOf(who.name);
+    if (standing === null || standing.revokedAt !== null || standing.role !== "approver" || standing.generation !== provedGeneration || !store.accountCanAccess(who.name, target)) return back("Your sign-in changed. Connect again.");
     for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
     // The password above proves one thing: this connection, by this account as it is now, and (from a kit whose subagent
     // is set up) letting that subagent use this tool in this project. The callback holds the visit to exactly that.
     const kitSet = kit === null || also !== null ? null : kitOf(kit);
     const installed = kitSet === null || !kitSet.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kitSet, target);
-    connectVisits.set(started.state, { ...started.visit, generation: store.accountOf(who.name)?.generation ?? -1,
+    connectVisits.set(started.state, { ...started.visit, generation: provedGeneration,
       grant: installed === null ? null : { subagent: installed.mate.id, tool: service.id, repo: target } });
     return goOutside(response, started.go, `Going to ${service.label} to sign in…`, { state: started.state, path: CONNECT_CALLBACK, secure: origin.startsWith("https:") });
   }
@@ -1455,10 +1472,14 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
     }
     const action = body.get("action") ?? "";
     const name = body.get("name") ?? "";
-    // Anything that adds what a build can run or reach, or a secret, needs the password.
-    if (["add-catalog", "add-custom", "import", "secret"].includes(action) && !authenticateApprover(who, body.get("password") ?? "").ok) {
+    // Anything that adds what a build can run or reach, or a secret, is a credential act: a password typed now, never the
+    // session (solo or Passwordless). The account it proved is held to the end, across the import's waits.
+    const widening = ["add-catalog", "add-custom", "import", "secret"].includes(action);
+    const provedGeneration = store.accountOf(who.name)?.generation ?? -1;
+    if (widening && !authenticateCredential(who, body.get("password") ?? "").ok) {
       return back("problem", "Enter your Toolroll password to change this project's tools.");
     }
+    const stillProved = (): boolean => { const account = store.accountOf(who.name); return account !== null && account.revokedAt === null && account.role === "approver" && account.generation === provedGeneration && store.accountCanAccess(who.name, repo); };
     const now = clock();
     const finish = (added: { ok: true; spec: ToolSpec } | { ok: false; message: string }, label: string) => {
       if (!added.ok) return back("problem", added.message);
@@ -1492,6 +1513,8 @@ ${restoreHtml(chosen, retired, undoableMerges(store, chosen), disabledLessons(st
           projectConfig = looked.value;
         }
         const found = discoverTools(repo, await codexServers(repo), toolHome, process.env, projectConfig);
+        // After the waits: the account that typed the password still stands as it did, or nothing is added.
+        if (!stillProved()) return back("problem", "Your access changed while this was read. Nothing was added.");
         const added: string[] = [], problems: string[] = [];
         for (const one of wanted) {
           const match = found.find(tool => tool.spec.name === one);
@@ -1923,9 +1946,9 @@ ${postForm("/settings/chat-approval/save", html`\
     if (wanted !== "auto" && wanted !== "bypassPermissions") {
       return refuse(response, who, 400, "permissions must be Auto or Full access", "/settings");
     }
-    // Widening every new task to Full access takes a password (chat-management.md §0a.3): an ordinary step-up, so a
-    // signed-in session does under Passwordless. Back to Auto narrows, and needs none.
-    if (wanted === "bypassPermissions" && store.permissionDefault().mode !== "bypassPermissions" && !authenticateApprover(who, body.get("password") ?? "").ok) {
+    // Widening every new task to Full access widens where builds write: a credential act, a password typed now, never the
+    // session (solo or Passwordless). Back to Auto narrows, and needs none.
+    if (wanted === "bypassPermissions" && store.permissionDefault().mode !== "bypassPermissions" && !authenticateCredential(who, body.get("password") ?? "").ok) {
       return redirect(response, `/settings/approval?problem=${encodeURIComponent("Enter your Toolroll password to start new tasks with Full access. Nothing changed.")}#defaults`);
     }
     store.setPermissionDefault(wanted, who.name, now);
@@ -2021,6 +2044,8 @@ ${postForm("/settings/chat-approval/save", html`\
     // finding 2): an invalid key must never persist a mode change it
     // then hides, a mode equal to the current one is not a "change",
     // and an unchanged blank form does nothing.
+    // Saving a key (or how the provider is paid) is a credential act: a password typed now, never the session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return redirect(response, `/settings/agents?problem=${encodeURIComponent("Enter your Toolroll password to save a key. Nothing changed.")}#providers`);
     const wantedMode = body.get("auth-mode");
     const value = (body.get("value") ?? "").trim();
     const modeSelected = wantedMode === "subscription" || wantedMode === "api-key";
@@ -2057,6 +2082,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const { who, response, posted } = ctx;
     if (options.telegramTokenFile === undefined) return refuse(response, who, 404, "There's no page at this address.", "/chat");
     const body = readForm(posted, CONSOLE_FORMS.telegramToken);
+    // The bot's token is a credential: saving it takes a password typed now, never the session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return redirect(response, `/settings/alerts?problem=${encodeURIComponent("Enter your Toolroll password to save the bot token. Nothing changed.")}#telegram-token`);
     const value = body.get("token") ?? "";
     const saved = saveBotToken(options.telegramTokenFile, value);
     if (!saved.ok) return redirect(response, `/settings/alerts?problem=${encodeURIComponent(saved.message)}#telegram-token`);
@@ -2069,6 +2096,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const body = readForm(posted, CONSOLE_FORMS.email);
     const said = (words: string, key: "said" | "problem" = "said") => redirect(response, `/settings/alerts?${key}=${encodeURIComponent(words)}#email`);
     if (op === "save") {
+      // The mail account's sign-in is a credential: a password typed now (the form's `token`), never the session.
+      if (!authenticateCredential(who, body.get("token") ?? "").ok) return said("Enter your Toolroll password to save email. Nothing changed.", "problem");
       const saved = saveEmailSettings(options.configDir, { host: body.get("host"), port: body.get("port"), secure: body.get("secure"), user: body.get("user"), from: body.get("from"), password: body.get("password"), imapHost: body.get("imapHost"), imapPort: body.get("imapPort") });
       return saved.ok ? said(saved.said) : said(saved.message, "problem");
     }
@@ -2095,6 +2124,8 @@ ${postForm("/settings/chat-approval/save", html`\
       await disconnectGoogle(options.configDir, options.googleFetch ?? fetch);
       return said("Google disconnected. Email goes through the mail server again, if one is set up.");
     }
+    // Connecting a Google account stores its client secret and, after consent, its sign-in: a credential act.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return redirect(response, `/settings/alerts?problem=${encodeURIComponent("Enter your Toolroll password to connect Google. Nothing changed.")}#email`);
     const saved = saveGoogleClient(options.configDir, { clientId: body.get("clientId"), clientSecret: body.get("clientSecret") });
     if (!saved.ok) return said(saved.message);
     const origin = consoleOrigin(request.headers.host);
@@ -2432,6 +2463,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.passwordless": passwordlessPage,
     "settings.passwordless-send": passwordlessSave,
     "settings.local-mode-off": localModeOff,
+    "settings.just-me": justMe,
     "settings.release-approval-send": releaseApprovalSave,
     "settings.project-flexible": projectFlexible,
     "settings.lead": leadPage,
@@ -2747,6 +2779,25 @@ ${postForm("/settings/chat-approval/save", html`\
     if (!turned.ok) return back("problem", turned.reason === "not-on" ? "Local mode is already off." : "Only an instance operator can turn off local mode.");
     return done("said", "Local mode is off. This computer's browser signs in with your password now.");
   }
+  // Solo or team (install-mode.ts): "It's just me". A credential act (a password typed now, or a one-use provider
+  // re-check; never a session) from a full session, proved and written in one transaction that re-reads every fact: a
+  // second person, a token for someone else or a chat-app user added meanwhile refuses it.
+  async function justMe(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.justMe);
+    const done = sayTo(response, "/settings/general?section=install-mode");
+    const back = sayTo(response, "/settings/change/just-me");
+    if (body.sent.getAll("password").length > 1) return back("problem", "That form was sent twice over. Nothing changed.");
+    if (who.authority !== "full") return back("problem", "Sign in with your password to do this.");
+    const said = store.transact(() => {
+      if (!authenticateCredential(who, body.get("password") ?? "").ok) return null;
+      return declareJustMe(store, who.name, now);
+    });
+    if (said === null) return back("problem", "Enter your Toolroll password to say it's just you.");
+    if (!said.ok) return back("problem", said.reason === "already-solo" ? "This install is already solo." : said.reason === "not-owner" ? "Only an instance operator can say this." : said.facts.map(fact => TEAM_FACT_WORDS[fact]).join(" "));
+    return done("said", "This install is solo now.");
+  }
   /** Settings → Models → Suggested: one project's offers, rules and switch; on the installation scope, every
    * project's offers and rules, each reviewed on its own project's page. */
   function suggestedView(repo: string | null, projects: readonly string[], asked: string | null, now: Date): SuggestedView {
@@ -2905,8 +2956,9 @@ ${postForm("/settings/chat-approval/save", html`\
     updatesVersion: name => settingsUpdates(name, "")?.current ?? null,
     packageVersion: PACKAGE_VERSION,
     firstResult: now => { const at = store.firstSuccessAt(now), since = store.installationStartedAt(); return at === null || since === null ? null : firstResultWords(since, at); },
-    passwordless: () => passwordlessSetting(store).on,
+    passwordless: () => sessionStandsIn(store),
     localModeOn: () => localModeOf(store)?.enabled === true,
+    installMode: () => installModeNow(store),
   });
   /** What Computers' sections read (settings plan F2), none of it from the request. */
   const computersDeps = {

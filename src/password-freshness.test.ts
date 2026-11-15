@@ -387,13 +387,13 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 67, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 65, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 10, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 27,
-      "src/server/tasks.ts": 7, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
+      "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
     const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
@@ -517,7 +517,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Flexible projects (flexible.ts, F1): lowering and turning off are an approver's step, signed in as a person.
     "src/operate.ts#projectFlexibleCommand@256": 1,
     "src/operate.ts#projectRulesCommand@141": 1,
-    "src/operate.ts#publishCommand@70": 5,
+    "src/operate.ts#publishCommand@70": 3,
     // Quick answers on or off (responsive-chat.md §8): an instance operator's password, checked where it is written.
     "src/operate.ts#quickAnswersConfig@234": 1,
     "src/operate.ts#regateTaskCommand@36": 1,
@@ -557,7 +557,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
     "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@22": 1,
     "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@25": 1,
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 4,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 2,
     // …and a kit's tools, given only with that proof (0.9.73 review, finding 1).
     "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 2,
     // A trigger from anyone from the command line: only the person's own proof, never a machine credential (finding 2).
@@ -590,9 +590,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>modelsSave@112": 1,
     // Results routing (slice 2): Settings → Models → Suggested's step-up acts (accept, keep, suggestions on), last in
     // the handlers so the reviewed positions above stay as they were.
-    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@116><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@66": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@86": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@117><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>policySave@51": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectDelete@50": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@48": 1,
@@ -603,11 +601,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>spendBudget@46": 1,
     "src/server/settings.ts#createSettingsHandlers@1>storageAct@57><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>teamsAct@83><anonymous>@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>toolsChange@68": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>toolsConnect@67": 1,
     "src/server/settings.ts#createSettingsHandlers@1>updatesAct@55><anonymous>@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2": 2,
-    "src/server/tasks.ts#createTasksHandlers@2>codeAct@22><anonymous>@1": 2,
+    "src/server/tasks.ts#createTasksHandlers@2>codeAct@22><anonymous>@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@40": 3,
     // Put away old tasks (task-tidy.md): the bulk put-away's step-up, and the runtime it reads it from.
     "src/server/tasks.ts#createTidyHandlers@3": 2,
@@ -998,17 +994,33 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>discordAct@84><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@95><anonymous>@1": 1,
     // Passwordless review round 1: reviewed new sites.
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@117": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@120": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@118": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@121": 1,
+    // Solo or team: "It's just me" is a credential act from a full session, proved inside the declaration's transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>justMe@115>said:store.transact(_)@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectSandbox@106": 1,
     // Auto-approve green: Settings → Approval rules → Release approval, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>releaseApprovalSave@107": 1,
+    // Solo or team (Codex round 1): connections, tools and their secrets, monitoring, Full access, pull requests on, a
+    // coding session's additional access and a flow's key and browser are credential acts, never the session.
+    "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@66": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@86": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>pullRequestsSave@58": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>toolsChange@68": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>toolsConnect@67": 1,
+    "src/server/tasks.ts#createTasksHandlers@2": 2,
+    "src/server/tasks.ts#createTasksHandlers@2>codeAct@22><anonymous>@1": 1,
+    // Solo or team (Codex round 2): saving a provider key, the Telegram bot token, the mail account or a Google account.
+    "src/server/settings.ts#createSettingsHandlers@1>providerKeyAct@91><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>telegramTokenSave@92": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>emailAct@93><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>googleAct@94><anonymous>@1": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
@@ -1028,13 +1040,18 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#unconfinedAgentsCommand@144": 1,
     // Sandbox parity C9: a project's sandbox changes with a password typed now (reviewed new site).
     "src/operate.ts#projectSandboxCommand@180": 1,
+    // Solo or team (Codex round 1): letting Toolroll push a project (publish setup, publish grant) is a credential act.
+    "src/operate.ts#publishCommand@70": 2,
   },
   proveCredential: {
+    // Solo or team (Codex round 2): a credential-class shared action's secure screen takes a credential proof.
+    "src/chat-actions.ts#<module>": 2,
+    "src/chat-actions.ts#executeSharedAction@26": 1,
     "src/scope.ts#addApprover@31>store.transact(_)@1": 1,
     "src/scope.ts#proveCredential@41": 1,
     // Passwordless review round 1: reviewed new sites.
     "src/flows-cli.ts#<module>": 2,
-    "src/flows-cli.ts#runFlowsCommand@3": 1,
+    "src/flows-cli.ts#runFlowsCommand@3": 2,
     // Auto-approve green: `release auto-approve on`, a password typed now (reviewed new site).
     "src/release-cli.ts#<module>": 2,
     "src/release-cli.ts#runAuthorityCommand@9": 1,

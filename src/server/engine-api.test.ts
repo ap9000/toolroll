@@ -298,8 +298,8 @@ describe("the local owner reads them with the session a terminal client redeems"
     const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
     const cookie = `${body.cookie.name}=${body.cookie.value}`;
     const add = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" },
-      new URLSearchParams({ csrf: body.csrf, title: "Fix the typo in the README", repo: world.repo }).toString());
-    // Not a small task (nothing sized it here): filed for a plan, as the page does.
+      new URLSearchParams({ csrf: body.csrf, title: "Fix the typo in the README", repo: world.repo, "planning-policy": "choice", "plan-first": "1" }).toString());
+    // Plan first chosen (on a solo install anything else is a Just code offer): filed for a plan, as the page does.
     expect(add.status).toBe(303);
     expect(add.headers.location).toMatch(/^\/t\//);
     // A small task: its exact terms, preview and digest as data, nothing filed or approved yet.

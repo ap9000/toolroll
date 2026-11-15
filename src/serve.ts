@@ -179,7 +179,7 @@ import { instrumentRequest } from "./server-telemetry.js";
 import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
-import { passwordlessOn } from './passwordless.js';
+import { declareSoloOnUpgrade, sessionStandsIn } from './install-mode.js';
 import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
 import { createFlowsHandlers } from './server/flows.js';
@@ -268,6 +268,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   });
 
   const { store, evidenceRoot } = options;
+  // An upgraded laptop install whose whole history is one person becomes solo, once, recorded (install-mode.ts).
+  declareSoloOnUpgrade(store, new Date());
   let coding = options.codingWorkspace ?? null;
   let codingProblem: string | undefined;
   if (coding === null && options.localRunner !== undefined && !store.isDemo()) {
@@ -958,8 +960,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       appOrigins: [consoleOrigin(request.headers.host), publicOrigin?.origin ?? null, options.configDir === undefined ? null : loadConsoleUrl(process.env, options.configDir)],
       // Every signed-in page shares the workspace shell; pages showing a one-time secret opt out (forceSensitive).
       browser: who.via === 'cookie',
-      // Passwordless (read once for rendering; every act proves it again at the act): ceremony fields render as nothing.
-      passwordless: who.via === 'cookie' && passwordlessOn(store),
+      // Passwordless, or a solo install (read once for rendering; every act proves it again at the act): ceremony fields
+      // render as nothing. Never for a local owner's session: its proofs never stand on the session (scope.ts), so its
+      // forms keep saying how to set a password.
+      passwordless: who.via === 'cookie' && who.authority !== 'local-owner' && sessionStandsIn(store),
       // Settings → Advanced: this person's own switch (read once for rendering; it hides links and never decides an act).
       advanced: advancedShownFor(store, who.name),
       openProject: who.via === 'cookie' ? who.session.project : null,

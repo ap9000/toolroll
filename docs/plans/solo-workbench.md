@@ -35,7 +35,8 @@ ACP agents). Flexible supports agents in two tiers, and the screen says which ti
 1. **One engine, two renderers, one keymap.** The Node engine owns state, PTYs, the fence, sanitising, auth and every
    write. The Rust TUI and the web are clients of one local API (never two runtimes — herdr-app's split is the warning).
 2. **Solo visible, team silent.** The solo screen shows no team concepts. Team mode turns on only by a literal act
-   (inviting a second person, or an acting token for someone else); chat apps notify in solo, control only in team.
+   (inviting a second person, or an acting token for someone else); chat apps notify and can approve for the owner's
+   own paired account in solo; team control features only in team.
 3. **Status from the stream, not scraping.** Needs-you and step state come from the engine's structured records.
 4. **Measured, not self-graded.** Every bar below is a gated number or a stranger observation.
 

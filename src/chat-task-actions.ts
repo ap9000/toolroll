@@ -4,6 +4,7 @@ import { chatApproveMode, effectiveChatApproval } from "./chat-approval.js";
 import { requestTaskStop, resumeTaskStop, taskControlOf, type StopRequest } from "./task-control.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { fileAddTestsTask, requestFollowUpChecks } from "./result-follow-ups.js";
+import { soloChatSeatRefusal } from "./install-mode.js";
 
 export const CHAT_TASK_ACTIONS = {
   // Build #1604 feedback: one short consequence that still says saved work
@@ -39,8 +40,14 @@ export function chatTaskRun(store: Store, task: string, operation: "stop" | "res
   const control = taskControlOf(store, ref.id, now);
   return (operation === "stop" && control.kind === "stop") || (operation === "resume" && control.kind === "paused") ? control.run : null;
 }
-export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload: Record<string, unknown>, now: Date, web: boolean, controls: Pick<StopRequest, "deferSignal"> & { via?: StopRequest["via"]; evidenceRoot?: string; person?: boolean } = {}):
+export function applyChatTaskAction(store: Store, who: VerifiedApprover, payload: Record<string, unknown>, now: Date, web: boolean, controls: Pick<StopRequest, "deferSignal"> & { via?: StopRequest["via"]; evidenceRoot?: string; person?: boolean; /** The chat binding a chat road came from. */ binding?: number } = {}):
   { ok: true; taskId: string; said: string } | { ok: false; message: string } {
+  // A chat app's act on a solo install stands only from the owner's own paired chat identity (read in the caller's
+  // transaction); a chat road naming no binding refuses.
+  if (controls.via !== undefined && controls.via !== "web" && controls.via !== "cli") {
+    const solo = soloChatSeatRefusal(store, { provider: controls.via, binding: controls.binding, approver: who.name });
+    if (solo !== null) return { ok: false, message: solo };
+  }
   const task = payload["task"], operation = payload["operation"];
   if (typeof task !== "string" || !isChatTaskAction(operation)) return { ok: false, message: "This task action is incomplete." };
   const stamp = chatTaskStamp(store, who, task);
