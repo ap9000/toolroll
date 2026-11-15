@@ -12,6 +12,7 @@
  *   start-task        file a new task (the task exists)
  *   add-project       add a git repository from a projects folder (the project is added; this demo gets a projects
  *                     folder, which `toolroll demo` doesn't have)
+ *   connect-builder   find the command that connects a builder (Settings → Computers shows toolroll up)
  *   approve-plan-password  the same approval with Passwordless off, measured up to the password field and stopped there:
  *                     nothing is typed. The task page carrying the password field is a ceremony load.
  *
@@ -179,6 +180,16 @@ const FLOWS = [
       await click(page.getByRole("button", { name: "Add and open" }));
       await until("the project added", () => store.listProjects().some(one => one.path === want));
       return "ledger-tools added";
+    },
+  },
+  {
+    // Settings plan v2 §6: a first-time task. Settings → Computers shows the one command (target: 3 clicks, no load).
+    name: "connect-builder", about: "find the command that connects a builder", passwordless: true,
+    async run({ page, click }) {
+      await click(page.locator(".so-rail").getByRole("link", { name: "Settings", exact: true }));
+      await click(page.getByRole("link", { name: "Computers", exact: true }).first());
+      await page.locator("#start code", { hasText: "toolroll up" }).waitFor({ state: "visible" });
+      return "toolroll up showing";
     },
   },
   {

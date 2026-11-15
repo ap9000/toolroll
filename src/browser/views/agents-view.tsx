@@ -1,21 +1,21 @@
 /** Agents (UI revamp wave B, on the kit): who is working, in one list — Needs you, Working, Finished in a window you
- * pick — then, for a person with access to the whole installation, the computers that build (register, details,
- * retire, reserved work) and which model runs each phase. A row opens that agent's own reading page (/agents?run=N):
+ * pick — then, for a person with access to the whole installation, how many computers build (Settings → Computers
+ * registers, retires and details them) and which model runs each phase. A row opens that agent's own reading page (/agents?run=N):
  * where it stands with Pause and Stop, its conversation and changes, and one composer — Reply while it asks,
  * otherwise a note that steers it. The page follows the workspace and the opened agent's own room, so it updates in
  * place; forms keep what is being typed. Every act posts to the handler it always had; the server proves it again. */
 import { useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AgentLaneWindow, BrowserAgentDetail, BrowserAgentRow, BrowserAgentsView, BrowserComputer, BrowserComputers } from "../../browser-workspace.js";
-import { RESOURCE, termsOf, type ChipTone } from "../../design/kit.js";
+import { RESOURCE, type ChipTone } from "../../design/kit.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
-  KActs, KApprove, KButton, KChip, KComposer, KCount, KDisclose, KDoc, KDocHeader, KEmpty, KFacts, KField, KGroup, KInfoLine, KInput,
+  KActs, KButton, KChip, KComposer, KCount, KDisclose, KDoc, KDocHeader, KEmpty, KGroup, KInfoLine,
   KLinkButton, KNote, KNotice, KOverlay, KPageHeader, KPhoneHeader, KRow, KSeg, KSelect, KSlots, KTabs, KWorkConversation, usePasswordAsked,
 } from "../kit/index.js";
 import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
-import { FormToken, Passwordless, PostForm } from "../ui/index.js";
+import { FormToken, PostForm } from "../ui/index.js";
 import { LiveGrid } from "./agents-live-view.js";
 import { freshDraft, loadDraft, saveDraft, type SteerDraft } from "./steer-composer.js";
 import "./agents.css";
@@ -127,7 +127,7 @@ function OfflineBox({ one, others }: { one: BrowserComputer; others: boolean }) 
   return <div data-computer-offline={one.name}><KSlots status={<>{computerChip(one)}<h2>{one.name} is offline</h2></>}
     text={`It stopped answering at ${when(one.heardAt, now)}. Nothing is lost: work it would take waits in the queue${others ? ", and the other computers keep building" : ""}. To bring it back, open a terminal on ${one.host}, go to the project's folder and run:`}
     acts={<CopyLine text="toolroll up" />}
-    terms={`Keep it running; it picks up queued work on its own. If ${one.name} is gone for good, retire it below.`} /></div>;
+    terms={<>Keep it running; it picks up queued work on its own. If {one.name} is gone for good, retire it in <a className="k-link" href={`/settings/computers?section=builders&open=1&computer=${encodeURIComponent(one.name)}#builders`}>Settings → Computers</a>.</>} /></div>;
 }
 
 /** No computer builds yet: approved tasks wait until one is connected. */
@@ -137,133 +137,16 @@ function StartBox() {
     acts={<CopyLine text="toolroll up" />} terms="Keep it running. The console alone (toolroll serve) doesn't build." /></div>;
 }
 
-/** A computer's details, in a drawer: its facts, reserved work (move it), its note, and Retire (step-up). */
-function ComputerDrawer({ one, computers, trigger, onClose }: { one: BrowserComputer; computers: BrowserComputers; trigger: HTMLElement; onClose: () => void }) {
-  const now = useNow(30_000);
-  const passwordless = useContext(Passwordless);
-  const csrf = useContext(FormToken);
-  const facts = { passwordless, remembered: false };
-  const status = one.retired ? "Retired" : one.state === "offline" ? `Offline since ${when(one.heardAt, now)}` : one.state === "building" ? "Online, building" : "Online";
-  // The same handler /fleet posted to; the server proves the password (or Passwordless) again.
-  const retire = async (password: string | null): Promise<string | null> => {
-    try {
-      const answer = await fetch("/fleet/runner/retire", { method: "POST", credentials: "same-origin", redirect: "manual", headers: keyed({}),
-        body: new URLSearchParams({ csrf, name: one.name, token: password ?? "" }) });
-      if (answer.type === "opaqueredirect" || (answer.status >= 300 && answer.status < 400)) { location.assign(`/agents?retired=${encodeURIComponent(one.name)}#computers`); return null; }
-      if (answer.status === 404) return "There's no computer by that name any more. Nothing changed.";
-      return password === null ? "Retiring needs your password now. Nothing changed." : "That password didn't match. Nothing changed.";
-    } catch { return "The console didn't answer. Nothing changed; try again."; }
-  };
-  return <KOverlay kind="drawer" title={one.name} trigger={trigger} onClose={onClose}>
-    <div className="agents-cpanel" data-computer-panel={one.name}>
-      <KFacts rows={[
-        ["Status", status], ["Computer", one.host],
-        ["Takes work from", one.projects.length > 0 ? one.projects.join(", ") : "No projects yet"],
-        ["Building now", one.building.length === 0 && one.hidden === 0 ? "Nothing"
-          : <>{one.building.map(build => <span key={build.taskId} className="agents-fact-line"><a href={build.href}>{build.title}</a></span>)}
-            {one.hidden > 0 && <span className="agents-fact-line">{plural(one.hidden, "task", "tasks")} in projects you can't see</span>}</>],
-        ["At a time", plural(one.capacity, "task", "tasks")],
-        ["Last heard", `${when(one.heardAt, now)} (${elapsedWords(one.heardAt, now)} ago)`],
-        ["Registered", when(one.registeredAt, now)],
-      ]} />
-      <section className="k-sec" aria-label="Reserved for it">
-        <h3>Reserved for it</h3>
-        {one.reserved.length === 0 ? <KNote>Nothing. It takes from the shared queue, top first.</KNote>
-          : <ul className="agents-list">{one.reserved.map(task => <li key={task.id} data-reserved={task.id}>
-            <span className="agents-list-t"><a href={task.href}>{task.title}</a>{task.project && <span className="k-muted"> · {task.project}</span>}</span>
-            {computers.manage && !task.taken && <PostForm action="/queue/move" className="agents-move">
-              <input type="hidden" name="queueRevision" value={String(computers.queueRevision)} />
-              <input type="hidden" name="task" value={task.id} /><input type="hidden" name="before" value="" />
-              <KSelect sm name="column" aria-label={`Move ${task.title} to`} defaultValue="anyone"
-                items={[["anyone", "Shared queue"], ...computers.list.filter(other => other.name !== one.name && !other.retired).map(other => [other.name, other.name] as const)]} />
-              <KButton sm type="submit" label="Move" />
-            </PostForm>}
-            {task.taken && <span className="k-note">Being taken</span>}
-          </li>)}</ul>}
-      </section>
-      {computers.manage && !one.retired && <PostForm action="/queue/note" className="k-sec">
-        <input type="hidden" name="runner" value={one.name} /><input type="hidden" name="from" value="fleet" />
-        <KField label="Note on its queue" hint="What it is working through, for whoever looks next.">
-          {ids => <KInput id={ids.id} name="note" maxLength={200} defaultValue={one.note ?? ""} aria-describedby={ids.describedBy} />}
-        </KField>
-        <KActs><KButton sm type="submit" label="Save note" /></KActs>
-      </PostForm>}
-      {!computers.manage && one.note && <KFacts rows={[["Note", one.note]]} />}
-      {computers.manage && !one.retired && <div className="k-sec" data-computer-retire={one.name}>
-        <KActs><KApprove kind="step-up" facts={facts} label="Retire computer" primary={false} terms={`Retire ${one.name}: it takes no more work.`} onApprove={retire} /></KActs>
-        <KNote>{`Retiring stops it taking work. Tasks reserved for it wait until you move them. ${termsOf("step-up", facts)}`}</KNote>
-      </div>}
-    </div>
-  </KOverlay>;
-}
-
-/** A name a computer can have: one short line, no control or format characters (as the handler checks). */
-const nameProblem = (name: string): string | null =>
-  name === "" ? "Name the computer first." : name.length > 60 || /[\p{Cc}\p{Cf}]/u.test(name) ? "Use one short line: up to 60 characters, no control characters." : null;
-
-/** Register a computer: its name and how many tasks at a time; always the password typed now (it makes a token). */
-function RegisterForm({ onCancel }: { onCancel: () => void }) {
-  const csrf = useContext(FormToken);
-  const passwordless = useContext(Passwordless);
-  const [name, setName] = useState("");
-  const [capacity, setCapacity] = useState("1");
-  const [error, setError] = useState<string | null>(null);
-  const field = useRef<HTMLInputElement>(null);
-  const trimmed = name.trim();
-  const facts = { passwordless, remembered: false };
-  // The token page is the handler's own (shown once, no script on it): the form goes there natively.
-  const register = async (password: string | null): Promise<string | null> => {
-    const form = document.createElement("form");
-    form.setAttribute("method", "post"); form.setAttribute("action", "/fleet/runner/register"); form.hidden = true;
-    for (const [key, value] of Object.entries({ csrf, name: trimmed, capacity, token: password ?? "" })) {
-      const input = document.createElement("input");
-      input.type = "hidden"; input.name = key; input.value = value;
-      form.append(input);
-    }
-    document.body.append(form);
-    form.submit();
-    return null;
-  };
-  // Invalid values are refused next to their field before any password is asked for.
-  const refuse = () => { setError(nameProblem(trimmed)); field.current?.focus(); };
-  return <div className="k-sec agents-reg" id="agents-register" data-computer-register>
-    <h3>Add a computer</h3>
-    <KField label="Computer name" error={error}>
-      {ids => <KInput ref={field} id={ids.id} value={name} autoComplete="off" spellCheck={false} maxLength={60} aria-describedby={ids.describedBy} aria-invalid={ids.invalid || undefined}
-        onChange={event => { setName(event.target.value); setError(null); }} />}
-    </KField>
-    <KField label="Tasks at a time">
-      {ids => <KSelect id={ids.id} wide value={capacity} onChange={event => setCapacity(event.target.value)} items={["1", "2", "3", "4", "6", "8"]} />}
-    </KField>
-    <p className="agents-terms">{trimmed || "New computer"} · up to {capacity} at a time · takes from the shared queue</p>
-    <KActs>
-      {nameProblem(trimmed) === null
-        ? <KApprove kind="way-in" facts={facts} label="Register computer" terms={`Register ${trimmed}: up to ${capacity} at a time.`} onApprove={register} />
-        : <KButton variant="primary" label="Register computer" onClick={refuse} />}
-      <KButton variant="ghost" label="Cancel" onClick={onCancel} />
-    </KActs>
-    <KNote>{`${termsOf("way-in", facts)} Registering makes a token that lets the computer take work; it is shown once.`}</KNote>
-  </div>;
-}
-
-function Computers({ computers, terminals }: { computers: BrowserComputers; terminals: boolean }) {
-  const now = useNow(30_000);
-  const [adding, setAdding] = useState(false);
-  const [open, setOpen] = useState<{ name: string; trigger: HTMLElement } | null>(null);
-  const shown = open === null ? null : computers.list.find(one => one.name === open.name) ?? null;
-  const add = computers.manage && !adding ? <KButton variant="ghost" sm lead="plus" label="Add a computer" onClick={() => setAdding(true)} /> : undefined;
+/** The computers that build live in Settings → Computers (settings plan F2): register, retire, details and reserved
+ * work are there. Agents keeps the count, the way there, and (above) what to do about one that stopped answering;
+ * #computers keeps old links landing here. */
+function ComputersLink({ computers }: { computers: BrowserComputers }) {
+  const taking = computers.list.filter(one => !one.retired && one.state !== "offline").length;
   return <section id="computers" className="agents-sec" aria-labelledby="agents-computers" data-computers>
-    <KGroup id="agents-computers" label="Computers that build" count={<KCount n={computers.list.length} />} right={add} />
-    {computers.list.length === 0 && <div className="agents-pad"><StartBox /></div>}
-    {computers.list.map(one => <div key={one.name} data-computer={one.name}>
-      <KRow chip={computerChip(one)} title={one.name} desc={`${one.host} · ${computerLine(one, now)}`}
-        meta={<span>{one.projects.length > 0 ? one.projects.join(", ") : "No projects yet"}</span>}
-        action={<KButton sm label="Details" aria-haspopup="dialog" onClick={event => setOpen({ name: one.name, trigger: event.currentTarget })} />} />
-    </div>)}
-    {computers.shared > 0 && <p className="agents-line">{plural(computers.shared, "task waits", "tasks wait")} in the shared queue for any free computer. <a className="k-link" href="/?view=order">Reserve one for a computer</a></p>}
-    {adding && <RegisterForm onCancel={() => setAdding(false)} />}
-    {terminals && <p className="agents-line k-phone-only"><a className="k-link" href="/agents/terminals">Terminals on these computers</a></p>}
-    {open !== null && shown !== null && <ComputerDrawer one={shown} computers={computers} trigger={open.trigger} onClose={() => setOpen(null)} />}
+    <KGroup id="agents-computers" label="Computers that build" count={<KCount n={computers.list.length} />}
+      right={<KLinkButton sm variant="ghost" href="/settings/computers?section=builders" label="Manage" />} />
+    {computers.list.length === 0 ? <div className="agents-pad"><StartBox /></div>
+      : <p className="agents-line">{taking === 0 ? "None is taking work now." : `${plural(taking, "computer", "computers")} taking work.`}</p>}
   </section>;
 }
 
@@ -325,9 +208,9 @@ function AgentsList({ view }: { view: BrowserAgentsView }) {
     <Group id="finished" label={<><span className="k-desk-only">Finished in {WINDOW_WORDS[range]}</span><span className="k-phone-only">Finished</span></>} rows={finished}
       right={<span className="k-phone-only"><KSelect sm aria-label="Finished in" value={range} onChange={event => choose(event.target.value)} items={[["30m", "Last 30 min"], ["2h", "Last 2 h"], ["24h", "Last 24 h"]]} /></span>} />
     {finished.length === 0 && <p className="agents-none">Nothing finished in {WINDOW_WORDS[range]}.</p>}
-    {view.computers != null && <Computers computers={view.computers} terminals={view.terminals === true} />}
+    {view.computers != null && <ComputersLink computers={view.computers} />}
     {view.phases != null && <Models view={view} />}
-    {view.computers == null && view.terminals === true && <p className="agents-line k-phone-only"><a className="k-link" href="/agents/terminals">Terminals</a></p>}
+    {view.terminals === true && <p className="agents-line k-phone-only"><a className="k-link" href="/agents/terminals">Terminals</a></p>}
   </div>;
 }
 

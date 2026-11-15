@@ -130,7 +130,8 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     // The task's link names it; the page reports beta whatever is open, and the selection stays alpha.
     await openProject(cookie, alpha);
     const task = await page(cookie, "/t/t-beta");
-    expect(task).toMatch(/<a [^>]*href="\/start-builder\?task=t-beta"[^>]*>Connect a builder/);
+    // Settings → Computers' Connect a builder (settings plan F2); the old /start-builder?task= redirects there, task kept.
+    expect(task).toMatch(/<a [^>]*href="\/settings\/computers\?task=t-beta&amp;section=start"[^>]*>Connect a builder/);
     expect(await page(cookie, "/start-builder?task=t-beta")).toContain(`<strong>No builder is connected</strong> to <strong>${basename(beta)}</strong>`);
     expect(await page(cookie, "/start-builder")).toContain(`A builder is connected to <strong>${basename(alpha)}</strong>`);
     // Unknown, or outside what this person may see: 404.
@@ -447,29 +448,29 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     await agree(id, "needs-approval", "Approve plan", "Approve");
     approve(store, id, "alex", now, store.getScope(id)!.digest, approverToken);
     await agree(id, "no-worker-registered", "Connect a builder");
-    // Connect a builder leads to Start a builder and its command, never back to the task's own page.
-    expect(workListOf(workspaceOf(await page(cookie, "/"))).rows.find(row => row.id === id)?.action).toEqual({ label: "Connect a builder", href: `/start-builder?task=${id}` });
+    // Connect a builder leads to Settings → Computers' Connect a builder and its command, never back to the task's own page.
+    expect(workListOf(workspaceOf(await page(cookie, "/"))).rows.find(row => row.id === id)?.action).toEqual({ label: "Connect a builder", href: `/settings/computers?task=${id}&section=start` });
     for (const path of [`/t/${id}`]) {
       const shown = await page(cookie, path);
-      expect(shown, path).toMatch(new RegExp(`<a [^>]*href="/start-builder\\?task=${id}"[^>]*>Connect a builder`));
+      expect(shown, path).toMatch(new RegExp(`<a [^>]*href="/settings/computers\\?task=${id}&amp;section=start"[^>]*>Connect a builder`));
       expect(shown, path).not.toMatch(/<a [^>]*href="[^"]*#run-status"[^>]*>Connect a builder/);
     }
     // System is part of Agents now (a 302 to its models); Start a builder keeps the command.
     expect((await fetch(url("/system"), { headers: { cookie }, redirect: "manual" })).headers.get("location")).toBe("/agents#models");
-    expect(await page(cookie, "/start-builder")).toMatch(/<section id="builder"[^>]*><h1 id="builder-heading">Start a builder<\/h1>[\s\S]*>toolroll up<\/code>/);
+    expect(await page(cookie, "/start-builder")).toMatch(/<section class="k-ssec" id="start"[^>]*>[\s\S]*Connect a builder[\s\S]*>toolroll up<\/code>/);
     // A live builder bound to another project doesn't connect this one: not on Start a builder, not in the first-run
     // steps (dispatch's own answer, buildersFor).
     register(store, { name: "beta-worker", host: "here", capacity: 1, repos: [beta], now, newToken: () => "beta-token" });
     await openProject(cookie, alpha);
     const builderStep = workspaceOf(await page(cookie, "/chat")).firstRun?.steps.find(one => one.key === "builder");
-    expect(builderStep).toMatchObject({ done: false, action: { href: "/start-builder" } });
+    expect(builderStep).toMatchObject({ done: false, action: { href: "/settings/computers?section=start" } });
     expect(await page(cookie, "/start-builder")).toContain(`<strong>No builder is connected</strong> to <strong>${basename(alpha)}</strong>`);
     await agree(id, "no-worker-registered", "Connect a builder");
     // A project-limited person reaches the same instructions (System stays instance-only), told who can start one.
     const limitedInvite = store.mintInvite("approver", "alex", now, undefined, [alpha]);
     expect(store.consumeInviteAndCreateAccount({ tokenValue: limitedInvite.token, name: "limited", credentialHash: hashPassword(memberPassword) }, now).ok).toBe(true);
     const limited = await login("limited", memberPassword);
-    expect(await page(limited, `/t/${id}`)).toMatch(new RegExp(`<a [^>]*href="/start-builder\\?task=${id}"[^>]*>Connect a builder`));
+    expect(await page(limited, `/t/${id}`)).toMatch(new RegExp(`<a [^>]*href="/settings/computers\\?task=${id}&amp;section=start"[^>]*>Connect a builder`));
     const limitedStart = await fetch(url("/start-builder"), { headers: { cookie: limited } });
     expect(limitedStart.status).toBe(200);
     const limitedPage = await limitedStart.text();

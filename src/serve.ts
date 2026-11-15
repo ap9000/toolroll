@@ -794,17 +794,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return nonce;
   }
 
-  /** Single use, bound to who saw which digest of which task, and young. */
+  /** Single use, bound to who saw which digest of which task, and young. Only the submission it was minted for (its
+   * person, purpose and digest) spends it, at once and synchronously, whatever happens after; any other leaves it for
+   * its owner, so nobody can burn someone else's form. An expired one is gone whoever asks. */
   function consumeApprovalNonce(nonce: string, name: string, taskId: string, digest: string): boolean {
     const held = approvalNonces.get(nonce);
     if (held === undefined) return false;
+    if (held.expiresAt < Date.now()) { approvalNonces.delete(nonce); return false; }
+    if (held.name !== name || held.taskId !== taskId || held.digest !== digest) return false;
     approvalNonces.delete(nonce);
-    return (
-      held.name === name &&
-      held.taskId === taskId &&
-      held.digest === digest &&
-      held.expiresAt >= Date.now()
-    );
+    return true;
   }
 
   const hookContext: RemoteHookContext = { store, clock, options };

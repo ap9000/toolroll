@@ -2749,10 +2749,10 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
     store.moveTask({ taskId: "t-queued", toRunner: "builder-2", beforeTaskId: null }, new Date());
 
     const cookie = await login();
-    // Fleet became the computers on Agents (UI revamp wave B): /fleet is a GET alias to them.
+    // Fleet became the computers on Agents (UI revamp wave B), and those are Settings → Computers now (settings plan F2).
     const alias = await fetch(url("/fleet"), { headers: { cookie }, redirect: "manual" });
     expect(alias.status).toBe(302);
-    expect(alias.headers.get("location")).toBe("/agents#computers");
+    expect(alias.headers.get("location")).toBe("/settings/computers?section=builders");
     const view = workspaceOf(await (await fetch(url("/agents"), { headers: { cookie } })).text()).view as BrowserAgentsView;
     const computers = view.computers!;
     expect(computers.manage).toBe(true);
@@ -2766,22 +2766,25 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
   test("registering a worker takes a password and shows its token once; the token is never re-rendered", async () => {
     const cookie = await login();
     const token = workspaceOf(await (await fetch(url("/agents"), { headers: { cookie } })).text()).csrf;
+    // Its form is Settings → Computers' register document (settings plan F2), with a one-use form token.
+    const nonceOf = async () => /name="nonce" value="([0-9a-f]{32})"/.exec(await (await fetch(url("/settings/change/register-computer"), { headers: { cookie } })).text())![1]!;
 
-    // No password: refused, nothing minted.
+    // No password: refused back to the document, nothing minted.
     const noPassword = await fetch(url("/fleet/runner/register"), {
       method: "POST",
       headers: { cookie },
-      body: new URLSearchParams({ csrf: token, name: "builder-9", capacity: "1", token: "" }),
+      body: new URLSearchParams({ csrf: token, name: "builder-9", capacity: "1", token: "", nonce: await nonceOf() }),
       redirect: "manual",
     });
-    expect(noPassword.status).toBe(403);
+    expect(noPassword.status).toBe(303);
+    expect(noPassword.headers.get("location")).toMatch(/^\/settings\/change\/register-computer\?problem=/);
     expect(store.getRunner("builder-9")).toBeNull();
 
     // With the password: the token renders on this one response and nowhere else.
     const created = await fetch(url("/fleet/runner/register"), {
       method: "POST",
       headers: { cookie },
-      body: new URLSearchParams({ csrf: token, name: "builder-9", capacity: "2", token: approverToken }),
+      body: new URLSearchParams({ csrf: token, name: "builder-9", capacity: "2", token: approverToken, nonce: await nonceOf() }),
       redirect: "manual",
     });
     expect(created.status).toBe(200);
@@ -2793,10 +2796,10 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
     const runner = store.getRunner("builder-9");
     expect(runner).not.toBeNull();
     expect(runner?.runner.capacity).toBe(2);
-    // The token page is a kit reading page back to the computers on Agents.
-    expect(shown).toContain('href="/agents#computers"');
+    // The token page is a kit reading page back to Settings → Computers.
+    expect(shown).toContain('href="/settings/computers?section=builders"');
     // Only a hash is kept — the raw token is not in the database's runner row.
-    const later = await (await fetch(url("/agents"), { headers: { cookie } })).text();
+    const later = await (await fetch(url("/settings/computers"), { headers: { cookie } })).text();
     expect(later).not.toContain("builder-9 is registered");
   });
 
@@ -2808,12 +2811,14 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
     const cookie = await login();
     const token = workspaceOf(await (await fetch(url("/agents"), { headers: { cookie } })).text()).csrf;
 
+    // Refusals go back to Settings → Computers' retire document for the same name (settings plan F2).
     const unknown = await fetch(url("/fleet/runner/retire"), {
       method: "POST", headers: { cookie },
       body: new URLSearchParams({ csrf: token, name: "nobody", token: approverToken }),
       redirect: "manual",
     });
-    expect(unknown.status).toBe(404);
+    expect(unknown.status).toBe(303);
+    expect(unknown.headers.get("location")).toMatch(/^\/settings\/change\/retire-computer\?computer=nobody&problem=/);
 
     const retired = await fetch(url("/fleet/runner/retire"), {
       method: "POST", headers: { cookie },
@@ -2821,9 +2826,9 @@ describe("the fleet — runner lanes as the agents × projects surface", () => {
       redirect: "manual",
     });
     expect(retired.status).toBe(303);
-    expect(retired.headers.get("location")).toBe("/agents?retired=builder-1#computers");
+    expect(retired.headers.get("location")).toBe(`/settings/computers?section=builders&said=${encodeURIComponent("builder-1 is retired. It takes no more work.")}`);
     expect(store.getRunner("builder-1")?.runner.retiredAt).not.toBeNull();
-    // Agents says so in fixed words, naming only a computer the store knows as retired.
+    // An old Agents link still says it in fixed words, naming only a computer the store knows as retired.
     const said = async (path: string) => (workspaceOf(await (await fetch(url(path), { headers: { cookie } })).text()).view as BrowserAgentsView).computerSaid;
     expect(await said("/agents?retired=builder-1")).toMatchObject({ tone: "info", text: expect.stringContaining("builder-1 is retired") });
     expect(await said(`/agents?retired=${encodeURIComponent("<b>nobody</b>")}`)).toBeNull();

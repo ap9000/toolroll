@@ -20,7 +20,7 @@ import { kitSectionForm } from "../settings-kit.js";
 import { evaluateRoutePolicy, holdsRole, type RoutePrincipal } from "./route-policy.js";
 import type { LimitedAccess, ProjectResolver } from "./route-table.js";
 import { btn, codeLine, disclose, doc, docHeader, formRow, infoLine, input, notice, phoneHeader, select, settingsLink, settingsSection } from "./kit.js";
-import { changeHref, sectionHref, SETTINGS_SECTIONS, sectionDeclaration, type SectionDeclaration, type SectionGate, type SettingsArea } from "./settings-section-table.js";
+import { changeDocumentOf, changeHref, sectionHref, SETTINGS_SECTIONS, type SectionDeclaration, type SectionGate, type SettingsArea } from "./settings-section-table.js";
 
 // ---- who is asking -------------------------------------------------------------------------------------------------
 
@@ -36,6 +36,8 @@ export type SectionPerson = {
   readonly restricted: boolean;
   /** Installation-wide settings are theirs to see (settingsHome's `!minimal`). */
   readonly installation: boolean;
+  /** The demo's sandbox (it registers and retires nothing). */
+  readonly demo: boolean;
   readonly passwordSet: boolean;
   /** The request's proven capability, exactly as the console hands it to evaluateRoutePolicy (serve.ts): an API
    * token's own scope (a read token reads, whatever its person's role), else the person's role. */
@@ -54,6 +56,8 @@ export function gateHolds(gate: SectionGate, person: SectionPerson): boolean {
     case "operator": return person.via === "cookie" && person.operator;
     case "approver": return person.role === "approver";
     case "password-holder": return !(person.via === "cookie" && person.authority !== "full" && !person.passwordSet);
+    case "whole-installation": return !person.restricted;
+    case "not-demo": return !person.demo;
   }
 }
 
@@ -171,7 +175,7 @@ export type SectionImpl<S = unknown, D = unknown> = {
   readonly loadDetail?: (ctx: SectionContext) => D;
   readonly render: (view: SectionView<S, D>) => Html;
   /** Its change document's body (the form), for a section with one; `summary` null: nothing to change now. */
-  readonly renderChange?: (view: Omit<SectionView<S | null, D>, "summary"> & { summary: S | null; problem: string | null }) => { title: string; body: Html };
+  readonly renderChange?: (view: Omit<SectionView<S | null, D>, "summary"> & { summary: S | null; problem: string | null; document: string }) => { title: string; body: Html };
   /** What a person without the act capability hears on the change document. */
   readonly refusal?: string;
 };
@@ -214,13 +218,14 @@ export function renderArea(area: SettingsArea, impls: SectionImpls, base: Base, 
 export type ChangeAnswer = { ok: true; title: string; body: Html } | { ok: false; status: 403 | 404; message: string };
 /** One section's change document: admitted as the section is, and only for a person with its act capability. */
 export function changeDocument(id: string, impls: SectionImpls, base: Base, problem: string | null): ChangeAnswer {
-  const declaration = sectionDeclaration(id);
-  const impl = impls[id] as SectionImpl<unknown, unknown> | undefined;
-  if (declaration === undefined || declaration.change === null || impl?.renderChange === undefined) return { ok: false, status: 404, message: "There's no page at this address." };
+  const change = changeDocumentOf(id);
+  const declaration = change?.section;
+  const impl = declaration === undefined ? undefined : impls[declaration.id] as SectionImpl<unknown, unknown> | undefined;
+  if (change === undefined || declaration === undefined || impl?.renderChange === undefined) return { ok: false, status: 404, message: "There's no page at this address." };
   const admitted = admitSection(declaration, base.person, base.project);
-  if (!admitted.ok || admitted.can[declaration.change.act] !== true) return { ok: false, status: 403, message: impl.refusal ?? "You can't change this here." };
+  if (!admitted.ok || admitted.can[change.act] !== true) return { ok: false, status: 403, message: impl.refusal ?? "You can't change this here." };
   const ctx: SectionContext = { ...base, scopes: admitted.scopes, can: admitted.can };
-  const drawn = impl.renderChange({ declaration, ctx, summary: impl.loadSummary(ctx), detail: null, asked: true, attrs: {}, problem });
+  const drawn = impl.renderChange({ declaration, ctx, summary: impl.loadSummary(ctx), detail: null, asked: true, attrs: {}, problem, document: change.id });
   return { ok: true, ...drawn };
 }
 
@@ -353,7 +358,7 @@ function localModeSection(deps: GeneralDeps): SectionImpl<LocalSummary> {
         body: html`<div class="k-acts">${btn("Set a password", { sm: true, href: "/password/set?next=%2Fsettings%2Fgeneral" })}</div>` })
       : settingsSection({ id: "local-mode", title: "Local mode", state: " · on", attrs,
         lead: "A browser on this computer can file tasks, approve plans and add projects without your password.",
-        right: btn("Turn off local mode", { sm: true, href: changeHref(declaration) }), body: html`` }),
+        right: btn("Turn off local mode", { sm: true, href: changeHref(declaration.changes[0]!) }), body: html`` }),
     refusal: "An instance operator signed in with a password turns off local mode.",
     renderChange: ({ declaration, summary, problem }) => {
       const home = sectionHref(declaration);
@@ -385,7 +390,11 @@ export function generalSections(deps: GeneralDeps): SectionImpls {
 
 /** The General area page's body (the frame is the caller's). */
 export function generalBody(impls: SectionImpls, base: Base, asked: { section: string | null; open: boolean }, said: { said: string | null; problem: string | null }): { body: Html; shown: string[] } {
-  const area = renderArea("general", impls, base, asked);
+  return areaBody("general", impls, base, asked, said);
+}
+/** An area page's body: what the last act said (once), where the asked section is, then each admitted section. */
+export function areaBody(name: SettingsArea, impls: SectionImpls, base: Base, asked: { section: string | null; open: boolean }, said: { said: string | null; problem: string | null }): { body: Html; shown: string[] } {
+  const area = renderArea(name, impls, base, asked);
   const sentence = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
   const answered = said.problem ? notice(sentence(said.problem)) : said.said ? infoLine(sentence(said.said)) : html``;
   return { body: joinHtml([answered, area.jump, ...area.sections]), shown: area.shown };

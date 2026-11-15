@@ -44,13 +44,16 @@ import { PACKAGE_VERSION } from "../version.js";
 import type { HandlerContext } from './handler-context.js';
 import { handlersOf } from './handler-registry.js';
 import type { ServerRuntime } from './runtime.js';
-import { refuse,screen,when } from "./chrome.js";
+import { refuse,relativeAge,screen,when } from "./chrome.js";
 import { requestContext } from "./request-context.js";
 import { btn,empty,infoLine,settingsSection,settingsShell } from "./kit.js";
 import { shortPathOf } from "./render-projects.js";
 import { approvalGroup,flagsOf,needsByGroup,projectPicker,GROUP_PATHS,groupTitle,modeCeremonyHtml,modePageHtml,passwordlessHtml,HUB_ANCHOR_SCRIPT,pushScriptOf,settingsGroupPage,settingsNeeds,settingsSubPage,type SettingsFacts,type SettingsGroup } from "../settings-groups-ui.js";
 import { routePrincipalOf } from "./route-policy.js";
-import { askedSection,changeDocument,generalBody,generalSections,resolveSettingsProject,type SectionBase,type SectionPerson } from "./settings-sections.js";
+import { areaBody,askedSection,changeDocument,generalBody,generalSections,resolveSettingsProject,type SectionBase,type SectionImpls,type SectionPerson } from "./settings-sections.js";
+import { computersSections,RUNNER_REGISTER,type ComputersSubject } from "./settings-computers.js";
+import { computersOf } from "./agents-computers.js";
+import { buildersFor } from "../dispatch.js";
 import { CHANGE_DOCUMENTS } from "./settings-section-table.js";
 import { retiredRedirect } from "./retired-routes.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
@@ -2443,6 +2446,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.telegram": telegramPage,
     "settings.page": settingsHome,
     "settings.group-general": generalPage,
+    "settings.group-computers": computersPage,
     "settings.group-agents": settingsHome.bind(null),
     "settings.group-alerts": settingsHome.bind(null),
     "settings.group-projects": settingsHome.bind(null),
@@ -2894,7 +2898,7 @@ ${postForm("/settings/chat-approval/save", html`\
       restricted: restricted(), installation: options.telegramTokenFile !== undefined && !restricted(), passwordSet: store.accountOf(who.name)?.passwordSet === true,
       // The same principal serve.ts hands evaluateRoutePolicy for this request.
       principal: routePrincipalOf(who),
-      unscopedConsole: runtime.unscopedMode };
+      unscopedConsole: runtime.unscopedMode, demo: store.isDemo() };
   }
   /** What General's sections read, none of it from the request. */
   const generalImpls = generalSections({
@@ -2904,7 +2908,36 @@ ${postForm("/settings/chat-approval/save", html`\
     passwordless: () => passwordlessSetting(store).on,
     localModeOn: () => localModeOf(store)?.enabled === true,
   });
-  const sectionImpls = { ...generalImpls };
+  /** What Computers' sections read (settings plan F2), none of it from the request. */
+  const computersDeps = {
+    computers: (now: Date, manage: boolean) => computersOf(store, now, visible, manage),
+    connected: (repo: string, now: Date, runner: string | null) => buildersFor(store, repo, now, runner).alive.length > 0,
+    projectName,
+    registerNonce: (name: string) => mintApprovalNonce(name, RUNNER_REGISTER, ""),
+    ago: (iso: string, now: Date) => now.getTime() - Date.parse(iso) < 60_000 ? "just now" : relativeAge(iso, now),
+  };
+  /** Every area's sections for one request: Computers' are made with that page's own resolved keys. */
+  const sectionImplsFor = (subject: ComputersSubject): SectionImpls => ({ ...generalImpls, ...computersSections(computersDeps, subject) });
+  const NO_SUBJECT: ComputersSubject = { task: null, computer: null, drafts: {} };
+  /**
+   * Settings → Computers' own keys, resolved before any section loads: ?task= names a task whose saved project the
+   * person may see (else the same 404 for unknown and unseen), ?computer= one short name, and a change document's safe
+   * drafts after a refusal (name, capacity and the field that was wrong; never a password).
+   */
+  function computersSubjectOf(url: URL): { ok: true; subject: ComputersSubject } | { ok: false; status: 400 | 404; message: string } {
+    const one = (key: string): string | null | undefined => { const all = url.searchParams.getAll(key); return all.length === 0 ? null : all.length === 1 ? all[0]! : undefined; };
+    const taskId = one("task"), computer = one("computer");
+    if (taskId === undefined || computer === undefined) return { ok: false, status: 400, message: "Name one task and one computer at most." };
+    let task: ComputersSubject["task"] = null;
+    if (taskId !== null) {
+      const ref = taskId.length <= 200 ? store.lookupRef(taskId) : null;
+      if (ref === null || ref.repo === null || !visible(ref.repo)) return { ok: false, status: 404, message: "That task is not available." };
+      task = { id: taskId, repo: ref.repo, runner: ref.assignedRunner ?? null };
+    }
+    const drafts: Record<string, string> = {};
+    for (const key of ["name", "capacity", "field"]) { const value = one(key); if (typeof value === "string" && value.length <= 60) drafts[key] = value; }
+    return { ok: true, subject: { task, computer: computer !== null && computer.length <= 60 ? computer : null, drafts } };
+  }
   /** The last backup in the words the overview and the section nav use. */
   function backupFacts(last: ReturnType<typeof store.backupRuns>[number] | null): SettingsFacts["backup"] {
     return last === null ? null : last.ok === false
@@ -2933,8 +2966,20 @@ ${postForm("/settings/chat-approval/save", html`\
     const { url, who, response, now, project } = ctx;
     const resolved = resolveSettingsProject(url, project, { projects: consoleProjects, canOpen: repo => visible(repo) });
     if (!resolved.ok) return refuse(response, who, resolved.status, resolved.message, "/settings");
-    const drawn = generalBody(sectionImpls, sectionBase(who, resolved.project, now), askedSection(url), { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
+    const drawn = generalBody(sectionImplsFor(NO_SUBJECT), sectionBase(who, resolved.project, now), askedSection(url), { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
     return sendScreen(response, 200, screen("General", settingsShell({ group: "general", title: "General", lead: "How Toolroll looks and behaves in this browser.", flags: navFlagsFor(who, now), body: drawn.body }),
+      { chrome: chromeFor(project, "settings") }));
+  }
+  // Settings → Computers (settings plan F2): connect a builder, every computer that builds and one's details. The project
+  // and the page's own keys are resolved first; each section is admitted before any of its readers runs.
+  async function computersPage(ctx: HandlerContext): Promise<void> {
+    const { url, who, response, now, project } = ctx;
+    const resolved = resolveSettingsProject(url, project, { projects: consoleProjects, canOpen: repo => visible(repo) });
+    if (!resolved.ok) return refuse(response, who, resolved.status, resolved.message, "/settings");
+    const subject = computersSubjectOf(url);
+    if (!subject.ok) return refuse(response, who, subject.status, subject.message, "/settings/computers");
+    const drawn = areaBody("computers", sectionImplsFor(subject.subject), sectionBase(who, resolved.project, now), askedSection(url), { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
+    return sendScreen(response, 200, screen("Computers", settingsShell({ group: "computers", title: "Computers", lead: "The computers that build approved work.", flags: navFlagsFor(who, now), body: drawn.body }),
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Advanced is General's Advanced section now: a permanent redirect (retired-routes.ts SETTINGS_RETIRED).
@@ -2953,8 +2998,10 @@ ${postForm("/settings/chat-approval/save", html`\
       const { url, who, response, now, project } = ctx;
       const resolved = resolveSettingsProject(url, project, { projects: consoleProjects, canOpen: repo => visible(repo) });
       if (!resolved.ok) return refuse(response, who, resolved.status, resolved.message, "/settings");
-      const answer = changeDocument(id, sectionImpls, sectionBase(who, resolved.project, now), url.searchParams.get("problem"));
-      if (!answer.ok) return refuse(response, who, answer.status, answer.message, "/settings/general");
+      const subject = computersSubjectOf(url);
+      if (!subject.ok) return refuse(response, who, subject.status, subject.message, "/settings/computers");
+      const answer = changeDocument(id, sectionImplsFor(subject.subject), sectionBase(who, resolved.project, now), url.searchParams.get("problem"));
+      if (!answer.ok) return refuse(response, who, answer.status, answer.message, "/settings");
       return sendScreen(response, 200, screen(answer.title, answer.body, { chrome: chromeFor(project, "settings"), forceSensitive: true }));
     };
   }
