@@ -416,7 +416,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(fit(&clean(&q.text), qa.width as usize - 10), ink()),
         ])];
         for (i, o) in q.options.iter().take(9).enumerate() {
-            let chosen = app.mode == Mode::ConfirmAnswer(i);
+            let chosen = matches!(&app.mode, Mode::ConfirmAnswer(pin) if pin.index == i);
             let tag = if o.recommended { " (suggested)" } else { "" };
             let text = format!(
                 "{} {}{} — {}",
@@ -446,8 +446,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
     if input {
         let (label, text) = match &app.mode {
             Mode::Steer(t) => ("Steer: ", t),
-            Mode::Note(NoteKind::Accept, t) => ("Accept, with a note (optional): ", t),
-            Mode::Note(NoteKind::SendBack, t) => ("Send back, saying what to change: ", t),
+            Mode::Note(NoteKind::SendBack(_), t) => ("Send back, saying what to change: ", t),
             Mode::NewTask(t) => ("New task: ", t),
             _ => unreachable!(),
         };
@@ -839,11 +838,17 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from(Span::styled("Any other key keeps it running.", dim())),
             ],
         ),
-        Mode::ConfirmAnswer(i) => {
+        Mode::ConfirmAnswer(pin) => {
             let Some((q, o)) = app
                 .selected_item()
                 .and_then(|it| it.question())
-                .and_then(|q| q.options.get(*i).map(|o| (q.clone(), o.clone())))
+                .filter(|q| q.id == pin.question)
+                .and_then(|q| {
+                    q.options
+                        .get(pin.index)
+                        .filter(|o| o.id == pin.option)
+                        .map(|o| (q.clone(), o.clone()))
+                })
             else {
                 return;
             };
@@ -884,19 +889,13 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } => return draw_build(f, app, area),
-        Mode::ConfirmAccept => {
-            let files = app
-                .diff
-                .as_ref()
-                .and_then(|d| d.totals.as_ref())
-                .map(|t| format!(" ({} files, +{} −{})", t.files, t.additions, t.deletions))
+        Mode::ConfirmAccept(pin) => {
+            // What is shown is the pinned result: the same facts the act posts.
+            let files = pin
+                .totals
+                .map(|(f, a, d)| format!(" ({f} files, +{a} −{d})"))
                 .unwrap_or_default();
-            let run = app
-                .steps
-                .as_ref()
-                .and_then(|s| s.review.as_ref())
-                .map(|r| r.run)
-                .unwrap_or_default();
+            let run = pin.run;
             (
                 " Accept ",
                 vec![

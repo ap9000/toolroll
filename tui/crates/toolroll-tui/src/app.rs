@@ -83,11 +83,37 @@ impl Item {
     }
 }
 
+/// The result facts a dialog showed, pinned when it opened: what its act posts, exactly, and what a refresh is compared
+/// with (a result that changed meanwhile closes the dialog instead of acting on something not shown).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewPin {
+    pub task: String,
+    pub run: i64,
+    pub receipt: String,
+    pub source: String,
+    /// The changes as shown: files, additions, deletions (when the Diff tab had read them).
+    pub totals: Option<(i64, i64, i64)>,
+}
+
+/// The question and answer a dialog showed, pinned when it opened.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnswerPin {
+    pub task: String,
+    pub index: usize,
+    pub question: i64,
+    pub option: String,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NoteKind {
-    Accept,
-    SendBack,
+    /// Send back the result pinned here, with the words typed.
+    SendBack(ReviewPin),
 }
+
+/// Said when a dialog closes because what it showed changed.
+pub const RESULT_CHANGED: &str = "This result changed — look again.";
+pub const QUESTION_CHANGED: &str = "This question changed — look again.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -96,7 +122,7 @@ pub enum Mode {
     Note(NoteKind, String),
     NewTask(String),
     ConfirmStop(i64),
-    ConfirmAnswer(usize),
+    ConfirmAnswer(AnswerPin),
     /// A small task's exact terms: Enter builds (POST /tasks/fast), p files it to plan first, Esc files nothing.
     /// Build is a person's yes to exactly these terms, so every term is shown whole (wrapped, scrolled with j/k), and
     /// Enter builds only once the view has drawn the end of them (`seen_end`, set by view.rs, never by a key). The
@@ -110,7 +136,7 @@ pub enum Mode {
         seen_end: bool,
     },
     /// Accept the result: a plain completion of the receipt read (no acceptance of anything not shown here).
-    ConfirmAccept,
+    ConfirmAccept(ReviewPin),
     Help,
     Quit,
     /// Nothing more can happen here: the words, and the exit code a key ends with.
@@ -342,6 +368,7 @@ impl App {
                 }
                 let before = self.transcript_run();
                 self.steps = Some(steps);
+                self.check_pins();
                 let mut fx = vec![];
                 let run = self.transcript_run();
                 if run != before || self.transcript.run != run {
@@ -477,6 +504,7 @@ impl App {
         self.project_name = clean(&rows.project_name);
         self.needs_count = rows.needs_count;
         self.items = items_of(&rows);
+        self.check_pins();
         let mut fx = vec![];
         // One notification per ask: a pair (task, what it asks) seen for the first time after the first read.
         let now: HashSet<(String, String)> = self
@@ -661,7 +689,17 @@ impl App {
         self.fetching_live = false;
         if matches!(
             self.mode,
-            Mode::ConfirmAnswer(_) | Mode::ConfirmStop(_) | Mode::Note(..) | Mode::Steer(_)
+            Mode::ConfirmAccept(_) | Mode::ConfirmAnswer(_) | Mode::Note(..)
+        ) {
+            self.say(Tone::Refused, RESULT_CHANGED);
+        }
+        if matches!(
+            self.mode,
+            Mode::ConfirmAnswer(_)
+                | Mode::ConfirmAccept(_)
+                | Mode::ConfirmStop(_)
+                | Mode::Note(..)
+                | Mode::Steer(_)
         ) {
             self.mode = Mode::Normal;
         }
@@ -833,17 +871,17 @@ impl App {
                     vec![]
                 }
             },
-            Mode::ConfirmAccept => {
+            Mode::ConfirmAccept(pin) => {
                 self.mode = Mode::Normal;
                 match key.code {
-                    KeyCode::Enter => self.accept(),
+                    KeyCode::Enter => self.accept(pin),
                     _ => {
                         self.say(Tone::Said, "Not accepted.");
                         vec![]
                     }
                 }
             }
-            Mode::ConfirmAnswer(index) => {
+            Mode::ConfirmAnswer(pin) => {
                 self.mode = Mode::Normal;
                 match key.code {
                     // Only an answer whose question and consequence were drawn whole (view.rs sets it).
@@ -851,7 +889,7 @@ impl App {
                         self.say(Tone::Refused, ANSWER_TOO_LONG);
                         vec![]
                     }
-                    KeyCode::Enter => self.answer(index),
+                    KeyCode::Enter => self.answer(pin),
                     _ => {
                         self.say(Tone::Said, "Not answered.");
                         vec![]
@@ -985,7 +1023,14 @@ impl App {
                 let n = (c as u8 - b'1') as usize;
                 match item.as_ref().and_then(|i| i.question()) {
                     Some(q) if n < q.options.len() => {
-                        self.mode = Mode::ConfirmAnswer(n);
+                        let o = &q.options[n];
+                        self.mode = Mode::ConfirmAnswer(AnswerPin {
+                            task: item.as_ref().unwrap().id.clone(),
+                            index: n,
+                            question: q.id,
+                            option: o.id.clone(),
+                            label: o.label.clone(),
+                        });
                         self.answer_shown = false;
                         vec![]
                     }
@@ -1000,14 +1045,17 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                if self.open_note(NoteKind::Accept).is_empty()
-                    && matches!(self.mode, Mode::Note(NoteKind::Accept, _))
-                {
-                    self.mode = Mode::ConfirmAccept;
+                if let Some(pin) = self.pin_review() {
+                    self.mode = Mode::ConfirmAccept(pin);
                 }
                 vec![]
             }
-            KeyCode::Char('r') => self.open_note(NoteKind::SendBack),
+            KeyCode::Char('r') => {
+                if let Some(pin) = self.pin_review() {
+                    self.mode = Mode::Note(NoteKind::SendBack(pin), String::new());
+                }
+                vec![]
+            }
             KeyCode::Char('n') => {
                 self.mode = Mode::NewTask(String::new());
                 vec![]
@@ -1158,72 +1206,125 @@ impl App {
         )
     }
 
-    fn answer(&mut self, index: usize) -> Vec<Effect> {
-        let Some(q) = self.selected_item().and_then(|i| i.question()).cloned() else {
+    /// The answer pinned when the dialog opened, sent only while the same question still waits with the same option.
+    fn answer(&mut self, pin: AnswerPin) -> Vec<Effect> {
+        if self.answer_pin_stands(&pin).is_none() {
+            self.say(Tone::Refused, QUESTION_CHANGED);
             return vec![];
-        };
-        let Some(option) = q.options.get(index) else {
-            return vec![];
-        };
-        // The person read the choice and its consequence and pressed Enter on it: that is the confirmation the form's
-        // box stands for.
+        }
+        // The person read the question, the choice and its consequence and pressed Enter on it: that is the
+        // confirmation the form's box stands for.
         self.act(
-            format!("/d/{}/answer", q.id),
+            format!("/d/{}/answer", pin.question),
             vec![
-                ("choice", option.id.clone()),
+                ("choice", pin.option),
                 ("confirm", "yes".into()),
                 ("return", "next".into()),
             ],
-            format!("Answered: {}.", clean(&option.label)),
+            format!("Answered: {}.", clean(&pin.label)),
         )
     }
 
-    fn open_note(&mut self, kind: NoteKind) -> Vec<Effect> {
-        if self
+    /// Whether the pinned answer is still the one on screen (Some), or the question changed (None).
+    fn answer_pin_stands(&self, pin: &AnswerPin) -> Option<()> {
+        let item = self.selected_item().filter(|i| i.id == pin.task)?;
+        let q = item.question().filter(|q| q.id == pin.question)?;
+        q.options
+            .get(pin.index)
+            .filter(|o| o.id == pin.option && o.label == pin.label)
+            .map(|_| ())
+    }
+
+    /// The result waiting on this task as it is shown now, pinned (or why there's none, said).
+    fn pin_review(&mut self) -> Option<ReviewPin> {
+        let task = self
+            .selected_item()
+            .filter(|i| i.is_task)
+            .map(|i| i.id.clone());
+        let review = self
             .steps
             .as_ref()
-            .and_then(|s| s.review.as_ref())
-            .is_none()
-        {
-            let why = match self
-                .selected_item()
-                .and_then(|i| i.need.as_ref())
-                .and_then(|n| n.ask.as_deref())
-            {
-                Some("review") => {
-                    "This result isn't ready to accept here yet. Press w to open it in the browser."
-                }
-                _ => "No result is waiting for you on this task.",
-            };
-            self.say(Tone::Refused, why);
-            return vec![];
+            .filter(|s| Some(&s.task.id) == task.as_ref() || Some(&s.task.root) == task.as_ref())
+            .and_then(|s| s.review.clone());
+        match (task, review) {
+            (Some(task), Some(r)) => {
+                let totals = self
+                    .diff
+                    .as_ref()
+                    .filter(|d| d.run == Some(r.run))
+                    .and_then(|d| d.totals.as_ref())
+                    .map(|t| (t.files, t.additions, t.deletions));
+                Some(ReviewPin {
+                    task,
+                    run: r.run,
+                    receipt: r.receipt,
+                    source: r.source,
+                    totals,
+                })
+            }
+            _ => {
+                let why = match self.selected_item().and_then(|i| i.need.as_ref()).and_then(|n| n.ask.as_deref()) {
+                    Some("review") => "This result isn't ready to accept here yet. Press w to open it in the browser.",
+                    _ => "No result is waiting for you on this task.",
+                };
+                self.say(Tone::Refused, why);
+                None
+            }
         }
-        self.mode = Mode::Note(kind, String::new());
-        vec![]
+    }
+
+    /// Whether a pinned result is still the one waiting (same task, run, receipt and revision source).
+    fn review_pin_stands(&self, pin: &ReviewPin) -> bool {
+        self.selected_item().is_some_and(|i| i.id == pin.task)
+            && self
+                .steps
+                .as_ref()
+                .and_then(|s| s.review.as_ref())
+                .is_some_and(|r| {
+                    r.run == pin.run && r.receipt == pin.receipt && r.source == pin.source
+                })
+    }
+
+    /// After a refresh: a dialog whose pinned facts no longer stand closes, saying so (nothing is sent).
+    fn check_pins(&mut self) {
+        let changed = match &self.mode {
+            Mode::ConfirmAccept(pin) | Mode::Note(NoteKind::SendBack(pin), _) => {
+                (!self.review_pin_stands(pin)).then_some(RESULT_CHANGED)
+            }
+            Mode::ConfirmAnswer(pin) => self
+                .answer_pin_stands(pin)
+                .is_none()
+                .then_some(QUESTION_CHANGED),
+            _ => None,
+        };
+        if let Some(words) = changed {
+            self.mode = Mode::Normal;
+            self.say(Tone::Refused, words);
+        }
     }
 
     fn note(&mut self, kind: NoteKind, text: String) -> Vec<Effect> {
-        let Some(review) = self.steps.as_ref().and_then(|s| s.review.clone()) else {
-            return vec![];
-        };
         let note = text.trim().to_string();
         match kind {
-            NoteKind::Accept => self.accept(),
-            NoteKind::SendBack => {
+            NoteKind::SendBack(pin) => {
+                if !self.review_pin_stands(&pin) {
+                    self.say(Tone::Refused, RESULT_CHANGED);
+                    return vec![];
+                }
                 if note.is_empty() {
                     self.say(Tone::Refused, "Say what to change, then press Enter.");
-                    self.mode = Mode::Note(NoteKind::SendBack, String::new());
+                    self.mode = Mode::Note(NoteKind::SendBack(pin), String::new());
                     return vec![];
                 }
                 let request = self.token(32);
                 self.act(
-                    format!("/r/{}/comment", review.run),
+                    format!("/r/{}/comment", pin.run),
                     vec![
                         ("intent", "revise".into()),
                         ("note", note),
                         ("request", request),
                         ("batch", String::new()),
-                        ("source", review.source),
+                        ("source", pin.source),
                     ],
                     "Sent back. The revision is filed.".into(),
                 )
@@ -1234,16 +1335,14 @@ impl App {
     /// Accept: the plain completion of the receipt read (POST /t/<task>/complete with `receipt` and `run`). Never
     /// `accept=1`: a result that still owes the person's acceptance (its checks, a caveat, a reason) is refused by the
     /// engine in words, and accepted in the browser where those terms are shown whole.
-    fn accept(&mut self) -> Vec<Effect> {
-        let (Some(review), Some(path)) = (
-            self.steps.as_ref().and_then(|s| s.review.clone()),
-            self.task_path("complete"),
-        ) else {
+    fn accept(&mut self, pin: ReviewPin) -> Vec<Effect> {
+        if !self.review_pin_stands(&pin) {
+            self.say(Tone::Refused, RESULT_CHANGED);
             return vec![];
-        };
+        }
         self.act(
-            path,
-            vec![("receipt", review.receipt), ("run", review.run.to_string())],
+            format!("/t/{}/complete", toolroll_api::client::encode(&pin.task)),
+            vec![("receipt", pin.receipt), ("run", pin.run.to_string())],
             "Accepted. The task is complete.".into(),
         )
     }

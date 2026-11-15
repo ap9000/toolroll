@@ -114,7 +114,9 @@ fn a_question() {
     insta::assert_snapshot!("a_question", screen(&mut app, 120, 30));
     // 2 picks "Remove it" and asks for Enter before anything is sent.
     assert_eq!(app.key(key('2')), vec![]);
-    assert_eq!(app.mode, Mode::ConfirmAnswer(1));
+    assert!(
+        matches!(&app.mode, Mode::ConfirmAnswer(pin) if pin.index == 1 && pin.question == 31 && pin.option == "no")
+    );
     insta::assert_snapshot!("a_question_confirm", screen(&mut app, 120, 30));
     let fx = app.key(code(KeyCode::Enter));
     // (drawn whole above, so Enter sends it)
@@ -268,7 +270,9 @@ fn accept_and_send_back_post_the_review_facts() {
     // a asks first; Enter posts the plain completion of the receipt read: never an acceptance (accept=1) of terms the
     // terminal didn't show (a result that owes one is refused in words and accepted in the browser).
     assert_eq!(app.key(key('a')), vec![]);
-    assert_eq!(app.mode, Mode::ConfirmAccept);
+    assert!(
+        matches!(&app.mode, Mode::ConfirmAccept(pin) if pin.run == 2 && pin.receipt == "a".repeat(64))
+    );
     insta::assert_snapshot!("accept_confirm", screen(&mut app, 120, 30));
     let fx = app.key(code(KeyCode::Enter));
     assert_eq!(
@@ -652,4 +656,79 @@ fn an_answer_is_sent_only_after_it_was_shown_whole() {
     assert!(
         matches!(app.key(code(KeyCode::Enter)).as_slice(), [Effect::Act { path, fields, .. }] if path == "/d/31/answer" && fields[0] == ("choice".into(), "yes".into()))
     );
+}
+
+/// A dialog posts exactly the facts it showed; a refresh that changes them closes it, says so, and sends nothing.
+#[test]
+fn dialogs_post_the_facts_they_showed_and_close_when_those_change() {
+    use toolroll_tui::app::{QUESTION_CHANGED, RESULT_CHANGED};
+    let state = fake::scenario();
+    let steps_with = |run: i64, receipt: &str| {
+        let mut v = state.steps["t-done"].clone();
+        v["review"] =
+            serde_json::json!({ "run": run, "receipt": receipt, "source": "b".repeat(64) });
+        parse::<StepCards>(v)
+    };
+    // Accept: a newer result arrives while the dialog is open.
+    let mut app = scenario_app("t-done");
+    app.key(key('a'));
+    app.update(Msg::Steps(
+        "t-done".into(),
+        Ok(steps_with(3, &"c".repeat(64))),
+    ));
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.as_ref().unwrap().1, RESULT_CHANGED);
+    assert!(no_act(app.key(code(KeyCode::Enter))));
+    // Unchanged (the same steps read again): exactly the pinned run and receipt.
+    let mut app = scenario_app("t-done");
+    app.key(key('a'));
+    app.update(Msg::Steps(
+        "t-done".into(),
+        Ok(steps_with(2, &"a".repeat(64))),
+    ));
+    assert_eq!(
+        app.key(code(KeyCode::Enter)),
+        vec![Effect::Act {
+            path: "/t/t-done/complete".into(),
+            fields: vec![
+                ("receipt".into(), "a".repeat(64)),
+                ("run".into(), "2".into())
+            ],
+            done: "Accepted. The task is complete.".into()
+        }]
+    );
+    // Send back: the result changes while the note is typed.
+    let mut app = scenario_app("t-done");
+    app.key(key('r'));
+    for c in "keep the order".chars() {
+        app.key(key(c));
+    }
+    app.update(Msg::Steps(
+        "t-done".into(),
+        Ok(steps_with(3, &"c".repeat(64))),
+    ));
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.as_ref().unwrap().1, RESULT_CHANGED);
+    // Answer: the question is replaced by another while the dialog is open.
+    let mut app = scenario_app("t-ask");
+    app.key(key('1'));
+    screen(&mut app, 120, 30);
+    let mut work = fake::scenario_work();
+    work["rows"][0]["need"]["question"]["id"] = 32.into();
+    app.update(Msg::Work(Ok(parse(work))));
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(app.status.as_ref().unwrap().1, QUESTION_CHANGED);
+    assert!(no_act(app.key(code(KeyCode::Enter))));
+    // Unchanged question: exactly the pinned question and option.
+    let mut app = scenario_app("t-ask");
+    app.key(key('2'));
+    screen(&mut app, 120, 30);
+    app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    assert!(
+        matches!(app.key(code(KeyCode::Enter)).as_slice(), [Effect::Act { path, fields, .. }] if path == "/d/31/answer" && fields[0] == ("choice".into(), "no".into()))
+    );
+}
+
+fn no_act(fx: Vec<Effect>) -> bool {
+    !fx.iter().any(|e| matches!(e, Effect::Act { .. }))
 }
