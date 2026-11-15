@@ -13,7 +13,7 @@ import { openBrowser } from "./operate.js";
 
 const inside = (child: string, parent: string): boolean => child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 let dir: string, home: string, stand: string, person: string;
-const saved = { PATH: process.env["PATH"], HOME: process.env["HOME"], TOOLROLL_BROWSER_COMMAND: process.env["TOOLROLL_BROWSER_COMMAND"] };
+const saved = { PATH: process.env["PATH"], HOME: process.env["HOME"], XDG_CACHE_HOME: process.env["XDG_CACHE_HOME"], TOOLROLL_BROWSER_COMMAND: process.env["TOOLROLL_BROWSER_COMMAND"] };
 
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), "so-home-isolation-")));
@@ -27,7 +27,10 @@ beforeEach(() => {
     writeFileSync(join(stand, name), `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg" >> '${join(dir, `${name}.log`)}'; done\nexit 0\n`);
     chmodSync(join(stand, name), 0o755);
   }
+  // The console's own HOME and cache folder (on Linux the build cache follows XDG_CACHE_HOME), as a console started
+  // in a throwaway world gets them.
   process.env["HOME"] = home;
+  process.env["XDG_CACHE_HOME"] = join(home, ".cache");
   process.env["PATH"] = `${stand}:/usr/bin:/bin`;
   delete process.env["TOOLROLL_BROWSER_COMMAND"];
 });
