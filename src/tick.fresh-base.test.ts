@@ -35,7 +35,8 @@ describe("fresh base, against real git", () => {
   };
   const brokenAgent: Runner = async (_file, _args, options) => {
     agentHeads.push(await git(["rev-parse", "HEAD"], options?.cwd ?? ""));
-    return { ...OK, code: 1, stdout: JSON.stringify({ type: "system", subtype: "init" }), stderr: "the model refused" };
+    // A failure that retries on its own (the harness never came up); an agent's own error after it came up stops instead.
+    return { ...OK, code: 1, stdout: "", stderr: "the model refused" };
   };
   const run = (argv: string[], runner: Runner = agent, now: Date = T0) => {
     const [command = "", ...rest] = argv;

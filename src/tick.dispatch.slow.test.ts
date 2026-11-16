@@ -500,57 +500,77 @@ describe("tick, against real git", () => {
     expect(agentRan).toHaveLength(0);
   });
 
-  test("a broken agent earns a strike and a backoff, not a terminal failure", async () => {
+  test("an agent that came up and then exited non-zero stops after that one failure (the owner's rule), its words kept and never sent out", async () => {
     const { runnerToken, approverToken } = await credentials();
     await queueApproved("t-1", approverToken);
 
     const code = await tick(runnerToken, [], brokenAgent);
 
     expect(code).toBe(EXIT.failed);
-    expect(payload()).toMatchObject({
-      ok: false,
-      reason: "build-failed",
-      dispatched: [{ id: "t-1", outcome: "failed", reason: "unknown — retry 1/3" }],
-    });
-
-    // gnhf's shape: the task requeues behind a doubling backoff rather than
-    // dying on the first unknown exit — and stays off the ready set until
-    // the pause lapses.
+    expect(payload()).toMatchObject({ ok: false, reason: "build-failed", dispatched: [{ id: "t-1", outcome: "failed", reason: "agent-error — stalled" }] });
     await run(["task", "show", "t-1", "--json"]);
-    expect(payload().task.state).toBe("queued");
-    expect(payload().runs).toHaveLength(1);
-    expect(payload().runs[0]).toMatchObject({ outcome: "failed", reason: "unknown" });
-    await run(["ready", "--json"]);
-    expect((payload().tasks ?? []).map((t: { id: string }) => t.id)).toEqual([]);
+    expect(payload().task.state).toBe("failed");
+    expect(payload().runs[0]).toMatchObject({ outcome: "failed", reason: "agent-error" });
+    const store = openStore(db);
+    try {
+      const failed = store.lastBuilderRun(store.lookupRef("t-1")!.id)!;
+      expect(agentSaidOf(store, failed.id)).toEqual(["the model refused"]);
+      // Everything sent outside Toolroll (chat, push, email, webhooks: the notification rows) is Toolroll's own words.
+      const sent = store.handle.prepare("SELECT subject, body FROM notification").all().map(row => `${String(row["subject"])}\n${String(row["body"])}`).join("\n");
+      expect(sent).toContain("The agent stopped with an error.");
+      expect(sent).not.toContain("the model refused");
+    } finally { store.close(); }
   });
 
-  test("stranger round 2: an agent that stops with its own error before coming up is the agent's error, not the machine's, and its words are kept", async () => {
+  test("redaction that leaves nothing to say doesn't change the class: still the agent's own error", async () => {
+    const { runnerToken, approverToken } = await credentials();
+    await queueApproved("t-quiet", approverToken);
+    const keyOnly: Runner = async () => ({ ...OK, code: 1, stdout: JSON.stringify({ type: "system", subtype: "init" }), stderr: `/Users/me/secret\nsk-ant-api03-${"A".repeat(80)}\n` });
+    await tick(runnerToken, [], keyOnly);
+    expect(payload()).toMatchObject({ dispatched: [{ id: "t-quiet", outcome: "failed", reason: "agent-error — stalled" }] });
+  });
+
+  test("stranger round 2: a harness that never came up stays retryable whatever it printed, and its words are kept for Steps, never sent out", async () => {
     const { runnerToken, approverToken } = await credentials();
     await queueApproved("t-said", approverToken);
     // The stand-in the stranger test used: no init line, its own words on stderr (after a sandbox note naming a path).
     const refusing: Runner = async () => ({ ...OK, code: 1, stdout: "", stderr: `${repo}/logs/claude.log: Operation not permitted\nclaude stand-in: refusing to run a model\n` });
     expect(await tick(runnerToken, [], refusing)).toBe(EXIT.failed);
-    // The agent's own error stops at once (the owner's rule): no automatic re-run, a person reads its words and retries.
-    expect(payload()).toMatchObject({ dispatched: [{ id: "t-said", outcome: "failed", reason: "agent-error — stalled" }] });
+    // No init seen: never proof of the agent's own error. Retried as before.
+    expect(payload()).toMatchObject({ dispatched: [{ id: "t-said", outcome: "failed", reason: "retryable-infra — retry 1/3" }] });
     const store = openStore(db);
     try {
       const failed = store.handle.prepare("SELECT id, reason, handoff FROM run WHERE outcome = 'failed' ORDER BY id DESC LIMIT 1").get()!;
-      expect(failed["reason"]).toBe("agent-error");
-      expect(String(failed["handoff"])).toBe("the agent stopped with an error — claude stand-in: refusing to run a model");
+      expect(failed["reason"]).toBe("retryable-infra");
       // Kept short and safe: the path said as [path], never the folder.
       expect(agentSaidOf(store, Number(failed["id"]))).toEqual(["[path]: Operation not permitted", "claude stand-in: refusing to run a model"]);
-      // The stop's words for a person: the agent's error, never the machine's.
-      expect(RUN_REASON_WORDS["agent-error"]).toBe("the agent stopped with an error");
-      expect(store.getTask("t-said")?.state).toBe("failed");
-      expect(store.handle.prepare("SELECT reason FROM hold WHERE task_ref = ?").all(store.lookupRef("t-said")!.id).map(one => String(one["reason"])))
+      expect(RUN_REASON_WORDS["retryable-infra"]).toBe("a temporary problem on the machine stopped it");
+      expect(store.getTask("t-said")?.state).toBe("queued");
+      // Nothing the stand-in printed is in what is sent outside Toolroll.
+      const sent = store.handle.prepare("SELECT subject, body FROM notification").all().map(row => `${String(row["subject"])}\n${String(row["body"])}`).join("\n");
+      expect(sent).not.toMatch(/refusing to run a model|Operation not permitted/);
+    } finally { store.close(); }
+    // Retried on its own once the backoff lapses.
+    agentRan = [];
+    await run(tickArgs(runnerToken), agent, new Date(T0.getTime() + 60 * 60_000));
+    expect(agentRan).toHaveLength(1);
+  });
+
+  test("the agent's own error after it came up stops, and a person's Retry runs it again", async () => {
+    const { runnerToken, approverToken } = await credentials();
+    await queueApproved("t-stop", approverToken);
+    await tick(runnerToken, [], brokenAgent);
+    const store = openStore(db);
+    try {
+      expect(store.getTask("t-stop")?.state).toBe("failed");
+      expect(store.handle.prepare("SELECT reason FROM hold WHERE task_ref = ?").all(store.lookupRef("t-stop")!.id).map(one => String(one["reason"])))
         .toEqual(["agent-error — the agent stopped with an error; it isn't retried on its own"]);
     } finally { store.close(); }
-    // Nothing runs it again on its own: the next tick dispatches nothing for it, even after any backoff would have lapsed.
+    // Nothing runs it again on its own, even after any backoff would have lapsed.
     agentRan = [];
     await run(tickArgs(runnerToken), agent, new Date(T0.getTime() + 60 * 60_000));
     expect(agentRan).toEqual([]);
-    // A person's Retry runs it again.
-    expect(await run(["task", "requeue", "t-said", "--as", "alex", "--token", approverToken, "--json"])).toBe(EXIT.ok);
+    expect(await run(["task", "requeue", "t-stop", "--as", "alex", "--token", approverToken, "--json"])).toBe(EXIT.ok);
     await run(tickArgs(runnerToken), agent, new Date(T0.getTime() + 61 * 60_000));
     expect(agentRan).toHaveLength(1);
   });
@@ -741,12 +761,15 @@ describe("tick, against real git", () => {
 
     // Each pass fails once; the backoff between them is waited out by
     // advancing the injected clock past the doubling pauses.
-    await run(tickArgs(runnerToken), brokenAgent, T0);
-    await run(tickArgs(runnerToken), brokenAgent, new Date(T0.getTime() + 5 * 60_000));
-    const third = await run(tickArgs(runnerToken), brokenAgent, new Date(T0.getTime() + 15 * 60_000));
+    // A harness that never comes up (the machine's kind of failure, which still retries); an agent's own error stops
+    // after one (tested above).
+    const neverUp: Runner = async () => ({ ...OK, code: 1, stdout: "", stderr: "" });
+    await run(tickArgs(runnerToken), neverUp, T0);
+    await run(tickArgs(runnerToken), neverUp, new Date(T0.getTime() + 5 * 60_000));
+    const third = await run(tickArgs(runnerToken), neverUp, new Date(T0.getTime() + 15 * 60_000));
 
     expect(third).toBe(EXIT.failed);
-    expect(payload().dispatched).toMatchObject([{ id: "t-1", outcome: "failed", reason: "unknown — stalled" }]);
+    expect(payload().dispatched).toMatchObject([{ id: "t-1", outcome: "failed", reason: "retryable-infra — stalled" }]);
 
     await run(["task", "show", "t-1", "--json"]);
     expect(payload().task.state).toBe("failed");
@@ -754,7 +777,7 @@ describe("tick, against real git", () => {
     expect(payload().incidents).toMatchObject([{ kind: "attempts-exhausted", taskId: "t-1" }]);
 
     // A fourth pass finds nothing to try: the stall holds.
-    const fourth = await run(tickArgs(runnerToken), brokenAgent, new Date(T0.getTime() + 60 * 60_000));
+    const fourth = await run(tickArgs(runnerToken), neverUp, new Date(T0.getTime() + 60 * 60_000));
     expect(fourth).toBe(EXIT.refused);
   });
 

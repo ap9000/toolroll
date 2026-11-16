@@ -380,7 +380,7 @@ const STOP_SUGGESTIONS: Readonly<Record<string, string>> = {
   "moved-head": "Retry: the next attempt starts from where the branch is now.",
   "moved-branch": "Retry: the next attempt starts from where the branch is now.",
   "retryable-infra": "Retry as it is.",
-  "agent-error": "Fix what the agent said, then retry.",
+  "agent-error": "Read what the agent said, change what it needs, then retry.",
   interrupted: "Retry as it is.",
   orphaned: "Retry as it is.",
   capability: "Add what the project is missing, then retry.",

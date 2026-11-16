@@ -374,8 +374,8 @@ export type BuildRefusal =
   | "commit-failure"
   | "malformed-decision"
   | "provider-init"
-  /** The agent's process ran and exited non-zero with error output of its own before its harness came up (its own
-   * error, not the machine's: "the agent stopped with an error"). */
+  /** The agent came up (its init signal seen) and then exited non-zero, not at a turn or budget ceiling: its own error,
+   * not the machine's ("the agent stopped with an error"). */
   | "agent-error"
   | "setup"
   | "revision-brief"
@@ -1996,17 +1996,14 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
   }
   if (result.initFailed) {
     // The harness never initialized, observed structurally (the provider's init event never arrived and the turn has
-    // nothing to show). When the agent's own process ran, exited non-zero and said why, that is the agent stopping with
-    // an error of its own (its words are kept); with nothing said, it stays the harness that never came up. Neither is
-    // bad agent work: both keep their infrastructure execution class (route-store.ts).
+    // nothing to show): config, auth, install or the machine, never proof of the agent's own error, whatever it printed.
+    // It stays retryable infrastructure; what it printed is kept, for the person's own Steps.
     const said = agentSaidTail(result.stderr);
-    if (result.code !== 0 && !result.notFound && said.length > 0) {
-      return { ok: false, reason: "agent-error", message: `the agent stopped with an error — ${said.at(-1)}`, agentSaid: said };
-    }
     return {
       ok: false,
       reason: "provider-init",
       message: `the provider harness never initialized — ${firstLine(result.stderr) || `exit ${result.code}`}`,
+      ...(said.length === 0 ? {} : { agentSaid: said }),
     };
   }
   // Toolroll ended a live session itself (live-input.ts): its turn budget was spent, or a paused session reached the
@@ -2020,8 +2017,11 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       const kept = await keepForNextAgent(captured);
       if (kept !== null) return kept;
     }
+    // The agent came up (its init signal was seen: the structured evidence) and then exited non-zero: its own error,
+    // decided here from the exit and its ending, never from what it printed. A turn or budget ceiling isn't one.
+    const ceiling = result.ending?.subtype === "error_max_turns" || result.ending?.subtype === "error_max_budget_usd";
     const said = agentSaidTail(result.stderr.trim() !== "" ? result.stderr : result.finalMessage);
-    return { ok: false, reason: "agent", message: agentExitWords(result), ...(said.length === 0 ? {} : { agentSaid: said }) };
+    return { ok: false, reason: ceiling ? "agent" : "agent-error", message: agentExitWords(result), ...(said.length === 0 ? {} : { agentSaid: said }) };
   }
   if (captured.live?.close === "turn-budget" && ![done, mailbox, captured.plan?.proposal].some(name => name !== undefined && existsSync(join(worktree, name)))) {
     return { ok: false, reason: "agent", message: agentExitWords({ ...result, ending: { subtype: "error_max_turns", turns: captured.live.maxTurns } }) };

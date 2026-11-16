@@ -17,6 +17,18 @@ describe("the agent's last words, kept short and safe", () => {
   test("terminal escape sequences and control characters are stripped", () => {
     expect(agentSaidTail("\u001b[31mError:\u001b[0m bad\u0007 config\r\n\u001b]0;title\u0007done\u0000")).toEqual(["Error: bad config", "done"]);
   });
+  test("a token in a web address is never kept: its query, fragment and userinfo hidden, the address otherwise kept", () => {
+    const kept = agentSaidTail([
+      "fetch failed: https://api.example.com/v1/items?access_token=abc123secret&x=1",
+      "see https://example.com/docs#token=zzz",
+      "push to https://sam:hunter2@git.example.com/shop.git refused",
+    ].join("\n"));
+    expect(kept).toEqual(["fetch failed: https://api.example.com/v1/items?[hidden]", "see https://example.com/docs?[hidden]", "push to https://[hidden]@git.example.com/shop.git refused"]);
+    expect(kept.join("\n")).not.toMatch(/abc123secret|zzz|hunter2/);
+  });
+  test("a named home's folder and a file at the root are folders on this computer: [path]", () => {
+    expect(agentSaidTail("~sam/notes/key.txt is unreadable\ncannot open /secret.txt\nrun /login, or /help")).toEqual(["[path] is unreadable", "cannot open [path]", "run /login, or /help"]);
+  });
   test("no folder on this computer and no key: paths said as [path], key lines hidden, and nothing private left", () => {
     const kept = agentSaidTail([
       "/Users/me/work/shop/src/app.ts: cannot read",

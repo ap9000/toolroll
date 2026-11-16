@@ -29,6 +29,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { INFRASTRUCTURE_TERMINALS } from "./route-store.js";
+import { RUN_REASON_WORDS } from "./needs-you.js";
 import { authenticate, drainOf } from "./runner.js";
 import { pauseForAuth } from "./provider-auth.js";
 import {
@@ -1057,8 +1059,8 @@ export type MalformedFinalize = { ok: true; incidentId: number } | { ok: false; 
 /** How a failed attempt is classified, per gnhf. Decides retry, backoff, or stall. */
 export type FailureClass =
   | "agent-reported"
-  /** The agent's own process ran and stopped with an error of its own before its harness came up. Stops at once (a stall
-   * with its words kept on the run), never re-run on its own; a person chooses Retry. */
+  /** The agent came up and then stopped with an error of its own (builder.ts). Stops at once (a stall with its words
+   * kept on the run), never re-run on its own; a person chooses Retry. */
   | "agent-error"
   | "retryable-infra"
   | "no-op"
@@ -1268,7 +1270,8 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   // The agent itself stopped with an error of its own (agent-error): stopped at once, never re-run on its own (the
   // owner's rule, 2026-11-16). What the agent said is on the run; a person reads it and chooses Retry. A machine's or
   // the harness's trouble (retryable-infra and the rest) keeps its automatic retries.
-  const agentStopped = failureClass === "agent-error";
+  // Not when the gateway saw the provider end it (throttled, out of credits or plan): that is the provider's, and retries.
+  const agentStopped = failureClass === "agent-error" && !INFRASTRUCTURE_TERMINALS.has(run.terminalClass ?? "");
 
   if (strikes >= MAX_STRIKES || agentStopped) {
     // The state first: a task a person already closed keeps its state, and then no incident, hold or page is
@@ -1295,9 +1298,11 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: agentStopped ? `${taskId} stopped: the agent stopped with an error` : `${taskId} stalled after ${strikes} straight failures`,
+        // Toolroll's own words, never the attempt's message (it can carry what the agent printed): this is sent to chat,
+        // push, email and webhooks. What the agent said is on the task, for the person who opens it.
         body: agentStopped
-          ? `${oneLine(message, 200)}\nIt isn't retried on its own. Read what the agent said, then Retry (\`toolroll task requeue ${taskId}\`).`
-          : `Last failure (${failureClass}): ${oneLine(message, 200)}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
+          ? `${outboundFailureWords(failureClass)}.\nIt isn't retried on its own. Read what the agent said on the task, then Retry (\`toolroll task requeue ${taskId}\`).`
+          : `Last failure (${failureClass}): ${outboundFailureWords(failureClass)}.\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
       },
       now,
     );
@@ -1330,7 +1335,8 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
       subject: failureClass === "no-handoff"
         ? `${taskId}: the agent stopped before handing off; its work was kept, retry ${strikes}/${MAX_STRIKES}`
         : `${taskId}: attempt failed (${failureClass}), retry ${strikes}/${MAX_STRIKES}`,
-      body: `${oneLine(message, 200)}\nNext attempt no earlier than ${until.toISOString()}.`,
+      // Toolroll's own words (sent outside Toolroll), never the attempt's message.
+      body: `${outboundFailureWords(failureClass)}.\nNext attempt no earlier than ${until.toISOString()}.`,
     },
     now,
   );
@@ -2134,4 +2140,11 @@ export function acquireForCheckCleanup(store: Store, checkId: number, attempt: s
     if (bound === null) return { ok: false as const, reason: "no-task" as const };
     return acquireLocked(store, bound, runner, options, "refuse");
   });
+}
+
+/** A build failure in Toolroll's own words, for what is sent outside Toolroll (chat, push, email, webhooks): never the
+ * attempt's message, which can carry what the agent printed. */
+function outboundFailureWords(failureClass: FailureClass): string {
+  const words = RUN_REASON_WORDS[failureClass] ?? "the attempt stopped";
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }

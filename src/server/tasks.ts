@@ -2130,6 +2130,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         if ((seenState === null) !== (seenRun === null) || (seenRun !== null && !/^(?:none|[1-9][0-9]{0,15})$/.test(seenRun))) {
           return taskScreen(response, who, taskId, "not cancelled: name both the state and the build that were shown", 400);
         }
+        // A browser or terminal session's confirm must name them (its form always does); the CLI and act tokens send
+        // none today and keep the cancel as it was.
+        if (who.via === "cookie" && seenState === null) return taskScreen(response, who, taskId, "not cancelled: name both the state and the build that were shown", 400);
         const seen = seenState === null || seenRun === null ? undefined : { state: seenState, run: seenRun === "none" ? null : Number(seenRun) };
         const cancelled = withActor({ account: who.name, lead: false }, () => store.cancelTask(taskId, now, reason, seen));
         if (!cancelled.ok && cancelled.reason === "changed") {

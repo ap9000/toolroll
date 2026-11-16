@@ -229,8 +229,10 @@ export async function postWebhook(
   // The rule every outbound message shares (outbound-privacy.ts): words that name a key or a folder on this computer
   // go as the safe version, the project's name and the link to Toolroll, never as written.
   const withheld = outboundPrivate([notification.subject, notification.body]);
-  const subject = withheld ? safeWords({ project: notification.project }) : notification.subject;
-  const said = withheld ? [] : [notification.body];
+  // Plain text in the platform's markup: nothing in a subject or body can format, link or mention (escapeFor).
+  const escape = (text: string) => escapeFor(target.kind, text);
+  const subject = escape(withheld ? safeWords({ project: notification.project }) : notification.subject);
+  const said = withheld ? [] : [escape(notification.body)];
   const body =
     target.kind === "slack"
       ? {
@@ -288,4 +290,11 @@ export async function webhookPass(store: Store, options: { targets: WebhookTarge
     }
   }
   return report;
+}
+
+/** Text as plain words in a legacy webhook's markup: Slack's mrkdwn control characters (&, <, >) as entities; Discord's
+ * Markdown characters backslash-escaped, and @everyone / @here broken so no message can mention a whole server. */
+export function escapeFor(kind: WebhookTarget["kind"], text: string): string {
+  if (kind === "slack") return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return text.replace(/([\\`*_~|>#[\]()-])/g, "\\$1").replace(/@(everyone|here)\b/gi, "@\u200b$1");
 }
