@@ -348,7 +348,8 @@ fn check_again_asks_the_console_and_agent_text_is_drawn_inert() {
     assert!(app.agents_screen.as_ref().unwrap().checking);
     let shown = screen(&mut app, 120, 34);
     assert!(
-        !shown.contains('\u{1b}') && !shown.contains("evil.example\u{7}"),
+        // Every control character is a visible stand-in (text.rs clean), never sent to the terminal.
+        !shown.contains('\u{1b}') && shown.contains("Claude\u{fffd}]8;;"),
         "{shown}"
     );
     app.update(Msg::Agents(Ok(parse(fake::fixture("agents.json")))));
