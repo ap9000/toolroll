@@ -114,13 +114,17 @@ for one in claude codex; do
 done
 
 package="${SO_PACKAGE:-toolroll@${SO_VERSION:-latest}}"
+# The older package (standing-orders, before the rename) owns the `standing-orders` command, which the toolroll
+# package also provides: npm refuses to install over it (EEXIST). So it is removed first, by name, and nothing else is;
+# the toolroll package brings the `standing-orders` command back, and your data stays where it is.
+if npm ls -g standing-orders --depth=0 >/dev/null 2>&1; then
+  say "Removing the older standing-orders package first (npm uninstall -g standing-orders) …"
+  if ! npm uninstall -g standing-orders --no-fund --no-audit --loglevel=error; then
+    stop "npm couldn't remove the older standing-orders package. Run npm uninstall -g standing-orders yourself, then run this again."
+  fi
+fi
 say "Installing $package …"
-# The toolroll package also provides the `standing-orders` command, which npm
-# won't link over the older standing-orders package's copy without --force.
-# The old package's files stay, so a service installed from them keeps running.
-force=""
-if npm ls -g standing-orders --depth=0 >/dev/null 2>&1; then force="--force"; fi
-if ! npm install -g "$package" $force --no-fund --no-audit --loglevel=error; then
+if ! npm install -g "$package" --no-fund --no-audit --loglevel=error; then
   stop "npm couldn't install it. If it said permission denied, give npm a folder you own: https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally"
 fi
 # Releases before the rename only have the older `standing-orders` name.
