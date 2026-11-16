@@ -49,6 +49,10 @@ pub struct Screen {
     pub row: usize,
     pub models: Option<ModelsRead>,
     pub checking: bool,
+    /// The pane open now: which agent, and what it runs (`sign-in` | `install`).
+    pub pane: Option<(String, String)>,
+    /// How the last sign-in or install ended, kept on screen (its output never is): the agent and the words.
+    pub outcome: Option<(String, String)>,
 }
 
 /// A choice being made: a role's model, or the default agent.
@@ -68,6 +72,8 @@ pub struct ModelsChange {
     pub title: String,
     pub lines: Vec<String>,
     pub fields: Vec<(String, String)>,
+    /// The default agent chosen isn't signed in: its id, offered a sign-in (s) before or instead of saving.
+    pub sign_in: Option<String>,
 }
 
 /// The groups, in order, and which agents are in each.
@@ -141,12 +147,16 @@ pub fn status_of(a: &AgentRow) -> (String, &'static str, Option<Role>) {
 
 /// The screen opens (reading the agents and the models).
 pub fn open(app: &mut App) -> Vec<Effect> {
+    // What was said belonged to the screen left.
+    app.status = None;
     app.agents_screen = Some(Screen {
         agent: None,
         focus: Focus::Agents,
         row: 0,
         models: None,
         checking: false,
+        pane: None,
+        outcome: None,
     });
     app.mode = Mode::Normal;
     let mut fx = vec![Effect::FetchModels];
@@ -160,6 +170,7 @@ pub fn open(app: &mut App) -> Vec<Effect> {
 /// The screen closes; an agent's pane is let go of (its program keeps running in the console until it ends).
 pub fn close(app: &mut App) -> Vec<Effect> {
     app.agents_screen = None;
+    app.status = None;
     if app
         .term
         .as_ref()
@@ -206,7 +217,10 @@ pub fn on_agents(app: &mut App) {
     if let Some(s) = app.agents_screen.as_mut() {
         if s.checking {
             s.checking = false;
-            app.say(Tone::Said, "Agents checked.");
+            // A sign-in or install that just failed keeps its words on the status line too.
+            if s.outcome.is_none() {
+                app.say(Tone::Said, "Agents checked.");
+            }
         }
     }
 }
@@ -270,6 +284,10 @@ fn start_pane(app: &mut App, agent: &str, kind: &str, confirm: Option<String>) -
     app.term = Some(crate::term::Pane::opening_sensitive(format!(
         "agent:{agent}"
     )));
+    if let Some(s) = app.agents_screen.as_mut() {
+        s.pane = Some((agent.to_string(), kind.to_string()));
+        s.outcome = None;
+    }
     app.say(
         Tone::Said,
         if kind == "install" {
@@ -343,6 +361,14 @@ pub fn key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             let Some(a) = current(app).cloned() else {
                 return vec![];
             };
+            if a.ready && a.setup.can_sign_in {
+                // Already signed in: a new sign-in replaces it, so it is asked first.
+                app.mode = Mode::ConfirmSignInAgain {
+                    agent: a.id.clone(),
+                    words: signed_in_as(&a),
+                };
+                return vec![];
+            }
             if !a.setup.can_sign_in || a.state == "not-installed" {
                 app.say(
                     Tone::Said,
@@ -360,6 +386,13 @@ pub fn key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             let Some(a) = current(app).cloned() else {
                 return vec![];
             };
+            if a.state != "not-installed" {
+                app.say(
+                    Tone::Said,
+                    format!("{} is installed already.", clean(&a.name)),
+                );
+                return vec![];
+            }
             match (&a.setup.install, a.setup.can_install) {
                 (Some(command), true) => {
                     app.mode = Mode::ConfirmInstall {
@@ -407,9 +440,14 @@ fn pick(app: &mut App) -> Vec<Effect> {
                 .presets
                 .iter()
                 .map(|p| {
+                    let state = match agent_of(app, &p.agent) {
+                        Some(a) if a.ready => "ready".to_string(),
+                        Some(a) => status_of(a).0.to_lowercase(),
+                        None => "not on this computer".to_string(),
+                    };
                     (
                         p.agent.clone(),
-                        format!("{} — {}", clean(&p.name), clean(&p.words)),
+                        format!("{} ({state}) — {}", clean(&p.name), clean(&p.words)),
                     )
                 })
                 .collect(),
@@ -424,10 +462,10 @@ fn pick(app: &mut App) -> Vec<Effect> {
             .iter()
             .flat_map(|c| {
                 c.models.iter().map(move |m| {
-                    (
-                        format!("{}|{}", c.provider, m.value),
-                        format!("{} · {}", clean(&c.label), clean(&m.label)),
-                    )
+                    let value = format!("{}|{}", c.provider, m.value);
+                    let words = model_words(role, &value)
+                        .unwrap_or_else(|| format!("{} · {}", clean(&c.label), clean(&m.label)));
+                    (value, words)
                 })
             })
             .collect();
@@ -456,6 +494,14 @@ fn pick(app: &mut App) -> Vec<Effect> {
 /// Keys in the screen's dialogs.
 pub fn mode_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
     match app.mode.clone() {
+        Mode::ConfirmSignInAgain { agent, .. } => match key.code {
+            KeyCode::Enter => start_pane(app, &agent, "sign-in", None),
+            _ => {
+                app.mode = Mode::Normal;
+                app.say(Tone::Said, "Still signed in as before.");
+                vec![]
+            }
+        },
         Mode::ConfirmInstall { agent, command, .. } => match key.code {
             KeyCode::Enter => start_pane(app, &agent, "install", Some(command)),
             _ => {
@@ -488,6 +534,19 @@ pub fn mode_key(app: &mut App, key: KeyEvent) -> Vec<Effect> {
             }
         },
         Mode::ConfirmModels(c) => match key.code {
+            KeyCode::Char('s') if c.sign_in.is_some() => {
+                let agent = c.sign_in.clone().unwrap_or_default();
+                if let Some(s) = app.agents_screen.as_mut() {
+                    s.agent = Some(agent.clone());
+                    s.focus = Focus::Agents;
+                }
+                app.mode = Mode::Normal;
+                app.say(
+                    Tone::Said,
+                    "Nothing changed yet: sign in first, then choose it again.",
+                );
+                start_pane(app, &agent, "sign-in", None)
+            }
             KeyCode::Enter => {
                 app.mode = Mode::Normal;
                 app.say(Tone::Said, MODELS_SENT);
@@ -517,8 +576,18 @@ fn change_of(app: &App, p: &Pick) -> Option<ModelsChange> {
         ("password".to_string(), String::new()),
     ];
     let mut lines = vec![];
+    let mut sign_in = None;
     if p.role == "default" {
         let preset = models.presets.iter().find(|x| x.agent == value)?;
+        if let Some(a) = agent_of(app, &preset.agent).filter(|a| !a.ready) {
+            lines.push(format!(
+                "{} isn't signed in yet, so new tasks would wait for it.",
+                clean(&preset.name)
+            ));
+            if a.setup.can_sign_in && a.state != "not-installed" {
+                sign_in = Some(a.id.clone());
+            }
+        }
         lines.push(format!(
             "New tasks go to {}: every role moves to its preset.",
             clean(&preset.name)
@@ -532,7 +601,7 @@ fn change_of(app: &App, p: &Pick) -> Option<ModelsChange> {
         lines.push(format!(
             "{}: {} → {}",
             clean(&role.label),
-            clean(&role.words),
+            role_words(role),
             label
         ));
         fields.push((p.role.clone(), value));
@@ -544,7 +613,87 @@ fn change_of(app: &App, p: &Pick) -> Option<ModelsChange> {
         title: p.title.clone(),
         lines,
         fields,
+        sign_in,
     })
+}
+
+/// An agent of the agents read, by id.
+fn agent_of<'a>(app: &'a App, id: &str) -> Option<&'a AgentRow> {
+    app.agents.as_ref()?.agents.iter().find(|a| a.id == id)
+}
+
+/// "You're signed in as a Claude account": what a new sign-in would replace.
+fn signed_in_as(a: &AgentRow) -> String {
+    match a.how.as_deref().map(clean) {
+        Some(how) => format!("You're signed in as a {how}. Start a new sign-in?"),
+        None => format!("{} is signed in. Start a new sign-in?", clean(&a.name)),
+    }
+}
+
+/// A model in words, from the engine's own catalog (the role's choices): "Claude Opus 5.5", or "Codex · gpt-6-sol"
+/// when the model's name doesn't say its agent.
+fn model_words(role: &toolroll_api::ModelRole, value: &str) -> Option<String> {
+    let (provider, model) = value.split_once('|')?;
+    let choice = role.choices.iter().find(|c| c.provider == provider)?;
+    let m = choice.models.iter().find(|m| m.value == model)?;
+    let (agent, name) = (clean(&choice.label), clean(&m.label));
+    Some(if name.starts_with(&agent) {
+        name
+    } else {
+        format!("{agent} · {name}")
+    })
+}
+
+/// A role's model as the screen says it: the catalog's name when it has one, else the engine's words.
+pub fn role_words(role: &toolroll_api::ModelRole) -> String {
+    model_words(role, &role.current).unwrap_or_else(|| clean(&role.words))
+}
+
+/// How a sign-in or install pane ended, said and kept on the screen (nothing of its output is kept).
+pub fn ended(app: &mut App, code: Option<i64>, signal: Option<i64>) {
+    let Some((agent, kind)) = app.agents_screen.as_mut().and_then(|s| s.pane.take()) else {
+        return;
+    };
+    let command = agent_of(app, &agent)
+        .and_then(|a| {
+            if kind == "install" {
+                a.setup.install.clone()
+            } else {
+                a.setup.sign_in.clone()
+            }
+        })
+        .map(|c| clean(&c))
+        .unwrap_or_else(|| {
+            if kind == "install" {
+                "The install".into()
+            } else {
+                "The sign-in".into()
+            }
+        });
+    let key = if kind == "install" { "i" } else { "s" };
+    let words = match (code, signal) {
+        (Some(0), _) => None,
+        (Some(c), _) => Some(format!(
+            "{command} exited with an error (code {c}). Try again with {key}."
+        )),
+        (None, Some(sig)) => Some(format!(
+            "{command} was stopped (signal {sig}). Try again with {key}."
+        )),
+        (None, None) => None,
+    };
+    match words {
+        Some(w) => {
+            if let Some(s) = app.agents_screen.as_mut() {
+                s.outcome = Some((agent, w.clone()));
+            }
+            app.say(Tone::Said, w);
+        }
+        None => {
+            if let Some(s) = app.agents_screen.as_mut() {
+                s.outcome = None;
+            }
+        }
+    }
 }
 
 /// The screen's dialogs, as the overlay draws them.
@@ -608,21 +757,48 @@ pub fn dialog_lines(app: &App, area: Rect) -> Option<(&'static str, Vec<Line<'st
             lines.push(Line::from(Span::styled("Any other key cancels.", dim())));
             Some((" Install ", lines))
         }
+        Mode::ConfirmSignInAgain { words, .. } => {
+            let mut lines = vec![Line::raw("")];
+            for piece in wrap(words, w) {
+                lines.push(Line::from(Span::styled(piece, ink())));
+            }
+            lines.push(Line::raw(""));
+            for piece in wrap("It opens the agent's own sign-in in a pane here; finishing it replaces the sign-in in use.", w) {
+                lines.push(Line::from(Span::styled(piece, dim())));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Sign in again", true)));
+            lines.push(Line::from(Span::styled(
+                "Any other key keeps it as it is.",
+                dim(),
+            )));
+            Some((" Sign in again ", lines))
+        }
         Mode::PickModel(p) => {
             let mut lines = vec![Line::raw("")];
             let rows = (area.height as usize).saturating_sub(8).clamp(3, 16);
             let top = p.selected.saturating_sub(rows.saturating_sub(1));
-            for (i, (_, words)) in p.options.iter().enumerate().skip(top).take(rows) {
+            // Each choice whole, wrapped under itself (never cut mid-word); the rows shown keep the picked one in view.
+            let mut used = 0;
+            for (i, (_, words)) in p.options.iter().enumerate().skip(top) {
                 let here = i == p.selected;
-                let l = Line::from(Span::styled(
-                    format!("{} {}", if here { "›" } else { " " }, fit(words, w)),
-                    if here { ink() } else { Style::default() },
-                ));
-                lines.push(if here {
-                    sheet::band(l, w + 2, selected())
-                } else {
-                    l
-                });
+                let pieces = wrap(words, w);
+                if used + pieces.len() > rows && used > 0 {
+                    break;
+                }
+                used += pieces.len();
+                for (j, piece) in pieces.into_iter().enumerate() {
+                    let mark = if here && j == 0 { "›" } else { " " };
+                    let l = Line::from(Span::styled(
+                        format!("{mark} {piece}"),
+                        if here { ink() } else { Style::default() },
+                    ));
+                    lines.push(if here {
+                        sheet::band(l, w + 2, selected())
+                    } else {
+                        l
+                    });
+                }
             }
             lines.push(Line::raw(""));
             let mut keys = sheet::act("Enter", "Choose", true);
@@ -646,6 +822,9 @@ pub fn dialog_lines(app: &App, area: Rect) -> Option<(&'static str, Vec<Line<'st
             }
             lines.push(Line::raw(""));
             lines.push(Line::from(sheet::act("Enter", "Save these models", true)));
+            if c.sign_in.is_some() {
+                lines.push(Line::from(sheet::act("s", "Sign in to it first", false)));
+            }
             lines.push(Line::from(Span::styled("Any other key cancels.", dim())));
             Some((" Change models ", lines))
         }
@@ -660,8 +839,19 @@ pub fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     if focus == Some(Focus::Models) {
         keys.push((marks().enter.into(), "change"));
     } else {
-        keys.push(("s".into(), "sign in"));
-        keys.push(("i".into(), "install"));
+        // Only what applies to the agent on screen.
+        if let Some(a) = current(app) {
+            if a.state == "not-installed" {
+                if a.setup.can_install {
+                    keys.push(("i".into(), "install"));
+                }
+            } else if a.setup.can_sign_in {
+                keys.push((
+                    "s".into(),
+                    if a.ready { "sign in again" } else { "sign in" },
+                ));
+            }
+        }
         keys.push(("y".into(), "copy commands"));
     }
     keys.push((
@@ -688,7 +878,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         .agents
         .as_ref()
         .and_then(|a| a.checked_at.as_deref())
-        .map(|at| format!("checked {}", at.get(11..16).unwrap_or(at)))
+        .map(|at| format!("checked {}", local_hhmm(at, app.utc_offset_secs)))
         .unwrap_or_else(|| "not checked yet".into());
     let mut head = vec![
         Span::styled("Agents", ink()),
@@ -820,16 +1010,36 @@ fn draw_agent(f: &mut Frame, app: &mut App, a: &AgentRow, area: Rect) {
             }
             lines.push(sheet::band(Line::from(l), w, crate::theme::raised()));
         };
-    if let Some(c) = &a.setup.install {
-        let act = (a.setup.can_install && a.state == "not-installed")
-            .then(|| sheet::button("Install", "i", a.state == "not-installed"));
+    // Installed already: no install line (its command is still in what y copies).
+    if let Some(c) = a
+        .setup
+        .install
+        .as_ref()
+        .filter(|_| a.state == "not-installed")
+    {
+        let act = a
+            .setup
+            .can_install
+            .then(|| sheet::button("Install", "i", true));
         command(&mut lines, "Install", c, act);
     }
     if let Some(c) = &a.setup.sign_in {
         let wants = a.state == "signed-out" || a.state == "unknown";
+        let label = if a.ready { "Sign in again" } else { "Sign in" };
         let act = (a.setup.can_sign_in && a.state != "not-installed")
-            .then(|| sheet::button("Sign in", "s", wants));
+            .then(|| sheet::button(label, "s", wants));
         command(&mut lines, "Sign in", c, act);
+    }
+    let outcome = app
+        .agents_screen
+        .as_ref()
+        .and_then(|s| s.outcome.clone())
+        .filter(|(id, _)| *id == a.id);
+    if let Some((_, words)) = outcome {
+        lines.push(Line::raw(""));
+        for piece in wrap(&words, w) {
+            lines.push(Line::from(Span::styled(piece, crate::theme::failed())));
+        }
     }
     if let Some(c) = &a.setup.check {
         command(&mut lines, "Check", c, None);
@@ -951,7 +1161,7 @@ fn draw_models(f: &mut Frame, screen: &Screen, area: Rect) {
         .unwrap_or_else(|| "not chosen yet".into());
     let mut rows: Vec<(String, String)> = vec![("Default for new tasks".into(), default)];
     for r in &models.roles {
-        rows.push((clean(&r.label), clean(&r.words)));
+        rows.push((clean(&r.label), role_words(r)));
     }
     let label_w = rows
         .iter()
@@ -971,10 +1181,54 @@ fn draw_models(f: &mut Frame, screen: &Screen, area: Rect) {
         ]);
         lines.push(if on { sheet::band(l, w, selected()) } else { l });
     }
-    if !models.can_change {
-        lines.push(Line::from(Span::styled(fit(MODELS_LOCKED, w), dim())));
-    } else if let Some(p) = &models.problem {
-        lines.push(Line::from(Span::styled(fit(&clean(p), w), dim())));
+    let said = if !models.can_change {
+        Some(MODELS_LOCKED.to_string())
+    } else {
+        models.problem.as_deref().map(clean)
+    };
+    if let Some(said) = said {
+        for piece in wrap(&said, w) {
+            lines.push(Line::from(Span::styled(piece, dim())));
+        }
     }
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// An ISO time ("2026-11-16T06:49:12.000Z") as the person's own clock says it ("22:49"), `offset` seconds from UTC
+/// (run.rs reads it from the system at start; tests use 0). Anything else is shown as it came, cut to its time.
+pub fn local_hhmm(iso: &str, offset: i64) -> String {
+    let parsed = (|| {
+        let y: i64 = iso.get(0..4)?.parse().ok()?;
+        let mo: i64 = iso.get(5..7)?.parse().ok()?;
+        let d: i64 = iso.get(8..10)?.parse().ok()?;
+        let h: i64 = iso.get(11..13)?.parse().ok()?;
+        let mi: i64 = iso.get(14..16)?.parse().ok()?;
+        if !iso.ends_with('Z')
+            || !(1..=12).contains(&mo)
+            || !(1..=31).contains(&d)
+            || h > 23
+            || mi > 59
+        {
+            return None;
+        }
+        // Days from the civil date (Howard Hinnant's algorithm), only for the time of day.
+        let (y, m) = if mo <= 2 {
+            (y - 1, mo + 9)
+        } else {
+            (y, mo - 3)
+        };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let doy = (153 * m + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        Some(days * 86_400 + h * 3600 + mi * 60)
+    })();
+    match parsed {
+        Some(secs) => {
+            let t = (secs + offset).rem_euclid(86_400);
+            format!("{:02}:{:02}", t / 3600, (t % 3600) / 60)
+        }
+        None => clean(iso.get(11..16).unwrap_or(iso)),
+    }
 }

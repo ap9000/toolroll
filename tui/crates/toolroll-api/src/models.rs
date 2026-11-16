@@ -435,7 +435,36 @@ pub struct StepCards {
     pub live_run: Option<i64>,
     pub cards: Option<Vec<StepCard>>,
     pub review: Option<Review>,
+    /// Why a failed task stopped (null unless it failed).
+    pub failure: Option<Failure>,
+    /// What Retry posts to `/t/<task>/requeue` (null unless a failed task can be retried as it stands).
+    pub retry: Option<RetryPins>,
+    /// Who approved the task's scope (null while no approval stands).
+    pub approval: Option<Approval>,
     pub room: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Failure {
+    pub line: String,
+    pub failed_in_a_row: i64,
+    pub suggestion: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetryPins {
+    pub run: i64,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Approval {
+    pub by: String,
+    pub you: bool,
+    pub automatic: bool,
 }
 
 // ---- Result diff ----------------------------------------------------------------------------------------------

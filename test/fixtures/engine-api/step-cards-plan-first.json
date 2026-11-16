@@ -93,5 +93,8 @@
     }
   ],
   "review": null,
+  "failure": null,
+  "retry": null,
+  "approval": null,
   "room": "task:t-b"
 }

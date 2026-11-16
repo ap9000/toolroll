@@ -143,14 +143,23 @@ const needRowSchema = z.object({
   question: z.object({ id: z.number().int(), text: z.string(), recap: z.string(),
     options: z.array(z.object({ id: z.string(), label: z.string(), consequence: z.string(), recommended: z.boolean() })) }).nullable(),
 });
-/** A task row of the Work list (browser-workspace.ts BrowserTaskRow), the facts a terminal needs. */
+/** A Work row's group (work-index.ts WorkIndexGroup): a Needs-you ask, building, or everything else. */
+export const WORK_ROW_GROUPS = ["decide", "review", "unblock", "building", "rest"] as const;
+/** A Work row's status tone (workspace-ui.ts StatusTone). */
+export const WORK_STATUS_TONES = ["attention", "problem", "live", "ready", "done", "muted", "neutral"] as const;
+/** A Work row's chip tone (browser-workspace.ts BrowserTaskRow word). */
+export const WORK_WORD_TONES = ["", "needs", "ask", "live", "done", "failed"] as const;
+/** A task row of the Work list (browser-workspace.ts BrowserTaskRow), the facts a terminal needs. A client lists every
+ * row it is sent, whatever its group, tone or token (the token is open: dozens of status words each have their own),
+ * by these closed enums and the rank. */
 const workRowSchema = z.object({
   id: z.string(), title: z.string(), href: z.string(), project: z.string().nullable(), age: z.string(),
-  status: z.object({ label: z.string(), tone: z.string(), token: z.string() }),
-  word: z.object({ word: z.string(), tone: z.string() }),
+  status: z.object({ label: z.string(), tone: z.enum(WORK_STATUS_TONES), token: z.string() }),
+  word: z.object({ word: z.string(), tone: z.enum(WORK_WORD_TONES) }),
   ask: z.string().nullable(),
   chip: z.string().nullable(),
-  group: z.string(),
+  group: z.enum(WORK_ROW_GROUPS),
+  /** 0 waits on a person, 1 runs, 2 queued or waiting (a retry included), 3 finished, 4 stopped or put away. */
   rank: z.number().int(),
   detail: z.string().nullable(),
   problem: z.string().nullable(),
@@ -231,6 +240,17 @@ export const stepCardsSchema = z.object({
      * one-person approval, a fast start that grew). Display only: the completion decides again. */
     accept: z.object({ owed: z.enum(["person-check", "exception"]).nullable(), blockers: z.array(z.string()), needs: z.string().nullable() }),
   }).nullable(),
+  /** Why a failed task stopped, as the task page and `task show` say it: the latest finished attempt's reason in one
+   * plain line (needs-you.ts failedAttemptSentence), the build attempts that failed in a row, and one suggestion. Null
+   * unless the task failed. */
+  failure: z.object({ line: z.string(), failedInARow: z.number().int(), suggestion: z.string().nullable() }).nullable(),
+  /** What Retry binds to (local-owner-acts.ts retryPinsOf): the latest build and the approved scope's digest, posted
+   * to POST /t/<task>/requeue as `run` and `digest`, the same act the task page's Retry is (re-proved there). Null
+   * unless the task failed and its approval stands as it is. */
+  retry: z.object({ run: z.number().int(), digest: z.string() }).nullable(),
+  /** Who approved this task's scope: a person (`you` when it is the reader), or a rule (`automatic`). Null while no
+   * approval stands. A "Just code" task's yes came with the task, so a client says who gave it. */
+  approval: z.object({ by: z.string(), you: z.boolean(), automatic: z.boolean() }).nullable(),
   room: z.string(),
 });
 

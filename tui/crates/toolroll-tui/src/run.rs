@@ -490,6 +490,7 @@ async fn event_loop(
         });
     }
     let mut app = App::new(opts.owned, opts.project.clone());
+    app.utc_offset_secs = local_utc_offset();
     app.now = now_secs();
     app.origin = Some(client.origin().to_string());
     // Where the last run left off (state.rs): our own small file, read only when it is safe to.
@@ -680,4 +681,26 @@ async fn event_loop(
         );
     }
     Ok(exit.unwrap_or(EXIT_LEAVE))
+}
+
+/// This computer's offset from UTC now, in seconds (the system's own time zone rules; 0 when it can't be read).
+fn local_utc_offset() -> i64 {
+    #[cfg(unix)]
+    {
+        // SAFETY: time and localtime_r are given valid pointers to locals; tm is fully written on success.
+        unsafe {
+            let now = libc::time(std::ptr::null_mut());
+            let mut tm: libc::tm = std::mem::zeroed();
+            if libc::localtime_r(&now, &mut tm).is_null() {
+                return 0;
+            }
+            // c_long: i64 on the 64-bit targets Toolroll ships, i32 elsewhere.
+            #[allow(clippy::useless_conversion)]
+            i64::from(tm.tm_gmtoff)
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
 }

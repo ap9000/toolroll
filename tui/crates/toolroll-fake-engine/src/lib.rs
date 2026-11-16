@@ -198,7 +198,21 @@ fn row(
     r["project"] = json!("shop");
     r["age"] = json!(age);
     r["status"] = json!({ "label": label, "tone": tone, "token": format!("assignment-{}", group) });
-    r["word"] = json!({ "word": word, "tone": tone });
+    // The chip's tone and the rank as Work gives them (contract: WORK_WORD_TONES; rank 0 waits, 1 runs, 3 finished).
+    let word_tone = match tone {
+        "attention" => "ask",
+        "live" => "live",
+        "done" => "done",
+        "problem" => "failed",
+        _ => "",
+    };
+    r["word"] = json!({ "word": word, "tone": word_tone });
+    r["rank"] = json!(match (group, tone) {
+        ("decide" | "review" | "unblock", _) => 0,
+        ("building", _) | (_, "live") => 1,
+        (_, "done") => 3,
+        _ => 2,
+    });
     r["group"] = json!(group);
     r["detail"] = json!(detail);
     r["ask"] = if need.is_null() {

@@ -11,4 +11,4 @@ expression: small
 "│ │                                                      │ │"
 "╰─│                                                      │─╯"
 "  ╰──────────────────────────────────────────────────────╯  "
-" j/k move  ⏎ open  s steer  a accept  n new  : all actions  "
+" j/k move  ⏎ open  s steer  n new  : all actions            "

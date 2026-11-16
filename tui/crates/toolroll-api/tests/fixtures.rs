@@ -31,6 +31,7 @@ const FIXTURES: &[(&str, &str)] = &[
     ("live-session-window-thread.json", "liveSessionWindow"),
     ("live-threads.json", "liveThreads"),
     ("work-rows.json", "workRows"),
+    ("work-rows-every-kind.json", "workRows"),
     ("step-cards-just-code.json", "stepCards"),
     ("step-cards-plan-first.json", "stepCards"),
     ("result-diff.json", "resultDiff"),

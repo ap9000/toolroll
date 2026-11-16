@@ -31,4 +31,4 @@ expression: shown
 " │                                            │ │                                                                     │ "
 " ╰────────────────────────────────────────────╯ ╰─────────────────────────────────────────────────────────────────────╯ "
 "                                                                                                                        "
-"  j/k move  ⏎ open  s steer  a accept  n new  : all actions                                                             "
+"  n new task  A agents  ? keys  : all actions                                                                           "

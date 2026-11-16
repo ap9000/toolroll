@@ -56,16 +56,53 @@ impl Tab {
 pub enum Section {
     NeedsYou,
     Working,
-    DoneToday,
+    /// Queued, or waiting to start again (a retry after a temporary problem).
+    UpNext,
+    /// Everything else Work sends: finished, failed, stopped, put away.
+    Recent,
 }
 
 impl Section {
+    pub const ALL: [Section; 4] = [
+        Section::NeedsYou,
+        Section::Working,
+        Section::UpNext,
+        Section::Recent,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Section::NeedsYou => "Needs you",
             Section::Working => "Working",
-            Section::DoneToday => "Done today",
+            Section::UpNext => "Up next",
+            Section::Recent => "Recent",
         }
+    }
+    /// The left column's order.
+    pub fn order(self) -> u8 {
+        match self {
+            Section::NeedsYou => 0,
+            Section::Working => 1,
+            Section::UpNext => 2,
+            Section::Recent => 3,
+        }
+    }
+}
+
+/// Where a Work row is listed. Total over every row Work can send: the group and tone are the contract's closed enums
+/// (WORK_ROW_GROUPS, WORK_STATUS_TONES) and the status token is open, so nothing here drops a row; a row nothing else
+/// places is Recent.
+pub fn section_of(r: &WorkRow) -> Section {
+    let waits = r.need.is_some()
+        || matches!(r.group.as_str(), "decide" | "review" | "unblock")
+        || r.status.tone == "attention";
+    if waits {
+        Section::NeedsYou
+    } else if r.group == "building" || r.status.tone == "live" || r.rank == 1 {
+        Section::Working
+    } else if r.rank == 2 || r.status.token.contains("queued") {
+        Section::UpNext
+    } else {
+        Section::Recent
     }
 }
 
@@ -247,6 +284,12 @@ pub enum Mode {
     /// The command palette: what is typed and the line picked (palette.rs). Enter runs it as its key would.
     Palette(crate::palette::Palette),
     ConfirmStop(i64),
+    /// Retry a failed task: the build and approved scope the steps named (pinned when it opened), posted exactly.
+    ConfirmRetry {
+        task: String,
+        run: i64,
+        digest: String,
+    },
     ConfirmAnswer(AnswerPin),
     /// A thread's question and the answer picked, pinned (thread.rs): Enter posts exactly them.
     ConfirmThread(crate::thread::ThreadPin),
@@ -264,6 +307,11 @@ pub enum Mode {
     PickModel(crate::agents::Pick),
     /// The Agents screen: a models change shown before → after; Enter saves exactly it (Settings → Models' write).
     ConfirmModels(crate::agents::ModelsChange),
+    /// The Agents screen: a ready agent's new sign-in, asked first (it replaces the one in use).
+    ConfirmSignInAgain {
+        agent: String,
+        words: String,
+    },
     /// A small task's exact terms: Enter builds (POST /tasks/fast), p files it to plan first, Esc files nothing.
     /// Build is a person's yes to exactly these terms, so every term is shown whole (wrapped, scrolled with j/k), and
     /// Enter builds only once the view has drawn the end of them (`seen_end`, set by view.rs, never by a key). The
@@ -640,6 +688,10 @@ pub struct App {
     pub fetching_agents: bool,
     /// The Agents screen, while it is open (agents.rs).
     pub agents_screen: Option<crate::agents::Screen>,
+    /// This computer's offset from UTC, in seconds (read at start; 0 in tests): times are shown on its clock.
+    pub utc_offset_secs: i64,
+    /// The Settings screen's chosen row (settings.rs Choice::ALL).
+    pub settings_row: usize,
     pub work_again: bool,
     pub areas: Areas,
     /// The Live tab's lines for (transcript version, width): rebuilt only when either moves.
@@ -721,6 +773,8 @@ impl App {
             agents: None,
             fetching_agents: false,
             agents_screen: None,
+            utc_offset_secs: 0,
+            settings_row: 0,
             work_again: false,
             areas: Areas::default(),
             line_cache: None,
@@ -744,6 +798,29 @@ impl App {
     /// The run being watched: the task's live build.
     pub fn live_run(&self) -> Option<i64> {
         self.steps.as_ref().and_then(|s| s.live_run)
+    }
+
+    /// The steps read, when it is the selected task's.
+    pub fn steps_here(&self) -> Option<&StepCards> {
+        let task = self
+            .selected_item()
+            .filter(|i| i.is_task)
+            .map(|i| i.id.as_str())?;
+        self.steps
+            .as_ref()
+            .filter(|s| s.task.id == task || s.task.root == task)
+    }
+
+    /// A result waits for this person's Accept or Send back on the selected task.
+    pub fn review_waiting(&self) -> bool {
+        self.steps_here().is_some_and(|s| s.review.is_some())
+    }
+
+    /// What Retry would post for the selected task (a failed task whose approval stands as it is).
+    pub fn retry_pins(&self) -> Option<(String, toolroll_api::RetryPins)> {
+        let task = self.selected_item().filter(|i| i.is_task)?.id.clone();
+        let pins = self.steps_here()?.retry.clone()?;
+        Some((task, pins))
     }
 
     /// The run whose records the Live tab shows: the live build, else the newest build the steps name.
@@ -1035,7 +1112,14 @@ impl App {
         self.fetching_work = false;
         let before = self.selected_id();
         self.project_name = clean(&rows.project_name);
-        self.needs_count = rows.needs_count;
+        // The first-run steps the welcome offers aren't counted as needing you (covered_by_welcome).
+        let covered = rows
+            .needs
+            .iter()
+            .flat_map(|g| g.rows.iter())
+            .filter(|n| covered_by_welcome(n))
+            .count() as i64;
+        self.needs_count = (rows.needs_count - covered).max(0);
         self.spend = rows.spend.clone();
         self.all_items = items_of(&rows);
         self.all_items.extend(self.threads.items());
@@ -1512,6 +1596,10 @@ impl App {
     }
 
     fn set_tab(&mut self, tab: Tab) -> Vec<Effect> {
+        if self.tab != tab {
+            // What was said belonged to the tab left.
+            self.status = None;
+        }
         self.tab = tab;
         match (tab, self.selected_id()) {
             (Tab::Diff, Some(id)) if self.diff.is_none() => vec![self.ask_diff(id)],
@@ -1552,11 +1640,30 @@ impl App {
                 vec![]
             }
             Mode::Settings => {
-                if key.code == KeyCode::Char('t') {
-                    self.prefs.cycle_theme();
-                    self.line_cache = None;
-                } else {
-                    self.mode = Mode::Normal;
+                let rows = crate::settings::Choice::ALL.len();
+                match key.code {
+                    KeyCode::Char('t') => {
+                        self.prefs.cycle_theme();
+                        self.line_cache = None;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        self.settings_row = (self.settings_row + 1).min(rows - 1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.settings_row = self.settings_row.saturating_sub(1);
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        let choice = crate::settings::Choice::ALL[self.settings_row.min(rows - 1)];
+                        match self.prefs.change(choice) {
+                            Ok(words) => self.say(Tone::Said, words),
+                            Err(words) => self.say(Tone::Refused, words),
+                        }
+                        self.line_cache = None;
+                    }
+                    _ => {
+                        self.mode = Mode::Normal;
+                        self.status = None;
+                    }
                 }
                 vec![]
             }
@@ -1575,6 +1682,16 @@ impl App {
                     KeyCode::Char('y') | KeyCode::Char('Y') => self.stop(run),
                     _ => {
                         self.say(Tone::Said, "Not stopped.");
+                        vec![]
+                    }
+                }
+            }
+            Mode::ConfirmRetry { task, run, digest } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.retry(task, run, digest),
+                    _ => {
+                        self.say(Tone::Said, "Not retried.");
                         vec![]
                     }
                 }
@@ -1850,9 +1967,10 @@ impl App {
             Mode::Normal if self.agents_screen.is_some() => crate::agents::key(self, key),
             Mode::Normal => self.normal_key(key),
             Mode::TakeOver => vec![],
-            Mode::ConfirmInstall { .. } | Mode::PickModel(_) | Mode::ConfirmModels(_) => {
-                crate::agents::mode_key(self, key)
-            }
+            Mode::ConfirmInstall { .. }
+            | Mode::PickModel(_)
+            | Mode::ConfirmModels(_)
+            | Mode::ConfirmSignInAgain { .. } => crate::agents::mode_key(self, key),
             Mode::ConfirmTakeOver { task, run } => match key.code {
                 KeyCode::Char('t') => {
                     self.mode = Mode::Normal;
@@ -1967,6 +2085,22 @@ impl App {
             KeyCode::Char(c @ '1'..='9') => self.answer_key((c as u8 - b'1') as usize),
             KeyCode::Esc => {
                 self.status = None;
+                vec![]
+            }
+            // A key that means nothing here says so, never nothing at all.
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && !c.is_control() =>
+            {
+                let palette = self.prefs.settings.keymap.key_words(Action::Palette);
+                let words = if palette.is_empty() {
+                    format!("{c} does nothing here.")
+                } else {
+                    format!("{c} does nothing here · {palette} shows every action")
+                };
+                self.say(Tone::Said, words);
                 vec![]
             }
             _ => vec![],
@@ -2112,6 +2246,24 @@ impl App {
                 self.mode = Mode::ConfirmAccept(pin);
                 vec![]
             }
+            Action::SendBack if !self.review_waiting() && self.retry_pins().is_some() => {
+                self.run_action(Action::Retry)
+            }
+            Action::Retry => match self.retry_pins() {
+                Some((task, pins)) => {
+                    self.status = None;
+                    self.mode = Mode::ConfirmRetry {
+                        task,
+                        run: pins.run,
+                        digest: pins.digest,
+                    };
+                    vec![]
+                }
+                None => {
+                    self.say(Tone::Refused, "Only a failed task can be retried here.");
+                    vec![]
+                }
+            },
             Action::SendBack => {
                 if let Some(pin) = self.pin_review() {
                     // The notes kept for this result (if any) and words for the whole change, then the whole text to
@@ -2701,6 +2853,30 @@ impl App {
         )
     }
 
+    /// Retry exactly the build and approved scope the dialog showed (POST /t/<task>/requeue, the task page's Retry; the
+    /// console proves them again). Never the selection's task now: the pinned one.
+    fn retry(&mut self, task: String, run: i64, digest: String) -> Vec<Effect> {
+        if self.retry_pins().map(|(t, p)| (t, p.run, p.digest))
+            != Some((task.clone(), run, digest.clone()))
+        {
+            self.say(
+                Tone::Refused,
+                "This task changed — look again before retrying.",
+            );
+            return vec![];
+        }
+        let path = format!("/t/{}/requeue", toolroll_api::client::encode(&task));
+        self.act(
+            path,
+            vec![
+                ("run", run.to_string()),
+                ("digest", digest),
+                ("return", "task".into()),
+            ],
+            format!("Retrying build #{run}: it starts again under your approval."),
+        )
+    }
+
     fn stop(&mut self, run: i64) -> Vec<Effect> {
         let Some(path) = self.task_path("stop") else {
             return vec![];
@@ -3197,22 +3373,11 @@ fn ask_word(ask: Option<&str>) -> Option<&'static str> {
     })
 }
 
-/// "Done today": a finished row updated within the day (Work's own age words: `<n>m ago`, `<n>h ago` under 24).
-fn today(age: &str) -> bool {
-    if let Some(m) = age.strip_suffix("m ago") {
-        return m.parse::<u32>().is_ok();
-    }
-    age.strip_suffix("h ago")
-        .and_then(|h| h.parse::<u32>().ok())
-        .is_some_and(|h| h < 24)
-}
-
 /// The left column from Work's rows: what waits on you (Work's Decide, Review, Unblock groups, and asks that are no
-/// task), what agents are working on, and what finished today.
+/// task), what agents are working on, what is up next, and everything else Work sent (section_of: every row listed).
 pub fn items_of(rows: &WorkRows) -> Vec<Item> {
     let mut needs = vec![];
-    let mut working = vec![];
-    let mut done = vec![];
+    let mut rest = vec![];
     let item = |section: Section, r: &WorkRow, word: String| Item {
         section,
         id: r.id.clone(),
@@ -3229,10 +3394,8 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         thread: false,
     };
     for r in &rows.rows {
-        let waits = r.need.is_some()
-            || matches!(r.group.as_str(), "decide" | "review" | "unblock")
-            || r.status.tone == "attention";
-        if waits {
+        let section = section_of(r);
+        if section == Section::NeedsYou {
             let asks = r
                 .need
                 .as_ref()
@@ -3243,19 +3406,14 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 .clone()
                 .unwrap_or_else(|| ask_word(asks).unwrap_or(&r.word.word).to_string());
             needs.push(item(Section::NeedsYou, r, word));
-        } else if r.group == "building"
-            || r.status.tone == "live"
-            || r.status.token.contains("queued")
-        {
-            working.push(item(Section::Working, r, r.word.word.clone()));
-        } else if r.status.tone == "done" && today(&r.age) {
-            done.push(item(Section::DoneToday, r, r.word.word.clone()));
+        } else {
+            rest.push(item(section, r, r.word.word.clone()));
         }
     }
     // Asks that are no task row (a held release, a flow card, a setup step): listed, opened in the browser.
     for group in &rows.needs {
         for n in &group.rows {
-            if needs.iter().any(|i: &Item| i.id == n.id) {
+            if needs.iter().any(|i: &Item| i.id == n.id) || covered_by_welcome(n) {
                 continue;
             }
             needs.push(Item {
@@ -3274,7 +3432,15 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
             });
         }
     }
-    needs.into_iter().chain(working).chain(done).collect()
+    // Each section in the order Work sent its rows.
+    rest.sort_by_key(|i| i.section.order());
+    needs.into_iter().chain(rest).collect()
+}
+
+/// First-run steps the first-run screen itself offers (New task n, Agents A): not listed, and not counted as needing
+/// you, so the screen isn't sent to the browser for them.
+pub fn covered_by_welcome(n: &NeedRow) -> bool {
+    n.ask.as_deref() == Some("setup") && matches!(n.id.as_str(), "setup:task" | "setup:agent")
 }
 
 /// Errors that end the screen whichever read they came from (a stale read's other errors are dropped).
@@ -3282,15 +3448,10 @@ fn fatal(e: &ApiError) -> bool {
     matches!(e, ApiError::SessionEnded | ApiError::Contract(_))
 }
 
-/// The left column's order by section (Needs you, Working, Done today), each section's rows in the order given: a
+/// The left column's order by section (Needs you, Working, Up next, Recent), each section's rows in the order given: a
 /// thread joins its section after the tasks there.
 fn sort_sections(items: &mut [Item]) {
-    let rank = |s: Section| match s {
-        Section::NeedsYou => 0,
-        Section::Working => 1,
-        Section::DoneToday => 2,
-    };
-    items.sort_by_key(|i| rank(i.section));
+    items.sort_by_key(|i| i.section.order());
 }
 
 /// Said when a batch is over the engine's note limit.
@@ -3903,7 +4064,7 @@ impl App {
         let mut back = false;
         let mut said: Option<(Tone, String)> = None;
         let mut detach: Option<String> = None;
-        let mut agent_ended = false;
+        let mut agent_ended: Option<(Option<i64>, Option<i64>)> = None;
         match event {
             TermEvent::Output(chunk) => {
                 pane.input_full = false;
@@ -3920,8 +4081,8 @@ impl App {
                 back = true;
                 if pane.task.starts_with("agent:") {
                     // An agent's own sign-in or install ended: nothing of it is kept (its pane goes), and this
-                    // computer's agents are looked for again.
-                    agent_ended = true;
+                    // computer's agents are looked for again. How it ended stays on the screen.
+                    agent_ended = Some((code, signal));
                     pane.forget();
                     detach = pane.id.clone();
                 } else {
@@ -3961,9 +4122,10 @@ impl App {
             self.say(tone, words);
         }
         let mut fx: Vec<Effect> = detach.map(Effect::TermDetach).into_iter().collect();
-        if agent_ended {
+        if let Some((code, signal)) = agent_ended {
             self.term = None;
             fx.extend(crate::agents::check_again(self));
+            crate::agents::ended(self, code, signal);
         }
         fx
     }

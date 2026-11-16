@@ -308,7 +308,7 @@ const ACP_CHECK = (id: string): string => `toolroll agents check ${id} --model <
 
 export const AGENT_SETUP: Readonly<Record<ProviderId, AgentSetup>> = Object.freeze({
   claude: { ...npm("@anthropic-ai/claude-code"), signIn: "claude auth login", signInRun: { binary: "claude", args: ["auth", "login"] }, key: null, check: null,
-    note: "Flexible threads bill your Claude plan through Toolroll's relay, which needs a long-lived token: run `claude setup-token` in your own terminal (it prints the token, so Toolroll never runs it for you)." },
+    note: "Flexible threads (off for now) need `claude setup-token`." },
   codex: { ...npm("@openai/codex"), signIn: "codex login", signInRun: { binary: "codex", args: ["login"] }, key: null, check: null, note: null },
   gemini: { ...npm("@google/gemini-cli"), signIn: "gemini", signInRun: { binary: "gemini", args: [] },
     key: "Or run it on an API key: switch it with `toolroll keys auth gemini api-key`, then pipe the key in with `toolroll keys set gemini < key.txt` (or paste it in Settings → Agents in the browser).", check: null,

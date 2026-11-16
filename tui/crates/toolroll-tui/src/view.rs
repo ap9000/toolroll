@@ -472,6 +472,22 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(shown), area);
 }
 
+/// A row's mark, its colour and its badge's role (None: the needs-you chip), by section and, for Recent, by how it
+/// ended (failed in red, done in green, anything else quiet).
+pub fn look_of(item: &Item) -> (&'static str, Style, Option<crate::theme::Role>) {
+    use crate::theme::Role;
+    let m = marks();
+    match item.section {
+        Section::NeedsYou => (m.needs, needs_you(), None),
+        Section::Working if item.paused => (m.paused, dim(), Some(Role::Fill)),
+        Section::Working => (m.running, running(), Some(Role::Running)),
+        Section::UpNext => (m.todo, dim(), Some(Role::Fill)),
+        Section::Recent if item.tone == "problem" => (m.failed, failed(), Some(Role::Failed)),
+        Section::Recent if item.tone == "done" => (m.passed, passed(), Some(Role::Passed)),
+        Section::Recent => (m.skipped, dim(), Some(Role::Fill)),
+    }
+}
+
 /// A row as a card: its mark and title with any columns and its badge on the right, then the project and age (and,
 /// comfortable, what it is doing). The selected card is filled across.
 fn card_lines(
@@ -482,13 +498,7 @@ fn card_lines(
     cols: &[(Column, usize)],
     comfortable: bool,
 ) -> Vec<Line<'static>> {
-    let m = marks();
-    let (mark, mark_style, role) = match item.section {
-        Section::NeedsYou => (m.needs, needs_you(), None),
-        Section::Working if item.paused => (m.paused, dim(), Some(crate::theme::Role::Fill)),
-        Section::Working => (m.running, running(), Some(crate::theme::Role::Running)),
-        Section::DoneToday => (m.passed, passed(), Some(crate::theme::Role::Passed)),
-    };
+    let (mark, mark_style, role) = look_of(item);
     // The step column is the badge; the others sit before it.
     let step = cols.iter().any(|(c, _)| *c == Column::Step);
     let others: Vec<(Column, usize)> = cols
@@ -497,7 +507,8 @@ fn card_lines(
         .filter(|(c, _)| *c != Column::Step)
         .collect();
     let badge = step.then(|| {
-        let word = fit(&item.word, 12);
+        // Room for a word like "Retrying in 2 min" whole.
+        let word = fit(&item.word, 18);
         match role {
             None => sheet::chip(&word),
             Some(r) => sheet::badge(&word, r),
@@ -710,13 +721,9 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     // Head: the task (a link to its page in the console, ours: link.rs) and its badge, what's running it, its steps.
-    let badge = match item.section {
-        Section::NeedsYou => sheet::chip(&fit(&item.word, 14)),
-        Section::Working if item.paused => {
-            sheet::badge(&fit(&item.word, 14), crate::theme::Role::Fill)
-        }
-        Section::Working => sheet::badge(&fit(&item.word, 14), crate::theme::Role::Running),
-        Section::DoneToday => sheet::badge(&fit(&item.word, 14), crate::theme::Role::Passed),
+    let badge = match look_of(&item).2 {
+        None => sheet::chip(&fit(&item.word, 14)),
+        Some(role) => sheet::badge(&fit(&item.word, 14), role),
     };
     let badge_w = width(&badge.content);
     let title = fit(&item.title, w.saturating_sub(badge_w + 2));
@@ -1109,13 +1116,28 @@ fn new_task_hint(app: &App, plan: bool, w: usize) -> Line<'static> {
         spans.push(Span::styled(agent, ink()));
     }
     spans.push(Span::styled(" · ", dim()));
+    // The long form when it fits, else a shorter one: never cut.
+    let long = {
+        let mut v = spans.clone();
+        if plan {
+            v.push(Span::styled(format!("{enter} Plan first"), ink()));
+            v.push(Span::styled(" · Tab: Just code", dim()));
+        } else {
+            v.push(Span::styled(format!("{enter} Just code"), ink()));
+            v.push(Span::styled(" · Tab or Shift-", dim()));
+            v.push(Span::styled(format!("{enter} Plan first"), dim()));
+        }
+        v
+    };
+    if sheet::spans_width(&long) <= w {
+        return Line::from(long);
+    }
     if plan {
-        spans.push(Span::styled(format!("{enter} Plan first"), ink()));
-        spans.push(Span::styled(" · Tab: Just code", dim()));
+        spans.push(Span::styled(format!("{enter} plan first"), ink()));
+        spans.push(Span::styled(" · Tab: just code", dim()));
     } else {
-        spans.push(Span::styled(format!("{enter} Just code"), ink()));
-        spans.push(Span::styled(" · Tab or Shift-", dim()));
-        spans.push(Span::styled(format!("{enter} Plan first"), dim()));
+        spans.push(Span::styled(format!("{enter} just code"), ink()));
+        spans.push(Span::styled(" · Tab: plan first", dim()));
     }
     fit_line(Line::from(spans), w)
 }
@@ -1124,6 +1146,11 @@ fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let w = area.width as usize;
     let t = &app.transcript;
     if t.run.is_none() || (t.main.is_empty() && t.sub.is_empty()) {
+        // A failed task: why it stopped and how to retry, before anything else.
+        if app.steps_here().is_some_and(|s| s.failure.is_some()) {
+            f.render_widget(Paragraph::new(failure_lines(app, w)), area);
+            return;
+        }
         let review = item.need.as_ref().and_then(|n| n.ask.as_deref()) == Some("review");
         let words = if review && app.steps.as_ref().is_some_and(|s| s.review.is_some()) {
             "Ready for you to check. Press Enter for the changes, a to accept, or r to send it back.".to_string()
@@ -1229,7 +1256,12 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
     };
     let w = area.width as usize;
     let mut lines = vec![];
-    if let Some(headline) = &steps.headline {
+    let why = failure_lines(app, w);
+    if !why.is_empty() {
+        lines.push(Line::from(Span::styled("Failed", crate::theme::failed())));
+        lines.extend(why);
+        lines.push(Line::raw(""));
+    } else if let Some(headline) = &steps.headline {
         for l in wrap(&clean(headline), w) {
             lines.push(Line::from(Span::styled(l, ink())));
         }
@@ -1348,12 +1380,67 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
     }
     if steps.chain == "just-code" {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(
-            "Just code: no plan or approval step.",
-            dim(),
-        )));
+        lines.push(Line::from(Span::styled(just_code_words(steps), dim())));
     }
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// A "Just code" task's chain in words, saying who gave its yes (it came with the task, so there is no Approval card).
+pub fn just_code_words(steps: &StepCards) -> String {
+    match &steps.approval {
+        Some(a) if a.automatic => "Approved automatically: just code (no plan).".into(),
+        Some(a) if a.you => "You approved: just code (no plan).".into(),
+        Some(a) => format!("{} approved: just code (no plan).", clean(&a.by)),
+        None => "Just code: no plan step.".into(),
+    }
+}
+
+/// Why a failed task stopped, in one line: the engine's reason, and how many attempts in a row failed.
+pub fn failure_words(f: &toolroll_api::Failure) -> String {
+    let line = clean(&f.line);
+    let line = line.trim_end_matches('.');
+    if f.failed_in_a_row > 1 {
+        format!("{line} · {} consecutive failures", f.failed_in_a_row)
+    } else {
+        format!("{line}.")
+    }
+}
+
+/// A failed task's Live and Steps words: why it stopped, what to change, and how to retry (when it can be).
+fn failure_lines(app: &App, w: usize) -> Vec<Line<'static>> {
+    let Some(steps) = app.steps_here() else {
+        return vec![];
+    };
+    let Some(failure) = &steps.failure else {
+        return vec![];
+    };
+    // (The head's badge already says Failed.)
+    let mut lines = vec![];
+    for l in wrap(&failure_words(failure), w) {
+        lines.push(Line::from(Span::styled(l, ink())));
+    }
+    if let Some(next) = &failure.suggestion {
+        for l in wrap(&clean(next), w) {
+            lines.push(Line::from(Span::styled(l, dim())));
+        }
+    }
+    lines.push(Line::raw(""));
+    let retry = key_name(app, Action::SendBack);
+    if steps.retry.is_some() && !retry.is_empty() {
+        lines.push(Line::from(sheet::act(
+            &retry,
+            "Retry (Review and retry)",
+            true,
+        )));
+    } else {
+        for l in wrap(
+            "It can't be retried here as it stands: press w to review it in the browser.",
+            w,
+        ) {
+            lines.push(Line::from(Span::styled(l, dim())));
+        }
+    }
+    lines
 }
 
 /// What accepting the result on screen means, from the facts the engine already gave (the diff's totals, the step
@@ -1988,14 +2075,38 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     if app.agents_screen.is_some() {
         return crate::agents::bar_keys(app);
     }
+    // Only the acts this task's state allows: steer while it builds, accept and send back while a result waits,
+    // retry once it failed (r, the same key as send back).
+    let review = app.review_waiting();
+    let retry = !review && app.retry_pins().is_some();
+    let live = app.live_run().is_some();
+    let acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
+        if live {
+            v.push((&[Steer], "steer"));
+        }
+        if review {
+            v.push((&[Accept], "accept"));
+            v.push((&[SendBack], "send back"));
+        } else if retry {
+            v.push((&[SendBack], "retry"));
+        }
+    };
     let five: Vec<(&[Action], &'static str)> = match app.tab {
-        Tab::Diff if app.thread_selected().is_none() => vec![
-            (&[LineDown, LineUp], "line"),
-            (&[Note], "note"),
-            (&[Accept], "accept"),
-            (&[SendBack], "send back"),
-            (&[PreviousFile, NextFile], "file"),
+        _ if app.items.is_empty() => vec![
+            (&[NewTask], "new task"),
+            (&[Agents], "agents"),
+            (&[Help], "keys"),
         ],
+        Tab::Diff if app.thread_selected().is_none() => {
+            let mut v: Vec<(&[Action], &str)> =
+                vec![(&[LineDown, LineUp], "line"), (&[Note], "note")];
+            if review {
+                v.push((&[Accept], "accept"));
+                v.push((&[SendBack], "send back"));
+            }
+            v.push((&[PreviousFile, NextFile], "file"));
+            v
+        }
         Tab::Terminal if app.pane_here().is_some() => vec![
             (&[TakeOver], "type in it"),
             (&[ScrollUp, ScrollDown], "scroll"),
@@ -2003,20 +2114,23 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             (&[MoveDown, MoveUp], "task"),
             (&[NextTab], "next tab"),
         ],
-        _ if app.panes.layout.count() > 1 => vec![
-            (&[MoveDown, MoveUp], "move"),
-            (&[NextPane], "next panel"),
-            (&[Open], "open"),
-            (&[Accept], "accept"),
-            (&[NewTask], "new"),
-        ],
-        _ => vec![
-            (&[MoveDown, MoveUp], "move"),
-            (&[Open], "open"),
-            (&[Steer], "steer"),
-            (&[Accept], "accept"),
-            (&[NewTask], "new"),
-        ],
+        _ if app.panes.layout.count() > 1 => {
+            let mut v: Vec<(&[Action], &str)> = vec![
+                (&[MoveDown, MoveUp], "move"),
+                (&[NextPane], "next panel"),
+                (&[Open], "open"),
+            ];
+            acts(&mut v);
+            v.push((&[NewTask], "new"));
+            v
+        }
+        _ => {
+            let mut v: Vec<(&[Action], &str)> =
+                vec![(&[MoveDown, MoveUp], "move"), (&[Open], "open")];
+            acts(&mut v);
+            v.push((&[NewTask], "new"));
+            v
+        }
     };
     let mut out: Vec<(String, &'static str)> = five
         .into_iter()
@@ -2072,92 +2186,104 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// The help overlay's lines: the keys in use (tui.toml can change them), the Diff and Terminal tabs' own, and where
-/// every other action is.
-fn help_lines(app: &App) -> Vec<Line<'static>> {
-    use Action::*;
-    let rows: Vec<(String, &str)> = vec![
-        (
-            keys_name(app, &[MoveDown, MoveUp]),
-            "move up and down the list",
-        ),
-        (
-            key_name(app, Open),
-            "open: the changes for a result, else the live output",
-        ),
-        (
-            key_name(app, NextTab),
-            "next tab (Live, Steps, Diff, Terminal)",
-        ),
-        (key_name(app, Steer), "steer: send the running agent a note"),
-        (key_name(app, Pause), "pause the build (again to resume)"),
-        (key_name(app, Stop), "stop the build"),
-        ("1-9".into(), "answer the agent's question"),
-        (key_name(app, Accept), "accept the result"),
-        (key_name(app, SendBack), "send the result back, with a note"),
-        (
-            key_name(app, TakeOver),
-            "take over: type in a terminal on the latest build (Ctrl-] back)",
-        ),
-        (
-            key_name(app, NewTask),
-            "new task (Enter: Just code, Tab: plan first)",
-        ),
-        (
-            key_name(app, NextNeedsYou),
-            "next thing that needs you, oldest first",
-        ),
-        (
-            keys_name(app, &[Layout, NextPane]),
-            "split the screen; next panel",
-        ),
-        (
-            keys_name(app, &[ScrollUp, ScrollDown]),
-            "scroll; End follows the newest",
-        ),
-        (key_name(app, Browser), "open Toolroll in your browser"),
-        (key_name(app, Quit), "quit"),
-    ];
-    let mut lines: Vec<Line<'static>> = rows
-        .into_iter()
-        .filter(|(k, _)| !k.is_empty())
-        .map(|(k, what)| {
-            Line::from(vec![
-                Span::styled(format!("{k:<13}"), ink()),
-                Span::raw(what.to_string()),
-            ])
-        })
+/// The help overlay's lines, made from the keymap in use (keys.rs help_rows: every action with a key, tui.toml's own
+/// included), two columns when the window is wide enough, then the keys no file changes and how to change the rest.
+fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
+    let map = &app.prefs.settings.keymap;
+    let rows = crate::keys::help_rows(map);
+    let inner = (area.width as usize).saturating_sub(10).clamp(30, 118);
+    let two = inner >= 90;
+    let col = if two { (inner - 3) / 2 } else { inner };
+    let key_w = 15;
+    // One cell: its keys, then its words wrapped under themselves.
+    let cell = |keys: &str, words: &str| -> Vec<Line<'static>> {
+        let keys = if keys == "Enter" {
+            marks().enter.to_string()
+        } else {
+            keys.to_string()
+        };
+        wrap(words, col.saturating_sub(key_w).max(8))
+            .into_iter()
+            .enumerate()
+            .map(|(i, piece)| {
+                let pad = col.saturating_sub(key_w + width(&piece));
+                Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "{:<key_w$}",
+                            if i == 0 {
+                                fit(&keys, key_w - 1)
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        ink(),
+                    ),
+                    Span::raw(piece),
+                    Span::raw(" ".repeat(pad)),
+                ])
+            })
+            .collect()
+    };
+    let columns = |cells: Vec<Vec<Line<'static>>>| -> Vec<Line<'static>> {
+        if !two {
+            return cells.into_iter().flatten().collect();
+        }
+        let half = cells.len().div_ceil(2);
+        let (left, right) = cells.split_at(half);
+        let mut out = vec![];
+        for (i, l) in left.iter().enumerate() {
+            let r = right.get(i).cloned().unwrap_or_default();
+            for j in 0..l.len().max(r.len()) {
+                let mut spans = l
+                    .get(j)
+                    .cloned()
+                    .unwrap_or_else(|| Line::raw(" ".repeat(col)))
+                    .spans;
+                spans.push(Span::raw("   "));
+                if let Some(x) = r.get(j) {
+                    spans.extend(x.spans.clone());
+                }
+                out.push(Line::from(spans));
+            }
+        }
+        out
+    };
+    let mut lines = vec![];
+    let global: Vec<Vec<Line<'static>>> = rows
+        .iter()
+        .filter(|r| r.scope == crate::keys::Scope::Global)
+        .map(|r| cell(&r.keys, &r.words))
         .collect();
+    lines.extend(columns(global));
     lines.push(Line::raw(""));
-    lines.push(Line::raw(format!(
-        "In Diff: {} a line  {} a hunk  {} a file  {} a note  {} more lines  {} side by side  {} copy",
-        keys_name(app, &[LineDown, LineUp]),
-        keys_name(app, &[PreviousHunk, NextHunk]),
-        keys_name(app, &[PreviousFile, NextFile]),
-        key_name(app, Note),
-        keys_name(app, &[MoreAbove, MoreBelow]),
-        key_name(app, SideBySide),
-        key_name(app, Copy),
-    )));
-    lines.push(Line::raw(format!(
-        "In Terminal: {} types in it  {} scroll back  {} copy",
-        key_name(app, TakeOver),
-        keys_name(app, &[ScrollUp, ScrollDown]),
-        key_name(app, Copy),
-    )));
+    lines.push(Line::from(Span::styled("In Diff", ink())));
+    let diff: Vec<Vec<Line<'static>>> = rows
+        .iter()
+        .filter(|r| r.scope == crate::keys::Scope::Diff)
+        .map(|r| cell(&r.keys, &r.words))
+        .collect();
+    lines.extend(columns(diff));
     lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled(format!("{:<13}", key_name(app, Palette)), ink()),
-        Span::raw("every action, task, project and setting"),
-    ]));
-    lines.push(Line::raw(format!(
-        "Keys: the {} preset; change them in tui.toml under [keys].",
-        app.prefs.settings.keymap.preset.key()
+    let fixed: Vec<Vec<Line<'static>>> = crate::keys::FIXED_KEYS
+        .iter()
+        .map(|(k, w)| cell(k, w))
+        .collect();
+    lines.extend(columns(fixed));
+    lines.push(Line::raw(""));
+    for l in wrap(
+        &format!(
+            "Keys: the {} preset. Change any in tui.toml under [keys], e.g. preset = \"vim\" or accept = \"A\".",
+            map.preset.key()
+        ),
+        inner,
+    ) {
+        lines.push(Line::from(Span::styled(l, dim())));
+    }
+    lines.push(Line::from(Span::styled(
+        "Press s for settings, any other key to close.",
+        dim(),
     )));
-    lines.push(Line::raw(
-        "Mouse: click to select, wheel to scroll, drag the divider.",
-    ));
-    lines.push(Line::raw("Press s for settings, any other key to close."));
     lines
 }
 
@@ -2169,10 +2295,14 @@ fn palette_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     let w = (area.width as usize).saturating_sub(8).clamp(24, 76);
     let rows = (area.height as usize).saturating_sub(8).clamp(3, 14);
     let found = crate::palette::matches(app, &p.query);
+    // The query line is padded to the box's full width: the box keeps one width whatever matches.
+    let query = fit(&p.query, w.saturating_sub(4));
+    let pad = w.saturating_sub(3 + width(&query));
     let mut lines = vec![Line::from(vec![
         Span::styled(": ", ink()),
-        Span::raw(fit(&p.query, w.saturating_sub(4))),
+        Span::raw(query),
         Span::styled("▏", ink()),
+        Span::raw(" ".repeat(pad)),
     ])];
     lines.push(Line::raw(""));
     if found.is_empty() {
@@ -2233,12 +2363,14 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 
 fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
-        Mode::Help => (" Keys ", help_lines(app)),
+        Mode::Help => (" Keys ", help_lines(app, area)),
         Mode::Palette(_) => (" Commands ", palette_lines(app, area)),
         Mode::Settings => (
             " Settings ",
-            app.prefs
-                .screen((area.width as usize).saturating_sub(8).min(88)),
+            app.prefs.screen(
+                (area.width as usize).saturating_sub(8).min(88),
+                app.settings_row,
+            ),
         ),
         Mode::Quit => (
             " Quit Toolroll? ",
@@ -2271,6 +2403,35 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             keys.extend(sheet::act("Esc", "to cancel", false));
             lines.push(Line::from(keys));
             (" Take over ", lines)
+        }
+        Mode::ConfirmRetry { run, .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 76);
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled(format!("Retry build #{run}?"), ink())),
+                Line::raw(""),
+            ];
+            if let Some(failure) = app.steps_here().and_then(|s| s.failure.as_ref()) {
+                for l in wrap(&failure_words(failure), w) {
+                    lines.push(Line::raw(l));
+                }
+                if let Some(next) = &failure.suggestion {
+                    for l in wrap(&clean(next), w) {
+                        lines.push(Line::from(Span::styled(l, dim())));
+                    }
+                }
+                lines.push(Line::raw(""));
+            }
+            for l in wrap(
+                "It clears the repeated failures and starts again under your approval, keeping the branch and workspace. It may cost again.",
+                w,
+            ) {
+                lines.push(Line::raw(l));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Retry it", true)));
+            lines.push(Line::from(Span::styled("Any other key cancels.", dim())));
+            (" Retry ", lines)
         }
         Mode::ConfirmStop(run) => (
             " Stop ",
@@ -2330,12 +2491,13 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } => return draw_build(f, app, area),
-        Mode::ConfirmInstall { .. } | Mode::PickModel(_) | Mode::ConfirmModels(_) => {
-            match crate::agents::dialog_lines(app, area) {
-                Some(shown) => shown,
-                None => return,
-            }
-        }
+        Mode::ConfirmInstall { .. }
+        | Mode::PickModel(_)
+        | Mode::ConfirmModels(_)
+        | Mode::ConfirmSignInAgain { .. } => match crate::agents::dialog_lines(app, area) {
+            Some(shown) => shown,
+            None => return,
+        },
         Mode::StartThread(_) => return crate::thread::draw_start(f, app, area),
         Mode::ConfirmThread(_) => match crate::thread::confirm_lines(app, area) {
             Some(shown) => shown,
