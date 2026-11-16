@@ -4,6 +4,41 @@ Each release opens with one line on its theme, then **New**, **Changed**, **Fixe
 the ones it has). Each item is at most two lines and says where to find it. Notes for maintainers (CI, the release
 tooling) go on the GitHub release, not here. Entries before 0.9.104 use the older format.
 
+## 0.9.110 — 2026-11-15
+
+A real terminal screen: run `toolroll` in a terminal and watch, steer, review and accept your agents' work there, in a
+calmer look. Solo installs ask for less, and first runs go straight to the agent you already have.
+
+### New
+
+- **The terminal workbench.** Bare `toolroll` opens a native screen (Mac and Linux): your work list, the agent's
+  work live, Steer / Pause / Stop, and the diff with notes, Accept and Send back.
+- **Take over a build.** On a task's Terminal tab press t for a real shell in a separate copy of its latest build;
+  Ctrl-] comes back and the shell keeps running.
+- **Agents screen (A).** Every supported agent and what it needs: sign in through the agent's own login in a pane,
+  install with npm after a confirm, and pick the agent and model for planning, building and review.
+- **Command palette and layouts.** `:` lists every action; key presets, split and grid layouts, resume where you left
+  off, and today's cost in the top bar.
+- **Themes and `~/.config/toolroll/tui.toml`:** light, dark, high contrast or your terminal's own colours; density,
+  glyphs and notifications. Works down to 16 colours and NO_COLOR.
+- **Instant start.** First run finds the coding agents you have and whether each is signed in, then sends your first
+  task to one you can use, or names the one sign-in command to run. It never makes a model call to check.
+- **Solo and team.** A one-person install is solo: your signed-in session stands in for the password at ordinary
+  steps. Settings → General shows which you are; "It's just me" switches a single-person install to solo.
+
+### Changed
+
+- **Approvals are shorter and exact.** One summary (goal, done when, agents, what it may touch and cost), risks under
+  "Before you approve", and Approve after what it approves. Revisions lead with what changed.
+- **Saving a credential always asks for your password** (provider keys, the Telegram bot token, mail and Google
+  accounts), solo or team.
+- **Messages that leave Toolroll never name a local folder or a key.** Chat apps, webhooks, push and email get a
+  plain "An update is ready" instead and the detail stays in Toolroll.
+
+### Fixed
+
+- **A slow sign-in check no longer sends your first task to a plan** instead of the agent you have.
+
 ## 0.9.109 — 2026-11-14
 
 One Work screen, pages several times faster on a busy install, a clearer first run, and what the agent decided
