@@ -164,9 +164,12 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "task.act.approve": "approve-plan",
   "task.act.keep-grown": "approve-plan",
   "decision.answer": "answer-question",
-  // A thread's owner answers their own agent's request (F3; refused while Flexible isn't available). Starting a thread
-  // is no local-owner act yet: its terms card for a laptop owner comes with the enable gates.
+  // A thread's owner answers their own agent's request (F3; refused while Flexible isn't available).
   "agents.live.thread.answer": "answer-question",
+  // Starting a thread: the laptop owner's yes to the thread's terms card, at this computer (the Flexible plan v2 §3: the
+  // local owner's act is a person's proof). engine-api.ts threadStart checks this exact act inside its proof; refused while
+  // Flexible isn't available.
+  "agents.live.thread.start": "start-thread",
   "task.act.reply": "answer-question",
   "task.act.stop": "stop-run",
   "task.act.cancel": "stop-run",

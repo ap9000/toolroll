@@ -69,6 +69,11 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // install is solo (server/terminals.ts reads solo and the local sign-in again at every proof and right before the
   // program starts). A shell for the person already at this computer; it grants no credential and widens no way in.
   "take-over",
+  // Flexible threads (pre-enable; refused while Flexible isn't available): the laptop owner's yes to a thread's terms card
+  // (flexible-start.ts), the thread starting under the project's signed Flexible terms. It grants nothing those terms
+  // don't (a start above their password-free level still needs this proof); the start (engine-api.ts threadStart)
+  // checks this exact act.
+  "start-thread",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);

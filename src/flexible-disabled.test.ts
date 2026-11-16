@@ -20,13 +20,15 @@ import { ROUTES } from "./server/route-table.js";
 import { flexibleThreadCodexProfile, flexibleThreadFence, flexibleThreadSpawn, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent, withFlexibleThreadLock } from "./flexible-thread.js";
 import { admitFlexibleTurn, beginFlexibleTurn, chargeFlexibleTurn, finishFlexibleTurn, interruptFlexibleThreadTurns, interruptFlexibleTurnsOf, setFlexibleInstallationCaps, withdrawFlexibleTurn, withdrawFlexibleTurnsAbove } from "./flexible-turns.js";
 import { flexibleAgentLaunch, lowerFlexibleThreadLevel, recoverFlexibleLaunchesOf, startFlexibleTurn } from "./flexible-agents.js";
-import { startFlexibleRelay } from "./flexible-relay.js";
+import { flexibleRelayBilling, startFlexibleRelay } from "./flexible-relay.js";
 import { ackFlexibleAnswer, cancelFlexibleAnswer, decideFlexibleAnswer, decideFlexibleAnswerByPolicy, expireFlexibleAnswers, flexibleRequestsOf, noteFlexibleToolActivity, openFlexibleAnswerCatalog,
   recordFlexibleProviderDecision, recordFlexibleRequest, recoverFlexibleAnswersOf, revokeFlexibleAnswers, sendFlexibleAnswer, streamAnswerSender, type FlexibleAnswerCatalog } from "./flexible-answers.js";
 import { PassThrough } from "node:stream";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, attachFlexibleAgent, beginFlexibleThreadTurn, closeFlexibleSessions, endFlexibleThreadTurn, flexibleThreadLiveOf, flexibleThreadsOf,
-  lowerFlexibleThreadSession, openFlexibleSessions, recoverFlexibleHolders, startFlexibleThread, startFlexibleThreadSession, stopFlexibleThreadSession, tickFlexibleSessions,
+import { admitFlexibleThreadOwner, answerFlexibleRequest, attachFlexibleAgent, beginFlexibleThreadTurn, closeFlexibleSessions, endFlexibleThreadTurn, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf,
+  lowerFlexibleThreadSession, openFlexibleSessions, recoverFlexibleHolders, startFlexibleThread, startFlexibleThreadSession, stopFlexibleThreadSession, tickFlexibleSessions, waitFlexibleThreadChange,
   type FlexibleSessions } from "./flexible-session.js";
+import { createFlexibleLauncher, flexibleThreadNetwork } from "./flexible-launcher.js";
+import { flexibleStartCard } from "./flexible-start.js";
 import * as upstreams from "./flexible-relay-upstreams.js";
 import { flexibleTaskBranch, importFlexibleCandidate, readFlexibleCandidate, removeFlexibleImportRefs, settleInterruptedImport } from "./flexible-import.js";
 import { cancelFlexibleShip, flexibleArmedPass, flexibleShipsOf, flexibleShipTerms, mergeArmedFlexible, reconcileFlexibleShips, removeFlexibleImport, sendBackFlexible, shipFlexible } from "./flexible-ship.js";
@@ -232,17 +234,34 @@ describe("switched off", () => {
     expect(attachFlexibleAgent(store, sessions, { thread: id, turn, launch: "c".repeat(32), stdout, stdin, exited: () => { touched.push("exited"); } })).toEqual(refused);
     expect(endFlexibleThreadTurn(store, sessions, { thread: id, turn, outcome: "finished" })).toEqual(refused);
     expect(await lowerFlexibleThreadSession(store, sessions, { thread: id, by: person, level: "supervised" })).toEqual(refused);
-    const launcher = { network: async () => { touched.push("network"); return { proxyPort: 1, token: "t", proxyEnv: {}, close: () => {} }; }, storage: { names: [], denies: [] } };
+    const launcher = { prepare: async () => { touched.push("prepare"); return { ok: true as const, network: { proxyPort: 1, token: "t", proxyEnv: {}, close: () => {} }, storage: { names: [], denies: [] } }; },
+      open: () => 0, close: async () => { touched.push("close"); } };
     expect(await beginFlexibleThreadTurn(store, sessions, { turn, message: "hello", launcher })).toEqual(refused);
-    expect(await startFlexibleThread(store, sessions, { repo, by: person, digest: "0".repeat(64), message: "hello", model: "claude-sonnet-4-5", launcher })).toEqual(refused);
+    expect(await startFlexibleThread(store, sessions, { repo, by: person, digest: "0".repeat(64), message: "hello", model: "claude-sonnet-4-5", billing: "subscription", startKey: "5".repeat(32), launcher })).toEqual(refused);
     expect(await answerFlexibleRequest(store, sessions, { held: () => true, thread: id, request, shownDigest: "1".repeat(64), by: { kind: "person", ...person }, choice: { decision: "accept" } })).toEqual(refused);
     expect(flexibleThreadLiveOf(store, sessions, { thread: id, viewer: { name: "alex" }, file: "main", cursor: null })).toEqual(refused);
     expect(flexibleThreadsOf(store, sessions, { owner: "alex" })).toEqual(refused);
     expect(admitFlexibleThreadOwner(store, sessions, { thread: id, viewer: { name: "alex" }, canAccess: () => { touched.push("canAccess"); return true; } })).toEqual(refused);
+    // The owner's read woken on change (pre-enable push): no count is read and nothing waits.
+    expect(flexibleThreadChangeOf(sessions, { thread: id })).toEqual(refused);
+    expect(waitFlexibleThreadChange(sessions, { thread: id, since: 0, ms: 10, abandoned: () => { touched.push("abandoned"); } })).toEqual(refused);
     expect(touched).toEqual([]);
     expect(stdin.writableLength).toBe(0);
     expect(["thread_turn", "thread_decision", "flexible_thread_launch", "flexible_relay_grant", "flexible_thread_level", "action_ledger"].map(table => store.handle.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!["n"])).toEqual(before);
     expect(existsSync(join(dir, "threads"))).toBe(false);
+  });
+
+  test("the console's launcher and the start's terms card (pre-enable): no launcher is made, no network read, no proxy started, no card built", async () => {
+    const refused = { ok: false, reason: "not-available", message: FLEXIBLE_UNAVAILABLE };
+    const digest = plant();
+    store.upsertProject(repo, "shop", NOW);
+    const started: string[] = [];
+    expect(createFlexibleLauncher(store, { startProxy: async () => { started.push("proxy"); throw new Error("started"); }, storage: async () => { started.push("storage"); return { names: [], denies: [] }; } })).toEqual(refused);
+    expect(flexibleThreadNetwork(store, repo)).toEqual(refused);
+    expect(flexibleRelayBilling(store)).toEqual(refused);
+    expect(flexibleStartCard(store, { repo, by: { name: "alex", generation: store.accountOf("alex")!.generation }, model: null, message: "hello" })).toEqual(refused);
+    expect(started).toEqual([]);
+    expect(digest).toMatch(/^[0-9a-f]{32}$/);
   });
 
   test.each([["show"], ["enable"], ["lower"], ["off"]])("the CLI refuses project flexible %s", async action => {
@@ -278,7 +297,9 @@ describe("switched off", () => {
       // The thread roads (F3): the list, one answer and a new thread all refuse, before anything is looked up.
       expect(await (await fetch(`${base}/agents/live/threads`, { headers: { cookie } })).json()).toEqual({ error: "not-available" });
       expect(await (await fetch(`${base}/agents/live/thread/${"a".repeat(32)}`, { headers: { cookie } })).json()).toEqual({ error: "not-available" });
-      for (const [path, fields] of [[`/agents/live/thread/${"a".repeat(32)}/answer`, { request: "d".repeat(32), card: "1".repeat(64), decision: "accept" }], ["/agents/live/thread", { repo, message: "hello", terms: digest }]] as const) {
+      // A new thread both ways: asking for its terms card (no key), and naming one.
+      for (const [path, fields] of [[`/agents/live/thread/${"a".repeat(32)}/answer`, { request: "d".repeat(32), card: "1".repeat(64), decision: "accept" }], ["/agents/live/thread", { repo, message: "hello", terms: digest }],
+        ["/agents/live/thread", { repo, message: "hello" }]] as const) {
         const answer = await fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
         expect(answer.status, path).toBe(404);
         expect(await answer.json(), path).toEqual({ outcome: "refused", words: FLEXIBLE_UNAVAILABLE });
@@ -313,7 +334,8 @@ describe("the switch can't become a runtime override", () => {
     const users = product.filter(one => code(one.text).includes("FLEXIBLE_AVAILABLE") && one.path !== join("src", "flexible-available.ts"));
     // server/engine-api.ts: the LiveSession's thread roads refuse before anything is looked up while it is false, and it
     // opens no thread host then. flexible-session.ts (F3): the one bridge from the engine to a person's surface.
-    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "flexible-turns.ts"), join("src", "flexible-agents.ts"), join("src", "flexible-relay.ts"), join("src", "flexible-answers.ts"), join("src", "flexible-session.ts"), join("src", "flexible-import.ts"), join("src", "flexible-ship.ts"), join("src", "operate.ts"), join("src", "server", "engine-api.ts"), join("src", "server", "settings.ts")].sort());
+    // flexible-launcher.ts and flexible-start.ts (pre-enable): the console's launcher and the start's terms card.
+    expect(users.map(one => one.path).sort()).toEqual([join("src", "flexible.ts"), join("src", "flexible-thread.ts"), join("src", "flexible-turns.ts"), join("src", "flexible-agents.ts"), join("src", "flexible-relay.ts"), join("src", "flexible-answers.ts"), join("src", "flexible-session.ts"), join("src", "flexible-import.ts"), join("src", "flexible-ship.ts"), join("src", "flexible-launcher.ts"), join("src", "flexible-start.ts"), join("src", "operate.ts"), join("src", "server", "engine-api.ts"), join("src", "server", "settings.ts")].sort());
     for (const one of users) {
       expect(one.text, one.path).toMatch(/import \{ FLEXIBLE_AVAILABLE \} from "\.\.?\/flexible-available\.js";/);
       expect(one.text, one.path).not.toMatch(/FLEXIBLE_AVAILABLE\s*(?:=(?!=)|\+\+|--)|export\s*\{[^}]*FLEXIBLE_AVAILABLE|as\s+FLEXIBLE_AVAILABLE/);
@@ -349,7 +371,8 @@ describe("the switch can't become a runtime override", () => {
     for (const one of product.filter(engine("flexible-agents.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-agents\.js"/);
     for (const one of product.filter(engine("flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts", "flexible-answers.ts", "flexible-session.ts", "flexible-ship.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-launch\.js"/);
     // The sign-in relay (F2b): only the thread start and the thread's session (F3) use it, and only the relay reads its list of services.
-    for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
+    // The start's terms card (pre-enable) reads only the relay credential's kind (flexibleRelayBilling), never the credential.
+    for (const one of product.filter(engine("flexible-relay.ts", "flexible-agents.ts", "flexible-session.ts", "flexible-start.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay\.js"/);
     for (const one of product.filter(engine("flexible-relay-upstreams.ts", "flexible-relay.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay-upstreams\.js"/);
     // The relay's cancellations: told by the writers that end a call's authority, heard by the relay; nothing else.
     for (const one of product.filter(engine("flexible-relay-cancel.ts", "flexible-relay.ts", "flexible-launch.ts", "flexible-turns.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-relay-cancel\.js"/);
@@ -375,11 +398,14 @@ describe("the switch can't become a runtime override", () => {
       expect(lines[lines.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
     }
     for (const one of product.filter(engine("flexible-turns.ts", "flexible-launch.ts", "flexible-thread.ts", "flexible-agents.ts", "flexible-relay.ts", "flexible-answers.ts", "flexible-session.ts"))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/flexible-turns\.js"/);
-    // The sign-in relay (F2b): its one entry point checks the constant first; its other export only computes an address.
+    // The sign-in relay (F2b): its entry points check the constant first (the relay, and the kind of its credential); its
+    // other export only computes an address.
     const relay = readFileSync("src/flexible-relay.ts", "utf8");
-    expect([...relay.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual(["relayUrlInside", "startFlexibleRelay"]);
-    const lines = relay.slice(relay.indexOf("export async function startFlexibleRelay(")).split("\n");
-    expect(lines[lines.findIndex(line => line.endsWith(" {")) + 1]).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
+    expect([...relay.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual(["flexibleRelayBilling", "relayUrlInside", "startFlexibleRelay"]);
+    for (const name of ["export async function startFlexibleRelay(", "export function flexibleRelayBilling("]) {
+      const lines = relay.slice(relay.indexOf(name)).split("\n");
+      expect(lines[lines.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
+    }
     // The answers (F2d): every entry point checks the constant first, the catalog's opening included.
     const answers = readFileSync("src/flexible-answers.ts", "utf8");
     const answerEntries = ["openFlexibleAnswerCatalog", "streamAnswerSender", "recordFlexibleRequest", "decideFlexibleAnswer", "decideFlexibleAnswerByPolicy", "sendFlexibleAnswer", "cancelFlexibleAnswer",
@@ -394,14 +420,28 @@ describe("the switch can't become a runtime override", () => {
     const session = readFileSync("src/flexible-session.ts", "utf8");
     const sessionEntries = ["openFlexibleSessions", "closeFlexibleSessions", "tickFlexibleSessions", "recoverFlexibleHolders", "startFlexibleThreadSession", "stopFlexibleThreadSession",
       "attachFlexibleAgent", "endFlexibleThreadTurn", "lowerFlexibleThreadSession", "beginFlexibleThreadTurn", "startFlexibleThread", "answerFlexibleRequest", "flexibleThreadLiveOf",
-      "flexibleThreadsOf", "admitFlexibleThreadOwner"];
+      "flexibleThreadsOf", "admitFlexibleThreadOwner", "flexibleThreadChangeOf", "waitFlexibleThreadChange"];
     expect([...session.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).sort()).toEqual([...sessionEntries].sort());
     for (const name of sessionEntries) {
       const body = session.slice(session.search(new RegExp(`^export (?:async )?function ${name}\\(`, "m"))).split("\n");
       expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
     }
+    // The console's launcher and the start's terms card (pre-enable): every entry point checks the constant first (the
+    // network digest only hashes what it is given); only the engine API's thread roads, the thread's session (its type)
+    // and the terms card (the thread's network) import the launcher, and only the engine API the card.
+    for (const [file, names] of [["src/flexible-launcher.ts", ["flexibleThreadNetwork", "createFlexibleLauncher"]], ["src/flexible-start.ts", ["flexibleStartCard"]]] as const) {
+      const text = readFileSync(file, "utf8");
+      expect([...text.matchAll(/^export (?:async )?function (\w+)/gm)].map(match => match[1]!).filter(name => name !== "flexibleNetworkDigest").sort(), file).toEqual([...names].sort());
+      for (const name of names) {
+        const body = text.slice(text.search(new RegExp(`^export (?:async )?function ${name}\\(`, "m"))).split("\n");
+        expect(body[body.findIndex(line => line.endsWith(" {")) + 1], name).toBe('  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");');
+      }
+    }
+    for (const one of product.filter(engine("flexible-launcher.ts", "flexible-session.ts", "flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-launcher\.js"/);
+    for (const one of product.filter(engine("flexible-start.ts", join("server", "engine-api.ts")))) expect(one.text, one.path).not.toMatch(/from "\.\.?\/(?:\.\.\/)?flexible-start\.js"/);
     const engineApi = readFileSync("src/server/engine-api.ts", "utf8");
     expect(engineApi).toMatch(/const flexible: FlexibleSessions \| null = \(\(\) => \{\n    if \(!FLEXIBLE_AVAILABLE\) return null;/);
+    expect(engineApi).toMatch(/const launcher: FlexibleLauncher \| null = \(\(\) => \{\n    if \(!FLEXIBLE_AVAILABLE \|\| flexible === null\) return null;/);
     for (const name of ["liveThread", "liveThreads", "threadAnswer", "threadStart"]) {
       expect(engineApi, name).toMatch(new RegExp(`async function ${name}\\(ctx: HandlerContext\\): Promise<void> \\{\\n[^\\n]*\\n(?:[^\\n]*\\n)?    if \\(!FLEXIBLE_AVAILABLE \\|\\| flexible === null\\) return `));
     }

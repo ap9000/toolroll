@@ -93,18 +93,23 @@ const CONNECT_TIMEOUT_MS = 10_000;
  * A connection to the first of the checked addresses that answers, tried in turn (review 827): a host whose IPv6
  * address is unreachable from here is still reached over IPv4. Null when none answers.
  */
-export async function connectFirst(addresses: readonly string[], port: number, timeoutMs = CONNECT_TIMEOUT_MS): Promise<Socket | null> {
+export async function connectFirst(addresses: readonly string[], port: number, timeoutMs = CONNECT_TIMEOUT_MS, signal?: AbortSignal): Promise<Socket | null> {
   for (const address of addresses) {
+    // Aborted (the proxy closing): no attempt starts, and one in flight is destroyed and answers none.
+    if (signal?.aborted === true) return null;
     const socket = await new Promise<Socket | null>(done => {
       const attempt = connect({ host: address, port });
       const give = (value: Socket | null): void => {
         attempt.removeAllListeners("connect").removeAllListeners("error").removeAllListeners("timeout");
         attempt.setTimeout(0);
+        signal?.removeEventListener("abort", aborted);
         if (value === null) attempt.destroy();
         done(value);
       };
+      const aborted = (): void => give(null);
+      signal?.addEventListener("abort", aborted, { once: true });
       attempt.setTimeout(timeoutMs);
-      attempt.once("connect", () => give(attempt));
+      attempt.once("connect", () => give(signal?.aborted === true ? null : attempt));
       attempt.once("error", () => give(null));
       attempt.once("timeout", () => give(null));
     });

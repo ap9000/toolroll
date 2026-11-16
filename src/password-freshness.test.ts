@@ -392,7 +392,9 @@ describe("where freshness may be honoured", () => {
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
+      // server/engine-api.ts: starting a Flexible thread (pre-enable) is a person's yes to its terms card, proved as an
+      // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -556,6 +558,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatFile@25": 1,
     "src/server/chat.ts#createChatHandlers@1>chatSend@24>opened:spendingOnlyOnSuccess(_,_)@9>withFreshness(chat-send,_)@1": 1,
     "src/server/chat.ts#createChatHandlers@1>pushSubscribe@13": 1,
+    // Starting a Flexible thread (pre-enable): the person's yes to its terms card, proved as an approval's is.
+    "src/server/engine-api.ts#<module>": 2,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadStart@11": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.

@@ -128,8 +128,16 @@ export async function startFlexibleTurn(store: Store, input: FlexibleTurnStartIn
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const first = flexibleTurn(store, input.turn);
   if (first === null) return { ok: false, reason: "turn-unknown", message: "There's no such turn." };
-  const unused = async () => { try { await input.network.close(); } catch { /* the caller's own proxy */ } };
-  const started = await withFlexibleThreadLock(first.thread, () => startLocked(store, input));
+  const unused = async () => { try { await input.network.close(); } catch { /* the caller's own proxy: its closer keeps it for a retry */ } };
+  // The proxy is the caller's until a launch owns it (onLaunchStopped, in startLocked). Anything that ends this start
+  // without that, a refusal or a throw at any point, closes it here before the start answers.
+  let started: Awaited<ReturnType<typeof startLocked>> | FlexibleThreadRefusal;
+  try {
+    started = await withFlexibleThreadLock(first.thread, () => startLocked(store, input));
+  } catch (error) {
+    await unused();
+    throw error;
+  }
   if (!started.ok || started.launched === "reused") await unused();
   return started;
 }

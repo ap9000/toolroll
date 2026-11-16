@@ -75,6 +75,29 @@ export function hostAllowed(host: string, hosts: readonly string[]): boolean {
 }
 
 /**
+ * `work`'s answer, or null the moment `signal` aborts (the proxy closing) if that comes first. Each call subscribes on its
+ * own and unsubscribes the moment either settles, so a finished request leaves nothing attached to the proxy: a proxy
+ * that serves thousands of requests holds no more than the ones still pending.
+ */
+export function untilClosed<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T | null> {
+  if (signal.aborted) return Promise.resolve(null);
+  return new Promise<T | null>((resolve, reject) => {
+    const aborted = (): void => resolve(null);
+    signal.addEventListener("abort", aborted, { once: true });
+    let pending: Promise<T>;
+    try { pending = work(); } catch (error) { signal.removeEventListener("abort", aborted); reject(error); return; }
+    pending.then(value => { signal.removeEventListener("abort", aborted); resolve(value); }, error => { signal.removeEventListener("abort", aborted); reject(error); });
+  });
+}
+
+/** Whether `host` is a host name an open proxy may reach: a name as normalizeHost reads one (never a wildcard, never an
+ * address: those are refused there before anything resolves). */
+function anyHostByName(host: string): boolean {
+  const name = normalizeHost(host);
+  return name !== null && !name.startsWith("*.");
+}
+
+/**
  * Each provider's own hosts (catalog version 1): its model API and the sign-in refresh its CLI needs. Codex starts
  * its harness outside its command sandbox, so its hosts matter only to what its commands may reach. An ACP agent
  * talks to whatever model service it was set up with; its row names the hosts its own service uses.
@@ -295,13 +318,25 @@ export function proxyEnv(proxy: EgressProxy, loopback: LoopbackMode): Record<str
  */
 export async function startEgressProxy(options: {
   hosts: readonly string[]; lookup?: Lookup; decided?: (host: string, allowed: boolean, why: string) => void;
+  /** An open-network Flexible thread's proxy (flexible-launcher.ts): any host by name (never a bare address), with every
+   * other rule unchanged: this launch's credentials, ports 443 and 80 only, public addresses only, each decision counted
+   * and told to `decided`. A build's network never sets it (an open build runs without a proxy). */
+  open?: true;
   /** Tests only: which resolved addresses may be reached (default: public internet addresses), and the port an
    * approved request is relayed to (default: the one it asked for). */
   addressAllowed?: (address: string) => boolean; upstreamPort?: (port: number) => number;
+  /** Tests only: how an approved request's upstream connection is made (default: connectFirst, which honours `signal`). */
+  connect?: (addresses: readonly string[], port: number, signal: AbortSignal) => Promise<Socket | null>;
 }): Promise<EgressProxy> {
   const addressAllowed = options.addressAllowed ?? isPublicAddress;
   const upstreamPort = options.upstreamPort ?? ((port: number) => port);
   const lookup = options.lookup ?? (async (host: string) => (await dnsLookup(host, { all: true, verbatim: true })).map(one => one.address));
+  const connectUpstream = options.connect ?? ((addresses: readonly string[], port: number, signal: AbortSignal) => connectFirst(addresses, port, undefined, signal));
+  // Closing comes first and is final: every lookup still pending answers nothing, every connection being made is
+  // destroyed, and any socket that arrives afterwards (an accepted client, an upstream that connected just then) is
+  // destroyed on arrival. Nothing the proxy started outlives its close.
+  const closing = new AbortController();
+  const isClosed = (): boolean => closing.signal.aborted;
   const secret = randomBytes(24).toString("base64url");
   const expected = Buffer.from(secret);
   const sockets = new Set<Socket>();
@@ -330,9 +365,13 @@ export async function startEgressProxy(options: {
   /** The addresses a request may reach, or why it may not. */
   const admit = async (host: string, port: number, wantPort: number): Promise<{ ok: true; addresses: readonly string[] } | { ok: false; why: string }> => {
     if (port !== wantPort) return { ok: false, why: `port ${port} is not allowed` };
-    if (!hostAllowed(host, options.hosts)) return { ok: false, why: "not an approved host" };
+    if (options.open === true ? !anyHostByName(host) : !hostAllowed(host, options.hosts)) return { ok: false, why: "not an approved host" };
     let addresses: readonly string[];
-    try { addresses = await lookup(normalizeHost(host)!); } catch { return { ok: false, why: "the host does not resolve" }; }
+    try {
+      const found = await untilClosed(closing.signal, () => lookup(normalizeHost(host)!));
+      if (found === null || isClosed()) return { ok: false, why: "the proxy closed" };
+      addresses = found;
+    } catch { return { ok: false, why: "the host does not resolve" }; }
     if (addresses.length === 0) return { ok: false, why: "the host does not resolve" };
     if (!addresses.every(addressAllowed)) return { ok: false, why: "not a public internet address" };
     return { ok: true, addresses };
@@ -351,12 +390,14 @@ export async function startEgressProxy(options: {
         return;
       }
       const reached = await admit(url.hostname, Number(url.port || 80), 80);
+      if (isClosed()) { incoming.socket.destroy(); return; }
       if (!reached.ok) {
         count(url.hostname, false, reached.why);
         outgoing.writeHead(403, { "content-type": "text/plain" }).end(`Toolroll: ${url.hostname} is not one of this build's approved hosts.`);
         return;
       }
-      const upstream = await connectFirst(reached.addresses, upstreamPort(80));
+      const upstream = await connectUpstream(reached.addresses, upstreamPort(80), closing.signal);
+      if (isClosed()) { upstream?.destroy(); incoming.socket.destroy(); return; }
       if (upstream === null) { outgoing.writeHead(502).end(); return; }
       count(url.hostname, true, "approved");
       sockets.add(upstream);
@@ -381,12 +422,14 @@ export async function startEgressProxy(options: {
       if (!authorized(incoming)) { client.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="toolroll"\r\nContent-Length: 0\r\n\r\n'); return; }
       const match = /^([^:[\]\s]+):(\d{1,5})$/.exec(incoming.url ?? "");
       const reached = match === null ? { ok: false as const, why: "not a host name and port" } : await admit(match[1]!, Number(match[2]), 443);
+      if (isClosed()) { client.destroy(); return; }
       if (!reached.ok) {
         count(match?.[1] ?? String(incoming.url ?? ""), false, reached.why);
         client.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
         return;
       }
-      const upstream = await connectFirst(reached.addresses, upstreamPort(443));
+      const upstream = await connectUpstream(reached.addresses, upstreamPort(443), closing.signal);
+      if (isClosed()) { upstream?.destroy(); client.destroy(); return; }
       if (upstream === null) { if (!client.destroyed) client.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"); return; }
       count(match![1]!, true, "approved");
       sockets.add(upstream);
@@ -398,7 +441,11 @@ export async function startEgressProxy(options: {
       client.pipe(upstream);
     })();
   });
-  server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  server.on("connection", socket => {
+    if (isClosed()) { socket.destroy(); return; }
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
 
   await new Promise<void>((done, fail) => {
     server.once("error", fail);
@@ -412,6 +459,7 @@ export async function startEgressProxy(options: {
     port,
     counts: () => ({ connections, refused, hosts: [...byHost].map(([host, one]) => ({ host, ...one })).sort((a, b) => b.connections + b.refused - (a.connections + a.refused) || a.host.localeCompare(b.host)), otherHosts }),
     close: () => new Promise<void>(done => {
+      closing.abort();
       for (const socket of sockets) socket.destroy();
       server.close(() => done());
     }),

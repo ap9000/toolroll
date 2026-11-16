@@ -245,9 +245,10 @@ impl Loop {
                 thread,
                 cursor,
                 known,
+                wait,
             } => drop(tokio::spawn(async move {
                 let r = client
-                    .thread_window(&thread, cursor.as_deref(), known.as_deref())
+                    .thread_window(&thread, cursor.as_deref(), known.as_deref(), wait)
                     .await;
                 let _ = tx.send(Msg::Thread(thread, r));
             })),

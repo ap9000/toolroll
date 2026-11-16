@@ -19,6 +19,7 @@ import { FLEXIBLE_ANSWER_ACK_MS } from "./flexible-answers.js";
 import {
   admitFlexibleThreadOwner, answerFlexibleRequest, attachFlexibleAgent, endFlexibleThreadTurn, flexibleThreadLiveOf, flexibleThreadsOf, lowerFlexibleThreadSession, openFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, startFlexibleThreadSession, stopFlexibleThreadSession, tickFlexibleSessions, FLEXIBLE_SCOPE_LINES,
+  flexibleThreadChangeOf, waitFlexibleThreadChange, FLEXIBLE_WAITERS_MAX, FLEXIBLE_WAIT_MS,
   type FlexibleSessions,
 } from "./flexible-session.js";
 import { withFlexibleThreadLock } from "./flexible-thread.js";
@@ -328,7 +329,7 @@ describe("the owner's read", () => {
 
   test("a new thread is refused before anything is made when this console has no launcher for its network", async () => {
     const before = world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"];
-    expect(await startFlexibleThread(world.store, sessions, { repo: world.project, by: { name: "pat", generation: gen("pat") }, digest, message: "Fix the README", model: "claude-sonnet-4-5", launcher: null }))
+    expect(await startFlexibleThread(world.store, sessions, { repo: world.project, by: { name: "pat", generation: gen("pat") }, digest, message: "Fix the README", model: "claude-sonnet-4-5", billing: "subscription", startKey: "5".repeat(32), launcher: null }))
       .toMatchObject({ ok: false, reason: "no-network" });
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"]).toBe(before);
   });
@@ -541,5 +542,51 @@ describe("a card is never cut while it says it is whole", () => {
     // Every whole card's detail is exactly the text it shows, never a cut of it.
     const recorded = raw.prepare("SELECT card FROM thread_request").all().map(row => JSON.parse(String(row["card"])) as { complete: boolean; detail: string });
     expect(recorded.filter(card => card.complete)).toEqual([]);
+  });
+});
+
+describe("the owner's read woken on change (pre-enable push, no polling)", () => {
+  test("a wait wakes at the agent's next words, a request, an answer's send and the turn's end; it never waits when a change came first", async () => {
+    const agent = await attached();
+    const change = () => { const read = flexibleThreadChangeOf(sessions, { thread: T1 }); if (!read.ok) throw new Error(read.message); return read.change; };
+    const wakes = async (act: () => void | Promise<unknown>) => {
+      const since = change();
+      const waiting = waitFlexibleThreadChange(sessions, { thread: T1, since, ms: 5_000 });
+      if (!("then" in waiting)) throw new Error(waiting.message);
+      await act();
+      await settled();
+      return waiting;
+    };
+    expect(await wakes(() => agent.say({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Reading the README" }] } }))).toEqual({ ok: true, woke: "changed" });
+    expect(await wakes(() => agent.say(bash("r1")))).toEqual({ ok: true, woke: "changed" });
+    const card = read().facts.questions[0]!;
+    expect(await wakes(() => answerFlexibleRequest(world.store, sessions, { thread: T1, request: card.request, shownDigest: card.digest, by: pat(), choice: { decision: "accept" }, held: () => true, clock: () => NOW })))
+      .toEqual({ ok: true, woke: "changed" });
+    expect(await wakes(() => endFlexibleThreadTurn(world.store, sessions, { thread: T1, turn, outcome: "finished", clock: () => NOW }))).toEqual({ ok: true, woke: "changed" });
+    // A change between the read and the wait is never missed: the count taken before the read has moved, so it answers now.
+    const stale = change();
+    agent.say({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Done" }] } });
+    await settled();
+    expect(await waitFlexibleThreadChange(sessions, { thread: T1, since: stale, ms: 5_000 })).toEqual({ ok: true, woke: "changed" });
+  });
+
+  test("with nothing changing it waits its time out; a reader that goes away stops it; past the cap a read answers at once", async () => {
+    const since = flexibleThreadChangeOf(sessions, { thread: T1 });
+    if (!since.ok) throw new Error(since.message);
+    const started = Date.now();
+    expect(await waitFlexibleThreadChange(sessions, { thread: T1, since: since.change, ms: 60 })).toEqual({ ok: true, woke: "timeout" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+    let stop: () => void = () => {};
+    const abandoned = waitFlexibleThreadChange(sessions, { thread: T1, since: since.change, ms: 5_000, abandoned: give => { stop = give; } });
+    stop();
+    expect(await abandoned).toEqual({ ok: true, woke: "abandoned" });
+    expect(sessions.waiters.size).toBe(0);
+    const held: Promise<unknown>[] = [];
+    for (let n = 0; n < FLEXIBLE_WAITERS_MAX; n++) held.push(waitFlexibleThreadChange(sessions, { thread: T1, since: since.change, ms: 5_000 }) as Promise<unknown>);
+    expect(await waitFlexibleThreadChange(sessions, { thread: T1, since: since.change, ms: 5_000 })).toEqual({ ok: true, woke: "busy" });
+    // Closing the host wakes every waiter.
+    await stopFlexibleThreadSession(world.store, sessions, { thread: T1, reason: "test", clock: () => NOW });
+    expect((await Promise.all(held)).every(one => JSON.stringify(one) === JSON.stringify({ ok: true, woke: "changed" }))).toBe(true);
+    expect(waitFlexibleThreadChange(sessions, { thread: T1, since: 0, ms: FLEXIBLE_WAIT_MS + 1 })).toMatchObject({ ok: false, reason: "invalid-request" });
   });
 });

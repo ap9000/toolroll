@@ -31,6 +31,8 @@ import type { RevisionLineage, Store } from "./store.js";
 export type BoundField =
   | "goal" | "outOfScope" | "touches" | "acceptance" | "budget" | "qualityMode" | "candidate" | "releaseTerms" | "releaseCheck"
   | "route" | `route.${string}` | "chain" | `profile.${string}`
+  /** A Flexible thread start's terms card (flexible-start.ts): its own rows, bound by its own key. */
+  | `flexible.${string}`
   /** A Flexible Ship's own terms (flexible-ship.ts): not a scope's, so named apart. */
   | `ship.${string}`;
 

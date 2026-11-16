@@ -103,7 +103,8 @@ export const threadFactsSchema = z.object({
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
  * (GET /live?room=) that says when to read again; `cursor` is opaque state, never permission. A thread's window also
  * carries its facts (`thread`), unless the read named their current `version` as `known=` (then they're unchanged and
- * left out); a run's never does. */
+ * left out); a run's never does. A thread's read holding both `cursor=` and `known=` may add `wait=1`: when nothing
+ * moved, the console answers at the thread's next change (or after about 20 s) instead of at once. */
 export const liveSessionWindowSchema = z.object({
   version,
   session: liveSessionRefSchema,

@@ -55,6 +55,12 @@ pub enum ActOutcome {
         digest: String,
         terms: Vec<(String, String)>,
     },
+    /// A new Flexible thread's terms card (POST /agents/live/thread without a key): every line of it, and the key the
+    /// start posts. Nothing was started.
+    ThreadTerms {
+        key: String,
+        lines: Vec<String>,
+    },
 }
 
 struct Creds {
@@ -429,18 +435,24 @@ impl Client {
         )
     }
 
-    /// One window of a Flexible thread's live session from `cursor`, with its facts unless they are still `known`.
+    /// One window of a Flexible thread's live session from `cursor`, with its facts unless they are still `known`. With
+    /// `wait` (a cursor and a known version held), the console holds the read until the thread changes (or about 20 s),
+    /// so the screen wakes on a change instead of polling.
     pub async fn thread_window(
         &self,
         thread: &str,
         cursor: Option<&str>,
         known: Option<&str>,
+        wait: bool,
     ) -> Result<LiveSessionWindow, ApiError> {
         let mut q = cursor
             .map(|c| format!("&cursor={}", encode(c)))
             .unwrap_or_default();
         if let Some(known) = known {
             q.push_str(&format!("&known={}", encode(known)));
+        }
+        if wait && cursor.is_some() && known.is_some() {
+            q.push_str("&wait=1");
         }
         versioned(
             self.get::<LiveSessionWindow>(
@@ -503,6 +515,26 @@ impl Client {
                     .or_else(|| v["error"].as_str())
                     .unwrap_or("")
                     .to_string();
+                if v["outcome"] == "thread-terms" && status == 200 {
+                    let key = v["key"].as_str().unwrap_or("").to_string();
+                    let lines: Vec<String> = v["lines"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .map(|l| l.as_str().unwrap_or("").to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if key.len() != 32
+                        || !key.bytes().all(|b| b.is_ascii_hexdigit())
+                        || lines.is_empty()
+                    {
+                        return Err(ApiError::Contract(
+                            "The thread's terms aren't what this version expects.".into(),
+                        ));
+                    }
+                    return Ok(ActOutcome::ThreadTerms { key, lines });
+                }
                 if v["outcome"] == "terms" && status == 200 {
                     let text = |x: &serde_json::Value| x.as_str().unwrap_or("").to_string();
                     let terms = v["terms"]
