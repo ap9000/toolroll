@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { createServer, request, type Server } from "node:http";
-import { connect } from "node:net";
+import { connect, createServer as createTcpServer, type Server as TcpServer, type Socket } from "node:net";
+import { connectFirst } from "./scout-net.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -194,6 +195,67 @@ describe("the run's own proxy", () => {
     const strict = await startEgressProxy({ hosts: [], open: true, lookup: async () => ["10.0.0.5"] });
     closers.push(() => strict.close());
     expect(await tunnel(strict, "anything.example:443", auth(strict))).toMatch(/ 403 /);
+  });
+
+  test("closing cancels what is pending: a lookup still resolving, a connection still being made, a socket that connects just after", async () => {
+    // The client's answer, or "closed" when the proxy ends the connection without one.
+    const ask = (proxy: EgressProxy, target: string) => new Promise<string>(done => {
+      const socket = connect(proxy.port, "127.0.0.1", () => socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Authorization: ${auth(proxy)}\r\n\r\n`));
+      socket.once("data", chunk => { done(String(chunk).split("\r\n")[0]!); socket.destroy(); });
+      socket.on("error", () => done("closed"));
+      socket.on("close", () => done("closed"));
+    });
+    // A plain TCP stand-in for the upstream: it counts what reaches it and what is still open.
+    const upstreamSockets = new Set<Socket>();
+    let reached = 0;
+    const tcp: TcpServer = createTcpServer(socket => { reached++; upstreamSockets.add(socket); socket.on("close", () => upstreamSockets.delete(socket)); });
+    closers.push(() => tcp.close());
+    await new Promise<void>(done => tcp.listen(0, "127.0.0.1", () => done()));
+    const port = (tcp.address() as { port: number }).port;
+    // 1. Closed while the lookup is still pending: when it answers, nothing connects and the client is gone.
+    let answer: (addresses: string[]) => void = () => {};
+    let lookupSeen: () => void = () => {};
+    const asked = new Promise<void>(seen => { lookupSeen = seen; });
+    const deferred = await startEgressProxy({ hosts: ["approved.example"], addressAllowed: () => true, upstreamPort: () => port,
+      lookup: () => new Promise(resolve => { answer = resolve; lookupSeen(); }) });
+    const first = ask(deferred, "approved.example:443");
+    await asked;
+    await deferred.close();
+    answer(["127.0.0.1"]);
+    expect(await first).toBe("closed");
+    await new Promise(done => setTimeout(done, 30));
+    expect(reached).toBe(0);
+    // 2. Closed while the upstream connection is being made: it is cancelled (its signal aborted), and a socket handed
+    // over after the close is destroyed on arrival, never piped.
+    let handOver: (socket: Socket | null) => void = () => {};
+    let signalOf: AbortSignal | null = null;
+    let connectSeen: () => void = () => {};
+    const connecting = new Promise<void>(seen => { connectSeen = seen; });
+    const slow = await startEgressProxy({ hosts: ["approved.example"], lookup: async () => ["127.0.0.1"], addressAllowed: () => true, upstreamPort: () => port,
+      connect: (_addresses, to, signal) => { signalOf = signal; connectSeen(); return new Promise(resolve => { handOver = socket => resolve(socket); void to; }); } });
+    const second = ask(slow, "approved.example:443");
+    await connecting;
+    await slow.close();
+    expect(signalOf!.aborted).toBe(true);
+    const late = connect(port, "127.0.0.1");
+    await new Promise<void>(done => late.once("connect", () => done()));
+    handOver(late);
+    expect(await second).toBe("closed");
+    for (let i = 0; i < 50 && (upstreamSockets.size > 0 || !late.destroyed); i++) await new Promise(done => setTimeout(done, 10));
+    expect(late.destroyed).toBe(true);
+    expect(upstreamSockets.size).toBe(0);
+    // Only the hand-over itself ever reached the upstream (step 1 never connected).
+    expect(reached).toBeLessThanOrEqual(1);
+    // 3. The real connector: an aborted signal starts no attempt at all.
+    let touched = 0;
+    const quiet: TcpServer = createTcpServer(socket => { touched++; socket.destroy(); });
+    closers.push(() => quiet.close());
+    await new Promise<void>(done => quiet.listen(0, "127.0.0.1", () => done()));
+    const aborted = new AbortController();
+    aborted.abort();
+    expect(await connectFirst(["127.0.0.1"], (quiet.address() as { port: number }).port, 1_000, aborted.signal)).toBeNull();
+    await new Promise(done => setTimeout(done, 30));
+    expect(touched).toBe(0);
   });
 
   test("a plain request may name port 80 in its Host", async () => {

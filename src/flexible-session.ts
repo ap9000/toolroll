@@ -44,8 +44,8 @@ import {
 } from "./flexible-answers.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import { defaultCustodyIO } from "./flexible-launch.js";
-import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
-import { flexibleThread, prepareFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
+import { flexibleRelayBilling, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
+import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
 import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
@@ -508,8 +508,18 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
     return prepared;
   }
   const network = prepared.network;
-  const started = await startFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, ...clocked, network, relay: session.relay!, storage: prepared.storage,
-    ...(input.launcher.platform === undefined ? {} : { platform: input.launcher.platform }), ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
+  // The launch's proxy is this start's until startFlexibleTurn hands it to a launch (which closes it on any refusal or
+  // throw of its own); a throw before it is reached closes it here too. Closing twice is harmless.
+  let started: Awaited<ReturnType<typeof startFlexibleTurn>>;
+  try {
+    started = await startFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, ...clocked, network, relay: session.relay!, storage: prepared.storage,
+      ...(input.launcher.platform === undefined ? {} : { platform: input.launcher.platform }), ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
+  } catch (error) {
+    try { await network.close(); } catch { /* the launcher keeps a failed close for its retry */ }
+    try { withdrawFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, detail: "the agent couldn't be started", ...clocked }); } catch { /* recovery settles it */ }
+    bump(sessions, turn.thread);
+    throw error;
+  }
   if (!started.ok) { bump(sessions, turn.thread); return started; }
   if (started.launched === "started") {
     const child = started.child;
@@ -527,33 +537,87 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
 }
 
 /**
- * Start a new thread for a person (a person's surface only): the thread's isolated repository (F2a), its session and
- * relay, its first turn admitted under the terms they were shown (`digest`; no fresh password: at most the terms'
- * password-free level), and the turn begun with their message. Refused before anything is made when this console has no
- * launcher for the thread's network.
+ * Start a new thread for a person (a person's surface only), as the terms card they said yes to (`startKey`, its key)
+ * describes it. In order:
+ * - Its first turn is admitted (F2e's limits reserved) in the same transaction that records the thread, before anything
+ *   is written to disk: a start the limits refuse makes no repository, keep-ref or thread record at all.
+ * - The same start again (the same person and card key, its thread still being made or ready) gets that thread back,
+ *   never a second one.
+ * - The billing the card showed is the billing of the relay's credential now (flexibleRelayBilling), re-read in that
+ *   transaction.
+ * - Then the thread's isolated repository is made (F2a) and the turn begins with their message. Making the repository
+ *   failing gives the turn back; a turn the launch refuses (nothing ran) takes the thread with it: its relay stopped,
+ *   its repository and keep-ref removed.
+ * Refused before anything is made when this console has no launcher for the thread's network.
  */
 export async function startFlexibleThread(store: Store, sessions: FlexibleSessions, input: { repo: string; by: { name: string; generation: number }; digest: string; message: string; model: string;
+  /** How the turn is billed, as the card showed it (the relay's credential kind). */
+  billing: "subscription" | "api-key";
+  /** The terms card's key the person posted: what makes a repeated post the same start. */
+  startKey: string;
   launcher: FlexibleLauncher | null; clock?: FlexibleClock;
   /** The person proved themselves for this start just now (a password, an identity-provider re-check, the local owner's
    * own act): a start above the terms' password-free level needs it. Never a session standing in. */
   freshProof?: boolean;
   /** The network digest of the terms card the person was shown (flexible-start.ts): the first launch is held to it. */
   expectNetwork?: string;
-  seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; thread: string; turn: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; thread: string; turn: string; replayed: boolean } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
-  if (typeof input.repo !== "string" || typeof input.digest !== "string" || typeof input.model !== "string" || typeof input.message !== "string" || input.message.trim() === "") return refuse("invalid-request");
+  if (typeof input.repo !== "string" || typeof input.digest !== "string" || typeof input.model !== "string" || typeof input.message !== "string" || input.message.trim() === ""
+    || typeof input.startKey !== "string" || !/^[0-9a-f]{32}$/.test(input.startKey) || (input.billing !== "subscription" && input.billing !== "api-key")) return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
   const clock = input.clock ?? systemClock;
-  const prepared = await prepareFlexibleThread(store, { repo: input.repo, base: "HEAD", by: input.by.name, now: clock() });
-  if (!prepared.ok) return prepared;
+  const requestKey = `start:${input.startKey}`;
+  let replay: { thread: string; turn: string } | null = null;
+  let turn: string | null = null;
+  const prepared = await prepareFlexibleThread(store, { repo: input.repo, base: "HEAD", by: input.by.name, now: clock(),
+    reserve: id => {
+      const same = store.handle.prepare(`SELECT t.id AS turn, t.thread AS thread FROM thread_turn t JOIN flexible_thread f ON f.id = t.thread
+        WHERE t.owner = ? AND t.request_key = ? AND t.status <> 'withdrawn' AND f.state IN ('preparing', 'ready') ORDER BY t.admitted_at LIMIT 1`).get(input.by.name, requestKey);
+      if (same !== undefined) {
+        replay = { thread: String(same["thread"]), turn: String(same["turn"]) };
+        return { ok: false as const, reason: "replayed", message: "This thread has already started." };
+      }
+      const billing = flexibleRelayBilling(store);
+      if (!billing.ok) return billing;
+      if (billing.billing !== input.billing) return { ok: false as const, reason: "billing-changed", message: "Toolroll's Claude sign-in for Flexible threads changed since the terms were shown. Look at them again before starting. Nothing was started." };
+      const admitted = admitFlexibleTurn(store, { thread: id, starter: input.by, digest: input.digest, level: "full", freshProof: input.freshProof === true, provider: "claude", model: input.model,
+        billing: input.billing, requestKey, holder: sessions.holder, clock, opening: true });
+      if (!admitted.ok) return admitted;
+      turn = admitted.turn;
+      return { ok: true as const };
+    },
+    release: (_id, why) => {
+      if (turn !== null) withdrawFlexibleTurn(store, { turn, holder: sessions.holder, detail: `the thread's repository couldn't be made: ${why}`.slice(0, 500), clock });
+    } });
+  const replayed = replay as { thread: string; turn: string } | null;
+  if (!prepared.ok) return replayed !== null ? { ok: true, thread: replayed.thread, turn: replayed.turn, replayed: true } : prepared;
   const thread = prepared.thread.id;
-  const admitted = admitFlexibleTurn(store, { thread, starter: input.by, digest: input.digest, level: "full", freshProof: input.freshProof === true, provider: "claude", model: input.model, billing: "subscription",
-    requestKey: randomBytes(16).toString("hex"), holder: sessions.holder, clock });
-  if (!admitted.ok) return admitted;
-  const begun = await beginFlexibleThreadTurn(store, sessions, { turn: admitted.turn, message: input.message, launcher: input.launcher, clock,
-    ...(input.expectNetwork === undefined ? {} : { expectNetwork: input.expectNetwork }), ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
-  if (!begun.ok) return begun;
-  return { ok: true, thread, turn: admitted.turn };
+  const first = turn as string | null;
+  if (first === null) return refuse("invalid-request");
+  let begun: Awaited<ReturnType<typeof beginFlexibleThreadTurn>>;
+  try {
+    begun = await beginFlexibleThreadTurn(store, sessions, { turn: first, message: input.message, launcher: input.launcher, clock,
+      ...(input.expectNetwork === undefined ? {} : { expectNetwork: input.expectNetwork }), ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
+  } catch (error) {
+    await discardRefusedStart(store, sessions, { thread, turn: first, by: input.by.name, detail: "the agent couldn't be started", clock });
+    throw error;
+  }
+  if (!begun.ok) {
+    await discardRefusedStart(store, sessions, { thread, turn: first, by: input.by.name, detail: begun.message, clock });
+    return begun;
+  }
+  return { ok: true, thread, turn: first, replayed: false };
+}
+
+/** A new thread whose first turn launched nothing: the turn withdrawn, its session (relay) stopped, its repository and
+ * keep-ref removed (F2a removeFlexibleThread, which refuses while anything of an agent may still run, so a thread
+ * whose agent did start is left as it is). */
+async function discardRefusedStart(store: Store, sessions: FlexibleSessions, input: { thread: string; turn: string; by: string; detail: string; clock: FlexibleClock }): Promise<void> {
+  try { withdrawFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, detail: input.detail.slice(0, 500), clock: input.clock }); } catch { /* already ended */ }
+  if (flexibleTurn(store, input.turn)?.startedAt != null) return;
+  try { await stopFlexibleThreadSession(store, sessions, { thread: input.thread, reason: "its start was refused", clock: input.clock }); } catch { /* nothing ran */ }
+  try { await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.clock() }); } catch { /* left for its owner to remove */ }
 }
 
 // ---- answering ------------------------------------------------------------------------------------------------------------------

@@ -282,8 +282,10 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     if (!proved.ok || !START_PROOFS.has(proved.method)) return acted(response, 403, "refused", "Starting a thread needs your password here. Nothing was started.");
     // The local owner's own act, exactly this one, still standing (re-read now).
     if (proved.method === "local-owner" && localActNow(store, "start-thread") === null) return acted(response, 403, "refused", "Starting a thread needs your password here. Nothing was started.");
-    const started = await startFlexibleThread(store, flexible, { repo, by, digest: card.digest, message, model: card.model, launcher, freshProof: FRESH_PROOFS.has(proved.method), expectNetwork: card.network });
-    return started.ok ? acted(response, 200, "done", "The thread started.") : acted(response, 409, "refused", started.message);
+    const started = await startFlexibleThread(store, flexible, { repo, by, digest: card.digest, message, model: card.model, billing: card.billing, startKey: card.summary.key, launcher,
+      freshProof: FRESH_PROOFS.has(proved.method), expectNetwork: card.network });
+    if (!started.ok) return acted(response, 409, "refused", started.message);
+    return acted(response, 200, "done", started.replayed ? "This thread already started." : "The thread started.");
   }
 
   /** The task an address names, in view as its page would be (the route admitted its project already). */
@@ -383,7 +385,10 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     upkeep: (): void => { if (flexible !== null) { try { tickFlexibleSessions(store, flexible); } catch { /* the next tick tries again */ } } },
     /** Shutdown: every thread here stopped, its answers revoked and its relay closed, then every proxy the launcher still
      * holds. Nothing while off. */
-    close: async (): Promise<void> => { if (flexible !== null) await closeFlexibleSessions(store, flexible); await launcher?.close(); },
+    close: async (): Promise<void> => {
+      // The launcher's proxies close whatever the threads' shutdown does (it may throw).
+      try { if (flexible !== null) await closeFlexibleSessions(store, flexible); } finally { await launcher?.close(); }
+    },
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
         "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart }),

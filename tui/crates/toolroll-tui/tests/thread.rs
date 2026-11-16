@@ -546,3 +546,59 @@ fn every_word_of_a_terms_card_is_drawn_at_any_width_never_cut_at_the_edge() {
         assert!(matches!(&app.mode, Mode::StartThread(t) if t.seen_end));
     }
 }
+
+#[test]
+fn paging_a_short_card_never_skips_a_row_and_a_jump_past_unread_rows_never_counts_as_read() {
+    // 16 rows tall: six rows of the card at a time, fewer than the ten an old page moved by.
+    let (mut app, _) = start_app();
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    let mut seen = String::new();
+    seen.push_str(&screen(&mut app, 120, 16));
+    for _ in 0..20 {
+        app.key(key(' '));
+        seen.push_str(&screen(&mut app, 120, 16));
+    }
+    // Every line, word for word, was on screen at some page.
+    for line in fake::start_card_lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        assert!(
+            words.iter().all(|w| seen.contains(w)),
+            "paging skipped part of {line:?}"
+        );
+    }
+    assert!(matches!(&app.mode, Mode::StartThread(t) if t.seen_end));
+    // A card jumped to its end without the rows between drawn: Enter starts nothing.
+    let (mut app, _) = start_app();
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    screen(&mut app, 120, 16);
+    if let Mode::StartThread(terms) = &mut app.mode {
+        terms.scroll = 10_000;
+    }
+    screen(&mut app, 120, 16);
+    assert!(matches!(&app.mode, Mode::StartThread(t) if !t.seen_end));
+    assert_eq!(app.key(enter()), vec![]);
+    assert_eq!(
+        app.status,
+        Some((Tone::Refused, START_READ_TO_THE_END.into()))
+    );
+    // Laid out again at another width, it is read again from the top.
+    let (mut app, _) = start_app();
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    for _ in 0..20 {
+        app.key(key(' '));
+        screen(&mut app, 90, 30);
+    }
+    assert!(matches!(&app.mode, Mode::StartThread(t) if t.seen_end));
+    // Wider: fewer rows than were read, but not the same rows.
+    screen(&mut app, 120, 16);
+    assert!(matches!(&app.mode, Mode::StartThread(t) if !t.seen_end));
+}

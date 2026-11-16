@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
 import { FLEXIBLE_LAPSE_WORDS, FLEXIBLE_LEVEL_WORDS, FLEXIBLE_UNAVAILABLE, flexibleStanding, FULL_ACCESS_WORDS, OPEN_NETWORK_WORDS, type FlexibleTerms } from "./flexible.js";
 import { flexibleNetworkDigest, flexibleThreadNetwork } from "./flexible-launcher.js";
+import { flexibleRelayBilling } from "./flexible-relay.js";
 import { networkWords } from "./egress.js";
 import { agentModelName } from "./model-names.js";
 import { CLAUDE_EXACT } from "./model-catalog.js";
@@ -29,19 +30,20 @@ export const FLEXIBLE_DEFAULT_MODEL: string = CLAUDE_EXACT.find(one => one.value
 /** A model the sign-in relay forwards for Claude (flexible-relay-upstreams.ts): anything else is refused here. */
 const RELAY_MODEL = /^claude-(?:opus|sonnet|haiku|fable)-\d{1,2}(?:-\d{1,2})?(?:-\d{8})?$/;
 
-export type FlexibleStartRefusal = { ok: false; reason: "not-available" | "invalid-request" | "not-flexible" | "terms-lapsed" | "terms-unreadable" | "not-a-starter"; message: string };
+export type FlexibleStartRefusal = { ok: false; reason: "not-available" | "invalid-request" | "not-flexible" | "terms-lapsed" | "terms-unreadable" | "not-a-starter" | "no-sign-in"; message: string };
 const WORDS = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
   "invalid-request": "That isn't a thread Toolroll can start: name a project and a Claude model. Nothing was started.",
   "not-flexible": "This project isn't Flexible, so threads can't start in it. Nothing was started.",
   "terms-unreadable": "This project's Flexible terms can't be read, so they allow nothing. Nothing was started.",
   "not-a-starter": "These terms don't let you start threads in this project. Nothing was started.",
+  "no-sign-in": "Toolroll holds no Claude sign-in for Flexible threads yet, so no thread can start. Nothing was started.",
 } as const);
 const refuse = (reason: Exclude<FlexibleStartRefusal["reason"], "terms-lapsed">): FlexibleStartRefusal => ({ ok: false, reason, message: WORDS[reason] });
 
 /** The card, and what it binds: the project's live terms digest (what the turn's admission names), the thread's
  * network and its digest (what the first launch is held to), the model, the level, and `summary.key`. */
-export type FlexibleStartCard = { summary: ApprovalSummary; digest: string; network: string; model: string; level: "full"; terms: FlexibleTerms };
+export type FlexibleStartCard = { summary: ApprovalSummary; digest: string; network: string; model: string; level: "full"; billing: "subscription" | "api-key"; terms: FlexibleTerms };
 
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? "" : "s"}`;
@@ -70,6 +72,10 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   if (terms.starters === "signer" && input.by.name !== terms.signer) return refuse("not-a-starter");
   const network = flexibleThreadNetwork(store, input.repo);
   if ("ok" in network) return refuse("not-available");
+  // How its turns are billed: the kind of the relay's own credential, as the relay reads it (never a request's word).
+  const credential = flexibleRelayBilling(store);
+  if (!credential.ok) return refuse("no-sign-in");
+  const billing = credential.billing;
   const open = network.mode === "open";
   const project = store.handle.prepare("SELECT name FROM project WHERE path = ?").get(input.repo)?.["name"];
   const caps = terms.caps;
@@ -77,7 +83,8 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   const decisions: SummaryRow[] = [
     { label: "Project", words: typeof project === "string" ? project : input.repo, lines: typeof project === "string" ? [input.repo] : [], fields: ["flexible.repo"] },
     { label: "Level", words: `${FLEXIBLE_LEVEL_WORDS.full}: no permission prompts inside the sandbox`, lines: [FULL_ACCESS_WORDS], fields: ["flexible.level"], risky: true },
-    { label: "Agent", words: `${agentModelName("claude", model)}, signed in through Toolroll's relay`, lines: ["Your Claude login stays with Toolroll and never enters the agent; each call is checked and counted."], fields: ["flexible.agent"] },
+    { label: "Agent", words: `${agentModelName("claude", model)}, signed in through Toolroll's relay`, lines: ["Your Claude login stays with Toolroll and never enters the agent; each call is checked and counted.",
+      billing === "subscription" ? "Billed to your Claude plan (Toolroll's setup-token sign-in)." : "Billed per call to Toolroll's Claude API key."], fields: ["flexible.agent", "flexible.billing"] },
     { label: "Works in", words: "its own copy of this repository, on its own branch", lines: ["Your repository changes only when you Ship."], fields: ["flexible.repository"] },
     { label: "Network", words: open ? "open: any website, through the thread's own proxy" : lowerFirst(networkWords(network, "claude").replace(/^Network: /, "")),
       lines: ["Nothing on this computer is reachable (no local services, keychain, SSH agent or saved sign-ins)."], fields: ["flexible.network"], ...(open ? { risky: true } : {}) },
@@ -99,8 +106,8 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   // generation, the model, the message), under its own kind: a key minted here means nothing to any other approval.
   const digestOfMessage = createHash("sha256").update(input.message, "utf8").digest("hex");
   const networkDigest = flexibleNetworkDigest(network);
-  const key = createHash("sha256").update(JSON.stringify({ v: 1, kind: "standing-orders:flexible-start", digest: standing.digest, repo: input.repo, by: input.by, model, level: "full",
+  const key = createHash("sha256").update(JSON.stringify({ v: 1, kind: "standing-orders:flexible-start", digest: standing.digest, repo: input.repo, by: input.by, model, level: "full", billing,
     network: networkDigest, message: digestOfMessage, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
   const summary: ApprovalSummary = { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: "Other settings", key };
-  return { ok: true, card: { summary, digest: standing.digest, network: networkDigest, model, level: "full", terms } };
+  return { ok: true, card: { summary, digest: standing.digest, network: networkDigest, model, level: "full", billing, terms } };
 }

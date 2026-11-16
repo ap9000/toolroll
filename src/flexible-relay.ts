@@ -61,13 +61,14 @@ export type FlexibleRelayEndpoint = { url: string; token: string; revoke: () => 
 export type FlexibleRelay = { url: string; port: number; issue: (grant: { thread: string; turn: string; launch: string }) => FlexibleRelayEndpoint };
 /** A running relay: one thread's, until closed. */
 export type FlexibleRelayServer = FlexibleRelay & { thread: string; inFlight: () => number; close: () => Promise<void> };
-export type FlexibleRelayRefusal = { ok: false; reason: "not-available" | "invalid-request" | "thread-unknown" | "no-state-folder"; message: string };
+export type FlexibleRelayRefusal = { ok: false; reason: "not-available" | "invalid-request" | "thread-unknown" | "no-state-folder" | "no-credential"; message: string };
 
 const START_WORDS = Object.freeze({
   "not-available": FLEXIBLE_UNAVAILABLE,
   "invalid-request": "That isn't a thread Toolroll can start a sign-in relay for. Nothing was started.",
   "thread-unknown": "There's no such thread, or it isn't ready.",
   "no-state-folder": "Toolroll's state folder can't be found, so its sign-in relay can't start.",
+  "no-credential": "Toolroll holds no Claude sign-in for Flexible threads yet, so no thread can start. Nothing was started.",
 } as const);
 const refuse = (reason: keyof typeof START_WORDS): FlexibleRelayRefusal => ({ ok: false, reason, message: START_WORDS[reason] });
 
@@ -122,6 +123,22 @@ function credentialOf(state: string, upstream: RelayUpstream): Credential | null
     if (kind === null || typeof parsed.value !== "string" || !upstream.auth[kind].shape.test(parsed.value)) return null;
     return { kind, value: parsed.value };
   } catch { return null; }
+}
+
+/**
+ * How a thread's turns are billed: what the relay's own Claude credential is (a plan's setup-token: subscription; an API
+ * key: api-key), read from Toolroll's sealed store exactly as the relay reads it for every call (credentialOf), never
+ * from a request. Only the kind leaves here, never the credential. No usable credential: refused.
+ */
+export function flexibleRelayBilling(store: Store): { ok: true; billing: "subscription" | "api-key" } | FlexibleRelayRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  const file = store.databaseFile();
+  let state: string;
+  try { if (file === null || file === "" || file === ":memory:") return refuse("no-state-folder"); state = dirname(realpathSync(file)); } catch { return refuse("no-state-folder"); }
+  const upstream = FLEXIBLE_RELAY_UPSTREAMS.claude;
+  const credential = credentialOf(state, upstream);
+  if (credential === null) return refuse("no-credential");
+  return { ok: true, billing: upstream.auth[credential.kind].billing };
 }
 
 /** Anything shaped like an Anthropic credential, and the exact credential in hand: replaced before any text leaves. */

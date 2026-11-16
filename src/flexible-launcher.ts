@@ -52,7 +52,7 @@ export type FlexibleLauncher = {
   platform?: NodeJS.Platform;
   /** Every proxy this launcher started and nobody closed yet. */
   open: () => number;
-  /** Close every proxy still open (the console stopping). */
+  /** Close every proxy still open (the console stopping); throws while any couldn't be (each stays listed for a retry). */
   close: () => Promise<void>;
 };
 
@@ -89,10 +89,14 @@ export function createFlexibleLauncher(store: Pick<Store, "projectNetwork">, sea
   // Each open proxy and its one closing (shared by the launch's own close and the launcher's): closed once, however asked.
   const live = new Map<EgressProxy, () => Promise<void>>();
   let closed = false;
+  // A close that fails keeps the proxy listed (open() counts it) and its closer ready to try again: revokeLaunch and the
+  // holder's watcher retry a closer that throws, and the launcher's own close retries every one still listed.
   const closerOf = (proxy: EgressProxy): (() => Promise<void>) => {
     let closing: Promise<void> | null = null;
     return () => {
-      closing ??= (async () => { live.delete(proxy); await proxy.close(); })();
+      closing ??= (async () => {
+        try { await proxy.close(); live.delete(proxy); } catch (error) { closing = null; throw error; }
+      })();
       return closing;
     };
   };
@@ -120,6 +124,7 @@ export function createFlexibleLauncher(store: Pick<Store, "projectNetwork">, sea
     async close() {
       closed = true;
       await Promise.allSettled([...live.values()].map(close => close()));
+      if (live.size > 0) throw new Error(`${live.size} of the threads' network proxies couldn't be closed yet`);
     },
   };
 }

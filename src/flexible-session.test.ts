@@ -329,7 +329,7 @@ describe("the owner's read", () => {
 
   test("a new thread is refused before anything is made when this console has no launcher for its network", async () => {
     const before = world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"];
-    expect(await startFlexibleThread(world.store, sessions, { repo: world.project, by: { name: "pat", generation: gen("pat") }, digest, message: "Fix the README", model: "claude-sonnet-4-5", launcher: null }))
+    expect(await startFlexibleThread(world.store, sessions, { repo: world.project, by: { name: "pat", generation: gen("pat") }, digest, message: "Fix the README", model: "claude-sonnet-4-5", billing: "subscription", startKey: "5".repeat(32), launcher: null }))
       .toMatchObject({ ok: false, reason: "no-network" });
     expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"]).toBe(before);
   });

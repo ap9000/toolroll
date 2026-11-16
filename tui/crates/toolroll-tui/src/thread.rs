@@ -533,7 +533,9 @@ pub const START_TOO_SMALL: &str =
     "These terms don't fit this window. Make it larger to read them. Nothing was started.";
 
 /// A new thread's terms card as the engine made it: every line, the key the start posts, the message and project it was
-/// made for, and how far it has been read (`seen_end` is set by drawing its end, never by a key).
+/// made for, and how far it has been read. `drawn` is how many rows from the top have all been drawn without a gap (at
+/// the width `drawn_width` laid them out); `seen_end` is set only when that covers every row, by drawing, never by a key.
+/// `page` is how many rows the last draw showed: Space and PageDown move by exactly that, so paging never skips a row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartTerms {
     pub message: String,
@@ -542,6 +544,9 @@ pub struct StartTerms {
     pub lines: Vec<String>,
     pub scroll: usize,
     pub seen_end: bool,
+    pub page: usize,
+    pub drawn: usize,
+    pub drawn_width: usize,
 }
 
 impl StartTerms {
@@ -553,6 +558,9 @@ impl StartTerms {
             lines,
             scroll: 0,
             seen_end: false,
+            page: 1,
+            drawn: 0,
+            drawn_width: 0,
         }
     }
 }
@@ -563,7 +571,7 @@ pub fn start_key(app: &mut App, mut terms: StartTerms, key: KeyEvent) -> Vec<Eff
     match key.code {
         KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown | KeyCode::Char(' ') => {
             terms.scroll += if matches!(key.code, KeyCode::PageDown | KeyCode::Char(' ')) {
-                10
+                terms.page.max(1)
             } else {
                 1
             };
@@ -571,7 +579,11 @@ pub fn start_key(app: &mut App, mut terms: StartTerms, key: KeyEvent) -> Vec<Eff
             vec![]
         }
         KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
-            let by = if key.code == KeyCode::PageUp { 10 } else { 1 };
+            let by = if key.code == KeyCode::PageUp {
+                terms.page.max(1)
+            } else {
+                1
+            };
             terms.scroll = terms.scroll.saturating_sub(by);
             app.mode = Mode::StartThread(terms);
             vec![]
@@ -633,6 +645,8 @@ pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
         .title(Span::styled(" New thread ", ink()));
     if inner < 24 || visible < 3 {
         terms.seen_end = false;
+        terms.drawn = 0;
+        terms.drawn_width = 0;
         let lines: Vec<Line<'static>> = wrap(START_TOO_SMALL, inner.max(8))
             .into_iter()
             .map(|l| Line::from(Span::styled(l, ink())))
@@ -673,14 +687,24 @@ pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
             ]));
         }
     }
+    // Laid out at another width: the rows aren't the ones read before, so reading starts again from the top.
+    if terms.drawn_width != inner {
+        terms.drawn_width = inner;
+        terms.drawn = 0;
+        terms.scroll = 0;
+        terms.seen_end = false;
+    }
     let max = body.len().saturating_sub(visible);
     if terms.scroll > max {
         terms.scroll = max;
     }
     let end = (terms.scroll + visible).min(body.len());
-    if end >= body.len() {
-        terms.seen_end = true;
+    terms.page = visible;
+    // Only rows that join what was already drawn count: a jump past unread rows covers nothing.
+    if terms.scroll <= terms.drawn {
+        terms.drawn = terms.drawn.max(end);
     }
+    terms.seen_end = terms.drawn >= body.len();
     let mut lines = vec![
         Line::from(Span::styled(
             "Starting this thread agrees to exactly this:",

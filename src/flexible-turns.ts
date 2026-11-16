@@ -154,6 +154,10 @@ export type FlexibleTurnRequest = {
   requestKey: string;
   /** The process that will run the turn: only it may start, finish or charge it, and when it is gone its turns end. */
   holder: string;
+  /** A new thread's first turn, admitted while its repository is still being made (flexible-session.ts
+   * startFlexibleThread): the turn reserves its limits before anything is written to disk. Only for a thread in
+   * `preparing` with no turn at all; every other check is the same. */
+  opening?: boolean;
   /** Where the time comes from, read once after the write lock is held (default: the system clock). */
   clock?: FlexibleClock;
 };
@@ -259,7 +263,7 @@ function validRequest(input: FlexibleTurnRequest): boolean {
     && typeof input.digest === "string" && isFlexibleLevel(input.level) && typeof input.freshProof === "boolean" && (input.provider === "claude" || input.provider === "codex")
     && typeof input.model === "string" && MODEL.test(input.model) && (input.billing === "subscription" || input.billing === "api-key")
     && typeof input.requestKey === "string" && KEY.test(input.requestKey) && typeof input.holder === "string" && KEY.test(input.holder)
-    && clockOk(input.clock);
+    && (input.opening === undefined || typeof input.opening === "boolean") && clockOk(input.clock);
 }
 
 /**
@@ -276,7 +280,9 @@ export function admitFlexibleTurn(store: Store, input: FlexibleTurnRequest): Fle
     const now = timeOf(input.clock);
     const thread = store.handle.prepare("SELECT repo, state, created_by, live_pid FROM flexible_thread WHERE id = ?").get(input.thread);
     if (thread === undefined) return refuse("thread-unknown");
-    if (thread["state"] !== "ready") return refuse("thread-not-ready");
+    const opening = input.opening === true && thread["state"] === "preparing"
+      && store.handle.prepare("SELECT 1 AS hit FROM thread_turn WHERE thread = ? LIMIT 1").get(input.thread) === undefined;
+    if (thread["state"] !== "ready" && !opening) return refuse("thread-not-ready");
     if (thread["created_by"] !== input.starter.name) return refuse("not-owner");
     const repo = String(thread["repo"]);
     const delegation = flexibleDelegationAtUse(store, { repo, starter: input.starter, digest: input.digest, level: input.level, freshProof: input.freshProof });

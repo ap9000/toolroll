@@ -17,6 +17,9 @@ import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../flex
 import { linkRedemptionSchema } from "../contracts/engine-api.js";
 import { threadWorld, type ThreadWorld } from "../../test/flexible-thread-world.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
+import { randomBytes } from "node:crypto";
+import { FLEXIBLE_RELAY_CREDENTIAL } from "../flexible-relay.js";
+import { writeHeldSecret } from "../tool-secret-store.js";
 
 vi.mock("../flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
 const held = vi.hoisted(() => ({ starts: [] as Record<string, unknown>[] }));
@@ -27,6 +30,12 @@ vi.mock("../flexible-session.js", async importOriginal => {
     return { ok: true, thread: "e".repeat(32), turn: "f".repeat(32) };
   } };
 });
+
+/** The relay's own Claude credential, of one kind (built here, never a real one). */
+function signIn(state: string, kind: "setup-token" | "api-key"): void {
+  const value = ["sk", "ant", kind === "setup-token" ? "oat01" : "api03", randomBytes(24).toString("hex")].join("-");
+  writeHeldSecret(state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind, value }));
+}
 
 type Card = { outcome: string; key: string; terms: { label: string; words: string; lines: string[] }[]; notes: string[]; lines: string[] };
 
@@ -50,6 +59,7 @@ describe("a team install: the card, a stale key, and a password typed now", () =
     patToken = pat.token;
     expect(world.store.setAccountProjects("pat", [world.project], "alex", new Date())).toEqual({ ok: true });
     digest = plant(world.store, world.project, "alex");
+    signIn(world.state, "setup-token");
     server = createDecisionServer({ store: world.store, evidenceRoot: join(world.dir, "evidence"), repos: [world.project], clock: () => new Date() });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -92,7 +102,8 @@ describe("a team install: the card, a stale key, and a password typed now", () =
     const done = await start({ terms: card.key, password: patToken });
     expect(done).toEqual({ status: 200, body: { outcome: "done", words: "The thread started." } });
     expect(held.starts).toHaveLength(1);
-    expect(held.starts[0]).toMatchObject({ repo: world.project, digest, model: "claude-sonnet-5-5", message: "Fix the README", freshProof: true, expectNetwork: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(held.starts[0]).toMatchObject({ repo: world.project, digest, model: "claude-sonnet-5-5", message: "Fix the README", freshProof: true, expectNetwork: expect.stringMatching(/^[0-9a-f]{32}$/),
+      billing: "subscription", startKey: card.key });
     expect(held.starts[0]!["launcher"]).not.toBeNull();
     expect((held.starts[0]!["by"] as { name: string }).name).toBe("pat");
   });
@@ -119,7 +130,7 @@ describe("a team install: the card, a stale key, and a password typed now", () =
 
 describe("a laptop install: the local owner's own act at this computer", () => {
   let world: LocalWorld;
-  beforeAll(async () => { world = await openLocalWorld({ browserKey: true }); world.store.upsertProject(world.repo, "shop", new Date()); plant(world.store, world.repo, "alex"); }, LOCAL_WORLD_SETUP_MS);
+  beforeAll(async () => { world = await openLocalWorld({ browserKey: true }); world.store.upsertProject(world.repo, "shop", new Date()); plant(world.store, world.repo, "alex"); signIn(world.configDir, "api-key"); }, LOCAL_WORLD_SETUP_MS);
   afterAll(async () => { await world.close(); });
 
   test("the terminal's session reads the card and starts the thread with no password, as the owner's act", async () => {
@@ -138,7 +149,7 @@ describe("a laptop install: the local owner's own act at this computer", () => {
     const started = await post({ terms: card.key });
     expect(JSON.parse(started.body)).toEqual({ outcome: "done", words: "The thread started." });
     expect(held.starts).toHaveLength(1);
-    expect(held.starts[0]).toMatchObject({ repo: world.repo, freshProof: true, by: { name: "alex" } });
+    expect(held.starts[0]).toMatchObject({ repo: world.repo, freshProof: true, by: { name: "alex" }, billing: "api-key" });
     // A stale key is refused for the owner too.
     expect(JSON.parse((await post({ terms: "0".repeat(32) })).body)).toMatchObject({ outcome: "refused" });
     expect(held.starts).toHaveLength(1);

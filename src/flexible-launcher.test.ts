@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { startEgressProxy, type EgressProxy } from "./egress.js";
@@ -20,7 +20,12 @@ import { holdLaunch, onLaunchStopped, watchLaunch, flexibleLaunch } from "./flex
 import { stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { realCustodyIO } from "./flexible-custody.js";
 import { FLEXIBLE_PROVEN } from "./flexible-levels.js";
-import { beginFlexibleThreadTurn, openFlexibleSessions, type FlexibleSessions } from "./flexible-session.js";
+import { beginFlexibleThreadTurn, openFlexibleSessions, startFlexibleThread, type FlexibleSessions } from "./flexible-session.js";
+import { FLEXIBLE_RELAY_CREDENTIAL } from "./flexible-relay.js";
+import { writeHeldSecret } from "./tool-secret-store.js";
+import { readdirSync } from "node:fs";
+import { tgit } from "../test/flexible-thread-world.js";
+import { randomBytes } from "node:crypto";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -39,7 +44,8 @@ beforeEach(() => {
   world = threadWorld();
   world.store.saveApprover("pat", "hash-p", NOW);
   const folder = join(world.state, "threads", T1);
-  mkdirSync(folder, { recursive: true });
+  mkdirSync(folder, { recursive: true, mode: 0o700 });
+  chmodSync(join(world.state, "threads"), 0o700);
   world.store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'ready')`)
     .run(T1, world.project, world.second, `refs/toolroll/threads/${T1}/base`, folder, NOW.toISOString());
 });
@@ -50,11 +56,16 @@ afterEach(async () => {
   rmSync(world.dir, { recursive: true, force: true });
 });
 
+/** The relay's own Claude credential, of one kind (built here, never a real one). */
+function signIn(kind: "setup-token" | "api-key"): void {
+  const value = ["sk", "ant", kind === "setup-token" ? "oat01" : "api03", randomBytes(24).toString("hex")].join("-");
+  writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind, value }));
+}
 /** pat's signed terms for the project, at its network posture now. */
-function plantTerms(): void {
+function plantTerms(caps: Partial<FlexibleTerms["caps"]> = {}): void {
   const terms: FlexibleTerms = { version: 1, repo: world.project, signer: "pat", signerGeneration: world.store.accountOf("pat")!.generation, starters: "approvers-with-access", passwordFreeUpTo: "full",
     max: "full", default: "full", network: world.store.projectNetwork(world.project).mode === "open" ? "open" : "confined",
-    caps: { liveThreads: 3, turnsPerDayProject: 300, turnsPerDayPerson: 150, measuredMicrousdPerDay: null } };
+    caps: { liveThreads: 3, turnsPerDayProject: 300, turnsPerDayPerson: 150, measuredMicrousdPerDay: null, ...caps } };
   digest = flexibleDigestOf(terms);
   world.store.handle.prepare(`INSERT INTO flexible_terms (repo, terms_json, digest, signed_terms_json, signed_digest, signed_by, signed_at, proof, changed_by, changed_at)
     VALUES (?, ?, ?, ?, ?, 'pat', ?, 'password-now', 'pat', ?)`).run(world.project, flexibleTermsJson(terms), digest, flexibleTermsJson(terms), digest, NOW.toISOString(), NOW.toISOString());
@@ -227,5 +238,125 @@ describe("a turn that launches nothing", () => {
     expect(begun).toMatchObject({ ok: false, reason: "network-changed" });
     expect(asked).toEqual([]);
     expect(flexibleTurn(world.store, turn)?.status).toBe("withdrawn");
+  });
+});
+
+describe("the real start path: limits before storage, one thread per start, nothing left behind", () => {
+  let sessions: FlexibleSessions;
+  const KEY = "5".repeat(32);
+  beforeEach(() => {
+    const opened = openFlexibleSessions(world.store);
+    if (!opened.ok) throw new Error(opened.message);
+    sessions = opened.sessions;
+    sessionsOpen.push(sessions);
+    signIn("setup-token");
+  });
+  /** Threads besides the fixture's, their folders, and the keep-refs in the project's repository. */
+  const leftovers = () => ({
+    rows: world.store.handle.prepare("SELECT id, state FROM flexible_thread WHERE id <> ?").all(T1).map(row => ({ ...row })),
+    folders: readdirSync(join(world.state, "threads")).filter(name => /^[0-9a-f]{32}$/.test(name) && name !== T1),
+    refs: tgit(world.project, "for-each-ref", "--format=%(refname)", "refs/toolroll/threads/"),
+  });
+  const start = (launcher: FlexibleLauncher, over: Partial<Parameters<typeof startFlexibleThread>[2]> = {}) => startFlexibleThread(world.store, sessions, {
+    repo: world.project, by: { name: "pat", generation: world.store.accountOf("pat")!.generation }, digest, message: "Fix the README", model: "claude-sonnet-4-5", billing: "subscription",
+    startKey: KEY, launcher, clock: () => NOW, ...over });
+
+  test("a start the limits refuse makes no repository, keep-ref or thread record at all", async () => {
+    plantTerms({ liveThreads: 1 });
+    // One thread already has a turn waiting: the project's one live thread.
+    const busy = admitFlexibleTurn(world.store, { thread: T1, starter: { name: "pat", generation: world.store.accountOf("pat")!.generation }, digest, level: "full", freshProof: false, provider: "claude",
+      model: "claude-sonnet-4-5", billing: "subscription", requestKey: "m-busy", holder: sessions.holder, clock: () => NOW });
+    expect(busy.ok).toBe(true);
+    const { launcher, asked } = counted();
+    expect(await start(launcher)).toMatchObject({ ok: false, reason: "cap-reached" });
+    expect(leftovers()).toEqual({ rows: [], folders: [], refs: "" });
+    expect(asked).toEqual([]);
+  });
+
+  test("a start refused after its repository was made (the storage check) takes the repository, keep-ref and turn with it", async () => {
+    plantTerms();
+    const { launcher, asked } = counted(async () => { throw new Error("walk unfinished"); });
+    expect(await start(launcher)).toMatchObject({ ok: false, reason: "storage" });
+    const left = leftovers();
+    expect(left.rows.every(row => row["state"] === "removed")).toBe(true);
+    expect(left.folders).toEqual([]);
+    expect(left.refs).toBe("");
+    expect(asked).toEqual([]);
+    expect(world.store.handle.prepare("SELECT status FROM thread_turn WHERE request_key = ?").all(`start:${KEY}`).map(row => row["status"])).toEqual(["withdrawn"]);
+  });
+
+  test("the same start posted twice makes one thread: the second gets the first one back", async () => {
+    plantTerms();
+    let release: () => void = () => {};
+    const gate = new Promise<void>(open => { release = open; });
+    const { launcher } = counted(async () => { await gate; throw new Error("walk unfinished"); });
+    const first = start(launcher);
+    // The first start's thread is recorded (its turn reserved) before its repository is made; the second post then finds it.
+    await until(() => world.store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE request_key = ?").get(`start:${KEY}`)!["n"] === 1);
+    const second = await start(launcher);
+    expect(second).toMatchObject({ ok: true, replayed: true });
+    release();
+    await first;
+    const made = world.store.handle.prepare("SELECT id FROM flexible_thread WHERE id <> ?").all(T1).map(row => String(row["id"]));
+    expect(made).toHaveLength(1);
+    expect(second.ok && second.thread).toBe(made[0]);
+  });
+
+  test("billing: the card's kind must be the relay credential's kind now, or nothing is made; with no credential nothing starts", async () => {
+    plantTerms();
+    const { launcher, asked } = counted(async () => { throw new Error("walk unfinished"); });
+    expect(await start(launcher, { billing: "api-key" })).toMatchObject({ ok: false, reason: "billing-changed" });
+    expect(leftovers()).toEqual({ rows: [], folders: [], refs: "" });
+    signIn("api-key");
+    expect(await start(launcher, { billing: "subscription" })).toMatchObject({ ok: false, reason: "billing-changed" });
+    writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, null);
+    expect(await start(launcher)).toMatchObject({ ok: false, reason: "no-credential" });
+    expect(leftovers()).toEqual({ rows: [], folders: [], refs: "" });
+    expect(asked).toEqual([]);
+  });
+
+  test("a throw after the launch's proxy was made closes the proxy, and the thread goes with it", async () => {
+    plantTerms();
+    const { launcher, proxies } = counted();
+    const exploding = new Proxy({}, { get: () => { throw new Error("the proven matrix couldn't be read"); } }) as typeof FLEXIBLE_PROVEN;
+    await expect(start(launcher, { proven: exploding })).rejects.toThrow("couldn't be read");
+    expect(proxies).toHaveLength(1);
+    expect(launcher.open()).toBe(0);
+    expect(await listening(proxies[0]!.port)).toBe(false);
+    const left = leftovers();
+    expect(left.rows.every(row => row["state"] === "removed")).toBe(true);
+    expect(left.folders).toEqual([]);
+    expect(left.refs).toBe("");
+  });
+});
+
+describe("admission opens only a new thread's first turn while it is being made", () => {
+  test("a thread still being made is admitted only with `opening`, and only while it has no turn", () => {
+    plantTerms();
+    const T2 = tid(2);
+    world.store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'preparing')`)
+      .run(T2, world.project, world.second, `refs/toolroll/threads/${T2}/base`, join(world.state, "threads", T2), NOW.toISOString());
+    const ask = (key: string, opening?: boolean) => admitFlexibleTurn(world.store, { thread: T2, starter: { name: "pat", generation: world.store.accountOf("pat")!.generation }, digest, level: "full",
+      freshProof: false, provider: "claude", model: "claude-sonnet-4-5", billing: "subscription", requestKey: key, holder: "h1", clock: () => NOW, ...(opening === undefined ? {} : { opening }) });
+    expect(ask("m-a")).toMatchObject({ ok: false, reason: "thread-not-ready" });
+    expect(ask("m-b", true)).toMatchObject({ ok: true });
+    expect(ask("m-c", true)).toMatchObject({ ok: false, reason: "thread-not-ready" });
+  });
+});
+
+describe("a proxy that fails to close stays listed and is tried again", () => {
+  test("the launcher's close keeps a failed one for the next close", async () => {
+    let fails = 1, closed = 0;
+    const fake = { url: "http://run:x@127.0.0.1:1", secret: "x", port: 1, counts: () => ({ connections: 0, refused: 0, hosts: [], otherHosts: 0 }),
+      close: async () => { if (fails-- > 0) throw new Error("busy"); closed++; } };
+    const made = createFlexibleLauncher(world.store, { storage: async () => STORAGE, startProxy: async () => fake });
+    if (!("prepare" in made)) throw new Error(made.message);
+    const prepared = await made.prepare({ id: T1, repo: world.project });
+    expect(prepared.ok).toBe(true);
+    await expect(made.close()).rejects.toThrow("couldn't be closed yet");
+    expect(made.open()).toBe(1);
+    await made.close();
+    expect(made.open()).toBe(0);
+    expect(closed).toBe(1);
   });
 });

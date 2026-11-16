@@ -125,6 +125,7 @@ pub fn start_card_lines() -> Vec<String> {
         "               Full access removes the agent's permission prompts inside the sandbox only. It never lets the agent leave the sandbox, use your keychain or SSH agent, read or change Toolroll's own data, write to your repository directly, or change how agents are started. It covers the agent's own tools, its MCP servers and plugins, and every program they start. Answering an agent's request never runs anything outside the sandbox, and if the sandbox can't hold, the thread doesn't run.",
         "  Agent        Claude Sonnet 5.5, signed in through Toolroll's relay",
         "               Your Claude login stays with Toolroll and never enters the agent; each call is checked and counted.",
+        "               Billed to your Claude plan (Toolroll's setup-token sign-in).",
         "  Works in     its own copy of this repository, on its own branch",
         "               Your repository changes only when you Ship.",
         "  Network      npm",
