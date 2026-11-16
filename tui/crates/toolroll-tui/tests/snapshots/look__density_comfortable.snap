@@ -2,27 +2,27 @@
 source: crates/toolroll-tui/tests/look.rs
 expression: shown
 ---
-┌ Toolroll · shop ──────────────────────────────────────────── $1.84 today · plan 62% · 2 need you ┐
-│Needs you 2                         │Live · Steps · Diff · Terminal                               │
-│● Fix the login redirect    Question│Upgrade the test runner                                      │
-│  The agent asked a question.       │claude sonnet · Building now · 4m 12s · $0.31 · build #7     │
-│● Add CSV export              Result│Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready            │
-│  Ready for you to check.           │  Started.                                                   │
-│                                    │  Reading the test setup before switching runners.           │
-│Working 2                           │✓ Edited vitest.config.ts  +14 −3                            │
-│◐ Upgrade the test runner   Building│✓ Asked a helper: Check the CSV export edge cases            │
-│  An agent is working on it.        │  ┌ Helper: Check the CSV export edge cases                  │
-│◐ Rate-limit middleware     Planning│  │  Empty rows export as a header line only.                │
-│  An agent is planning it.          │  │· Read src/export.ts                                      │
-│                                    │  └ Helper finished                                          │
-│Done today 1                        │✓ Ran npm test  212 passed (3.1 s)                           │
-│✓ Bump dependencies         Complete│  Tests pass on the new runner. Removing the old config next.│
-│  Accepted.                         │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                                                                                  │
-│j/k move  ⏎ open  s steer  a accept  n new  : all actions                                         │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Toolroll   shop   $1.84 today · plan 62%                                ◐ 2 working    2 need you  
+                                                                                                    
+   Work  5                                        Live    Steps    Diff    Terminal                 
+                                                Upgrade the test runner   Building                  
+   Needs you 2                                  claude sonnet · Building now · 4m 12s · $0.31 · …   
+   ● Fix the login redirect       Question      Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready   
+     shop · 3m ago                                                                                  
+     The agent asked a question.                  Worked · 3 steps                                  
+   ● Add CSV export                 Result        ✓ Edited vitest.config.ts  +14 −3                 
+     shop · 12m ago                               ✓ Asked a helper: Check the CSV export edge       
+     Ready for you to check.                        cases                                           
+                                                    ┌ Helper: Check the CSV export edge cases       
+   Working 2                                        │  Empty rows export as a header line only.     
+   ◐ Upgrade the test runner      Building          │· Read src/export.ts                           
+     shop · 2m ago                                  └ Helper finished                               
+     An agent is working on it.                   ✓ Ran npm test  212 passed (3.1 s)                
+   ◐ Rate-limit middleware        Planning                                                          
+     shop · 7m ago                                                                                  
+     An agent is planning it.                   Tests pass on the new runner. Removing the old      
+                                                config next.                                        
+   Done today 1                                                                                     
+                                                                                                    
+                                                                                                    
+   j/k  move   ⏎  open   s  steer   a  accept   n  new   :  all actions

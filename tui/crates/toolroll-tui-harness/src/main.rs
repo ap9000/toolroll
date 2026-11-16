@@ -272,23 +272,24 @@ impl Screen {
                 .map(|c| c.contents().to_string())
                 .unwrap_or_default()
         };
-        // A frame drawn for the size before a resize (the app hadn't seen the new size yet): its corner is elsewhere.
-        if cell(0, 0) == "┌" && cell(0, cols - 1) != "┐" && (0..cols).any(|c| cell(0, c) == "┐")
-        {
+        // A whole frame: the top bar starts with Toolroll and ends at the right edge (what needs you), and the key bar
+        // ends with the palette or, typing in a terminal, says the one way back.
+        let top = s.contents_between(0, 0, 0, cols);
+        let starts = top.trim_start().starts_with("Toolroll");
+        let reaches_right = (cols.saturating_sub(4)..cols).any(|c| !cell(0, c).trim().is_empty());
+        // A frame drawn for the size before a resize (the app hadn't seen the new size yet): its top bar ends elsewhere.
+        if starts && !reaches_right {
             self.frames_old_size += 1;
             return;
         }
         self.frames_checked += 1;
+        let keys = s.contents_between(rows - 1, 0, rows - 1, cols);
+        let keys_ok = keys.contains("all actions") || keys.contains("back to the workbench");
+        let ok = starts && reaches_right && keys_ok;
         let corners = [
-            cell(0, 0),
-            cell(0, cols - 1),
-            cell(rows - 1, 0),
-            cell(rows - 1, cols - 1),
+            top.chars().take(12).collect::<String>(),
+            keys.trim().chars().take(24).collect(),
         ];
-        let keys = s.contents_between(rows - 2, 0, rows - 2, cols);
-        // The key bar ends with quit, or (typing in a terminal) says the one way back.
-        let keys_ok = keys.contains("q quit") || keys.contains("Ctrl-] back");
-        let ok = corners == ["┌", "┐", "└", "┘"] && keys_ok;
         if !ok {
             let example = if self.torn.len() < 5 {
                 format!("{cols}x{rows} corners={corners:?} keys_ok={keys_ok}")

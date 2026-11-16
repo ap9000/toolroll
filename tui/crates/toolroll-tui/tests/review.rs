@@ -238,8 +238,8 @@ fn word_level_emphasis() {
     let mut app = review_app(no_accept_facts());
     // (No syntax colours here: the emphasis alone, whatever another test loaded.)
     app.syntax_on = false;
-    // Rows 9..14: the first hunk's renamed function (only the changed word is reversed on each side).
-    let shown = styled(&mut app, 120, 34, 9, 18);
+    // Rows 14..23: the first hunk's renamed function (only the changed word is reversed on each side).
+    let shown = styled(&mut app, 120, 34, 14, 23);
     assert!(shown.contains("+REVERSED:total⟧"), "{shown}");
     assert!(shown.contains("+REVERSED:subtotal⟧"), "{shown}");
     insta::assert_snapshot!(shown);
@@ -956,14 +956,15 @@ fn diff_view_follows_the_theme_and_glyphs() {
             app.prefs.theme.passed().fg,
             app.prefs.theme.failed().fg,
         ];
-        screen(&mut app, 120, 34);
+        // Tall enough for the whole file above the decision row.
+        screen(&mut app, 120, 40);
         assert!(app
             .highlights
             .as_ref()
             .unwrap()
             .wait(std::time::Duration::from_secs(10)));
-        let term = draw(&mut app, 120, 34);
-        let code_rows: Vec<_> = (9..24u16)
+        let term = draw(&mut app, 120, 40);
+        let code_rows: Vec<_> = (9..36u16)
             .flat_map(|y| (50..119u16).map(move |x| (x, y)))
             .map(|p| term.backend().buffer()[p].fg)
             .collect();

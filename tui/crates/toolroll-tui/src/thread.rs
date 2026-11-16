@@ -13,13 +13,12 @@
 //! message and the card's key, nothing else: the engine starts it only if the card it makes again has that same key.
 use crate::app::{App, Effect, Item, Mode, Section, Tone, Transcript};
 use crate::text::{clean, fit, wrap};
-use crate::theme::{base, dim, failed, ink, line, marks, needs_you, passed, running, selected};
+use crate::theme::{dim, failed, ink, marks, needs_you, passed, running, selected};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::{Block, Borders, Clear};
 use ratatui::Frame;
 use toolroll_api::{LiveThreads, ThreadFacts, ThreadQuestion, ThreadRow};
 
@@ -295,6 +294,12 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         })
         .unwrap_or(0)
         + others.len() as u16;
+    // A question waiting for you is a card outlined in ink (two rows and two columns more), when there's room.
+    let waits = shown
+        .as_ref()
+        .is_some_and(|q| q.state == "pending" && q.answerable);
+    let card = waits && area.height >= 20 && w >= 40;
+    let q_lines = q_lines + if card { 2 } else { 0 };
     let input = matches!(app.mode, Mode::NewThread(_));
     let [head, content, qa, input_row] = Layout::vertical([
         Constraint::Length(2),
@@ -337,7 +342,8 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             .collect(),
     };
     f.render_widget(Paragraph::new(lines), content);
-    // Questions.
+    // Questions (inside the card when there is one).
+    let w = if card { w.saturating_sub(4) } else { w };
     let mut lines = vec![];
     if let Some(q) = &shown {
         let (mark, words, style) = state_words(q, sending.as_deref() == Some(q.request.as_str()));
@@ -419,6 +425,17 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
             Span::styled(format!("  {words}"), dim()),
         ]));
     }
+    let qa = if card {
+        crate::sheet::outline(f.buffer_mut(), qa, needs_you());
+        Rect {
+            x: qa.x + 2,
+            y: qa.y + 1,
+            width: qa.width.saturating_sub(4),
+            height: qa.height.saturating_sub(2),
+        }
+    } else {
+        qa
+    };
     f.render_widget(Paragraph::new(lines), qa);
     if let Mode::NewThread(text) = &app.mode {
         f.render_widget(
@@ -495,16 +512,18 @@ pub fn confirm_lines(app: &mut App, area: Rect) -> Option<(&'static str, Vec<Lin
     lines.extend(body[top..end].iter().cloned());
     lines.push(Line::raw(""));
     if app.thread_shown {
-        lines.push(Line::from(vec![
-            Span::styled("Enter  ", ink()),
-            Span::raw("Send it to the agent"),
-        ]));
+        lines.push(Line::from(crate::sheet::act(
+            "Enter",
+            "Send it to the agent",
+            true,
+        )));
         lines.push(Line::from(Span::styled("Esc cancels.", dim())));
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("j/Space  ", ink()),
-            Span::raw(format!("Read on ({} more lines)", body.len() - end)),
-        ]));
+        lines.push(Line::from(crate::sheet::act(
+            "j/Space",
+            &format!("Read on ({} more lines)", body.len() - end),
+            false,
+        )));
         lines.push(Line::from(Span::styled(
             "Enter sends once you've read to the end. Esc cancels.",
             dim(),
@@ -626,9 +645,10 @@ pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
     let Mode::StartThread(terms) = &mut app.mode else {
         return;
     };
-    let w = area.width.saturating_sub(6).min(100);
+    let w = area.width.saturating_sub(4).min(102);
     let h = area.height.saturating_sub(2);
-    let inner = w.saturating_sub(2) as usize;
+    // Inside the border and its padding.
+    let inner = w.saturating_sub(4) as usize;
     // Head 2 lines, foot 4 lines, the border 2: what's left shows the card.
     let visible = (h as usize).saturating_sub(8);
     let r = Rect {
@@ -637,12 +657,7 @@ pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
         width: w,
         height: h,
     };
-    f.render_widget(Clear, r);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(base())
-        .border_style(line())
-        .title(Span::styled(" New thread ", ink()));
+    let block = crate::view::dialog(f, r, " New thread ");
     if inner < 24 || visible < 3 {
         terms.seen_end = false;
         terms.drawn = 0;
@@ -723,10 +738,11 @@ pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::raw(""));
     }
     if terms.seen_end {
-        lines.push(Line::from(vec![
-            Span::styled("Enter  ", ink()),
-            Span::raw("Start the thread"),
-        ]));
+        lines.push(Line::from(crate::sheet::act(
+            "Enter",
+            "Start the thread",
+            true,
+        )));
     } else {
         lines.push(Line::from(Span::styled(
             "Enter starts it once you've read to the end.",

@@ -131,10 +131,19 @@ pub enum Role {
     Running,
     Passed,
     Failed,
+    /// Sheets (DESIGN.md): the frame the panels sit on, raised blocks inside them, and the neutral fill of badges, keys
+    /// and tab tracks.
+    Ground,
+    Raised,
+    Fill,
+    /// The quiet washes behind a status badge (and a changed line in Diff): each status's own hue, faint.
+    RunningSoft,
+    PassedSoft,
+    FailedSoft,
 }
 
 impl Role {
-    pub const ALL: [Role; 10] = [
+    pub const ALL: [Role; 16] = [
         Role::Paper,
         Role::Ink,
         Role::Muted,
@@ -145,6 +154,12 @@ impl Role {
         Role::Running,
         Role::Passed,
         Role::Failed,
+        Role::Ground,
+        Role::Raised,
+        Role::Fill,
+        Role::RunningSoft,
+        Role::PassedSoft,
+        Role::FailedSoft,
     ];
     /// The four whose colour means something; they must never look alike.
     pub const MEANING: [Role; 4] = [Role::NeedsYou, Role::Running, Role::Passed, Role::Failed];
@@ -162,6 +177,12 @@ impl Role {
             Role::Running => "running",
             Role::Passed => "passed",
             Role::Failed => "failed",
+            Role::Ground => "ground",
+            Role::Raised => "raised",
+            Role::Fill => "fill",
+            Role::RunningSoft => "running-soft",
+            Role::PassedSoft => "passed-soft",
+            Role::FailedSoft => "failed-soft",
         }
     }
 
@@ -182,6 +203,12 @@ impl Role {
             Role::Running => "running",
             Role::Passed => "passed",
             Role::Failed => "failed",
+            Role::Ground => "the frame around the panels",
+            Role::Raised => "raised blocks",
+            Role::Fill => "badges and keys",
+            Role::RunningSoft => "running's badge",
+            Role::PassedSoft => "passed's badge",
+            Role::FailedSoft => "failed's badge",
         }
     }
 
@@ -191,7 +218,7 @@ impl Role {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Palette([Paint; 10]);
+pub struct Palette([Paint; 16]);
 
 impl Palette {
     pub fn get(&self, role: Role) -> Paint {
@@ -200,7 +227,7 @@ impl Palette {
     pub fn set(&mut self, role: Role, paint: Paint) {
         self.0[role.index()] = paint;
     }
-    fn of(hex: [&str; 10]) -> Palette {
+    fn of(hex: [&str; 16]) -> Palette {
         Palette(hex.map(|h| Paint::Rgb(Rgb::parse(h).expect("built-in colour"))))
     }
 }
@@ -276,28 +303,36 @@ impl Depth {
     }
 }
 
-/// DESIGN.md's light tokens: paper, ink, muted, input-line, selection, ink on it, signal, info, success, danger.
+/// DESIGN.md's light tokens: paper, ink, muted, input-line, selection, ink on it, signal, info, success, danger; then
+/// ground, raised, the neutral fill, and the info, success and danger washes.
 pub fn light() -> Palette {
     Palette::of([
         "#ffffff", "#171717", "#666666", "#d4d4d4", "#d4d4d4", "#171717", "#171717", "#0d74ce",
-        "#218358", "#c4320a",
+        "#218358", "#c4320a", "#efefef", "#f5f5f5", "#e8e8e8", "#e6f4fe", "#e6f6eb", "#feebe7",
     ])
 }
 
-/// DESIGN.md's dark tokens.
+/// DESIGN.md's dark tokens (the washes are each hue at 14% over the paper).
 pub fn dark() -> Palette {
     Palette::of([
         "#161616", "#ededed", "#a1a1a1", "#363636", "#3a3a3a", "#ededed", "#ededed", "#70b8ff",
-        "#3dd68c", "#ff977d",
+        "#3dd68c", "#ff977d", "#0b0b0b", "#1c1c1c", "#2a2a2a", "#232d37", "#1b3127", "#372824",
     ])
 }
 
-/// Pure black and white, the status colours lifted: every pair well past the contrast floor.
+/// Pure black and white, the status colours lifted: every pair well past the contrast floor. Its sheets are the ground
+/// (black on black), so the panels are set apart by rules.
 pub fn high_contrast() -> Palette {
     Palette::of([
         "#000000", "#ffffff", "#d4d4d4", "#a3a3a3", "#ffffff", "#000000", "#ffffff", "#8ec8ff",
-        "#5ff0a8", "#ffa08a",
+        "#5ff0a8", "#ffa08a", "#000000", "#141414", "#2e2e2e", "#0d2742", "#0b3220", "#3d1a12",
     ])
+}
+
+/// `a` with `t` of `b` laid over it.
+pub fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
+    let m = |x: u8, y: u8| ((x as f64) * (1.0 - t) + (y as f64) * t).round() as u8;
+    Rgb(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
 }
 
 /// The floors an override must keep (WCAG contrast against the paper, and ΔE between the meaning colours).
@@ -355,6 +390,39 @@ impl Theme {
             palette.set(Role::NeedsYou, Paint::Terminal);
             if let Some(b) = background {
                 reference = b;
+                // The sheets' frame and fills drawn from the terminal's own background, so they sit with its colours.
+                let (dark_ground, ink) = (
+                    Rgb(0, 0, 0),
+                    if is_dark {
+                        Rgb(255, 255, 255)
+                    } else {
+                        Rgb(0, 0, 0)
+                    },
+                );
+                let hue = |r: Role| match palette.get(r) {
+                    Paint::Rgb(c) => c,
+                    Paint::Terminal => b,
+                };
+                let (run, pass, fail) = (hue(Role::Running), hue(Role::Passed), hue(Role::Failed));
+                let set = |p: &mut Palette, r: Role, c: Rgb| p.set(r, Paint::Rgb(c));
+                set(
+                    &mut palette,
+                    Role::Ground,
+                    mix(b, dark_ground, if is_dark { 0.4 } else { 0.07 }),
+                );
+                set(
+                    &mut palette,
+                    Role::Raised,
+                    mix(b, ink, if is_dark { 0.05 } else { 0.03 }),
+                );
+                set(
+                    &mut palette,
+                    Role::Fill,
+                    mix(b, ink, if is_dark { 0.11 } else { 0.08 }),
+                );
+                set(&mut palette, Role::RunningSoft, mix(b, run, 0.14));
+                set(&mut palette, Role::PassedSoft, mix(b, pass, 0.14));
+                set(&mut palette, Role::FailedSoft, mix(b, fail, 0.14));
             }
         }
         let mut theme = Theme {
@@ -433,6 +501,35 @@ impl Theme {
                         "it would be too faint on the background".to_string()
                     };
                     problems.push((role, words));
+                }
+            }
+        }
+        // Words on the sheets' own fills, and each status on its wash.
+        let ink_on = self.rgb(Role::Ink).unwrap_or(if self.dark {
+            Rgb(255, 255, 255)
+        } else {
+            Rgb(0, 0, 0)
+        });
+        for (fg, bg, floor) in [
+            (Role::Ink, Role::Raised, TEXT_FLOOR),
+            (Role::Ink, Role::Fill, TEXT_FLOOR),
+            (Role::Ink, Role::Ground, TEXT_FLOOR),
+            (Role::Running, Role::RunningSoft, MARK_FLOOR),
+            (Role::Passed, Role::PassedSoft, MARK_FLOOR),
+            (Role::Failed, Role::FailedSoft, MARK_FLOOR),
+        ] {
+            let f = if fg == Role::Ink {
+                Some(ink_on)
+            } else {
+                self.rgb(fg)
+            };
+            if let (Some(f), Some(b)) = (f, self.rgb(bg)) {
+                if f.contrast(b) < floor {
+                    let mine = if focus == Some(fg) { fg } else { bg };
+                    problems.push((
+                        mine,
+                        format!("{} would be too faint on {}", fg.words(), bg.words()),
+                    ));
                 }
             }
         }
@@ -579,6 +676,119 @@ impl Theme {
                 .add_modifier(Modifier::ITALIC),
             Token::Comment => self.muted().add_modifier(Modifier::ITALIC),
             Token::Text | Token::Number => accent(),
+        }
+    }
+
+    /// Whether the sheets are drawn with fills (truecolor and 256 colours); else rules, weight and reversal carry them.
+    pub fn fills(&self) -> bool {
+        self.painted()
+    }
+
+    /// Whether panels need rules between them: no fills, or a ground the same as the sheets (high contrast).
+    pub fn ruled(&self) -> bool {
+        !self.painted() || self.palette.get(Role::Ground) == self.palette.get(Role::Paper)
+    }
+
+    fn on(&self, fg: Role, bg: Role) -> Style {
+        Style::default().fg(self.color(fg)).bg(self.color(bg))
+    }
+
+    /// The frame the sheets sit on (the top bar, the gutters, the key bar).
+    pub fn ground(&self) -> Style {
+        if self.painted() {
+            self.on(Role::Ink, Role::Ground)
+        } else {
+            Style::default()
+        }
+    }
+
+    /// A raised block inside a sheet (its background only, so its words keep their own colour).
+    pub fn raised(&self) -> Style {
+        if self.painted() {
+            Style::default().bg(self.color(Role::Raised))
+        } else {
+            Style::default()
+        }
+    }
+
+    /// The neutral fill of a badge, a key and a tab track (background only).
+    pub fn fill(&self) -> Style {
+        if self.painted() {
+            Style::default().bg(self.color(Role::Fill))
+        } else {
+            Style::default()
+        }
+    }
+
+    /// A key's cap: ink, bold, on the fill.
+    pub fn keycap(&self) -> Style {
+        self.ink().patch(self.fill())
+    }
+
+    /// A status badge: the hue on its wash (at 16 colours the hue alone; with colour off, plain).
+    pub fn badge(&self, role: Role) -> Style {
+        let (wash, ansi) = match role {
+            Role::Running => (Role::RunningSoft, Color::Blue),
+            Role::Passed => (Role::PassedSoft, Color::Green),
+            Role::Failed => (Role::FailedSoft, Color::Red),
+            _ => return self.muted().patch(self.fill()),
+        };
+        if self.painted() {
+            self.on(role, wash)
+        } else {
+            self.status(role, ansi)
+        }
+    }
+
+    /// A status's wash behind a whole row (a changed line in Diff); nothing without fills.
+    pub fn wash(&self, role: Role) -> Style {
+        let wash = match role {
+            Role::Running => Role::RunningSoft,
+            Role::Passed => Role::PassedSoft,
+            Role::Failed => Role::FailedSoft,
+            _ => Role::Raised,
+        };
+        if self.painted() {
+            Style::default().bg(self.color(wash))
+        } else {
+            Style::default()
+        }
+    }
+
+    /// The solid "Needs you" chip: the needs-you ink, reversed onto the sheet (solid in every depth, NO_COLOR too).
+    pub fn chip(&self) -> Style {
+        let s = Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        if self.painted() {
+            s.fg(self.color(Role::NeedsYou)).bg(self.color(Role::Paper))
+        } else {
+            s
+        }
+    }
+
+    /// The one ink verb on a screen (Accept, Send, Build): ink reversed onto the sheet.
+    pub fn primary(&self) -> Style {
+        let s = Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        if self.painted() {
+            s.fg(self.color(Role::Ink)).bg(self.color(Role::Paper))
+        } else {
+            s
+        }
+    }
+
+    /// The tab on screen in the tab track; the others.
+    pub fn tab_on(&self) -> Style {
+        if self.painted() {
+            self.on(Role::SelectionInk, Role::Selection)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        }
+    }
+    pub fn tab_off(&self) -> Style {
+        if self.painted() {
+            self.on(Role::Muted, Role::Fill)
+        } else {
+            self.muted()
         }
     }
 
@@ -751,6 +961,42 @@ pub fn passed() -> Style {
 }
 pub fn failed() -> Style {
     theme().failed()
+}
+pub fn fills() -> bool {
+    theme().fills()
+}
+pub fn ruled() -> bool {
+    theme().ruled()
+}
+pub fn ground() -> Style {
+    theme().ground()
+}
+pub fn raised() -> Style {
+    theme().raised()
+}
+pub fn fill() -> Style {
+    theme().fill()
+}
+pub fn keycap() -> Style {
+    theme().keycap()
+}
+pub fn badge(role: Role) -> Style {
+    theme().badge(role)
+}
+pub fn wash(role: Role) -> Style {
+    theme().wash(role)
+}
+pub fn chip() -> Style {
+    theme().chip()
+}
+pub fn primary() -> Style {
+    theme().primary()
+}
+pub fn tab_on() -> Style {
+    theme().tab_on()
+}
+pub fn tab_off() -> Style {
+    theme().tab_off()
 }
 pub fn selected() -> Style {
     theme().selected()

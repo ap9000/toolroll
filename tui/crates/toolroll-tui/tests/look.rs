@@ -225,6 +225,78 @@ fn no_color() {
     insta::assert_snapshot!(styled(&buf));
 }
 
+/// The sheets hold at every depth: with fills the ground and the paper sheets are filled; without (16 colours,
+/// NO_COLOR) each sheet is outlined instead. At every depth the needs-you chip is solid (reversed), the selected row is
+/// lit, and the same words are drawn: nothing disappears when colour does.
+#[test]
+fn sheets_hold_at_every_depth() {
+    let mut words: Option<String> = None;
+    for depth in [Depth::TrueColor, Depth::Ansi256, Depth::Ansi16, Depth::Off] {
+        let s = Settings {
+            theme: ThemeName::Dark,
+            ..Settings::default()
+        };
+        let mut app = live_app(prefs(s, depth, None));
+        let buf = draw(&mut app, 120, 30);
+        let shown = text(&buf);
+        let t = app.prefs.theme;
+        let fills = matches!(depth, Depth::TrueColor | Depth::Ansi256);
+        if fills {
+            assert_eq!(
+                buf[(0, 0)].bg,
+                t.ground().bg.unwrap(),
+                "{depth:?}: the ground"
+            );
+            assert_eq!(buf[(3, 4)].bg, t.base().bg.unwrap(), "{depth:?}: a sheet");
+        } else {
+            assert!(
+                shown.contains('╭') && shown.contains('╯'),
+                "{depth:?}: no outline\n{shown}"
+            );
+        }
+        // The chip on what needs you is reversed (solid) at every depth.
+        let (y, line) = shown
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("Fix the login redirect"))
+            .unwrap();
+        let x = line.chars().collect::<Vec<_>>().len()
+            - line
+                .chars()
+                .rev()
+                .position(|c| c == 'Q')
+                .map(|p| p + 1)
+                .unwrap();
+        assert!(
+            buf[(x as u16, y as u16)]
+                .modifier
+                .contains(Modifier::REVERSED),
+            "{depth:?}: the Question chip isn't solid"
+        );
+        // The same words at every depth (fills only pad them).
+        let squeezed = shown.replace(['╭', '╮', '╰', '╯', '│', '├', '┤', '─'], " ");
+        let squeezed: String = squeezed.split_whitespace().collect::<Vec<_>>().join(" ");
+        match &words {
+            None => words = Some(squeezed),
+            Some(w) => {
+                for needed in [
+                    "Needs you 2",
+                    "Question",
+                    "Upgrade the test runner",
+                    "Building",
+                    "Worked",
+                    "all actions",
+                ] {
+                    assert!(
+                        w.contains(needed) && squeezed.contains(needed),
+                        "{depth:?}: {needed}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn density_compact() {
     let mut app = live_app(prefs(Settings::default(), Depth::TrueColor, None));
@@ -240,14 +312,14 @@ fn density_comfortable() {
     let mut app = live_app(prefs(s, Depth::TrueColor, None));
     let shown = text(&draw(&mut app, 100, 24));
     insta::assert_snapshot!(shown);
-    // Both lines of a row select it.
+    // Every line of a row's card (three when comfortable) selects it.
     let rows: Vec<_> = app
         .areas
         .rows
         .iter()
         .filter(|(_, i)| *i == Some(0))
         .collect();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
 }
 
 #[test]

@@ -2,13 +2,13 @@
 source: crates/toolroll-tui/tests/screens.rs
 expression: small
 ---
-"┌ Toolroll · shop ──── $1.84 today · plan 62% · 2 need you ┐"
-"│Ne┌ New task ──────────────────────────────────────────┐l │"
-"│● │These terms are too long to show here — press w to  │  │"
-"│● │review them in the browser.                         │·…│"
-"│  │                                                    │ …│"
-"│Wo│                                                    │r.│"
-"│◐ │                                                    │t.│"
-"│  │                                                    │  │"
-"│j/└────────────────────────────────────────────────────┘s │"
-"└──────────────────────────────────────────────────────────┘"
+" Toolroll  · shop                 ◐ 2 working   2 need you  "
+"╭─╭ New task ────────────────────────────────────────────╮─╮"
+"│ │ These terms are too long to show here — press w to   │ │"
+"│ │ review them in the browser.                          │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"╰─│                                                      │─╯"
+"  ╰──────────────────────────────────────────────────────╯  "
+" j/k move  ⏎ open  s steer  a accept  n new  : all actions  "

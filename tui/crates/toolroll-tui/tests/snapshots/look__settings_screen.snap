@@ -2,39 +2,39 @@
 source: crates/toolroll-tui/tests/look.rs
 expression: "text(&draw(&mut app, 110, 36))"
 ---
-┌ Toolroll · shop ────────────────────────────────────────────────────── $1.84 today · plan 62% · 2 need you ┐
-│Needs you 2                         │Live · Steps · Diff · Terminal                                         │
-│● Fix the login redirect    Question│Upgrade the test runner                                                │
-│● Add CSV export              Result│claude sonnet · Building now · 4m 12s · $0.31 · build #7               │
-│                                    │Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready                      │
-│Working 2                           │  Started.                                                             │
-│◐ Upgrad┌ Settings ────────────────────────────────────────────────────────────────────────────────┐        │
-│◐ Rate-l│File  /home/me/.config/toolroll/tui.toml                                                  │        │
-│        │      read                                                                                │        │
-│Done tod│                                                                                          │        │
-│✓ Bump d│Theme           terminal: its own colours, with dark roles (it didn't say its backgroun…  │        │
-│        │Colour          full colour                                                               │        │
-│        │Density         compact                                                                   │        │
-│        │Key bar         on                                                                        │        │
-│        │Costs           shown                                                                     │        │
-│        │Columns         step                                                                      │        │
-│        │Glyphs          unicode                                                                   │        │
-│        │Keys            default preset                                                            │        │
-│        │Notify          asks on · finished off · failed on                                        │        │
-│        │Bell            on                                                                        │        │
-│        │Reduced motion  off                                                                       │        │
-│        │Delivered       desktop notifications (OSC 9)                                             │        │
-│        │                                                                                          │        │
-│        │Not used                                                                                  │        │
-│        │  tui.toml: Line 3: themes isn't a setting, so it was ignored.                            │        │
-│        │  Your colour for running (#3dd68c) wasn't used: running and passed would look alike.     │        │
-│        │                                                                                          │        │
-│        │t  Next theme, for this session (the file is never changed)                               │        │
-│        │Any other key closes.                                                                     │        │
-│        └──────────────────────────────────────────────────────────────────────────────────────────┘        │
-│                                    │                                                                       │
-│                                    │                                                                       │
-│                                    │                                                                       │
-│                                                                                                            │
-│j/k move  ⏎ open  s steer  a accept  n new  : all actions                                                   │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Toolroll   shop   $1.84 today · plan 62%                                          ◐ 2 working    2 need you  
+                                                                                                              
+                                                                                                              
+   Work  5                                          Live    Steps    Diff    Terminal                         
+                                                                                                              
+   Needs you 2                                    Upgrade the test runner   Building                          
+        ╭ Settings ──────────────────────────────────────────────────────────────────────────────────╮d #7    
+   ● Fix│ File  /home/me/.config/toolroll/tui.toml                                                   │        
+     sho│       read                                                                                 │Ready   
+        │                                                                                            │─────── 
+   ● Add│ Theme           terminal: its own colours, with dark roles (it didn't say its backgroun…   │        
+     sho│ Colour          full colour                                                                │        
+        │ Density         compact                                                                    │        
+   Worki│ Key bar         on                                                                         │        
+        │ Costs           shown                                                                      │        
+   ◐ Upg│ Columns         step                                                                       │        
+     sho│ Glyphs          unicode                                                                    │        
+        │ Keys            default preset                                                             │        
+   ◐ Rat│ Notify          asks on · finished off · failed on                                         │        
+     sho│ Bell            on                                                                         │        
+        │ Reduced motion  off                                                                        │        
+   Done │ Delivered       desktop notifications (OSC 9)                                              │        
+        │                                                                                            │        
+   ✓ Bum│ Not used                                                                                   │        
+     sho│   tui.toml: Line 3: themes isn't a setting, so it was ignored.                             │g       
+        │   Your colour for running (#3dd68c) wasn't used: running and passed would look alike.      │        
+        │                                                                                            │        
+        │ t  Next theme, for this session (the file is never changed)                                │        
+        │ Any other key closes.                                                                      │        
+        ╰────────────────────────────────────────────────────────────────────────────────────────────╯        
+                                                  ╭───────────────────────────────────────────────────────╮   
+                                                  │ Steer the agent: a note (it goes to build #7)         │   
+                                                  ╰───────────────────────────────────────────────────────╯   
+                                                                                                              
+                                                                                                              
+   j/k  move   ⏎  open   s  steer   a  accept   n  new   :  all actions

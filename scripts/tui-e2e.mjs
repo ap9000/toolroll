@@ -276,13 +276,13 @@ async function main() {
     // A small task: its exact terms, and Enter is Build (the page's own fast start, as data).
     await waitFor(/Build approves exactly this|Filed\. (A plan comes first|Just code)|Refused: /, "the filing's answer");
     step("New task's answer");
-    if (/Refused: /.test(text())) throw new Error(`filing was refused: ${/Refused: (.*?)\s*│/.exec(text())?.[1]}`);
+    if (/Refused: /.test(text())) throw new Error(`filing was refused: ${/Refused: (.*?)(?:\s*│|\s{2,}|$)/m.exec(text())?.[1]}`);
     report.road = /Build approves exactly this/.test(text()) ? "build" : /Filed\. Just code/.test(text()) ? "just-code" : "plan";
     if (report.road === "build") {
       term.write("\r");
       await waitFor(/Building it\.|Refused: /, "Build's answer");
       step("Enter: Build");
-      if (/Refused: /.test(text())) throw new Error(`Build was refused: ${/Refused: (.*?)\s*│/.exec(text())?.[1]}`);
+      if (/Refused: /.test(text())) throw new Error(`Build was refused: ${/Refused: (.*?)(?:\s*│|\s{2,}|$)/m.exec(text())?.[1]}`);
     }
     const task = await (async () => { for (let i = 0; i < 100; i += 1) { const row = sqlite("SELECT id, state FROM task ORDER BY rowid DESC LIMIT 1")[0]; if (row) return row; await sleep(200); } return null; })();
     report.task = task;

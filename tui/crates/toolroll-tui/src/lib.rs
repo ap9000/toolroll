@@ -10,6 +10,7 @@ pub mod panes;
 pub mod review;
 pub mod run;
 pub mod settings;
+pub mod sheet;
 pub mod state;
 pub mod stats;
 pub mod syntax;

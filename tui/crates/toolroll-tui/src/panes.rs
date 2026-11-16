@@ -7,7 +7,7 @@
 //! Terminal tab's rule from T4 holds as before (only a drawn, focused terminal takes input).
 use crate::app::{App, Effect, Section, Transcript, RECORDS_KEPT};
 use crate::text::{clean, fit};
-use crate::theme::{dim, ink, line, needs_you};
+use crate::theme::{dim, ink, needs_you};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -106,7 +106,7 @@ pub fn run_of(steps: &StepCards) -> Option<i64> {
 }
 
 /// The panels' places in the area given: one, two side by side, or a grid of four (rows first), with a one-cell rule
-/// between them (drawn by `draw_rules`).
+/// between them (the ground shows through it, or a rule's outline when there are no fills).
 pub fn places(layout: Layout, area: Rect) -> Vec<Rect> {
     let half_w = area.width.saturating_sub(1) / 2;
     let half_h = area.height.saturating_sub(1) / 2;
@@ -134,24 +134,6 @@ pub fn places(layout: Layout, area: Rect) -> Vec<Rect> {
                 left(bottom_y, bottom_h),
                 right(bottom_y, bottom_h),
             ]
-        }
-    }
-}
-
-/// The rules between panels, in the line colour.
-pub fn draw_rules(f: &mut Frame, layout: Layout, area: Rect) {
-    if layout == Layout::Focused || area.width < 3 {
-        return;
-    }
-    let x = area.x + area.width.saturating_sub(1) / 2;
-    for y in area.y..area.y + area.height {
-        f.buffer_mut()[(x, y)].set_symbol("│").set_style(line());
-    }
-    if layout == Layout::Grid && area.height >= 3 {
-        let y = area.y + area.height.saturating_sub(1) / 2;
-        for x2 in area.x..area.x + area.width {
-            let sym = if x2 == x { "┼" } else { "─" };
-            f.buffer_mut()[(x2, y)].set_symbol(sym).set_style(line());
         }
     }
 }

@@ -22,7 +22,8 @@
 //! failed = true
 //!
 //! [colors]                    # any role: paper, ink, muted, line, selection, selection-ink,
-//! running = "#5aa9ff"         # needs-you, running, passed, failed
+//! running = "#5aa9ff"         # needs-you, running, passed, failed, ground, raised, fill,
+//!                             # running-soft, passed-soft, failed-soft
 //!
 //! [keys]                      # keys.rs: a preset, then any action's keys
 //! preset = "default"          # default | vim | emacs
@@ -122,7 +123,8 @@ impl Settings {
                 Column::Project => 14,
             })
             .sum();
-        (36 + extra).min(90)
+        // The sheet, its padding and the card's badge besides the title.
+        (46 + extra).min(90)
     }
 }
 
@@ -449,7 +451,7 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
                     v.shown()
                 )),
                 (None, _) => warnings.push(format!(
-                    "Line {n}: there's no colour called {}, so it was ignored (paper, ink, muted, line, selection, selection-ink, needs-you, running, passed, failed).",
+                    "Line {n}: there's no colour called {}, so it was ignored (paper, ink, muted, line, selection, selection-ink, needs-you, running, passed, failed, ground, raised, fill, running-soft, passed-soft, failed-soft).",
                     fit(&clean(role), 24)
                 )),
             },
@@ -1079,7 +1081,7 @@ running = "#5aa9ff"
             "Line 3: bell can be true or false, not \"yes\"; using true.".into(),
             "Line 4: \"mood\" isn't a column (agent, step, age, cost or project), so it was left out.".into(),
             "Line 6: running needs a colour like \"#1a2b3c\", not \"blue\"; the theme's own is used.".into(),
-            "Line 7: there's no colour called teal, so it was ignored (paper, ink, muted, line, selection, selection-ink, needs-you, running, passed, failed).".into(),
+            "Line 7: there's no colour called teal, so it was ignored (paper, ink, muted, line, selection, selection-ink, needs-you, running, passed, failed, ground, raised, fill, running-soft, passed-soft, failed-soft).".into(),
         ]);
     }
 
