@@ -332,7 +332,7 @@ fn keys_go_only_to_the_focused_panel() {
     assert_eq!(fx, vec![]);
     assert_eq!(
         app.status.as_ref().unwrap().1,
-        "Nothing is building on this task to stop."
+        "Nothing is building or waiting on this task to stop."
     );
     // A click on the other panel moves focus back.
     screen(&mut app, 160, 34);

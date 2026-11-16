@@ -53,7 +53,8 @@
           "href": "/t/t-done?tab=result&run=2"
         },
         "question": null
-      }
+      },
+      "waiting": null
     },
     {
       "id": "t-b",
@@ -76,7 +77,8 @@
       "rank": 1,
       "detail": "An agent is working on it.",
       "problem": null,
-      "need": null
+      "need": null,
+      "waiting": null
     },
     {
       "id": "t-live",
@@ -99,7 +101,8 @@
       "rank": 1,
       "detail": "An agent is working on it.",
       "problem": null,
-      "need": null
+      "need": null,
+      "waiting": null
     }
   ],
   "needs": [

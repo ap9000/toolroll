@@ -55,6 +55,32 @@ pub fn duration(secs: i64) -> String {
     }
 }
 
+/// A waiting task in one line: "Last build failed · <reason> · next try in 1m 40s", from the engine's own due time.
+pub fn waiting_words(w: &toolroll_api::Waiting, now: i64) -> String {
+    let next = match w.retry_at.as_deref().and_then(epoch) {
+        Some(at) if at > now => format!("next try in {}", duration(at - now)),
+        Some(_) => "trying again now".to_string(),
+        None => "next try when a builder is free".to_string(),
+    };
+    match w.last_failure.as_deref().map(clean) {
+        Some(why) if !why.is_empty() => format!("Last build failed · {why} · {next}"),
+        _ => format!("Waiting · {next}"),
+    }
+}
+
+/// The engine's suggestion beside Retry, without its "retry as it is" (Retry is the key right under it).
+pub fn suggestion_words(s: &str) -> Option<String> {
+    let s = clean(s);
+    let rest = s
+        .strip_prefix("Retry as it is;")
+        .or_else(|| s.strip_prefix("Retry as it is."))
+        .map(str::trim)
+        .unwrap_or(s.trim());
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    Some(format!("{}{}", first.to_uppercase(), chars.as_str()))
+}
+
 fn mark_of(card: &StepCard) -> (&'static str, Style) {
     let m = marks();
     match card.mark.as_str() {
@@ -121,7 +147,13 @@ fn step_line_with(app: &App, steps: &StepCards, times: bool, join: &str) -> Line
         spans.push(Span::raw(format!("{label} ")));
         spans.push(Span::styled(mark.to_string(), style));
         if card.mark == "live" && times {
-            if let Some(start) = card.started_at.as_deref().and_then(epoch) {
+            // This build's own time (not the first build's).
+            if let Some(start) = card
+                .latest_started_at
+                .as_deref()
+                .or(card.started_at.as_deref())
+                .and_then(epoch)
+            {
                 spans.push(Span::styled(
                     format!(" {}", short_duration(app.now - start)),
                     dim(),
@@ -154,19 +186,36 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
     if !card.sentence.is_empty() {
         parts.push(clean(&card.sentence));
     }
-    if let Some(start) = card.started_at.as_deref().and_then(epoch) {
-        let end = card
-            .finished_at
-            .as_deref()
-            .and_then(epoch)
-            .unwrap_or(app.now);
+    // Counted from this build (not the first one, nor the filing); while waiting to try again, how long it has waited.
+    let running = steps.live_run.is_some() || card.state == "current";
+    if steps.waiting.is_some() && !running {
+        if let Some(end) = card.finished_at.as_deref().and_then(epoch) {
+            parts.push(duration(app.now - end));
+        }
+    } else if let Some(start) = card
+        .latest_started_at
+        .as_deref()
+        .or(card.started_at.as_deref())
+        .and_then(epoch)
+    {
+        let end = if running {
+            app.now
+        } else {
+            card.finished_at
+                .as_deref()
+                .and_then(epoch)
+                .unwrap_or(app.now)
+        };
         parts.push(duration(end - start));
     }
     if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
         parts.push(format!("${cost:.2}"));
     }
     if let Some(run) = card.runs.first() {
-        parts.push(format!("build #{run}"));
+        parts.push(match card.runs.len() {
+            0 | 1 => format!("build #{run}"),
+            n => format!("build #{run} ({} before)", n - 1),
+        });
     }
     Some(Line::from(Span::styled(parts.join(" · "), dim())))
 }
@@ -560,6 +609,12 @@ fn card_lines(
             dim(),
         )),
     ];
+    // Waiting to try again: why, and when, wrapped whole under the card.
+    if let Some(wait) = &item.waiting {
+        for piece in wrap(&waiting_words(wait, app.now), w.saturating_sub(2).max(10)) {
+            out.push(Line::from(Span::styled(format!("  {piece}"), dim())));
+        }
+    }
     if comfortable {
         // Comfortable: a third line with what it is doing, quiet.
         out.push(Line::from(Span::styled(
@@ -650,7 +705,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         && app.steps.as_ref().is_some_and(|s| s.live_run.is_some());
     // (A question waiting takes the foot instead: the composer shows again once it is answered, or while typing.)
     let composer_h = if input || (live_build && roomy && question.is_none()) {
-        let rows = if matches!(app.mode, Mode::NewTask(..)) {
+        let rows = if matches!(app.mode, Mode::NewTask(..) | Mode::NewThread(_)) {
             2
         } else {
             1
@@ -904,6 +959,15 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
             hint,
         );
         typed
+    } else if matches!(app.mode, Mode::NewThread(_)) {
+        // New thread: the same context line, where it runs and which agent.
+        let [hint, typed] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+        f.render_widget(
+            Paragraph::new(new_thread_hint(app, hint.width as usize)),
+            hint,
+        );
+        typed
     } else {
         Rect {
             height: 1.min(inner.height),
@@ -1101,6 +1165,32 @@ fn draw_first_run(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// New task's line: "In shop · to Claude Code · ⏎ Just code · Tab plan first" (or, with Tab, the other way round).
+/// The context line above a new thread's first message: its project and agent, and what Enter does.
+fn new_thread_hint(app: &App, w: usize) -> Line<'static> {
+    let project = app
+        .project
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .map(|n| clean(&n.to_string_lossy()))
+        .unwrap_or_else(|| "no project".into());
+    let mut spans = vec![Span::styled("In ", dim()), Span::styled(project, ink())];
+    if let Some(agent) = app
+        .agents
+        .as_ref()
+        .and_then(|a| a.first_task.as_ref())
+        .map(|t| clean(&t.name))
+    {
+        spans.push(Span::styled(" · with ", dim()));
+        spans.push(Span::styled(agent, ink()));
+    }
+    spans.push(Span::styled(" · ", dim()));
+    spans.push(Span::styled(
+        format!("{} shows its terms first", marks().enter),
+        dim(),
+    ));
+    fit_line(Line::from(spans), w)
+}
+
 fn new_task_hint(app: &App, plan: bool, w: usize) -> Line<'static> {
     let project = app
         .project
@@ -1153,6 +1243,12 @@ fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         // A failed task: why it stopped and how to retry, before anything else.
         if app.steps_here().is_some_and(|s| s.failure.is_some()) {
             f.render_widget(Paragraph::new(failure_lines(app, w)), area);
+            return;
+        }
+        // Waiting to try again: why the last build stopped and when the next one starts, never a blank pane.
+        let waiting = waiting_lines(app, w);
+        if !waiting.is_empty() {
+            f.render_widget(Paragraph::new(waiting), area);
             return;
         }
         let review = item.need.as_ref().and_then(|n| n.ask.as_deref()) == Some("review");
@@ -1265,6 +1361,9 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(Span::styled("Failed", crate::theme::failed())));
         lines.extend(why);
         lines.push(Line::raw(""));
+    } else if !waiting_lines(app, w).is_empty() {
+        lines.extend(waiting_lines(app, w));
+        lines.push(Line::raw(""));
     } else if let Some(headline) = &steps.headline {
         for l in wrap(&clean(headline), w) {
             lines.push(Line::from(Span::styled(l, ink())));
@@ -1289,12 +1388,21 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
         let (mark, mark_style) = mark_of(card);
         let (outcome, outcome_style) = outcome_of(card);
         let mut right = vec![Span::styled(outcome, outcome_style)];
-        if let Some(start) = card.started_at.as_deref().and_then(epoch) {
-            let end = card
-                .finished_at
-                .as_deref()
-                .and_then(epoch)
-                .unwrap_or(app.now);
+        // The step's newest run: how long it ran (or has run, while live).
+        if let Some(start) = card
+            .latest_started_at
+            .as_deref()
+            .or(card.started_at.as_deref())
+            .and_then(epoch)
+        {
+            let end = if card.mark == "live" {
+                app.now
+            } else {
+                card.finished_at
+                    .as_deref()
+                    .and_then(epoch)
+                    .unwrap_or(app.now)
+            };
             right.push(Span::styled(format!(" · {}", duration(end - start)), dim()));
         }
         if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
@@ -1423,11 +1531,12 @@ fn failure_lines(app: &App, w: usize) -> Vec<Line<'static>> {
     for l in wrap(&failure_words(failure), w) {
         lines.push(Line::from(Span::styled(l, ink())));
     }
-    if let Some(next) = &failure.suggestion {
-        for l in wrap(&clean(next), w) {
+    if let Some(next) = failure.suggestion.as_deref().and_then(suggestion_words) {
+        for l in wrap(&next, w) {
             lines.push(Line::from(Span::styled(l, dim())));
         }
     }
+    lines.extend(agent_said_lines(failure, w));
     lines.push(Line::raw(""));
     let retry = key_name(app, Action::SendBack);
     if steps.retry.is_some() && !retry.is_empty() {
@@ -1443,6 +1552,59 @@ fn failure_lines(app: &App, w: usize) -> Vec<Line<'static>> {
         ) {
             lines.push(Line::from(Span::styled(l, dim())));
         }
+    }
+    lines
+}
+
+/// A waiting task's Live and Steps words: why the last build stopped, when the next try is, and the keys that stop it.
+fn waiting_lines(app: &App, w: usize) -> Vec<Line<'static>> {
+    let Some(wait) = app.steps_here().and_then(|s| s.waiting.as_ref()) else {
+        return vec![];
+    };
+    let mut lines: Vec<Line<'static>> = wrap(&waiting_words(wait, app.now), w)
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, ink())))
+        .collect();
+    lines.push(Line::raw(""));
+    let mut keys = vec![];
+    for (action, words) in [
+        (Action::Stop, "Stop retrying"),
+        (Action::CancelTask, "Cancel task"),
+    ] {
+        let k = key_name(app, action);
+        if k.is_empty() {
+            continue;
+        }
+        if !keys.is_empty() {
+            keys.push(Span::raw("   "));
+        }
+        keys.extend(sheet::act(&k, words, false));
+    }
+    if !keys.is_empty() {
+        lines.push(Line::from(keys));
+    }
+    lines
+}
+
+/// At most this many of the agent's own last lines are drawn (the engine keeps at most 8).
+pub const AGENT_SAID_SHOWN: usize = 8;
+
+/// "What the agent said": the engine's cleaned tail of the agent's last output, cleaned again, each line cut to the
+/// width (never wrapped into more), at most AGENT_SAID_SHOWN of them.
+fn agent_said_lines(failure: &toolroll_api::Failure, w: usize) -> Vec<Line<'static>> {
+    let Some(said) = failure.agent_said.as_ref().filter(|s| !s.is_empty()) else {
+        return vec![];
+    };
+    let mut lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled("What the agent said", ink())),
+    ];
+    let from = said.len().saturating_sub(AGENT_SAID_SHOWN);
+    for l in &said[from..] {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", fit(&clean(l), w.saturating_sub(2))),
+            dim(),
+        )));
     }
     lines
 }
@@ -2084,6 +2246,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     let review = app.review_waiting();
     let retry = !review && app.retry_pins().is_some();
     let live = app.live_run().is_some();
+    let waiting = !live && app.queued_here();
     let acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
         if live {
             v.push((&[Steer], "steer"));
@@ -2093,6 +2256,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[SendBack], "send back"));
         } else if retry {
             v.push((&[SendBack], "retry"));
+        } else if waiting {
+            v.push((&[Stop], "stop retrying"));
         }
     };
     let five: Vec<(&[Action], &'static str)> = match app.tab {
@@ -2277,8 +2442,10 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     lines.push(Line::raw(""));
     for l in wrap(
         &format!(
-            "Keys: the {} preset. Change any in tui.toml under [keys], e.g. preset = \"vim\" or accept = \"A\".",
-            map.preset.key()
+            "Keys: the {} preset. Change any in tui.toml under [keys], e.g. preset = \"vim\" or {} = \"{}\".",
+            map.preset.key(),
+            crate::keys::HELP_EXAMPLE.0,
+            crate::keys::HELP_EXAMPLE.1
         ),
         inner,
     ) {
@@ -2408,19 +2575,83 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(keys));
             (" Take over ", lines)
         }
-        Mode::ConfirmRetry { run, .. } => {
-            let w = (area.width as usize).saturating_sub(10).clamp(24, 76);
+        Mode::ConfirmHold { .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
             let mut lines = vec![
                 Line::raw(""),
-                Line::from(Span::styled(format!("Retry build #{run}?"), ink())),
+                Line::from(Span::styled("Stop retrying this task?", ink())),
+                Line::raw(""),
+            ];
+            if let Some(wait) = app.steps_here().and_then(|s| s.waiting.as_ref()) {
+                for l in wrap(&waiting_words(wait, app.now), w) {
+                    lines.push(Line::raw(l));
+                }
+                lines.push(Line::raw(""));
+            }
+            for l in wrap(
+                "It stays in your list with its branch and workspace; nothing more runs until you resume it.",
+                w,
+            ) {
+                lines.push(Line::raw(l));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Stop retrying", true)));
+            lines.push(Line::from(Span::styled(
+                "Any other key keeps it retrying.",
+                dim(),
+            )));
+            (" Stop retrying ", lines)
+        }
+        Mode::ConfirmCancel {
+            title, state, run, ..
+        } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let mut lines = vec![Line::raw("")];
+            for l in wrap(&format!("Cancel “{}”?", clean(title)), w) {
+                lines.push(Line::from(Span::styled(l, ink())));
+            }
+            lines.push(Line::raw(""));
+            let shown = match run {
+                Some(r) => format!("It is {} · its latest build is #{r}.", clean(state)),
+                None => format!("It is {} · no build has run yet.", clean(state)),
+            };
+            lines.push(Line::raw(shown));
+            lines.push(Line::raw(""));
+            for l in wrap(
+                "Nothing else will run for it, and it can't be resumed. If it changes before Toolroll gets this, nothing is cancelled.",
+                w,
+            ) {
+                lines.push(Line::raw(l));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Cancel task", true)));
+            lines.push(Line::from(Span::styled("Any other key keeps it.", dim())));
+            (" Cancel task ", lines)
+        }
+        Mode::ConfirmRetry { run, .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 76);
+            // Build numbers are the console's own (shared by every task), so the new build's is known once it starts:
+            // what is said is which attempt it is, and the build it follows.
+            let attempt = app
+                .steps_here()
+                .and_then(|s| s.cards.as_ref())
+                .and_then(|c| c.iter().find(|c| c.key == "build"))
+                .map_or(1, |c| c.runs.len())
+                + 1;
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled(
+                    format!("Retry: starts a new build, attempt {attempt}, after build #{run}."),
+                    ink(),
+                )),
                 Line::raw(""),
             ];
             if let Some(failure) = app.steps_here().and_then(|s| s.failure.as_ref()) {
                 for l in wrap(&failure_words(failure), w) {
                     lines.push(Line::raw(l));
                 }
-                if let Some(next) = &failure.suggestion {
-                    for l in wrap(&clean(next), w) {
+                if let Some(next) = failure.suggestion.as_deref().and_then(suggestion_words) {
+                    for l in wrap(&next, w) {
                         lines.push(Line::from(Span::styled(l, dim())));
                     }
                 }
@@ -2783,9 +3014,23 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let mut body: Vec<Line<'static>> = vec![];
+    let unfold = app.build_unfold;
     for (label, words) in terms.iter() {
         let mut first = true;
-        for part in words.split('\n') {
+        // The Usual row is its summary line, then each setting on its own line: folded to the summary, with how to
+        // see them all (the summary is the engine's own words for them).
+        let parts: Vec<&str> = words.split('\n').collect();
+        let folded = label == "Usual" && parts.len() > 1 && !unfold;
+        let shown: Vec<String> = if folded {
+            vec![
+                parts[0].to_string(),
+                format!("f shows all {} settings", parts.len() - 1),
+            ]
+        } else {
+            parts.iter().map(|p| p.to_string()).collect()
+        };
+        for (pi, part) in shown.iter().enumerate() {
+            let hint = folded && pi == 1;
             for piece in wrap(&clean(part), text_w) {
                 let lead = if first {
                     format!("{:<width$}  ", label, width = label_w)
@@ -2800,7 +3045,11 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
                 first = false;
                 body.push(Line::from(vec![
                     Span::styled(lead, dim()),
-                    Span::raw(piece),
+                    if hint {
+                        Span::styled(piece, dim())
+                    } else {
+                        Span::raw(piece)
+                    },
                 ]));
             }
         }

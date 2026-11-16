@@ -214,6 +214,8 @@ pub struct Item {
     pub is_task: bool,
     /// A Flexible thread (thread.rs): one more live session, its panel the thread's own.
     pub thread: bool,
+    /// A queued task waiting to start again (Work's own facts: when, and why the last build stopped).
+    pub waiting: Option<toolroll_api::Waiting>,
 }
 
 impl Item {
@@ -289,6 +291,18 @@ pub enum Mode {
         task: String,
         run: i64,
         digest: String,
+    },
+    /// Stop retrying a waiting task (POST /t/<task>/hold, the task page's "Hold the next attempt"): it stays, nothing
+    /// more runs until it is resumed.
+    ConfirmHold {
+        task: String,
+    },
+    /// Cancel a task: the state and latest build shown (`run`: None for no build), posted as pins the cancel proves.
+    ConfirmCancel {
+        task: String,
+        title: String,
+        state: String,
+        run: Option<i64>,
     },
     ConfirmAnswer(AnswerPin),
     /// A thread's question and the answer picked, pinned (thread.rs): Enter posts exactly them.
@@ -697,6 +711,8 @@ pub struct App {
     pub key_since_said: bool,
     /// The Settings screen's chosen row (settings.rs Choice::ALL).
     pub settings_row: usize,
+    /// Build's Usual row shown whole (f), else its summary line only.
+    pub build_unfold: bool,
     pub work_again: bool,
     pub areas: Areas,
     /// The Live tab's lines for (transcript version, width): rebuilt only when either moves.
@@ -782,6 +798,7 @@ impl App {
             said_at: None,
             key_since_said: true,
             settings_row: 0,
+            build_unfold: false,
             work_again: false,
             areas: Areas::default(),
             line_cache: None,
@@ -816,6 +833,34 @@ impl App {
         self.steps
             .as_ref()
             .filter(|s| s.task.id == task || s.task.root == task)
+    }
+
+    /// The selected task is queued with nothing building: waiting for a builder, or to try again.
+    pub fn queued_here(&self) -> bool {
+        self.steps_here()
+            .is_some_and(|s| s.task.state == "queued" && s.live_run.is_none())
+    }
+
+    /// What Cancel shows and pins for the selected task: its id, title, state and latest build (any step's newest run).
+    pub fn cancel_pins(&self) -> Option<(String, String, String, Option<i64>)> {
+        let item = self.selected_item().filter(|i| i.is_task && !i.thread)?;
+        let steps = self.steps_here()?;
+        if !matches!(steps.task.state.as_str(), "queued" | "running" | "failed") {
+            return None;
+        }
+        let run = steps
+            .cards
+            .iter()
+            .flatten()
+            .flat_map(|c| c.runs.iter().copied())
+            .max()
+            .or(steps.live_run);
+        Some((
+            item.id.clone(),
+            item.title.clone(),
+            steps.task.state.clone(),
+            run,
+        ))
     }
 
     /// A result waits for this person's Accept or Send back on the selected task.
@@ -1053,6 +1098,7 @@ impl App {
             })) => {
                 let title = self.filing.clone();
                 self.status = None;
+                self.build_unfold = false;
                 self.mode = Mode::Build {
                     title,
                     preview,
@@ -1714,6 +1760,28 @@ impl App {
                     }
                 }
             }
+            Mode::ConfirmHold { task } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.hold(task),
+                    _ => {
+                        self.say(Tone::Said, "It keeps retrying.");
+                        vec![]
+                    }
+                }
+            }
+            Mode::ConfirmCancel {
+                task, state, run, ..
+            } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.cancel(task, state, run),
+                    _ => {
+                        self.say(Tone::Said, "Not cancelled.");
+                        vec![]
+                    }
+                }
+            }
             Mode::ConfirmRetry { task, run, digest } => {
                 self.mode = Mode::Normal;
                 match key.code {
@@ -1745,6 +1813,19 @@ impl App {
                         digest,
                         terms,
                         scroll: scroll + by,
+                        seen_end,
+                    };
+                    vec![]
+                }
+                KeyCode::Char('f') => {
+                    // The Usual row: its summary, or every setting in it.
+                    self.build_unfold = !self.build_unfold;
+                    self.mode = Mode::Build {
+                        title,
+                        preview,
+                        digest,
+                        terms,
+                        scroll,
                         seen_end,
                     };
                     vec![]
@@ -2242,13 +2323,47 @@ impl App {
                     self.mode = Mode::ConfirmStop(run);
                     vec![]
                 }
+                // Waiting to try again, or queued: stop retrying (it stays; nothing more runs).
+                None if self.queued_here() => {
+                    let task = item.as_ref().map(|i| i.id.clone()).unwrap_or_default();
+                    self.status = None;
+                    self.mode = Mode::ConfirmHold { task };
+                    vec![]
+                }
                 None => {
-                    self.say(Tone::Refused, "Nothing is building on this task to stop.");
+                    self.say(
+                        Tone::Refused,
+                        "Nothing is building or waiting on this task to stop.",
+                    );
+                    vec![]
+                }
+            },
+            Action::CancelTask => match self.cancel_pins() {
+                Some((task, title, state, run)) => {
+                    self.status = None;
+                    self.mode = Mode::ConfirmCancel {
+                        task,
+                        title,
+                        state,
+                        run,
+                    };
+                    vec![]
+                }
+                None => {
+                    self.say(
+                        Tone::Refused,
+                        "Only a queued, running or failed task can be cancelled (open its steps first).",
+                    );
                     vec![]
                 }
             },
             Action::NewThread => {
                 self.mode = Mode::NewThread(String::new());
+                // Its agent is said on the line above: read it when it isn't known yet.
+                if self.agents.is_none() && !self.fetching_agents {
+                    self.fetching_agents = true;
+                    return vec![Effect::FetchAgents];
+                }
                 vec![]
             }
             Action::Accept => {
@@ -2906,6 +3021,46 @@ impl App {
         )
     }
 
+    /// Stop retrying (POST /t/<task>/hold): an operator's hold, as the task page's "Hold the next attempt".
+    fn hold(&mut self, task: String) -> Vec<Effect> {
+        if self.selected_id().as_deref() != Some(task.as_str()) {
+            self.say(
+                Tone::Refused,
+                "This task isn't selected any more — look again.",
+            );
+            return vec![];
+        }
+        let path = format!("/t/{}/hold", toolroll_api::client::encode(&task));
+        self.act(
+            path,
+            vec![("reason", "stopped retrying from the terminal".into())],
+            "Stopped retrying: it stays, and nothing more runs until you resume it.".into(),
+        )
+    }
+
+    /// Cancel exactly the task, state and build the dialog showed (POST /t/<task>/cancel with them as pins, which the
+    /// cancel proves in its own transaction).
+    fn cancel(&mut self, task: String, state: String, run: Option<i64>) -> Vec<Effect> {
+        if self.cancel_pins().map(|(t, _, s, r)| (t, s, r))
+            != Some((task.clone(), state.clone(), run))
+        {
+            self.say(
+                Tone::Refused,
+                "This task changed — look again before cancelling.",
+            );
+            return vec![];
+        }
+        let path = format!("/t/{}/cancel", toolroll_api::client::encode(&task));
+        self.act(
+            path,
+            vec![
+                ("state", state),
+                ("run", run.map_or("none".into(), |r| r.to_string())),
+            ],
+            "Cancelled: nothing else will run for this task.".into(),
+        )
+    }
+
     fn stop(&mut self, run: i64) -> Vec<Effect> {
         let Some(path) = self.task_path("stop") else {
             return vec![];
@@ -3425,6 +3580,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
         need: r.need.clone(),
         is_task: true,
         thread: false,
+        waiting: r.waiting.clone(),
     };
     for r in &rows.rows {
         let section = section_of(r);
@@ -3439,6 +3595,9 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 .clone()
                 .unwrap_or_else(|| ask_word(asks).unwrap_or(&r.word.word).to_string());
             needs.push(item(Section::NeedsYou, r, word));
+        } else if r.waiting.is_some() {
+            // One word while it waits to try again, whatever the status says from moment to moment.
+            rest.push(item(section, r, "Waiting".into()));
         } else {
             rest.push(item(section, r, r.word.word.clone()));
         }
@@ -3462,6 +3621,7 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 need: Some(n.clone()),
                 is_task: false,
                 thread: false,
+                waiting: None,
             });
         }
     }
