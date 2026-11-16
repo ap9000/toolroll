@@ -19,7 +19,7 @@ expression: shown
 " │ ◐ Rate-limit middleware           Planning │ │ │$ npm test                                                       │ │ "
 " │   shop · 7m ago                            │ │ │212 passed (3.1 s)                                               │ │ "
 " │                                            │ │ │$                                                                │ │ "
-" │ Done today 1                               │ │ │                                                                 │ │ "
+" │ Recent 1                                   │ │ │                                                                 │ │ "
 " │ ✓ Bump dependencies               Complete │ │ │                                                                 │ │ "
 " │   shop · 3h ago                            │ │ │                                                                 │ │ "
 " │                                            │ │ │                                                                 │ │ "

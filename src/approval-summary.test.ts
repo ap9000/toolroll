@@ -30,13 +30,14 @@ beforeEach(() => {
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const criterion = (id: string, statement: string, evidence: ("check" | "manual-review")[] = ["manual-review"]) => ({ id, statement, how: null, evidence });
-function file(id: string, input: { goal?: string; touches?: string[]; outOfScope?: string; budgetMicrousd?: number; pin?: [string, string] } = {}): Scope {
+function file(id: string, input: { goal?: string; touches?: string[]; outOfScope?: string; budgetMicrousd?: number; pin?: [string, string]; reviewOnly?: boolean } = {}): Scope {
   store.createTask({ id, title: id }, at);
   store.placeTask(store.lookupRef(id)!.id, REPO);
   if (input.pin !== undefined) store.pinTaskAgent(store.lookupRef(id)!.id, input.pin[0], input.pin[1]);
   return propose(store, { taskId: id, goal: input.goal ?? "Add a per-account guard to the payout limiter.", touches: input.touches ?? [],
     outOfScope: input.outOfScope ?? null, ...(input.budgetMicrousd === undefined ? {} : { budgetMicrousd: input.budgetMicrousd }),
-    acceptance: [criterion("c1", "Two settlements can't both pass the limiter."), criterion("c2", "The limiter tests pass.", ["check"])], now: at });
+    acceptance: input.reviewOnly === true ? [criterion("c1", input.goal ?? "Add a per-account guard to the payout limiter.")]
+      : [criterion("c1", "Two settlements can't both pass the limiter."), criterion("c2", "The limiter tests pass.", ["check"])], now: at });
 }
 const contextOf = (scope: Scope): SummaryContext => summaryContextOf(store, scope.taskId, scope, at);
 const linesOf = (scope: Scope, extra: Partial<SummaryContext> = {}): string => summaryLines(approvalSummaryOf(scope, { ...contextOf(scope), ...extra })).join("\n");
@@ -49,6 +50,8 @@ function representative(): { name: string; scope: Scope; context: SummaryContext
   const made: { name: string; scope: Scope; context: SummaryContext }[] = [];
   const add = (name: string, scope: Scope, extra: Partial<SummaryContext> = {}) => made.push({ name, scope, context: { ...contextOf(scope), ...extra } });
   add("plain", file("plain"));
+  // A first task: its one requirement is its goal, shown by the person's review.
+  add("first task", file("first", { goal: "Add a subtract function to math.js next to add", reviewOnly: true }));
   add("revision", file("revision", { goal: "Add a per-account guard to the payout limiter. — repair exactly the unmet criteria named below; a comment cannot widen the scope. Unmet: c1." }),
     { revision: { sourceTask: "plain", sourceRun: 9, hadPlan: true, changed: [], problem: null, repair: { cap: null, remaining: null } } });
   add("custom model", file("custom", { pin: ["codex", "gpt-5-codex"] }));
@@ -63,6 +66,32 @@ function representative(): { name: string; scope: Scope; context: SummaryContext
   return made;
 }
 
+describe("task sizing in the terms", () => {
+  const sized = (id: string, sizing: Parameters<Store["applySizing"]>[1], goal: string): Scope => {
+    store.createTask({ id, title: id }, at);
+    store.placeTask(store.lookupRef(id)!.id, REPO);
+    expect(store.applySizing(id, sizing, { followPlanning: false }, at)).toMatchObject({ ok: true });
+    return propose(store, { taskId: id, goal, touches: [], outOfScope: null, acceptance: [criterion("c1", goal)], now: at });
+  };
+  test("on, and the classifier answered: the terms name the model that sized it, sealed in the route", () => {
+    const scope = sized("haiku", { size: "small", risky: false, source: "classifier", reason: "one file", by: "Claude Haiku 5.5" }, "Add a subtract function to math.js");
+    expect(linesOf(scope)).toMatch(/^ {2}Sized by {5}Claude Haiku 5\.5$/m);
+    expect(scope.proposedRouteJson).toContain('"by":"Claude Haiku 5.5"');
+    const jev = sized("jev", { size: "small", risky: false, source: "classifier", reason: "Jev is 90% sure", by: "Jev (OpenRouter)" }, "Add a subtract function to math.js");
+    expect(linesOf(jev)).toMatch(/^ {2}Sized by {5}Jev \(OpenRouter\)$/m);
+    // The words alone: no model is named.
+    const words = sized("words", { size: "small", risky: false, source: "heuristic", reason: "short and focused" }, "Add a subtract function to math.js");
+    expect(linesOf(words)).not.toMatch(/Sized by/);
+    expect(words.proposedRouteJson).not.toContain('"by"');
+  });
+  test("off, and it plans because of that: the terms say so, with where to change it; a tiny change says nothing", () => {
+    const planned = sized("planned", { size: "medium", risky: false, source: "heuristic", reason: "task sizing is off; planned first" }, "Add a dark mode toggle");
+    expect(linesOf(planned)).toMatch(/^ {2}Note {9}Planned first: task sizing is off \(Settings → General\)$/m);
+    const tiny = sized("tiny", { size: "small", risky: false, source: "heuristic", reason: "task sizing is off; a tiny change" }, "Fix the typo in footer.txt");
+    expect(linesOf(tiny)).not.toMatch(/Planned first/);
+  });
+});
+
 describe("the summary, short and plain", () => {
   test("representative scopes read as their decisions, what differs, every risk, and the usual settings by name", () => {
     const shown = Object.fromEntries(representative().map(one => [one.name, summaryLines(approvalSummaryOf(one.scope, one.context)).join("\n")]));
@@ -74,8 +103,30 @@ describe("the summary, short and plain", () => {
         Files        any file in the project
         Network      the agent's provider
         Tools        file edits and routine commands; anything risky stops
-        May cost     no cap: an attempt runs until it finishes or reaches its time limit
-        Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
+        May cost     No spend cap · stops at its time limit (20 min without progress)
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 1000 turns or 20 min without progress
+                     Fixes: on the same model, up to 4 turns and 5 min
+                     Project checks: sandboxed"
+    `);
+    expect(shown["first task"]).toMatchInlineSnapshot(`
+      "  Goal         Add a subtract function to math.js next to add
+        Done when    You review the result
+        Agent        Claude Sonnet plans, builds, fixes and reviews
+        Files        any file in the project
+        Network      the agent's provider
+        Tools        file edits and routine commands; anything risky stops
+        May cost     No spend cap · stops at its time limit (20 min without progress)
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 1000 turns or 20 min without progress
+                     Fixes: on the same model, up to 4 turns and 5 min
+                     Project checks: sandboxed"
     `);
     expect(shown["revision"]).toMatchInlineSnapshot(`
       "  Revision     This revises build #9. It keeps the same limits. Each extra attempt asks you first.
@@ -86,8 +137,14 @@ describe("the summary, short and plain", () => {
         Files        any file in the project
         Network      the agent's provider
         Tools        file edits and routine commands; anything risky stops
-        May cost     no cap: an attempt runs until it finishes or reaches its time limit
-        Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
+        May cost     No spend cap · stops at its time limit (20 min without progress)
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 1000 turns or 20 min without progress
+                     Fixes: on the same model, up to 4 turns and 5 min
+                     Project checks: sandboxed"
     `);
     expect(shown["custom model"]).toMatchInlineSnapshot(`
       "  Goal         Add a per-account guard to the payout limiter.
@@ -97,9 +154,15 @@ describe("the summary, short and plain", () => {
         Files        any file in the project
         Network      the agent's provider
         Tools        file edits and commands inside the project only
-        May cost     no cap: an attempt runs until it finishes or reaches its time limit
+        May cost     No spend cap · stops at its time limit (20 min without progress)
         Your pick    builder Codex · gpt-5-codex, not the project’s usual pick
-        Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 20 min without progress · fixes on the same model, up to 5 min · project checks sandboxed"
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 20 min without progress
+                     Fixes: on the same model, up to 5 min
+                     Project checks: sandboxed"
     `);
     expect(shown["path limits"]).toMatchInlineSnapshot(`
       "  Goal         Add a per-account guard to the payout limiter.
@@ -110,8 +173,14 @@ describe("the summary, short and plain", () => {
         Files        only src/payout-limiter.ts, src/settle.ts
         Network      the agent's provider
         Tools        file edits and routine commands; anything risky stops
-        May cost     no cap: an attempt runs until it finishes or reaches its time limit
-        Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
+        May cost     No spend cap · stops at its time limit (20 min without progress)
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 1000 turns or 20 min without progress
+                     Fixes: on the same model, up to 4 turns and 5 min
+                     Project checks: sandboxed"
     `);
     expect(shown["budget"]).toMatchInlineSnapshot(`
       "  Goal         Add a per-account guard to the payout limiter.
@@ -122,7 +191,13 @@ describe("the summary, short and plain", () => {
         Network      the agent's provider
         Tools        file edits and routine commands; anything risky stops
         May cost     up to $2.50 per attempt; the agent is stopped there
-        Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 1000 turns or 20 min without progress
+                     Fixes: on the same model, up to 4 turns and 5 min
+                     Project checks: sandboxed"
     `);
     expect(shown["network"]).toMatchInlineSnapshot(`
       "  Goal         Add a per-account guard to the payout limiter.
@@ -132,8 +207,14 @@ describe("the summary, short and plain", () => {
         Files        any file in the project
         Network      open — any host
         Tools        file edits and routine commands; anything risky stops
-        May cost     no cap: an attempt runs until it finishes or reaches its time limit
-        Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
+        May cost     No spend cap · stops at its time limit (20 min without progress)
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 1000 turns or 20 min without progress
+                     Fixes: on the same model, up to 4 turns and 5 min
+                     Project checks: sandboxed"
     `);
     expect(shown["team rule"]).toMatchInlineSnapshot(`
       "  Goal         Add a per-account guard to the payout limiter.
@@ -143,9 +224,15 @@ describe("the summary, short and plain", () => {
         Files        any file in the project
         Network      the agent's provider
         Tools        file edits and routine commands; anything risky stops
-        May cost     no cap: an attempt runs until it finishes or reaches its time limit
+        May cost     No spend cap · stops at its time limit (20 min without progress)
         Note         This project protects this work: two people must approve it.
-        Usual        Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed"
+        Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
+                     Checks: Default
+                     Writes: only its checkout, its caches and its temp folder
+                     Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
+                     Time limit: stops after 1000 turns or 20 min without progress
+                     Fixes: on the same model, up to 4 turns and 5 min
+                     Project checks: sandboxed"
     `);
   });
 

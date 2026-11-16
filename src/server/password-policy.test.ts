@@ -62,6 +62,8 @@ const COOKIE_ONLY_POSTS = [
   // Settings → Lead → Quick answers (responsive-chat.md §8): an operator's installation-wide switch for which model
   // answers plain questions, from a browser. No password, and never a bearer's choice.
   'settings.lead-quick',
+  // Settings → General: task sizing by a quick model call, an operator's step-up from a browser.
+  'settings.task-sizing',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {
@@ -82,7 +84,7 @@ const PASSWORD_CEREMONIES = [
   '/settings/chat-approval/confirm', '/settings/chat-approval/save', '/settings/project/live-view', '/settings/project/fallback',
   '/control/instructions-approve', '/control/setup-approve', '/fleet/runner/register', '/fleet/runner/retire',
   '/mode/sign', '/mode/confirm', '/people/projects', '/people/invite', '/people/invite-revoke', '/people/revoke',
-  '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off', '/settings/install-mode/solo',
+  '/projects/onboard-confirm', '/push/subscribe', '/settings/local-mode/off', '/settings/install-mode/solo', '/settings/task-sizing',
   '/settings/provider-key', '/settings/telegram-token', '/settings/email', '/settings/google',
   '/chat/config', '/chat', `/chat/file/${'a'.repeat(32)}`, '/chat/ack/1',
   '/t/guarded/reopen', '/t/guarded/accept-revision', '/t/guarded/resume', '/t/guarded/approve',

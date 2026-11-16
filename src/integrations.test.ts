@@ -16,7 +16,7 @@ import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
 import type { ExecResult } from "./exec.js";
 import { addToolTo, setToolSecrets, validateToolSpec } from "./project-tools.js";
-import { checkIntegrations, createIntegrationMonitor, integrationsNow, renderIntegrations, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
+import { agentsSignedOutLines, checkIntegrations, createIntegrationMonitor, integrationsBrokenLine, integrationsNow, renderIntegrations, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
 import { UNANSWERED_WORDS } from "./tool-secret-store.js";
 import { integrationsHtml } from "./integrations-ui.js";
 import { NO_OS_FENCE } from "../test/inside-fence.js";
@@ -171,6 +171,16 @@ test("toolroll integrations --json lists every integration with its state, times
     await runOperate("status", [], line => lines.push(line), { ...options, integrationIo: { ...options.integrationIo, fetch: neverCalled }, releaseIo: { fetch: async () => { throw new Error("offline"); } } } as Parameters<typeof runOperate>[3]);
     expect(lines.join("\n").split("\n").filter(line => line.startsWith("Broken integration"))).toEqual(["Broken integration: Linear. See `toolroll integrations` or Settings → Integrations."]);
   } finally { store = openStore(join(dir, "orders.db")); }
+});
+
+test("an agent signed out is Not set up with its sign-in command, never Broken (eight stranger 2)", async () => {
+  const list = await checkIntegrations(io({ checkConnection: async provider => ({ state: provider === "codex" ? "signed-out" : "connected", mode: "subscription", checkedAt: now.toISOString() }) }));
+  expect(one(list, "agent:codex")).toMatchObject({ state: "not-set-up", detail: "signed out (run `codex login`)" });
+  expect(agentsSignedOutLines(list)).toEqual(["Codex · signed out (run `codex login`)"]);
+  expect(integrationsBrokenLine(list.filter(row => row.key.startsWith("agent:")))).toBeNull();
+  // Not installed stays plainly Not set up, with no sign-in line.
+  const absent = await checkIntegrations(io());
+  expect(agentsSignedOutLines(absent)).toEqual([]);
 });
 
 test("a render never waits on an integration check: the page answers while every check hangs", async () => {

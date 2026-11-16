@@ -173,7 +173,8 @@ impl App {
         let rank = |s: Section| match s {
             Section::Working => 0,
             Section::NeedsYou => 1,
-            Section::DoneToday => 2,
+            Section::UpNext => 2,
+            Section::Recent => 3,
         };
         let mut candidates: Vec<&crate::app::Item> = self
             .items

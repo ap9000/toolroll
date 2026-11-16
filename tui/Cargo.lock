@@ -2361,6 +2361,7 @@ dependencies = [
  "tokio",
  "toolroll-api",
  "toolroll-fake-engine",
+ "toolroll-vt100",
  "unicode-width",
  "vt100",
  "zeroize",
@@ -2380,6 +2381,15 @@ dependencies = [
  "toolroll-fake-engine",
  "toolroll-tui",
  "vt100",
+]
+
+[[package]]
+name = "toolroll-vt100"
+version = "0.16.2"
+dependencies = [
+ "itoa",
+ "unicode-width",
+ "vte",
 ]
 
 [[package]]

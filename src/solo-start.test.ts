@@ -6,6 +6,7 @@
  * apply; Plan first and a team install keep today's approval. Isolated stores and temp repositories only.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { sizingOn } from "../test/sizing-on.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,6 +42,7 @@ function world(kind: "solo" | "team" | "laptop"): Store {
   git(REPO, "add", ".");
   git(REPO, "commit", "-q", "-m", "first");
   const s = openStore(join(dir, "orders.db"));
+  sizingOn(s);
   if (kind === "solo") expect(s.bootstrapApproverIfNone("owner", hashPassword("owner-password-1"), NOW)).toEqual({ ok: true });
   else if (kind === "team") expect(addApprover(s, "owner", NOW).ok).toBe(true);
   else expect(initLocalMode(s, { owner: "owner", fenceAvailable: true, now: NOW })).toMatchObject({ ok: true });
@@ -60,6 +62,23 @@ const press = (preview: string, digest: string, via: FastVia = "console") => fre
 const taskOfPreview = (preview: string) => String(store.handle.prepare("SELECT task_id FROM fast_preview WHERE id = ?").get(preview)!["task_id"]);
 
 describe("on a solo install, filing with Just code is the approval", () => {
+  test("task sizing off (the default): Just code still builds any size as the person chose, with no model call and no word of planning", async () => {
+    store = world("solo");
+    store.handle.prepare("DELETE FROM task_sizing_setting").run();
+    dropSizer();
+    let asked = 0;
+    dropSizer = installFilingSizer(async () => { asked += 1; return { size: "small", risky: false, reason: "one word" }; });
+    for (const title of [BIG, "Fix the typo in footer.txt"]) {
+      const shown = await prepare(title);
+      if (!shown.eligible) throw new Error(shown.reason);
+      const words = fastTermsLines(store, shown.scope, REPO).map(one => `${one.label} ${one.words}`).join("\n");
+      expect(words, title).not.toContain("Planned first");
+      expect(words, title).not.toContain("Sized by");
+      expect(press(shown.preview, shown.digest).ok, title).toBe(true);
+    }
+    expect(asked).toBe(0);
+  });
+
   test("any size: shows the terms and their cost first, then files and approves exactly them, recorded with the digest and summary key", async () => {
     store = world("solo");
     const shown = await prepare();

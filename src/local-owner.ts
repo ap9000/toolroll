@@ -87,6 +87,9 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // Settings → Models from the terminal workbench on a solo install: which agent and model plans, builds and reviews
   // (model-choices.ts applyModelChoices re-checks this exact act and solo inside its one transaction).
   "change-models",
+  // Settings → General's task sizing (task-sizing.ts): whether a quick model call on the owner's own plan sizes new tasks
+  // before the yes. It grants no access and approves nothing; the handler checks this exact act inside its write.
+  "task-sizing-switch",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);

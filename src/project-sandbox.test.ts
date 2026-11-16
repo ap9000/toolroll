@@ -83,13 +83,14 @@ describe("the setting", () => {
     // Every sealed term is said where the yes is asked for: the CLI's scope words and the console's scope view.
     const scope = store.getScope("t-2")!;
     const cli = describeScope(scope).join("\n");
-    expect(cli).toMatch(/reads your home folder, as in Anthropic's sandbox runtime/);
+    // The usual settings: one plain line, then each whole on its own line (approval-summary.ts summaryLines).
+    expect(cli).toMatch(/^ {15}Reads: your home folder, as in Anthropic's sandbox runtime/m);
     // Extra services are a risk: said in the open, never among the usual settings.
     expect(cli).toMatch(/^ {2}Note {9}It also reaches these macOS services: com\.apple\.trustd\.agent\.$/m);
     const web = htmlString(profileWords(scope));
     expect(web).toContain("data-scope-reads");
     expect(web).toContain("Also reaches these macOS services: com.apple.trustd.agent");
-    expect(describeScope(store.getScope("t-1")!).join("\n")).toMatch(/reads your home folder, as in Anthropic's sandbox runtime, except ~\/\.ssh/);
+    expect(describeScope(store.getScope("t-1")!).join("\n")).toMatch(/^ {15}Reads: your home folder, as in Anthropic's sandbox runtime, except ~\/\.ssh/m);
     for (const kind of ["mode", "grant", "chat"] as const) expect(store.sealScopeApproval("t-2", "alex", new Date(), {}, { kind, modeDigest: "d" }, "person")).toBe(false);
     expect(store.sealScopeApproval("t-2", "alex", new Date())).toBe(true);
   });

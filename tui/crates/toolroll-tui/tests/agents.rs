@@ -69,11 +69,19 @@ fn every_agent_grouped_with_how_to_add_it() {
         "Needs sign-in",
         "Needs a check",
         "Not installed",
-        "npm install -g @anthropic-ai/claude-code",
+        "Sign in again",
         "Models",
+        // Readable model names, from the engine's catalog.
+        "Claude Opus 5.5",
     ] {
         assert!(shown.contains(words), "{words}\n{shown}");
     }
+    // Installed already: no install line (y still copies it).
+    assert!(
+        !shown.contains("npm install -g @anthropic-ai/claude-code"),
+        "{shown}"
+    );
+    assert!(!shown.contains("claude-opus-5-5"), "{shown}");
     insta::assert_snapshot!("agents_ready", shown);
     select(&mut app, "codex");
     insta::assert_snapshot!("agents_needs_sign_in", screen(&mut app, 120, 34));
@@ -308,7 +316,8 @@ fn a_models_change_is_shown_before_it_is_saved_through_settings_models() {
     assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
     let shown = screen(&mut app, 120, 34);
     assert!(
-        shown.contains("Builder for routine tasks: Claude · Claude Sonnet 5.5 → Codex · GPT-6 Sol"),
+        shown
+            .contains("Builder for routine tasks: Claude Sonnet 5.5 · $$ → Codex · GPT-6 Sol · $$"),
         "{shown}"
     );
     insta::assert_snapshot!("agents_models_confirm", shown);

@@ -20,6 +20,9 @@ pub const SCROLLBACK_LINES: usize = 5000;
 pub const ATTACH_HOLD_MAX: usize = 32 << 20;
 /// Said when output can't be kept whole: the pane closes, and t attaches again.
 pub const TOO_MUCH: &str = "Too much output; reattach with t.";
+/// The smallest screen the emulator is ever given (rows and columns alike): a one-row or one-column screen has edge
+/// cases the emulator has crashed on, and a pane that small shows nothing useful anyway.
+pub const MIN_SIDE: u16 = 2;
 /// Pasted text larger than this is refused (the console takes 256 KiB a second at most).
 pub const PASTE_MAX_BYTES: usize = 200 * 1024;
 
@@ -67,6 +70,8 @@ pub struct Pane {
     pub scroll: usize,
     /// The program said it isn't reading input (typing waits until it does).
     pub input_full: bool,
+    /// Output bytes parsed into the emulator so far (the harness checks none were dropped).
+    pub parsed: u64,
 }
 
 impl std::fmt::Debug for Pane {
@@ -96,6 +101,7 @@ impl Pane {
             drawn: false,
             scroll: 0,
             input_full: false,
+            parsed: 0,
         }
     }
 
@@ -126,6 +132,7 @@ impl Pane {
             return true;
         }
         self.parser.process(&chunk);
+        self.parsed += chunk.len() as u64;
         true
     }
 
@@ -136,6 +143,7 @@ impl Pane {
             return;
         }
         self.parser.process(bytes);
+        self.parsed += bytes.len() as u64;
     }
 
     /// `hello`: the screen so far was drawn at the console's size; parse it at that size, then go live (the next frame
@@ -151,15 +159,18 @@ impl Pane {
     /// Nothing of what it showed is kept: an empty screen, nothing held.
     pub fn forget(&mut self) {
         let (rows, cols) = self.parser.screen().size();
-        self.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+        self.parser = vt100::Parser::new(rows.max(MIN_SIDE), cols.max(MIN_SIDE), 0);
         self.held.clear();
         self.held_bytes = 0;
     }
 
     pub fn hello(&mut self, cols: u16, rows: u16, ended: bool) {
-        self.parser.screen_mut().set_size(rows.max(1), cols.max(1));
+        self.parser
+            .screen_mut()
+            .set_size(rows.max(MIN_SIDE), cols.max(MIN_SIDE));
         for chunk in std::mem::take(&mut self.held) {
             self.parser.process(&chunk);
+            self.parsed += chunk.len() as u64;
         }
         self.held_bytes = 0;
         self.sent = Some((cols, rows));
@@ -175,7 +186,8 @@ impl Pane {
 
     /// The size this pane wants the terminal to be, when it differs from the one last sent (only while live).
     pub fn wanted_size(&mut self) -> Option<(u16, u16)> {
-        if !self.live() || !self.drawn || self.area.width < 2 || self.area.height < 1 {
+        if !self.live() || !self.drawn || self.area.width < MIN_SIDE || self.area.height < MIN_SIDE
+        {
             return None;
         }
         let want = (self.area.width.min(500), self.area.height.min(200));

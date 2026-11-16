@@ -15,12 +15,16 @@ Run it inside one of your projects (a git repository): it installs the
 `toolroll` command and opens Toolroll on that project, in this terminal.
 Anywhere else, or without a terminal (a script, CI), it prints how to start
 it instead. `standing-orders`, the older
-name, still works. With npm instead:
+name, still works (the script removes the older `standing-orders` package
+first, saying so). With npm instead:
 
 ```sh
-npm install -g toolroll
+npm uninstall -g standing-orders 2>/dev/null; npm install -g toolroll
 toolroll
 ```
+
+The first command removes the older `standing-orders` package if it is there;
+npm can't install over it.
 
 To look around first, `npx toolroll demo` opens a throwaway sandbox
 with sample tasks already mid-flight. It never spends and never
@@ -65,7 +69,7 @@ it.
 
 | Install with | Command |
 |---|---|
-| npm | `npm install -g toolroll` |
+| npm | `npm uninstall -g standing-orders 2>/dev/null; npm install -g toolroll` |
 | Homebrew | `brew install ap9000/toolroll/toolroll` |
 | bun | `bun add -g toolroll` |
 | pnpm | `pnpm add -g toolroll` |
@@ -75,7 +79,8 @@ it.
 Bun's runtime has no `node:sqlite`, so Toolroll always runs on Node; `bunx`
 hands the shebang to Node, so `bunx toolroll up` works too. Coming from
 Standing Orders? It's the same product renamed; the `standing-orders` command
-and your data keep working.
+and your data keep working. Remove the older package first
+(`npm uninstall -g standing-orders`), or npm stops with `EEXIST`.
 
 Toolroll needs git 2.41 or newer: it reads agent-written checkouts with
 `git --attr-source`, which older git refuses, and `toolroll up`, `serve`,

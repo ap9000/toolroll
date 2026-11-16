@@ -26,7 +26,8 @@ import { run, terminateOwnedProcesses } from "./exec.js";
 import { CLAUDE_NO_TOOLS_ARGS, claudeJsonBody, type CommandRunner } from "./claude-print.js";
 import { JEV_MODEL, JEV_URL } from "./flow-sort.js";
 import { readProviderKey } from "./keys.js";
-import { type TaskSize, type TaskSizing } from "./phase-routing.js";
+import { PLANNED_FIRST_REASON, SIZING_OFF_REASON, type TaskSize, type TaskSizing } from "./phase-routing.js";
+import { envValue } from "./names.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { Store } from "./store.js";
 
@@ -37,8 +38,15 @@ export const SIZING_CLAUDE_MODEL = "claude-haiku-5-5";
 
 export type SizingInput = { title: string; goal?: string | undefined; outOfScope?: string | null | undefined; touches?: readonly string[] | undefined };
 export type { SizeAnswer } from "./contracts/task-sizing.js";
-/** One classifier: null (or a throw) is "no answer"; the signal ends at the budget. */
-export type Sizer = (input: SizingInput, signal: AbortSignal) => Promise<SizeAnswer | null>;
+/** One classifier: null (or a throw) is "no answer"; the signal ends at the budget. `by` names the model that answered,
+ * in Toolroll's own words (the approval terms say "Sized by …"). */
+export type Sizer = (input: SizingInput, signal: AbortSignal, only?: SizerChoice) => Promise<(SizeAnswer & { by?: string }) | null>;
+/** Which classifier a person consented to: Claude Haiku on their plan, or Jev through their OpenRouter key. */
+export type SizerChoice = "claude" | "jev";
+/** What the approval terms call `claude -p --model claude-haiku-5-5`. */
+export const CLAUDE_SIZER_NAME = "Claude Haiku 5.5";
+/** What the approval terms call Jev through OpenRouter. */
+export const JEV_SIZER_NAME = "Jev (OpenRouter)";
 
 /** Structural or broad work — the description signal planning has always read. */
 export const SUBSTANTIAL_WORK = /\b(?:architecture|end[- ]to[- ]end|migrat(?:e|ion)|moderni[sz]e|redesign|refactor|rework|workflow|navigation|accessibility|responsive|performance|security|unif(?:y|ied)|multi[- ](?:step|project|service))\b/i;
@@ -113,7 +121,8 @@ export function claudeSizer(runner: CommandRunner = run, model = SIZING_CLAUDE_M
       if (signal.aborted || result.notFound || result.timedOut || result.code !== 0) return null;
       const body = claudeJsonBody(result.stdout, 256 * 1024);
       if (body === null || body["is_error"] === true || body["subtype"] !== "success") return null;
-      return answerOf(body["structured_output"]);
+      const answer = answerOf(body["structured_output"]);
+      return answer === null ? null : { ...answer, by: model === SIZING_CLAUDE_MODEL ? CLAUDE_SIZER_NAME : `Claude ${model}` };
     } finally {
       signal.removeEventListener("abort", stop);
       rmSync(dir, { recursive: true, force: true });
@@ -147,18 +156,29 @@ export function jevSizer(fetcher: typeof fetch, key: string): Sizer {
     const risky = answers["risky"]?.["noul"];
     if (typeof risky !== "number" || !Number.isFinite(risky)) return null;
     const sure = answers["size"]?.["confidence"];
-    return answerOf({ size, risky: risky >= 0.5, reason: typeof sure === "number" && Number.isFinite(sure) ? `Jev is ${Math.round(Math.min(1, Math.max(0, sure)) * 100)}% sure` : "" });
+    const answer = answerOf({ size, risky: risky >= 0.5, reason: typeof sure === "number" && Number.isFinite(sure) ? `Jev is ${Math.round(Math.min(1, Math.max(0, sure)) * 100)}% sure` : "" });
+    return answer === null ? null : { ...answer, by: JEV_SIZER_NAME };
   };
 }
 
-/** The owner's own classifier: Jev when an OpenRouter key is set up, otherwise Claude on this computer's sign-in. */
-export function ownerSizer(fetcher: typeof fetch = fetch, keyOf: () => string | null = () => readProviderKey("openrouter")): Sizer {
-  const claude = claudeSizer();
-  return (input, signal) => {
+/** The owner's own classifier: Jev when an OpenRouter key is set up, otherwise Claude on this computer's sign-in. Given
+ * `only` (the classifier the person consented to), only that one is ever asked: never Jev without its key, and never
+ * Jev in Claude's place because a key was saved since. */
+export function ownerSizer(fetcher: typeof fetch = fetch, keyOf: () => string | null = () => readProviderKey("openrouter"), claude: Sizer = claudeSizer()): Sizer {
+  return (input, signal, only) => {
     const key = keyOf();
+    if (only === "claude") return claude(input, signal);
+    if (only === "jev") return key === null ? Promise.resolve(null) : jevSizer(fetcher, key)(input, signal);
     return key === null ? claude(input, signal) : jevSizer(fetcher, key)(input, signal);
   };
 }
+
+/** The classifier available right now: Jev when an OpenRouter key is saved, otherwise Claude Haiku on this plan. */
+export function availableSizer(keyOf: () => string | null = () => readProviderKey("openrouter")): SizerChoice {
+  return keyOf() === null ? "claude" : "jev";
+}
+/** What each classifier is called where a person chooses it. */
+export const SIZER_WORDS: Readonly<Record<SizerChoice, string>> = { claude: "Claude Haiku, on your plan", jev: "Jev via OpenRouter, your credit" };
 
 /**
  * Size one task within the budget: the classifier's answer, or — when it
@@ -174,7 +194,7 @@ export async function classifyTask(input: SizingInput, sizer: Sizer | null, budg
     const answer = await Promise.race([sizer(input, controller.signal).catch(() => null), late]);
     if (answer === "late") return heuristicSizing(input, `no classifier answer within ${Math.round(budgetMs / 1000)}s`);
     if (answer === null) return heuristicSizing(input, "the classifier could not answer");
-    return { size: answer.size, risky: answer.risky, source: "classifier", reason: answer.reason };
+    return { size: answer.size, risky: answer.risky, source: "classifier", reason: answer.reason, ...(typeof answer.by === "string" ? { by: answer.by } : {}) };
   } finally {
     clearTimeout(timer);
   }
@@ -195,8 +215,14 @@ export function installFilingSizer(sizer: Sizer, budgetMs = SIZING_BUDGET_MS): (
   return () => { installed = previous; budget = previousBudget; };
 }
 let budget = SIZING_BUDGET_MS;
-/** The classifier this process filed with, and its budget (fast-start.ts waits for it; null: no answer will come). */
-export const filingSizer = (): { sizer: Sizer | null; budget: number } => ({ sizer: installed, budget });
+/** The classifier this process files with, and its budget (fast-start.ts waits for it; null: no answer will come). With
+ * task sizing off (the default) there is none, whatever is installed: no model call before a yes. */
+export const filingSizer = (store: Store, keyOf?: () => string | null): { sizer: Sizer | null; budget: number; off: boolean } => {
+  const read = taskSizingSetting(store, keyOf);
+  const sizer = installed;
+  // Only the classifier the person consented to, and only while it is the one available (taskSizingSetting).
+  return { sizer: read.on && sizer !== null && read.sizer !== null ? ((input, signal) => sizer(input, signal, read.sizer!)) : null, budget, off: !read.on };
+};
 
 /**
  * After a filing: ask the classifier (within the budget) and apply its size
@@ -205,8 +231,12 @@ export const filingSizer = (): { sizer: Sizer | null; budget: number } => ({ siz
  * chose planning explicitly.
  */
 export function refineFiledSizing(store: Store, taskId: string, input: SizingInput, followPlanning: boolean, clock: () => Date = () => new Date()): Promise<void> | null {
-  const sizer = installed;
-  if (sizer === null) return null;
+  const read = taskSizingSetting(store);
+  const installedSizer = installed;
+  // Task sizing off (the default), or the consented classifier no longer the one available: no model call.
+  if (installedSizer === null || !read.on || read.sizer === null) return null;
+  const consented = read.sizer;
+  const sizer: Sizer = (asked, signal) => installedSizer(asked, signal, consented);
   const work = classifyTask(input, sizer, budget)
     .then(sizing => { if (sizing.source === "classifier") store.applySizing(taskId, sizing, { followPlanning }, clock()); })
     .catch(() => undefined)
@@ -218,4 +248,79 @@ export function refineFiledSizing(store: Store, taskId: string, input: SizingInp
 /** Wait for every classification still in flight (each is bounded by the budget). */
 export async function settleSizings(): Promise<void> {
   while (pending.size > 0) await Promise.allSettled([...pending]);
+}
+
+// ---- the setting (Settings → General, `toolroll config set task-sizing`) -------------------------------------------
+
+export { SIZING_OFF_REASON } from "./phase-routing.js";
+
+/** Whether a person turned task sizing on: off unless its one row says on, so a new install and an upgraded one that
+ * never chose start with no model call before a yes. `byEnv`: TOOLROLL_NO_TASK_CLASSIFIER is set, which keeps the
+ * classifier out of this process whatever the row says (operate.ts installs none). */
+export function taskSizingSetting(store: Store, keyOf?: () => string | null): {
+  /** In effect now: turned on, for the classifier that is the one available now. */
+  on: boolean;
+  /** Turned on (the saved choice, whatever is available). */
+  chosen: boolean;
+  /** The classifier it was turned on for; null when off or never chosen. */
+  sizer: SizerChoice | null;
+  /** The classifier available right now (what turning it on would consent to). */
+  available: SizerChoice;
+  by: string | null; at: string | null; byEnv: boolean;
+} {
+  const byEnv = envValue(process.env, "NO_TASK_CLASSIFIER") !== undefined;
+  const available = availableSizer(keyOf);
+  let row: Record<string, unknown> | undefined;
+  // A database opened read-only from before the table: nothing chosen, so off.
+  try { row = store.handle.prepare("SELECT enabled, sizer, updated_by, updated_at FROM task_sizing_setting WHERE id = 1").get(); } catch { row = undefined; }
+  if (row === undefined) return { on: false, chosen: false, sizer: null, available, by: null, at: null, byEnv };
+  const chosen = Number(row["enabled"]) === 1;
+  const sizer = row["sizer"] === "claude" || row["sizer"] === "jev" ? row["sizer"] : null;
+  // Never switched silently: on only for the classifier the person consented to, while it is the one available.
+  return { on: chosen && sizer !== null && sizer === available, chosen, sizer: chosen ? sizer : null, available, by: String(row["updated_by"]), at: String(row["updated_at"]), byEnv };
+}
+export const taskSizingOn = (store: Store): boolean => taskSizingSetting(store).on;
+
+/** Turn task sizing on for one classifier (the one the person was shown and consented to), or off, ledgered. The caller
+ * proved the person (an instance operator's step-up) in the same transaction it calls this in. */
+export function setTaskSizing(store: Store, on: SizerChoice | false, by: string, now: Date): void {
+  store.handle.prepare(`INSERT INTO task_sizing_setting (id, enabled, sizer, updated_by, updated_at) VALUES (1, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, sizer = excluded.sizer, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+    .run(on === false ? 0 : 1, on === false ? null : on, by, now.toISOString());
+  store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "task sizing by a quick model call", outcome: on === false ? "off" : `on: ${on}`, source: "policy", detail: null });
+}
+
+/** The words that can't be left to a guess with no classifier to flag them: anything they touch plans first. */
+export const RISKY_WORDS = /\b(?:auth\w*|payments?|billing|delet\w*|migrat\w*|secur\w*|deploy\w*)\b/i;
+/** Typo or rename wording: the kind of change that is tiny by its nature. */
+const TINY_WORDING = /\b(?:typos?|misspell\w*|spelling|renam\w*)\b/i;
+/** A file named in the words (math.js, src/app/page.tsx). */
+const NAMED_FILE = /(?:^|[\s`'"(])((?:[\w.-]+\/)*[\w-]{2,}\.[A-Za-z][A-Za-z0-9]{0,7})(?=$|[\s`'"),:;!?]|\.(?:\s|$))/g;
+/** How short a goal must be to count as tiny. */
+export const TINY_TEXT_MAX = 140;
+
+/** Whether the words alone say this is clearly tiny: a short goal, at most one file and either exactly one named or
+ * typo/rename wording, no risky word and none of the planning signals. Anything else is uncertain. */
+export function tinyTask(input: SizingInput): boolean {
+  const goal = input.goal ?? "";
+  const text = goal.trim() === "" || goal.trim() === input.title.trim() ? input.title : `${input.title}\n${goal}`;
+  if (text.length > TINY_TEXT_MAX || (input.outOfScope ?? "").trim() !== "" || (input.touches?.length ?? 0) > 1) return false;
+  if (RISKY_WORDS.test(text) || planningSignals(input)) return false;
+  const files = new Set([...text.matchAll(NAMED_FILE)].map(one => one[1]!));
+  const named = (input.touches?.length ?? 0) === 1 ? files.size <= 1 : files.size === 1;
+  return named || (files.size === 0 && TINY_WORDING.test(text));
+}
+
+/** The size when task sizing is off: small only for a clearly tiny task (tinyTask), else medium, so it plans first.
+ * Never risky (nothing could flag it), and its reason says sizing was off (the approval terms read it). */
+export function cautiousSizing(input: SizingInput): TaskSizing {
+  return tinyTask(input)
+    ? { size: "small", risky: false, source: "heuristic", reason: `${SIZING_OFF_REASON}; a tiny change` }
+    : { size: "medium", risky: false, source: "heuristic", reason: PLANNED_FIRST_REASON };
+}
+
+/** A filing's size from its words: today's heuristic with task sizing on (the classifier then refines it), the
+ * cautious one with it off. */
+export function filingSizing(store: Store, input: SizingInput): TaskSizing {
+  return taskSizingOn(store) ? heuristicSizing(input) : cautiousSizing(input);
 }

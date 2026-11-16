@@ -5,6 +5,7 @@
  * Settings → Lead. Real console, stubbed sign-in checks: no model, no network.
  */
 import { execFileSync } from "node:child_process";
+import { sizingOn } from "../test/sizing-on.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -484,7 +485,7 @@ describe("instant start on a busy computer: a sign-in check past its deadline", 
     execFileSync("git", ["-C", shop, "-c", "user.email=q@example.com", "-c", "user.name=q", "add", "README.md"], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
     execFileSync("git", ["-C", shop, "-c", "user.email=q@example.com", "-c", "user.name=q", "commit", "-qm", "readme"], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
     const { installFilingSizer } = await import("./task-sizing.js");
-    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
     try {
       // Claude Code is signed in, but the first status command is ended at its deadline (a slow check), after a delay;
       // asked again, it answers. Codex isn't installed.

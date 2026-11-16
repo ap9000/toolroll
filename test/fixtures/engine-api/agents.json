@@ -17,7 +17,7 @@
         "canSignIn": true,
         "key": null,
         "check": null,
-        "note": "Flexible threads bill your Claude plan through Toolroll's relay, which needs a long-lived token: run `claude setup-token` in your own terminal (it prints the token, so Toolroll never runs it for you).",
+        "note": "Flexible threads (off for now) need `claude setup-token`.",
         "registry": null,
         "registryUnsure": false
       }

@@ -2017,6 +2017,8 @@ describe("explainable phase routing from the command line (v47)", () => {
     await run(["config", "set", "build", "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", token, "--json"]);
     await run(["config", "set", "plan", "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", token, "--json"]); // v47: every phase names an exact model
     await run(["config", "set", "review", "--provider", "claude", "--model", "sonnet", "--as", "alex", "--token", token, "--json"]);
+    // These cases exercise the classifier: task sizing on (it is off by default), through its own CLI twin.
+    expect(await run(["config", "set", "task-sizing", "on", "--as", "alex", "--token", token, "--json"])).toBe(0);
     await run(["task", "add", "harden payouts", "--id", "payouts", "--repo", ROUTED_REPO, "--json"]);
   });
 

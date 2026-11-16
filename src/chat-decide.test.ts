@@ -662,7 +662,8 @@ describe("decisions finish in the chat app", () => {
       noteYouiyouxFiled(store, [calm, wide], now);
       await pass();
       const card = script.cardWith(BOB, /^Approve all \(2\)$/);
-      const agent = "Agent: Claude Sonnet builds, fixes and reviews; Claude Sonnet plans only if you ask for a plan (small change: everyday model, no plan)";
+      // Task sizing is off by default: neither request is clearly tiny, so each plans first, and its terms say why.
+      const agent = "Planned first: task sizing is off (Settings → General)\n\nAgent: Claude Sonnet plans, builds, fixes and reviews (medium change: everyday agents)";
       const usual = "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed";
       // One card for the pass, not one per request.
       expect(script.inChat(BOB).filter(call => call.method === "sendMessage" && String(call.params["text"]).includes("youiyoux change requests"))).toHaveLength(1);
@@ -671,10 +672,10 @@ describe("decisions finish in the chat app", () => {
         "1. Calmer button", "Goal:", "From youiyoux request r-0000000001 on /flows.", "", "Make calmer button on /flows.", "", "Not this:", "- New dependencies", "",
         "Files: src/button.tsx", "", "Done when:", "• Calmer button is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`, "",
         // Then the approval summary's other rows, bound with the words (approval-summary.ts).
-        agent, "Files: only src/button.tsx", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: no cap: an attempt runs until it finishes or reaches its time limit", "", usual, "",
+        agent, "Files: only src/button.tsx", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: No spend cap · stops at its time limit (20 min without progress)", "", usual, "",
         "2. Wider page", "Goal:", "From youiyoux request r-0000000002 on /flows.", "", "Make wider page on /flows.", "", "Not this:", "- New dependencies", "",
         "Files: any file (no file list)", "", "Done when:", "• Wider page is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`, "",
-        agent, "Files: any file in the project", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: no cap: an attempt runs until it finishes or reaches its time limit", "", usual,
+        agent, "Files: any file in the project", "Network: the agent's provider", "Tools: file edits and routine commands; anything risky stops", "May cost: No spend cap · stops at its time limit (20 min without progress)", "", usual,
       ].join("\n"));
       expect(card.labels).toEqual(["Approve all (2)", "Approve 1", "Open 1 ↗", "Approve 2", "Open 2 ↗"]);
       // A plain plan card never approves a change request: only its own card, which shows every word.

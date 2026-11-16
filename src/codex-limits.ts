@@ -95,18 +95,14 @@ export function readCodexLimits(options: { command?: string; timeoutMs?: number;
  * plan. Never in tests, the demo, or the end-to-end harness (which runs with the person's own sign-in), and never while
  * a Codex build is running (both would refresh the same sign-in). One read at a time: the next waits for the last
  * process to end. */
-export function startCodexLimits(store: Store, everyMs = 5 * 60_000): () => void {
+export function startCodexLimits(store: Store, signedIn: () => Promise<boolean>, everyMs = 5 * 60_000): () => void {
   if (process.env["VITEST"] !== undefined || envValue(process.env, "NO_PLAN_PROBE") !== undefined || store.isDemo()) return () => {};
   let stopped = false, busy = false;
   const pass = async () => {
-    if (stopped || busy || billingOf("codex") !== "subscription") return;
-    // A Codex run started in the last few hours and not finished: let it have the sign-in to itself.
-    const recent = new Date(Date.now() - 6 * 3_600_000).toISOString();
-    if (store.handle.prepare("SELECT 1 AS live FROM run WHERE provider = 'codex' AND outcome IS NULL AND started_at > ? LIMIT 1").get(recent) !== undefined) return;
+    if (stopped || busy) return;
     busy = true;
     try {
-      const reading = await readCodexLimits();
-      if (reading !== null && !stopped) store.recordProviderLimits(reading, new Date());
+      await codexLimitsPass(store, { signedIn, stopped: () => stopped });
     } catch {
       // The next pass tries again.
     } finally {
@@ -118,4 +114,30 @@ export function startCodexLimits(store: Store, everyMs = 5 * 60_000): () => void
   const first = setTimeout(() => void pass(), 10_000);
   first.unref?.();
   return () => { stopped = true; clearInterval(timer); clearTimeout(first); };
+}
+
+/**
+ * One pass of the limits loop: Codex's app server is started only for a Codex signed in to its ChatGPT plan (eight
+ * stranger 2: a signed-out Codex was started every five minutes). `signedIn` is the cached sign-in check (its status
+ * command, at most every few minutes while signed out: provider-connection.ts), asked only once nothing else stands in
+ * the way. A Codex run started in the last few hours and not finished keeps the sign-in to itself.
+ */
+export async function codexLimitsPass(store: Store, seams: { signedIn: () => Promise<boolean>; stopped?: () => boolean; read?: () => Promise<LimitReading | null> }): Promise<"read" | "skipped"> {
+  if (billingOf("codex") !== "subscription") return "skipped";
+  const recent = new Date(Date.now() - 6 * 3_600_000).toISOString();
+  if (store.handle.prepare("SELECT 1 AS live FROM run WHERE provider = 'codex' AND outcome IS NULL AND started_at > ? LIMIT 1").get(recent) !== undefined) return "skipped";
+  if (!(await seams.signedIn())) return "skipped";
+  const reading = await (seams.read ?? (() => readCodexLimits()))();
+  if (reading !== null && seams.stopped?.() !== true) store.recordProviderLimits(reading, new Date());
+  return "read";
+}
+
+/**
+ * Whether Codex is signed in to its plan right now, for the moment before its app server starts: the cached answer
+ * first (so a signed-out Codex keeps its back-off and nothing is asked), then, only when that says signed in, a fresh
+ * status check awaited here (a sign-out since the cached answer is seen before anything starts).
+ */
+export async function codexSignedInNow(check: (provider: "codex", fresh?: boolean) => Promise<{ state: string }>): Promise<boolean> {
+  if ((await check("codex")).state !== "connected") return false;
+  return (await check("codex", true)).state === "connected";
 }

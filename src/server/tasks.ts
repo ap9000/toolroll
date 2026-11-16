@@ -1954,9 +1954,17 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           if (!retried.ok) return taskScreen(response, who, taskId, retried.message, retried.status);
           replayed = retried.replayed;
         } else {
-          const requeued = store.requeueTask(taskId, who.name, now);
+          // The build and plan the page showed, when it sent them: proved inside the requeue's own transaction for every
+          // caller, so a Retry pressed on a page that went stale never runs what the person didn't see.
+          const sentRun = body.get("run") ?? null, sentDigest = body.get("digest") ?? null;
+          let pins: { run: number; digest: string } | undefined;
+          if (sentRun !== null || sentDigest !== null) {
+            if (sentRun === null || !/^[1-9][0-9]{0,14}$/.test(sentRun) || sentDigest === null || !/^[a-f0-9]{32}$/.test(sentDigest)) return taskScreen(response, who, taskId, TASK_CHANGED_SINCE, 409);
+            pins = { run: Number(sentRun), digest: sentDigest };
+          }
+          const requeued = store.requeueTask(taskId, who.name, now, undefined, pins);
           if (!requeued.ok) {
-            return taskScreen(response, who, taskId, `not requeued: ${requeued.reason}`, 409);
+            return taskScreen(response, who, taskId, requeued.reason === "stale" ? TASK_CHANGED_SINCE : `not requeued: ${requeued.reason}`, 409);
           }
         }
         if (note !== "" && !replayed) {
@@ -3421,3 +3429,6 @@ export const YOU_SAID_CAP = 8;
 export function answerTermsInPlace(response: ServerResponse, offer: { preview: string; digest: string; terms: ReadonlyArray<readonly [string, string]> }): void {
   respond(response, 200, "application/json; charset=utf-8", JSON.stringify({ outcome: "terms", preview: offer.preview, digest: offer.digest, terms: offer.terms.map(([label, words]) => ({ label, words })) }));
 }
+
+/** A Retry whose displayed build or plan moved on before the press (requeueTask's pins). */
+export const TASK_CHANGED_SINCE = "This task changed since you looked. Review it again.";

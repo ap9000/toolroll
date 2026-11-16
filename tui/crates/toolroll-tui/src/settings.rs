@@ -1,5 +1,8 @@
 //! The terminal workbench's own settings: `tui.toml` in the person's config folder (`$XDG_CONFIG_HOME/toolroll/` when
-//! that is set, else `~/.config/toolroll/`). Read once at start, never written by the app.
+//! that is set, else `~/.config/toolroll/`). Read once at start. The Settings screen changes the common choices (theme,
+//! density, glyphs, notifications) and writes them back (write_safely): only those lines change, every comment and
+//! other key is kept, and the file is replaced whole (a temporary file renamed over it, mode 0600) under the same
+//! ownership rules the reader keeps.
 //!
 //! Strict: a key it doesn't know is named in a warning and ignored; a value it can't use falls back to the default,
 //! saying so; a line it can't read is skipped, saying so. The file is read only when it is a plain file owned by this
@@ -52,6 +55,369 @@ impl Density {
             Density::Comfortable => "comfortable",
         }
     }
+    pub fn next(self) -> Density {
+        match self {
+            Density::Compact => Density::Comfortable,
+            Density::Comfortable => Density::Compact,
+        }
+    }
+}
+
+/// What the Settings screen changes (and writes to tui.toml).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    Theme,
+    Density,
+    Glyphs,
+    Asks,
+    Finished,
+    Failed,
+}
+
+impl Choice {
+    pub const ALL: [Choice; 6] = [
+        Choice::Theme,
+        Choice::Density,
+        Choice::Glyphs,
+        Choice::Asks,
+        Choice::Finished,
+        Choice::Failed,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Choice::Theme => "Theme",
+            Choice::Density => "Density",
+            Choice::Glyphs => "Glyphs",
+            Choice::Asks => "Notify: asks",
+            Choice::Finished => "Notify: finished",
+            Choice::Failed => "Notify: failed",
+        }
+    }
+    /// Where it lives in tui.toml: its section ("" for the top) and key.
+    pub fn place(self) -> (&'static str, &'static str) {
+        match self {
+            Choice::Theme => ("", "theme"),
+            Choice::Density => ("", "density"),
+            Choice::Glyphs => ("", "glyphs"),
+            Choice::Asks => ("notifications", "asks"),
+            Choice::Finished => ("notifications", "finished"),
+            Choice::Failed => ("notifications", "failed"),
+        }
+    }
+    /// The next value, applied to these settings; and that value as tui.toml writes it.
+    pub fn step(self, s: &mut Settings) -> String {
+        let flip = |b: &mut bool| {
+            *b = !*b;
+            b.to_string()
+        };
+        match self {
+            Choice::Theme => {
+                s.theme = s.theme.next();
+                format!("\"{}\"", s.theme.key())
+            }
+            Choice::Density => {
+                s.density = s.density.next();
+                format!("\"{}\"", s.density.key())
+            }
+            Choice::Glyphs => {
+                let at = Glyphs::ALL.iter().position(|g| *g == s.glyphs).unwrap_or(0);
+                s.glyphs = Glyphs::ALL[(at + 1) % Glyphs::ALL.len()];
+                format!("\"{}\"", s.glyphs.key())
+            }
+            Choice::Asks => flip(&mut s.notify.asks),
+            Choice::Finished => flip(&mut s.notify.finished),
+            Choice::Failed => flip(&mut s.notify.failed),
+        }
+    }
+    /// Its value in words now.
+    pub fn words(self, s: &Settings) -> String {
+        let on = |b: bool| if b { "on" } else { "off" }.to_string();
+        match self {
+            Choice::Theme => s.theme.key().to_string(),
+            Choice::Density => s.density.key().to_string(),
+            Choice::Glyphs => s.glyphs.key().to_string(),
+            Choice::Asks => on(s.notify.asks),
+            Choice::Finished => on(s.notify.finished),
+            Choice::Failed => on(s.notify.failed),
+        }
+    }
+}
+
+/// The comment a tui.toml written fresh starts with.
+pub const FRESH_HEAD: &str = "# Toolroll's terminal workbench settings. The Settings screen (? then s) writes the common ones;\n# every key is in docs, and a [keys] table changes any key: [keys] preset = \"vim\"\n";
+
+/// tui.toml's text with one setting set to `value` (already written as TOML): the line that sets it is rewritten in
+/// place (its indentation and comment kept), else the line is added to its section (the section made when missing).
+/// Every other line, comment and key is kept as it was.
+pub fn set_in_toml(text: &str, section: &str, key: &str, value: &str) -> String {
+    let dotted = format!("{section}.{key}");
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut current = String::new();
+    let mut found = false;
+    // Where to add it when no line sets it: after the section's last line that holds something.
+    let mut header_at: Option<usize> = None;
+    let mut last_in_section: Option<usize> = None;
+    let mut first_header: Option<usize> = None;
+    for (i, raw) in lines.iter_mut().enumerate() {
+        let body = without_comment(raw);
+        let trimmed = body.trim();
+        if let Some(name) = trimmed.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            current = name.trim().to_string();
+            first_header.get_or_insert(i);
+            if current == section {
+                header_at = Some(i);
+            }
+            continue;
+        }
+        if current == section && !trimmed.is_empty() {
+            last_in_section = Some(i);
+        }
+        let Some((k, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let k = k.trim();
+        let k = quoted(k)
+            .filter(|(_, rest)| rest.is_empty())
+            .map(|(q, _)| q)
+            .unwrap_or_else(|| k.to_string());
+        let hits = (current == section && k == key)
+            || (current.is_empty() && !section.is_empty() && k == dotted);
+        if hits {
+            let indent: String = raw.chars().take_while(|c| c.is_whitespace()).collect();
+            let comment = raw[body.len()..].to_string();
+            let spacer = if comment.is_empty() { "" } else { "  " };
+            *raw = format!("{indent}{k} = {value}{spacer}{}", comment.trim_start());
+            found = true;
+        }
+    }
+    if !found {
+        let line = format!("{key} = {value}");
+        if section.is_empty() {
+            match first_header {
+                Some(at) => {
+                    let at = lines[..at]
+                        .iter()
+                        .rposition(|l| !l.trim().is_empty())
+                        .map_or(0, |p| p + 1);
+                    lines.insert(at, line);
+                }
+                None => lines.push(line),
+            }
+        } else if let Some(h) = header_at {
+            lines.insert(last_in_section.unwrap_or(h).max(h) + 1, line);
+        } else {
+            if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push(format!("[{section}]"));
+            lines.push(line);
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// Whether `dir` (an existing folder) and every folder above it, up to the root, can be trusted with a write to
+/// tui.toml: each one looked at with lstat on its real path, owned by this user or root, and changeable by nobody else;
+/// a shared folder with the sticky bit (/tmp) only strictly above the home folder (the reader's and the launcher's own
+/// rule). `dir` itself must be this user's. Anything else is named, in plain words.
+#[cfg(unix)]
+fn trusted_chain(dir: &Path, home: Option<&Path>, me: u32) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt;
+    let real = std::fs::canonicalize(dir).map_err(|_| "its folder couldn't be read".to_string())?;
+    let home = home.and_then(|h| std::fs::canonicalize(h).ok());
+    let mut at: Option<&Path> = Some(real.as_path());
+    while let Some(d) = at {
+        let m = std::fs::symlink_metadata(d)
+            .map_err(|_| "a folder above it couldn't be read".to_string())?;
+        let own = d == real.as_path();
+        let owner_ok = m.uid() == me || (!own && m.uid() == 0);
+        let shared = m.mode() & 0o022 != 0;
+        let above_home = home.as_deref().is_some_and(|h| h != d && h.starts_with(d));
+        let sticky_ok = !own && m.mode() & 0o1000 != 0 && above_home;
+        if !m.is_dir() || !owner_ok || (shared && !sticky_ok) {
+            return Err(if own {
+                "its folder can be changed by other people, or isn't yours".to_string()
+            } else {
+                format!(
+                    "a folder above it ({}) can be changed by other people, or isn't yours or the system's",
+                    clean(&d.display().to_string())
+                )
+            });
+        }
+        at = d.parent();
+    }
+    Ok(real)
+}
+
+/// Write tui.toml with `change` made to its text, safely. Every folder from the file's up to the root is trusted first
+/// (trusted_chain; before a missing folder is made, mode 0700, and again after). The folder is then opened (never
+/// through a link) and everything else is done relative to that open folder, so no folder swapped in by name can
+/// redirect it: the file there is read only when it is a plain file of this user's nobody else can change (a link is
+/// never written through), and the new text goes to a fresh temporary file in it (mode 0600, never following a link),
+/// synced, then renamed over the name in the same folder, so the file is never half-written. No file: a fresh one.
+#[cfg(unix)]
+pub fn write_safely(
+    path: &Path,
+    home: Option<&Path>,
+    change: &dyn Fn(&str) -> String,
+) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::DirBuilderExt;
+    // SAFETY: geteuid has no preconditions.
+    let me = unsafe { libc::geteuid() };
+    let dir = path.parent().ok_or("it has no folder")?;
+    let name = path.file_name().ok_or("it has no name")?;
+    if std::fs::symlink_metadata(dir).is_err() {
+        // The nearest folder that exists, and all above it, before anything is made under them.
+        let mut base = dir.parent();
+        while let Some(b) = base {
+            if std::fs::symlink_metadata(b).is_ok() {
+                break;
+            }
+            base = b.parent();
+        }
+        if let Some(b) = base {
+            trusted_chain(b, home, me).map_err(|why| {
+                if why.starts_with("its folder") {
+                    format!(
+                        "a folder above it ({}) can be changed by other people, or isn't yours",
+                        clean(&b.display().to_string())
+                    )
+                } else {
+                    why
+                }
+            })?;
+        }
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|_| "its folder couldn't be made".to_string())?;
+    }
+    let real = trusted_chain(dir, home, me)?;
+    let c = |bytes: &[u8]| CString::new(bytes).map_err(|_| "its name can't be used".to_string());
+    let dir_c = c(real.as_os_str().as_bytes())?;
+    // SAFETY: a valid C string; the descriptor is owned (closed) by OwnedFd from here.
+    let raw = unsafe {
+        libc::open(
+            dir_c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw < 0 {
+        return Err("its folder couldn't be opened".into());
+    }
+    // SAFETY: raw is a descriptor this call just opened and nothing else owns.
+    let dfd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // The folder opened is the one judged (not the name, which could change in between).
+    // SAFETY: a zeroed stat is valid storage for fstat to fill.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: dfd is open; st is valid storage.
+    if unsafe { libc::fstat(dfd.as_raw_fd(), &mut st) } != 0
+        || st.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || st.st_uid != me
+        || st.st_mode & 0o022 != 0
+    {
+        return Err("its folder can be changed by other people, or isn't yours".into());
+    }
+    let name_c = c(name.as_bytes())?;
+    // The file there now, opened through the folder, never following a link.
+    // SAFETY: dfd is open; name_c is a valid C string.
+    let fd = unsafe {
+        libc::openat(
+            dfd.as_raw_fd(),
+            name_c.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    let text = if fd < 0 {
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOENT) => FRESH_HEAD.to_string(),
+            Some(libc::ELOOP) => {
+                return Err(
+                    "it is a link (a dotfile manager's?): change the file it points to".into(),
+                )
+            }
+            _ => return Err("it couldn't be opened".into()),
+        }
+    } else {
+        // SAFETY: fd was just opened by this call.
+        let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let m = file
+            .metadata()
+            .map_err(|_| "it couldn't be read".to_string())?;
+        use std::os::unix::fs::MetadataExt;
+        judge(m.file_type().is_file(), m.uid(), m.mode(), m.len(), me).map_err(str::to_string)?;
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "it couldn't be read".to_string())?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err("it is larger than 64 KB".into());
+        }
+        String::from_utf8(bytes).map_err(|_| "it isn't UTF-8 text".to_string())?
+    };
+    let new = change(&text);
+    if new.len() as u64 > MAX_BYTES {
+        return Err("it would be larger than 64 KB".into());
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_c = c(format!(".tui.toml.{}.{nanos}.tmp", std::process::id()).as_bytes())?;
+    // SAFETY: dfd is open; tmp_c is a valid C string; 0o600 is the mode for a new file.
+    let tfd = unsafe {
+        libc::openat(
+            dfd.as_raw_fd(),
+            tmp_c.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600 as libc::c_uint,
+        )
+    };
+    if tfd < 0 {
+        return Err("it couldn't be written".into());
+    }
+    let written = (|| -> std::io::Result<()> {
+        // SAFETY: tfd was just opened by this call.
+        let mut f = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(tfd) });
+        f.write_all(new.as_bytes())?;
+        f.sync_all()?;
+        // SAFETY: dfd is open; both names are valid C strings, in the same open folder.
+        if unsafe {
+            libc::renameat(
+                dfd.as_raw_fd(),
+                tmp_c.as_ptr(),
+                dfd.as_raw_fd(),
+                name_c.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    })();
+    if written.is_err() {
+        // SAFETY: dfd is open; tmp_c is a valid C string.
+        unsafe { libc::unlinkat(dfd.as_raw_fd(), tmp_c.as_ptr(), 0) };
+        return Err("it couldn't be written".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn write_safely(
+    _path: &Path,
+    _home: Option<&Path>,
+    _change: &dyn Fn(&str) -> String,
+) -> Result<(), String> {
+    Err("this system's files aren't written from here".into())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -704,6 +1070,7 @@ pub fn start(env: &Env) -> Prefs {
     };
     let reach = Reach::of(env, settings.tmux_passthrough);
     let mut prefs = Prefs::new(settings, path, file, warnings, depth, background, reach);
+    prefs.home = env.home.clone();
     // Asked and not answered in time: an answer may still come, and must not be read as keys (theme::LateReply).
     prefs.late_reply = ask && background.is_none();
     prefs
@@ -717,6 +1084,8 @@ pub fn start(env: &Env) -> Prefs {
 pub struct Prefs {
     pub settings: Settings,
     pub path: Option<PathBuf>,
+    /// The home folder the reader checks a link against (the writer reads through it too).
+    pub home: Option<PathBuf>,
     pub file: FileState,
     /// The file's warnings (fixed at start).
     pub file_warnings: Vec<String>,
@@ -736,6 +1105,7 @@ impl Default for Prefs {
         Prefs {
             settings: Settings::default(),
             path: None,
+            home: None,
             file: FileState::Missing,
             file_warnings: vec![],
             color_warnings: vec![],
@@ -763,6 +1133,7 @@ impl Prefs {
         Prefs {
             settings,
             path,
+            home: None,
             file,
             file_warnings,
             color_warnings,
@@ -795,6 +1166,45 @@ impl Prefs {
         self.color_warnings = warnings;
     }
 
+    /// Change one setting (the Settings screen's Enter): for this session at once, and written to tui.toml. The words
+    /// say what happened; Err when the file wasn't written (the change still holds for this session).
+    pub fn change(&mut self, choice: Choice) -> Result<String, String> {
+        let value = choice.step(&mut self.settings);
+        if choice == Choice::Theme {
+            let (theme, warnings) = Theme::build(
+                self.settings.theme,
+                self.depth,
+                self.background,
+                &self.settings.colors,
+            );
+            self.theme = theme;
+            self.color_warnings = warnings;
+        }
+        let now = format!("{}: {}", choice.label(), choice.words(&self.settings));
+        let Some(path) = self.path.clone() else {
+            return Err(format!(
+                "{now}, for this session (there's no home folder to keep tui.toml in)."
+            ));
+        };
+        if let FileState::Ignored(why) = &self.file {
+            return Err(format!(
+                "{now}, for this session: tui.toml isn't written while it is ignored ({why})."
+            ));
+        }
+        let (section, key) = choice.place();
+        match write_safely(&path, self.home.as_deref(), &|text| {
+            set_in_toml(text, section, key, &value)
+        }) {
+            Ok(()) => {
+                self.file = FileState::Read;
+                Ok(format!("{now}. Saved to tui.toml."))
+            }
+            Err(why) => Err(format!(
+                "{now}, for this session: tui.toml wasn't written ({why})."
+            )),
+        }
+    }
+
     /// The line the status bar shows at start when something wasn't used (None: all was).
     pub fn first_warning(&self) -> Option<String> {
         let all = self.warnings();
@@ -809,41 +1219,38 @@ impl Prefs {
         })
     }
 
-    /// The settings screen (`?` then `s`): what is in use, from where. Read-only but for `t`.
-    pub fn screen(&self, width: usize) -> Vec<Line<'static>> {
+    /// The settings screen (`?` then `s`, or Settings in the palette): the choices it changes first (the one at
+    /// `cursor` marked), then the rest in use, and the file they come from. Every line wraps; none is cut.
+    pub fn screen(&self, width: usize, cursor: usize) -> Vec<Line<'static>> {
         let ink = crate::theme::ink;
         let dim = crate::theme::dim;
         let on = |b: bool| if b { "on" } else { "off" };
         let s = &self.settings;
+        let w = width.max(24);
         let path = self
             .path
             .as_ref()
             .map(|p| clean(&p.display().to_string()))
             .unwrap_or_else(|| "(no home folder, so no settings file)".into());
         let file = match &self.file {
-            FileState::Missing => "not there, so the defaults are used".to_string(),
+            _ if self.path.is_none() => "changes here hold for this session only".to_string(),
+            FileState::Missing => {
+                "not there yet: the defaults are used, and a change here makes it".to_string()
+            }
             FileState::Read => "read".to_string(),
             FileState::Ignored(why) => format!("ignored: {why}"),
         };
-        let theme = match self.theme.name {
-            ThemeName::Terminal => format!(
-                "terminal: its own colours, with {} roles{}",
+        let theme_note = match self.theme.name {
+            ThemeName::Terminal => Some(format!(
+                "its own colours, with {} roles{}",
                 if self.theme.dark { "dark" } else { "light" },
                 if self.background.is_some() {
                     ""
                 } else {
                     " (it didn't say its background)"
                 }
-            ),
-            t => t.key().to_string(),
-        };
-        let theme = if self.theme.name != s.theme {
-            format!(
-                "{theme}, for this session (the file says {})",
-                s.theme.key()
-            )
-        } else {
-            theme
+            )),
+            _ => None,
         };
         let columns = if s.columns.is_empty() {
             "none".to_string()
@@ -854,58 +1261,96 @@ impl Prefs {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let rows: Vec<(&str, String)> = vec![
-            ("Theme", theme),
+        let label_w = 18;
+        let row =
+            |lines: &mut Vec<Line<'static>>, mark: &str, label: &str, words: &str, here: bool| {
+                for (i, piece) in crate::text::wrap(words, w.saturating_sub(label_w + 2).max(8))
+                    .into_iter()
+                    .enumerate()
+                {
+                    let head = if i == 0 {
+                        format!("{mark:<2}{label:<label_w$}")
+                    } else {
+                        " ".repeat(label_w + 2)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(head, if here { ink() } else { dim() }),
+                        Span::styled(
+                            piece,
+                            if here {
+                                ink()
+                            } else {
+                                ratatui::style::Style::default()
+                            },
+                        ),
+                    ]));
+                }
+            };
+        let mut lines = vec![];
+        for (i, piece) in crate::text::wrap(&path, w.saturating_sub(6))
+            .into_iter()
+            .enumerate()
+        {
+            lines.push(Line::from(vec![
+                Span::styled(if i == 0 { "File  " } else { "      " }, ink()),
+                Span::raw(piece),
+            ]));
+        }
+        for piece in crate::text::wrap(&file, w.saturating_sub(6)) {
+            lines.push(Line::from(Span::styled(format!("      {piece}"), dim())));
+        }
+        lines.push(Line::raw(""));
+        for (i, choice) in Choice::ALL.into_iter().enumerate() {
+            let mut words = choice.words(s);
+            if choice == Choice::Theme {
+                if self.theme.name != s.theme {
+                    words = format!(
+                        "{} for this session (saved: {words})",
+                        self.theme.name.key()
+                    );
+                } else if let Some(note) = &theme_note {
+                    words = format!("{words}: {note}");
+                }
+            }
+            let here = i == cursor;
+            row(
+                &mut lines,
+                if here { "›" } else { "" },
+                choice.label(),
+                &words,
+                here,
+            );
+        }
+        lines.push(Line::raw(""));
+        let keys = {
+            let changed = crate::keys::SPECS
+                .iter()
+                .filter(|sp| {
+                    s.keymap.keys_of(sp.action)
+                        != crate::keys::Keymap::preset(s.keymap.preset).keys_of(sp.action)
+                })
+                .count();
+            match changed {
+                0 => format!("{} preset", s.keymap.preset.key()),
+                1 => format!("{} preset, 1 key changed", s.keymap.preset.key()),
+                c => format!("{} preset, {c} keys changed", s.keymap.preset.key()),
+            }
+        };
+        let rest: Vec<(&str, String)> = vec![
             ("Colour", self.depth.words().to_string()),
-            ("Density", s.density.key().to_string()),
             ("Key bar", on(s.key_bar).to_string()),
             (
                 "Costs",
                 if s.show_costs { "shown" } else { "hidden" }.to_string(),
             ),
             ("Columns", columns),
-            ("Glyphs", s.glyphs.key().to_string()),
-            ("Keys", {
-                let changed = crate::keys::SPECS
-                    .iter()
-                    .filter(|sp| {
-                        s.keymap.keys_of(sp.action)
-                            != crate::keys::Keymap::preset(s.keymap.preset).keys_of(sp.action)
-                    })
-                    .count();
-                match changed {
-                    0 => format!("{} preset", s.keymap.preset.key()),
-                    1 => format!("{} preset, 1 key changed", s.keymap.preset.key()),
-                    c => format!("{} preset, {c} keys changed", s.keymap.preset.key()),
-                }
-            }),
-            (
-                "Notify",
-                format!(
-                    "asks {} · finished {} · failed {}",
-                    on(s.notify.asks),
-                    on(s.notify.finished),
-                    on(s.notify.failed)
-                ),
-            ),
+            ("Keys", keys),
             ("Bell", on(s.bell).to_string()),
             ("Reduced motion", on(s.reduced_motion).to_string()),
             ("Delivered", self.reach.words().to_string()),
         ];
-        let w = width.max(20);
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("File  ", ink()),
-                Span::raw(fit(&path, w.saturating_sub(6))),
-            ]),
-            Line::from(Span::styled(fit(&format!("      {file}"), w), dim())),
-            Line::raw(""),
-        ];
-        for (label, words) in rows {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{label:<16}"), dim()),
-                Span::raw(fit(&words, w.saturating_sub(16))),
-            ]));
+        for (label, words) in rest {
+            row(&mut lines, "", label, &words, false);
         }
         let warnings = self.warnings();
         if !warnings.is_empty() {
@@ -919,10 +1364,17 @@ impl Prefs {
         }
         lines.push(Line::raw(""));
         lines.push(Line::from(vec![
-            Span::styled("t  ", ink()),
-            Span::raw("Next theme, for this session (the file is never changed)"),
+            Span::styled("j/k ", ink()),
+            Span::raw("choose  "),
+            Span::styled("Enter ", ink()),
+            Span::raw("change it (saved to tui.toml)  "),
+            Span::styled("t ", ink()),
+            Span::raw("next theme, this session only"),
         ]));
-        lines.push(Line::from(Span::styled("Any other key closes.", dim())));
+        lines.push(Line::from(Span::styled(
+            "Other settings and keys: edit tui.toml ([keys] preset = \"vim\"). Esc closes.",
+            dim(),
+        )));
         lines
     }
 }

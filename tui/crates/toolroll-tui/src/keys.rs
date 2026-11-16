@@ -68,7 +68,8 @@ actions! {
     Pause = "pause", Global, Act, "Pause the build (again to resume)", ["p"];
     Stop = "stop", Global, Act, "Stop the build", ["x"];
     Accept = "accept", Global, Act, "Accept the result", ["a"];
-    SendBack = "send-back", Global, Act, "Send the result back, with a note", ["r"];
+    SendBack = "send-back", Global, Act, "Send the result back, with a note (on a failed task: retry it)", ["r"];
+    Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
     TakeOver = "take-over", Global, Act, "Take over: type in a terminal on the latest build", ["t"];
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
@@ -186,6 +187,109 @@ impl Preset {
         }
     }
 }
+
+// ---- the help screen, from the keymap ---------------------------------------------------------------------------------
+
+/// Actions help shows as one row ("j/k  Move through the list"): the pair, and the row's words.
+const PAIRS: &[(Action, Action, &str)] = &[
+    (Action::MoveDown, Action::MoveUp, "Move through the list"),
+    (Action::NextTab, Action::PreviousTab, "Next / previous tab"),
+    (Action::ScrollUp, Action::ScrollDown, "Scroll up / down"),
+    (
+        Action::NextPane,
+        Action::PreviousPane,
+        "Next / previous pane",
+    ),
+    (Action::LineDown, Action::LineUp, "Next / previous line"),
+    (
+        Action::NextHunk,
+        Action::PreviousHunk,
+        "Next / previous hunk",
+    ),
+    (
+        Action::NextFile,
+        Action::PreviousFile,
+        "Next / previous file",
+    ),
+    (
+        Action::NextNote,
+        Action::PreviousNote,
+        "Next / previous note",
+    ),
+    (
+        Action::MoreAbove,
+        Action::MoreBelow,
+        "More lines above / below the hunk",
+    ),
+];
+
+/// One row of the help screen: the keys as words, what they do, and the actions they are.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpRow {
+    pub keys: String,
+    pub words: String,
+    pub scope: Scope,
+    pub actions: Vec<Action>,
+}
+
+/// Every action that has a key in this keymap, in SPECS order (a pair as one row): the help screen is made from this,
+/// so it says exactly the keys in use (tui.toml's own included) and can't drift from the keymap.
+pub fn help_rows(map: &Keymap) -> Vec<HelpRow> {
+    let mut rows = vec![];
+    for spec in SPECS {
+        let a = spec.action;
+        if PAIRS.iter().any(|(_, second, _)| *second == a) {
+            continue;
+        }
+        let (actions, words) = match PAIRS.iter().find(|(first, _, _)| *first == a) {
+            Some((first, second, words)) => (vec![*first, *second], words.to_string()),
+            None => (vec![a], help_words(a).unwrap_or(spec.label).to_string()),
+        };
+        let keys: Vec<String> = actions
+            .iter()
+            .map(|x| map.key_words(*x))
+            .filter(|k| !k.is_empty())
+            .collect();
+        if keys.is_empty() {
+            continue;
+        }
+        rows.push(HelpRow {
+            keys: keys.join("/"),
+            words,
+            scope: spec.scope,
+            actions,
+        });
+    }
+    rows
+}
+
+/// Shorter words for help's two columns, where the palette's label runs long.
+fn help_words(a: Action) -> Option<&'static str> {
+    Some(match a {
+        Action::Open => "Open the changes, else the live output",
+        Action::SendBack => "Send back with a note; retry if failed",
+        Action::TakeOver => "Take over: a terminal on the build",
+        Action::NextNeedsYou => "Next thing that needs you",
+        Action::Palette => "Every action, task and setting",
+        Action::Copy => "Copy to your terminal's scrollback",
+        Action::Help => "These keys",
+        Action::Layout => "Next layout (one, two or four panels)",
+        Action::Agents => "Agents: add, sign in, choose models",
+        Action::Follow => "Follow the newest",
+        Action::Note => "A note on the line or hunk",
+        Action::RemoveNote => "Remove the note here",
+        Action::SideBySide => "Side by side (a wide window)",
+        _ => return None,
+    })
+}
+
+/// The keys no tui.toml can change, as help says them.
+pub const FIXED_KEYS: &[(&str, &str)] = &[
+    ("1-9", "Answer the agent's question"),
+    ("Esc", "Cancel, close, or go back"),
+    ("Ctrl-]", "Leave a terminal you are typing in"),
+    ("Ctrl-C", "Quit"),
+];
 
 // ---- keys as written and as pressed ---------------------------------------------------------------------------------
 

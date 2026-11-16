@@ -6,11 +6,11 @@
  * terminal, with --json or under a coding agent, nothing here runs and bare `toolroll` behaves exactly as before.
  */
 import { describe, expect, test, vi } from "vitest";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "./cli.js";
-import { easyStartApplies, easyStartArgs, runEasyStart, spawnOwnedUp, START_OVER_POINTER, type EasyStartSeams, type OwnedUp } from "./easy-start.js";
+import { defaultEasyStartSeams, easyStartApplies, easyStartArgs, runEasyStart, spawnOwnedUp, START_OVER_POINTER, type EasyStartSeams, type OwnedUp } from "./easy-start.js";
 import type { AttachProof } from "./console-instance.js";
 import type { TuiExit, TuiSession } from "./tui-contract.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -48,6 +48,8 @@ type Script = {
   /** l1: the database was made by a laptop start and never had local mode. */
   byLaptop?: boolean;
   savedLogin?: string | null;
+  /** The database's folder is too deep for the console's socket: why, with the fix. */
+  deep?: string | null;
 };
 function scripted(script: Script = {}) {
   const calls: string[] = [];
@@ -61,6 +63,7 @@ function scripted(script: Script = {}) {
   const seams: EasyStartSeams = {
     databaseFile: "/tmp/none.db", cwd: "/work/shop", write: line => lines.push(line),
     prove: async () => (proofs.length > 1 ? proofs.shift()! : proofs[0]!),
+    socketProblem: () => script.deep ?? null,
     localMode: () => (local.length > 1 ? local.shift()! : local[0]!),
     initLocal: async () => { inits.push("init"); return script.init ?? true; },
     sandbox: async () => ({ missing: script.missing ?? [], problem: script.problem ?? null }),
@@ -129,6 +132,43 @@ describe("which invocations are an easy start", () => {
 });
 
 describe("bare toolroll at a terminal", () => {
+  test("a database too deep for the console's socket: refused at once with the fix, before anything is made or started (eight stranger 1)", async () => {
+    const deep = "the database's folder is too deep for Toolroll's socket (177 of at most 103 bytes)";
+    for (const local of ["absent", "candidate", "on"] as const) {
+      const { seams, calls, lines, inits } = scripted({ proofs: [NONE], local: [local], deep });
+      seams.sandbox = async () => { throw Error("must not probe the sandbox"); };
+      expect(await runEasyStart("start", bare, seams)).toBe(3);
+      expect(lines).toEqual([`Toolroll can't start: ${deep}.`]);
+      // Nothing started, nothing waited for, nothing initialised.
+      expect(calls).toEqual([]);
+      expect(inits).toEqual([]);
+    }
+    // The browser roads that need no socket go on: a password install, and --web's own foreground `up`.
+    const off = scripted({ proofs: [NONE], local: ["off"], deep });
+    expect(await runEasyStart("start", bare, off.seams)).toBe(0);
+    expect(off.calls).toEqual(["foreground"]);
+    const web = scripted({ proofs: [NONE], local: ["on"], deep });
+    expect(await runEasyStart("start", { web: true, projectRoot: null }, web.seams)).toBe(0);
+    expect(web.calls).toEqual(["foreground --laptop"]);
+  });
+
+  test("the real seams on a too-deep database: the exact remedy at once, and no `up` is ever spawned", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "so-easy-deep-")));
+    const folder = join(root, "d".repeat(60), "e".repeat(60));
+    mkdirSync(folder, { recursive: true, mode: 0o700 });
+    const lines: string[] = [];
+    const seams = defaultEasyStartSeams({ databaseFile: join(folder, "orders.db"), write: line => lines.push(line), build: "x", cwd: root, admit: async () => 0 });
+    const spawned: string[] = [];
+    const code = await runEasyStart("start", bare, { ...seams, spawnUp: args => { spawned.push(args.join(" ")); throw Error("must not start"); },
+      // Nothing runs before the refusal: not even the sandbox probe.
+      sandbox: async () => { throw Error("must not probe the sandbox"); }, initLocal: async () => { throw Error("must not initialise"); }, serviceInstalled: () => false });
+    expect(code).toBe(3);
+    expect(spawned).toEqual([]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^Toolroll can't start: the database's folder is too deep for Toolroll's socket \(\d+ of at most \d+ bytes\).* move it to a shorter folder \(at most \d+ bytes long\), or point TOOLROLL_DB at an orders\.db in one: `TOOLROLL_DB=\/short\/folder\/orders\.db toolroll`\.$/);
+    expect(existsSync(join(folder, "orders.db"))).toBe(false);
+  });
+
   test("nothing running, no service: `up --laptop` starts as its own child, the terminal UI opens, and quitting with Stop drains it", async () => {
     const { seams, calls, children } = scripted({ proofs: [NONE, NONE, LIVE], local: ["absent", "on"] });
     expect(await runEasyStart("start", { web: false, projectRoot: "/p" }, seams)).toBe(0);
@@ -432,6 +472,8 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
     const out: string[] = [];
     const code = await main([], line => out.push(line), { operate: { databaseFile: file }, easyStart: { terminal: true, underAgent: false, seams: {
       sandbox: async () => ({ missing: ["socat"], problem: null }),
+      // This folder's own depth isn't what this test is about (a temp folder can be deep): its socket fits.
+      socketProblem: () => null,
       // Never a real `up` from a test, even if the stop regressed: those starts fail here instead.
       spawnUp: () => { throw Error("started an up"); }, runUpForeground: async () => { throw Error("started an up"); },
     } } });

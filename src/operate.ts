@@ -48,16 +48,16 @@ import { runTokensCommand } from "./tokens-cli.js";
 import { startTokenNotices } from "./token-notices.js";
 import { liftAuthPause, openAuthPauses, signInGate, signInWords, startSignInProbes, type SignInGate } from "./provider-auth.js";
 import { createConnectionChecker } from "./provider-connection.js";
-import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
+import { agentsSignedOutLines, checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
 import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin, type OnboardIo } from "./agent-onboard.js";
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
 import { startLiveBackups } from "./live-backup.js";
 import { pushLimitSink } from "./provider-limits.js";
-import { heuristicSizing, installFilingSizer, ownerSizer, refineFiledSizing, settleSizings, type Sizer } from "./task-sizing.js";
+import { filingSizing, installFilingSizer, ownerSizer, refineFiledSizing, setTaskSizing, settleSizings, taskSizingSetting, type Sizer } from "./task-sizing.js";
 import { tierLines, tierReport } from "./tier-report.js";
 import { savingsLines, savingsReportOrError } from "./route-savings.js";
 import { limitsView } from "./limits-ui.js";
-import { startCodexLimits } from "./codex-limits.js";
+import { codexSignedInNow, startCodexLimits } from "./codex-limits.js";
 import { packageVersion, startMonitoring, targetOf } from "./monitoring.js";
 import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
@@ -779,6 +779,10 @@ Agents — which provider and model each phase runs on
   toolroll config set|clear|show quick-answers --as <you> --token <t>
       quick answers on (set) or off (clear): plain status questions go to a
       faster model on the Claude membership; changes stay on the main model
+  toolroll config set task-sizing on|off --as <you> --token <t>
+      size each new task with a quick model call (Claude Haiku, on your
+      plan) before you approve; off, the default, sizes from the words alone
+      and plans anything uncertain (config show task-sizing says which)
   toolroll chat --as <you> [--repo <path>…] [--say "…"] [--end]
       [--ceiling-usd <n>] [--json]                 (password at the prompt;
       --token <t> only for scripts — it lands in shell history)
@@ -4624,6 +4628,8 @@ async function startConsole(options: {
     store: context.store, settings: () => readMonitoring(dirname(context.databaseFile)),
     instance: options.publicUrl ?? hostname(), version: packageVersion(),
   });
+  // One sign-in check for the loops beside the console, so its cache answers them all.
+  const signIns = createConnectionChecker({ store: context.store });
   // Every loop beside the console stops when it does, through one close listener (one each pushed the server past
   // Node's ten-listener warning, printed on every Ctrl-C).
   const besideConsole: (() => void)[] = [
@@ -4633,10 +4639,11 @@ async function startConsole(options: {
     // v111: API tokens: 7- and 1-day expiry notices to their person, and the end of each rotated token, a pass a minute.
     startTokenNotices(context.store),
     // A paused provider's sign-in is checked every two minutes (no model, nothing spent); the pause lifts when it works.
-    startSignInProbes(context.store, createConnectionChecker({ store: context.store })),
+    startSignInProbes(context.store, signIns),
     // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
     startBackups(context.store, context.databaseFile),
-    startCodexLimits(context.store),
+    // Codex's app server only for a Codex signed in to its plan: the same cached sign-in check (eight stranger 2).
+    startCodexLimits(context.store, () => codexSignedInNow(signIns)),
     // At most one anonymous look a day for a newer Toolroll (Settings → Updates can switch it off).
     startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {}),
   ];
@@ -4758,6 +4765,8 @@ async function requeueTask(
       published: `${id}'s last result is published; revise it through its pull request`,
       // Only an Approve & build again asks for an exact build; the CLI never does.
       moved: `${id} changed since its page was read; read it again`,
+      // Only a Retry pressed on a page pins the build it showed; the CLI never does.
+      stale: `${id} changed since its page was read; read it again`,
       archived: `${id} is put away — restore it with \`toolroll task restore ${id}\` first`,
     };
     return fail(write, json, "task requeue", result.reason, why[result.reason], EXIT.refused);
@@ -5560,6 +5569,8 @@ async function configCommand(
   const scope = repoGiven === undefined ? INSTALLATION_SCOPE : canonicalProject(repoGiven) ?? resolve(repoGiven);
   // Settings → Lead's "Quick answers use a faster model", the same switch (responsive-chat.md §8).
   if (phase === "quick-answers") return quickAnswersConfig(action ?? "show", repoGiven !== undefined, flags, context);
+  // Settings → General's task sizing, the same switch and the same step-up.
+  if (phase === "task-sizing") return taskSizingConfig(action ?? "show", positional[2], repoGiven !== undefined, flags, context);
 
   if (action === undefined || action === "show") {
     const installation = store.listPhaseConfig(INSTALLATION_SCOPE);
@@ -9322,8 +9333,12 @@ async function statusCommand(
   const line = updateLine(release, current, method.updateCommand);
   const update = release === null ? {} : { update: { current, latest: release.version, security: release.security, updateCommand: method.updateCommand, url: release.url } };
   // One line when an integration is Broken, from the last checks only: status never waits on a check.
-  const brokenIntegrations = await savedIntegrations(context).then(list => list.filter(one => one.state === "broken"), () => []);
+  const savedList = await savedIntegrations(context).catch((): Integration[] => []);
+  const brokenIntegrations = savedList.filter(one => one.state === "broken");
   const brokenLine = integrationsBrokenLine(brokenIntegrations);
+  // An agent signed out is said as such, with its sign-in command, never as a Broken integration (eight stranger 2).
+  const signedOutLines = agentsSignedOutLines(savedList);
+  const signedOut = signedOutLines.length === 0 ? {} : { agentsSignedOut: signedOutLines };
   const integrations = brokenIntegrations.length === 0 ? {} : { integrations: { broken: brokenIntegrations.map(one => ({ key: one.key, name: one.name, fix: one.action.kind === "fix" ? one.action.words : null })) } };
   // An update waiting, on what, and the action: before anything else, as it holds up new work.
   const waiting = waitingUpdate(context.databaseFile, run => context.store.stopQuiescenceProblem(run) !== null, context.clock());
@@ -9341,7 +9356,7 @@ async function statusCommand(
   const laptop = { laptop: await laptopStatus(context.store, context.databaseFile, context.laptopSeams) };
   // Nothing else on this computer is left to notice a builder that died: a look at status brings it back when it may.
   if (!laptop.laptop.running && laptop.laptop.background === "on" && !machineActing()) await restartOwnBuilder(context.store, context.databaseFile, context.laptopSeams, context.clock()).catch(() => null);
-  return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
+  return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...signedOut, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...signedOutLines, ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
 }
 
 function unsentRepliesLine(unsent: readonly { since: string; error: string | null }[]): string | null {
@@ -10934,7 +10949,7 @@ async function scopeTask(
         ref.sizing?.source === "person" || approvalOf(previous).approved ||
         previous?.proposedVia === "coordinator" || store.filedViaOf(id)?.startsWith("mcp:")) return null;
     const input = { title: store.getTask(id)!.title, goal, outOfScope: text(flags, "not") ?? null, touches };
-    const sized = store.applySizing(id, heuristicSizing(input), { followPlanning: true }, now);
+    const sized = store.applySizing(id, filingSizing(store, input), { followPlanning: true }, now);
     if (sized.ok) refinement = refineFiledSizing(store, id, input, true, context.clock);
     return null;
   }, () => false);
@@ -15201,4 +15216,36 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   const done = turnFlexibleOff(store, { repo, by: acting.name, now: context.clock() });
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
   return succeed(write, json, command, { repo, changed: done.changed, flexible: { state: "secure" } }, () => [done.changed ? `${repo} is Secure again. No new Flexible threads start.` : `${repo} is already Secure.`]);
+}
+
+/** `toolroll config set task-sizing on|off` and `config show task-sizing`: Settings → General's switch, proved as its
+ * route is (an instance operator's password, or the laptop owner's own act), checked and written in one transaction. */
+async function taskSizingConfig(action: string, value: string | undefined, repoGiven: boolean, flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = `config ${action}`;
+  if (repoGiven) return fail(write, json, command, "usage", "task sizing is installation-wide: no --repo", EXIT.usage);
+  const said = () => {
+    const read = taskSizingSetting(store);
+    const on = read.on && !read.byEnv;
+    const name = (one: "claude" | "jev") => one === "jev" ? "Jev via OpenRouter (your credit)" : "Claude Haiku (on your plan)";
+    return { payload: { taskSizing: { on, setting: read.chosen ? "on" : "off", sizer: read.sizer, available: read.available, byEnv: read.byEnv } }, lines: () => [read.byEnv
+      ? "Task sizing is off: TOOLROLL_NO_TASK_CLASSIFIER is set, so no model call happens before you approve; uncertain tasks get a plan first."
+      : on ? `Task sizing is on: each new task is sized by ${name(read.sizer!)} before you approve.`
+      : read.chosen && read.sizer !== null ? `Task sizing is off: it was turned on for ${name(read.sizer)}, but ${name(read.available)} is the one available now, so nothing is sent. Run \`toolroll config set task-sizing on\` to choose it.`
+      : "Task sizing is off: no model call before you approve; uncertain tasks get a plan first."] };
+  };
+  if (action === "show") { const shown = said(); return succeed(write, json, command, shown.payload, shown.lines); }
+  if (action !== "set" || (value !== "on" && value !== "off")) return fail(write, json, command, "usage", "`toolroll config set task-sizing on|off --as <you> --token <t>`", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "changing task sizing takes `--as <you> --token <t>`", EXIT.usage);
+  const saved = store.transact(() => {
+    const verified = authenticateApprover(store, acting.name, acting.token);
+    if (!verified.ok || !store.isInstanceOperator(acting.name)) return false;
+    // On consents to the classifier available now (said back below); never another later.
+    setTaskSizing(store, value === "on" ? taskSizingSetting(store).available : false, acting.name, clock());
+    return true;
+  });
+  if (!saved) return fail(write, json, command, "unauthenticated", "an instance operator changes task sizing, with their password", EXIT.refused);
+  const shown = said();
+  return succeed(write, json, command, shown.payload, shown.lines);
 }

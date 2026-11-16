@@ -9,6 +9,8 @@
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
 import type { Run, Store, TaskFamily } from "./store.js";
+import { failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
+import { retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
 import { assignmentCardOf } from "./assignment-ui.js";
 import { assignmentStageOf, stageOfCode } from "./task-status.js";
@@ -112,8 +114,25 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
       ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null),
         accept: acceptFactsOf(store, assignment, viewer, evidenceRoot) } : null,
+    failure: current.state === "failed" ? failureOf(builds) : null,
+    retry: current.state === "failed" ? (() => { const pins = retryPinsOf(store, current.id); return pins === null ? null : { run: pins.run, digest: pins.digest }; })() : null,
+    approval: scope !== null && approved && scope.approvedBy !== null
+      ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
     room: `task:${encodeURIComponent(root.id)}`,
   };
+}
+
+/** A failed task's latest finished build attempt in one plain line, how many attempts in a row failed (newest first,
+ * stopping at the first that didn't), and its suggestion (needs-you.ts, the words the task page says). */
+function failureOf(builds: readonly Run[]): NonNullable<StepCards["failure"]> {
+  const last = latestFinishedAttempt(builds);
+  let failedInARow = 0;
+  for (const run of [...builds].sort((a, b) => b.id - a.id)) {
+    if (run.finishedAt === null && run.outcome === null) continue;
+    if (run.outcome !== "failed") break;
+    failedInARow += 1;
+  }
+  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : stopSuggestionOf(last.reason) };
 }
 
 /** Who ran a step's latest run, when its runs started and ended, and their recorded cost together. Runs are newest first. */

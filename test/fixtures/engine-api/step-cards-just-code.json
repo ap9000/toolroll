@@ -102,5 +102,12 @@
       "needs": null
     }
   },
+  "failure": null,
+  "retry": null,
+  "approval": {
+    "by": "alex",
+    "you": true,
+    "automatic": false
+  },
   "room": "task:t-done"
 }

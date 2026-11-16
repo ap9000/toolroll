@@ -428,8 +428,9 @@ describe("the lead's confirm doors (mate arc, ruling 7; slice-2 review)", () => 
     expect(body).toMatchObject({
       task: "a",
       standing: "awaiting approval",
-      // A short, single-path goal is a small change: it makes no plan, so no planner works on it.
-      summary: "claude · sonnet builds and repairs",
+      // Task sizing is off (the default) and this goal isn't clearly tiny (no named file): it plans first, so the planner
+      // works on it too.
+      summary: "claude · sonnet plans, builds, and repairs",
       editable: true,
       approval: "not approved",
     });

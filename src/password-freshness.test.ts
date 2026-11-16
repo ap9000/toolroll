@@ -387,14 +387,14 @@ describe("where freshness may be honoured", () => {
     // person proves each inside its own transaction.
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flexible-ship.ts": 1, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
-      "src/nightly-github.ts": 1, "src/operate.ts": 65, "src/pull-request-flow.ts": 1,
+      "src/nightly-github.ts": 1, "src/operate.ts": 66, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       // server/settings.ts 27: results routing's raising rule acts (accept a suggestion, keep a paused rule, turn
       // suggestions on) are an instance operator's step-up; the rule door re-proves the session in the write.
       // server/engine-api.ts: starting a Flexible thread (pre-enable) is a person's yes to its terms card, proved as an
       // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 24,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -542,6 +542,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#steerTask@108": 1,
     "src/operate.ts#stopTaskCommand@138": 1,
     "src/operate.ts#storageCommand@157>operator@1": 1,
+    // `config set task-sizing`: an instance operator proved and the setting written in one transaction.
+    "src/operate.ts#taskSizingConfig@257>saved:store.transact(_)@2": 1,
     "src/operate.ts#verifyCommand@50": 2,
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
@@ -599,7 +601,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>modelsSave@113": 1,
     // Results routing (slice 2): Settings → Models → Suggested's step-up acts (accept, keep, suggestions on), last in
     // the handlers so the reviewed positions above stay as they were.
-    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@118><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@119><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>policySave@51": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectDelete@50": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@48": 1,
@@ -609,6 +611,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>slackAct@79><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>spendBudget@46": 1,
     "src/server/settings.ts#createSettingsHandlers@1>storageAct@57><anonymous>@1": 1,
+    // Settings → General: task sizing, an instance operator's step-up proved and written in one transaction.
+    "src/server/settings.ts#createSettingsHandlers@1>taskSizingAct@116>saved:store.transact(_)@2": 1,
     "src/server/settings.ts#createSettingsHandlers@1>teamsAct@83><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>updatesAct@55><anonymous>@1": 1,
     "src/server/tasks.ts#createTasksHandlers@2": 2,
@@ -807,6 +811,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Not a password: a code map check's "fresh" outcome, and release-carry's set of files added in the change.
     "src/code-map-build.ts#<module>": 1,
     "src/code-map-build.ts#checkCodeMap@13": 1,
+    // Codex's sign-in asked again, fresh, right before its app server starts (no password: a status command).
+    "src/codex-limits.ts#codexSignedInNow@6": 1,
     "src/release-carry.ts#changeRefusal@18": 2,
     "src/release-carry.ts#preflightCarry@21": 3,
   },
@@ -1007,10 +1013,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@119": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@122": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@120": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@123": 1,
     // Solo or team: "It's just me" is a credential act from a full session, proved inside the declaration's transaction.
-    "src/server/settings.ts#createSettingsHandlers@1>justMe@116>said:store.transact(_)@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>justMe@117>said:store.transact(_)@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).

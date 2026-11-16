@@ -409,9 +409,7 @@ fn the_settings_screen_and_t() {
     assert_eq!(app.key(key('t')), vec![]);
     assert_eq!(app.prefs.theme.name, ThemeName::Light);
     assert_eq!(app.prefs.settings.theme, ThemeName::Terminal);
-    assert!(
-        text(&draw(&mut app, 110, 36)).contains("light, for this session (the file says terminal)")
-    );
+    assert!(text(&draw(&mut app, 110, 36)).contains("light for this session (saved: terminal)"));
     app.key(key('x'));
     assert_eq!(app.mode, Mode::Normal);
 }

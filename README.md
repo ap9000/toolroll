@@ -40,9 +40,13 @@ curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | s
 or
 
 ```sh
-npm install -g toolroll    # or: brew install ap9000/toolroll/toolroll
+npm uninstall -g standing-orders 2>/dev/null; npm install -g toolroll    # or: brew install ap9000/toolroll/toolroll
 toolroll
 ```
+
+The first command removes Toolroll's older package, `standing-orders`, if you
+have it: npm can't install over it (it stops with `EEXIST: file already
+exists … bin/standing-orders`). Without it, the command does nothing.
 
 Toolroll opens in your terminal and runs while that window is open. No
 password and no login file: on your own computer you're already in. Started

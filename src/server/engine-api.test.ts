@@ -106,6 +106,21 @@ beforeAll(async () => {
   store.setTaskState("t-done", "done", T0);
   storeEvidence(store, evidenceRoot, resultRun, "terminal-diff", "diff.patch", Buffer.from(PATCH), "git diff (exit 0)", T0, { captureStatus: "ok" });
   started("t-b", repoB);
+  // A sealed task whose builds failed once, then finished, then failed three times in a row (a temporary problem on
+  // the machine), now failed: three in a row, not four.
+  let failRef = 0;
+  for (let i = 0; i < 5; i += 1) {
+    const run = i === 0 ? started("t-fail", repoA, true) : (() => {
+      const taken = acquire(store, failRef, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 3_600_000 });
+      if (!taken.ok) throw new Error(`claim ${i}: ${JSON.stringify(taken)}`);
+      return store.startRun({ taskRef: failRef, leaseId: taken.claim.leaseId, runner: "builder-1", branch: "b-t-fail", worktree, now: new Date(), ...presented(store, failRef, "builder") });
+    })();
+    failRef = store.lookupRef("t-fail")!.id;
+    store.finishRun(run, i === 1 ? { outcome: "built", committed: true, now: new Date() } as never : { outcome: "failed", reason: "retryable-infra", now: new Date() } as never);
+    const lease = store.handle.prepare("SELECT lease_id FROM claim WHERE task_ref = ?").get(failRef) as { lease_id?: string } | undefined;
+    if (lease?.lease_id !== undefined) release(store, lease.lease_id, new Date());
+  }
+  store.setTaskState("t-fail", "failed", T0);
   // This computer's sign-in check (stubbed, no process): Codex signed in, nothing else installed. Builds are already set
   // to Claude Code here, so the first task waits for it.
   const notFound = { code: 127, stdout: "", stderr: "", timedOut: false, notFound: true };
@@ -270,6 +285,23 @@ describe("every answer is its contract's shape", () => {
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-ready/steps")).body);
     expect(steps.review).toEqual({ run, receipt: expect.stringMatching(/^[0-9a-f]{64}$/), source: store.getScope("t-ready")!.digest,
       accept: { owed: null, blockers: [], needs: null } });
+  });
+
+  test("a failed task's steps say why it stopped, what Retry binds to, and who approved it", async () => {
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
+    expect(steps.failure).toEqual({ line: "A temporary problem on the machine stopped it.", failedInARow: 3, suggestion: expect.any(String) });
+    const last = store.lastBuilderRun(store.lookupRef("t-fail")!.id)!;
+    expect(steps.retry).toEqual({ run: last.id, digest: store.getScope("t-fail")!.digest });
+    expect(steps.approval).toEqual({ by: "alex", you: true, automatic: false });
+    // Another person reads who approved, not "you".
+    expect(stepCardsSchema.parse((await read("approver", "/t/t-fail/steps")).body).approval).toEqual({ by: "alex", you: false, automatic: false });
+    // A task that didn't fail has neither.
+    const done = stepCardsSchema.parse((await read("operator", "/t/t-done/steps")).body);
+    expect([done.failure, done.retry]).toEqual([null, null]);
+    expect(done.approval).toEqual({ by: "alex", you: true, automatic: false });
+    // Every Work row the console sends is a closed group and tone (the client lists each one).
+    const rows = workRowsSchema.parse((await read("operator", "/work/rows")).body);
+    expect(rows.rows.find(row => row.id === "t-fail")).toBeDefined();
   });
 
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {

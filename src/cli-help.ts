@@ -8,7 +8,7 @@ import { DEFAULT_MAX_DEPTH } from "./scan.js";
 export const HELP = `Toolroll — your agents build. You decide.
 
   toolroll                     start here, in this terminal (--web: in the browser)
-                               keys: n new task · a approve · c accept · b send back · ? all
+                               keys: n new task · a accept · r send back · A agents · ? all keys
   toolroll demo                try it first: sample tasks, no model calls, no cost
   toolroll repos add <folder>  add another project
   toolroll task add "<change>" --repo .

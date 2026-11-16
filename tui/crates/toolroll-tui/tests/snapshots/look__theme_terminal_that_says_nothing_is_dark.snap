@@ -18,14 +18,14 @@ expression: "themed(ThemeName::Terminal, Depth::TrueColor, None)"
    ◐ Rate-limit middleware        Planning          │· Read src/export.ts                           
      shop · 7m ago                                  └ Helper finished                               
                                                   ✓ Ran npm test  212 passed (3.1 s)                
-   Done today 1                                                                                     
+   Recent 1                                                                                         
    ✓ Bump dependencies            Complete                                                          
      shop · 3h ago                              Tests pass on the new runner. Removing the old      
                                                 config next.                                        
                                                                                                     
                                                                                                     
                                                                                                     
-   j/k  move   ⏎  open   s  steer   a  accept   n  new   :  all actions                             
+   j/k  move   ⏎  open   s  steer   n  new   :  all actions                                         
 
 abbbbbbbbaaccccccddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
@@ -43,14 +43,14 @@ aggvvvvvvvvvvvvvvvtttttttttttttttttttttttttggaggnnqqqnnnnnnnnnnnnnnnnnnnnnnnnnnn
 aggmmggggggggggggggggggggggggggggeeeeeeeeeeggaggnnqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggnnqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnqqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnngga
-agghhhhhhhhhhiiigggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+agghhhhhhiiigggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggllggggggggggggggggggggggggggggwwwwwwwwwwggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-aacccccdddddaacccdddddaacccddddddaacccdddddddaacccddddaacccddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aacccccdddddaacccdddddaacccddddddaacccddddaacccddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a = fg terminal bg #0b0b0b
 b = fg terminal bg #0b0b0b bold

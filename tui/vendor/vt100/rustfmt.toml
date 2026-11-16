@@ -1,0 +1,3 @@
+# Upstream vt100 0.16.2 is formatted at this width; keeping it lets `cargo fmt --all --check` pass without reformatting
+# the vendored copy (its diff from upstream stays the few lines README names).
+max_width = 78

@@ -18,11 +18,11 @@ expression: shown
    ◐ Rate-limit middlew… 7m                         Planning          │  Empty rows export as a header line only.                           
      shop · 7m ago                                                    │· Read src/export.ts                                                 
                                                                       └ Helper finished                                                     
-   Done today 1                                                     ✓ Ran npm test  212 passed (3.1 s)                                      
+   Recent 1                                                         ✓ Ran npm test  212 passed (3.1 s)                                      
    ✓ Bump dependencies   3h                         Complete                                                                                
      shop · 3h ago                                                                                                                          
                                                                   Tests pass on the new runner. Removing the old config next.               
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-   j/k  move   ⏎  open   s  steer   a  accept   n  new   :  all actions
+   j/k  move   ⏎  open   s  steer   n  new   :  all actions

@@ -4,6 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { sizingOn } from "../test/sizing-on.js";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, readFileSync } from "node:fs";
 import { saveSlackCredentials } from "./slack-api.js";
@@ -1215,7 +1216,7 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
   });
 
   test("a Start card on web chat: Review and start opens the whole terms; I confirm this exact action files, approves and marks one small task and wakes the builder", async () => {
-    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
     try {
       const cookie = await login(); const csrf = await mint(cookie);
       script.push(

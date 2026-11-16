@@ -230,6 +230,10 @@ impl Client {
     }
 
     /// Attach to terminal `id`: what to send it, and what it says, until either side closes.
+    ///
+    /// The socket lives on a thread of its own (with its own small runtime): typing goes out and output comes in at once
+    /// however busy the screen's thread is parsing and drawing, and output waits in order in the budget's bounded queue
+    /// (past it the socket isn't read, so the console slows the program; nothing is dropped).
     pub async fn term_connect(
         &self,
         id: &str,
@@ -249,10 +253,6 @@ impl Client {
             .strip_prefix("http://")
             .ok_or_else(|| ApiError::Refused("Terminals open only on this computer.".into()))?
             .to_string();
-        let stream = tokio::net::TcpStream::connect(&host)
-            .await
-            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
-        let _ = stream.set_nodelay(true);
         let mut request = format!("ws://{host}/term/{}/socket", encode(id))
             .into_client_request()
             .map_err(|e| ApiError::Unreachable(e.to_string()))?;
@@ -269,17 +269,60 @@ impl Client {
             protocols.set_sensitive(true);
             headers.insert("sec-websocket-protocol", protocols);
         }
-        // The console sends the screen as it is (with its scrollback) as one message of at most 8 Mi characters.
-        let config = WebSocketConfig::default()
-            .max_message_size(Some(32 << 20))
-            .max_frame_size(Some(32 << 20));
-        let (ws, _) = match tokio_tungstenite::client_async_with_config(
-            request,
-            stream,
-            Some(config),
-        )
-        .await
-        {
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("toolroll-term".into())
+            .spawn(move || {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(ApiError::Unreachable(e.to_string())));
+                        return;
+                    }
+                };
+                rt.block_on(socket(host, request, ready_tx));
+            })
+            .map_err(|e| ApiError::Unreachable(e.to_string()))?;
+        ready_rx.await.unwrap_or_else(|_| {
+            Err(ApiError::Unreachable(
+                "The terminal's connection ended.".into(),
+            ))
+        })
+    }
+}
+
+type Opened = Result<
+    (
+        mpsc::UnboundedSender<TermSend>,
+        mpsc::UnboundedReceiver<TermEvent>,
+        std::sync::Arc<Held>,
+    ),
+    ApiError,
+>;
+
+/// The socket's own thread: open it, say so (or why not), then carry frames both ways until either side closes.
+async fn socket(
+    host: String,
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    ready: tokio::sync::oneshot::Sender<Opened>,
+) {
+    let stream = match tokio::net::TcpStream::connect(&host).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            let _ = ready.send(Err(ApiError::Unreachable(e.to_string())));
+            return;
+        }
+    };
+    let _ = stream.set_nodelay(true);
+    // The console sends the screen as it is (with its scrollback) as one message of at most 8 Mi characters.
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(32 << 20))
+        .max_frame_size(Some(32 << 20));
+    let (ws, _) =
+        match tokio_tungstenite::client_async_with_config(request, stream, Some(config)).await {
             Ok(done) => done,
             Err(WsError::Http(response)) => {
                 let status = response.status().as_u16();
@@ -296,68 +339,75 @@ impl Client {
                     })
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| format!("The terminal refused to open (status {status})."));
-                return Err(ApiError::Refused(words));
+                let _ = ready.send(Err(ApiError::Refused(words)));
+                return;
             }
-            Err(e) => return Err(ApiError::Unreachable(e.to_string())),
+            Err(e) => {
+                let _ = ready.send(Err(ApiError::Unreachable(e.to_string())));
+                return;
+            }
         };
-        let (mut sink, mut source) = ws.split();
-        let (send_tx, mut send_rx) = mpsc::unbounded_channel::<TermSend>();
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<TermEvent>();
-        let held = std::sync::Arc::new(Held::default());
-        let budget = held.clone();
-        tokio::spawn(async move {
-            // Until `hello`, the console sends only the screen as it is (one message it bounds) and then `hello`: read
-            // freely until then (the screen waits for `hello` before it parses, so blocking here would never end).
-            let mut hello_seen = false;
-            loop {
-                // Over budget: typing still goes out, but nothing more is read until the screen lets go of some.
-                let can_read = !hello_seen || budget.bytes() < OUTPUT_BUDGET;
-                tokio::select! {
-                    _ = budget.freed.notified(), if !can_read => {}
-                    out = send_rx.recv() => {
-                        let Some(out) = out else {
-                            // The screen let go of it (detached, another task, quitting): close it; the program runs on.
-                            let _ = sink.send(Message::Close(None)).await;
-                            break;
-                        };
-                        let frames = match out {
-                            TermSend::Input(text) => input_frames(&text),
-                            TermSend::Resize { cols, rows } => vec![serde_json::json!({ "t": "resize", "cols": cols, "rows": rows }).to_string()],
-                        };
-                        for frame in frames {
-                            if sink.send(Message::text(frame)).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    frame = source.next(), if can_read => {
-                        let event = match frame {
-                            Some(Ok(Message::Binary(bytes))) => TermEvent::Output(Chunk::held(bytes.to_vec(), &budget)),
-                            Some(Ok(Message::Text(text))) => match control_of(text.as_str()) {
-                                Some(e) => {
-                                    hello_seen |= matches!(e, TermEvent::Hello { .. });
-                                    e
-                                }
-                                None => continue,
-                            },
-                            Some(Ok(Message::Close(frame))) => {
-                                let _ = event_tx.send(TermEvent::Closed { code: frame.map(|f| u16::from(f.code)) });
-                                break;
-                            }
-                            Some(Ok(_)) => continue,
-                            Some(Err(_)) | None => {
-                                let _ = event_tx.send(TermEvent::Closed { code: None });
-                                break;
-                            }
-                        };
-                        if event_tx.send(event).is_err() {
-                            break;
-                        }
+    let (mut sink, mut source) = ws.split();
+    let (send_tx, mut send_rx) = mpsc::unbounded_channel::<TermSend>();
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<TermEvent>();
+    let held = std::sync::Arc::new(Held::default());
+    let budget = held.clone();
+    if ready.send(Ok((send_tx, event_rx, held))).is_err() {
+        // Nobody waits for it any more: close it; the program runs on.
+        let _ = sink.send(Message::Close(None)).await;
+        return;
+    }
+    // Until `hello`, the console sends only the screen as it is (one message it bounds) and then `hello`: read freely
+    // until then (the screen waits for `hello` before it parses, so blocking here would never end).
+    let mut hello_seen = false;
+    loop {
+        // Over budget: typing still goes out, but nothing more is read until the screen lets go of some.
+        let can_read = !hello_seen || budget.bytes() < OUTPUT_BUDGET;
+        tokio::select! {
+            // Typing first: it never waits behind output.
+            biased;
+            out = send_rx.recv() => {
+                let Some(out) = out else {
+                    // The screen let go of it (detached, another task, quitting): close it; the program runs on.
+                    let _ = sink.send(Message::Close(None)).await;
+                    break;
+                };
+                let frames = match out {
+                    TermSend::Input(text) => input_frames(&text),
+                    TermSend::Resize { cols, rows } => vec![serde_json::json!({ "t": "resize", "cols": cols, "rows": rows }).to_string()],
+                };
+                for frame in frames {
+                    if sink.send(Message::text(frame)).await.is_err() {
+                        break;
                     }
                 }
             }
-        });
-        Ok((send_tx, event_rx, held))
+            _ = budget.freed.notified(), if !can_read => {}
+            frame = source.next(), if can_read => {
+                let event = match frame {
+                    Some(Ok(Message::Binary(bytes))) => TermEvent::Output(Chunk::held(bytes.to_vec(), &budget)),
+                    Some(Ok(Message::Text(text))) => match control_of(text.as_str()) {
+                        Some(e) => {
+                            hello_seen |= matches!(e, TermEvent::Hello { .. });
+                            e
+                        }
+                        None => continue,
+                    },
+                    Some(Ok(Message::Close(frame))) => {
+                        let _ = event_tx.send(TermEvent::Closed { code: frame.map(|f| u16::from(f.code)) });
+                        break;
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) | None => {
+                        let _ = event_tx.send(TermEvent::Closed { code: None });
+                        break;
+                    }
+                };
+                if event_tx.send(event).is_err() {
+                    break;
+                }
+            }
+        }
     }
 }
 

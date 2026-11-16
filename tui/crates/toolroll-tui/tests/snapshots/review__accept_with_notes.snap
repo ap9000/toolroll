@@ -23,7 +23,7 @@ expression: shown
 " │ ◐ Rate-limit mi│ Notes on the changes:                                                           │                 │ "
 " │   shop · 7m ago│ - src/cart.rs line 3 — subtotal reads better                                    │                 │ "
 " │                │                                                                                 │                 │ "
-" │ Done today 1   │ It completes the task.                                                          │                 │ "
+" │ Recent 1       │ It completes the task.                                                          │                 │ "
 " │                │                                                                                 │                 │ "
 " │ ✓ Bump dependen│ Enter  Accept with the notes                                                    │                 │ "
 " │   shop · 3h ago│ t  Don't attach the notes                                                       │                 │ "

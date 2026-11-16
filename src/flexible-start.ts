@@ -108,6 +108,6 @@ export function flexibleStartCard(store: Store, input: { repo: string; by: { nam
   const networkDigest = flexibleNetworkDigest(network);
   const key = createHash("sha256").update(JSON.stringify({ v: 1, kind: "standing-orders:flexible-start", digest: standing.digest, repo: input.repo, by: input.by, model, level: "full", billing,
     network: networkDigest, message: digestOfMessage, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
-  const summary: ApprovalSummary = { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: "Other settings", key };
+  const summary: ApprovalSummary = { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: "Other settings", usualSummary: "", key };
   return { ok: true, card: { summary, digest: standing.digest, network: networkDigest, model, level: "full", billing, terms } };
 }

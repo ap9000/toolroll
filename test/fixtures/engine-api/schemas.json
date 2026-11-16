@@ -1,5 +1,5 @@
 {
-  "digest": "53b7ed1125a73f940e9a076d2fecb9c9432f3f1c12aeb3f4f30946e34951bffb",
+  "digest": "6daf140a99f39d0a1336246bd144393dbb5a5e0925b69e78c2d2449776b7bd1c",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -806,7 +806,16 @@
                     "type": "string"
                   },
                   "tone": {
-                    "type": "string"
+                    "type": "string",
+                    "enum": [
+                      "attention",
+                      "problem",
+                      "live",
+                      "ready",
+                      "done",
+                      "muted",
+                      "neutral"
+                    ]
                   },
                   "token": {
                     "type": "string"
@@ -826,7 +835,15 @@
                     "type": "string"
                   },
                   "tone": {
-                    "type": "string"
+                    "type": "string",
+                    "enum": [
+                      "",
+                      "needs",
+                      "ask",
+                      "live",
+                      "done",
+                      "failed"
+                    ]
                   }
                 },
                 "required": [
@@ -848,7 +865,14 @@
                 ]
               },
               "group": {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "decide",
+                  "review",
+                  "unblock",
+                  "building",
+                  "rest"
+                ]
               },
               "rank": {
                 "type": "integer",
@@ -1659,6 +1683,90 @@
             }
           ]
         },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "line": {
+                  "type": "string"
+                },
+                "failedInARow": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "suggestion": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "line",
+                "failedInARow",
+                "suggestion"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "digest": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "run",
+                "digest"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approval": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "by": {
+                  "type": "string"
+                },
+                "you": {
+                  "type": "boolean"
+                },
+                "automatic": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "by",
+                "you",
+                "automatic"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "room": {
           "type": "string"
         }
@@ -1671,6 +1779,9 @@
         "liveRun",
         "cards",
         "review",
+        "failure",
+        "retry",
+        "approval",
         "room"
       ],
       "additionalProperties": false
