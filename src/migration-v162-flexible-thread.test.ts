@@ -38,7 +38,7 @@ const insert = (db: { prepare: DatabaseSync["prepare"] }, over: Record<string, u
 
 describe("v162", () => {
   test("fresh: the table, no rows, update-safe", () => {
-    expect(SCHEMA_VERSION).toBe(167);
+    expect(SCHEMA_VERSION).toBe(168);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(162);
     expect(updateSafeSchema(161)).toBe(true);
     expect(V162_STEPS).toEqual(["flexible-thread"]);
@@ -80,7 +80,7 @@ describe("v162", () => {
     const steps: string[] = [];
     const upgraded = openStore(file, { migrationStep: one => steps.push(one) });
     expect(steps).toEqual(expect.arrayContaining([...V162_STEPS]));
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(167);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(168);
     expect(upgraded.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()?.["n"]).toBe(0);
     expect(upgraded.accountOf("alex")).not.toBeNull();
     upgraded.close();
@@ -90,7 +90,7 @@ describe("v162", () => {
     const file = v161File();
     expect(() => openStore(file, { migrationStep: at => { if (at === step) throw new Error(`crash after ${at}`); } })).toThrow(`crash after ${step}`);
     const resumed = openStore(file);
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(167);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(168);
     expect(resumed.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()?.["n"]).toBe(0);
     resumed.close();
   });

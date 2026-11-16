@@ -385,7 +385,7 @@ describe("where freshness may be honoured", () => {
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
     // evals: starting an eval campaign spends money, and abandoning a stuck one ends it with its spending unknown, so a
     // person proves each inside its own transaction.
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flexible-ship.ts": 1, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
       "src/nightly-github.ts": 1, "src/operate.ts": 65, "src/pull-request-flow.ts": 1,
       // server/flows.ts: allowing browser use in a flow's script zones (flow-browser.ts) is a person's own step-up.
@@ -469,6 +469,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#mapCommand@223": 1,
   },
   "authenticateApprover": {
+    // Flexible Ship (F4): the one press takes the same step-up as an ordinary approval, never a machine's credential
+    // (reviewed new site; gated off by FLEXIBLE_AVAILABLE). approve() proves the person again inside the seal.
+    "src/flexible-ship.ts#<module>": 2,
+    "src/flexible-ship.ts#personNow@7": 1,
     "src/chat-actions.ts#<module>": 2,
     "src/chat-actions.ts#executeSharedAction@26": 1,
     "src/control-setup.ts#<module>": 2,

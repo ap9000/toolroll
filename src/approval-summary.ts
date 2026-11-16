@@ -32,7 +32,9 @@ export type BoundField =
   | "goal" | "outOfScope" | "touches" | "acceptance" | "budget" | "qualityMode" | "candidate" | "releaseTerms" | "releaseCheck"
   | "route" | `route.${string}` | "chain" | `profile.${string}`
   /** A Flexible thread start's terms card (flexible-start.ts): its own rows, bound by its own key. */
-  | `flexible.${string}`;
+  | `flexible.${string}`
+  /** A Flexible Ship's own terms (flexible-ship.ts): not a scope's, so named apart. */
+  | `ship.${string}`;
 
 /** One row of the summary: a label, its words, any further lines, and the bound fields it states. */
 /** `risky`: access a person must see before the yes whatever the project usually allows (writes anywhere, any host, full
@@ -483,4 +485,15 @@ export function summaryContextOf(store: Store, taskId: string, scope: Scope, now
 export function approvalSummaryFor(store: Store, taskId: string, now: Date, evidence: string | null = null): ApprovalSummary | null {
   const scope = store.getScope(taskId);
   return scope === null ? null : approvalSummaryOf(scope, summaryContextOf(store, taskId, scope, now, evidence));
+}
+
+/**
+ * A Flexible Ship's yes (flexible-ship.ts, "Send for checks"): its decisions and warnings, read the same way as a
+ * scope's, with `key` over them and the Ship terms' own digest. The press carries the key back and the Ship refuses a
+ * stale one, exactly as a scope's approval form does. Kept apart from approvalSummaryOf (no scope, no usual settings),
+ * and keyed under its own kind so a Ship's key can never equal a scope's.
+ */
+export function shipSummaryOf(digest: string, decisions: SummaryRow[], warnings: SummaryNote[]): ApprovalSummary {
+  const key = createHash("sha256").update(JSON.stringify({ v: 2, kind: "flexible-ship", digest, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
+  return { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: USUAL_LABEL, key };
 }

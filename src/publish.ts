@@ -20,6 +20,7 @@
  * @-mention in its conclusion cannot acquire GitHub semantics.
  */
 
+import { flexibleMergeRefusal } from "./flexible-merge-guard.js";
 import { createHash } from "node:crypto";
 import { protectedPublicationHold } from "./result-completion.js";
 import { fastPublishProblem } from "./fast-start.js";
@@ -693,6 +694,8 @@ export async function sweepMerges(
       const ref = store.refForId(publication.taskRef);
       if (ref === null || ref.repo !== options.repo) continue;
       if (publication.githubRepo !== grant.githubRepo) continue;
+      // A Flexible result merges only through its armed Ship (flexible-merge-guard.ts): never this sweep.
+      if (flexibleMergeRefusal(store, ref.externalId, "publish-sweep") !== null) { report.skipped++; continue; }
 
       const blocker = store.mergeBlockerFor(publication.id);
       if (blocker !== null) {
