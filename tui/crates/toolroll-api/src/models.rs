@@ -355,6 +355,16 @@ pub struct WorkRows {
     pub needs: Vec<NeedGroup>,
     pub next: Option<String>,
     pub room: String,
+    /// The cost line: today's spend and the fullest current plan window (an instance operator's only; else None).
+    pub spend: Option<Spend>,
+}
+
+/// "$1.84 today · plan 62%": today's spend (the UTC day) and the fullest current subscription window, rounded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Spend {
+    pub today_usd: f64,
+    pub plan_percent: Option<i64>,
 }
 
 // ---- Step cards -----------------------------------------------------------------------------------------------

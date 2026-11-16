@@ -79,7 +79,8 @@ pub async fn run(client: Client, mut opts: Options) -> std::io::Result<i32> {
     terminal::enable_raw_mode()?;
     // Settings, the terminal's colours and background (asked before anything else reads the keyboard), and where
     // notifications go.
-    let prefs = crate::settings::start(&crate::settings::Env::from_process());
+    let env = crate::settings::Env::from_process();
+    let prefs = crate::settings::start(&env);
     let mut stdout = std::io::stdout();
     stdout.write_all(crate::notify::TITLE_PUSH.as_bytes())?;
     TITLE.store(true, Ordering::SeqCst);
@@ -98,7 +99,7 @@ pub async fn run(client: Client, mut opts: Options) -> std::io::Result<i32> {
     }
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 18, std::io::stdout()));
     let mut term: Term = Terminal::new(backend)?;
-    let result = event_loop(&mut term, client, &mut opts, prefs).await;
+    let result = event_loop(&mut term, client, &mut opts, prefs, &env).await;
     drop(term);
     restore();
     result
@@ -399,6 +400,7 @@ async fn event_loop(
     client: Client,
     opts: &mut Options,
     prefs: crate::settings::Prefs,
+    env: &crate::settings::Env,
 ) -> std::io::Result<i32> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
     let mut lp = Loop {
@@ -431,6 +433,14 @@ async fn event_loop(
     }
     let mut app = App::new(opts.owned, opts.project.clone());
     app.now = now_secs();
+    app.origin = Some(client.origin().to_string());
+    // Where the last run left off (state.rs): our own small file, read only when it is safe to.
+    let state_path = crate::state::path(env);
+    app.restore = state_path.as_deref().and_then(crate::state::load);
+    let mut saved = app.restore.clone();
+    let mut last_save = Instant::now();
+    // Clickable links follow the theme's rules (NO_COLOR, tmux): link.rs.
+    let links_on = crate::link::enabled(env.no_color, env.tmux, prefs.settings.tmux_passthrough);
     app.status = prefs.first_warning().map(|w| (crate::app::Tone::Said, w));
     app.split = prefs.settings.list_width();
     // A background answer that comes late is dropped, never read as keys (for about a second from now).
@@ -467,7 +477,16 @@ async fn event_loop(
             return Ok(t);
         }
         crossterm::queue!(term.backend_mut(), BeginSynchronizedUpdate)?;
-        term.draw(|f| view::draw(f, app))?;
+        let frame = term.draw(|f| view::draw(f, app))?;
+        // Our own links made clickable over the frame just drawn (never anything an agent wrote).
+        let links = if links_on {
+            crate::link::overlay(frame.buffer, &app.areas.links)
+        } else {
+            String::new()
+        };
+        if !links.is_empty() {
+            term.backend_mut().write_all(links.as_bytes())?;
+        }
         crossterm::queue!(term.backend_mut(), EndSynchronizedUpdate)?;
         term.backend_mut().flush()?;
         let done = Instant::now();
@@ -475,12 +494,31 @@ async fn event_loop(
         Ok(done)
     };
 
+    // Where the person is, kept at most every two seconds while it changes, and on the way out (state.rs).
+    let mut keep_place = |app: &App, force: bool| {
+        let Some(path) = state_path.as_deref() else {
+            return;
+        };
+        if !app.loaded || matches!(app.mode, crate::app::Mode::Fatal(..)) {
+            return;
+        }
+        let now = app.resume_state();
+        if saved.as_ref() == Some(&now) || (!force && last_save.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        last_save = Instant::now();
+        if crate::state::save(path, &now).is_ok() {
+            saved = Some(now);
+        }
+    };
     loop {
         for fx in pending.drain(..) {
             if let Some(code) = lp.effect(fx, term, opts, &mut app) {
                 exit = Some(code);
             }
         }
+        keep_place(&app, false);
         if exit.is_some() {
             break;
         }
@@ -570,6 +608,7 @@ async fn event_loop(
             }
         }
     }
+    keep_place(&app, true);
     workspace.abort();
     if let Some(h) = lp.watch.take() {
         h.abort();

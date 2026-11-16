@@ -421,6 +421,10 @@ fn drive(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(scratch.join("home"))?;
     c.env("HOME", scratch.join("home"));
     c.env("XDG_CONFIG_HOME", scratch.join("home").join(".config"));
+    c.env(
+        "XDG_STATE_HOME",
+        scratch.join("home").join(".local").join("state"),
+    );
     let mut child = pty.slave.spawn_command(c)?;
     drop(pty.slave);
     let mut reader = pty.master.try_clone_reader()?;
@@ -724,6 +728,10 @@ fn drive_term(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(scratch.join("home"))?;
     c.env("HOME", scratch.join("home"));
     c.env("XDG_CONFIG_HOME", scratch.join("home").join(".config"));
+    c.env(
+        "XDG_STATE_HOME",
+        scratch.join("home").join(".local").join("state"),
+    );
     let mut child = pty.slave.spawn_command(c)?;
     drop(pty.slave);
     let mut reader = pty.master.try_clone_reader()?;

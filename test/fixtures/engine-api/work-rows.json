@@ -111,5 +111,9 @@
     }
   ],
   "next": null,
-  "room": "workspace"
+  "room": "workspace",
+  "spend": {
+    "todayUsd": 1.84,
+    "planPercent": 62
+  }
 }

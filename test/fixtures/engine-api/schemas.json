@@ -1,5 +1,5 @@
 {
-  "digest": "24c571f4b6968de3a8fcb05c43570d3175e408acd4c7734b42e37bd0fd482223",
+  "digest": "3133f758304689dc1947254e2339d8b09c1d92a67a2a39c40952d55c48e00550",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1269,6 +1269,38 @@
         "room": {
           "type": "string",
           "const": "workspace"
+        },
+        "spend": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "todayUsd": {
+                  "type": "number"
+                },
+                "planPercent": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "todayUsd",
+                "planPercent"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1280,7 +1312,8 @@
         "rows",
         "needs",
         "next",
-        "room"
+        "room",
+        "spend"
       ],
       "additionalProperties": false
     },

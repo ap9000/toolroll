@@ -169,6 +169,10 @@ export const workRowsSchema = z.object({
   needs: z.array(z.object({ key: z.enum(["decide", "review", "unblock"]), label: z.string(), count: z.number().int(), rows: z.array(needRowSchema) })),
   next: z.string().nullable(),
   room: z.literal("workspace"),
+  /** The terminal's cost line ("$1.84 today · plan 62%"): today's spend (the UTC day, from the Spend page's own items,
+   * unpriced work counted as nothing) and the fullest current subscription window the providers last reported, rounded
+   * (null: none reported). The Limits view's audience only (an instance operator); null for everyone else. */
+  spend: z.object({ todayUsd: z.number(), planPercent: z.number().int().nullable() }).nullable(),
 });
 
 // ---- Step cards ---------------------------------------------------------------------------------------------------

@@ -1,8 +1,8 @@
 ---
 source: crates/toolroll-tui/tests/review.rs
-assertion_line: 264
 expression: shown
 ---
+⟦Reset+DIM:│⟧⟦Reset+BOLD:›⟧⟦Reset+DIM | REVERSED:@@ -1,6 +1,7 @@⟧
 ⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   1    1   ⟧⟦Reset+BOLD:use⟧ std::fmt;
 ⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   2    2   ⟧
 ⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:   3      ⟧⟦Red:− fn ⟧⟦Red+REVERSED:total⟧⟦Red:(items: &[i64]) -> i64 {⟧
@@ -17,4 +17,3 @@ expression: shown
 ⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:  21      ⟧⟦Red:−         self.items.⟧⟦Red+REVERSED:len⟧⟦Red:()⟧
 ⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:       22 ⟧⟦Green:+ ⟧        self.items.⟦Reset+REVERSED:iter⟧()⟦Reset+REVERSED:.filter(|i| ⟧⟦Reset+BOLD | REVERSED:**⟧⟦Reset+REVERSED:i ⟧⟦Reset+BOLD | REVERSED:>⟧⟦Reset+REVERSED: ⟧⟦LightMagenta+REVERSED:0⟧⟦Reset+REVERSED:).count()⟧
 ⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:  22   23   ⟧    }
-⟦Reset+DIM:│⟧⟦Reset+BOLD: ⟧⟦Reset+DIM:⋯ more lines below · E shows them⟧
