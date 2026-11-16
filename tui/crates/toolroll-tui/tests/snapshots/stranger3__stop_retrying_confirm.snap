@@ -21,7 +21,7 @@ expression: shown
 " │                   │ until you resume it.                                                       │                   │ "
 " │ Recent 2          │                                                                            │                   │ "
 " │ ✓ Fix the date par│ Enter  Stop retrying                                                       │                   │ "
-" │   proj · 3d ago   │ Any other key keeps it retrying.                                           │                   │ "
+" │   proj · 3d ago   │ Any other key changes nothing.                                             │                   │ "
 " │ – Try a new logger╰────────────────────────────────────────────────────────────────────────────╯                   │ "
 " │   proj · 5d ago                            │ │                                                                     │ "
 " │                                            │ │                                                                     │ "

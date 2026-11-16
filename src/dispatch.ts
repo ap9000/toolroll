@@ -155,9 +155,11 @@ export function taskReadinessBlocker(store: Store, taskRef: number, now: Date): 
 
   const hold = db
     .prepare(
+      // A person's hold (or a question, an incident, a stop) is said before a backoff: the backoff ends on its own, the
+      // other doesn't, so "Retry scheduled" over a task a person stopped would say what won't happen.
       `SELECT owner_kind, until, reason FROM hold
        WHERE task_ref = ? AND (until IS NULL OR until > ?)
-       ORDER BY held_at, id LIMIT 1`,
+       ORDER BY owner_kind = 'backoff', held_at, id LIMIT 1`,
     )
     .get(taskRef, stamp);
   if (hold !== undefined) {

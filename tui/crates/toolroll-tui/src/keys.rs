@@ -68,6 +68,7 @@ actions! {
     Pause = "pause", Global, Act, "Pause the build (again to resume)", ["p"];
     Stop = "stop", Global, Act, "Stop the build, or stop retrying a waiting task", ["x"];
     CancelTask = "cancel-task", Global, Act, "Cancel task (asks first)", ["X"];
+    Resume = "resume", Global, Act, "Resume retrying a task you stopped (asks first)", [];
     Accept = "accept", Global, Act, "Accept the result", ["a"];
     SendBack = "send-back", Global, Act, "Send the result back, with a note (on a failed task: retry it)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];

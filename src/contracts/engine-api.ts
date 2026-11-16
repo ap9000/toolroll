@@ -147,6 +147,7 @@ const needRowSchema = z.object({
  * (the backoff hold's own end; null: as soon as a builder is free) and the last build's failure in one short line
  * (needs-you.ts failedAttemptSentence; null when the last build didn't fail). Read facts only. */
 export const waitingSchema = z.object({ retryAt: iso.nullable(), lastFailure: z.string().nullable() });
+// (Null whenever a person's hold stands: engine-reads.ts waitingForTasks.)
 /** A Work row's group (work-index.ts WorkIndexGroup): a Needs-you ask, building, or everything else. */
 export const WORK_ROW_GROUPS = ["decide", "review", "unblock", "building", "rest"] as const;
 /** A Work row's status tone (workspace-ui.ts StatusTone). */
@@ -256,8 +257,13 @@ export const stepCardsSchema = z.object({
      * at most AGENT_SAID_LINES lines of plain text, each at most AGENT_SAID_CHARS characters, no folder or key); null
      * when none was kept. */
     agentSaid: z.array(z.string()).max(8).nullable() }).nullable(),
-  /** A queued task waiting to start again (waitingSchema); null otherwise. */
-  waiting: waitingSchema.nullable(),
+  /** A queued task waiting to start again (waitingSchema), with what the agent said on its way out of the last build
+   * (as failure.agentSaid); null otherwise, and null whenever a person's hold stands. */
+  waiting: waitingSchema.extend({ agentSaid: z.array(z.string()).max(8).nullable() }).nullable(),
+  /** A person's hold on the task (the operator's own: Stop retrying, "Hold the next attempt"): its id, which Resume
+   * names (POST /t/<task>/unhold `hold`, proved where it is released), its reason, and the last build's failure in a
+   * short line. Null when none stands. */
+  held: z.object({ id: z.number().int(), reason: z.string(), lastFailure: z.string().nullable() }).nullable(),
   /** What Retry binds to (local-owner-acts.ts retryPinsOf): the latest build and the approved scope's digest, posted
    * to POST /t/<task>/requeue as `run` and `digest`, the same act the task page's Retry is (re-proved there). Null
    * unless the task failed and its approval stands as it is. */

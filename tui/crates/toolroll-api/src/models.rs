@@ -442,7 +442,9 @@ pub struct StepCards {
     /// Why a failed task stopped (null unless it failed).
     pub failure: Option<Failure>,
     /// A queued task waiting to start again (null otherwise).
-    pub waiting: Option<Waiting>,
+    pub waiting: Option<StepWaiting>,
+    /// A person's hold on the task: what Resume releases (null when none stands).
+    pub held: Option<TaskHold>,
     /// What Retry posts to `/t/<task>/requeue` (null unless a failed task can be retried as it stands).
     pub retry: Option<RetryPins>,
     /// Who approved the task's scope (null while no approval stands).
@@ -458,6 +460,34 @@ pub struct Failure {
     pub suggestion: Option<String>,
     /// The agent's last lines before it stopped, cleaned by the engine (at most 8).
     pub agent_said: Option<Vec<String>>,
+}
+
+/// A step read's waiting task: the Work row's facts, and what the agent said on its way out of the last build.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StepWaiting {
+    pub retry_at: Option<String>,
+    pub last_failure: Option<String>,
+    pub agent_said: Option<Vec<String>>,
+}
+
+impl StepWaiting {
+    /// As a Work row says it.
+    pub fn facts(&self) -> Waiting {
+        Waiting {
+            retry_at: self.retry_at.clone(),
+            last_failure: self.last_failure.clone(),
+        }
+    }
+}
+
+/// A person's hold on a task (the operator's own): its id (what Resume names), reason and the last failure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TaskHold {
+    pub id: i64,
+    pub reason: String,
+    pub last_failure: Option<String>,
 }
 
 /// A queued task waiting to start again: when the next try is due, and the last build's failure in a line.

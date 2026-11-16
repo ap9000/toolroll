@@ -186,7 +186,7 @@ const PROJECTION = `WITH RECURSIVE admitted AS MATERIALIZED (
       AND lease_generation=(SELECT MAX(lease_generation) FROM claim WHERE task_ref=a.ref_id)) live_lease,
     (SELECT id FROM run WHERE task_ref=a.ref_id AND outcome IS NULL ORDER BY id DESC LIMIT 1) unfinished,
     CASE WHEN a.state='done' THEN (SELECT id FROM run WHERE task_ref=a.ref_id AND finished_at IS NOT NULL AND role IN ('builder','scout') ORDER BY id DESC LIMIT 1) END result_id,
-    (SELECT h.id FROM hold h WHERE h.task_ref=a.ref_id AND (h.until IS NULL OR h.until>$now) ORDER BY h.held_at,h.id LIMIT 1) hold_id,
+    (SELECT h.id FROM hold h WHERE h.task_ref=a.ref_id AND (h.until IS NULL OR h.until>$now) ORDER BY h.owner_kind='backoff',h.held_at,h.id LIMIT 1) hold_id,
     q.decision_id,${AGENT_ASK} agent_ask,EXISTS(SELECT 1 FROM task_archive ta WHERE ta.task_ref=a.ref_id) member_archived,(cu.task_ref IS NOT NULL OR a.ref_id IN (SELECT value FROM json_each($workspaceCustody)))
       AND a.ref_id NOT IN (SELECT value FROM json_each($settledCustody)) custody_unresolved
   FROM admitted a LEFT JOIN lineage l ON l.ref_id=a.ref_id
