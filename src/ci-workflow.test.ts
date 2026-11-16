@@ -22,7 +22,7 @@ import { GIT_FLOOR_WORDS } from "./git-floor.js";
 type Step = { uses?: string; with?: Record<string, unknown>; name?: string; run?: string; if?: unknown; env?: Record<string, unknown>; id?: string; "continue-on-error"?: unknown };
 type Job = {
   name?: string; "runs-on"?: string; uses?: string; container?: unknown; env?: Record<string, unknown>; if?: unknown; needs?: string | string[]; "continue-on-error"?: unknown;
-  permissions?: Record<string, string>; outputs?: Record<string, string>; strategy?: { matrix?: Record<string, unknown[]> }; steps?: Step[];
+  permissions?: Record<string, string>; outputs?: Record<string, string>; strategy?: { matrix?: Record<string, unknown[]>; "fail-fast"?: boolean }; steps?: Step[];
 };
 type Workflow = { file: string; on: Record<string, unknown>; jobs: Record<string, Job>; permissions?: unknown };
 /** An event, as the workflows see it: a pull request (its changed paths and branch), a push, the schedule, a dispatch. */
@@ -82,7 +82,9 @@ function checks(job: Job, id: string, event: Event, file: string): Check[] {
   if (!runs && /\$\{\{\s*matrix\./.test(job.name ?? id)) return [{ name: job.name ?? id, runner: job["runs-on"] ?? "", runs, workflow: `.github/workflows/${file}` }];
   const matrix = job.strategy?.matrix ?? {};
   let combos: Record<string, string>[] = [{}];
-  for (const [key, values] of Object.entries(matrix)) combos = combos.flatMap(combo => values.map(value => ({ ...combo, [key]: String(value) })));
+  // An `include`-only matrix: each entry is one combination (these workflows never mix `include` with other keys).
+  if (Object.keys(matrix).join() === "include") combos = (matrix["include"] as Record<string, unknown>[]).map(one => Object.fromEntries(Object.entries(one).map(([key, value]) => [key, String(value)])));
+  else for (const [key, values] of Object.entries(matrix)) combos = combos.flatMap(combo => values.map(value => ({ ...combo, [key]: String(value) })));
   const fill = (text: string, combo: Record<string, string>) => text.replace(/\$\{\{\s*matrix\.(\w+)\s*\}\}/g, (_, key: string) => combo[key] ?? "");
   // A matrix job whose name mentions no matrix value gets GitHub's suffix: "name (v1, v2)".
   const suffix = (combo: Record<string, string>) => Object.keys(matrix).length > 0 && !/\$\{\{\s*matrix\./.test(job.name ?? id) ? ` (${Object.values(combo).join(", ")})` : "";
@@ -117,6 +119,17 @@ const INSTALL_SMOKE = ["install smoke · ubuntu-24.04", "install smoke · macos-
 const WIRE = ["wire budgets"];
 /** rust.yml: advisory too, on pull requests that touch the terminal workbench or its contract. */
 const RUST = ["rust · macos-latest", "rust · ubuntu-latest"];
+/** The platforms the package carries a terminal workbench binary for (scripts/tui-build.mjs PLATFORMS). */
+const TUI_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"];
+/** package-build.yml's runner for each: its own platform. */
+const TUI_RUNNERS = { "darwin-arm64": "macos-latest", "darwin-x64": "macos-15-intel", "linux-x64": "ubuntu-24.04", "linux-arm64": "ubuntu-24.04-arm" } as Record<string, string>;
+/** tui-bundle.yml's packed-install smokes. */
+const TUI_BUNDLE_SMOKE = ["workbench bundle · macos-latest", "workbench bundle · ubuntu-24.04"];
+/** tui-bundle.yml: advisory too, on pull requests that touch the workbench, its launcher, what gets packed, or the proof:
+ * the smokes, and the package build publish.yml runs (package-build.yml, called as "workbench bundle"). */
+const TUI_BUNDLE = [...TUI_BUNDLE_SMOKE, ...TUI_PLATFORMS.map(platform => `workbench bundle / binary · ${platform}`), "workbench bundle / assemble"];
+/** publish.yml's terminal workbench builds (package-build.yml, called as "package"), one per platform. */
+const WORKBENCH_BINARIES = TUI_PLATFORMS.map(platform => `package / binary · ${platform}`);
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
@@ -210,7 +223,7 @@ describe("the CI workflows", () => {
     expect((REQUIRED_PR_CHECKS as readonly string[]).includes(LATEST)).toBe(false);
     expect(workflow("ci.yml").jobs["node-latest"]?.steps?.find(step => step.uses?.startsWith("actions/setup-node@"))?.with).toMatchObject({ "node-version": "26", "check-latest": true });
     // A release candidate's pull request runs everything, and its package.json change runs the install smoke.
-    expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual([...all, ...INSTALL_SMOKE].sort());
+    expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual([...all, ...INSTALL_SMOKE, ...TUI_BUNDLE].sort());
     // The macOS suite runs on the candidate before it merges, sharded; its joins run on Linux.
     const macos = reported(change).filter(one => /macos/.test(one.runner));
     expect(macos.map(one => one.name).sort()).toEqual([...shardNames("24").filter(name => name.includes("macos shard")), skippedShards[1]!].sort());
@@ -245,7 +258,7 @@ describe("the CI workflows", () => {
     // The release verdict leaves out exactly this job, from exactly this workflow (release.ts ADVISORY_PR_CHECKS;
     // release.slow.test.ts proves a failed or pending run of it neither fails nor holds a release).
     expect(ADVISORY_PR_CHECKS[ui.name!]).toBe(".github/workflows/youiyoux.yml");
-    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY, ...INSTALL_SMOKE, ...WIRE, ...RUST].sort());
+    expect(Object.keys(ADVISORY_PR_CHECKS).sort()).toEqual([...ADVISORY, ...INSTALL_SMOKE, ...WIRE, ...RUST, ...TUI_BUNDLE].sort());
   });
 
   test("W7: the install smoke runs on Linux and macOS for a pull request that changes what gets packed or installed, by hand, never on a tag, and never holds or fails a release", () => {
@@ -371,12 +384,17 @@ describe("the CI workflows", () => {
     const publish = workflow("publish.yml");
     expect(triggered(publish, { kind: "push", tag: "v0.9.80" })).toBe(true);
     expect(names({ kind: "push", tag: "v0.9.80" })).toEqual([...RELEASE_TAG_CHECKS].sort());
-    const proof = publish.jobs["proof"]!, publisher = publish.jobs["publish"]!;
-    expect(publisher.needs).toBe("proof");
-    // Read-only token for the proof; only the publisher may write (the GitHub release) and mint npm's OIDC token.
+    const proof = publish.jobs["proof"]!, publisher = publish.jobs["publish"]!, pkg = publish.jobs["package"]!;
+    const build = workflow("package-build.yml"), binary = build.jobs["binary"]!, assemble = build.jobs["assemble"]!;
+    expect(publisher.needs).toEqual(["proof", "package"]);
+    // Read-only token for the proof and the whole package build; only the publisher may write (the GitHub release) and
+    // mint npm's OIDC token.
     expect(publish.permissions).toEqual({ contents: "read" });
     expect(proof.permissions).toEqual({ contents: "read", actions: "read", "pull-requests": "read" });
     expect(publisher.permissions).toEqual({ contents: "write", "id-token": "write" });
+    expect(pkg.permissions).toEqual({ contents: "read" });
+    expect(build.permissions).toEqual({ contents: "read" });
+    for (const job of [binary, assemble]) expect(job.permissions).toEqual({ contents: "read" });
     // The list the proof reads is exactly the release gate's, each name from the same workflow.
     expect(parseRequired(String(proof.env?.["REQUIRED_CHECKS"]))).toEqual({ ...REQUIRED_PR_CHECKS_WORKFLOW });
     expect(Object.keys(PROOF_EVENTS).sort()).toEqual([...new Set(Object.values(REQUIRED_PR_CHECKS_WORKFLOW))].sort());
@@ -384,7 +402,7 @@ describe("the CI workflows", () => {
     expect(proof.steps?.at(-1)?.env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
     expect(runsOf(proof).some(run => run.includes(`git merge-base --is-ancestor "$GITHUB_SHA" origin/main`))).toBe(true);
     // Neither job nor any step may override failure, and the proof installs and runs nothing of the candidate's.
-    for (const job of [proof, publisher]) {
+    for (const job of [proof, publisher, pkg, binary, assemble]) {
       expect(job.if).toBeUndefined();
       expect(job["continue-on-error"] ?? false).toBe(false);
       for (const step of job.steps ?? []) { expect(step.if).toBeUndefined(); expect(step["continue-on-error"] ?? false).toBe(false); }
@@ -395,14 +413,86 @@ describe("the CI workflows", () => {
     const publishers = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.steps?.some(step => /\bnpm publish\b/.test(step.run ?? ""))).map(([id]) => `${one.file}:${id}`));
     expect(publishers).toEqual(["publish.yml:publish"]);
     for (const job of [proof, publisher]) expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ github.sha }}", "persist-credentials": false });
+    // The package build checks out exactly the tagged commit too: the caller hands it over as its only input.
+    expect((pkg as { with?: unknown }).with).toEqual({ ref: "${{ github.sha }}" });
+    for (const job of [binary, assemble]) expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toEqual({ ref: "${{ inputs.ref }}", "persist-credentials": false });
     const publishStep = publisher.steps?.find(step => /\bnpm publish\b/.test(step.run ?? ""));
     const guard = `node scripts/release-proof.mjs tag --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"`;
-    expect(publishStep?.run?.trim()).toBe(`${guard}\nnpm publish --access public --ignore-scripts`);
+    // The live tag is checked immediately before the write, which publishes exactly the checked tarball (trusted
+    // publishing, with provenance, no lifecycle scripts).
+    expect(publishStep?.run?.trim()).toBe(`${guard}\nnpm publish "$RUNNER_TEMP/package/$TARBALL" --access public --ignore-scripts --provenance`);
     expect(publishStep?.env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
-    // Build first, then check the live tag immediately before the write; publish must not run the build again.
-    expect(publisher.steps!.findIndex(step => step.run === "npm run prepublishOnly")).toBeLessThan(publisher.steps!.indexOf(publishStep!));
     expect(publisher.steps?.find(step => step.name === "GitHub release from the changelog")?.run).toContain(guard);
-    expect(reported({ kind: "push", tag: "v0.9.80" }).some(one => /macos/.test(one.runner))).toBe(false);
+    // The tag runs no tests: its only macOS runners build the workbench's macOS binaries (signing needs a Mac).
+    expect(reported({ kind: "push", tag: "v0.9.80" }).filter(one => /macos/.test(one.runner)).map(one => one.name).sort()).toEqual(["package / binary · darwin-arm64", "package / binary · darwin-x64"]);
+    expect([...runsOf(binary), ...runsOf(assemble)].filter(run => /vitest|npm (test|run test)\b/.test(run))).toEqual([]);
+  });
+
+  test("the package is built with no publishing right, on each platform it ships for; the publish job only checks and publishes that exact tarball", () => {
+    const publish = workflow("publish.yml");
+    const pkg = publish.jobs["package"]!, publisher = publish.jobs["publish"]!;
+    const build = workflow("package-build.yml"), binary = build.jobs["binary"]!, assemble = build.jobs["assemble"]!;
+    const tag = reported({ kind: "push", tag: "v0.9.80" });
+    // Each binary on its own platform's runner, so its self-check runs natively there (and macOS signs on a Mac).
+    expect(Object.fromEntries(tag.filter(one => WORKBENCH_BINARIES.includes(one.name)).map(one => [one.name, one.runner])))
+      .toEqual(Object.fromEntries(TUI_PLATFORMS.map(platform => [`package / binary · ${platform}`, TUI_RUNNERS[platform]])));
+    // One definition (package-build.yml), called only: never triggered on its own, so a pull request proves what publishes.
+    expect(pkg.uses).toBe("./.github/workflows/package-build.yml");
+    expect(build.on).toEqual({ workflow_call: {
+      inputs: { ref: { description: expect.any(String), type: "string", required: true } },
+      outputs: { tarball: { description: expect.any(String), value: "${{ jobs.assemble.outputs.tarball }}" }, sha256: { description: expect.any(String), value: "${{ jobs.assemble.outputs.sha256 }}" } },
+    } });
+    expect(Object.keys(build.jobs)).toEqual(["binary", "assemble"]);
+    expect(binary.needs).toBeUndefined();
+    expect(assemble.needs).toBe("binary");
+    // The release waits for every one by name (RELEASE_TAG_CHECKS): the matrix fills the names in only because neither
+    // the caller nor the binary job can be skipped (no `if:`, no `needs:`); a skipped matrix job reports once, unexpanded.
+    expect([...WORKBENCH_BINARIES, "package / assemble"].filter(name => !(RELEASE_TAG_CHECKS as readonly string[]).includes(name))).toEqual([]);
+    expect(pkg.if).toBeUndefined();
+    expect(pkg.needs).toBeUndefined();
+    expect(binary.strategy?.["fail-fast"]).toBe(false);
+    expect(runsOf(binary)).toContain(`node scripts/tui-build.mjs --bundle "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports" --targets "$PLATFORM"`);
+    expect(binary.steps?.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.with).toMatchObject({ name: "workbench-${{ matrix.platform }}", path: "${{ runner.temp }}/workbench", "if-no-files-found": "error" });
+    expect(readFileSync(join(folder, "package-build.yml"), "utf8")).not.toMatch(/secrets\.|github\.token|id-token/);
+    // Rust is the exact toolchain tui/rust-toolchain.toml pins, installed by name.
+    expect(readFileSync(join(import.meta.dirname, "..", "tui", "rust-toolchain.toml"), "utf8")).toMatch(/^channel = "\d+\.\d+\.\d+"$/m);
+    for (const job of [binary, workflow("rust.yml").jobs["rust"]!]) expect(runsOf(job).find(run => run.includes("rustup toolchain install"))).toContain(`toolchain="$(sed -n 's/^channel = "\\(.*\\)"$/\\1/p' tui/rust-toolchain.toml)"`);
+    // assemble: each binary matched to its report BEFORE anything runs, then the build, the check, and the pack.
+    const steps = assemble.steps!;
+    const at = (find: (step: Step) => boolean) => steps.findIndex(find);
+    const download = at(step => step.uses?.startsWith("actions/download-artifact@") === true);
+    const adopted = at(step => step.run === `node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports"`);
+    const built = at(step => step.run === "npm run prepublishOnly");
+    const verified = at(step => step.run === `node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports"`);
+    const packed = at(step => step.id === "pack");
+    const uploaded = at(step => step.uses?.startsWith("actions/upload-artifact@") === true && step.with?.["name"] === "package");
+    expect(steps[download]?.with).toMatchObject({ pattern: "workbench-*", path: "${{ runner.temp }}/workbench", "merge-multiple": true });
+    expect([download, adopted, built, verified, packed, uploaded].every((one, i, all) => one >= 0 && (i === 0 || all[i - 1]! < one))).toBe(true);
+    expect(steps[packed]?.run).toContain(`npm pack --ignore-scripts --pack-destination "$out"`);
+    expect(assemble.outputs).toEqual({ tarball: "${{ steps.pack.outputs.tarball }}", sha256: "${{ steps.pack.outputs.sha256 }}" });
+    // publish: no build, no install, nothing of the package runs; the tarball's sha256 must be assemble's.
+    const commands = runsOf(publisher).flatMap(run => run.split("\n").map(line => line.trim()));
+    expect(commands.filter(line => /^(npm (ci|run|pack|exec|test)\b|npx\b|node (scripts\/tui-build|dist\/))/.test(line))).toEqual([]);
+    expect(runsOf(publisher).filter(run => /\bnpm install\b/.test(run))).toEqual(["npm install -g npm@^11.5.1"]);
+    expect(publisher.env).toEqual({ TARBALL: "${{ needs.package.outputs.tarball }}", TARBALL_SHA256: "${{ needs.package.outputs.sha256 }}" });
+    const fetched = publisher.steps!.findIndex(step => step.uses?.startsWith("actions/download-artifact@") === true);
+    const matched = publisher.steps!.findIndex(step => (step.run ?? "").includes(`echo "$TARBALL_SHA256  $RUNNER_TEMP/package/$TARBALL" | sha256sum --strict -c -`));
+    const sent = publisher.steps!.findIndex(step => /\bnpm publish\b/.test(step.run ?? ""));
+    expect(publisher.steps![fetched]?.with).toEqual({ name: "package", path: "${{ runner.temp }}/package" });
+    expect(fetched >= 0 && fetched < matched && matched < sent).toBe(true);
+    // The package itself has no install scripts.
+    const scripts = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { scripts: Record<string, string> }).scripts;
+    expect(Object.keys(scripts).filter(name => /^(pre|post)?install$|^prepare$/.test(name))).toEqual([]);
+  });
+
+  test("the release's actions are pinned to full commit SHAs, each with its version", () => {
+    for (const file of ["publish.yml", "package-build.yml", "tui-bundle.yml"]) {
+      const uses = Object.values(workflow(file).jobs).flatMap(job => (job.steps ?? []).map(step => step.uses).filter((one): one is string => one !== undefined));
+      expect(uses.length, file).toBeGreaterThan(0);
+      for (const one of uses) expect(one, `${file}: ${one}`).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/);
+      const text = readFileSync(join(folder, file), "utf8");
+      for (const line of text.split("\n").filter(line => /uses: actions\//.test(line))) expect(line, file).toMatch(/@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+    }
   });
 
   test("test-matrix: a push to main builds, and runs the full CI unless its merge commit is proven tested on its pull request", () => {
@@ -1117,6 +1207,54 @@ describe("the terminal workbench's Rust checks (.github/workflows/rust.yml)", ()
     for (const name of RUST) expect(ADVISORY_PR_CHECKS[name]).toBe(".github/workflows/rust.yml");
     expect(rust.permissions).toEqual({ contents: "read" });
     expect(readFileSync(join(folder, "rust.yml"), "utf8")).not.toMatch(/secrets\./);
+  });
+});
+
+describe("the packed install's terminal workbench (.github/workflows/tui-bundle.yml)", () => {
+  test("on Linux x64 and macOS arm64 it bundles this platform's binary, checks it as npm would pack it, and opens it from a packed install; advisory", () => {
+    const lane = workflow("tui-bundle.yml");
+    expect(Object.keys(lane.jobs).sort()).toEqual(["binaries", "bundle"]);
+    for (const paths of [["tui/crates/toolroll-tui/src/app.rs"], ["src/tui-launch.ts"], ["src/trusted-path.ts"], ["package.json"], ["scripts/tui-build.mjs"], [".github/workflows/publish.yml"], [".github/workflows/package-build.yml"], ["tui/rust-toolchain.toml"]]) {
+      expect(executed(pr(paths)).filter(name => TUI_BUNDLE.includes(name)), paths[0]).toEqual([...TUI_BUNDLE].sort());
+    }
+    for (const paths of [["src/release.ts"], ["docs/a.md"], ["src/server/pages.ts"]]) expect(names(pr(paths)).filter(name => TUI_BUNDLE.includes(name)), paths[0]).toEqual([]);
+    expect(names({ kind: "push", tag: "v0.9.80" }).filter(name => TUI_BUNDLE.includes(name))).toEqual([]);
+    expect(reported(pr(["src/tui-launch.ts"])).filter(one => TUI_BUNDLE_SMOKE.includes(one.name)).map(one => one.runner).sort()).toEqual(["macos-latest", "ubuntu-24.04"]);
+    const job = lane.jobs["bundle"]!;
+    expect(job.if).toBeUndefined();
+    const runs = runsOf(job);
+    // The publish job's own packaging script, then the packed install in a throwaway world (scripts/isolated-env.mjs).
+    for (const command of [`node scripts/tui-build.mjs --bundle dist/tui --targets "$PLATFORM"`, `node scripts/tui-build.mjs --verify --targets "$PLATFORM"`, `node scripts/tui-bundle-smoke.mjs --out "$RUNNER_TEMP/tui-bundle"`]) expect(runs).toContain(command);
+    expect(runs.indexOf("npm run build")).toBeLessThan(runs.findIndex(run => run.includes("--bundle dist/tui")));
+    expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
+    expect(lane.permissions).toEqual({ contents: "read" });
+    expect(readFileSync(join(folder, "tui-bundle.yml"), "utf8")).not.toMatch(/secrets\.|github\.token/);
+    for (const name of TUI_BUNDLE) expect(ADVISORY_PR_CHECKS[name]).toBe(".github/workflows/tui-bundle.yml");
+    expect(TUI_BUNDLE.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
+  });
+});
+
+describe("the release's package build, proved on the pull request (package-build.yml, called by publish.yml and tui-bundle.yml)", () => {
+  test("a pull request runs the package build publish.yml runs, by the same definition on the same runners: four binaries, then assembled and checked", () => {
+    const lane = workflow("tui-bundle.yml"), publish = workflow("publish.yml");
+    const caller = lane.jobs["binaries"]!;
+    // The same called workflow publish.yml uses, on the pull request's head commit.
+    expect(caller.uses).toBe(publish.jobs["package"]!.uses);
+    expect((caller as { with?: unknown }).with).toEqual({ ref: "${{ github.event.pull_request.head.sha || github.sha }}" });
+    expect(caller.if).toBeUndefined();
+    expect(caller.needs).toBeUndefined();
+    expect(caller.permissions).toEqual({ contents: "read" });
+    const pull = reported(pr(["src/tui-launch.ts"])).filter(one => one.name.startsWith("workbench bundle / "));
+    expect(Object.fromEntries(pull.map(one => [one.name, one.runner]))).toEqual({
+      ...Object.fromEntries(TUI_PLATFORMS.map(platform => [`workbench bundle / binary · ${platform}`, TUI_RUNNERS[platform]])),
+      "workbench bundle / assemble": "ubuntu-latest",
+    });
+    // The tag's package build is the same jobs, on the same runners, under publish's own name.
+    const tag = reported({ kind: "push", tag: "v0.9.80" }).filter(one => one.name.startsWith("package / "));
+    expect(tag.map(one => [one.name.replace(/^package \/ /, ""), one.runner]).sort()).toEqual(pull.map(one => [one.name.replace(/^workbench bundle \/ /, ""), one.runner]).sort());
+    // Advisory, all of it: none is required, and the release verdict leaves each out only from tui-bundle.yml.
+    expect(TUI_BUNDLE.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
+    expect(executed(pr(["src/tui-launch.ts"])).filter(name => TUI_BUNDLE.includes(name))).toEqual([...TUI_BUNDLE].sort());
   });
 });
 

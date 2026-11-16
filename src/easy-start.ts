@@ -399,10 +399,11 @@ export function defaultEasyStartSeams(options: {
         if (!link.ok) why = `the terminal workbench couldn't sign in (${link.message})`;
         else {
           const { checkoutTop } = await import("./teardown-git.js");
-          const end = await runTuiBinary({ binary: choice.binary, link: link.url, session, project: checkoutTop(cwd), cwd });
-          if (end !== "classic") return end;
+          const end = await runTuiBinary({ binary: choice.binary, identity: choice.identity, link: link.url, session, project: checkoutTop(cwd), cwd });
+          if (end === "changed") why = "the terminal workbench changed after it was checked";
+          else if (end !== "classic") return end;
           // The workbench said why on its own way out.
-          why = null;
+          else why = null;
         }
       }
       if (why !== null) options.write(`Opening the classic screen: ${why}.`);

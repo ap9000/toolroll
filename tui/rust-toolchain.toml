@@ -1,0 +1,6 @@
+# The exact Rust every build of the terminal workbench uses: the release's binaries (.github/workflows/package-build.yml),
+# the pull request's checks (rust.yml, tui-bundle.yml) and a local `cargo build` alike. Change it on purpose, in its own
+# pull request; the workflows install this channel by name.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"

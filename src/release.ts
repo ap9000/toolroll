@@ -105,6 +105,17 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   // The terminal workbench's Rust checks (tui/): advisory until the workbench ships in the package.
   "rust · ubuntu-latest": ".github/workflows/rust.yml",
   "rust · macos-latest": ".github/workflows/rust.yml",
+  // A packed install opens the terminal workbench it carries (scripts/tui-bundle-smoke.mjs): advisory, like the install
+  // smoke; publish.yml's own check of the bundled binaries is what refuses a release.
+  "workbench bundle · ubuntu-24.04": ".github/workflows/tui-bundle.yml",
+  "workbench bundle · macos-latest": ".github/workflows/tui-bundle.yml",
+  // The same package build publish.yml runs (package-build.yml: four binaries, then assembled and checked), on the pull
+  // request, so a release is never its first run.
+  "workbench bundle / binary · darwin-arm64": ".github/workflows/tui-bundle.yml",
+  "workbench bundle / binary · darwin-x64": ".github/workflows/tui-bundle.yml",
+  "workbench bundle / binary · linux-x64": ".github/workflows/tui-bundle.yml",
+  "workbench bundle / binary · linux-arm64": ".github/workflows/tui-bundle.yml",
+  "workbench bundle / assemble": ".github/workflows/tui-bundle.yml",
 };
 
 /**
@@ -115,10 +126,11 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
  */
 export type MainProtection = { effective: boolean; missing: string[]; notYetRequired: string[] };
 /** The checks a release's publication waits for on its tag (.github/workflows/publish.yml, docs/plans/test-matrix.md):
- * the release proof (the tagged tree passed every REQUIRED_PR_CHECKS check on its pull request, read from GitHub) and
- * the publish job that needs it. The tag runs no tests again. Nothing else reported on the merge commit (main-push.yml)
- * holds publication. */
-export const RELEASE_TAG_CHECKS = ["release proof", "publish"] as const;
+ * the release proof (the tagged tree passed every REQUIRED_PR_CHECKS check on its pull request, read from GitHub), the
+ * package build with no publishing right (package-build.yml: the terminal workbench's binary built on each platform the
+ * package carries, then the package assembled, checked and packed), and the publish job that publishes exactly that
+ * tarball. The tag runs no tests again. Nothing else reported on the merge commit (main-push.yml) holds publication. */
+export const RELEASE_TAG_CHECKS = ["release proof", "package / binary · darwin-arm64", "package / binary · darwin-x64", "package / binary · linux-x64", "package / binary · linux-arm64", "package / assemble", "publish"] as const;
 export const RELEASE_TAG_WORKFLOW = ".github/workflows/publish.yml";
 
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;

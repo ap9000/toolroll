@@ -18,7 +18,7 @@ systems and native facilities do, so those stay — but each once, at the right 
 | Pull request | Node 24 unit shards on Linux and macOS. The newest Node's SQLite checks (`node 26 · SQLite`). Area lanes: Windows Job Object, Linux fence, Linux cgroup, git 2.41 and 2.47 | The area lanes on a documentation-only pull request (see below). Node 22 |
 | Release candidate (a `release-*` branch's pull request) | Everything a pull request runs, plus Node 22 unit shards on Linux and macOS, on the exact candidate | — |
 | Owner's Mac (release check) | Unchanged: the full unit suite locally, scripted journeys, real-model journeys when model-facing code changed, the upgrade path when its rule says so. Native attacks must run | — |
-| Tag / Publish | The release proof (below), then npm publish with provenance and the GitHub release | Any test. The two tag macOS legs are gone |
+| Tag / Publish | The release proof (below) and the package build with no publishing right (`package-build.yml`: the terminal workbench's four binaries, each built and self-checked on its own platform, two of them on macOS, then assembled, checked and packed), then npm publish of exactly that tarball (sha256 matched) with provenance, and the GitHub release | Any test. The two tag macOS test legs are gone |
 | Push to main | Typecheck and build; a proof that the merge commit is a tested pull request's head tree | The full CI, unless that proof fails: then it runs whole |
 | Nightly (main) | Everything: Node 22 and 24 on Linux and macOS, every area lane | — |
 

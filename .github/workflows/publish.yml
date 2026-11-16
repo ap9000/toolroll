@@ -9,8 +9,11 @@
 # matching tag on the squash-merged commit once main's tree equals the gated
 # tree. The tag runs no tests again (docs/plans/test-matrix.md): the release
 # proof job reads GitHub's own record, with this workflow's read-only token,
-# and npm publication needs it. The coordinator waits for both jobs
-# (RELEASE_TAG_CHECKS).
+# and npm publication needs it. The package (with the terminal workbench's
+# binaries, one built per platform) is assembled and checked by jobs with no
+# publishing right (package-build.yml); the publish job only checks that
+# tarball's sha256 and publishes it. The coordinator waits for every job
+# (RELEASE_TAG_CHECKS). Actions are pinned to full commit SHAs.
 name: Publish
 
 on:
@@ -52,7 +55,7 @@ jobs:
         "node 22 · ubuntu-latest": ".github/workflows/release-candidate.yml",
         "node 22 · macos-latest": ".github/workflows/release-candidate.yml"}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -63,7 +66,7 @@ jobs:
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::$GITHUB_REF_NAME is not on main; release only reviewed, merged commits"; exit 1
           fi
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "24"
       - name: The tagged tree passed every required check on its pull request
@@ -71,20 +74,38 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS" --tag "$GITHUB_REF_NAME"
 
+  # The package, built and checked with no publishing right (package-build.yml, the one definition tui-bundle.yml also
+  # runs on every pull request that touches it): the terminal workbench's four binaries, each built, signed (macOS) and
+  # self-checked on its own platform, then assembled, checked and packed. Its checks, "package / binary · <platform>"
+  # and "package / assemble", are RELEASE_TAG_CHECKS: this job has no `if:` and no `needs:`, so it is never skipped and
+  # GitHub fills each platform into its name.
+  package:
+    name: package
+    permissions:
+      contents: read
+    uses: ./.github/workflows/package-build.yml
+    with:
+      ref: ${{ github.sha }}
+
+  # The only job with a publishing right. It builds nothing, installs nothing and runs nothing from the package: it
+  # publishes exactly the tarball the package job assembled, once its sha256 is the one that job reported.
   publish:
-    needs: proof
+    needs: [proof, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write # the GitHub release
       id-token: write # npm trusted publishing
+    env:
+      TARBALL: ${{ needs.package.outputs.tarball }}
+      TARBALL_SHA256: ${{ needs.package.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
@@ -106,16 +127,30 @@ jobs:
             echo "::error::toolroll@$version is already on npm"; exit 1
           fi
 
-      - run: npm ci
-
-      # Build before the final tag read, so no lifecycle script delays the check-to-publish handoff.
-      - run: npm run prepublishOnly
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: package
+          path: ${{ runner.temp }}/package
+      - name: The tarball is exactly the one assembled and checked
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          found="$(find "$RUNNER_TEMP/package" -mindepth 1 -maxdepth 1 -printf '%f\n')"
+          if [ "$TARBALL" != "toolroll-$version.tgz" ] || [ "$found" != "$TARBALL" ]; then
+            echo "::error::expected only toolroll-$version.tgz from the package job, found: $found"; exit 1
+          fi
+          if ! echo "$TARBALL_SHA256  $RUNNER_TEMP/package/$TARBALL" | sha256sum --strict -c -; then
+            echo "::error::$TARBALL is not the tarball the package job assembled and checked"; exit 1
+          fi
+          packed="$(tar -xzOf "$RUNNER_TEMP/package/$TARBALL" package/package.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')"
+          if [ "$packed" != "$version" ]; then
+            echo "::error::$TARBALL says version $packed, the tag says $version"; exit 1
+          fi
       - name: Publish the proven commit while the remote tag still names it
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           node scripts/release-proof.mjs tag --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
-          npm publish --access public --ignore-scripts
+          npm publish "$RUNNER_TEMP/package/$TARBALL" --access public --ignore-scripts --provenance
 
       - name: GitHub release from the changelog
         env:
