@@ -43,7 +43,7 @@ import { withCheckoutLock } from "./git-views.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
-import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { defaultCustodyIO, holdLaunch, recordGateShut, recordLaunchOpened, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
@@ -227,8 +227,13 @@ function reserveProtectedNames(repo: string): void {
  * when this call made it) and ends the record failed. Who may start a thread and at what level is the start's own
  * check (F2c), made before this runs.
  */
-export async function prepareFlexibleThread(store: Store, input: { repo: string; base: string; by: string; now: Date; runner?: Runner }):
-  Promise<{ ok: true; thread: FlexibleThreadRow; paths: FlexibleThreadPaths } | FlexibleThreadRefusal> {
+export async function prepareFlexibleThread<R extends { ok: false; reason: string; message: string } = FlexibleThreadRefusal>(store: Store, input: { repo: string; base: string; by: string; now: Date; runner?: Runner;
+  /** Run inside the transaction that records the thread (state `preparing`), before anything is written to disk: the
+   * thread start reserves its first turn's limits here. A refusal leaves no record at all, and nothing is made. */
+  reserve?: (id: string) => { ok: true } | R;
+  /** Told when making the repository fails after `reserve` (before the record ends failed): what was reserved is given back. */
+  release?: (id: string, why: string) => void }):
+  Promise<{ ok: true; thread: FlexibleThreadRow; paths: FlexibleThreadPaths } | FlexibleThreadRefusal | R> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const state = stateFolderOf(store);
   if (state === null) return refuse("no-state-folder");
@@ -246,10 +251,14 @@ export async function prepareFlexibleThread(store: Store, input: { repo: string;
   const id = randomBytes(16).toString("hex");
   const paths = flexibleThreadPaths(state, id);
   const keepRef = flexibleKeepRef(id);
-  store.transact(() => {
+  const reserved = store.transact((): { ok: true } | R => {
     store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'preparing')`)
       .run(id, input.repo, baseSha, keepRef, paths.folder, input.by, input.now.toISOString());
+    const held = input.reserve?.(id) ?? { ok: true as const };
+    if (!held.ok) store.handle.prepare("DELETE FROM flexible_thread WHERE id = ? AND state = 'preparing'").run(id);
+    return held;
   });
+  if (!reserved.ok) return reserved;
   const zero = "0".repeat(baseSha.length);
   let madeFolder = false, madeRef = false;
   const build = gitIn(inner, "build");
@@ -287,6 +296,7 @@ export async function prepareFlexibleThread(store: Store, input: { repo: string;
     return { ok: true, thread: flexibleThread(store, id)!, paths };
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
+    try { input.release?.(id, why); } catch { /* recovery settles a turn that never started */ }
     if (madeRef) await build(project, ["update-ref", "--no-deref", "-d", keepRef, baseSha]);
     if (madeFolder) rmSync(paths.folder, { recursive: true, force: true });
     store.transact(() => {
@@ -710,6 +720,14 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
     stopUnopenedLaunch(child);
     recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: `stopped before it ran: ${shut}` });
     return refuse("thread-not-ready", shut);
+  }
+  // The launch is recorded as opened before the gate opens: a record that can't be written keeps it shut.
+  try { recordLaunchOpened(store, { launch: record.id, thread: input.id, turn: input.launch.turn }); }
+  catch {
+    try { child.stdin?.destroy(); } catch { /* already closed */ }
+    stopUnopenedLaunch(child);
+    recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: "stopped before it ran: its launch couldn't be recorded" });
+    return refuse("thread-not-ready", "its launch couldn't be recorded");
   }
   child.stdin!.write("start\n");
   return { ok: true, pid: pid!, launchId: record.id, launch, fenceDigest, child };

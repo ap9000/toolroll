@@ -2,17 +2,18 @@
 source: crates/toolroll-tui/tests/look.rs
 expression: "themed(ThemeName::Dark, Depth::TrueColor, None)"
 ---
-┌ Toolroll · shop ───────────────────────────────────────────────────────────────────── 2 need you ┐
+┌ Toolroll · shop ──────────────────────────────────────────── $1.84 today · plan 62% · 2 need you ┐
 │Needs you 2                         │Live · Steps · Diff · Terminal                               │
 │● Fix the login redirect    Question│Upgrade the test runner                                      │
 │● Add CSV export              Result│claude sonnet · Building now · 4m 12s · $0.31 · build #7     │
-│                                    │  Started.                                                   │
-│Working 2                           │  Reading the test setup before switching runners.           │
-│◐ Upgrade the test runner   Building│✓ Edited vitest.config.ts  +14 −3                            │
-│◐ Rate-limit middleware     Planning│✓ Asked a helper: Check the CSV export edge cases            │
-│                                    │  ┌ Helper: Check the CSV export edge cases                  │
-│Done today 1                        │  │  Empty rows export as a header line only.                │
-│✓ Bump dependencies         Complete│  │· Read src/export.ts                                      │
+│                                    │Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready            │
+│Working 2                           │  Started.                                                   │
+│◐ Upgrade the test runner   Building│  Reading the test setup before switching runners.           │
+│◐ Rate-limit middleware     Planning│✓ Edited vitest.config.ts  +14 −3                            │
+│                                    │✓ Asked a helper: Check the CSV export edge cases            │
+│Done today 1                        │  ┌ Helper: Check the CSV export edge cases                  │
+│✓ Bump dependencies         Complete│  │  Empty rows export as a header line only.                │
+│                                    │  │· Read src/export.ts                                      │
 │                                    │  └ Helper finished                                          │
 │                                    │✓ Ran npm test  212 passed (3.1 s)                           │
 │                                    │  Tests pass on the new runner. Removing the old config next.│
@@ -22,24 +23,24 @@ expression: "themed(ThemeName::Dark, Depth::TrueColor, None)"
 │                                    │                                                             │
 │                                    │                                                             │
 │                                    │                                                             │
-│                                    │Steps  Plan ✓ · Approval ✓ · Build ◐ 4m 12s · Checks · Ready │
 │                                                                                                  │
-│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  ? help  q quit     │
+│j/k move  ⏎ open  s steer  a accept  n new  : all actions                                         │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-abbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbba
+abbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacccccccccccccccccccccccccbbbbbbbbbbba
 abbbbbbbbbccdddddddddddddddddddddddddaeeeeccccccccccccccccccccccccccddddddddddddddddddddddddddddddda
 abbbbbbbbbbbbbbbbbbbbbbbbddddccccccccabbbbbbbbbbbbbbbbbbbbbbbdddddddddddddddddddddddddddddddddddddda
 abbbbbbbbbbbbbbbbddddddddddddddccccccaccccccccccccccccccccccccccccccccccccccccccccccccccccccccddddda
-addddddddddddddddddddddddddddddddddddaccccccccccddddddddddddddddddddddddddddddddddddddddddddddddddda
-abbbbbbbccdddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-affffffffffffffffffffffffffffffffffffaggdddddddddddddddddddddddccccccccdddddddddddddddddddddddddddda
-ahhddddddddddddddddddddddddddccccccccaggddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdddddddddddddddddda
-abbbbbbbbbbccddddddddddddddddddddddddacccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-aggddddddddddddddddddddddddddccccccccacccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddadddddfcccdddddddddfcccddddddgccccccccccccccccccccdddddddddddda
+abbbbbbbccdddddddddddddddddddddddddddaccccccccccddddddddddddddddddddddddddddddddddddddddddddddddddda
+ahhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+aggddddddddddddddddddddddddddccccccccaffdddddddddddddddddddddddccccccccdddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaffddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+abbbbbbbbbbccddddddddddddddddddddddddaccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdddddddddddddddddda
+affddddddddddddddddddddddddddccccccccacccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddacccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddda
 addddddddddddddddddddddddddddddddddddacccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaggddddddddddddccccccccccccccccccccddddddddddddddddddddddddddda
+addddddddddddddddddddddddddddddddddddaffddddddddddddccccccccccccccccccccddddddddddddddddddddddddddda
 addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
 addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
 addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
@@ -47,9 +48,8 @@ addddddddddddddddddddddddddddddddddddadddddddddddddddddddddddddddddddddddddddddd
 addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
 addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
 addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddacccccccdddddgcccdddddddddgcccddddddhccccccccccccccccccccccccda
 adddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-abbbcccccddbcccccddbccccccddbccccccddbcccccddbbbcccccccddbcccccccddbccccccccccddbcccccddbcccccddddda
+abbbcccccddbcccccddbccccccddbcccccccddbccccddbccccccccccccddddddddddddddddddddddddddddddddddddddddda
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 a = fg #363636 bg #161616
@@ -57,6 +57,6 @@ b = fg #ededed bg #161616 bold
 c = fg #a1a1a1 bg #161616
 d = fg #ededed bg #161616
 e = fg #ededed bg #161616 bold underlined
-f = fg #ededed bg #3a3a3a
-g = fg #3dd68c bg #161616
-h = fg #70b8ff bg #161616
+f = fg #3dd68c bg #161616
+g = fg #70b8ff bg #161616
+h = fg #ededed bg #3a3a3a

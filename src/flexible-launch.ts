@@ -114,6 +114,20 @@ export function recordGateShut(store: Store, input: { launch: string; thread: st
   });
 }
 
+/** The ledger's word for a launch whose start gate opened (its agent ran): written right before the gate opens. */
+const LAUNCHED = "flexible agent launched";
+/** Record that a launch's start gate is opening: its agent runs from here. Written before the gate opens (a write that
+ * fails keeps it shut). Its turn counts as launched only from this record, never from the turn having begun. */
+export function recordLaunchOpened(store: Store, input: { launch: string; thread: string; turn: string | null; clock?: FlexibleClock }): void {
+  store.recordAction({ at: (input.clock ?? (() => new Date()))().toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: LAUNCHED, outcome: "launched",
+    detail: `turn ${input.turn ?? "none"} · thread ${input.thread} · launch ${input.launch}` });
+}
+/** Whether a turn's agent was really launched (a launch of it opened its start gate), as opposed to the turn having begun. */
+export function flexibleTurnLaunched(store: Store, turn: string): boolean {
+  if (!/^[0-9a-f]{32}$/.test(turn)) return false;
+  return store.handle.prepare("SELECT 1 AS hit FROM action_ledger WHERE action = ? AND detail LIKE ? LIMIT 1").get(LAUNCHED, `turn ${turn} · %`) !== undefined;
+}
+
 /** A launch whose start gate never opened ended: nothing of its agent ran. */
 export function recordNeverStarted(store: Store, launch: string, detail: string, clock: FlexibleClock = () => new Date()): void {
   store.transact(() => {

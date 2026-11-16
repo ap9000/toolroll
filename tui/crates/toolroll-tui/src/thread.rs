@@ -6,13 +6,20 @@
 //! those (POST /agents/live/thread/<id>/answer), only while the same question still waits with the same card, and only
 //! once the question and the answer were drawn whole. The engine decides and sends it through F2d with this session's
 //! person: the screen never decides anything, and a model never answers. Agent text is cleaned again before it is drawn.
-use crate::app::{App, Item, Mode, Section, Tone, Transcript};
+//!
+//! Starting one: `T` takes the first message; the engine answers with the thread's terms card (the project, Full access,
+//! the agent and its relay sign-in, the network, the limits, what Ship does, the disclosures). The card is drawn whole
+//! (wrapped, never cut, scrolled with j/Space) and Enter starts the thread only once its end was drawn, posting the
+//! message and the card's key, nothing else: the engine starts it only if the card it makes again has that same key.
+use crate::app::{App, Effect, Item, Mode, Section, Tone, Transcript};
 use crate::text::{clean, fit, wrap};
-use crate::theme::{dim, failed, ink, marks, needs_you, passed, running, selected};
+use crate::theme::{base, dim, failed, ink, line, marks, needs_you, passed, running, selected};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Clear};
 use ratatui::Frame;
 use toolroll_api::{LiveThreads, ThreadFacts, ThreadQuestion, ThreadRow};
 
@@ -514,4 +521,218 @@ pub fn check_pin(app: &mut App) {
             app.status = Some((Tone::Refused, THREAD_QUESTION_CHANGED.into()));
         }
     }
+}
+
+// ---- starting a thread: its terms card -------------------------------------------------------------------------------
+
+/// Said when Enter is pressed before the card's end was drawn.
+pub const START_READ_TO_THE_END: &str =
+    "Read the terms to the end first (j or Space), then press Enter. Nothing was started.";
+/// The words that stand in for the card when the window can't show it at all.
+pub const START_TOO_SMALL: &str =
+    "These terms don't fit this window. Make it larger to read them. Nothing was started.";
+
+/// A new thread's terms card as the engine made it: every line, the key the start posts, the message and project it was
+/// made for, and how far it has been read. `drawn` is how many rows from the top have all been drawn without a gap (at
+/// the width `drawn_width` laid them out); `seen_end` is set only when that covers every row, by drawing, never by a key.
+/// `page` is how many rows the last draw showed: Space and PageDown move by exactly that, so paging never skips a row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartTerms {
+    pub message: String,
+    pub repo: Option<String>,
+    pub key: String,
+    pub lines: Vec<String>,
+    pub scroll: usize,
+    pub seen_end: bool,
+    pub page: usize,
+    pub drawn: usize,
+    pub drawn_width: usize,
+}
+
+impl StartTerms {
+    pub fn new(message: String, repo: Option<String>, key: String, lines: Vec<String>) -> Self {
+        StartTerms {
+            message,
+            repo,
+            key,
+            lines,
+            scroll: 0,
+            seen_end: false,
+            page: 1,
+            drawn: 0,
+            drawn_width: 0,
+        }
+    }
+}
+
+/// A key on the terms card: j/k read on and back, Enter starts the thread (only once the end was drawn), Esc starts
+/// nothing.
+pub fn start_key(app: &mut App, mut terms: StartTerms, key: KeyEvent) -> Vec<Effect> {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown | KeyCode::Char(' ') => {
+            terms.scroll += if matches!(key.code, KeyCode::PageDown | KeyCode::Char(' ')) {
+                terms.page.max(1)
+            } else {
+                1
+            };
+            app.mode = Mode::StartThread(terms);
+            vec![]
+        }
+        KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
+            let by = if key.code == KeyCode::PageUp {
+                terms.page.max(1)
+            } else {
+                1
+            };
+            terms.scroll = terms.scroll.saturating_sub(by);
+            app.mode = Mode::StartThread(terms);
+            vec![]
+        }
+        KeyCode::Enter if !terms.seen_end => {
+            app.mode = Mode::StartThread(terms);
+            app.status = Some((Tone::Refused, START_READ_TO_THE_END.into()));
+            vec![]
+        }
+        KeyCode::Enter => {
+            app.mode = Mode::Normal;
+            let mut fields = vec![
+                ("message".to_string(), terms.message),
+                ("terms".to_string(), terms.key),
+            ];
+            if let Some(repo) = terms.repo {
+                fields.push(("repo".to_string(), repo));
+            }
+            vec![Effect::Act {
+                path: "/agents/live/thread".into(),
+                fields,
+                done: "The thread started.".into(),
+            }]
+        }
+        KeyCode::Esc => {
+            app.mode = Mode::Normal;
+            app.status = Some((Tone::Said, "Nothing was started.".into()));
+            vec![]
+        }
+        _ => {
+            app.mode = Mode::StartThread(terms);
+            vec![]
+        }
+    }
+}
+
+/// The terms card over the screen: every line wrapped, never cut, from where it has been read to. Drawing its last line
+/// is what lets Enter start the thread.
+pub fn draw_start(f: &mut Frame, app: &mut App, area: Rect) {
+    let Mode::StartThread(terms) = &mut app.mode else {
+        return;
+    };
+    let w = area.width.saturating_sub(6).min(100);
+    let h = area.height.saturating_sub(2);
+    let inner = w.saturating_sub(2) as usize;
+    // Head 2 lines, foot 4 lines, the border 2: what's left shows the card.
+    let visible = (h as usize).saturating_sub(8);
+    let r = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + 1,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .style(base())
+        .border_style(line())
+        .title(Span::styled(" New thread ", ink()));
+    if inner < 24 || visible < 3 {
+        terms.seen_end = false;
+        terms.drawn = 0;
+        terms.drawn_width = 0;
+        let lines: Vec<Line<'static>> = wrap(START_TOO_SMALL, inner.max(8))
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, ink())))
+            .collect();
+        f.render_widget(Paragraph::new(lines).block(block), r);
+        return;
+    }
+    let mut body: Vec<Line<'static>> = vec![];
+    for raw in &terms.lines {
+        // The card's own layout (summaryLines): a labelled row is two spaces, its label and the spaces that pad it, then
+        // its words; its further lines start where the words do. Each line's words are wrapped to what is left after
+        // that lead and every wrapped piece starts at the same column, so nothing is ever cut at the edge.
+        let shown = clean(raw);
+        let indent = shown.len() - shown.trim_start().len();
+        let start = if indent == 2 {
+            let after = shown[2..].find(' ').map_or(shown.len(), |i| i + 2);
+            after + (shown[after..].len() - shown[after..].trim_start().len())
+        } else {
+            indent
+        };
+        let start = start.min(inner / 2);
+        let (lead, words) = shown.split_at(shown.floor_char_boundary(start));
+        let labelled = indent == 2;
+        for (i, piece) in wrap(words, inner.saturating_sub(lead.len()).max(8))
+            .into_iter()
+            .enumerate()
+        {
+            body.push(Line::from(vec![
+                if i == 0 {
+                    Span::styled(
+                        lead.to_string(),
+                        if labelled { dim() } else { Style::default() },
+                    )
+                } else {
+                    Span::raw(" ".repeat(lead.len()))
+                },
+                Span::raw(piece),
+            ]));
+        }
+    }
+    // Laid out at another width: the rows aren't the ones read before, so reading starts again from the top.
+    if terms.drawn_width != inner {
+        terms.drawn_width = inner;
+        terms.drawn = 0;
+        terms.scroll = 0;
+        terms.seen_end = false;
+    }
+    let max = body.len().saturating_sub(visible);
+    if terms.scroll > max {
+        terms.scroll = max;
+    }
+    let end = (terms.scroll + visible).min(body.len());
+    terms.page = visible;
+    // Only rows that join what was already drawn count: a jump past unread rows covers nothing.
+    if terms.scroll <= terms.drawn {
+        terms.drawn = terms.drawn.max(end);
+    }
+    terms.seen_end = terms.drawn >= body.len();
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Starting this thread agrees to exactly this:",
+            ink(),
+        )),
+        Line::raw(""),
+    ];
+    lines.extend(body[terms.scroll..end].iter().cloned());
+    lines.push(Line::raw(""));
+    if end < body.len() {
+        lines.push(Line::from(Span::styled(
+            format!("↓ {} more lines: j or Space reads on", body.len() - end),
+            ink(),
+        )));
+    } else {
+        lines.push(Line::raw(""));
+    }
+    if terms.seen_end {
+        lines.push(Line::from(vec![
+            Span::styled("Enter  ", ink()),
+            Span::raw("Start the thread"),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Enter starts it once you've read to the end.",
+            dim(),
+        )));
+    }
+    lines.push(Line::from(Span::styled("Esc starts nothing.", dim())));
+    f.render_widget(Paragraph::new(lines).block(block), r);
 }

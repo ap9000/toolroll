@@ -27,14 +27,17 @@ async fn settle(app: &mut App, client: &Client, mut fx: Vec<Effect>) {
     while let Some(effect) = fx.pop() {
         let more = match effect {
             Effect::FetchWork => app.update(Msg::Work(client.work_rows().await)),
+            // A held read waits for the thread's next change, which the stand-in console never makes.
+            Effect::FetchThread { wait: true, .. } => vec![],
             Effect::FetchThreads => app.update(Msg::Threads(client.threads().await)),
             Effect::FetchThread {
                 thread,
                 cursor,
                 known,
+                wait,
             } => {
                 let read = client
-                    .thread_window(&thread, cursor.as_deref(), known.as_deref())
+                    .thread_window(&thread, cursor.as_deref(), known.as_deref(), wait)
                     .await;
                 app.update(Msg::Thread(thread, read))
             }
@@ -141,4 +144,40 @@ async fn with_flexible_off_nothing_is_listed_and_a_new_thread_is_refused() {
         started.last().unwrap().field("message"),
         Some("Fix the README")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_thread_starts_only_under_the_key_of_the_terms_card_the_screen_drew_whole() {
+    let engine = FakeEngine::start(scenario_with_threads(), 0).await;
+    let client = redeem(&engine.link()).await.unwrap();
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    settle(&mut app, &client, vec![Effect::FetchWork]).await;
+    app.key(key('T'));
+    for c in "Fix the README".chars() {
+        app.key(key(c));
+    }
+    let fx = app.key(code(KeyCode::Enter));
+    settle(&mut app, &client, fx).await;
+    // The console answered with the card; nothing was started, and the card is on screen.
+    assert!(matches!(app.mode, toolroll_tui::app::Mode::StartThread(_)));
+    assert!(screen(&mut app).contains("Starting this thread agrees to exactly this:"));
+    assert_eq!(engine.acts().last().unwrap().field("terms"), None);
+    // Read to the end, then start: the act carries the message, the project and exactly the card's key.
+    for _ in 0..10 {
+        app.key(key(' '));
+        screen(&mut app);
+    }
+    let fx = app.key(code(KeyCode::Enter));
+    settle(&mut app, &client, fx).await;
+    let acts = engine.acts();
+    let posted = acts.last().unwrap();
+    assert_eq!(posted.path, "/agents/live/thread");
+    assert_eq!(posted.field("terms"), Some(toolroll_fake_engine::START_KEY));
+    assert_eq!(posted.field("message"), Some("Fix the README"));
+    assert_eq!(posted.field("repo"), Some("/home/me/shop"));
+    assert!(
+        posted.keyed && posted.csrf_ok && posted.cookie_ok && posted.in_place,
+        "{posted:?}"
+    );
+    assert_eq!(app.status, Some((Tone::Said, "The thread started.".into())));
 }

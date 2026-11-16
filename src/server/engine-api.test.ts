@@ -168,6 +168,20 @@ describe("each engine read admits per persona as the page it mirrors; a refusal 
     expect(all.rows.map(row => row.id).sort()).toEqual(expect.arrayContaining(["t-done", "t-live"]));
   });
 
+  test("the cost line is the Limits view's audience only: an unrestricted approver reads it, nobody else does", async () => {
+    const before = workRowsSchema.parse((await read("operator", "/work/rows")).body);
+    expect(before.spend).toEqual({ todayUsd: expect.any(Number), planPercent: null });
+    store.recordProviderLimits({ provider: "claude", plan: "max", windows: [
+      { window: "five_hour", usedPercent: 62.4, windowMinutes: 300, resetsAt: new Date(Date.now() + 3_600_000).toISOString(), reached: false },
+      // A window whose reset has passed isn't current: never the plan's figure.
+      { window: "seven_day", usedPercent: 97, windowMinutes: 10_080, resetsAt: new Date(Date.now() - 60_000).toISOString(), reached: false },
+    ] }, new Date());
+    for (const persona of ["operator", "approver"]) expect(workRowsSchema.parse((await read(persona, "/work/rows")).body).spend, persona).toMatchObject({ planPercent: 62 });
+    for (const persona of ["viewer", "project-limited", "token"]) {
+      expect(workRowsSchema.parse((await read(persona, "/work/rows")).body).spend, persona).toBeNull();
+    }
+  });
+
   test("a task and a run outside every project read the same as one that doesn't exist", async () => {
     for (const path of ["/t/nope/steps", "/t/nope/diff", "/agents/live/run/999999"]) expect((await read("operator", path)).status, path).toBe(404);
     expect((await read("operator", `/t/t-done/diff?run=${liveRun}`)).status).toBe(404); // not a result of this task

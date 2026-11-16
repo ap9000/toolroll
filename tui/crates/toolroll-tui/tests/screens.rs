@@ -447,17 +447,53 @@ fn stop_and_pause_and_new_task() {
         app.key(key(c));
     }
     insta::assert_snapshot!("new_task", screen(&mut app, 120, 30));
+    // Enter files it as Just code (a small one comes back as its terms to read before Build, below).
+    let filed = app.key(code(KeyCode::Enter));
     assert_eq!(
-        app.key(code(KeyCode::Enter)),
+        filed,
         vec![Effect::Act {
             path: "/tasks/add".into(),
             fields: vec![
                 ("title".into(), "add a dark mode toggle".into()),
+                ("planning-policy".into(), "choice".into()),
                 ("repo".into(), "/home/me/shop".into())
             ],
-            done: "Filed. A plan comes first.".into()
+            done: "Filed. Just code: no plan step.".into()
         }]
     );
+    // Tab then Enter, or Shift-Enter, files it to plan first: the web's own "Plan it first" fields.
+    let plan_first = Effect::Act {
+        path: "/tasks/add".into(),
+        fields: vec![
+            ("title".into(), "a plan please".into()),
+            ("plain".into(), "1".into()),
+            ("planning-policy".into(), "choice".into()),
+            ("plan-first".into(), "1".into()),
+            ("repo".into(), "/home/me/shop".into()),
+        ],
+        done: "Filed. A plan comes first.".into(),
+    };
+    for shifted in [false, true] {
+        let mut other = scenario_app("t-live");
+        other.agents = Some(parse(fake::scenario().agents.clone()));
+        other.key(key('n'));
+        for c in "a plan please".chars() {
+            other.key(key(c));
+        }
+        if !shifted {
+            other.key(code(KeyCode::Tab));
+            insta::assert_snapshot!("new_task_plan_first", screen(&mut other, 100, 26));
+        }
+        let enter = KeyEvent::new(
+            KeyCode::Enter,
+            if shifted {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            },
+        );
+        assert_eq!(other.key(enter), vec![plan_first.clone()]);
+    }
     // A small task comes back as its exact terms: Enter is Build, p plans it first, Esc files nothing.
     let terms = ActOutcome::Terms {
         preview: "p".repeat(32),

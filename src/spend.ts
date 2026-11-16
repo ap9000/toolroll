@@ -97,12 +97,13 @@ export function ceilingPriceFor(db: Database, provider: string): Price | null {
 
 /** What a piece of work cost, in micro-dollars: nothing on a subscription; otherwise reported, or tokens at the
  * catalogue price (usd per million tokens times tokens is micro-dollars), or unpriced. */
-export function priceWork(db: Database, work: { provider: string; model: string | null; costUsd: number | null; tokensIn: number | null; tokensOut: number | null; billing: Billing }):
+export function priceWork(db: Database, work: { provider: string; model: string | null; costUsd: number | null; tokensIn: number | null; tokensOut: number | null; billing: Billing },
+  lookup: (provider: string, model: string | null) => Price | null = (provider, model) => priceFor(db, provider, model) ?? ceilingPriceFor(db, provider)):
   { microusd: number | null; source: PriceSource; price: Price | null } {
   if (work.billing === "subscription") return { microusd: 0, source: "subscription", price: null };
   if (work.costUsd !== null && Number.isFinite(work.costUsd)) return { microusd: Math.round(work.costUsd * 1_000_000), source: "reported", price: null };
   if (work.tokensIn === null && work.tokensOut === null) return { microusd: null, source: "unpriced", price: null };
-  const price = priceFor(db, work.provider, work.model) ?? ceilingPriceFor(db, work.provider);
+  const price = lookup(work.provider, work.model);
   if (price === null) return { microusd: null, source: "unpriced", price: null };
   return { microusd: Math.round((work.tokensIn ?? 0) * price.inputUsd + (work.tokensOut ?? 0) * price.outputUsd), source: "estimated", price };
 }
@@ -236,12 +237,33 @@ export function filersOf(db: Database): (taskRef: number) => { repo: string | nu
 
 /** Every piece of spend in [from, to): runs (by when they started), subagent turns and chat turns. `modeOf` says how
  * a provider bills when a record doesn't (older rows): its current login or key. */
-export function spendItems(db: Database, from: string, to: string, modeOf: (provider: string) => Billing = provider => billingOf(provider, db)): SpendItem[] {
-  const subagentOf = subagentFilers(db);
+export function spendItems(db: Database, from: string, to: string, readMode: (provider: string) => Billing = provider => billingOf(provider, db)): SpendItem[] {
+  // One read per provider (how it bills) and per model (its price) for the whole call, never one per row: the same
+  // answers, since nothing is written while this runs.
+  const modes = new Map<string, Billing>();
+  const modeOf = (provider: string): Billing => { let mode = modes.get(provider); if (mode === undefined) { mode = readMode(provider); modes.set(provider, mode); } return mode; };
+  const prices = new Map<string, Price | null>();
+  const lookup = (provider: string, model: string | null): Price | null => {
+    const key = `${provider}\n${model ?? ""}`;
+    if (!prices.has(key)) prices.set(key, priceFor(db, provider, model) ?? ceilingPriceFor(db, provider));
+    return prices.get(key)!;
+  };
+  // Which sources have anything in the window, in one read: a source with nothing there isn't read at all (a short
+  // window, like today's for the terminal's cost line, usually has a few).
+  const has = db.prepare(`SELECT EXISTS(SELECT 1 FROM run WHERE started_at >= ?1 AND started_at < ?2) AS runs,
+      EXISTS(SELECT 1 FROM subagent_turn WHERE at >= ?1 AND at < ?2) AS subagent,
+      (EXISTS(SELECT 1 FROM chat_turn WHERE created_at >= ?1 AND created_at < ?2) OR EXISTS(SELECT 1 FROM mate_turn WHERE created_at >= ?1 AND created_at < ?2)) AS chat,
+      EXISTS(SELECT 1 FROM side_spend WHERE at >= ?1 AND at < ?2) AS side,
+      EXISTS(SELECT 1 FROM flow_step_run WHERE kind = 'sort' AND started_at >= ?1 AND started_at < ?2) AS sort,
+      EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_turn') AS threads,
+      EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_relay_pending') AS reservations`).get(from, to) ?? {};
+  const any = (key: string) => Number(has[key]) === 1;
+  let filers: ReturnType<typeof subagentFilers> | null = null;
+  const subagentOf: ReturnType<typeof subagentFilers> = (repo, filedBy, kind) => (filers ??= subagentFilers(db))(repo, filedBy, kind);
   const filerOf = filersOf(db);
   const text = (value: unknown) => value == null ? null : String(value);
   const count = (value: unknown) => value == null ? null : Number(value);
-  const runs = db.prepare(`SELECT run.id, run.task_ref, run.provider, run.model, run.cost_usd, run.tokens_in, run.tokens_out, run.started_at, run.auth_mode,
+  const runs = !any("runs") ? [] : db.prepare(`SELECT run.id, run.task_ref, run.provider, run.model, run.cost_usd, run.tokens_in, run.tokens_out, run.started_at, run.auth_mode,
       r.external_id AS task, r.repo, r.filed_by, r.filed_by_kind, r.revision_of, s.microusd, s.source, s.billing
     FROM run JOIN task_ref r ON r.id = run.task_ref LEFT JOIN run_spend s ON s.run = run.id
     WHERE run.started_at >= ? AND run.started_at < ? ORDER BY run.id`).all(from, to);
@@ -250,7 +272,7 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
     const billing: Billing = row["billing"] === "subscription" || row["billing"] === "api-key" ? row["billing"]
       : row["auth_mode"] === "subscription" || row["auth_mode"] === "api-key" ? row["auth_mode"] : modeOf(provider);
     const settled = row["source"] != null;
-    const priced = settled ? null : priceWork(db, { provider, model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), billing });
+    const priced = settled ? null : priceWork(db, { provider, model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), billing }, lookup);
     // Most tasks name their filer; only an automation-filed revision walks to its source's.
     const filer = row["filed_by"] == null && row["revision_of"] != null ? filerOf(Number(row["task_ref"]))
       : { repo: text(row["repo"]), filedBy: text(row["filed_by"]), kind: text(row["filed_by_kind"]) };
@@ -267,17 +289,17 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
   });
   // A subagent's own turns get no key from Toolroll (subagents.ts claudeTurnRunner): they bill as this computer's
   // Claude sign-in was seen billing when the turn ran (a plan, or a Console login, key helper or gateway).
-  for (const row of db.prepare(`SELECT t.at, t.subagent, t.model, t.cost_usd, t.tokens_in, t.tokens_out, t.billing, m.repo FROM subagent_turn t JOIN subagent m ON m.id = t.subagent
+  for (const row of !any("subagent") ? [] : db.prepare(`SELECT t.at, t.subagent, t.model, t.cost_usd, t.tokens_in, t.tokens_out, t.billing, m.repo FROM subagent_turn t JOIN subagent m ON m.id = t.subagent
       WHERE t.at >= ? AND t.at < ? ORDER BY t.id`).all(from, to)) {
     const billing: Billing = row["billing"] === "api-key" ? "api-key" : "subscription";
-    const priced = priceWork(db, { provider: "claude", model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), billing });
+    const priced = priceWork(db, { provider: "claude", model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), billing }, lookup);
     items.push({ at: String(row["at"]), kind: "subagent", microusd: priced.microusd, source: priced.source, project: String(row["repo"]), person: null,
       subagent: Number(row["subagent"]), provider: "claude", model: text(row["model"]),
       tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), taskId: null, runId: null, authMode: billing });
   }
   // A chat turn that mirrors a project chat's turn is that turn: counted once, as the project chat's. A task's chat
   // counts toward the task's project.
-  for (const row of db.prepare(`SELECT created_at AS at, approver, provider, model, settled_microusd, tokens_in, tokens_out, NULL AS project
+  for (const row of !any("chat") ? [] : db.prepare(`SELECT created_at AS at, approver, provider, model, settled_microusd, tokens_in, tokens_out, NULL AS project
       FROM chat_turn WHERE mate_turn IS NULL AND created_at >= ? AND created_at < ?
     UNION ALL SELECT t.created_at, t.approver, COALESCE((SELECT c.provider FROM chat_turn c WHERE c.mate_turn = t.id ORDER BY c.id LIMIT 1), 'lead'),
         (SELECT c.model FROM chat_turn c WHERE c.mate_turn = t.id ORDER BY c.id LIMIT 1), t.settled_microusd, t.tokens_in, t.tokens_out,
@@ -291,14 +313,14 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
       tokensIn: count(row["tokens_in"]), tokensOut: count(row["tokens_out"]), taskId: null, runId: null, authMode: subscription ? "subscription" : "api-key" });
   }
   // A flow's Claude drafts: like a subagent's turns, billed as the sign-in was.
-  for (const row of db.prepare("SELECT at, kind, repo, provider, model, cost_usd, billing FROM side_spend WHERE at >= ? AND at < ? ORDER BY id").all(from, to)) {
+  for (const row of !any("side") ? [] : db.prepare("SELECT at, kind, repo, provider, model, cost_usd, billing FROM side_spend WHERE at >= ? AND at < ? ORDER BY id").all(from, to)) {
     const billing: Billing = row["billing"] === "api-key" ? "api-key" : "subscription";
-    const priced = priceWork(db, { provider: String(row["provider"]), model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: null, tokensOut: null, billing });
+    const priced = priceWork(db, { provider: String(row["provider"]), model: text(row["model"]), costUsd: count(row["cost_usd"]), tokensIn: null, tokensOut: null, billing }, lookup);
     items.push({ at: String(row["at"]), kind: "draft", microusd: priced.microusd, source: priced.source, project: text(row["repo"]), person: null, subagent: null,
       provider: String(row["provider"]), model: text(row["model"]), tokensIn: null, tokensOut: null, taskId: null, runId: null, authMode: billing });
   }
   // A flow's Sort zone asks Jev on OpenRouter (the key's credit): what it cost is kept with its answer.
-  for (const row of db.prepare(`SELECT fs.started_at AS at, json_extract(fs.decision_json, '$.cost') AS cost, json_extract(fs.decision_json, '$.model') AS model, f.repo
+  for (const row of !any("sort") ? [] : db.prepare(`SELECT fs.started_at AS at, json_extract(fs.decision_json, '$.cost') AS cost, json_extract(fs.decision_json, '$.model') AS model, f.repo
       FROM flow_step_run fs JOIN flow_card c ON c.id = fs.card JOIN flow f ON f.id = c.flow
       WHERE fs.kind = 'sort' AND fs.decision_json IS NOT NULL AND fs.started_at >= ? AND fs.started_at < ? ORDER BY fs.started_at`).all(from, to)) {
     const cost = typeof row["cost"] === "number" && Number.isFinite(row["cost"]) && row["cost"] >= 0 ? row["cost"] : null;
@@ -308,10 +330,10 @@ export function spendItems(db: Database, from: string, to: string, modeOf: (prov
   // v164: a Flexible thread's turns (flexible-turns.ts), by when they started, counted toward the thread's project and
   // its owner. A withdrawn turn never reached the provider. A plan's turn is $0; a keyed turn whose cost Toolroll couldn't
   // measure is unpriced (never free); a turn still running counts what it has cost so far.
-  if (db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'thread_turn'").get() !== undefined) {
+  if (any("threads")) {
     // v166: a relay call whose charge was never recorded (its reservation is still there) leaves an ended keyed turn's
     // cost unknown too.
-    const reservations = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'thread_relay_pending'").get() !== undefined;
+    const reservations = any("reservations");
     for (const row of db.prepare(`SELECT COALESCE(started_at, admitted_at) AS at, repo, owner, provider, model, billing, status, cost_basis, cost_microusd, tokens_in, tokens_out,
         ${reservations ? "(status IN ('finished', 'interrupted', 'unknown') AND id IN (SELECT turn FROM thread_relay_pending))" : "0"} AS unsettled
         FROM thread_turn WHERE status <> 'withdrawn' AND COALESCE(started_at, admitted_at) >= ? AND COALESCE(started_at, admitted_at) < ? ORDER BY admitted_at, id`).all(from, to)) {

@@ -103,7 +103,8 @@ export const threadFactsSchema = z.object({
 /** `GET /agents/live/<kind>/<id>?file=main|sub&cursor=`: one window of the session's records. `room` is the live room
  * (GET /live?room=) that says when to read again; `cursor` is opaque state, never permission. A thread's window also
  * carries its facts (`thread`), unless the read named their current `version` as `known=` (then they're unchanged and
- * left out); a run's never does. */
+ * left out); a run's never does. A thread's read holding both `cursor=` and `known=` may add `wait=1`: when nothing
+ * moved, the console answers at the thread's next change (or after about 20 s) instead of at once. */
 export const liveSessionWindowSchema = z.object({
   version,
   session: liveSessionRefSchema,
@@ -169,6 +170,10 @@ export const workRowsSchema = z.object({
   needs: z.array(z.object({ key: z.enum(["decide", "review", "unblock"]), label: z.string(), count: z.number().int(), rows: z.array(needRowSchema) })),
   next: z.string().nullable(),
   room: z.literal("workspace"),
+  /** The terminal's cost line ("$1.84 today · plan 62%"): today's spend (the UTC day, from the Spend page's own items,
+   * unpriced work counted as nothing) and the fullest current subscription window the providers last reported, rounded
+   * (null: none reported). The Limits view's audience only (an instance operator); null for everyone else. */
+  spend: z.object({ todayUsd: z.number(), planPercent: z.number().int().nullable() }).nullable(),
 });
 
 // ---- Step cards ---------------------------------------------------------------------------------------------------

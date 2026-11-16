@@ -20,6 +20,9 @@ import { attachFlexibleAgent, startFlexibleThreadSession, type FlexibleSessions 
 import { liveSessionWindowSchema, liveThreadsSchema } from "../contracts/engine-api.js";
 import { threadWorld, type ThreadWorld } from "../../test/flexible-thread-world.js";
 import { fakePid } from "../../test/fake-pid.js";
+import { randomBytes } from "node:crypto";
+import { FLEXIBLE_RELAY_CREDENTIAL } from "../flexible-relay.js";
+import { writeHeldSecret } from "../tool-secret-store.js";
 
 vi.mock("../flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
 // The console's own host, kept where the test can attach a scripted agent to it (the real opener, called as the console
@@ -116,6 +119,8 @@ beforeAll(async () => {
   mkdirSync(join(world.state, "threads", T1), { recursive: true });
   store.handle.prepare(`INSERT INTO flexible_thread (id, repo, base_sha, keep_ref, folder, created_by, created_at, state) VALUES (?, ?, ?, ?, ?, 'pat', ?, 'ready')`)
     .run(T1, world.project, world.second, `refs/toolroll/threads/${T1}/base`, join(world.state, "threads", T1), NOW.toISOString());
+  // The relay's own Claude credential (built here, never a real one): a thread's terms card names its billing.
+  writeHeldSecret(world.state, FLEXIBLE_RELAY_CREDENTIAL.name, FLEXIBLE_RELAY_CREDENTIAL.file, JSON.stringify({ kind: "setup-token", value: ["sk", "ant", "oat01", randomBytes(24).toString("hex")].join("-") }));
   server = createDecisionServer({ store, evidenceRoot: join(world.dir, "evidence"), repos: [world.project], clock: () => new Date() });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -194,11 +199,37 @@ describe("an answer goes only through its owner, naming the card they were shown
     expect(liveSessionWindowSchema.parse((await read("pat", THREAD)).body).thread!.questions[0]).toMatchObject({ state: "sent", answerable: false });
   });
 
-  test("a new thread is refused here: this console has no launcher for a thread's network yet", async () => {
+  test("a new thread naming terms nobody was shown is refused, and nothing is made", async () => {
+    const before = world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"];
     const response = await fetch(`${base}/agents/live/thread`, { method: "POST", redirect: "manual", headers: { cookie: cookies["pat"]!, origin: base, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, repo: world.project, message: "Fix the README", model: "claude-sonnet-4-5", terms: "0".repeat(64) }).toString() });
+      body: new URLSearchParams({ csrf, repo: world.project, message: "Fix the README", model: "claude-sonnet-4-5", terms: "0".repeat(32) }).toString() });
     expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ outcome: "refused", words: "This console can't give a thread its network yet, so no thread was started." });
+    expect(await response.json()).toEqual({ outcome: "refused", words: "The terms changed since they were shown. Read them again before starting. Nothing was started." });
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread").get()!["n"]).toBe(before);
+  });
+});
+
+describe("the owner's read waits for the thread's next change (wait=1), never polled", () => {
+  test("an unchanged read waits; the agent's next words wake it at once with them; a read that isn't held to a version and cursor can't wait", async () => {
+    const first = await read("pat", THREAD);
+    const window = first.body as { window: { cursor: string }; thread: { version: string } };
+    const path = `${THREAD}?file=main&cursor=${encodeURIComponent(window.window.cursor)}&known=${window.thread.version}&wait=1`;
+    const started = Date.now();
+    const waiting = read("pat", path);
+    let answered = false;
+    void waiting.then(() => { answered = true; });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(answered).toBe(false);
+    say({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Tests pass; writing the summary" }] } });
+    const woke = await waiting;
+    expect(woke.status).toBe(200);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const parsed = liveSessionWindowSchema.parse(woke.body);
+    expect(parsed.window.ok && parsed.window.records.length).toBeGreaterThan(0);
+    for (const bad of [`${THREAD}?file=main&wait=1`, `${THREAD}?file=main&known=${window.thread.version}&wait=1`, `${THREAD}?file=main&cursor=x&known=${window.thread.version}&wait=2`,
+      `${THREAD}?file=main&cursor=x&known=${window.thread.version}&wait=1&wait=1`]) expect((await read("pat", bad)).status, bad).toBe(400);
+    // Someone else's thread never waits: refused before anything is read.
+    expect((await read("ines", path)).status).toBe(404);
   });
 });
 

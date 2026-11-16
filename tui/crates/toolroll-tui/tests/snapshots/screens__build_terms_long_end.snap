@@ -2,7 +2,7 @@
 source: crates/toolroll-tui/tests/screens.rs
 expression: end
 ---
-"┌ Toolroll · shop ───────────────────────────────────────────────────────────────────── 2 need you ┐"
+"┌ Toolroll · shop ──────────────────────────────────────────── $1.84 today · plan 62% · 2 need you ┐"
 "│Ne┌ New task ──────────────────────────────────────────────────────────────────────────────────┐  │"
 "│● │Build approves exactly this:                                                                │  │"
 "│● │                                                                                            │  │"
@@ -15,8 +15,8 @@ expression: end
 "│✓ │           Requirement 24: the export keeps every column in the same order and escapes      │  │"
 "│  │           quotes properly.                                                                 │  │"
 "│  │           Requirement 25: the export keeps every column in the same order and escapes      │  │"
-"│  │           quotes properly.                                                                 │t.│"
-"│  │           Requirement 26: the export keeps every column in the same order and escapes      │  │"
+"│  │           quotes properly.                                                                 │  │"
+"│  │           Requirement 26: the export keeps every column in the same order and escapes      │t.│"
 "│  │           quotes properly.                                                                 │  │"
 "│  │           Requirement 27: the export keeps every column in the same order and escapes      │  │"
 "│  │           quotes properly.                                                                 │  │"
@@ -28,7 +28,7 @@ expression: end
 "│  │           quotes properly.                                                                 │  │"
 "│  │                                                                                            │  │"
 "│  │                                                                                            │  │"
-"│  │Enter  Build                                                                                │y │"
+"│  │Enter  Build                                                                                │  │"
 "│Re│p  Plan it first   w  Review in the browser                                                 │  │"
 "│j/└────────────────────────────────────────────────────────────────────────────────────────────┘  │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────┘"

@@ -8,7 +8,9 @@ use serde_json::{json, Value};
 use toolroll_api::*;
 use toolroll_fake_engine as fake;
 use toolroll_tui::app::{App, Effect, Mode, Msg, Tone};
-use toolroll_tui::thread::{CANT_ALLOW_UNSHOWN, READ_TO_THE_END, THREAD_QUESTION_CHANGED};
+use toolroll_tui::thread::{
+    CANT_ALLOW_UNSHOWN, READ_TO_THE_END, START_READ_TO_THE_END, THREAD_QUESTION_CHANGED,
+};
 
 const NOW: i64 = 1_794_657_852;
 const PERMISSION: &str = "c0ffee00c0ffee00c0ffee00c0ffee02";
@@ -312,10 +314,12 @@ fn a_request_too_large_to_show_can_be_denied_but_not_allowed() {
 fn an_idle_thread_is_read_less_often_and_an_unchanged_poll_rebuilds_nothing() {
     let mut w = with_states(&[(PERMISSION, "sent", false)]);
     let mut app = thread_app(w.clone());
-    // Nothing waits and nothing changes: each unchanged read waits longer, up to every eighth tick (2 s).
+    // Nothing changes: after each unchanged (held) read the next waits longer, up to every eighth tick (2 s).
     w["thread"] = Value::Null;
     w.as_object_mut().unwrap().remove("thread");
     w["window"]["records"] = json!([]);
+    // The held read the first window sent comes back unchanged (the console's wait ran out).
+    app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(w.clone()))));
     let mut gaps = vec![];
     for _ in 0..5 {
         let mut ticks = 0;
@@ -340,13 +344,154 @@ fn an_idle_thread_is_read_less_often_and_an_unchanged_poll_rebuilds_nothing() {
             "facts left out mean unchanged, not gone"
         );
     }
-    assert_eq!(gaps, vec![1, 2, 4, 8, 8]);
-    // A question waiting: every tick again.
-    app.update(Msg::Thread(fake::THREAD.into(), Ok(parse(window()))));
-    assert!(app
-        .update(Msg::Tick)
-        .iter()
-        .any(|e| matches!(e, Effect::FetchThread { .. })));
+    assert_eq!(gaps, vec![2, 4, 8, 8, 8]);
+}
+
+#[test]
+fn a_change_wakes_the_screen_through_a_held_read_and_nothing_polls_while_it_waits() {
+    // The window just read changed what is shown, so a held read (wait) already went: while the console holds it (a
+    // question waiting on you, as here), no tick asks again. No 250 ms polling.
+    let mut app = thread_app(window());
+    for _ in 0..40 {
+        assert!(
+            !app.update(Msg::Tick)
+                .iter()
+                .any(|e| matches!(e, Effect::FetchThread { .. })),
+            "a tick polled while a held read waits"
+        );
+    }
+    // The console answers the held read with a change (the answer was received): the next held read goes at once,
+    // held to the cursor and the facts' version the screen now has.
+    let fx = app.update(Msg::Thread(
+        fake::THREAD.into(),
+        Ok(parse(with_states(&[(PERMISSION, "delivered", false)]))),
+    ));
+    assert!(
+        fx.iter().any(|e| matches!(
+            e,
+            Effect::FetchThread {
+                wait: true,
+                cursor: Some(_),
+                known: Some(_),
+                ..
+            }
+        )),
+        "{fx:?}"
+    );
+    for _ in 0..40 {
+        assert!(!app
+            .update(Msg::Tick)
+            .iter()
+            .any(|e| matches!(e, Effect::FetchThread { .. })));
+    }
+}
+
+#[test]
+fn the_first_read_of_a_thread_is_never_held() {
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    app.now = NOW;
+    app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    app.update(Msg::Threads(Ok(parse(fake::fixture("live-threads.json")))));
+    let at = app.items.iter().position(|i| i.id == fake::THREAD).unwrap();
+    let mut asked = vec![];
+    while app.selected < at {
+        asked.extend(app.key(key('j')));
+    }
+    assert!(asked.iter().any(|e| matches!(
+        e,
+        Effect::FetchThread {
+            cursor: None,
+            known: None,
+            wait: false,
+            ..
+        }
+    )));
+}
+
+/// A new thread's terms card, as the console answers `T`'s first message.
+fn start_app() -> (App, Vec<Effect>) {
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    app.now = NOW;
+    app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    app.key(key('T'));
+    for c in "Fix the README".chars() {
+        app.key(key(c));
+    }
+    let fx = app.key(enter());
+    (app, fx)
+}
+
+#[test]
+fn a_new_threads_terms_card_is_read_whole_before_enter_starts_it_with_exactly_its_key() {
+    let (mut app, fx) = start_app();
+    // The first message asks for the card only: no key posted, nothing started.
+    assert_eq!(
+        fx,
+        vec![Effect::Act {
+            path: "/agents/live/thread".into(),
+            fields: vec![
+                ("message".into(), "Fix the README".into()),
+                ("repo".into(), "/home/me/shop".into())
+            ],
+            done: "The thread started.".into(),
+        }]
+    );
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    assert!(matches!(app.mode, Mode::StartThread(_)));
+    insta::assert_snapshot!("thread_start_terms", screen(&mut app, 120, 30));
+    // Enter before the end was drawn starts nothing.
+    assert_eq!(app.key(enter()), vec![]);
+    assert_eq!(
+        app.status,
+        Some((Tone::Refused, START_READ_TO_THE_END.into()))
+    );
+    assert!(matches!(app.mode, Mode::StartThread(_)));
+    // Read on to the end (drawn), then Enter posts the message, the card's key and the project: nothing else.
+    for _ in 0..10 {
+        app.key(key(' '));
+        screen(&mut app, 120, 30);
+    }
+    insta::assert_snapshot!("thread_start_terms_end", screen(&mut app, 120, 30));
+    assert_eq!(
+        app.key(enter()),
+        vec![Effect::Act {
+            path: "/agents/live/thread".into(),
+            fields: vec![
+                ("message".into(), "Fix the README".into()),
+                ("terms".into(), fake::START_KEY.into()),
+                ("repo".into(), "/home/me/shop".into())
+            ],
+            done: "The thread started.".into(),
+        }]
+    );
+    assert_eq!(app.mode, Mode::Normal);
+}
+
+#[test]
+fn a_terms_card_too_big_for_the_window_never_counts_as_read_and_esc_starts_nothing() {
+    let (mut app, _) = start_app();
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    // A window too small to show the card at all (the screen draws, the card can't): Enter still starts nothing.
+    for _ in 0..30 {
+        app.key(key(' '));
+        assert!(screen(&mut app, 40, 10).contains("don't fit"));
+    }
+    assert_eq!(app.key(enter()), vec![]);
+    assert_eq!(
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        vec![]
+    );
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(
+        app.status,
+        Some((Tone::Said, "Nothing was started.".into()))
+    );
 }
 
 #[test]
@@ -361,4 +506,99 @@ fn a_thread_on_the_diff_tab_keeps_its_own_keys() {
     let at = app.selected;
     app.key(key('k'));
     assert_eq!(app.selected, at - 1);
+}
+
+#[test]
+fn every_word_of_a_terms_card_is_drawn_at_any_width_never_cut_at_the_edge() {
+    // Tall enough to hold the whole card at once: the dialog's own columns, read back as text, hold every line of the
+    // card word for word (a line wrapped across rows reads on in the next row), and Enter may start it.
+    for width in [72u16, 90, 120] {
+        let (mut app, _) = start_app();
+        app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+            key: fake::START_KEY.into(),
+            lines: fake::start_card_lines(),
+        })));
+        let drawn = screen(&mut app, width, 90);
+        let w = (width - 6).min(100) as usize;
+        let x = (width as usize - w) / 2;
+        let inside: Vec<String> = drawn
+            .lines()
+            .map(|row| {
+                row.trim_matches('"')
+                    .chars()
+                    .skip(x + 1)
+                    .take(w - 2)
+                    .collect::<String>()
+            })
+            .collect();
+        let text = inside
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for line in fake::start_card_lines() {
+            let words = line.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                text.contains(&words),
+                "at {width} columns the card didn't draw {line:?} whole"
+            );
+        }
+        assert!(matches!(&app.mode, Mode::StartThread(t) if t.seen_end));
+    }
+}
+
+#[test]
+fn paging_a_short_card_never_skips_a_row_and_a_jump_past_unread_rows_never_counts_as_read() {
+    // 16 rows tall: six rows of the card at a time, fewer than the ten an old page moved by.
+    let (mut app, _) = start_app();
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    let mut seen = String::new();
+    seen.push_str(&screen(&mut app, 120, 16));
+    for _ in 0..20 {
+        app.key(key(' '));
+        seen.push_str(&screen(&mut app, 120, 16));
+    }
+    // Every line, word for word, was on screen at some page.
+    for line in fake::start_card_lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        assert!(
+            words.iter().all(|w| seen.contains(w)),
+            "paging skipped part of {line:?}"
+        );
+    }
+    assert!(matches!(&app.mode, Mode::StartThread(t) if t.seen_end));
+    // A card jumped to its end without the rows between drawn: Enter starts nothing.
+    let (mut app, _) = start_app();
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    screen(&mut app, 120, 16);
+    if let Mode::StartThread(terms) = &mut app.mode {
+        terms.scroll = 10_000;
+    }
+    screen(&mut app, 120, 16);
+    assert!(matches!(&app.mode, Mode::StartThread(t) if !t.seen_end));
+    assert_eq!(app.key(enter()), vec![]);
+    assert_eq!(
+        app.status,
+        Some((Tone::Refused, START_READ_TO_THE_END.into()))
+    );
+    // Laid out again at another width, it is read again from the top.
+    let (mut app, _) = start_app();
+    app.update(Msg::Acted(Ok(ActOutcome::ThreadTerms {
+        key: fake::START_KEY.into(),
+        lines: fake::start_card_lines(),
+    })));
+    for _ in 0..20 {
+        app.key(key(' '));
+        screen(&mut app, 90, 30);
+    }
+    assert!(matches!(&app.mode, Mode::StartThread(t) if t.seen_end));
+    // Wider: fewer rows than were read, but not the same rows.
+    screen(&mut app, 120, 16);
+    assert!(matches!(&app.mode, Mode::StartThread(t) if !t.seen_end));
 }

@@ -17402,6 +17402,11 @@ export class Store {
     }));
   }
 
+  /** Every piece of spend in [from, to) (spend.ts spendItems): a short window's own read, not the month's. */
+  spendBetween(from: string, to: string): SpendItem[] {
+    return spendItems(this.db, from, to);
+  }
+
   /** This month's spend, and each budget's state. */
   monthSpend(now: Date): { month: string; items: SpendItem[]; budgets: BudgetState[] } {
     const month = monthOf(now);

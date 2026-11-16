@@ -3,7 +3,7 @@
 //! reaches it (Ctrl-C too) and its echo comes back; the pane's size is sent; Ctrl-] comes back. The terminal outlives
 //! the binary: a second run reattaches to it (listed, never started again) and shows the screen. What the program wrote
 //! — clipboard writes, links, titles, notifications — never reaches the real terminal: every raw byte the binary wrote
-//! is checked. The sign-in link reaches the binary on descriptor 3 from a 0600 file, removed once read.
+//! is checked (the only links written are Toolroll's own, to the console's task page). The sign-in link reaches the binary on descriptor 3 from a 0600 file, removed once read.
 #![cfg(unix)]
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
@@ -145,9 +145,17 @@ fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
 
 fn no_leaks(raw: &[u8]) {
     let out = String::from_utf8_lossy(raw);
+    // Links (OSC 8) only ever ours: the console's own task page, or the end of one (link.rs). Never the program's.
+    for (i, _) in out.match_indices("\x1b]8;;") {
+        let rest = &out[i + 5..];
+        let url = &rest[..rest.find('\x1b').unwrap_or(rest.len())];
+        assert!(
+            url.is_empty() || (url.starts_with("http://127.0.0.1:") && url.contains("/t/")),
+            "a link that isn't ours reached the real terminal: {url:?}"
+        );
+    }
     for leak in [
         "\x1b]52",
-        "\x1b]8;",
         "ZXZpbC1jbGlwYm9hcmQ",
         "evil.example",
         "evil-title",
@@ -225,7 +233,13 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     // Ctrl-] comes back to the workbench; q quits it (the terminal keeps running in the console).
     run.press("\x1d");
     run.wait_for("Back to the workbench", 5);
-    no_leaks(&run.quit());
+    let raw = run.quit();
+    no_leaks(&raw);
+    // Our own link was written: the task on screen, clickable (OSC 8 to the console's task page).
+    assert!(
+        String::from_utf8_lossy(&raw).contains("\x1b]8;;http://127.0.0.1:"),
+        "no link of ours was written"
+    );
     assert_eq!(engine.state.lock().unwrap().term_attaches, 1);
 
     // A second run reattaches to the same terminal: listed, not started again.

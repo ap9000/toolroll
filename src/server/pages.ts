@@ -1,4 +1,5 @@
 import { advancedShownNow } from "../advanced-view.js";
+import { spendLineOf } from "../limits-ui.js";
 import { projectOutcomes } from '../project-outcomes.js';
 import { steerControlsFor } from "../steer-controls.js";
 import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
@@ -1449,10 +1450,17 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
   /** GET /work/rows: Work's list as data (contracts/engine-api.ts workRows), the same address keys, grouping and
    * Needs-you facts as the page, admitted as Work is; the room to follow is the workspace's. */
   async function workRows(ctx: HandlerContext): Promise<void> {
-    const { response } = ctx;
+    const { response, who, now } = ctx;
     const built = await workViewOf(ctx);
     if (built === null) return;
     const { view } = built, list = view.list;
+    // The cost line: the Limits view's own audience (an instance operator on a browser-style session), else nothing.
+    const spend = (() => {
+      if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return null;
+      // Today's items only (one read of the day, never the month's), and the plan windows the providers last reported.
+      const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+      try { return spendLineOf(store.spendBetween(dayStart, new Date(now.getTime() + 1).toISOString()), store.providerLimits(), now); } catch { return null; }
+    })();
     const needOf = (row: BrowserHomeRow) => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, state: row.state, ask: row.ask,
       ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
     const body: WorkRows = {
@@ -1460,7 +1468,7 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
       rows: list.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, status: row.status, word: row.word, ask: row.ask,
         chip: row.chip, group: row.group, rank: row.rank, detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need) })),
       needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
-      next: list.pages.next, room: "workspace",
+      next: list.pages.next, room: "workspace", spend,
     };
     return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("workRows", body)));
   }

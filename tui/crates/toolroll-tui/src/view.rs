@@ -3,6 +3,7 @@
 //! DESIGN.md: plain words in sentence case; ink for what needs you, never amber; blue only for running, green only for
 //! passed, red only for failed. Every style is a theme role (theme.rs), every mark the glyph set's.
 use crate::app::{App, Item, Mode, NoteKind, Section, Tab, Tone};
+use crate::keys::Action;
 use crate::review::{self, Checks, Kind, Note, Row};
 use crate::settings::{Column, Density};
 use crate::syntax::{Highlights, Source, Token};
@@ -72,8 +73,21 @@ fn chain_cards(steps: &StepCards) -> Vec<&StepCard> {
         .collect()
 }
 
-/// "Plan ✓ · Build ◐ 4m 12s · Checks · Ready": the chain's steps (a "Just code" chain has no Plan or Approval).
-fn step_line(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
+/// A step's time on the strip: "42s", "4m", "1h 05m".
+pub fn short_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// The step strip in a panel's header, "Plan ✓ · Build ◐ 4m · Checks · Review (codex)": the chain's steps from the
+/// task's step cards (a "Just code" chain has no Plan or Approval), the running one's time ticking with the clock.
+pub fn strip(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
     let full = step_line_with(app, steps, true);
     if full.width() <= w {
         return full;
@@ -82,7 +96,7 @@ fn step_line(app: &App, steps: &StepCards, w: usize) -> Line<'static> {
 }
 
 fn step_line_with(app: &App, steps: &StepCards, times: bool) -> Line<'static> {
-    let mut spans = vec![Span::styled("Steps  ", dim())];
+    let mut spans = vec![];
     for (i, card) in chain_cards(steps).into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" · ", dim()));
@@ -98,7 +112,7 @@ fn step_line_with(app: &App, steps: &StepCards, times: bool) -> Line<'static> {
         if card.mark == "live" && times {
             if let Some(start) = card.started_at.as_deref().and_then(epoch) {
                 spans.push(Span::styled(
-                    format!(" {}", duration(app.now - start)),
+                    format!(" {}", short_duration(app.now - start)),
                     dim(),
                 ));
             }
@@ -168,6 +182,7 @@ fn fit_line(line: Line<'static>, w: usize) -> Line<'static> {
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     crate::theme::set_look(app.prefs.theme, app.prefs.settings.glyphs);
+    app.areas.links.clear();
     // On screen this frame only if draw_terminal draws it, and no dialog is drawn over it.
     if let Some(pane) = app.term.as_mut() {
         pane.drawn = false;
@@ -175,10 +190,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_frame(f, app);
     let dialog = !matches!(
         app.mode,
-        Mode::Normal | Mode::TakeOver | Mode::Steer(_) | Mode::NewTask(_) | Mode::Note(..)
+        Mode::Normal | Mode::TakeOver | Mode::Steer(_) | Mode::NewTask(..) | Mode::Note(..)
     );
     if let Some(pane) = app.term.as_mut().filter(|_| dialog) {
         pane.drawn = false;
+    }
+    // A dialog may be drawn over a link's words: nothing is made clickable under it.
+    if dialog {
+        app.areas.links.clear();
     }
     // Typing stops when its terminal isn't on screen; t starts it again once it is.
     if app.mode == Mode::TakeOver && !app.term.as_ref().is_some_and(|p| p.drawn) {
@@ -214,6 +233,22 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     } else {
         format!(" · {}", app.project_name)
     };
+    // The cost line, before what needs you: "$1.84 today · plan 62%" (show-costs = false hides it), when there's room.
+    let cost = cost_line(app)
+        .filter(|c| width(c) + width(&title_right) + width(&name) + 20 <= area.width as usize);
+    let mut right = vec![Span::raw(" ")];
+    if let Some(c) = cost {
+        right.push(Span::styled(c, dim()));
+        right.push(Span::styled(" · ", dim()));
+    }
+    right.push(Span::styled(
+        format!("{title_right} "),
+        if app.needs_count > 0 {
+            needs_you()
+        } else {
+            dim()
+        },
+    ));
     let outer = Block::default()
         .borders(Borders::ALL)
         .style(base())
@@ -225,17 +260,7 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
                 fit(&name, (area.width as usize).saturating_sub(24))
             )),
         ]))
-        .title(
-            Line::from(Span::styled(
-                format!(" {title_right} "),
-                if app.needs_count > 0 {
-                    needs_you()
-                } else {
-                    dim()
-                },
-            ))
-            .right_aligned(),
-        );
+        .title(Line::from(right).right_aligned());
     let inner = outer.inner(area);
     f.render_widget(outer, area);
     if inner.height < 4 || inner.width < 30 {
@@ -268,7 +293,18 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         ]),
         sep,
     );
-    draw_right(f, app, right);
+    // One panel, or two to four (panes.rs): the focused one is the workbench's own, the others watch their tasks.
+    let layout = app.panes.layout;
+    let places = crate::panes::places(layout, right);
+    app.panes.areas = places.clone();
+    crate::panes::draw_rules(f, layout, right);
+    for (slot, place) in places.iter().enumerate() {
+        if slot == app.panes.focus {
+            draw_right(f, app, *place);
+        } else {
+            crate::panes::draw_watch(f, app, slot, *place);
+        }
+    }
     draw_status(f, app, status);
     if app.prefs.settings.key_bar {
         draw_keys(f, app, keys);
@@ -276,12 +312,41 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
     draw_overlay(f, app, area);
 }
 
+/// "$1.84 today · plan 62%": what the console says today's work cost and how full the plan is (None: costs hidden,
+/// or the console doesn't say).
+pub fn cost_line(app: &App) -> Option<String> {
+    if !app.prefs.settings.show_costs {
+        return None;
+    }
+    let spend = app.spend.as_ref()?;
+    let mut out = format!("${:.2} today", spend.today_usd.max(0.0));
+    if let Some(p) = spend.plan_percent {
+        out.push_str(&format!(" · plan {}%", p.clamp(0, 100)));
+    }
+    Some(out)
+}
+
 fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     app.areas.list = area;
     app.areas.rows.clear();
     let mut lines: Vec<(Line<'static>, Option<usize>)> = vec![];
+    // The filter in use, said once at the top (the palette changes it).
+    if let Some(words) = app.filter.words() {
+        lines.push((
+            Line::from(vec![
+                Span::styled("Showing: ", dim()),
+                Span::styled(fit(&words, (area.width as usize).saturating_sub(9)), ink()),
+            ]),
+            None,
+        ));
+    }
     if app.loaded && app.items.is_empty() {
-        lines.push((Line::from(Span::styled("Nothing yet.", dim())), None));
+        let words = if app.all_items.is_empty() {
+            "Nothing yet."
+        } else {
+            "Nothing here. : changes the filter."
+        };
+        lines.push((Line::from(Span::styled(words, dim())), None));
     }
     let mut last: Option<Section> = None;
     let w = area.width as usize;
@@ -441,15 +506,22 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         .unwrap_or(0);
     let input = matches!(
         app.mode,
-        Mode::Steer(_) | Mode::Note(..) | Mode::NewTask(_) | Mode::NewThread(_)
+        Mode::Steer(_) | Mode::Note(..) | Mode::NewTask(..) | Mode::NewThread(_)
     );
-    let [tabs, head, content, qa, steps_row, input_row] = Layout::vertical([
+    // New task says where it goes and how it will be filed on a line of its own, above what is typed.
+    let input_h = match app.mode {
+        Mode::NewTask(..) => 2,
+        _ if input => 1,
+        _ => 0,
+    };
+    // The header: the task, what runs it, and its step strip (when its steps are read).
+    let head_h = if app.steps.is_some() { 3 } else { 2 };
+    let [tabs, head, content, qa, input_row] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(2),
+        Constraint::Length(head_h),
         Constraint::Min(1),
         Constraint::Length(q_lines),
-        Constraint::Length(1),
-        Constraint::Length(if input { 1 } else { 0 }),
+        Constraint::Length(input_h),
     ])
     .areas(area);
     // Tabs.
@@ -504,17 +576,32 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(Paragraph::new(lines), content);
         return;
     };
-    // Head: the task, then what's running it.
-    let mut head_lines = vec![Line::from(Span::styled(
-        fit(&item.title, head.width as usize),
-        ink(),
-    ))];
+    // Head: the task (a link to its page in the console, ours: link.rs), what's running it, and its step strip.
+    let title = fit(&item.title, head.width as usize);
+    if item.is_task {
+        if let Some(url) = app
+            .origin
+            .as_deref()
+            .and_then(|o| crate::link::task_url(o, &item.id))
+        {
+            app.areas.links.push(crate::link::LinkArea {
+                x: head.x,
+                y: head.y,
+                width: (width(&title) as u16).min(head.width),
+                url,
+            });
+        }
+    }
+    let mut head_lines = vec![Line::from(Span::styled(title, ink()))];
     match app.steps.as_ref().and_then(|s| facts_line(app, s)) {
         Some(l) => head_lines.push(fit_line(l, head.width as usize)),
         None => head_lines.push(Line::from(Span::styled(
             fit(&item.detail, head.width as usize),
             dim(),
         ))),
+    }
+    if let Some(steps) = &app.steps {
+        head_lines.push(strip(app, steps, head.width as usize));
     }
     f.render_widget(Paragraph::new(head_lines), head);
     match app.tab {
@@ -550,12 +637,6 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::raw(""));
         f.render_widget(Paragraph::new(lines), qa);
     }
-    if let Some(steps) = &app.steps {
-        f.render_widget(
-            Paragraph::new(step_line(app, steps, steps_row.width as usize)),
-            steps_row,
-        );
-    }
     if input {
         let note_label: String;
         let (label, text) = match &app.mode {
@@ -572,9 +653,21 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
                 note_label = format!("Note on {}: ", fit(&place, 48));
                 (note_label.as_str(), t)
             }
-            Mode::NewTask(t) => ("New task: ", t),
+            Mode::NewTask(t, _) => ("New task: ", t),
             Mode::NewThread(t) => ("New thread: ", t),
             _ => unreachable!(),
+        };
+        // New task: where it goes, to whom, and how Enter files it, on the line above.
+        let input_row = if let Mode::NewTask(_, plan) = &app.mode {
+            let [hint, typed] =
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(input_row);
+            f.render_widget(
+                Paragraph::new(new_task_hint(app, *plan, hint.width as usize)),
+                hint,
+            );
+            typed
+        } else {
+            input_row
         };
         // The end of what's typed stays in view.
         let room = (input_row.width as usize).saturating_sub(width(label) + 1);
@@ -597,6 +690,37 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
             input_row,
         );
     }
+}
+
+/// New task's line: "In shop · to Claude Code · ⏎ Just code · Tab plan first" (or, with Tab, the other way round).
+fn new_task_hint(app: &App, plan: bool, w: usize) -> Line<'static> {
+    let project = app
+        .project
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .map(|n| clean(&n.to_string_lossy()))
+        .unwrap_or_else(|| "no project".into());
+    let agent = app
+        .agents
+        .as_ref()
+        .and_then(|a| a.first_task.as_ref())
+        .map(|t| clean(&t.name));
+    let enter = marks().enter;
+    let mut spans = vec![Span::styled("In ", dim()), Span::styled(project, ink())];
+    if let Some(agent) = agent {
+        spans.push(Span::styled(" · to ", dim()));
+        spans.push(Span::styled(agent, ink()));
+    }
+    spans.push(Span::styled(" · ", dim()));
+    if plan {
+        spans.push(Span::styled(format!("{enter} Plan first"), ink()));
+        spans.push(Span::styled(" · Tab: Just code", dim()));
+    } else {
+        spans.push(Span::styled(format!("{enter} Just code"), ink()));
+        spans.push(Span::styled(" · Tab or Shift-", dim()));
+        spans.push(Span::styled(format!("{enter} Plan first"), dim()));
+    }
+    fit_line(Line::from(spans), w)
 }
 
 fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
@@ -1231,53 +1355,73 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-const KEYS: &[(&str, &str)] = &[
-    ("j/k", "move"),
-    ("Enter", "open"),
-    ("s", "steer"),
-    ("p", "pause"),
-    ("x", "stop"),
-    ("1-9", "answer"),
-    ("a", "accept"),
-    ("r", "send back"),
-    ("t", "take over"),
-    ("n", "new"),
-    ("w", "browser"),
-    ("?", "help"),
-    ("q", "quit"),
-];
-
-/// The Terminal tab's keys while not typing in it.
-const TERMINAL_KEYS: &[(&str, &str)] = &[
-    ("t", "type in it"),
-    ("PgUp/PgDn", "scroll"),
-    ("y", "copy"),
-    ("j/k", "task"),
-    ("Tab", "next tab"),
-    ("w", "browser"),
-    ("?", "help"),
-    ("q", "quit"),
-];
-
-/// While typing in the terminal: one way back.
+/// While typing in the terminal: one way back (Ctrl-] is never remapped).
 const TYPING_KEY: (&str, &str) = ("Ctrl-]", "back to the workbench");
 
-/// The Diff tab's keys: moving through the changes, notes, more lines, the view, copy, and the acts.
-const DIFF_KEYS: &[(&str, &str)] = &[
-    ("j/k", "line"),
-    ("[ ]", "hunk"),
-    ("{ }", "file"),
-    ("c", "note"),
-    ("a", "accept"),
-    ("r", "send back"),
-    ("e/E", "more lines"),
-    ("v", "side by side"),
-    ("y", "copy"),
-    ("n/N", "notes"),
-    ("w", "browser"),
-    ("?", "help"),
-    ("q", "quit"),
-];
+/// An action's first key as the key bar and help say it ("⏎" for Enter, with the glyph set's mark).
+fn key_name(app: &App, action: Action) -> String {
+    let words = app.prefs.settings.keymap.key_words(action);
+    if words == "Enter" {
+        marks().enter.to_string()
+    } else {
+        words
+    }
+}
+
+/// One or two actions' keys as one name: "j/k", "PgUp/PgDn", "{/}".
+fn keys_name(app: &App, actions: &[Action]) -> String {
+    actions
+        .iter()
+        .map(|a| key_name(app, *a))
+        .filter(|k| !k.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The key bar: the five keys that matter most where the person is, then the palette, which has every other.
+fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
+    use Action::*;
+    let five: Vec<(&[Action], &'static str)> = match app.tab {
+        Tab::Diff if app.thread_selected().is_none() => vec![
+            (&[LineDown, LineUp], "line"),
+            (&[Note], "note"),
+            (&[Accept], "accept"),
+            (&[SendBack], "send back"),
+            (&[PreviousFile, NextFile], "file"),
+        ],
+        Tab::Terminal if app.pane_here().is_some() => vec![
+            (&[TakeOver], "type in it"),
+            (&[ScrollUp, ScrollDown], "scroll"),
+            (&[Copy], "copy"),
+            (&[MoveDown, MoveUp], "task"),
+            (&[NextTab], "next tab"),
+        ],
+        _ if app.panes.layout.count() > 1 => vec![
+            (&[MoveDown, MoveUp], "move"),
+            (&[NextPane], "next panel"),
+            (&[Open], "open"),
+            (&[Accept], "accept"),
+            (&[NewTask], "new"),
+        ],
+        _ => vec![
+            (&[MoveDown, MoveUp], "move"),
+            (&[Open], "open"),
+            (&[Steer], "steer"),
+            (&[Accept], "accept"),
+            (&[NewTask], "new"),
+        ],
+    };
+    let mut out: Vec<(String, &'static str)> = five
+        .into_iter()
+        .map(|(a, what)| (keys_name(app, a), what))
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    let palette = key_name(app, Palette);
+    if !palette.is_empty() {
+        out.push((palette, "all actions"));
+    }
+    out
+}
 
 fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
     if app.mode == Mode::TakeOver {
@@ -1288,13 +1432,9 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(line), area);
         return;
     }
-    let keys = match app.tab {
-        Tab::Diff => DIFF_KEYS,
-        Tab::Terminal if app.pane_here().is_some() => TERMINAL_KEYS,
-        _ => KEYS,
-    };
-    // Everything that fits, always ending with help and quit.
-    let render = |set: &[(&str, &str)]| -> (Vec<Span<'static>>, usize) {
+    let keys = bar_keys(app);
+    // Everything that fits, always ending with the palette.
+    let render = |set: &[(String, &str)]| -> (Vec<Span<'static>>, usize) {
         let mut spans = vec![];
         let mut w = 0;
         for (i, (k, what)) in set.iter().enumerate() {
@@ -1302,19 +1442,19 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::raw("  "));
                 w += 2;
             }
-            spans.push(Span::styled(k.to_string(), ink()));
+            spans.push(Span::styled(k.clone(), ink()));
             spans.push(Span::styled(format!(" {what}"), dim()));
             w += width(k) + 1 + width(what);
         }
         (spans, w)
     };
-    let mut keep = keys.len();
+    let last = keys.len().saturating_sub(1);
+    let mut keep = last;
     loop {
-        let mut set: Vec<(&str, &str)> = keys[..keep.min(keys.len() - 2)]
-            .iter()
-            .map(|&(k, what)| (if k == "Enter" { marks().enter } else { k }, what))
-            .collect();
-        set.extend_from_slice(&keys[keys.len() - 2..]);
+        let mut set: Vec<(String, &str)> = keys[..keep.min(last)].to_vec();
+        if let Some(l) = keys.get(last) {
+            set.push(l.clone());
+        }
         let (spans, w) = render(&set);
         if w <= area.width as usize || keep == 0 {
             f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1322,6 +1462,156 @@ fn draw_keys(f: &mut Frame, app: &App, area: Rect) {
         }
         keep -= 1;
     }
+}
+
+/// The help overlay's lines: the keys in use (tui.toml can change them), the Diff and Terminal tabs' own, and where
+/// every other action is.
+fn help_lines(app: &App) -> Vec<Line<'static>> {
+    use Action::*;
+    let rows: Vec<(String, &str)> = vec![
+        (
+            keys_name(app, &[MoveDown, MoveUp]),
+            "move up and down the list",
+        ),
+        (
+            key_name(app, Open),
+            "open: the changes for a result, else the live output",
+        ),
+        (
+            key_name(app, NextTab),
+            "next tab (Live, Steps, Diff, Terminal)",
+        ),
+        (key_name(app, Steer), "steer: send the running agent a note"),
+        (key_name(app, Pause), "pause the build (again to resume)"),
+        (key_name(app, Stop), "stop the build"),
+        ("1-9".into(), "answer the agent's question"),
+        (key_name(app, Accept), "accept the result"),
+        (key_name(app, SendBack), "send the result back, with a note"),
+        (
+            key_name(app, TakeOver),
+            "take over: type in a terminal on the latest build (Ctrl-] back)",
+        ),
+        (
+            key_name(app, NewTask),
+            "new task (Enter: Just code, Tab: plan first)",
+        ),
+        (
+            key_name(app, NextNeedsYou),
+            "next thing that needs you, oldest first",
+        ),
+        (
+            keys_name(app, &[Layout, NextPane]),
+            "split the screen; next panel",
+        ),
+        (
+            keys_name(app, &[ScrollUp, ScrollDown]),
+            "scroll; End follows the newest",
+        ),
+        (key_name(app, Browser), "open Toolroll in your browser"),
+        (key_name(app, Quit), "quit"),
+    ];
+    let mut lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .filter(|(k, _)| !k.is_empty())
+        .map(|(k, what)| {
+            Line::from(vec![
+                Span::styled(format!("{k:<13}"), ink()),
+                Span::raw(what.to_string()),
+            ])
+        })
+        .collect();
+    lines.push(Line::raw(""));
+    lines.push(Line::raw(format!(
+        "In Diff: {} a line  {} a hunk  {} a file  {} a note  {} more lines  {} side by side  {} copy",
+        keys_name(app, &[LineDown, LineUp]),
+        keys_name(app, &[PreviousHunk, NextHunk]),
+        keys_name(app, &[PreviousFile, NextFile]),
+        key_name(app, Note),
+        keys_name(app, &[MoreAbove, MoreBelow]),
+        key_name(app, SideBySide),
+        key_name(app, Copy),
+    )));
+    lines.push(Line::raw(format!(
+        "In Terminal: {} types in it  {} scroll back  {} copy",
+        key_name(app, TakeOver),
+        keys_name(app, &[ScrollUp, ScrollDown]),
+        key_name(app, Copy),
+    )));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<13}", key_name(app, Palette)), ink()),
+        Span::raw("every action, task, project and setting"),
+    ]));
+    lines.push(Line::raw(format!(
+        "Keys: the {} preset; change them in tui.toml under [keys].",
+        app.prefs.settings.keymap.preset.key()
+    )));
+    lines.push(Line::raw(
+        "Mouse: click to select, wheel to scroll, drag the divider.",
+    ));
+    lines.push(Line::raw("Press s for settings, any other key to close."));
+    lines
+}
+
+/// The palette: what is typed, then the matching lines (kind, words, key), the picked one marked.
+fn palette_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
+    let Mode::Palette(p) = &app.mode else {
+        return vec![];
+    };
+    let w = (area.width as usize).saturating_sub(8).clamp(24, 76);
+    let rows = (area.height as usize).saturating_sub(8).clamp(3, 14);
+    let found = crate::palette::matches(app, &p.query);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(": ", ink()),
+        Span::raw(fit(&p.query, w.saturating_sub(4))),
+        Span::styled("▏", ink()),
+    ])];
+    lines.push(Line::raw(""));
+    if found.is_empty() {
+        lines.push(Line::from(Span::styled("Nothing matches.", dim())));
+    }
+    // A window of the matches that keeps the picked one in it.
+    let top = p.selected.saturating_sub(rows.saturating_sub(1));
+    for (i, e) in found.iter().enumerate().skip(top).take(rows) {
+        let here = i == p.selected;
+        let kind = format!("{:<10}", e.kind);
+        let key = if e.key.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "  {}",
+                if e.key == "Enter" {
+                    marks().enter.to_string()
+                } else {
+                    e.key.clone()
+                }
+            )
+        };
+        let room = w.saturating_sub(10 + width(&key));
+        let label = fit(&e.label, room);
+        let gap = room.saturating_sub(width(&label));
+        let row = if here { selected() } else { Style::default() };
+        lines.push(Line::from(vec![
+            Span::styled(kind, if here { row } else { dim() }),
+            Span::styled(label, row),
+            Span::styled(" ".repeat(gap), row),
+            Span::styled(key, if here { row } else { ink() }),
+        ]));
+    }
+    if found.len() > rows {
+        lines.push(Line::from(Span::styled(
+            format!("{} matches · Up and Down move", found.len()),
+            dim(),
+        )));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{}  ", marks().enter), ink()),
+        Span::raw("runs it, as its key would   "),
+        Span::styled("Esc  ", ink()),
+        Span::raw("closes"),
+    ]));
+    lines
 }
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
@@ -1337,39 +1627,8 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 
 fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
-        Mode::Help => (
-            " Keys ",
-            vec![
-                "j / k        move up and down the list",
-                "Enter        open: the changes for a result, else the live output",
-                "Tab          next tab (Live, Steps, Diff, Terminal)",
-                "s            steer: send the running agent a note",
-                "p            pause the build (again to resume)",
-                "x            stop the build",
-                "1-9          answer the agent's question",
-                "a            accept the result",
-                "r            send the result back, with a note",
-                "t            take over: type in a terminal on the latest build (Ctrl-] back)",
-                "PgUp PgDn    scroll; End follows the newest",
-                "",
-                "In Diff: j/k a line  [ ] a hunk  { } a file  n/N a note",
-                "  c          a note on the line or hunk (kept here until you send)",
-                "  e / E      more lines above / below the hunk",
-                "  v          side by side (on a wide window)",
-                "  y          copy the hunk to your terminal's scrollback",
-                "  r          send back with your notes;  a  accept (t attaches them)",
-                "In Terminal: t types in it  PgUp/PgDn scroll back  y copy",
-                "n            new task",
-                "w            open Toolroll in your browser",
-                "q            quit",
-                "",
-                "Mouse: click to select, wheel to scroll, drag the divider.",
-                "Press s for settings, any other key to close.",
-            ]
-            .into_iter()
-            .map(Line::raw)
-            .collect(),
-        ),
+        Mode::Help => (" Keys ", help_lines(app)),
+        Mode::Palette(_) => (" Commands ", palette_lines(app, area)),
         Mode::Settings => (
             " Settings ",
             app.prefs
@@ -1468,6 +1727,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } => return draw_build(f, app, area),
+        Mode::StartThread(_) => return crate::thread::draw_start(f, app, area),
         Mode::ConfirmThread(_) => match crate::thread::confirm_lines(app, area) {
             Some(shown) => shown,
             None => return,

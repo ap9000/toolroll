@@ -23,6 +23,10 @@
 //!
 //! [colors]                    # any role: paper, ink, muted, line, selection, selection-ink,
 //! running = "#5aa9ff"         # needs-you, running, passed, failed
+//!
+//! [keys]                      # keys.rs: a preset, then any action's keys
+//! preset = "default"          # default | vim | emacs
+//! accept = "a"                # one key, or a list: palette = [":", "ctrl-k"]
 //! ```
 use crate::notify::Reach;
 use crate::text::{clean, fit};
@@ -100,6 +104,8 @@ pub struct Settings {
     pub tmux_passthrough: bool,
     /// Role colours, in the file's order.
     pub colors: Vec<(Role, Rgb)>,
+    /// The keymap: a preset and the file's own keys (keys.rs).
+    pub keymap: crate::keys::Keymap,
 }
 
 impl Settings {
@@ -138,6 +144,7 @@ impl Default for Settings {
             reduced_motion: false,
             tmux_passthrough: false,
             colors: vec![],
+            keymap: crate::keys::Keymap::default(),
         }
     }
 }
@@ -333,6 +340,8 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
     let mut s = Settings::default();
     let (entries, mut warnings) = entries(text);
     let mut seen: Vec<(String, String)> = vec![];
+    let mut preset: Option<(usize, crate::keys::Written)> = None;
+    let mut overrides: Vec<(usize, String, crate::keys::Written)> = vec![];
     for (n, section, key, v) in entries {
         let section = if section == "colours" {
             "colors".to_string()
@@ -416,6 +425,18 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
                     "[\"step\"]",
                 ),
             },
+            ("keys", name) => {
+                let written = match &v {
+                    Value::Str(k) => crate::keys::Written::Keys(vec![k.clone()]),
+                    Value::List(l) => crate::keys::Written::Keys(l.clone()),
+                    other => crate::keys::Written::Bad(other.shown()),
+                };
+                if name == "preset" {
+                    preset = Some((n, written));
+                } else {
+                    overrides.push((n, name.to_string(), written));
+                }
+            }
             ("notifications", "asks") => flag(&mut warnings, &mut s.notify.asks),
             ("notifications", "finished") => flag(&mut warnings, &mut s.notify.finished),
             ("notifications", "failed") => flag(&mut warnings, &mut s.notify.failed),
@@ -446,6 +467,9 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
             }
         }
     }
+    let (keymap, key_warnings) = crate::keys::Keymap::build(preset, &overrides);
+    s.keymap = keymap;
+    warnings.extend(key_warnings);
     (s, warnings)
 }
 
@@ -477,6 +501,8 @@ fn known(name: &str) -> bool {
 pub struct Env {
     pub home: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
+    /// Where the workbench keeps where you left off (state.rs).
+    pub xdg_state_home: Option<PathBuf>,
     pub no_color: bool,
     pub colorterm: Option<String>,
     pub term: Option<String>,
@@ -492,6 +518,7 @@ impl Env {
         Env {
             home: var("HOME").map(PathBuf::from),
             xdg_config_home: var("XDG_CONFIG_HOME").map(PathBuf::from),
+            xdg_state_home: var("XDG_STATE_HOME").map(PathBuf::from),
             no_color: var("NO_COLOR").is_some(),
             colorterm: var("COLORTERM"),
             term: var("TERM"),
@@ -836,6 +863,20 @@ impl Prefs {
             ),
             ("Columns", columns),
             ("Glyphs", s.glyphs.key().to_string()),
+            ("Keys", {
+                let changed = crate::keys::SPECS
+                    .iter()
+                    .filter(|sp| {
+                        s.keymap.keys_of(sp.action)
+                            != crate::keys::Keymap::preset(s.keymap.preset).keys_of(sp.action)
+                    })
+                    .count();
+                match changed {
+                    0 => format!("{} preset", s.keymap.preset.key()),
+                    1 => format!("{} preset, 1 key changed", s.keymap.preset.key()),
+                    c => format!("{} preset, {c} keys changed", s.keymap.preset.key()),
+                }
+            }),
             (
                 "Notify",
                 format!(
@@ -900,6 +941,15 @@ impl RowFacts {
         else {
             return;
         };
+        // The task's cost: every step of its chain that recorded one (plan, build, review), together.
+        let costs: Vec<f64> = steps
+            .cards
+            .iter()
+            .flatten()
+            .filter(|c| c.in_chain)
+            .filter_map(|c| c.cost_usd)
+            .collect();
+        let cost = (!costs.is_empty()).then(|| costs.iter().sum::<f64>());
         let agent = card.agent.as_ref().map(|a| {
             clean(&format!(
                 "{} {}",
@@ -912,7 +962,7 @@ impl RowFacts {
         if self.0.len() > 4096 {
             self.0.clear();
         }
-        self.0.insert(steps.task.id.clone(), (agent, card.cost_usd));
+        self.0.insert(steps.task.id.clone(), (agent, cost));
     }
 
     pub fn agent(&self, task: &str) -> Option<&str> {
@@ -988,6 +1038,11 @@ running = "#5aa9ff"
             }
         );
         assert_eq!(s.colors, vec![(Role::Running, Rgb(0x5a, 0xa9, 0xff))]);
+        // The keymap: a preset and an action's own keys (keys.rs holds its rules).
+        let (s, w) = parse("[keys]\npreset = \"emacs\"\naccept = [\"A\", \"a\"]\nkeys.stop = 3");
+        assert_eq!(s.keymap.preset, crate::keys::Preset::Emacs);
+        assert_eq!(s.keymap.all_words(crate::keys::Action::Accept), "A, a");
+        assert_eq!(w.len(), 1, "{w:?}");
         // Dotted keys work too.
         let (s, w) = parse("notifications.finished = true\ncolors.failed = \"#f00\"");
         assert!(w.is_empty() && s.notify.finished);
