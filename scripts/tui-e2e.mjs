@@ -175,7 +175,8 @@ async function main() {
   execFileSync("git", ["-C", shop, "commit", "-qm", "First version"], { env: gitEnv });
 
   // The model, scripted: the build of TASK writes subtract and its test.
-  const provider = scriptedProvider(join(out, "provider"));
+  // The world's own home is where a fenced build keeps its journal (its project's build cache folder), not this process's.
+  const provider = scriptedProvider(join(out, "provider"), { homes: [home] });
   provider.add("tui", { role: "builder", when: [/subtract\(a, b\)/], answer: {
     files: { "src/math.js": "export const add = (a, b) => a + b;\nexport const subtract = (a, b) => a - b;\n",
       "test/math.test.js": files["test/math.test.js"].replace("import { add }", "import { add, subtract }") + "test('subtracts', () => assert.equal(subtract(5, 2), 3));\n" },

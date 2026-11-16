@@ -90,18 +90,22 @@ function inPlace(dir, write) {
   }
 }
 const record = (dir, entry) => inPlace(dir, base => appendFileSync(join(base, JOURNAL), `${JSON.stringify(entry)}\n`));
-/** Every spool of this world there now. */
-function spools(dir) {
-  const root = buildCacheRoot();
-  let projects = [];
-  try { projects = readdirSync(root); } catch { return []; }
-  return projects.map(one => join(root, one, spoolName(dir))).filter(path => existsSync(path));
+/** Every spool of this world there now: under this process's home and each home the world's children run with (a
+ * journey that gives its children a home of their own without replacing this process's, as tui-e2e.mjs does). */
+function spools(dir, homes = []) {
+  const found = [];
+  for (const root of [...new Set([buildCacheRoot(), ...homes.map(home => buildCacheRoot(home))])]) {
+    let projects = [];
+    try { projects = readdirSync(root); } catch { continue; }
+    found.push(...projects.map(one => join(root, one, spoolName(dir))).filter(path => existsSync(path)));
+  }
+  return found;
 }
 /** A world's journal: its own and its spools', each complete line once, in the order the world first read it. */
-function journalOf(dir) {
+function journalOf(dir, homes = []) {
   const seen = new Set(), entries = [];
   return () => {
-    for (const base of [dir, ...spools(dir)]) {
+    for (const base of [dir, ...spools(dir, homes)]) {
       let text = "";
       try { text = readFileSync(join(base, JOURNAL), "utf8"); } catch { continue; }
       const lines = text.split("\n");
@@ -117,8 +121,8 @@ function journalOf(dir) {
   };
 }
 /** Remove this world's spools once it's done (a crash leaves only a small folder in a cache). */
-function removeSpoolsOnExit(dir) {
-  process.on("exit", () => { for (const spool of spools(dir)) { try { rmSync(spool, { recursive: true, force: true }); } catch { /* left */ } } });
+function removeSpoolsOnExit(dir, homes = []) {
+  process.on("exit", () => { for (const spool of spools(dir, homes)) { try { rmSync(spool, { recursive: true, force: true }); } catch { /* left */ } } });
 }
 
 // ------------------------------------------------------------------ for the journeys
@@ -143,8 +147,9 @@ export function which(name, path = process.env.PATH ?? "", skip = []) {
   return null;
 }
 
-/** The world's scripted provider, in `dir`: `bin` goes first on the PATH; `add` scripts answers for a journey. */
-export function scriptedProvider(dir) {
+/** The world's scripted provider, in `dir`: `bin` goes first on the PATH; `add` scripts answers for a journey. `homes`:
+ * the homes its children run with, when they aren't this process's own (where a fenced build's spool is kept). */
+export function scriptedProvider(dir, { homes = [] } = {}) {
   const bin = join(dir, "bin");
   mkdirSync(bin, { recursive: true }); mkdirSync(join(dir, USED), { recursive: true });
   const rules = [];
@@ -165,7 +170,7 @@ export function scriptedProvider(dir) {
       save();
       return ids;
     },
-    journal: (removeSpoolsOnExit(dir), journalOf(dir)),
+    journal: (removeSpoolsOnExit(dir, homes), journalOf(dir, homes)),
   };
 }
 
