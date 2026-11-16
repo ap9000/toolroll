@@ -297,6 +297,12 @@ pub enum Mode {
     ConfirmHold {
         task: String,
     },
+    /// Resume a task this person stopped retrying: the hold shown (its id), released only while it still stands
+    /// (POST /t/<task>/unhold `hold`, proved where it is released).
+    ConfirmResume {
+        task: String,
+        hold: i64,
+    },
     /// Cancel a task: the state and latest build shown (`run`: None for no build), posted as pins the cancel proves.
     ConfirmCancel {
         task: String,
@@ -383,6 +389,22 @@ pub const TYPING_AGENT: &str =
     "Typing in the agent's own sign-in. Ctrl-] comes back; Toolroll never reads what it saves.";
 pub const TYPING: &str =
     "Typing in a separate copy of the build. Your shell's own startup files run in it.";
+/// What Esc on a dialog that changes a task says: nothing was sent.
+pub const NOTHING_CHANGED: &str = "Nothing changed.";
+/// The reason the workbench's Stop retrying gives its hold (and how it knows a hold is that one).
+pub const HOLD_REASON: &str = "stopped retrying from the terminal";
+
+/// A task's current build: its newest build attempt (the build card's newest run), the one every surface names.
+pub fn current_build_of(steps: &StepCards) -> Option<i64> {
+    steps
+        .cards
+        .iter()
+        .flatten()
+        .find(|c| c.key == "build")
+        .and_then(|c| c.runs.first().copied())
+        .or(steps.live_run)
+}
+
 /// How long a status said in answer to the person is held against background reads (status_held).
 pub const STATUS_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
 /// Said when Ctrl-] leaves the terminal.
@@ -556,6 +578,8 @@ pub struct ContextAsk {
 }
 
 /// An engine answer or signal, as the loop hands it over.
+// A read's answer is moved once, from the loop to `update`: boxing each would only add an allocation per read.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Msg {
     Work(Result<WorkRows, ApiError>),
@@ -708,6 +732,8 @@ pub struct App {
     pub utc_offset_secs: i64,
     /// When the status line was last said, and whether a key came since (status_held).
     pub said_at: Option<std::time::Instant>,
+    /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
+    pub said_for: Option<(String, Option<String>)>,
     pub key_since_said: bool,
     /// The Settings screen's chosen row (settings.rs Choice::ALL).
     pub settings_row: usize,
@@ -796,6 +822,7 @@ impl App {
             agents_screen: None,
             utc_offset_secs: 0,
             said_at: None,
+            said_for: None,
             key_since_said: true,
             settings_row: 0,
             build_unfold: false,
@@ -835,10 +862,22 @@ impl App {
             .filter(|s| s.task.id == task || s.task.root == task)
     }
 
-    /// The selected task is queued with nothing building: waiting for a builder, or to try again.
+    /// The selected task is queued with nothing building and no person's hold: waiting for a builder, or to try again.
     pub fn queued_here(&self) -> bool {
         self.steps_here()
-            .is_some_and(|s| s.task.state == "queued" && s.live_run.is_none())
+            .is_some_and(|s| s.task.state == "queued" && s.live_run.is_none() && s.held.is_none())
+    }
+
+    /// The person's hold on the selected task (Stop retrying, or the task page's hold), when one stands.
+    pub fn held_here(&self) -> Option<&toolroll_api::TaskHold> {
+        self.steps_here()
+            .filter(|s| s.live_run.is_none())
+            .and_then(|s| s.held.as_ref())
+    }
+
+    /// The selected task's current build: its newest build attempt, the one the header, Steps and list name.
+    pub fn current_build(&self) -> Option<i64> {
+        current_build_of(self.steps_here()?)
     }
 
     /// What Cancel shows and pins for the selected task: its id, title, state and latest build (any step's newest run).
@@ -893,6 +932,34 @@ impl App {
         self.status = Some((tone, clean(&words.into())));
         self.said_at = Some(std::time::Instant::now());
         self.key_since_said = false;
+        // Which task it was said about, in which state: words about an old state go once it moves on.
+        self.said_for = self.selected_id().map(|id| {
+            let state = self
+                .steps_here()
+                .map(|s| s.task.state.clone())
+                .filter(|_| self.steps_here().is_some_and(|s| s.task.id == id));
+            (id, state)
+        });
+    }
+
+    /// A task's steps arrived: when it is the task the status line spoke about and its state moved on from the one it
+    /// spoke in ("Building it." once it failed), the line goes, unless it is held (said just now, no key since).
+    fn status_follows(&mut self, steps: &StepCards) {
+        let Some((id, said_in)) = self.said_for.clone() else {
+            return;
+        };
+        if id != steps.task.id || self.status.is_none() || self.status_held() {
+            return;
+        }
+        let moved = match said_in {
+            Some(state) => state != steps.task.state,
+            // Said before its steps were read: only a final state is plainly news after it.
+            None => matches!(steps.task.state.as_str(), "failed" | "done" | "cancelled"),
+        };
+        if moved {
+            self.status = None;
+            self.said_for = None;
+        }
     }
 
     /// What was just said in answer to the person ("Back to the workbench") is held: until their next key, and for at
@@ -965,6 +1032,17 @@ impl App {
                 }
                 let before = self.transcript_run();
                 self.facts.learn(&steps);
+                self.status_follows(&steps);
+                // The list says what the newest read says about this task's wait (held: none; due: the new time).
+                let wait = steps.waiting.as_ref().map(|w| w.facts());
+                for i in self
+                    .all_items
+                    .iter_mut()
+                    .chain(self.items.iter_mut())
+                    .filter(|i| i.id == steps.task.id || i.id == steps.task.root)
+                {
+                    i.waiting = wait.clone();
+                }
                 self.steps = Some(steps);
                 self.check_pins();
                 let mut fx = vec![];
@@ -1765,7 +1843,17 @@ impl App {
                 match key.code {
                     KeyCode::Enter => self.hold(task),
                     _ => {
-                        self.say(Tone::Said, "It keeps retrying.");
+                        self.say(Tone::Said, NOTHING_CHANGED);
+                        vec![]
+                    }
+                }
+            }
+            Mode::ConfirmResume { task, hold } => {
+                self.mode = Mode::Normal;
+                match key.code {
+                    KeyCode::Enter => self.resume_hold(task, hold),
+                    _ => {
+                        self.say(Tone::Said, NOTHING_CHANGED);
                         vec![]
                     }
                 }
@@ -1777,7 +1865,7 @@ impl App {
                 match key.code {
                     KeyCode::Enter => self.cancel(task, state, run),
                     _ => {
-                        self.say(Tone::Said, "Not cancelled.");
+                        self.say(Tone::Said, NOTHING_CHANGED);
                         vec![]
                     }
                 }
@@ -2323,6 +2411,8 @@ impl App {
                     self.mode = Mode::ConfirmStop(run);
                     vec![]
                 }
+                // Stopped retrying already: x resumes it (asked first).
+                None if self.held_here().is_some() => self.run_action(Action::Resume),
                 // Waiting to try again, or queued: stop retrying (it stays; nothing more runs).
                 None if self.queued_here() => {
                     let task = item.as_ref().map(|i| i.id.clone()).unwrap_or_default();
@@ -2335,6 +2425,20 @@ impl App {
                         Tone::Refused,
                         "Nothing is building or waiting on this task to stop.",
                     );
+                    vec![]
+                }
+            },
+            Action::Resume => match (item.as_ref(), self.held_here().map(|h| h.id)) {
+                (Some(i), Some(held)) => {
+                    self.status = None;
+                    self.mode = Mode::ConfirmResume {
+                        task: i.id.clone(),
+                        hold: held,
+                    };
+                    vec![]
+                }
+                _ => {
+                    self.say(Tone::Refused, "Nothing is on hold here to resume.");
                     vec![]
                 }
             },
@@ -3017,7 +3121,10 @@ impl App {
                 ("digest", digest),
                 ("return", "task".into()),
             ],
-            format!("Retrying build #{run}: it starts again under your approval."),
+            match self.current_build() {
+                Some(n) => format!("Retrying: a new build starts after build #{n}."),
+                None => "Retrying: a new build starts.".to_string(),
+            },
         )
     }
 
@@ -3031,10 +3138,39 @@ impl App {
             return vec![];
         }
         let path = format!("/t/{}/hold", toolroll_api::client::encode(&task));
+        // The countdown stops now (no try is coming), not at the next read; the act's answer reads the task again.
+        if let Some(steps) = self.steps.as_mut().filter(|s| s.task.id == task) {
+            steps.waiting = None;
+        }
+        if let Some(i) = self.all_items.iter_mut().find(|i| i.id == task) {
+            i.waiting = None;
+        }
+        if let Some(i) = self.items.iter_mut().find(|i| i.id == task) {
+            i.waiting = None;
+        }
         self.act(
             path,
-            vec![("reason", "stopped retrying from the terminal".into())],
+            vec![("reason", HOLD_REASON.into())],
             "Stopped retrying: it stays, and nothing more runs until you resume it.".into(),
+        )
+    }
+
+    /// Resume exactly the hold the dialog showed (POST /t/<task>/unhold `hold`: released only while it still stands).
+    fn resume_hold(&mut self, task: String, hold: i64) -> Vec<Effect> {
+        if self.selected_id().as_deref() != Some(task.as_str())
+            || self.held_here().map(|h| h.id) != Some(hold)
+        {
+            self.say(
+                Tone::Refused,
+                "This task changed — look again before resuming.",
+            );
+            return vec![];
+        }
+        let path = format!("/t/{}/unhold", toolroll_api::client::encode(&task));
+        self.act(
+            path,
+            vec![("hold", hold.to_string())],
+            "Resumed: it tries again when a builder is free.".into(),
         )
     }
 
@@ -3595,6 +3731,9 @@ pub fn items_of(rows: &WorkRows) -> Vec<Item> {
                 .clone()
                 .unwrap_or_else(|| ask_word(asks).unwrap_or(&r.word.word).to_string());
             needs.push(item(Section::NeedsYou, r, word));
+        } else if r.status.token == "cancelled" {
+            // Cancelled (or Replaced by …): its own words, never the stage's "Stopped".
+            rest.push(item(section, r, r.status.label.clone()));
         } else if r.waiting.is_some() {
             // One word while it waits to try again, whatever the status says from moment to moment.
             rest.push(item(section, r, "Waiting".into()));

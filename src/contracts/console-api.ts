@@ -273,6 +273,7 @@ export const CONSOLE_FORMS = {
   taskSteer: formContract("POST /t/<task>/steer", ["note", "return", "run", "key", "after", "request"]),
   taskReply: formContract("POST /t/<task>/reply", ["question", "answer"]),
   taskHold: formContract("POST /t/<task>/hold", ["reason"]),
+  taskUnhold: formContract("POST /t/<task>/unhold", ["hold"]),
   taskBlock: formContract("POST /t/<task>/block|unblock", ["on"]),
   taskRepairDependency: formContract("POST /t/<task>/repair-dependency", ["blocker", "operation", "replacement"]),
   taskNext: formContract("POST /t/<task>/next", ["undo"]),
@@ -309,7 +310,6 @@ export const BODILESS_POSTS = [
   "POST /settings/telegram/retry",
   "POST /providers/<provider>/resume",
   "POST /logout",
-  "POST /t/<task>/unhold",
   "POST /t/<task>/stop-carrying",
   "POST /t/<task>/retry-review",
   // Check now and its kin (docs/plans/get-side-effects.md): the form token only, no fields read.

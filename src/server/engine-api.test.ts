@@ -24,6 +24,7 @@ import * as fast from "../fast-start.js";
 import * as newTask from "./render-new-task.js";
 import * as mainRead from "../live-main-read.js";
 import { agentsReadSchema, engineContractDigest, helloSchema, linkRedemptionSchema, liveSessionWindowSchema, resultDiffContextSchema, resultDiffFileSchema, resultDiffSchema, stepCardsSchema, workRowsSchema } from "../contracts/engine-api.js";
+import { diagnoseTaskDispatch } from "../dispatch.js";
 
 // Every loader a spy around the real one: a refused caller must cause none of them.
 vi.mock("../engine-reads.js", async importOriginal => {
@@ -117,6 +118,8 @@ beforeAll(async () => {
     })();
     failRef = store.lookupRef("t-fail")!.id;
     store.finishRun(run, i === 1 ? { outcome: "built", committed: true, now: new Date() } as never : { outcome: "failed", reason: "retryable-infra", now: new Date() } as never);
+    // The engine's own count (claim.ts): a failure strikes, a success clears them.
+    if (i === 1) store.resetStrikes(failRef); else store.addStrike(failRef);
     const lease = store.handle.prepare("SELECT lease_id FROM claim WHERE task_ref = ?").get(failRef) as { lease_id?: string } | undefined;
     if (lease?.lease_id !== undefined) release(store, lease.lease_id, new Date());
   }
@@ -316,10 +319,10 @@ describe("every answer is its contract's shape", () => {
 
   test("a task waiting to try again says when and why, on its steps and its Work row; a build's own start is sent", async () => {
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-wait/steps")).body);
-    expect(steps.waiting).toEqual({ retryAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastFailure: "The agent's reply could not be read" });
+    expect(steps.waiting).toEqual({ retryAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastFailure: "The agent's reply could not be read", agentSaid: null });
     expect(Date.parse(steps.waiting!.retryAt!)).toBeGreaterThan(Date.now());
     const rows = workRowsSchema.parse((await read("operator", "/work/rows")).body);
-    expect(rows.rows.find(row => row.id === "t-wait")?.waiting).toEqual(steps.waiting);
+    expect(rows.rows.find(row => row.id === "t-wait")?.waiting).toEqual({ retryAt: steps.waiting!.retryAt, lastFailure: steps.waiting!.lastFailure });
     // Not waiting: a done task, a failed one.
     expect(rows.rows.find(row => row.id === "t-done")?.waiting).toBeNull();
     expect(stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body).waiting).toBeNull();
@@ -341,6 +344,32 @@ describe("every answer is its contract's shape", () => {
       const steps = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
       expect(steps.failure?.agentSaid).toEqual(["[path]: cannot read config", "claude: refusing to run a model"]);
     } finally { store.handle.prepare("UPDATE run SET agent_said_json = NULL WHERE id = ?").run(last.id); }
+  });
+
+  test("failures in a row count from the last success or the last person's Retry, as the engine counts them", async () => {
+    const before = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body).failure!;
+    expect(before.failedInARow).toBe(3);
+    // A person's Retry clears them (store.requeueTask), and the words count from there.
+    const ref = store.lookupRef("t-fail")!.id;
+    const strikes = Number(store.handle.prepare("SELECT strikes FROM task_ref WHERE id = ?").get(ref)?.["strikes"]);
+    store.resetStrikes(ref);
+    store.addStrike(ref);
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body).failure!.failedInARow).toBe(1);
+    store.handle.prepare("UPDATE task_ref SET strikes = ? WHERE id = ?").run(strikes, ref);
+  });
+
+  test("a cancelled task keeps its builds on its steps and ends Cancelled", async () => {
+    const run = started("t-gone", repoA, true);
+    store.finishRun(run, { outcome: "failed", reason: "agent-error", now: new Date() } as never);
+    const ref = store.lookupRef("t-gone")!.id;
+    const lease = store.handle.prepare("SELECT lease_id FROM claim WHERE task_ref = ?").get(ref) as { lease_id?: string } | undefined;
+    if (lease?.lease_id !== undefined) release(store, lease.lease_id, new Date());
+    store.setTaskState("t-gone", "queued", T0);
+    expect(store.cancelTask("t-gone", new Date())).toEqual({ ok: true });
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-gone/steps")).body);
+    expect(steps.headline).toBe("Cancelled");
+    expect(steps.cards?.map(card => [card.key, card.label, card.state])).toEqual([["build", "Build", "stuck"], ["ready", "Cancelled", "skipped"]]);
+    expect(steps.cards?.[0]?.runs).toEqual([run]);
   });
 
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {
@@ -447,10 +476,32 @@ describe("the local owner reads them with the session a terminal client redeems"
     const act = (path: string, fields: Record<string, string>) => world.send(path, "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded",
       "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf: body.csrf, ...fields }).toString());
     const ref = world.store.lookupRef("one")!.id;
-    // Stop retrying: an operator's hold, the task kept.
+    const get = async (path: string) => JSON.parse((await world.send(path, "GET", { cookie, accept: "application/json" })).body) as unknown;
+    // Waiting to try again (a backoff), then a person stops it: a person's hold, said everywhere at once.
+    world.store.holdOwned({ taskRef: ref, ownerKind: "backoff", ownerId: String(ref), reason: "retrying", until: new Date(Date.now() + 100_000) }, new Date());
     expect((await act("/t/one/hold", { reason: "stopped retrying from the terminal" })).status).toBe(303);
     expect(world.store.activeHolds(ref, new Date()).map(hold => hold.ownerKind)).toContain("operator");
     expect(world.store.getTask("one")?.state).toBe("queued");
+    const held = stepCardsSchema.parse(await get("/t/one/steps"));
+    const hold = world.store.activeHolds(ref, new Date()).find(one => one.ownerKind === "operator")!;
+    expect(held.held).toEqual({ id: hold.id, reason: "stopped retrying from the terminal", lastFailure: null });
+    // Never a next try while a person's hold stands: not on its steps, not on its Work row, not in task show's words.
+    expect(held.waiting).toBeNull();
+    const row = workRowsSchema.parse(await get("/work/rows")).rows.find(row => row.id === "one")!;
+    expect(row.waiting).toBeNull();
+    // The row says the person's hold, never the backoff under it.
+    expect(row.chip).toBe("On hold");
+    expect(diagnoseTaskDispatch(world.store, "one", new Date())).toMatchObject({ code: "held", summary: "On hold" });
+    // Resume: only the hold that was shown is released.
+    expect((await act("/t/one/unhold", { hold: String(hold.id + 1000) })).status).toBe(409);
+    expect((await act("/t/one/unhold", { hold: "x1" })).status).toBe(400);
+    expect(world.store.activeHolds(ref, new Date()).some(one => one.ownerKind === "operator")).toBe(true);
+    expect((await act("/t/one/unhold", { hold: String(hold.id) })).status).toBe(303);
+    expect(world.store.activeHolds(ref, new Date()).some(one => one.ownerKind === "operator")).toBe(false);
+    expect(stepCardsSchema.parse(await get("/t/one/steps")).held).toBeNull();
+    // Released, the backoff it was waiting out is what's left: waiting again, with its due time.
+    expect(stepCardsSchema.parse(await get("/t/one/steps")).waiting).toMatchObject({ retryAt: expect.any(String) });
+    world.store.releaseOwnedHold("backoff", String(ref));
     // Cancel: what was shown is proved; anything else cancels nothing.
     const stale = await act("/t/one/cancel", { state: "running", run: "none" });
     expect(stale.status).toBe(409);

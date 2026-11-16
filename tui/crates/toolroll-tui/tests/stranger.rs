@@ -153,6 +153,11 @@ fn failed_steps() -> Value {
     s["failure"] = json!({ "line": "A temporary problem on the machine stopped it.", "failedInARow": 3,
         "suggestion": "Retry as it is; if it stops the same way, try another agent." });
     s["retry"] = json!({ "run": 3, "digest": "d".repeat(64) });
+    for card in s["cards"].as_array_mut().unwrap() {
+        if card["key"] == "build" {
+            card["runs"] = json!([3]);
+        }
+    }
     s["approval"] = json!({ "by": "me", "you": true, "automatic": false });
     s
 }
@@ -173,7 +178,10 @@ fn a_failed_task_says_why_and_offers_retry_only() {
         "{wide}"
     );
     let shown = screen(&mut app, 120, 30);
-    assert!(shown.contains("Retry (Review and retry)"), "{shown}");
+    assert!(
+        shown.contains("r  Retry") && !shown.contains("Review and retry"),
+        "{shown}"
+    );
     // The key bar: only what a failed task allows.
     let bar = shown.lines().last().unwrap().to_string();
     assert!(bar.contains("r retry"), "{bar}");
@@ -210,7 +218,7 @@ fn retry_posts_exactly_the_build_and_scope_shown_after_its_confirm() {
                 ("digest".into(), "d".repeat(64)),
                 ("return".into(), "task".into())
             ],
-            done: "Retrying build #3: it starts again under your approval.".into(),
+            done: "Retrying: a new build starts after build #3.".into(),
         }]
     );
     // Any other key: nothing is posted.

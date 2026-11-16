@@ -86,7 +86,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
       rows: [...summary.revisionChanges, ...summary.decisions, ...(summary.why === null ? [] : [{ label: "Why model", words: summary.why }]), ...summary.differs].map(one => ({ label: one.label, words: one.words, lines: "lines" in one ? [...(one.lines ?? [])] : [] })),
       warnings: summary.warnings.map(one => one.words), usualLabel: summary.usualLabel, usual: summary.usual.map(one => ({ label: one.label, words: one.words })) };
   })();
-  const cards: StepCard[] | null = rows === null ? null : rows.map(row => ({
+  const cards: StepCard[] | null = current.state === "cancelled" ? cancelledCards(builds, current.updatedAt ?? null) : rows === null ? null : rows.map(row => ({
     key: row.key, label: row.label, state: row.state, mark: row.mark, sentence: row.sentence, at: row.at, needsYou: row.needsYou,
     inChain: !(justCode && (row.key === "plan" || row.key === "approve")),
     ...runFacts(behind[row.key]),
@@ -107,15 +107,23 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     version: ENGINE_API_VERSION,
     task: { id: current.id, root: root.id, title: root.title, state: current.state, project: current.repo },
     chain: justCode ? "just-code" : "plan-first",
-    headline: card?.status.headline ?? null,
+    // A cancelled task's own word (the stage's is "Stopped"): it ended because a person cancelled it.
+    headline: current.state === "cancelled" ? "Cancelled" : card?.status.headline ?? null,
     liveRun: live?.id ?? null,
     cards,
     // The result this task's page offers Accept and Send back on (chat-decide.ts resultFresh reads the same facts).
     review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
       ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null),
         accept: acceptFactsOf(store, assignment, viewer, evidenceRoot) } : null,
-    failure: current.state === "failed" ? failureOf(store, builds) : null,
-    waiting: waitingOf(store, current.id, now),
+    failure: current.state === "failed" ? failureOf(store, ref?.id ?? null, builds) : null,
+    waiting: (() => {
+      const waiting = waitingOf(store, current.id, now);
+      if (waiting === null) return null;
+      // What the agent said on its way out of the last build, while it waits to try again (the Steps tab shows it).
+      const last = latestFinishedAttempt(builds);
+      return { ...waiting, agentSaid: last !== null && last.outcome === "failed" ? agentSaidOf(store, last.id) : null };
+    })(),
+    held: heldOf(store, ref?.id ?? null, builds, now),
     retry: current.state === "failed" ? (() => { const pins = retryPinsOf(store, current.id); return pins === null ? null : { run: pins.run, digest: pins.digest }; })() : null,
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
@@ -125,22 +133,50 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
 
 /** A failed task's latest finished build attempt in one plain line, how many attempts in a row failed (newest first,
  * stopping at the first that didn't), and its suggestion (needs-you.ts, the words the task page says). */
-function failureOf(store: Store, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
+function failureOf(store: Store, taskRef: number | null, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
   const last = latestFinishedAttempt(builds);
-  let failedInARow = 0;
-  for (const run of [...builds].sort((a, b) => b.id - a.id)) {
-    if (run.finishedAt === null && run.outcome === null) continue;
-    if (run.outcome !== "failed") break;
-    failedInARow += 1;
-  }
+  // The engine's own count (claim.ts addStrike): failures since the last success or the last person's Retry, which
+  // clears them (store.requeueTask resetStrikes). The words "N consecutive failures" mean exactly that.
+  const failedInARow = taskRef === null ? 0
+    : Number(store.handle.prepare("SELECT strikes FROM task_ref WHERE id = ?").get(taskRef)?.["strikes"] ?? 0);
   return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : stopSuggestionOf(last.reason),
     agentSaid: last === null ? null : agentSaidOf(store, last.id) };
 }
 
+/** A cancelled task's history: its builds as they ran, then Cancelled, the end (no road goes on from there). */
+function cancelledCards(builds: readonly Run[], at: string | null): StepCard[] {
+  const out: StepCard[] = [];
+  const latest = builds[0] ?? null;
+  if (latest !== null) {
+    const failed = latest.outcome === "failed" || latest.outcome === "refused" || latest.outcome === "interrupted";
+    out.push({ key: "build", label: "Build", state: failed ? "stuck" : "done", mark: failed ? "stuck" : "done",
+      sentence: failed ? failedAttemptSentence(latest.reason).replace(/[.\s]+$/, "") : "The build finished", at: latest.finishedAt,
+      needsYou: false, inChain: true, ...runFacts(builds) });
+  }
+  out.push({ key: "ready", label: "Cancelled", state: "skipped", mark: "skipped", sentence: "Cancelled: nothing else will run for this task.",
+    at, needsYou: false, inChain: true, ...runFacts([]) });
+  return out;
+}
+
+/** A person's hold on a queued task (the operator's own: "Hold the next attempt", the terminal's Stop retrying): what
+ * Resume releases (POST /t/<task>/unhold with `hold`, proved where it is released), its reason, and the last build's
+ * failure in a short line. Null when no such hold stands. */
+function heldOf(store: Store, taskRef: number | null, builds: readonly Run[], now: Date): StepCards["held"] {
+  if (taskRef === null) return null;
+  const hold = store.activeHolds(taskRef, now).find(one => one.ownerKind === "operator") ?? null;
+  if (hold === null) return null;
+  const last = latestFinishedAttempt(builds);
+  return { id: hold.id, reason: hold.reason,
+    lastFailure: last !== null && last.outcome === "failed" ? failedAttemptSentence(last.reason).replace(/[.\s]+$/, "") : null };
+}
+
+/** When a waiting task tries again and why its last build stopped (contracts/engine-api.ts waitingSchema). */
+type Waiting = { retryAt: string | null; lastFailure: string | null };
+
 /** A queued task waiting to start again: when the next try is due (its backoff hold's end; null: when a builder is
  * free) and the last build's failure in one short line. Null unless the task is queued and its last build failed or a
  * backoff holds it. */
-export function waitingOf(store: Store, taskId: string, now: Date): StepCards["waiting"] {
+export function waitingOf(store: Store, taskId: string, now: Date): Waiting | null {
   return waitingForTasks(store, [taskId], now).get(taskId) ?? null;
 }
 
@@ -148,8 +184,8 @@ export function waitingOf(store: Store, taskId: string, now: Date): StepCards["w
  * waitingOf for many tasks at once (the Work rows read): one statement whatever the number of rows, never a few per
  * row. Tasks with nothing to wait on are absent.
  */
-export function waitingForTasks(store: Store, taskIds: readonly string[], now: Date): Map<string, NonNullable<StepCards["waiting"]>> {
-  const out = new Map<string, NonNullable<StepCards["waiting"]>>();
+export function waitingForTasks(store: Store, taskIds: readonly string[], now: Date): Map<string, Waiting> {
+  const out = new Map<string, Waiting>();
   const ids = [...new Set(taskIds)];
   if (ids.length === 0) return out;
   const at = now.toISOString();
@@ -161,7 +197,9 @@ export function waitingForTasks(store: Store, taskIds: readonly string[], now: D
       (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
       (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason
     FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
-    WHERE task.state = 'queued' AND task.id IN (${ids.map(() => "?").join(", ")})`).all(at, at, ...ids);
+    WHERE task.state = 'queued' AND task.id IN (${ids.map(() => "?").join(", ")})
+      -- A person's hold (Stop retrying, a pause, a question, an incident) means it isn't waiting to try again.
+      AND NOT EXISTS (SELECT 1 FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind <> 'backoff' AND (hold.until IS NULL OR hold.until > ?))`).all(at, at, ...ids, at);
   for (const row of rows) {
     const failed = row["outcome"] === "failed";
     const held = Number(row["held"]) === 1;
