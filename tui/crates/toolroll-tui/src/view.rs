@@ -1468,6 +1468,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } => return draw_build(f, app, area),
+        Mode::StartThread(_) => return crate::thread::draw_start(f, app, area),
         Mode::ConfirmThread(_) => match crate::thread::confirm_lines(app, area) {
             Some(shown) => shown,
             None => return,

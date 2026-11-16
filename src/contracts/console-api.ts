@@ -132,7 +132,7 @@ export const CONSOLE_FORMS = {
   // (a permission's accept or decline, or one question part and its answer's words). A new thread: its project, first
   // message, model and the Flexible terms digest the person was shown (`terms`). Both refused while Flexible is off.
   threadAnswer: formContract("POST /agents/live/thread/<id>/answer", ["request", "card", "decision", "question", "answer"]),
-  threadStart: formContract("POST /agents/live/thread", ["repo", "message", "model", "terms"]),
+  threadStart: formContract("POST /agents/live/thread", ["repo", "message", "model", "terms", "password"]),
   // T4: a take-over names its task and build (task, run) instead of a project (repo).
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),

@@ -11,7 +11,9 @@
  * before anything is looked up, while Flexible isn't available (flexible-available.ts), and this console opens no thread
  * host at all then. With it: a thread is its owner's only (the session re-read, the thread's creator, its project still
  * theirs, before the read and again after it), and an answer goes only through F2d's decide and send with the person's
- * own session (flexible-session.ts answerFlexibleRequest), naming the card digest they were shown.
+ * own session (flexible-session.ts answerFlexibleRequest), naming the card digest they were shown. A new thread is a
+ * person's yes to its terms card (flexible-start.ts), named by the card's key and proved as an approval's yes is; its
+ * agent's network and storage come from this console's launcher (flexible-launcher.ts).
  */
 import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
@@ -20,8 +22,13 @@ import { checkEngineResponse, DIFF_CONTEXT_MAX, ENGINE_API_VERSION, ENGINE_RESPO
 import { CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { FLEXIBLE_AVAILABLE } from "../flexible-available.js";
 import { FLEXIBLE_UNAVAILABLE } from "../flexible.js";
-import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadLiveOf, flexibleThreadsOf, openFlexibleSessions, recoverFlexibleHolders, startFlexibleThread,
-  tickFlexibleSessions, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
+import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions, flexibleThreadChangeOf, flexibleThreadLiveOf, flexibleThreadsOf, FLEXIBLE_WAIT_MS, openFlexibleSessions,
+  recoverFlexibleHolders, startFlexibleThread, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
+import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
+import { flexibleStartCard } from "../flexible-start.js";
+import { summaryLines } from "../approval-summary.js";
+import { localActNow } from "../local-owner.js";
+import { authenticateApprover, type AuthMethod } from "../scope.js";
 import { defaultChainOf, installModeNow } from "../install-mode.js";
 import { packageVersion } from "../monitoring.js";
 import { readChildWindow, type ChildWindow } from "../live-children-read.js";
@@ -142,6 +149,13 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     void recoverFlexibleHolders(store, opened.sessions).catch(() => { /* the next start tries again */ });
     return opened.sessions;
   })();
+  /** This console's launcher for a thread's network and storage (flexible-launcher.ts): none while Flexible isn't
+   * available. Its proxies close with their launches, and all of them when the console stops (`close`, below). */
+  const launcher: FlexibleLauncher | null = (() => {
+    if (!FLEXIBLE_AVAILABLE || flexible === null) return null;
+    const made = createFlexibleLauncher(store);
+    return "prepare" in made ? made : null;
+  })();
   /** A thread `who` owns, ready, in a project still theirs, read again from their saved session: its project, or null. */
   const ownedThread = (request: IncomingMessage, who: Who & { via: "cookie" }, sessions: FlexibleSessions, thread: string): string | null => {
     if (rereadBrowser(runtime, request, who) === null) return null;
@@ -158,16 +172,30 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     const { url, who, request, response } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
     if (!FLEXIBLE_AVAILABLE || flexible === null) return refusal(response, 404, "not-available");
-    const known = url.searchParams.get("known");
+    const known = url.searchParams.get("known"), wait = url.searchParams.get("wait");
     const plain = new URL(url.href);
     plain.searchParams.delete("known");
-    const query = url.searchParams.getAll("known").length > 1 || (known !== null && !/^[0-9a-f]{16}$/.test(known)) ? null : liveQueryOf(plain);
+    plain.searchParams.delete("wait");
+    const query = url.searchParams.getAll("known").length > 1 || (known !== null && !/^[0-9a-f]{16}$/.test(known))
+      || url.searchParams.getAll("wait").length > 1 || (wait !== null && (wait !== "1" || known === null || !url.searchParams.has("cursor"))) ? null : liveQueryOf(plain);
     if (query === null) return refusal(response, 400, "request");
     const id = url.pathname.slice("/agents/live/thread/".length);
     // Admitted before the read and again after it: someone else's thread, or one gone from view, gets nothing read.
     if (ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
-    const read = flexibleThreadLiveOf(store, flexible, { thread: id, viewer: { name: who.name }, file: query.file, cursor: query.cursor });
+    // `wait=1` (a client holding the facts' version and a cursor): when nothing it shows moved, the read waits for the
+    // thread's next change on this host (or FLEXIBLE_WAIT_MS, or the client going away), then reads again under the same
+    // checks. The change count is taken before the first read, so a change in between wakes it at once.
+    const since = flexibleThreadChangeOf(flexible, { thread: id });
+    let read = flexibleThreadLiveOf(store, flexible, { thread: id, viewer: { name: who.name }, file: query.file, cursor: query.cursor });
     if (!read.ok || ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
+    if (wait === "1" && since.ok && read.facts.version === known && read.window.ok && read.window.records.length === 0 && !read.window.restarted && !read.window.more) {
+      const waited = waitFlexibleThreadChange(flexible, { thread: id, since: since.change, ms: FLEXIBLE_WAIT_MS, abandoned: stop => { response.once("close", stop); } });
+      if ("then" in waited) await waited;
+      if (response.destroyed || response.writableEnded) return;
+      if (ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
+      read = flexibleThreadLiveOf(store, flexible, { thread: id, viewer: { name: who.name }, file: query.file, cursor: query.cursor });
+      if (!read.ok || ownedThread(request, who, flexible, id) === null) return refusal(response, 404, "thread");
+    }
     const body: LiveSessionWindow = { version: ENGINE_API_VERSION, session: { kind: "thread", id, task: null }, room: `thread:${id}`, live: read.live, file: query.file, window: read.window,
       ...(known === read.facts.version ? {} : { thread: read.facts }) };
     return sendChecked(response, 200, "liveSessionWindow", body);
@@ -223,17 +251,38 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return done.ok ? acted(response, 200, "done", "Sent to the agent.") : acted(response, 409, "refused", done.message);
   }
 
-  /** POST /agents/live/thread: a new thread in a project of the person's, under the Flexible terms they were shown.
-   * Refused while Flexible isn't available; this console has no launcher for a thread's network yet, so it refuses then too. */
+  /**
+   * POST /agents/live/thread: a new thread in a project of the person's. Starting one is a person's yes to exact terms
+   * (flexible-start.ts): posted without `terms`, it answers the terms card (`{ outcome: "thread-terms", key, terms }`)
+   * and starts nothing; posted with the card's key, the card is made again now and the thread starts only if its key is
+   * exactly the one posted (anything that moved in between is a stale card, refused). The yes is proved as an approval's
+   * is (scope.ts authenticateApprover: a password typed now, or, where the existing rules let it stand in, the person's
+   * own session in a solo or Passwordless install, or the local owner's own act at this computer); the thread's first
+   * launch is held to the network the card showed. Refused while Flexible isn't available.
+   */
   async function threadStart(ctx: HandlerContext): Promise<void> {
     const { who, request, response, posted } = ctx;
     if (!FLEXIBLE_AVAILABLE || flexible === null) return acted(response, 404, "refused", FLEXIBLE_UNAVAILABLE);
     if (who.via !== "cookie" || rereadBrowser(runtime, request, who) === null) return acted(response, 403, "refused", "Only a person signed in here can start a thread.");
+    if (launcher === null) return acted(response, 409, "refused", "This console can't give a thread its network, so no thread was started.");
     const body = readForm(posted, CONSOLE_FORMS.threadStart);
-    const repo = body.get("repo") ?? "";
+    const repo = body.get("repo") ?? "", message = body.get("message") ?? "";
     if (!store.accountCanAccess(who.name, repo)) return acted(response, 403, "refused", "That project is outside your access.");
-    const started = await startFlexibleThread(store, flexible, { repo, by: { name: who.name, generation: who.session.generation }, digest: body.get("terms") ?? "",
-      message: body.get("message") ?? "", model: body.get("model") ?? "", launcher: null });
+    const by = { name: who.name, generation: who.session.generation };
+    const made = flexibleStartCard(store, { repo, by, model: body.get("model"), message });
+    if (!made.ok) return acted(response, 409, "refused", made.message);
+    const card = made.card;
+    const shown = body.get("terms");
+    if (shown === null || shown === "") {
+      const rows = [...card.summary.decisions, ...card.summary.differs].map(row => ({ label: row.label, words: row.words, lines: row.lines ?? [] }));
+      return json(response, 200, { outcome: "thread-terms", key: card.summary.key, terms: rows, notes: card.summary.warnings.map(note => note.words), lines: summaryLines(card.summary) });
+    }
+    if (shown !== card.summary.key) return acted(response, 409, "refused", "The terms changed since they were shown. Read them again before starting. Nothing was started.");
+    const proved = authenticateApprover(store, who.name, body.get("password") ?? "", repo);
+    if (!proved.ok || !START_PROOFS.has(proved.method)) return acted(response, 403, "refused", "Starting a thread needs your password here. Nothing was started.");
+    // The local owner's own act, exactly this one, still standing (re-read now).
+    if (proved.method === "local-owner" && localActNow(store, "start-thread") === null) return acted(response, 403, "refused", "Starting a thread needs your password here. Nothing was started.");
+    const started = await startFlexibleThread(store, flexible, { repo, by, digest: card.digest, message, model: card.model, launcher, freshProof: FRESH_PROOFS.has(proved.method), expectNetwork: card.network });
     return started.ok ? acted(response, 200, "done", "The thread started.") : acted(response, 409, "refused", started.message);
   }
 
@@ -332,8 +381,9 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   return {
     /** The console's upkeep tick (serve.ts): a thread's answers past their deadlines are settled. Nothing while off. */
     upkeep: (): void => { if (flexible !== null) { try { tickFlexibleSessions(store, flexible); } catch { /* the next tick tries again */ } } },
-    /** Shutdown: every thread here stopped, its answers revoked and its relay closed. Nothing while off. */
-    close: async (): Promise<void> => { if (flexible !== null) await closeFlexibleSessions(store, flexible); },
+    /** Shutdown: every thread here stopped, its answers revoked and its relay closed, then every proxy the launcher still
+     * holds. Nothing while off. */
+    close: async (): Promise<void> => { if (flexible !== null) await closeFlexibleSessions(store, flexible); await launcher?.close(); },
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
         "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart }),
@@ -342,6 +392,11 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     ],
   };
 }
+
+/** The proofs a thread start takes: an approval's own (never a token's, a lead's or a remembered CLI login). */
+const START_PROOFS: ReadonlySet<AuthMethod> = new Set<AuthMethod>(["password-now", "sso-now", "fresh-password", "fresh-sso", "session", "local-owner"]);
+/** The ones that are a fresh proof (a start above the terms' password-free level needs one): never a session standing in. */
+const FRESH_PROOFS: ReadonlySet<AuthMethod> = new Set<AuthMethod>(["password-now", "sso-now", "fresh-password", "fresh-sso", "local-owner"]);
 
 /** A small request body, or null when it is larger than `cap` bytes (the rest is drained, never kept). */
 function bodyOf(request: IncomingMessage, cap: number): Promise<string | null> {

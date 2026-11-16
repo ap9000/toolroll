@@ -179,6 +179,23 @@ describe("the run's own proxy", () => {
     expect(await tunnel(mapped, "approved.example:443", auth(mapped))).toMatch(/ 403 /);
   });
 
+  test("an open-network thread's proxy reaches any host by name; still never an address, another port, a private address or another run's credentials", async () => {
+    const port = await upstream(), decided: string[] = [];
+    const open = await startEgressProxy({ hosts: [], open: true, lookup: async () => ["127.0.0.1"], addressAllowed: () => true, upstreamPort: () => port, decided: (host, allowed) => decided.push(`${host}:${allowed}`) });
+    closers.push(() => open.close());
+    expect(await tunnel(open, "anything.example:443", auth(open))).toMatch(/ 200 /);
+    expect((await get(open, "http://elsewhere.example/", { host: "elsewhere.example", "proxy-authorization": auth(open) })).status).toBe(200);
+    expect(await tunnel(open, "anything.example:443", null)).toMatch(/ 407 /);
+    expect(await tunnel(open, "anything.example:22", auth(open))).toMatch(/ 403 /);
+    expect(await tunnel(open, "127.0.0.1:443", auth(open))).toMatch(/ 403 /);
+    expect(await tunnel(open, "localhost:443", auth(open))).toMatch(/ 403 /);
+    expect(decided).toEqual(["anything.example:true", "elsewhere.example:true", "anything.example:false", "(not a host name):false", "(not a host name):false"]);
+    // The public-address rule holds in open mode too.
+    const strict = await startEgressProxy({ hosts: [], open: true, lookup: async () => ["10.0.0.5"] });
+    closers.push(() => strict.close());
+    expect(await tunnel(strict, "anything.example:443", auth(strict))).toMatch(/ 403 /);
+  });
+
   test("a plain request may name port 80 in its Host", async () => {
     const proxy = await proxyFor(["approved.example"], await upstream());
     expect((await get(proxy, "http://approved.example:80/", { host: "approved.example:80", "proxy-authorization": auth(proxy) })).status).toBe(200);

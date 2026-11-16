@@ -9,12 +9,21 @@
  * Tests reach the enabled behaviour only by replacing this module with vi.mock; src/flexible-disabled.test.ts keeps
  * this file exactly one literal, imported only by name, so that seam can't become a runtime override.
  *
- * Never true before every enable gate holds (the Flexible plan v2, F2 breakdown "Enable gates"): full process custody
- * (setsid survivors, a crash between spawn and registration, a durable process identity instead of a bare live_pid),
- * F2c; the import filters and validates protected names and placeholders (exclude is no import boundary: `git add -f`
- * commits one), F4; Codex threads stay refused until they run inside the srt fence; the bubblewrap attack runs green in
- * CI; the F0 real-model matrix recorded (each batch with the owner's yes); F2b–F2e, F3, F4 and the docs shipped with it;
- * the unknown-cost monthly hold is explained in the user-facing Flexible terms before enablement (F2e: a keyed turn of
- * unknown cost holds the monthly hard budgets it counts toward until the month ends).
+ * Never true before every enable gate holds (the Flexible plan v2, F2 breakdown "Enable gates"; status 2026-11-15).
+ *
+ * Done, behind this constant: the thread's own repository, keep-ref and fence (F2a); the Claude sign-in relay (F2b);
+ * the thread start, level wiring and full process custody (F2c: setsid survivors found, nothing spawned before it is
+ * registered, a durable process identity instead of a bare live_pid); answers delivered exactly once (F2d); turn
+ * admission and limits (F2e); threads as live sessions in the terminal (F3); the controlled import with its
+ * protected-name and placeholder filter, and one-press Ship (F4, in review as eight-fx4); and the pre-enable pieces: the
+ * console's launcher (each launch's own run proxy under the project's network, its storage check, the proxy closed with
+ * the launch), the start's terms card (bound by its key; the unknown-cost monthly hold said there), the laptop owner's
+ * start as its own local-owner act, and the owner's view woken on change instead of polled.
+ *
+ * Left: the F0 real-model matrix (f0.md; the owner's yes for each batch); Claude's stdio permission channel proved
+ * (F0 row H); Codex threads running inside the srt thread fence (until then flexibleThreadCodexProfile refuses them);
+ * the bubblewrap attack runs green in CI (test/attacks/flexible-thread-fence.slow.test.ts, Linux native lane, no
+ * skips); the import's quarantine proved against the real sandbox; the F5 CLI; and the docs (the guide page and
+ * security.md's Flexible column), shipped in the release that turns this on.
  */
 export const FLEXIBLE_AVAILABLE: boolean = false;

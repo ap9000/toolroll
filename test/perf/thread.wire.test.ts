@@ -3,8 +3,9 @@
  * terminal client's thread reads cost, held to committed ceilings (thread-wire-ceilings.json) like the engine API's own
  * reads in wire.wire.test.ts. The constant is mocked on here only (vi.mock; the build's is false): a thread with a long
  * transcript and a few questions, read cold (every record and its facts), polled unchanged (no records, facts left out
- * as `known`), and listed. Bytes and SQL statements are gated; server time is gated at the engine's 300 ms bar (the
- * better of two reads). WIRE_WRITE_CEILINGS=1 rewrites the ceilings from this run, on purpose.
+ * as `known`), listed, and held as a long poll (`wait=1`) woken by the agent's next words (pre-enable push: the
+ * terminal waits instead of polling every 250 ms). Bytes and SQL statements are gated; server time is gated at the
+ * engine's 300 ms bar (the better of two reads; a held read's time is its wait, so it isn't timed). WIRE_WRITE_CEILINGS=1 rewrites the ceilings from this run, on purpose.
  */
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
@@ -37,6 +38,8 @@ const CEILINGS_FILE = join(import.meta.dirname, "thread-wire-ceilings.json");
 const SERVER_MS = 300;
 const T1 = "1".padStart(32, "0"), L1 = "a1".padStart(32, "0");
 let world: ThreadWorld, server: DecisionServer, port: number, cookie: string, probe: ReturnType<typeof tallyRequests>;
+/** The scripted agent's stdout: a woken read's change is one more line said on it. */
+let agentOut: PassThrough;
 
 function send(path: string): Promise<{ status: number; body: string; tally: Tally; ms: number }> {
   const tally = newTally();
@@ -79,6 +82,7 @@ beforeAll(async () => {
     VALUES (?, ?, ?, 'claude', 'full', ?, ?, 'here', ?, ?, 't1', 'live', ?)`).run(L1, T1, made.turn, "f".repeat(32), sessions.holder, "9".repeat(32), fakePid(1), at);
   await startFlexibleThreadSession(store, sessions, { thread: T1 });
   const stdout = new PassThrough(), exit = new EventEmitter();
+  agentOut = stdout;
   attachFlexibleAgent(store, sessions, { thread: T1, turn: made.turn, launch: L1, stdout, stdin: new PassThrough(), exited: listener => { exit.once("exit", listener); } });
   // A long turn: 400 records (said, read, edited, ran), and three requests.
   for (let n = 0; n < 100; n++) {
@@ -119,6 +123,18 @@ test("the thread roads stay within their wire budgets", async () => {
     rows.push({ id: `owner · Engine · ${name} | bytes`, observed: Buffer.byteLength(first.body) }, { id: `owner · Engine · ${name} | SQL statements`, observed: first.tally.statements });
     const best = Math.min(first.ms, again.ms);
     if (best > SERVER_MS) slow.push(`${name}: ${Math.round(best)} ms (bar ${SERVER_MS} ms)`);
+  }
+  // A held read woken by the agent's next words: what the wake costs (its first read, the wait, its read again).
+  {
+    const fresh = await send(`/agents/live/thread/${T1}?file=main`);
+    const at = JSON.parse(fresh.body) as { window: { cursor: string }; thread: { version: string } };
+    const held = send(`/agents/live/thread/${T1}?file=main&cursor=${encodeURIComponent(at.window.cursor)}&known=${at.thread.version}&wait=1`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    agentOut.write(`${JSON.stringify({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "Totals checked; the rounding fix is in." }] } })}\n`);
+    const woke = await held;
+    expect(woke.status).toBe(200);
+    expect(woke.ms).toBeLessThan(5_000);
+    rows.push({ id: "owner · Engine · thread window, woken long poll | bytes", observed: Buffer.byteLength(woke.body) }, { id: "owner · Engine · thread window, woken long poll | SQL statements", observed: woke.tally.statements });
   }
   const margin = (row: { id: string; observed: number }) => row.observed + (row.id.endsWith("bytes") ? Math.max(512, Math.ceil(row.observed * 0.05)) : Math.max(2, Math.ceil(row.observed * 0.1)));
   if (process.env["WIRE_WRITE_CEILINGS"] === "1") {

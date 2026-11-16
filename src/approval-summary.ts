@@ -30,7 +30,9 @@ import type { RevisionLineage, Store } from "./store.js";
 /** What a yes binds, field by field: the digest's own inputs, and each key of the sealed profile. */
 export type BoundField =
   | "goal" | "outOfScope" | "touches" | "acceptance" | "budget" | "qualityMode" | "candidate" | "releaseTerms" | "releaseCheck"
-  | "route" | `route.${string}` | "chain" | `profile.${string}`;
+  | "route" | `route.${string}` | "chain" | `profile.${string}`
+  /** A Flexible thread start's terms card (flexible-start.ts): its own rows, bound by its own key. */
+  | `flexible.${string}`;
 
 /** One row of the summary: a label, its words, any further lines, and the bound fields it states. */
 /** `risky`: access a person must see before the yes whatever the project usually allows (writes anywhere, any host, full

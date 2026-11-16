@@ -7,6 +7,8 @@
     "owner · Engine · thread window, unchanged poll | bytes": 821,
     "owner · Engine · thread window, unchanged poll | SQL statements": 44,
     "owner · Engine · thread list | bytes": 676,
-    "owner · Engine · thread list | SQL statements": 40
+    "owner · Engine · thread list | SQL statements": 40,
+    "owner · Engine · thread window, woken long poll | bytes": 912,
+    "owner · Engine · thread window, woken long poll | SQL statements": 65
   }
 }

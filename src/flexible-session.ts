@@ -46,10 +46,10 @@ import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import { defaultCustodyIO } from "./flexible-launch.js";
 import { startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleThread, prepareFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
-import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, type FlexibleClock } from "./flexible-turns.js";
+import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
 import { userFrame } from "./live-input.js";
 import { cleanLiveText, createLiveRecorder, HIDDEN_LINE, liveSecretHit, type LiveRecord, type LiveRecorder } from "./live-records.js";
-import type { ProtectedStorage } from "./protected-storage.js";
+import type { FlexibleLauncher } from "./flexible-launcher.js";
 import { primaryResultEvent } from "./stream-scope.js";
 import type { Store } from "./store.js";
 
@@ -84,8 +84,24 @@ type AgentLink = { launch: string; turn: string | null; stdin: Writable; connect
 type ThreadSession = { thread: string; relay: FlexibleRelayServer | null; agent: AgentLink | null; records: LiveRecord[]; dropped: number; epoch: string;
   asked: Map<string, Asked>; title: string | null };
 
-/** One console process's Flexible threads (openFlexibleSessions). */
-export type FlexibleSessions = { readonly holder: string; readonly catalog: FlexibleAnswerCatalog; readonly io: CustodyIO; readonly threads: Map<string, ThreadSession> };
+/** One console process's Flexible threads (openFlexibleSessions). `changes` counts, per thread, what this host changed
+ * that its owner's view shows (records, requests, answers, turns, level, the agent's life); `waiters` are the owner's
+ * reads waiting for the next change (waitFlexibleThreadChange). */
+export type FlexibleSessions = { readonly holder: string; readonly catalog: FlexibleAnswerCatalog; readonly io: CustodyIO; readonly threads: Map<string, ThreadSession>;
+  readonly changes: Map<string, number>; readonly waiters: Map<string, Set<() => void>> };
+
+/** Something the owner's view of `thread` shows changed here: its count moves and every read waiting on it wakes. */
+function bump(sessions: FlexibleSessions, thread: string): void {
+  sessions.changes.set(thread, (sessions.changes.get(thread) ?? 0) + 1);
+  const waiting = sessions.waiters.get(thread);
+  if (waiting === undefined) return;
+  sessions.waiters.delete(thread);
+  for (const wake of waiting) { try { wake(); } catch { /* one waiter never stops another */ } }
+}
+/** Every thread this host holds changed (an upkeep tick or a recovery settled answers it can't name one by one). */
+function bumpAll(sessions: FlexibleSessions): void {
+  for (const thread of new Set([...sessions.threads.keys(), ...sessions.waiters.keys()])) bump(sessions, thread);
+}
 
 const sha16 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
 const HOLDER = /^console:([1-9][0-9]{0,9}):([0-9a-f]{16})$/;
@@ -125,7 +141,7 @@ export function openFlexibleSessions(store: Store, input: { pid?: number; io?: C
   if (holder === null) return refuse("no-holder");
   const opened = openFlexibleAnswerCatalog(store);
   if (!opened.ok) return opened;
-  return { ok: true, sessions: { holder, catalog: opened.catalog, io, threads: new Map() } };
+  return { ok: true, sessions: { holder, catalog: opened.catalog, io, threads: new Map(), changes: new Map(), waiters: new Map() } };
 }
 
 /** Close the host: every thread's agent stopped, its answers revoked and its relay closed, then the catalog. */
@@ -135,6 +151,7 @@ export async function closeFlexibleSessions(store: Store, sessions: FlexibleSess
     try { await stopFlexibleThreadSession(store, sessions, { thread, reason: "Toolroll stopped", ...(input.clock === undefined ? {} : { clock: input.clock }) }); } catch { /* recovery settles it */ }
   }
   sessions.catalog.close();
+  bumpAll(sessions);
   return { ok: true };
 }
 
@@ -143,7 +160,9 @@ export async function closeFlexibleSessions(store: Store, sessions: FlexibleSess
 /** The console's upkeep tick: answers past their deadlines are settled (F2d expireFlexibleAnswers). */
 export function tickFlexibleSessions(store: Store, sessions: FlexibleSessions, input: { clock?: FlexibleClock } = {}): { ok: true; uncertain: number } | FlexibleSessionRefusal | FlexibleAnswerRefusal {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
-  return expireFlexibleAnswers(store, sessions.catalog, input.clock === undefined ? {} : { clock: input.clock });
+  const expired = expireFlexibleAnswers(store, sessions.catalog, input.clock === undefined ? {} : { clock: input.clock });
+  if (expired.ok && expired.uncertain > 0) bumpAll(sessions);
+  return expired;
 }
 
 /**
@@ -170,6 +189,7 @@ export async function recoverFlexibleHolders(store: Store, sessions: FlexibleSes
     const answers = recoverFlexibleAnswersOf(store, sessions.catalog, { holder, ...clocked });
     if (!launches.ok || launches.unresolved > 0 || !answers.ok) unresolved.push(holder); else recovered.push(holder);
   }
+  if (recovered.length + unresolved.length > 0) bumpAll(sessions);
   return { ok: true, recovered, unresolved, unknown };
 }
 
@@ -209,6 +229,7 @@ export async function stopFlexibleThreadSession(store: Store, sessions: Flexible
     session.relay = null;
     sessions.threads.delete(input.thread);
   }
+  bump(sessions, input.thread);
   if ("reason" in stopped) return stopped;
   return { ok: true, stopped: stopped.ok, why: stopped.ok ? null : stopped.why };
 }
@@ -371,6 +392,7 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
       session.records.splice(0, drop);
       session.dropped += drop;
     }
+    bump(sessions, input.thread);
   };
   const event = (raw: Record<string, unknown>) => {
     if (session.agent !== link) return;
@@ -388,6 +410,7 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
         kind: shown.kind, card: shown.card, correlation, ...clocked });
       if (made.ok) session.asked.set(made.request, { request: made.request, token: made.token, ref, kind: shown.kind, tool, input: structuredClone(toolInput), inputDigest: shown.inputDigest,
         complete: shown.card.complete !== false, questions: shown.questions });
+      bump(sessions, input.thread);
       return;
     }
     // Tool activity carrying a request's tool id: F2d decides whether it is that answer's acknowledgement.
@@ -395,7 +418,7 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
       const content = (raw["message"] as Record<string, unknown> | undefined)?.["content"];
       for (const part of Array.isArray(content) ? content : []) {
         const id = typeof part === "object" && part !== null && (part as Record<string, unknown>)["type"] === "tool_result" ? (part as Record<string, unknown>)["tool_use_id"] : null;
-        if (typeof id === "string" && REF.test(id)) noteFlexibleToolActivity(store, sessions.catalog, { connection: link.launch, turn: link.turn, correlation: id, ...clocked });
+        if (typeof id === "string" && REF.test(id)) { noteFlexibleToolActivity(store, sessions.catalog, { connection: link.launch, turn: link.turn, correlation: id, ...clocked }); bump(sessions, input.thread); }
       }
     }
     keep(link.recorder.observe(raw));
@@ -420,6 +443,7 @@ export function attachFlexibleAgent(store: Store, sessions: FlexibleSessions, in
   input.exited(() => {
     if (session.agent === link) { keep(link.recorder.end()); session.agent = null; }
     revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, connection: link.launch, reason: "the agent stopped", ...clocked });
+    bump(sessions, input.thread);
   });
   return { ok: true };
 }
@@ -435,6 +459,7 @@ export function endFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, 
   const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, turn: input.turn, reason: "the turn ended", ...clocked });
   const agent = sessions.threads.get(input.thread)?.agent;
   if (agent != null && agent.turn === input.turn) agent.turn = null;
+  bump(sessions, input.thread);
   if (!revoked.ok) return revoked;
   if (!finished.ok && finished.reason !== "turn-not-running") return finished;
   return revoked;
@@ -450,32 +475,42 @@ export async function lowerFlexibleThreadSession(store: Store, sessions: Flexibl
   const lowered = await lowerFlexibleThreadLevel(store, { thread: input.thread, by: input.by, level: input.level, ...clocked, io: sessions.io });
   if (!lowered.ok) return lowered;
   const revoked = revokeFlexibleAnswers(store, sessions.catalog, { thread: input.thread, reason: `the thread was lowered to ${FLEXIBLE_LEVEL_WORDS[input.level]}`, ...clocked });
+  bump(sessions, input.thread);
   if (!revoked.ok) return revoked;
   return lowered;
 }
 
-/** How a turn's agent gets its network and storage in this console (the thread's run proxy): absent, no turn starts. */
-export type FlexibleLauncher = { network: (thread: string) => Promise<FlexibleTurnStartInput["network"]>; storage: ProtectedStorage; platform?: NodeJS.Platform };
-
 /**
  * Start an admitted turn (F2c startFlexibleTurn, under this host's holder and the thread's relay), attach a newly
- * started agent, and hand it the person's message as its next user frame.
+ * started agent, and hand it the person's message as its next user frame. The launch's network (its own run proxy,
+ * under the project's network now, or exactly `expectNetwork` for a first launch a person was shown) and its storage
+ * check come from this console's launcher (flexible-launcher.ts); startFlexibleTurn closes the proxy when the agent is
+ * stopped, or at once when the turn launches nothing.
  */
 export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSessions, input: { turn: string; message: string; launcher: FlexibleLauncher | null; clock?: FlexibleClock;
-  seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; launched: "started" | "reused"; launchId: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  expectNetwork?: string; seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; launched: "started" | "reused"; launchId: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.turn !== "string" || !ID.test(input.turn) || typeof input.message !== "string" || input.message.trim() === "" || input.message.length > 100_000) return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
   const turn = flexibleTurn(store, input.turn);
   if (turn === null) return refuse("invalid-request");
+  const thread = flexibleThread(store, turn.thread);
+  if (thread === null) return refuse("thread-unknown");
   const relayed = await startFlexibleThreadSession(store, sessions, { thread: turn.thread });
   if (!relayed.ok) return relayed;
   const session = sessions.threads.get(turn.thread)!;
   const clocked = input.clock === undefined ? {} : { clock: input.clock };
-  const network = await input.launcher.network(turn.thread);
-  const started = await startFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, ...clocked, network, relay: session.relay!, storage: input.launcher.storage,
+  const prepared = await input.launcher.prepare({ id: thread.id, repo: thread.repo }, input.expectNetwork === undefined ? undefined : { network: input.expectNetwork });
+  if (!prepared.ok) {
+    // Nothing launched: the turn is withdrawn (it counts toward nothing), as startFlexibleTurn withdraws a turn it won't run.
+    withdrawFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, detail: prepared.message, ...clocked });
+    bump(sessions, turn.thread);
+    return prepared;
+  }
+  const network = prepared.network;
+  const started = await startFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, ...clocked, network, relay: session.relay!, storage: prepared.storage,
     ...(input.launcher.platform === undefined ? {} : { platform: input.launcher.platform }), ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
-  if (!started.ok) return started;
+  if (!started.ok) { bump(sessions, turn.thread); return started; }
   if (started.launched === "started") {
     const child = started.child;
     if (child.stdout === null || child.stdin === null) return refuse("invalid-request");
@@ -487,6 +522,7 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
   }
   session.title ??= cardText(input.message.split("\n")[0], 80) || null;
   try { session.agent?.stdin.write(`${userFrame(input.message, randomUUID())}\n`); } catch { /* its exit settles the turn */ }
+  bump(sessions, turn.thread);
   return { ok: true, launched: started.launched, launchId: started.launchId };
 }
 
@@ -497,7 +533,13 @@ export async function beginFlexibleThreadTurn(store: Store, sessions: FlexibleSe
  * launcher for the thread's network.
  */
 export async function startFlexibleThread(store: Store, sessions: FlexibleSessions, input: { repo: string; by: { name: string; generation: number }; digest: string; message: string; model: string;
-  launcher: FlexibleLauncher | null; clock?: FlexibleClock }): Promise<{ ok: true; thread: string; turn: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
+  launcher: FlexibleLauncher | null; clock?: FlexibleClock;
+  /** The person proved themselves for this start just now (a password, an identity-provider re-check, the local owner's
+   * own act): a start above the terms' password-free level needs it. Never a session standing in. */
+  freshProof?: boolean;
+  /** The network digest of the terms card the person was shown (flexible-start.ts): the first launch is held to it. */
+  expectNetwork?: string;
+  seams?: FlexibleTurnStartInput["seams"]; proven?: FlexibleTurnStartInput["proven"] }): Promise<{ ok: true; thread: string; turn: string } | FlexibleSessionRefusal | { ok: false; reason: string; message: string }> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.repo !== "string" || typeof input.digest !== "string" || typeof input.model !== "string" || typeof input.message !== "string" || input.message.trim() === "") return refuse("invalid-request");
   if (input.launcher === null) return refuse("no-network");
@@ -505,10 +547,11 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
   const prepared = await prepareFlexibleThread(store, { repo: input.repo, base: "HEAD", by: input.by.name, now: clock() });
   if (!prepared.ok) return prepared;
   const thread = prepared.thread.id;
-  const admitted = admitFlexibleTurn(store, { thread, starter: input.by, digest: input.digest, level: "full", freshProof: false, provider: "claude", model: input.model, billing: "subscription",
+  const admitted = admitFlexibleTurn(store, { thread, starter: input.by, digest: input.digest, level: "full", freshProof: input.freshProof === true, provider: "claude", model: input.model, billing: "subscription",
     requestKey: randomBytes(16).toString("hex"), holder: sessions.holder, clock });
   if (!admitted.ok) return admitted;
-  const begun = await beginFlexibleThreadTurn(store, sessions, { turn: admitted.turn, message: input.message, launcher: input.launcher, clock });
+  const begun = await beginFlexibleThreadTurn(store, sessions, { turn: admitted.turn, message: input.message, launcher: input.launcher, clock,
+    ...(input.expectNetwork === undefined ? {} : { expectNetwork: input.expectNetwork }), ...(input.seams === undefined ? {} : { seams: input.seams }), ...(input.proven === undefined ? {} : { proven: input.proven }) });
   if (!begun.ok) return begun;
   return { ok: true, thread, turn: admitted.turn };
 }
@@ -549,6 +592,7 @@ export async function answerFlexibleRequest(store: Store, sessions: FlexibleSess
   const answers = "decision" in choice ? undefined : { [choice.question]: { answers: [choice.answer] } };
   const decided = decideFlexibleAnswer(store, sessions.catalog, { request: input.request, token: asked.token, shownDigest: input.shownDigest, by: input.by, decision, ...(answers === undefined ? {} : { answers }),
     held: input.held, ...clocked });
+  bump(sessions, input.thread);
   if (!decided.ok) return decided;
   // The agent's connection as this host holds it now; with none, F2d refuses the send (the connection changed) and the
   // answer is not-sent.
@@ -558,6 +602,7 @@ export async function answerFlexibleRequest(store: Store, sessions: FlexibleSess
   if (!sent.ok && sent.reason === "uncertain" && agent != null) {
     try { agent.stdin.destroy(); } catch { /* already closed */ }
   }
+  bump(sessions, input.thread);
   return sent.ok ? { ok: true, state: "sent" } : sent;
 }
 
@@ -653,4 +698,53 @@ export function admitFlexibleThreadOwner(store: Store, sessions: FlexibleSession
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const thread = ownThread(store, input.thread, input.viewer);
   return thread === null || !input.canAccess(thread.repo) ? refuse("thread-unknown") : { ok: true, repo: thread.repo };
+}
+
+// ---- the owner's view, woken on change -----------------------------------------------------------------------------------------
+
+/** How long an owner's read may wait for a change (the engine's long poll, engine-api.ts liveThread `wait=1`): well
+ * inside a client's request timeout (the terminal's is 30 s). */
+export const FLEXIBLE_WAIT_MS = 20_000;
+/** Reads waiting at once on this host, all threads together: past it, a read answers at once (the client polls). */
+export const FLEXIBLE_WAITERS_MAX = 64;
+
+/** How many changes this host has seen for `thread` (0 before any): a read takes it BEFORE it reads, then waits for it
+ * to move, so a change between the read and the wait is never missed. */
+export function flexibleThreadChangeOf(sessions: FlexibleSessions, input: { thread: string }): { ok: true; change: number } | FlexibleSessionRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (typeof input.thread !== "string" || !ID.test(input.thread)) return refuse("invalid-request");
+  return { ok: true, change: sessions.changes.get(input.thread) ?? 0 };
+}
+
+/**
+ * Wait until `thread` changes on this host past `since` (flexibleThreadChangeOf), `ms` passes, or `abandoned` says the
+ * reader went away; at once when it already moved, or when FLEXIBLE_WAITERS_MAX reads are already waiting. The answer
+ * says which; the caller reads again (under its own checks) whatever it is. Nothing is read or decided here.
+ */
+export function waitFlexibleThreadChange(sessions: FlexibleSessions, input: { thread: string; since: number; ms: number; abandoned?: (stop: () => void) => void }):
+  Promise<{ ok: true; woke: "changed" | "timeout" | "busy" | "abandoned" }> | FlexibleSessionRefusal {
+  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (typeof input.thread !== "string" || !ID.test(input.thread) || !Number.isSafeInteger(input.since) || !Number.isSafeInteger(input.ms) || input.ms < 0 || input.ms > FLEXIBLE_WAIT_MS) return refuse("invalid-request");
+  if ((sessions.changes.get(input.thread) ?? 0) !== input.since) return Promise.resolve({ ok: true, woke: "changed" });
+  const waiting = [...sessions.waiters.values()].reduce((sum, set) => sum + set.size, 0);
+  if (waiting >= FLEXIBLE_WAITERS_MAX) return Promise.resolve({ ok: true, woke: "busy" });
+  return new Promise(resolve => {
+    let done = false;
+    const finish = (woke: "changed" | "timeout" | "abandoned") => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const set = sessions.waiters.get(input.thread);
+      set?.delete(wake);
+      if (set !== undefined && set.size === 0) sessions.waiters.delete(input.thread);
+      resolve({ ok: true, woke });
+    };
+    const wake = () => finish("changed");
+    const timer = setTimeout(() => finish("timeout"), input.ms);
+    timer.unref();
+    const set = sessions.waiters.get(input.thread) ?? new Set<() => void>();
+    set.add(wake);
+    sessions.waiters.set(input.thread, set);
+    input.abandoned?.(() => finish("abandoned"));
+  });
 }

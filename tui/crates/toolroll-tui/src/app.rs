@@ -158,6 +158,8 @@ pub enum Mode {
     ConfirmThread(crate::thread::ThreadPin),
     /// A new thread's first message (refused by the engine while Flexible isn't available).
     NewThread(String),
+    /// A new thread's terms card, read whole before Enter starts it (thread.rs StartTerms).
+    StartThread(crate::thread::StartTerms),
     /// A small task's exact terms: Enter builds (POST /tasks/fast), p files it to plan first, Esc files nothing.
     /// Build is a person's yes to exactly these terms, so every term is shown whole (wrapped, scrolled with j/k), and
     /// Enter builds only once the view has drawn the end of them (`seen_end`, set by view.rs, never by a key). The
@@ -277,11 +279,13 @@ pub enum Effect {
     FetchDiffFile(FileAsk),
     /// The person's Flexible threads (GET /agents/live/threads).
     FetchThreads,
-    /// One window of a thread's live session from `cursor`, with its facts unless they are still `known`.
+    /// One window of a thread's live session from `cursor`, with its facts unless they are still `known`; `wait`: held
+    /// by the console until the thread changes (no polling while it waits).
     FetchThread {
         thread: String,
         cursor: Option<String>,
         known: Option<String>,
+        wait: bool,
     },
     FetchContext(ContextAsk),
     Act {
@@ -740,6 +744,16 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::ThreadTerms { key, lines })) => {
+                self.status = None;
+                self.mode = Mode::StartThread(crate::thread::StartTerms::new(
+                    self.filing.clone(),
+                    self.project.clone(),
+                    key,
+                    lines,
+                ));
+                vec![]
+            }
             Msg::Acted(Ok(ActOutcome::Terms {
                 preview,
                 digest,
@@ -922,11 +936,13 @@ impl App {
             thread: id,
             cursor: view.transcript.cursor_main.clone(),
             known: view.facts.as_ref().map(|f| f.version.clone()),
+            wait: view.transcript.cursor_main.is_some() && view.facts.is_some(),
         }]
     }
 
-    /// The tick's read of the watched thread: every tick (250 ms) while a question waits on you or the thread is
-    /// changing, backing off to every eighth (2 s) while nothing changes.
+    /// The tick's read of the watched thread, when none is held: a held read (wait) answers the moment the thread
+    /// changes, so nothing polls while it waits; after one that came back unchanged the next waits a tick longer each
+    /// time, up to every eighth (2 s).
     fn tick_thread(&mut self) -> Vec<Effect> {
         let Some(view) = self.threads.view.as_mut() else {
             return self.poll_thread();
@@ -939,8 +955,8 @@ impl App {
     }
 
     /// A thread's window: its records appended (a restart clears them first), its facts replaced when they changed (a
-    /// window without them says they didn't); a dialog whose question no longer stands closes. The next tick's read is
-    /// sooner while something changes or a question waits, later while nothing does.
+    /// window without them says they didn't); a dialog whose question no longer stands closes. After a change the next
+    /// read is a held one at once (it answers at the thread's next change); after an unchanged one, a later tick's.
     fn got_thread(&mut self, id: String, read: Result<LiveSessionWindow, ApiError>) -> Vec<Effect> {
         let Some(view) = self.threads.view.as_mut().filter(|v| v.id == id) else {
             return vec![];
@@ -977,16 +993,7 @@ impl App {
                 more = Some(read.cursor);
             }
         }
-        let waiting = view
-            .facts
-            .as_ref()
-            .and_then(crate::thread::shown_question)
-            .is_some();
-        view.quiet = if changed || waiting {
-            0
-        } else {
-            (view.quiet + 1).min(3)
-        };
+        view.quiet = if changed { 0 } else { (view.quiet + 1).min(3) };
         view.due = (1u32 << view.quiet) - 1;
         crate::thread::check_pin(self);
         match more {
@@ -997,8 +1004,11 @@ impl App {
                     thread: id,
                     cursor: Some(cursor),
                     known: view.facts.as_ref().map(|f| f.version.clone()),
+                    wait: false,
                 }]
             }
+            // Something changed: wait for the next change at once (a held read), never on the tick.
+            None if changed => self.poll_thread(),
             None => vec![],
         }
     }
@@ -1555,6 +1565,7 @@ impl App {
                     }
                 }
             }
+            Mode::StartThread(terms) => crate::thread::start_key(self, terms, key),
             Mode::NewThread(text) => self.typing(
                 key,
                 text,
@@ -2420,7 +2431,7 @@ impl App {
                 self.say(Tone::Said, words);
                 self.refresh()
             }
-            Ok(ActOutcome::Terms { .. }) => {
+            Ok(ActOutcome::Terms { .. } | ActOutcome::ThreadTerms { .. }) => {
                 self.say(
                     Tone::Refused,
                     "Toolroll answered something unexpected. Your notes are kept.",
@@ -2469,6 +2480,8 @@ impl App {
         if message.is_empty() {
             return vec![];
         }
+        // Kept for the terms card the engine answers with (the start posts this message under its key).
+        self.filing = message.clone();
         let mut fields = vec![("message", message)];
         if let Some(project) = &self.project {
             fields.push(("repo", project.clone()));

@@ -74,6 +74,13 @@ export function hostAllowed(host: string, hosts: readonly string[]): boolean {
   return hosts.some(entry => entry === name || (entry.startsWith("*.") && name.endsWith(entry.slice(1))));
 }
 
+/** Whether `host` is a host name an open proxy may reach: a name as normalizeHost reads one (never a wildcard, never an
+ * address: those are refused there before anything resolves). */
+function anyHostByName(host: string): boolean {
+  const name = normalizeHost(host);
+  return name !== null && !name.startsWith("*.");
+}
+
 /**
  * Each provider's own hosts (catalog version 1): its model API and the sign-in refresh its CLI needs. Codex starts
  * its harness outside its command sandbox, so its hosts matter only to what its commands may reach. An ACP agent
@@ -295,6 +302,10 @@ export function proxyEnv(proxy: EgressProxy, loopback: LoopbackMode): Record<str
  */
 export async function startEgressProxy(options: {
   hosts: readonly string[]; lookup?: Lookup; decided?: (host: string, allowed: boolean, why: string) => void;
+  /** An open-network Flexible thread's proxy (flexible-launcher.ts): any host by name (never a bare address), with every
+   * other rule unchanged: this launch's credentials, ports 443 and 80 only, public addresses only, each decision counted
+   * and told to `decided`. A build's network never sets it (an open build runs without a proxy). */
+  open?: true;
   /** Tests only: which resolved addresses may be reached (default: public internet addresses), and the port an
    * approved request is relayed to (default: the one it asked for). */
   addressAllowed?: (address: string) => boolean; upstreamPort?: (port: number) => number;
@@ -330,7 +341,7 @@ export async function startEgressProxy(options: {
   /** The addresses a request may reach, or why it may not. */
   const admit = async (host: string, port: number, wantPort: number): Promise<{ ok: true; addresses: readonly string[] } | { ok: false; why: string }> => {
     if (port !== wantPort) return { ok: false, why: `port ${port} is not allowed` };
-    if (!hostAllowed(host, options.hosts)) return { ok: false, why: "not an approved host" };
+    if (options.open === true ? !anyHostByName(host) : !hostAllowed(host, options.hosts)) return { ok: false, why: "not an approved host" };
     let addresses: readonly string[];
     try { addresses = await lookup(normalizeHost(host)!); } catch { return { ok: false, why: "the host does not resolve" }; }
     if (addresses.length === 0) return { ok: false, why: "the host does not resolve" };

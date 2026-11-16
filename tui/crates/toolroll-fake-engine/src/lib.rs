@@ -112,6 +112,38 @@ pub struct State {
     pub thread_windows: HashMap<String, Value>,
 }
 
+/// A new thread's terms card key (32 hex, as the console's summary keys are).
+pub const START_KEY: &str = "5ea1ed0f5ea1ed0f5ea1ed0f5ea1ed0f";
+
+/// A new thread's terms card, line by line as the console sends it (approval-summary.ts summaryLines): realistic words,
+/// long enough that a 30-line window has to scroll to its end.
+pub fn start_card_lines() -> Vec<String> {
+    [
+        "  Project      shop",
+        "               /home/me/shop",
+        "  Level        Full access: no permission prompts inside the sandbox",
+        "               Full access removes the agent's permission prompts inside the sandbox only. It never lets the agent leave the sandbox, use your keychain or SSH agent, read or change Toolroll's own data, write to your repository directly, or change how agents are started. It covers the agent's own tools, its MCP servers and plugins, and every program they start. Answering an agent's request never runs anything outside the sandbox, and if the sandbox can't hold, the thread doesn't run.",
+        "  Agent        Claude Sonnet 5.5, signed in through Toolroll's relay",
+        "               Your Claude login stays with Toolroll and never enters the agent; each call is checked and counted.",
+        "  Works in     its own copy of this repository, on its own branch",
+        "               Your repository changes only when you Ship.",
+        "  Network      npm",
+        "               Nothing on this computer is reachable (no local services, keychain, SSH agent or saved sign-ins).",
+        "  Limits       150 turns a day for you, 300 turns a day in this project, 3 threads at once",
+        "               Turn limits are hard. A limit on turns doesn't limit what one turn costs.",
+        "               No dollar limit: a turn runs until it finishes.",
+        "               If Toolroll can't measure what a turn on an API key cost, that turn holds the monthly budgets it counts toward until the month ends, and a daily dollar limit until the next day (UTC).",
+        "  Ship         One press. Toolroll merges only when the project's required check passes on that exact commit. A failed or missing check never merges, there is no merge anyway, and any change to the commit cancels it.",
+        "  Terms        this project's Flexible terms, turned on by alex",
+        "               They last until someone turns them off or lowers them, or alex's account or access changes.",
+        "  Note         The agent can read this repository's whole history, not just the commit it starts from.",
+        "  Note         Anything it reads can end up in what it writes: its messages and its commits. Toolroll checks for secrets before Ship, but that isn't a guarantee.",
+    ]
+    .iter()
+    .map(|l| l.to_string())
+    .collect()
+}
+
 /// The terminal a take-over of the result waiting starts (32 hex, as the console's ids are).
 pub const TERM_ID: &str = "0123456789abcdef0123456789abcdef";
 
@@ -909,6 +941,29 @@ async fn act(
                 200,
                 json!({ "outcome": "done", "words": "Sent to the agent." }),
             );
+        }
+        if path == "/agents/live/thread" {
+            // A new thread: without a key, its terms card (as the console makes it); with the card's key, started; with
+            // any other key, refused as stale.
+            let terms = st
+                .acts
+                .last()
+                .and_then(|a| a.field("terms"))
+                .map(str::to_string);
+            return match terms.as_deref() {
+                None | Some("") => json_answer(
+                    200,
+                    json!({ "outcome": "thread-terms", "key": START_KEY, "lines": start_card_lines() }),
+                ),
+                Some(START_KEY) => json_answer(
+                    200,
+                    json!({ "outcome": "done", "words": "The thread started." }),
+                ),
+                Some(_) => json_answer(
+                    409,
+                    json!({ "outcome": "refused", "words": "The terms changed since they were shown. Read them again before starting. Nothing was started." }),
+                ),
+            };
         }
     }
     if path.ends_with("/comment") {
