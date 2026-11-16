@@ -27,7 +27,7 @@ import { BUILT_IN, nightlyTaskRef, releaseTaskRef, type Store } from "./store.js
 export const EXEC_CLASS_OF_REASON: Readonly<Record<string, ExecClass>> = Object.freeze({
   timeout: "model", agent: "model", "agent-reported": "model", "no-op": "model", "no-handoff": "model",
   "moved-head": "model", "moved-branch": "model", "commit-failure": "model",
-  git: "infrastructure", setup: "infrastructure", "provider-init": "infrastructure", "provider-unattested": "infrastructure",
+  git: "infrastructure", setup: "infrastructure", "provider-init": "infrastructure", "agent-error": "infrastructure", "provider-unattested": "infrastructure",
   "provider-protocol": "infrastructure", stopped: "infrastructure",
 });
 /** The gateway's terminal classes that say the provider, not the model, ended the attempt. */

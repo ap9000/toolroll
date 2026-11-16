@@ -19,7 +19,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runOperate, EXIT } from "./operate.js";
 import { run as exec } from "./exec.js";
-import { openStore } from "./store.js";
+import { agentSaidOf, openStore } from "./store.js";
+import { RUN_REASON_WORDS } from "./needs-you.js";
 import type { Runner } from "./builder.js";
 import { AUTH_TRIAL_MS, authPauseOf, pauseForAuth } from "./provider-auth.js";
 import { workIndexPage } from "./work-index.js";
@@ -521,6 +522,38 @@ describe("tick, against real git", () => {
     expect(payload().runs[0]).toMatchObject({ outcome: "failed", reason: "unknown" });
     await run(["ready", "--json"]);
     expect((payload().tasks ?? []).map((t: { id: string }) => t.id)).toEqual([]);
+  });
+
+  test("stranger round 2: an agent that stops with its own error before coming up is the agent's error, not the machine's, and its words are kept", async () => {
+    const { runnerToken, approverToken } = await credentials();
+    await queueApproved("t-said", approverToken);
+    // The stand-in the stranger test used: no init line, its own words on stderr (after a sandbox note naming a path).
+    const refusing: Runner = async () => ({ ...OK, code: 1, stdout: "", stderr: `${repo}/logs/claude.log: Operation not permitted\nclaude stand-in: refusing to run a model\n` });
+    expect(await tick(runnerToken, [], refusing)).toBe(EXIT.failed);
+    expect(payload()).toMatchObject({ dispatched: [{ id: "t-said", outcome: "failed", reason: "agent-error — retry 1/3" }] });
+    const store = openStore(db);
+    try {
+      const failed = store.handle.prepare("SELECT id, reason, handoff FROM run WHERE outcome = 'failed' ORDER BY id DESC LIMIT 1").get()!;
+      expect(failed["reason"]).toBe("agent-error");
+      expect(String(failed["handoff"])).toBe("the agent stopped with an error — claude stand-in: refusing to run a model");
+      // Kept short and safe: the path said as [path], never the folder.
+      expect(agentSaidOf(store, Number(failed["id"]))).toEqual(["[path]: Operation not permitted", "claude stand-in: refusing to run a model"]);
+      // The stop's words for a person: the agent's error, never the machine's.
+      expect(RUN_REASON_WORDS["agent-error"]).toBe("the agent stopped with an error");
+    } finally { store.close(); }
+  });
+
+  test("a harness that never comes up and says nothing stays the machine's problem, with nothing kept", async () => {
+    const { runnerToken, approverToken } = await credentials();
+    await queueApproved("t-silent", approverToken);
+    const silent: Runner = async () => ({ ...OK, code: 1, stdout: "", stderr: "" });
+    expect(await tick(runnerToken, [], silent)).toBe(EXIT.failed);
+    expect(payload()).toMatchObject({ dispatched: [{ id: "t-silent", outcome: "failed", reason: "retryable-infra — retry 1/3" }] });
+    const store = openStore(db);
+    try {
+      const failed = store.handle.prepare("SELECT id FROM run WHERE outcome = 'failed' ORDER BY id DESC LIMIT 1").get()!;
+      expect(agentSaidOf(store, Number(failed["id"]))).toBeNull();
+    } finally { store.close(); }
   });
 
   // An agent whose sign-in expired: the harness comes up, then the turn fails

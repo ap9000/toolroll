@@ -105,7 +105,6 @@ describe("the summary, short and plain", () => {
         Tools        file edits and routine commands; anything risky stops
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 1000 turns or 20 min without progress
@@ -121,7 +120,6 @@ describe("the summary, short and plain", () => {
         Tools        file edits and routine commands; anything risky stops
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 1000 turns or 20 min without progress
@@ -139,7 +137,6 @@ describe("the summary, short and plain", () => {
         Tools        file edits and routine commands; anything risky stops
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 1000 turns or 20 min without progress
@@ -157,7 +154,6 @@ describe("the summary, short and plain", () => {
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Your pick    builder Codex · gpt-5-codex, not the project’s usual pick
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 20 min without progress
@@ -175,7 +171,6 @@ describe("the summary, short and plain", () => {
         Tools        file edits and routine commands; anything risky stops
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 1000 turns or 20 min without progress
@@ -192,7 +187,6 @@ describe("the summary, short and plain", () => {
         Tools        file edits and routine commands; anything risky stops
         May cost     up to $2.50 per attempt; the agent is stopped there
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 1000 turns or 20 min without progress
@@ -209,7 +203,6 @@ describe("the summary, short and plain", () => {
         Tools        file edits and routine commands; anything risky stops
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 1000 turns or 20 min without progress
@@ -227,7 +220,6 @@ describe("the summary, short and plain", () => {
         May cost     No spend cap · stops at its time limit (20 min without progress)
         Note         This project protects this work: two people must approve it.
         Usual        Your usual project settings: sandboxed, writes only its checkout, Default checks
-                     Checks: Default
                      Writes: only its checkout, its caches and its temp folder
                      Reads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written
                      Time limit: stops after 1000 turns or 20 min without progress
