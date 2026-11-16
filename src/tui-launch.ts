@@ -30,9 +30,10 @@
  *   (Homebrew's Cellar, `npm i -g` under nvm or a person's own /opt/homebrew) and one owned by root (`sudo npm i -g`
  *   into /usr/local) both pass, and one others can write (a group- or world-writable npm prefix) is refused.
  * - The checked file's identity (device, inode, size, modification time) is taken at the check and must be the same
- *   before the self-check runs it and again right before the screen starts it; a change it detects refuses the launch.
- *   That is the limit of the proof (check and start are not one atomic step): a process of this same user that can write the person's own install could still swap the
- *   file in the instant left, as it could swap node or dist/*.js (an accepted residual).
+ *   before the self-check runs it and again right before the screen starts it; a change it detects refuses the
+ *   launch. That is the limit of the proof (check and start are not one atomic step): a process of this same user
+ *   that can write the person's own install could still swap the file in the instant left, as it could swap node or
+ *   dist/*.js (an accepted residual).
  * - Self-check, a compatibility test only: `<binary> --version` must answer `toolroll-tui <v> contract <digest>` with
  *   this build's engine contract digest (contracts/engine-api.ts); a binary from another build, one that doesn't start
  *   (ENOEXEC, a crash), can't turn crash dumps off (exit 43) or doesn't answer in time is never handed a sign-in.
