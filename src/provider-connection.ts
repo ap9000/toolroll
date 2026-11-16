@@ -18,6 +18,14 @@ export type ProviderConnection = {
 };
 export type ConnectionChecker = (provider: ProviderId, fresh?: boolean) => Promise<ProviderConnection>;
 
+/** The longest a conclusive "signed out" or "not installed" answer stands before a background check asks the CLI again
+ * (eight stranger 2: a signed-out Codex was asked every two minutes for as long as Toolroll ran). The first such answer
+ * stands 30 seconds, like any other, so a sign-in made just after the first start is seen within a pass; each one after
+ * it in a row stands four times longer, up to this. A person's Check again, a finished sign-in in the terminal workbench
+ * and every other on-demand check ask fresh at once, and any other answer starts the count again. */
+export const SIGNED_OUT_RECHECK_MS = 10 * 60_000;
+const ANSWER_MS = 30_000;
+
 export function signInFacts(provider: ProviderId, result: ExecResult, now = new Date()): ProviderConnection {
   const base = { mode: "subscription" as const, checkedAt: now.toISOString() };
   if (result.notFound) return { ...base, state: "not-installed" };
@@ -56,6 +64,8 @@ export function createConnectionChecker(options: { probe?: typeof run; home?: st
   const verify = options.verify ?? ((provider: KeyedProviderId, key: string) => verifyProviderKey(provider, key));
   const clock = options.clock ?? (() => new Date());
   const cache = new Map<ProviderId, { key: string; until: number; value: ProviderConnection }>();
+  /** Each provider's last conclusive "not here" answer and how many times in a row it came (answerStandsMs). */
+  const absentStreak = new Map<ProviderId, { state: string; count: number }>();
   const pending = new Map<string, Promise<ProviderConnection>>();
   return async (provider, fresh = false) => {
     // An ACP agent is never run to ask how it is signed in (nothing executes it outside the gateway): what is known
@@ -94,9 +104,19 @@ export function createConnectionChecker(options: { probe?: typeof run; home?: st
       // A slow subscription probe must not overwrite a newer API-key result.
       const currentKeyFacts = keyStatus(provider, home);
       const currentKey = JSON.stringify([provider, readAuthMode(provider, home), currentKeyFacts.set, currentKeyFacts.updatedAt, !!(options.env ?? process.env)[PROVIDER_KEY_ENV[provider]]]);
-      if (currentKey === key) cache.set(provider, { key, until: value.verdict !== undefined ? Number.POSITIVE_INFINITY : clock().getTime() + 30_000, value });
+      if (currentKey === key) {
+        const before = absentStreak.get(provider);
+        const absent = value.state === "signed-out" || value.state === "not-installed";
+        const count = absent ? (before?.state === value.state ? before.count + 1 : 1) : 0;
+        if (absent) absentStreak.set(provider, { state: value.state, count }); else absentStreak.delete(provider);
+        cache.set(provider, { key, until: value.verdict !== undefined ? Number.POSITIVE_INFINITY : clock().getTime() + answerStandsMs(value.state, count), value });
+      }
       return value;
     }
     finally { pending.delete(key); }
   };
 }
+
+/** How long an answer stands: 30 seconds, or longer for the same conclusive "not here" answer seen again and again. */
+export const answerStandsMs = (state: ProviderConnection["state"], inARow: number): number =>
+  state === "signed-out" || state === "not-installed" ? Math.min(ANSWER_MS * 4 ** Math.max(0, inARow - 1), SIGNED_OUT_RECHECK_MS) : ANSWER_MS;

@@ -59,6 +59,9 @@ export type ApprovalSummary = {
   /** Everything else the yes binds, in plain words: folded under `usualLabel`. */
   usual: SummaryRow[];
   usualLabel: string;
+  /** The fold's one plain line, read from the usual rows' own values ("sandboxed, writes only its checkout, Default
+   * checks, 20 min without progress"); "" when there is nothing to fold. Bound by `key` like every other word. */
+  usualSummary: string;
   /** A hash of everything above and the scope's digest: what an approval form pins. */
   key: string;
 };
@@ -132,6 +135,29 @@ function agentWords(route: PhaseRoute | null, profile: ExecutionProfile | null |
   const who = [...groups.map(one => `${one.name} ${list(one.verbs)}`), ...asked].join("; ");
   const size = sizeWords(route);
   return size === null ? who : `${who} (${lowerFirst(size)})`;
+}
+
+/** The time part of a run's limit alone ("20 min without progress"), for the cost row. */
+function timeWords(profile: ExecutionProfile): string {
+  if ("idleTimeoutSeconds" in profile) return `${minutes(profile.timeoutSeconds)}, or ${minutes(profile.idleTimeoutSeconds)} silent`;
+  return `${minutes(profile.timeoutSeconds)} ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}`;
+}
+
+/**
+ * The usual-settings fold's one plain line, each phrase read from a row that is in the fold (so it says only what the
+ * fold binds, and never a setting that differs, which is shown in the open): "sandboxed" only when both its reads are
+ * the sandbox runtime's and its project checks run sandboxed. Every setting stays whole inside the fold, and every
+ * surface that has no fold lists them after this line.
+ */
+function usualSummaryOf(usual: readonly SummaryRow[], profile: ExecutionProfile | null): string {
+  const has = (label: string): SummaryRow | undefined => usual.find(one => one.label === label);
+  const parts: string[] = [];
+  if (profile !== null && has("Reads") !== undefined && profile.fencePolicy === 2 && has("Project checks")?.words === checkAccessWords("sandboxed")) parts.push("sandboxed");
+  if (profile !== null && has("Writes") !== undefined && profile.writes === "workspace") parts.push("writes only its checkout");
+  const checks = has("Checks");
+  if (checks !== undefined) parts.push(`${checks.words} checks`);
+  // The time limit is named once, in the cost row; whole in the fold.
+  return parts.join(", ");
 }
 
 /** The time a run may take, in plain words. */
@@ -258,8 +284,12 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   // What will change: the goal whole, every word that is signed.
   decisions.push({ label: "Goal", words: scope.goal, fields: ["goal"] });
   if (scope.outOfScope !== null) decisions.push({ label: "Won’t touch", words: scope.outOfScope, fields: ["outOfScope"] });
+  // A first task's one requirement is its goal, shown by your review: said as that, not the goal a second time.
+  const reviewOnly = scope.acceptance.length === 1 && scope.acceptance[0]!.statement.trim() === scope.goal.trim()
+    && scope.acceptance[0]!.evidence.length === 1 && scope.acceptance[0]!.evidence[0] === "manual-review";
   decisions.push(scope.acceptance.length === 0
     ? { label: "Done when", words: "You decide when you review the result.", fields: ["acceptance"] }
+    : reviewOnly ? { label: "Done when", words: "You review the result", fields: ["acceptance"] }
     : { label: "Done when", words: `${scope.acceptance[0]!.statement} (${scope.acceptance[0]!.evidence.map(kind => EVIDENCE_WORDS[kind] ?? kind).join(", ")})`,
       lines: scope.acceptance.slice(1).map(one => `${one.statement} (${one.evidence.map(kind => EVIDENCE_WORDS[kind] ?? kind).join(", ")})`), fields: ["acceptance"] });
   if (scope.candidate) decisions.push({ label: "Commit", words: `${scope.candidate}, checked out as it is; no agent runs`, fields: ["candidate"] });
@@ -285,8 +315,9 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
       fields: permissionKey === null ? [] : [`profile.${permissionKey}` as BoundField], ...(scopeFullAccess(profile) ? { risky: true } : {}) });
   }
 
-  // What it may cost: with no cap an attempt runs until it finishes or its time limit (risky, so said in the open).
-  decisions.push({ label: "May cost", words: scope.budgetMicrousd === null ? "no cap: an attempt runs until it finishes or reaches its time limit" : `up to ${money(scope.budgetMicrousd)} per attempt; the agent is stopped there`,
+  // What it may cost: with no cap an attempt runs until it finishes or its time limit (risky, so said in the open), and
+  // that limit is named (its turns, when it has them, are in the Time limit row).
+  decisions.push({ label: "May cost", words: scope.budgetMicrousd === null ? `No spend cap · stops at its time limit${profile === null ? "" : ` (${timeWords(profile)})`}` : `up to ${money(scope.budgetMicrousd)} per attempt; the agent is stopped there`,
     fields: ["budget"], ...(scope.budgetMicrousd === null ? { risky: true } : {}) });
 
   // A release is said whole: what asks again is part of the yes.
@@ -340,11 +371,12 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   if (context.revision?.problem != null) warnings.push({ words: `Toolroll can’t check what this revises (${context.revision.problem}), so no fix runs on its own.`, fields: [] });
 
   const usualLabel = context.usual === null ? OTHER_LABEL : USUAL_LABEL;
+  const usualSummary = usualSummaryOf(usual, profile);
   // The baseline the rows were compared with is bound too (its network included), so a change to it is a stale form even
   // where no row's words move.
-  const key = createHash("sha256").update(JSON.stringify({ v: 2, digest: scope.digest, revision, revisionChanges, decisions, differs, warnings, usual, usualLabel, baseline: context.usual }), "utf8").digest("hex").slice(0, 32);
+  const key = createHash("sha256").update(JSON.stringify({ v: 3, digest: scope.digest, revision, revisionChanges, decisions, differs, warnings, usual, usualLabel, usualSummary, baseline: context.usual }), "utf8").digest("hex").slice(0, 32);
   const why = context.evidence == null || context.evidence === "" ? null : context.evidence.replace(/^Why this model: /, "");
-  return { revision, revisionNotes, revisionChanges, decisions, why, differs, warnings, usual, usualLabel, key };
+  return { revision, revisionNotes, revisionChanges, decisions, why, differs, warnings, usual, usualLabel, usualSummary, key };
 }
 
 /** Every bound field the summary states, in a row or a note. */
@@ -379,7 +411,9 @@ export function summaryLines(summary: ApprovalSummary): string[] {
     ...(summary.why === null ? [] : [`${pad("Why model")}${summary.why}`]),
     ...summary.differs.flatMap(row),
     ...summary.warnings.map(one => `${pad("Note")}${one.words}`),
-    ...(summary.usual.length === 0 ? [] : [`${pad("Usual")}${summary.usualLabel}: ${summary.usual.map(one => `${lowerFirst(one.label)} ${one.words}`).join(" · ")}`]),
+    // One plain line, then each setting whole on a line of its own (a screen may fold those under the first).
+    ...(summary.usual.length === 0 ? [] : [`${pad("Usual")}${summary.usualSummary === "" ? summary.usualLabel : `${summary.usualLabel}: ${summary.usualSummary}`}`,
+      ...summary.usual.map(one => `${indent}${one.label}: ${one.words}`)]),
   ];
 }
 
@@ -495,5 +529,5 @@ export function approvalSummaryFor(store: Store, taskId: string, now: Date, evid
  */
 export function shipSummaryOf(digest: string, decisions: SummaryRow[], warnings: SummaryNote[]): ApprovalSummary {
   const key = createHash("sha256").update(JSON.stringify({ v: 2, kind: "flexible-ship", digest, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
-  return { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: USUAL_LABEL, key };
+  return { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: USUAL_LABEL, usualSummary: "", key };
 }

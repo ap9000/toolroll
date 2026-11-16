@@ -59,6 +59,23 @@ function run(command: string, args: string[], env: Record<string, string>, stdin
 const started = (): string[] => readFileSync(record, "utf8").trimEnd().split("\n");
 
 describe("install.sh starts Toolroll on the terminal, or says how", () => {
+  test("eight stranger 5: the older standing-orders package is removed first, by name, and nothing else; never --force", async () => {
+    const calls = join(base, "npm-calls");
+    const npm = (installed: boolean) => { writeFileSync(join(stubs, "npm"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\n[ "$1" = ls ] && exit ${installed ? 0 : 1}\nexit 0\n`); chmodSync(join(stubs, "npm"), 0o755); };
+    npm(true);
+    const old = await run("sh", [INSTALL], { SO_NO_START: "1" });
+    expect(old.code, old.out).toBe(0);
+    expect(old.out).toContain("Removing the older standing-orders package first (npm uninstall -g standing-orders)");
+    expect(readFileSync(calls, "utf8").trimEnd().split("\n")).toEqual([
+      "ls -g standing-orders --depth=0", "uninstall -g standing-orders --no-fund --no-audit --loglevel=error", "install -g toolroll@latest --no-fund --no-audit --loglevel=error"]);
+    rmSync(calls);
+    npm(false);
+    const fresh = await run("sh", [INSTALL], { SO_NO_START: "1" });
+    expect(fresh.code, fresh.out).toBe(0);
+    expect(fresh.out).not.toContain("Removing");
+    expect(readFileSync(calls, "utf8").trimEnd().split("\n")).toEqual(["ls -g standing-orders --depth=0", "install -g toolroll@latest --no-fund --no-audit --loglevel=error"]);
+  });
+
   test("SO_NO_START=1 installs only and prints the quoted start command", async () => {
     const projects = join(base, "projects");
     const result = await run("sh", [INSTALL], { SO_NO_START: "1", SO_PROJECTS: projects });

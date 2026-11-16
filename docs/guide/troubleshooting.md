@@ -1,5 +1,11 @@
 # Troubleshooting
 
+**`npm error EEXIST: file already exists … bin/standing-orders` while
+installing.** The older `standing-orders` package is still installed, and npm
+won't replace its command. Remove it, then install again:
+`npm uninstall -g standing-orders && npm install -g toolroll`. Your data
+stays where it is, and the `standing-orders` command comes back with Toolroll.
+
 **"Sorting needs an OpenRouter key."** Add one in Settings → AI providers →
 OpenRouter. **Check again** there tests it.
 

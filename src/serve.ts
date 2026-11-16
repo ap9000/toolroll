@@ -1268,7 +1268,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const ask = (again: boolean) => Promise.all(LOCAL_AGENTS.map(one => connectionCheck(one, again).catch(() => null)));
     localSignInChecking = ask(fresh)
       // Nobody signed in and one of them couldn't be checked: asked once more, fresh, before anything is concluded.
-      .then(first => first.some(one => one !== null && SIGNED_IN_STATES.has(one.state)) || !first.some(one => one === null || one.state === "unverified") ? first : ask(true))
+      // Only the inconclusive ones are asked again: a conclusive answer (signed out, not installed) stands.
+      .then(first => first.some(one => one !== null && SIGNED_IN_STATES.has(one.state)) || !first.some(one => one === null || one.state === "unverified") ? first
+        : Promise.all(LOCAL_AGENTS.map((one, index) => { const was = first[index] ?? null; return was === null || was.state === "unverified" ? connectionCheck(one, true).catch(() => null) : was; })))
       .then(async answers => {
         const at = clock().getTime();
         const [claudeSeen, codexSeen] = answers.map((value, index) => heldSignIn(LOCAL_AGENTS[index]!, value, at));
@@ -2223,7 +2225,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           if (options.identities !== undefined && lastChecks.due(`project-mcp:${repo}`, 10 * 60_000)) {
             waits.push(lastChecks.run(`project-mcp:${repo}`, async () => { const looked = await lookProjectMcp(repo); if (looked.ok) savedProjectMcp.set(repo, looked.value); return looked.ok; }));
           }
-          if (lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) waits.push(lastChecks.run(`codex-tools:${repo}`, () => codexServers(repo)));
+          // Only for a Codex the last sign-in check saw signed in: a signed-out (or not yet checked) Codex is never started
+          // for its servers (eight stranger 2).
+          if (SIGNED_IN_STATES.has(knownConnections.get("codex")?.state ?? "") && lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) waits.push(lastChecks.run(`codex-tools:${repo}`, () => codexServers(repo)));
         }
         if (databaseFile !== null && lastChecks.due("storage", 30 * 60_000)) {
           waits.push(lastChecks.run("storage", () => checkoutPlan(store, storagePool(databaseFile), clock(), { manual: true })));
