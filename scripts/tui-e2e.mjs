@@ -344,7 +344,7 @@ async function main() {
     let seenLive = false;
     while (Date.now() < ready) {
       const now = text();
-      if (/Build ◐|Building now|build #\d+/.test(now)) seenLive = true;
+      if (/Build ◐|Building now|attempt \d+/.test(now)) seenLive = true;
       if (/Needs you \d/.test(now) && /Result|Ready/.test(now)) break;
       if (/Plan|Approval/.test(now) && /Needs you \d/.test(now) && /Approve|approve/.test(now)) break;
       await sleep(250);
@@ -353,13 +353,13 @@ async function main() {
     step("waiting on the person");
     const scope = sqlite(`SELECT approved_at FROM task_scope WHERE task_id = '${task?.id ?? ""}'`)[0] ?? null;
     report.approved = scope?.approved_at ?? null;
-    // 4. Its changes (Enter opens the Diff tab), then accept it with a: the dialog names the build it accepts
-    // (view.rs "Accept the result of build #N"); a with no diff of that build on screen shows the changes first.
+    // 4. Its changes (Enter opens the Diff tab), then accept it with a: the dialog names the attempt it accepts
+    // (view.rs "Accept the result of attempt N"); a with no diff of that build on screen shows the changes first.
     term.write("\r");
     await waitFor(/src\/math\.js/, "the result's changes", 20_000);
     step("Enter: the result's changes");
     report.diff_shown = true;
-    const DIALOG = /Accept the result of build #\d+/;
+    const DIALOG = /Accept the result of (?:attempt \d+|this attempt)/;
     const NOT_NOW = /Refused: |isn't ready to accept|No result is waiting|aren't the result waiting/;
     term.write("a");
     await waitFor(new RegExp(`${DIALOG.source}|Here are its changes|${NOT_NOW.source}`), "the accept dialog or why not", 10_000);

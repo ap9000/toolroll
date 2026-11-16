@@ -947,7 +947,8 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     completedBy: code !== 'complete' || landed !== null ? null : n(row, 'completed_by_lead') === 1 ? 'the lead' : String(row['checked_actor']).replace(/^(?:operator|coordinator|lead):/, ''),
     ...(landed === null ? {} : { landed }),
     ...(lead === null ? {} : { lead, ...(leadName === undefined ? {} : { leadName }) }) });
-  label = shared.headline;
+  // A cancelled task says so in its own word, never the stage's "Stopped" (a replaced one keeps "Replaced by …").
+  label = code === 'cancelled' && shared.headline === 'Stopped' && !shared.sentence.startsWith('Replaced by ') ? 'Cancelled' : shared.headline;
   detail = shared.sentence;
   // Every Needs you action wears its need's own words, except a first sign-in (no agent was ever signed in): it is
   // Sign in, never "Sign in again" (the task page's own rule, task-view.tsx).

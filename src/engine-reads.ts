@@ -124,7 +124,8 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
       const last = latestFinishedAttempt(builds);
       return { ...waiting, agentSaid: last !== null && last.outcome === "failed" ? agentSaidOf(store, last.id) : null };
     })(),
-    held: heldOf(store, ref?.id ?? null, builds, now),
+    // A hold matters only while the task could still run: a cancelled or finished task has nothing to resume.
+    held: current.state === "cancelled" || current.state === "done" ? null : heldOf(store, ref?.id ?? null, builds, now),
     retry: current.state === "failed" ? (() => { const pins = retryPinsOf(store, current.id); return pins === null ? null : { run: pins.run, digest: pins.digest }; })() : null,
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,

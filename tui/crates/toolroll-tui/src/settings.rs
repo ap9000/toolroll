@@ -1056,6 +1056,13 @@ pub fn load(env: &Env) -> (Settings, Option<PathBuf>, FileState, Vec<String>) {
     }
 }
 
+/// Whether the terminal speaks the keyboard protocol, from the start ask: yes only when it said so; no when it answered
+/// without it, or answered nothing in time (it won't answer the keyboard ask either); None when it wasn't asked (not a
+/// terminal, or not asked here), and crossterm asks on its own.
+pub fn keyboard_of(answers: Option<crate::theme::Answers>) -> Option<bool> {
+    answers.map(|a| a.answered && a.keyboard)
+}
+
 /// Everything the screen needs from its surroundings, at start: the settings, the colours the terminal shows, its
 /// background (asked only from a local terminal with colour on: raw mode, before anything reads the keyboard), and
 /// where notifications go.
@@ -1063,16 +1070,20 @@ pub fn start(env: &Env) -> Prefs {
     let (settings, path, file, warnings) = load(env);
     let depth = env.depth();
     let ask = depth != Depth::Off && !env.ssh;
-    let background = if ask {
-        crate::theme::ask_background(std::time::Duration::from_millis(150))
+    let answers = if ask {
+        crate::theme::ask_terminal(std::time::Duration::from_millis(150))
     } else {
         None
     };
+    let background = answers.and_then(|a| a.background);
     let reach = Reach::of(env, settings.tmux_passthrough);
     let mut prefs = Prefs::new(settings, path, file, warnings, depth, background, reach);
     prefs.home = env.home.clone();
     // Asked and not answered in time: an answer may still come, and must not be read as keys (theme::LateReply).
     prefs.late_reply = ask && background.is_none();
+    // The keyboard protocol, from the same ask: known once the terminal answered (a terminal that answered nothing
+    // within the ask won't answer the keyboard ask either). Not asked: crossterm asks on its own (run.rs).
+    prefs.keyboard = keyboard_of(answers);
     prefs
 }
 
@@ -1098,6 +1109,8 @@ pub struct Prefs {
     pub reach: Reach,
     /// The background was asked for and not answered in time (the loop drops a late answer: theme::LateReply).
     pub late_reply: bool,
+    /// Whether the terminal speaks the keyboard protocol, from the start ask (None: not asked here).
+    pub keyboard: Option<bool>,
     /// A change on the Settings screen was written to the file this session.
     pub saved: bool,
 }
@@ -1116,6 +1129,7 @@ impl Default for Prefs {
             theme: Theme::default(),
             reach: Reach::default(),
             late_reply: false,
+            keyboard: None,
             saved: false,
         }
     }
@@ -1145,6 +1159,7 @@ impl Prefs {
             theme,
             reach,
             late_reply: false,
+            keyboard: None,
             saved: false,
         }
     }

@@ -198,7 +198,7 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     run.press("j");
     // The first t says what it opens; nothing starts until the second.
     run.press("t");
-    run.wait_for("Opens your shell in a separate copy of build #2.", 5);
+    run.wait_for("Opens your shell in a separate copy of attempt 1.", 5);
     assert!(engine.acts().iter().all(|a| a.path != "/term/start"));
     run.press("t");
     let shown = run.wait_for("$ ", 10);

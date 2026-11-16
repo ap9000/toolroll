@@ -514,6 +514,35 @@ describe("the local owner reads them with the session a terminal client redeems"
     expect(world.store.getTask("one")?.state).toBe("cancelled");
   });
 
+  test("a task cancelled while on hold offers no Resume, refuses one in its own words, and its row says Cancelled", async () => {
+    const link = world.server.mintLocalLink()!;
+    const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
+    const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
+    const cookie = `${body.cookie.name}=${body.cookie.value}`;
+    const act = (path: string, fields: Record<string, string>) => world.send(path, "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded",
+      "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf: body.csrf, ...fields }).toString());
+    const made = world.store.createConsoleTask({ id: "two", title: "task two", repo: world.repo, goal: "do two", acceptance: [{ id: "c1", statement: "two is done.", evidence: ["manual-review"] }], filedVia: "cli" }, new Date());
+    expect(made.ok).toBe(true);
+    const ref = world.store.lookupRef("two")!.id;
+    const get = async (path: string) => JSON.parse((await world.send(path, "GET", { cookie, accept: "application/json" })).body) as unknown;
+    expect((await act("/t/two/hold", { reason: "stopped retrying from the terminal" })).status).toBe(303);
+    const hold = world.store.activeHolds(ref, new Date()).find(one => one.ownerKind === "operator")!;
+    expect(stepCardsSchema.parse(await get("/t/two/steps")).held).not.toBeNull();
+    expect((await act("/t/two/cancel", { state: "queued", run: "none" })).status).toBe(303);
+    // Cancelled: nothing waits and nothing can be resumed, whatever hold row is left behind.
+    const steps = stepCardsSchema.parse(await get("/t/two/steps"));
+    expect(steps.task.state).toBe("cancelled");
+    expect(steps.held).toBeNull();
+    expect(steps.waiting).toBeNull();
+    const resumed = await act("/t/two/unhold", { hold: String(hold.id) });
+    expect(resumed.status).toBe(409);
+    expect(JSON.parse(resumed.body)).toEqual({ outcome: "refused", words: "This task was cancelled, so there is nothing to resume." });
+    expect(world.store.getTask("two")?.state).toBe("cancelled");
+    // Its row's word is the task's own: Cancelled, never the stage's Stopped.
+    const row = workRowsSchema.parse(await get("/work/rows")).rows.find(row => row.id === "two");
+    if (row !== undefined) expect(row.word.word).toBe("Cancelled");
+  });
+
   test("a terminal client's act hears a refusal in place, in the page's own words; a browser's still gets the page", async () => {
     const link = world.server.mintLocalLink()!;
     const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));

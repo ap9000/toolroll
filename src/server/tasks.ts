@@ -1931,6 +1931,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         // the release's own transaction). A browser's form names none and releases as before.
         const shown = readForm(posted, CONSOLE_FORMS.taskUnhold).get("hold");
         if (shown !== null && !/^[1-9][0-9]{0,15}$/.test(shown)) return taskScreen(response, who, taskId, "not resumed: name the hold that was shown", 400);
+        // A cancelled or finished task has nothing to resume: refused in its own words, never answered as resumed.
+        const ended = store.getTask(taskId)?.state;
+        if (ended === "cancelled" || ended === "done") {
+          return taskScreen(response, who, taskId, ended === "cancelled" ? "This task was cancelled, so there is nothing to resume." : "This task is finished, so there is nothing to resume.", 409);
+        }
         const released = store.unhold(ref.id, {}, now, shown === null ? undefined : Number(shown));
         if (shown !== null && !released) return taskScreen(response, who, taskId, "This task's hold changed since it was shown — look again before resuming.", 409);
         return redirect(response, taskHref(taskId));

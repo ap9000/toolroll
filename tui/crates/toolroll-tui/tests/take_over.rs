@@ -483,7 +483,7 @@ fn the_pane_says_it_is_a_separate_copy_on_its_own_branch() {
     let mut app = taken_over();
     let shown = screen(&mut app, 120, 30);
     assert!(
-        shown.contains("separate copy at build #2 on toolroll/live-0123456789ab"),
+        shown.contains("separate copy at attempt 1 on toolroll/live-0123456789ab"),
         "{shown}"
     );
 }
@@ -553,7 +553,7 @@ fn nothing_starts_before_the_scope_is_confirmed() {
     assert_eq!(app.key(key('t')), vec![]);
     let shown = screen(&mut app, 120, 30);
     assert!(
-        shown.contains("Opens your shell in a separate copy of build #2.")
+        shown.contains("Opens your shell in a separate copy of attempt 1.")
             && shown.contains("direnv"),
         "{shown}"
     );

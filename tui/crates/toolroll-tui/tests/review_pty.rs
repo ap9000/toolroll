@@ -117,7 +117,7 @@ fn review_in_a_real_terminal() {
     assert!(engine.acts().is_empty(), "copying sent {:?}", engine.acts());
     // Send back with the note.
     press("r");
-    wait_for(&screen, "Send back build #2 with:", 5);
+    wait_for(&screen, "Send back attempt 1 with:", 5);
     press("Thanks.");
     wait_for(&screen, "For the whole change: Thanks.", 5);
     // The whole text, read to its end, then Enter sends exactly it.

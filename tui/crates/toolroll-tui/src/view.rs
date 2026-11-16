@@ -164,7 +164,31 @@ fn step_line_with(app: &App, steps: &StepCards, times: bool, join: &str) -> Line
     Line::from(spans)
 }
 
-/// "claude sonnet · Building now · 4m 12s · $0.31 · build #7".
+/// A build card's words while its task waits: on a person's hold, or to try again after a failed build (None: neither).
+/// The engine's card says "Stopped" or "Waiting to start"; a person reads where it stands and the attempt it follows.
+pub fn build_wait(steps: &StepCards, card: &StepCard) -> Option<&'static str> {
+    if card.key != "build" || steps.live_run.is_some() || steps.task.state != "queued" {
+        return None;
+    }
+    if steps.held.is_some() {
+        Some("On hold")
+    } else if steps.waiting.is_some() && !card.runs.is_empty() {
+        Some("Waiting to retry")
+    } else {
+        None
+    }
+}
+
+/// "Fix" → "Fix" ("attempt 2" → "Attempt 2").
+fn upper_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// "claude sonnet · Building now · 4m 12s · $0.31 · attempt 2"; waiting, "Waiting to retry · 21s · after attempt 2".
 fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
     let card = steps
         .cards
@@ -183,7 +207,10 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
             .to_string(),
         );
     }
-    if !card.sentence.is_empty() {
+    let wait = build_wait(steps, card);
+    if let Some(words) = wait {
+        parts.push(words.to_string());
+    } else if !card.sentence.is_empty() {
         parts.push(clean(&card.sentence));
     }
     if let Some(secs) = build_clock(app, steps, card) {
@@ -192,10 +219,16 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
     if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
         parts.push(format!("${cost:.2}"));
     }
-    if let Some(run) = card.runs.first() {
-        parts.push(match card.runs.len() {
-            0 | 1 => format!("build #{run}"),
-            n => format!("build #{run} ({} before)", n - 1),
+    // The task's own attempt number (the console's build ids count across tasks); waiting, the one it follows.
+    if let Some(n) = card
+        .runs
+        .first()
+        .and_then(|r| crate::app::attempt_of(steps, *r))
+    {
+        parts.push(if wait.is_some() {
+            format!("after attempt {n}")
+        } else {
+            format!("attempt {n}")
         });
     }
     Some(Line::from(Span::styled(parts.join(" · "), dim())))
@@ -1049,7 +1082,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
                 .steps
                 .as_ref()
                 .and_then(|s| s.live_run)
-                .map(|r| format!(" (it goes to build #{r})"))
+                .map(|r| format!(" (it goes to {})", app.attempt_words(r)))
                 .unwrap_or_default();
             spans.push(Span::styled(
                 fit(&format!("Steer the agent: a note{run}"), room_all),
@@ -1416,6 +1449,13 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 outcome
             };
+        // Waiting on a person's hold, or to retry: said so (never "waiting" over "Stopped").
+        let wait = build_wait(steps, card);
+        let outcome = match wait {
+            Some("On hold") => "on hold",
+            Some(_) => "waiting to retry",
+            None => outcome,
+        };
         let mut right = vec![Span::styled(outcome, outcome_style)];
         // The step's current build, on the header's own clock (build_clock).
         if let Some(secs) = build_clock(app, steps, card) {
@@ -1439,7 +1479,7 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
         ];
         head.extend(right);
         c.push(fit_line(Line::from(head), w));
-        if !card.sentence.is_empty() {
+        if !card.sentence.is_empty() && wait.is_none() {
             for l in wrap(&clean(&card.sentence), w.saturating_sub(2)) {
                 c.push(Line::raw(format!("  {l}")));
             }
@@ -1456,12 +1496,14 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
                 .to_string(),
             );
         }
-        match card.runs.as_slice() {
-            [] => {}
-            [one] => facts.push(format!("build #{one}")),
-            [newest, rest @ ..] => {
-                facts.push(format!("build #{newest} (and {} before)", rest.len()))
-            }
+        // The task's attempt, and the console's own build id beside it (here only: the details).
+        if let Some(newest) = card.runs.first() {
+            let n = card.runs.len();
+            facts.push(if wait.is_some() {
+                format!("after attempt {n} (build #{newest})")
+            } else {
+                format!("attempt {n} (build #{newest})")
+            });
         }
         if !facts.is_empty() {
             c.push(fit_line(
@@ -1474,7 +1516,13 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
             if let Some(review) = &steps.review {
                 c.push(fit_line(
                     Line::from(vec![
-                        Span::styled(format!("  Build #{} waits for you: ", review.run), ink()),
+                        Span::styled(
+                            format!(
+                                "  {} waits for you: ",
+                                upper_first(&app.attempt_words(review.run))
+                            ),
+                            ink(),
+                        ),
                         Span::styled("a accepts · r sends back · t takes over", dim()),
                     ]),
                     w,
@@ -2623,7 +2671,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
             let mut lines = vec![Line::raw("")];
             lines.extend(
-                wrap(&crate::app::take_over_scope(*run), w)
+                wrap(&crate::app::take_over_scope(&app.attempt_words(*run)), w)
                     .into_iter()
                     .map(|l| Line::from(Span::styled(l, ink()))),
             );
@@ -2700,16 +2748,17 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             // Its real state as the screen shows it, and its current build (the one every surface names).
             let steps = app.steps_here();
             let now_state = match state.as_str() {
-                "queued" if steps.is_some_and(|s| s.held.is_some()) => "on hold".to_string(),
+                "queued" if steps.is_some_and(|s| s.held.is_some()) => "is on hold".to_string(),
                 "queued" if steps.is_some_and(|s| s.waiting.is_some()) => {
-                    "waiting to retry".to_string()
+                    "is waiting to retry".to_string()
                 }
-                "running" => "building".to_string(),
-                other => clean(other),
+                "running" => "is building".to_string(),
+                "failed" => "failed".to_string(),
+                other => format!("is {}", clean(other)),
             };
             let shown = match app.current_build().or(*run) {
-                Some(r) => format!("It is {now_state} · its latest build is #{r}."),
-                None => format!("It is {now_state} · no build has run yet."),
+                Some(r) => format!("It {now_state} · its latest is {}.", app.attempt_words(r)),
+                None => format!("It {now_state} · nothing has run yet."),
             };
             lines.push(Line::raw(shown));
             lines.push(Line::raw(""));
@@ -2729,13 +2778,15 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Mode::ConfirmRetry { run, .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 76);
-            // Build numbers are the console's own (shared by every task), so the new build's is known once it starts:
-            // what is said is which attempt it is, and the build it follows.
+            // The console's build ids count across every task: what is said is the attempt it follows, on this task.
             let after = app.current_build().unwrap_or(*run);
             let mut lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
-                    format!("Retry: starts a new build after build #{after}."),
+                    format!(
+                        "Retry: starts a new attempt after {}.",
+                        app.attempt_words(after)
+                    ),
                     ink(),
                 )),
                 Line::raw(""),
@@ -2751,8 +2802,17 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 }
                 lines.push(Line::raw(""));
             }
+            // "Repeated failures" only when there were (2 or more in a row): one failure is just a failure.
+            let repeated = app
+                .steps_here()
+                .and_then(|s| s.failure.as_ref())
+                .is_some_and(|f| f.failed_in_a_row >= 2);
             for l in wrap(
-                "It clears the repeated failures and starts again under your approval, keeping the branch and workspace. It may cost again.",
+                if repeated {
+                    "It clears the repeated failures and starts again under your approval, keeping the branch and workspace. It may cost again."
+                } else {
+                    "It starts again under your approval, keeping the branch and workspace. It may cost again."
+                },
                 w,
             ) {
                 lines.push(Line::raw(l));
@@ -2766,7 +2826,10 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             " Stop ",
             vec![
                 Line::raw(""),
-                Line::from(Span::styled(format!("Stop build #{run}?"), ink())),
+                Line::from(Span::styled(
+                    format!("Stop {}?", app.attempt_words(*run)),
+                    ink(),
+                )),
                 Line::raw(""),
                 Line::from(sheet::act("y", "Stop it", true)),
                 Line::from(Span::styled("Any other key keeps it running.", dim())),
@@ -2844,7 +2907,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let mut lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
-                    format!("Accept the result of build #{run}?"),
+                    format!("Accept the result of {}?", app.attempt_words(run)),
                     ink(),
                 )),
                 Line::raw(""),
@@ -2959,10 +3022,11 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let w = (area.width as usize).saturating_sub(8).min(84);
             let notes = app.notes_of(&pin.task, pin.run);
             let room_lines = (area.height as usize).saturating_sub(12).max(1);
+            let attempt = app.attempt_words(pin.run);
             let head = if notes.is_empty() {
-                format!("Send back build #{}, saying what to change:", pin.run)
+                format!("Send back {attempt}, saying what to change:")
             } else {
-                format!("Send back build #{} with:", pin.run)
+                format!("Send back {attempt} with:")
             };
             let mut lines = vec![
                 Line::raw(""),
@@ -3270,6 +3334,12 @@ fn draw_send_review(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let w = area.width as usize;
     let typing = app.mode == Mode::TakeOver;
+    // Its attempt on this task, named before the pane is borrowed.
+    let attempt = app
+        .term
+        .as_ref()
+        .map(|p| app.attempt_words(p.run))
+        .unwrap_or_default();
     let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
         let words = if item.is_task {
             "Take over: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
@@ -3321,9 +3391,9 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     };
     // Said plainly: a separate copy at that build, on its own branch.
     let place = if pane.branch.is_empty() {
-        format!("separate copy at build #{}", pane.run)
+        format!("separate copy at {attempt}")
     } else {
-        format!("separate copy at build #{} on {}", pane.run, pane.branch)
+        format!("separate copy at {attempt} on {}", pane.branch)
     };
     // What it's doing first (and how far back it's scrolled); where it is after, cut first when the pane is narrow.
     let state = if fills && style.bg.is_some() {

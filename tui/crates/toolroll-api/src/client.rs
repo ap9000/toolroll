@@ -47,6 +47,11 @@ impl fmt::Display for ApiError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActOutcome {
     Done(String),
+    /// A new task was filed (a `/tasks/…` act answered with its page, `/t/<id>`): the words, and the new task's id.
+    Filed {
+        words: String,
+        task: String,
+    },
     Refused(String),
     /// New task's offer (POST /tasks/add for a small task): the exact terms Build would approve, and the preview and
     /// digest Build posts (POST /tasks/fast).
@@ -599,6 +604,15 @@ impl Client {
                 });
             }
         }
+        // Filing answers with the new task's page: its id, so the screen can open it.
+        if (300..400).contains(&status) && path.starts_with("/tasks/") {
+            if let Some(task) = location.as_deref().and_then(filed_task) {
+                return Ok(ActOutcome::Filed {
+                    words: done.to_string(),
+                    task,
+                });
+            }
+        }
         Ok(if (200..400).contains(&status) {
             ActOutcome::Done(done.to_string())
         } else {
@@ -666,6 +680,19 @@ fn signal_of(ev: &SseEvent) -> Option<LiveSignal> {
         "reload" => Some(LiveSignal::Reload),
         _ => None,
     }
+}
+
+/// The task a redirect names (`/t/<id>`, nothing after it but a fragment): an id of plain characters only.
+pub fn filed_task(location: &str) -> Option<String> {
+    let path = location.split('#').next()?;
+    let id = path.strip_prefix("/t/")?;
+    let ok = !id.is_empty()
+        && !id.starts_with('.')
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.');
+    ok.then(|| id.to_string())
 }
 
 /// A redirect's `said` or `problem` words (percent-decoded, `+` as a space), which ever it carries; None for neither.

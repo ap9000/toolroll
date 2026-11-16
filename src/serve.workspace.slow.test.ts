@@ -661,7 +661,7 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
       "t-chained": { token: "assignment-working", views: ["all", "queued"], label: "Waiting" },
       "t-held": { token: "assignment-needs-decision", views: ["all", "needs-you"], label: "Stopped" },
       "t-failed": { token: "assignment-needs-decision", views: ["all", "needs-you"], label: "Failed" },
-      "t-cancelled": { token: "assignment-cancelled", views: ["all"], label: "Stopped" },
+      "t-cancelled": { token: "assignment-cancelled", views: ["all"], label: "Cancelled" },
       "t-live": { token: "assignment-working", views: ["all", "running"], label: "Building" },
       ...Object.fromEntries(["t-checks", "t-mismatch", "t-missing", "t-attested", "t-accepted", "t-verified", "t-pr", "t-merged"].map(id => [id, { token: "assignment-needs-decision", views: ["all", "needs-you", "ready"], label: "Needs you" }])),
     });
