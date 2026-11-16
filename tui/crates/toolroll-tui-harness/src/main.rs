@@ -477,7 +477,9 @@ fn drive(args: &[String]) -> Result<()> {
     // To the live build (third row), then open the steer box.
     writer.write_all(b"jj")?;
     writer.flush()?;
-    wait_for(&screen, "build #7", 10)?;
+    // (The live build's own header, then its steps read: the steer box names its attempt.)
+    wait_for(&screen, "Upgrade the test runner   Building", 10)?;
+    wait_for(&screen, "(it goes to attempt", 10)?;
     writer.write_all(b"s")?;
     writer.flush()?;
     wait_for(&screen, STEER, 5)?;
@@ -856,7 +858,10 @@ fn drive_term_once(args: &[String]) -> Result<serde_json::Value> {
     // The result waiting (second row): take over, and wait for the busy program to be on screen.
     writer.write_all(b"j")?;
     writer.flush()?;
-    wait_for(&screen, "build #2", 10)?;
+    // (The result's own header: its title, then its chip.)
+    wait_for(&screen, "Add CSV export   Result", 10)?;
+    // (Its steps read: the finished build's line.)
+    wait_for(&screen, "The build finished", 10)?;
     writer.write_all(b"t")?;
     writer.flush()?;
     wait_for(&screen, "Opens your shell", 10)?;

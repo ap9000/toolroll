@@ -229,7 +229,7 @@ fn steering() {
         panic!("{fx:?}")
     };
     assert_eq!(path, "/t/t-live/steer");
-    assert_eq!(done, "Note sent to build #7.");
+    assert_eq!(done, "Note sent to attempt 1.");
     let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
     assert_eq!(
         field("note").as_deref(),
@@ -427,7 +427,7 @@ fn stop_and_pause_and_new_task() {
         vec![Effect::Act {
             path: "/t/t-live/stop".into(),
             fields: vec![("run".into(), "7".into()), ("return".into(), "task".into())],
-            done: "Stopping build #7.".into()
+            done: "Stopping attempt 1.".into()
         }]
     );
     assert_eq!(app.key(key('x')), vec![]);
@@ -439,7 +439,7 @@ fn stop_and_pause_and_new_task() {
     };
     assert_eq!(
         (path.as_str(), done.as_str()),
-        ("/t/t-live/pause", "Pausing build #7.")
+        ("/t/t-live/pause", "Pausing attempt 1.")
     );
     assert!(fields.iter().any(|(k, v)| k == "request" && v.len() >= 8));
     app.mode = Mode::Normal;

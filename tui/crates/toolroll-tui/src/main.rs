@@ -48,6 +48,7 @@ unsafe fn libc_fstat_ok(fd: i32) -> bool {
 }
 
 fn main() {
+    toolroll_tui::stats::started();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--version") {
         // The self-check proves the protection works here too: a binary that can't turn crash dumps off answers with
@@ -100,6 +101,7 @@ fn main() {
         }
         Ok(Some(link)) => link,
     };
+    toolroll_tui::stats::mark("link_read");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -113,7 +115,10 @@ fn main() {
             }
         };
         drop(link);
-        let fatal = match client.hello().await {
+        toolroll_tui::stats::mark("signed_in");
+        let hello = client.hello().await;
+        toolroll_tui::stats::mark("hello_read");
+        let fatal = match hello {
             Ok(hello) => toolroll_api::check_hello(&hello).err().map(|words| {
                 (
                     format!("{words} Opening the classic screen instead."),

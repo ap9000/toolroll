@@ -403,9 +403,9 @@ pub enum Mode {
     },
 }
 
-/// What opening a take-over means, said before the first one on a build (its number goes after "build #").
-pub fn take_over_scope(run: i64) -> String {
-    format!("Opens your shell in a separate copy of build #{run}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
+/// What opening a take-over means, said before the first one on a build (`attempt`: "attempt 2", attempt_words).
+pub fn take_over_scope(attempt: &str) -> String {
+    format!("Opens your shell in a separate copy of {attempt}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
@@ -430,6 +430,23 @@ pub fn current_build_of(steps: &StepCards) -> Option<i64> {
         .find(|c| c.key == "build")
         .and_then(|c| c.runs.first().copied())
         .or(steps.live_run)
+}
+
+/// A build's attempt number on its task (1: the task's first build), from the build card's builds, newest first. The
+/// console's build ids count across every task, so a person reads this one: a task's first build is "attempt 1".
+pub fn attempt_of(steps: &StepCards, run: i64) -> Option<usize> {
+    let runs = &steps
+        .cards
+        .iter()
+        .flatten()
+        .find(|c| c.key == "build")?
+        .runs;
+    match runs.iter().position(|r| *r == run) {
+        Some(at) => Some(runs.len() - at),
+        // The live build before the card lists it: the next attempt.
+        None if steps.live_run == Some(run) => Some(runs.len() + 1),
+        None => None,
+    }
 }
 
 /// How long a status said in answer to the person is held against background reads (status_held).
@@ -785,6 +802,8 @@ pub struct App {
     pub utc_offset_secs: i64,
     /// When the status line was last said, and whether a key came since (status_held).
     pub said_at: Option<std::time::Instant>,
+    /// A task just filed here: selected once the work list lists it (its detail shown).
+    pub filed: Option<String>,
     /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
     pub said_for: Option<(String, Option<String>)>,
     pub key_since_said: bool,
@@ -883,6 +902,7 @@ impl App {
             agents_screen: None,
             utc_offset_secs: 0,
             said_at: None,
+            filed: None,
             said_for: None,
             key_since_said: true,
             settings_row: 0,
@@ -937,6 +957,14 @@ impl App {
     }
 
     /// The selected task's current build: its newest build attempt, the one the header, Steps and list name.
+    /// "attempt N" for a build of the selected task (attempt_of); "this attempt" when its steps don't list it.
+    pub fn attempt_words(&self, run: i64) -> String {
+        match self.steps_here().and_then(|s| attempt_of(s, run)) {
+            Some(n) => format!("attempt {n}"),
+            None => "this attempt".into(),
+        }
+    }
+
     pub fn current_build(&self) -> Option<i64> {
         current_build_of(self.steps_here()?)
     }
@@ -1081,7 +1109,12 @@ impl App {
                 self.fetching_work = false;
                 self.failed(e)
             }
-            Msg::Steps(task, Ok(steps)) => {
+            Msg::Steps(task, Ok(mut steps)) => {
+                // A cancelled or finished task waits on nothing: no hold to resume, no next try (whatever a read says).
+                if matches!(steps.task.state.as_str(), "cancelled" | "done") {
+                    steps.held = None;
+                    steps.waiting = None;
+                }
                 // A watched panel's task (panes.rs), besides or instead of the selected one.
                 let mut watched = self.watch_steps(&task, &steps);
                 if !watched.is_empty() || self.panes.watches().any(|w| w.task == task) {
@@ -1215,6 +1248,15 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::Filed { words, task })) => {
+                // The new task is opened once it is listed, and what was said is about it (status_follows: once it
+                // fails or finishes, "Building it." goes).
+                self.say(Tone::Said, words);
+                self.said_for = Some((task.clone(), None));
+                self.filed = Some(task);
+                self.sent_thread();
+                self.refresh()
+            }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
                 self.say(Tone::Refused, words);
                 self.sent_thread();
@@ -1322,6 +1364,7 @@ impl App {
     fn got_work(&mut self, rows: WorkRows) -> Vec<Effect> {
         self.fetching_work = false;
         let before = self.selected_id();
+        let selected_before = before.clone();
         self.project_name = clean(&rows.project_name);
         // The first-run steps the welcome offers aren't counted as needing you (covered_by_welcome).
         let covered = rows
@@ -1381,6 +1424,18 @@ impl App {
             Some(task) if self.items.iter().any(|i| i.id == task) => Some(task),
             _ => before,
         };
+        // A task just filed here: selected once listed (a filter that hides it set aside), its detail shown.
+        let before = match self.filed.clone() {
+            Some(task) if self.all_items.iter().any(|i| i.id == task) => {
+                self.filed = None;
+                if !self.items.iter().any(|i| i.id == task) {
+                    self.filter = Filter::All;
+                    self.items = self.filtered();
+                }
+                Some(task)
+            }
+            _ => before,
+        };
         // Keep the same task selected when it is still listed.
         self.selected = before
             .as_ref()
@@ -1391,7 +1446,7 @@ impl App {
             fx.extend(self.resume(r));
         }
         let after = self.selected_id();
-        if after != before || first {
+        if after != selected_before || first {
             fx.extend(self.selection_changed());
         } else if let Some(id) = self
             .selected_item()
@@ -3455,7 +3510,7 @@ impl App {
                 ("run", run.to_string()),
                 ("key", key),
             ],
-            format!("Note sent to build #{run}."),
+            format!("Note sent to {}.", self.attempt_words(run)),
         )
     }
 
@@ -3478,9 +3533,9 @@ impl App {
             path,
             fields,
             if resume {
-                format!("Resuming build #{run}.")
+                format!("Resuming {}.", self.attempt_words(run))
             } else {
-                format!("Pausing build #{run}.")
+                format!("Pausing {}.", self.attempt_words(run))
             },
         )
     }
@@ -3506,8 +3561,11 @@ impl App {
                 ("return", "task".into()),
             ],
             match self.current_build() {
-                Some(n) => format!("Retrying: a new build starts after build #{n}."),
-                None => "Retrying: a new build starts.".to_string(),
+                Some(n) => format!(
+                    "Retrying: a new attempt starts after {}.",
+                    self.attempt_words(n)
+                ),
+                None => "Retrying: a new attempt starts.".to_string(),
             },
         )
     }
@@ -3588,7 +3646,7 @@ impl App {
         self.act(
             path,
             vec![("run", run.to_string()), ("return", "task".into())],
-            format!("Stopping build #{run}."),
+            format!("Stopping {}.", self.attempt_words(run)),
         )
     }
 
@@ -3912,7 +3970,7 @@ impl App {
         }
         let saved = self.pending.get(&key).is_some_and(|p| p.saved);
         match result {
-            Ok(ActOutcome::Done(words)) => {
+            Ok(ActOutcome::Done(words) | ActOutcome::Filed { words, .. }) => {
                 // The draft is done with: its notes and every identity kept for it.
                 self.drafts.remove(&(task.clone(), run));
                 self.pending
@@ -4749,7 +4807,8 @@ impl App {
         let mut fx = self.drop_term();
         self.term = Some(Pane::opening(task.clone(), run));
         self.tab = Tab::Terminal;
-        self.status = Some((Tone::Said, format!("Opening a terminal on build #{run}…")));
+        let words = format!("Opening a terminal on {}…", self.attempt_words(run));
+        self.status = Some((Tone::Said, words));
         fx.push(Effect::TermOpen { task, run });
         fx
     }

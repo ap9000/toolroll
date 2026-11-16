@@ -218,7 +218,7 @@ fn retry_posts_exactly_the_build_and_scope_shown_after_its_confirm() {
                 ("digest".into(), "d".repeat(64)),
                 ("return".into(), "task".into())
             ],
-            done: "Retrying: a new build starts after build #3.".into(),
+            done: "Retrying: a new attempt starts after attempt 1.".into(),
         }]
     );
     // Any other key: nothing is posted.

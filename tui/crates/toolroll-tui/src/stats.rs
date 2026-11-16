@@ -1,6 +1,38 @@
 //! Percentiles over recorded durations.
 use std::time::Duration;
 
+/// When the process started, and how long each start-up step took after it (for `--stats-out`'s `startup`): where a
+/// slow launch spends its time, measured, never guessed.
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static MARKS: std::sync::Mutex<Vec<(&'static str, f64)>> = std::sync::Mutex::new(Vec::new());
+
+/// The process began (main's first line).
+pub fn started() {
+    let _ = START.set(std::time::Instant::now());
+}
+
+/// A start-up step done now: its time since the process began, kept once per name.
+pub fn mark(name: &'static str) {
+    let Some(start) = START.get() else { return };
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    if let Ok(mut marks) = MARKS.lock() {
+        if !marks.iter().any(|(n, _)| *n == name) {
+            marks.push((name, round(ms)));
+        }
+    }
+}
+
+/// The start-up steps so far, in order (milliseconds since the process began).
+pub fn marks() -> serde_json::Value {
+    let marks = MARKS.lock().map(|m| m.clone()).unwrap_or_default();
+    serde_json::Value::Object(
+        marks
+            .into_iter()
+            .map(|(n, ms)| (n.to_string(), serde_json::json!(ms)))
+            .collect(),
+    )
+}
+
 #[derive(Default)]
 pub struct Samples(pub Vec<Duration>);
 

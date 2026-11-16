@@ -8,7 +8,7 @@ expression: "text(&draw(&mut app, 110, 36))"
    Work  ╭ Settings ───────────────────────────────────────────────────────────────────────────────╮          
          │ File  /home/me/.config/toolroll/tui.toml                                                │          
    Needs │       read                                                                              │          
-         │                                                                                         │ild #7    
+         │                                                                                         │tempt 1   
    ● Fix │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │          
      shop│                     background)                                                         │─ Ready   
          │   Density           compact                                                             │───────── 

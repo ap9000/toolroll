@@ -92,7 +92,9 @@ pub async fn run(client: Client, mut opts: Options) -> std::io::Result<i32> {
     // Settings, the terminal's colours and background (asked before anything else reads the keyboard), and where
     // notifications go.
     let env = crate::settings::Env::from_process();
+    crate::stats::mark("screen_starts");
     let prefs = crate::settings::start(&env);
+    crate::stats::mark("settings_and_background_read");
     let mut stdout = std::io::stdout();
     stdout.write_all(crate::notify::TITLE_PUSH.as_bytes())?;
     TITLE.store(true, Ordering::SeqCst);
@@ -102,13 +104,19 @@ pub async fn run(client: Client, mut opts: Options) -> std::io::Result<i32> {
         EnableBracketedPaste,
         EnableMouseCapture
     )?;
-    if terminal::supports_keyboard_enhancement().unwrap_or(false) {
+    // Asked with the background at start (one wait for both); else crossterm's own ask.
+    let keyboard = match prefs.keyboard {
+        Some(known) => known,
+        None => terminal::supports_keyboard_enhancement().unwrap_or(false),
+    };
+    if keyboard {
         crossterm::execute!(
             stdout,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
         KITTY.store(true, Ordering::SeqCst);
     }
+    crate::stats::mark("keyboard_asked");
     let backend = CrosstermBackend::new(BufWriter::with_capacity(1 << 18, std::io::stdout()));
     let mut term: Term = Terminal::new(backend)?;
     let result = event_loop(&mut term, client, &mut opts, prefs, &env).await;
@@ -585,6 +593,10 @@ async fn event_loop(
         term.backend_mut().flush()?;
         let done = Instant::now();
         frames.push(done - t);
+        crate::stats::mark("first_frame");
+        if app.loaded {
+            crate::stats::mark("work_shown");
+        }
         Ok(done)
     };
 
@@ -772,7 +784,7 @@ async fn event_loop(
         h.abort();
     }
     if let Some(path) = &opts.stats_out {
-        let report = serde_json::json!({ "frame_time": frames.summary(), "key_to_flush": echo.summary(),
+        let report = serde_json::json!({ "startup_ms": crate::stats::marks(), "frame_time": frames.summary(), "key_to_flush": echo.summary(),
             "term_bytes_parsed": app.term.as_ref().map(|p| p.parsed) });
         let _ = std::fs::write(
             path,

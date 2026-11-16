@@ -8,7 +8,7 @@ expression: shown
 " │ Work  5                                    │ │ Live · Steps · Diff · Terminal                                      │ "
 " │                                            │ │                                                                     │ "
 " │ Needs you 1                                │ │ Add a subtract function   Failed                                    │ "
-" │ ● Add a subtract function          Failed  │ │ claude sonnet · The build finished · 0s · build #3                  │ "
+" │ ● Add a subtract function          Failed  │ │ claude sonnet · The build finished · 0s · attempt 1                 │ "
 " │   proj · 1m ago                            │ │                                                                     │ "
 " │                                            │ │ Build ✓ ─── Checks – ─── Ready ●                                    │ "
 " │ Up next 2                                  │ ├─────────────────────────────────────────────────────────────────────┤ "
