@@ -27,6 +27,7 @@ import { agentSetupOf, detectionLines, NO_AGENT_YET, npmRegistryOf, type AgentDe
 import { scanPatchForSecrets } from "./evidence.js";
 import { fastCompletionProblem } from "./fast-start.js";
 import { viewedGitSync } from "./teardown-git.js";
+import { wasInterrupted } from "./run-ending.js";
 
 /** A run that is the task's delivered result (task-views.ts runIsTaskResult): a finished build or investigation. */
 export const isResultRun = (run: Pick<Run, "role" | "finishedAt">): boolean => run.finishedAt !== null && (run.role === "builder" || run.role === "scout");
@@ -148,7 +149,7 @@ function cancelledCards(builds: readonly Run[], at: string | null): StepCard[] {
   const out: StepCard[] = [];
   const latest = builds[0] ?? null;
   if (latest !== null) {
-    const failed = latest.outcome === "failed" || latest.outcome === "refused" || latest.outcome === "interrupted";
+    const failed = latest.outcome === "failed" || latest.outcome === "refused" || wasInterrupted(latest);
     out.push({ key: "build", label: "Build", state: failed ? "stuck" : "done", mark: failed ? "stuck" : "done",
       sentence: failed ? failedAttemptSentence(latest.reason).replace(/[.\s]+$/, "") : "The build finished", at: latest.finishedAt,
       needsYou: false, inChain: true, ...runFacts(builds) });
