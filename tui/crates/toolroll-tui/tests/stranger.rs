@@ -282,6 +282,19 @@ fn the_first_run_welcome_is_not_hijacked_by_the_engines_setup_step() {
         assert!(!shown.contains(never), "{never}\n{shown}");
     }
     insta::assert_snapshot!("first_run_welcome", shown);
+    // n opens the new-task box right there (scripts/tui-e2e.mjs waits for "New task: ").
+    app.key(key('n'));
+    assert!(matches!(app.mode, Mode::NewTask(..)), "{:?}", app.mode);
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("New task: ") && shown.contains("What would you like to work on?"),
+        "{shown}"
+    );
+    for c in "Add a subtract function".chars() {
+        app.key(key(c));
+    }
+    assert!(screen(&mut app, 120, 30).contains("Add a subtract function"));
+    insta::assert_snapshot!("first_run_new_task", screen(&mut app, 120, 30));
 }
 
 // ---- 4. help is the keymap; a key that does nothing says so --------------------------------------------------------
