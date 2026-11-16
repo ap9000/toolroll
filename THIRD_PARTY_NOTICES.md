@@ -585,3 +585,33 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+## vt100 0.16.2 (Rust crate) — MIT
+
+The terminal workbench's Terminal tab (the `toolroll-tui` binary) draws a take-over terminal through a vendored,
+modified copy of vt100 0.16.2 by Jesse Luehrs (https://github.com/doy/vt100-rust), kept in `tui/vendor/vt100`. It
+diverges from upstream in `grid.rs`, `row.rs` and `screen.rs` only: rows that scroll are reused and cleared only as
+far as they were written, and one-row and one-column screens no longer overflow. `tui/vendor/vt100/README` lists the
+exact changes.
+
+The MIT License (MIT)
+
+Copyright (c) 2016 Jesse Luehrs
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

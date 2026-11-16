@@ -1,0 +1,50 @@
+vt100 0.16.2, vendored
+======================
+
+Upstream: https://crates.io/crates/vt100/0.16.2 (https://github.com/doy/vt100-rust),
+by Jesse Luehrs, MIT licensed (LICENSE, unchanged). The Terminal tab of Toolroll's
+terminal workbench draws a take-over terminal through it (crates/toolroll-tui/src/term.rs).
+
+Every file in src/ is upstream 0.16.2 byte for byte except grid.rs, row.rs and
+screen.rs. Cargo.toml is ours: the package is named toolroll-vt100 (its library is
+still `vt100`) and it is excluded from the workspace, so rustfmt and clippy leave
+upstream's code as written.
+
+Divergences
+-----------
+
+1. Faster scrolling (grid.rs `Grid::scroll_up`, row.rs).
+   - A line scrolling inside a scroll region (or with no scrollback) rotates the
+     region's rows and reuses the row that left the top as the new blank bottom
+     row. Upstream allocated a new row and freed the old one for every line.
+   - With a full scrollback, the oldest scrollback row is reused as the new blank
+     row instead of being freed while another is allocated.
+   - Row keeps `dirty`: every cell at or past it is blank (equal to Cell::new()).
+     Writing a cell through get_mut, erase or clear_wide moves it out to cover that
+     cell; insert, remove, a non-blank resize and a coloured clear mark the whole
+     row. `Row::renew` (new) and a default-coloured `Row::clear` blank only the
+     cells before `dirty`. Upstream filled every cell of every new row.
+   Upstream held a 200-column pane to about 10 MB/s of short-line output (`yes`);
+   this copy parses the same about seven times faster. Nothing drawn changes.
+
+2. One-row and one-column screens (grid.rs `Grid::col_wrap`, screen.rs
+   `Screen::text`). Upstream overflowed there and, built for release, then
+   unwrapped a row or cell that doesn't exist (a crash a program's output could
+   cause):
+   - col_wrap compares `pos.col + width > cols` (upstream: `pos.col > cols - width`,
+     which overflowed when a wide character met a one-column screen), and when
+     the row a wrap left has scrolled away entirely (a one-row screen or region)
+     it marks nothing, where upstream computed the index of a row above row 0.
+   - text drops a wide character on a one-column screen, which can't hold it.
+   The pane also never gives the emulator a screen under 2x2 (term.rs MIN_SIDE).
+Every change carries a `toolroll` comment.
+
+Checks: crates/toolroll-tui/tests/vt100_same.rs runs this copy and upstream 0.16.2
+on the same bytes, split at the same places, and compares every cell, the cursor,
+the formatted screen and every scrollback line, and checks that a reused row comes
+back blank after every kind of write. It also runs this copy at 1x1, 1xN and Nx1
+(upstream panics there, so those have no upstream to compare against).
+
+Updating: take the new upstream release, reapply the three files' changes (search
+for `toolroll`), and keep vt100_same.rs passing
+against the new upstream version.

@@ -1,6 +1,7 @@
 //! The real-terminal loop: tokio select over crossterm's EventStream, the engine's answers and `/live` signals, a
 //! tick, and frame requests. Alternate screen; DEC 2026 synchronized output around every frame; frames drawn on
-//! request, capped at ~120 fps; a key is applied and echoed in a frame drawn at once (never waiting for the cap);
+//! request, capped at ~120 fps; a key is applied and echoed in a frame drawn at once (never waiting for the cap); a
+//! take-over's output is parsed in turns of at most PARSE_SLICE, keys read first, and its echo drawn as it lands;
 //! kitty keyboard where the terminal offers it; mouse; bracketed paste; a panic hook that gives the terminal back.
 use crate::app::{App, Effect, Msg, EXIT_LEAVE};
 use crate::stats::Samples;
@@ -26,6 +27,15 @@ use tokio::task::JoinHandle;
 use toolroll_api::{ApiError, Client, LiveSignal, TermSend};
 
 const FRAME_MIN: Duration = Duration::from_micros(8_333);
+/// While someone types into a terminal, its output is drawn this often at most (the echo waits no longer than this
+/// for a frame, and a busy program's output can't cost a frame per chunk).
+const ECHO_FRAME_MIN: Duration = Duration::from_millis(3);
+/// How long a key keeps the faster frames above (its echo comes back through the console).
+const ECHO_WINDOW: Duration = Duration::from_millis(250);
+/// Terminal output already waiting is parsed in one turn for up to this long; the rest waits its turn, so a key never
+/// waits behind more than this (keys are read first each turn), and nothing is dropped or reordered: the rest stays
+/// queued in order, and still counts against the socket's output budget (the console slows the program meanwhile).
+const PARSE_SLICE: Duration = Duration::from_millis(4);
 
 type Term = Terminal<CrosstermBackend<BufWriter<Stdout>>>;
 
@@ -525,6 +535,9 @@ async fn event_loop(
     let mut echo = Samples::default();
     let mut last_frame: Option<Instant> = None;
     let mut last_key: Option<Instant> = None;
+    // The first output after a key is drawn at once, however recent the key's own frame (no timer between a key and
+    // its echo: a short sleep can wake late); later output waits ECHO_FRAME_MIN between frames.
+    let mut output_since_key = false;
     let mut dirty = true;
     let mut exit: Option<i32> = None;
 
@@ -580,10 +593,14 @@ async fn event_loop(
         if exit.is_some() {
             break;
         }
+        // Typing into a terminal: its output (the echo among it) is drawn sooner.
+        let typing = app.mode == crate::app::Mode::TakeOver
+            && last_key.is_some_and(|k| k.elapsed() < ECHO_WINDOW);
+        let gap = if typing { ECHO_FRAME_MIN } else { FRAME_MIN };
         let wait = match (dirty, last_frame) {
             (false, _) => Duration::from_secs(3600),
             (true, None) => Duration::ZERO,
-            (true, Some(l)) => (l + FRAME_MIN).saturating_duration_since(Instant::now()),
+            (true, Some(l)) => (l + gap).saturating_duration_since(Instant::now()),
         };
         tokio::select! {
             biased;
@@ -609,6 +626,7 @@ async fn event_loop(
                         let done = draw(term, &mut app, &mut frames)?;
                         last_frame = Some(done);
                         last_key = Some(received);
+                        output_since_key = false;
                         echo.push(done - received);
                         pending.extend(app.term_resize());
                         // Colouring left for later frames: draw again at the next slot.
@@ -641,17 +659,38 @@ async fn event_loop(
                 pending.extend(app.update(Msg::Tick));
             }
             Some(msg) = rx.recv() => {
-                // A take-over's socket: held here (the newest replaces the last, whose socket then closes).
-                if let Msg::TermOpened { result: Ok((id, _, link)), .. } = &msg {
-                    lp.term = Some((id.clone(), link.0.clone()));
+                // Terminal output already waiting is taken in this turn too, in order, for up to PARSE_SLICE (one
+                // frame for all of it, not one per chunk); anything else ends the turn after it.
+                let turn = Instant::now();
+                let mut next = Some(msg);
+                let mut output = false;
+                while let Some(msg) = next.take() {
+                    // A take-over's socket: held here (the newest replaces the last, whose socket then closes).
+                    if let Msg::TermOpened { result: Ok((id, _, link)), .. } = &msg {
+                        lp.term = Some((id.clone(), link.0.clone()));
+                    }
+                    let is_output = matches!(msg, Msg::Term(_, toolroll_api::TermEvent::Output(_)));
+                    output |= is_output;
+                    pending.extend(app.update(msg));
+                    // Each message's effects before the next message, as one turn each would have run them.
+                    for fx in pending.drain(..) {
+                        if let Some(code) = lp.effect(fx, term, opts, &mut app) {
+                            exit = Some(code);
+                        }
+                    }
+                    if is_output && exit.is_none() && turn.elapsed() < PARSE_SLICE {
+                        next = rx.try_recv().ok();
+                    }
                 }
-                // Typed input's echo: drawn at once while the person is typing (never waiting for the frame cap).
-                let echo_now = matches!(msg, Msg::Term(_, toolroll_api::TermEvent::Output(_)))
-                    && app.mode == crate::app::Mode::TakeOver
-                    && last_key.is_some_and(|k| k.elapsed() < Duration::from_millis(50));
-                pending.extend(app.update(msg));
                 dirty = true;
+                // Typed input's echo: drawn as soon as its output is parsed while the person is typing (never waiting
+                // for the frame cap), at most every ECHO_FRAME_MIN.
+                let echo_now = output
+                    && app.mode == crate::app::Mode::TakeOver
+                    && last_key.is_some_and(|k| k.elapsed() < ECHO_WINDOW)
+                    && (!output_since_key || last_frame.is_none_or(|l| l.elapsed() >= ECHO_FRAME_MIN));
                 if echo_now {
+                    output_since_key = true;
                     last_frame = Some(draw(term, &mut app, &mut frames)?);
                     dirty = app.highlight_pending;
                     pending.extend(app.term_resize());
@@ -672,8 +711,8 @@ async fn event_loop(
         h.abort();
     }
     if let Some(path) = &opts.stats_out {
-        let report =
-            serde_json::json!({ "frame_time": frames.summary(), "key_to_flush": echo.summary() });
+        let report = serde_json::json!({ "frame_time": frames.summary(), "key_to_flush": echo.summary(),
+            "term_bytes_parsed": app.term.as_ref().map(|p| p.parsed) });
         let _ = std::fs::write(
             path,
             serde_json::to_string_pretty(&report).unwrap_or_default(),

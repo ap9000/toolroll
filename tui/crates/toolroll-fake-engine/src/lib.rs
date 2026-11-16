@@ -101,6 +101,18 @@ pub struct State {
     pub term_stream_gap_us: u64,
     /// The stream is sent this many times over (a sustained stream without holding it all in memory).
     pub term_stream_repeat: usize,
+    /// Paced to this many bytes a second instead of the gap (0: the gap): each chunk waits until the stream is due, and a
+    /// stream held back (the client not reading) carries on from where it is rather than bursting to catch up.
+    pub term_stream_rate: u64,
+    /// Set to stop the stream early; then (or when it runs out) `term_stream_end` is written last.
+    pub term_stream_stop: bool,
+    pub term_stream_end: Vec<u8>,
+    /// What the stream measured: its own bytes, when it started, and when it stopped.
+    pub term_stream_bytes: u64,
+    pub term_stream_started: Option<std::time::Instant>,
+    pub term_stream_ended: Option<std::time::Instant>,
+    /// Every output byte a terminal socket sent (the screen as it was, the stream, typed redraws and echoes).
+    pub term_bytes_sent: u64,
     /// Typed input comes back as output (a shell with echo on: Enter as CR LF).
     pub term_echo: bool,
     /// A full-screen program instead (the harness's busy terminal): typed input is redrawn on the terminal's fixed top
@@ -109,6 +121,10 @@ pub struct State {
     pub term_full_screen: bool,
     /// Every text frame a terminal client sent, and how many attaches were accepted.
     pub term_frames: Vec<String>,
+    /// When each typed-input frame arrived (the harness splits key → echo into its way there and back).
+    pub term_input_at: Vec<std::time::Instant>,
+    /// When each typed input's redraw (a full-screen terminal's) was written to the socket.
+    pub term_redraw_at: Vec<std::time::Instant>,
     pub term_attaches: usize,
     /// The socket upgrades refused, with their status.
     pub term_refusals: Vec<u16>,
@@ -506,9 +522,18 @@ pub fn scenario() -> State {
         term_stream: Vec::new(),
         term_stream_gap_us: 0,
         term_stream_repeat: 1,
+        term_stream_rate: 0,
+        term_stream_stop: false,
+        term_stream_end: Vec::new(),
+        term_stream_bytes: 0,
+        term_stream_started: None,
+        term_stream_ended: None,
+        term_bytes_sent: 0,
         term_echo: true,
         term_full_screen: false,
         term_frames: Vec::new(),
+        term_input_at: Vec::new(),
+        term_redraw_at: Vec::new(),
         term_attaches: 0,
         term_refusals: Vec::new(),
         threads: None,
@@ -1163,20 +1188,33 @@ async fn term_socket(
         .on_upgrade(move |socket| term_session_loop(s, socket))
 }
 
+/// How a full-screen terminal's typed-input redraw starts (save the cursor, go to the top line).
+const REDRAW: &[u8] = b"\x1b7\x1b[1;1H";
+
 async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
     use axum::extract::ws::Message;
     use futures_util::SinkExt;
     let (mut sink, mut source) = socket.split();
     // Bounded: a client that stops reading holds the stream back here too (the fake never buffers without limit).
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Message>(64);
+    let counted = s.clone();
     let writer = tokio::spawn(async move {
         while let Some(m) = out_rx.recv().await {
+            let (len, redraw) = match &m {
+                Message::Binary(b) => (b.len() as u64, b.starts_with(REDRAW)),
+                _ => (0, false),
+            };
             if sink.send(m).await.is_err() {
                 break;
             }
+            let mut st = counted.state.lock().unwrap();
+            st.term_bytes_sent += len;
+            if redraw {
+                st.term_redraw_at.push(std::time::Instant::now());
+            }
         }
     });
-    let (screen, stream, gap, echo, full, repeat) = {
+    let (screen, stream, gap, echo, full, repeat, rate, end) = {
         let mut st = s.state.lock().unwrap();
         st.term_attaches += 1;
         (
@@ -1186,6 +1224,8 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
             st.term_echo,
             st.term_full_screen,
             st.term_stream_repeat,
+            st.term_stream_rate,
+            st.term_stream_end.clone(),
         )
     };
     let rows = Arc::new(std::sync::atomic::AtomicU16::new(30));
@@ -1201,22 +1241,57 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
     let streamer = {
         let out_tx = out_tx.clone();
         let rows = rows.clone();
+        let s = s.clone();
         tokio::spawn(async move {
-            for chunk in std::iter::repeat_n(stream, repeat).flatten() {
-                let chunk = if full {
+            let started = std::time::Instant::now();
+            let mut base = started;
+            let mut paced = 0u64;
+            let mut sent = 0u64;
+            let in_full = |chunk: Vec<u8>| {
+                if full {
                     let r = rows.load(std::sync::atomic::Ordering::Relaxed);
                     let mut c = format!("\x1b[2;{r}r\x1b[{r};1H").into_bytes();
                     c.extend_from_slice(&chunk);
                     c
                 } else {
                     chunk
-                };
-                if out_tx.send(Message::Binary(chunk.into())).await.is_err() {
+                }
+            };
+            if !stream.is_empty() {
+                s.state.lock().unwrap().term_stream_started = Some(started);
+            }
+            for chunk in std::iter::repeat_n(stream, repeat).flatten() {
+                if s.state.lock().unwrap().term_stream_stop {
                     break;
                 }
-                if gap > 0 {
+                let chunk = in_full(chunk);
+                let len = chunk.len() as u64;
+                if out_tx.send(Message::Binary(chunk.into())).await.is_err() {
+                    return;
+                }
+                sent += len;
+                if rate > 0 {
+                    paced += len;
+                    let due = base + std::time::Duration::from_secs_f64(paced as f64 / rate as f64);
+                    let now = std::time::Instant::now();
+                    if due > now {
+                        tokio::time::sleep_until(due.into()).await;
+                    } else if now - due > std::time::Duration::from_millis(50) {
+                        // Held back: carry on from here, no burst.
+                        base = now;
+                        paced = 0;
+                    }
+                } else if gap > 0 {
                     tokio::time::sleep(std::time::Duration::from_micros(gap)).await;
                 }
+            }
+            {
+                let mut st = s.state.lock().unwrap();
+                st.term_stream_bytes = sent;
+                st.term_stream_ended = Some(std::time::Instant::now());
+            }
+            if !end.is_empty() {
+                let _ = out_tx.send(Message::Binary(in_full(end).into())).await;
             }
         })
     };
@@ -1224,8 +1299,14 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
         match frame {
             Message::Text(text) => {
                 let text = text.to_string();
-                s.state.lock().unwrap().term_frames.push(text.clone());
                 let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                {
+                    let mut st = s.state.lock().unwrap();
+                    st.term_frames.push(text.clone());
+                    if v["t"] == "in" {
+                        st.term_input_at.push(std::time::Instant::now());
+                    }
+                }
                 if v["t"] == "resize" {
                     if let Some(r) = v["rows"].as_u64() {
                         rows.store(r as u16, std::sync::atomic::Ordering::Relaxed);
@@ -1233,7 +1314,10 @@ async fn term_session_loop(s: Shared, socket: axum::extract::ws::WebSocket) {
                 }
                 if v["t"] == "in" && full {
                     typed.push_str(v["d"].as_str().unwrap_or(""));
-                    let line = format!("\x1b7\x1b[1;1H\x1b[2K\u{2301} {typed}\x1b8");
+                    let line = format!(
+                        "{}\x1b[2K\u{2301} {typed}\x1b8",
+                        std::str::from_utf8(REDRAW).unwrap_or("")
+                    );
                     let _ = out_tx.send(Message::Binary(line.into_bytes().into())).await;
                 } else if v["t"] == "in" && echo {
                     let typed = v["d"].as_str().unwrap_or("").replace('\r', "\r\n");
