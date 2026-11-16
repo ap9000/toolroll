@@ -243,6 +243,9 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     );
     // Ctrl-] comes back to the workbench; q quits it (the terminal keeps running in the console).
     run.press("\x1d");
+    // Back: the stable fact is the key bar (t types in it again; while typing it says Ctrl-] instead). What was said
+    // stays on the status line meanwhile (app.rs status_held), whatever a background read answers.
+    run.wait_for("type in it", 5);
     run.wait_for("Back to the workbench", 5);
     let raw = run.quit();
     no_leaks(&raw);
@@ -337,13 +340,17 @@ fn a_busy_program_loses_no_output_while_someone_types() {
     for ch in typed.chars() {
         run.press(&ch.to_string());
     }
-    run.wait_for(&format!("\u{2301} {typed}"), 5);
+    // A bound for a starved CI runner, not a latency measure: the fact waited on is the keys on screen, in order.
+    run.wait_for(&format!("\u{2301} {typed}"), 20);
     engine.state.lock().unwrap().term_stream_stop = true;
     run.wait_for("stream-end-7f3a", 20);
     // The stream ended; a last key's redraw comes after all of it, and is what the top line shows.
     run.press("!");
-    run.wait_for(&format!("\u{2301} {typed}!"), 5);
+    run.wait_for(&format!("\u{2301} {typed}!"), 20);
     run.press("\x1d");
+    // Back: the stable fact is the key bar (t types in it again; while typing it says Ctrl-] instead). What was said
+    // stays on the status line meanwhile (app.rs status_held), whatever a background read answers.
+    run.wait_for("type in it", 5);
     run.wait_for("Back to the workbench", 5);
     run.quit();
     let own: serde_json::Value =

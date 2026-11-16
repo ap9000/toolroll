@@ -369,6 +369,8 @@ pub const TYPING_AGENT: &str =
     "Typing in the agent's own sign-in. Ctrl-] comes back; Toolroll never reads what it saves.";
 pub const TYPING: &str =
     "Typing in a separate copy of the build. Your shell's own startup files run in it.";
+/// How long a status said in answer to the person is held against background reads (status_held).
+pub const STATUS_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
 /// Said when Ctrl-] leaves the terminal.
 pub const BACK: &str = "Back to the workbench. The terminal keeps running in Toolroll.";
 /// Said when typing stops because the terminal isn't on screen (too small a window, another tab, a dialog).
@@ -690,6 +692,9 @@ pub struct App {
     pub agents_screen: Option<crate::agents::Screen>,
     /// This computer's offset from UTC, in seconds (read at start; 0 in tests): times are shown on its clock.
     pub utc_offset_secs: i64,
+    /// When the status line was last said, and whether a key came since (status_held).
+    pub said_at: Option<std::time::Instant>,
+    pub key_since_said: bool,
     /// The Settings screen's chosen row (settings.rs Choice::ALL).
     pub settings_row: usize,
     pub work_again: bool,
@@ -774,6 +779,8 @@ impl App {
             fetching_agents: false,
             agents_screen: None,
             utc_offset_secs: 0,
+            said_at: None,
+            key_since_said: true,
             settings_row: 0,
             work_again: false,
             areas: Areas::default(),
@@ -839,6 +846,25 @@ impl App {
 
     pub(crate) fn say(&mut self, tone: Tone, words: impl Into<String>) {
         self.status = Some((tone, clean(&words.into())));
+        self.said_at = Some(std::time::Instant::now());
+        self.key_since_said = false;
+    }
+
+    /// What was just said in answer to the person ("Back to the workbench") is held: until their next key, and for at
+    /// least STATUS_HOLD, a background read's trouble doesn't replace it.
+    pub fn status_held(&self) -> bool {
+        self.status.is_some()
+            && !self.key_since_said
+            && self.said_at.is_some_and(|t| t.elapsed() < STATUS_HOLD)
+    }
+
+    /// A background read failed: an ended session or another contract still ends the screen; anything else is said
+    /// unless what is on the status line was just said to the person (status_held). The next poll reads again.
+    fn read_failed(&mut self, e: ApiError) -> Vec<Effect> {
+        if fatal(&e) || !self.status_held() {
+            return self.failed(e);
+        }
+        vec![]
     }
 
     fn token(&mut self, len: usize) -> String {
@@ -949,7 +975,7 @@ impl App {
                 }
                 fx
             }
-            Msg::Steps(_, Err(e)) => self.failed(e),
+            Msg::Steps(_, Err(e)) => self.read_failed(e),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
                     (Ok(window), "main") => self.watch_live(run, window),
@@ -973,14 +999,14 @@ impl App {
                     return vec![];
                 }
                 self.diff_wanted = None;
-                self.failed(e)
+                self.read_failed(e)
             }
             Msg::DiffFile(ask, Err(e)) => {
                 if self.file_wanted.as_ref() != Some(&ask) && !fatal(&e) {
                     return vec![];
                 }
                 self.file_wanted = None;
-                self.failed(e)
+                self.read_failed(e)
             }
             Msg::DiffFile(ask, Ok(file)) => self.got_diff_file(ask, file),
             Msg::Threads(read) => self.got_threads(read),
@@ -991,7 +1017,7 @@ impl App {
                     return vec![];
                 }
                 self.context_wanted = None;
-                self.failed(e)
+                self.read_failed(e)
             }
             Msg::Sent {
                 task,
@@ -1261,7 +1287,7 @@ impl App {
         view.fetching = false;
         let window = match read {
             Ok(w) => w,
-            Err(e) => return self.failed(e),
+            Err(e) => return self.read_failed(e),
         };
         let mut changed = view.transcript.live != window.live;
         view.transcript.live = window.live;
@@ -1355,7 +1381,7 @@ impl App {
         }
         let window = match result {
             Ok(w) => w,
-            Err(e) => return self.failed(e),
+            Err(e) => return self.read_failed(e),
         };
         self.transcript.live = window.live;
         match window.window {
@@ -1610,6 +1636,8 @@ impl App {
     // ---- keys ---------------------------------------------------------------------------------------------------
 
     pub fn key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        // A key: what was said before it may give way now.
+        self.key_since_said = true;
         // Typing in the terminal: every key is the terminal's (Ctrl-C too), but Ctrl-].
         if self.mode == Mode::TakeOver {
             return self.take_over_key(key);
@@ -2032,6 +2060,7 @@ impl App {
 
     /// Pasted text goes into the open text box (line breaks as spaces), or, while typing in the terminal, to it.
     pub fn paste(&mut self, pasted: &str) -> Vec<Effect> {
+        self.key_since_said = true;
         if self.mode == Mode::TakeOver {
             let Some(pane) = self.term.as_ref().filter(|p| p.live()) else {
                 return vec![];
@@ -3288,6 +3317,10 @@ impl App {
     // ---- mouse -----------------------------------------------------------------------------------------------------
 
     pub fn mouse(&mut self, ev: MouseEvent) -> Vec<Effect> {
+        // A click is the person's next act, like a key (a move or the wheel isn't).
+        if matches!(ev.kind, MouseEventKind::Down(_)) {
+            self.key_since_said = true;
+        }
         let (x, y) = (ev.column, ev.row);
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
         if let Some(fx) = self.terminal_mouse(&ev) {
