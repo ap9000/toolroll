@@ -547,7 +547,7 @@ test("a blocker's reason that already says what to do is said once (never \"Fix 
 });
 
 test("a retry names the task's own attempt with the build, as the workbench does", () => {
-  expect(WAITS["retry-later"]({ build: 5, attempt: 3, retry: "in 4 minutes" })).toBe("Waiting: Toolroll retries attempt 3 (build #5) in 4 minutes.");
+  expect(WAITS["retry-later"]({ build: 5, attempt: 2, retry: "in 4 minutes" })).toBe("Waiting: Toolroll tries attempt 3 in 4 minutes, after attempt 2 (build #5).");
   // No attempt known: the build alone; no build: the last build.
   expect(WAITS["retry-later"]({ build: 5, retry: "soon" })).toBe("Waiting: Toolroll retries build #5 soon.");
   expect(WAITS["retry-later"]({ retry: "soon" })).toBe("Waiting: Toolroll retries the last build soon.");
