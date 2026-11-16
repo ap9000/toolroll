@@ -35,7 +35,7 @@ const insert = (db: DatabaseSync | { prepare: DatabaseSync["prepare"] }, over: R
 
 describe("v161", () => {
   test("fresh: the table, no rows, update-safe; a project reads Secure", () => {
-    expect(SCHEMA_VERSION).toBe(167);
+    expect(SCHEMA_VERSION).toBe(168);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(161);
     expect(updateSafeSchema(160)).toBe(true);
     expect(V161_STEPS).toEqual(["flexible-terms"]);
@@ -72,7 +72,7 @@ describe("v161", () => {
     const steps: string[] = [];
     const upgraded = openStore(file, { migrationStep: one => steps.push(one) });
     expect(steps).toEqual(expect.arrayContaining([...V161_STEPS]));
-    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(167);
+    expect(upgraded.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(168);
     expect(flexibleStanding(upgraded, REPO)).toEqual({ state: "secure" });
     upgraded.close();
   });
@@ -81,7 +81,7 @@ describe("v161", () => {
     const file = v160File();
     expect(() => openStore(file, { migrationStep: at => { if (at === step) throw new Error(`crash after ${at}`); } })).toThrow(`crash after ${step}`);
     const resumed = openStore(file);
-    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(167);
+    expect(resumed.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(168);
     expect(resumed.handle.prepare("SELECT COUNT(*) AS n FROM flexible_terms").get()?.["n"]).toBe(0);
     resumed.close();
   });

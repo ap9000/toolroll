@@ -11,7 +11,8 @@
  *   names the project's real `objects` folder, on branch `toolroll/code-<id>` at the recorded base. Its new objects
  *   land in its own `objects`. The only write to the project's repository is Toolroll's own create-only keep-ref
  *   (refs/toolroll/threads/<id>/base), so a person's `gc` can't prune the base; removing the thread removes it by
- *   compare-and-swap. Import into the project's repository is a later slice (F4), never the thread.
+ *   compare-and-swap. Import into the project's repository is Toolroll's own (flexible-import.ts, F4), never the
+ *   thread's.
  * - Every path comes from Toolroll's own records (the flexible_thread row, the store's project list, the database's
  *   folder), resolved with realpath and proven to be the real folders they were; the thread's folder is attacker input
  *   once a thread has run in it.
@@ -43,6 +44,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
 import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
 
@@ -85,7 +87,7 @@ export function flexibleThread(store: Store, id: string): FlexibleThreadRow | nu
 // ---- refusals ---------------------------------------------------------------------------------------------------------
 
 export type FlexibleThreadRefusalReason = "not-available" | "no-state-folder" | "not-a-project" | "repository-unusable" | "base-unknown" | "setup-failed"
-  | "thread-unknown" | "thread-not-ready" | "thread-folder-changed" | "network-required" | "containment" | "thread-running" | "codex-unsupported";
+  | "thread-unknown" | "thread-not-ready" | "thread-folder-changed" | "network-required" | "containment" | "thread-running" | "codex-unsupported" | "thread-shipping";
 export type FlexibleThreadRefusal = { ok: false; reason: FlexibleThreadRefusalReason; message: string };
 
 const WORDS: Readonly<Record<FlexibleThreadRefusalReason, string>> = Object.freeze({
@@ -101,6 +103,7 @@ const WORDS: Readonly<Record<FlexibleThreadRefusalReason, string>> = Object.free
   "network-required": "A thread can only run through its own network proxy, and it wasn't given one.",
   "containment": "The sandbox couldn't hold this thread, so it didn't run.",
   "thread-running": "This thread's agent may still be running, so its repository was left as it is.",
+  "thread-shipping": "This thread's work is being shipped. Let the Ship finish, or cancel it, before removing the thread. Nothing was removed.",
   "codex-unsupported": "Codex's own sandbox can't keep a Flexible thread away from threads and files made after it starts, so a Codex thread can't run in it.",
 });
 const refuse = (reason: FlexibleThreadRefusalReason, detail?: string): FlexibleThreadRefusal =>
@@ -269,9 +272,13 @@ export async function prepareFlexibleThread(store: Store, input: { repo: string;
     const checkout = await build(paths.repo, ["reset", "-q", "--hard", baseSha]);
     if (checkout.code !== 0) throw new Error("the thread's files couldn't be checked out");
     reserveProtectedNames(paths.repo);
+    // The project's refs as they are at the thread's start (the ref audit, flexible-refs.ts): each import compares with
+    // them. Detection only, so a read that fails leaves no snapshot and decides nothing.
+    const refs = await readProjectRefs(read, project);
     const ready = store.transact(() => {
       const moved = store.handle.prepare("UPDATE flexible_thread SET state = 'ready' WHERE id = ? AND state = 'preparing'").run(id);
       if (Number(moved.changes) !== 1) return false;
+      if (refs !== null) saveRefSnapshot(store, id, refs, input.now);
       store.recordAction({ at: input.now.toISOString(), actor: input.by, repo: input.repo, taskId: null, runId: null, source: "policy", action: "flexible thread repository made", outcome: "ready",
         detail: `thread ${id} · base ${baseSha} · ${keepRef}` });
       return true;
@@ -320,6 +327,9 @@ async function removeLocked(store: Store, input: { id: string; by: string; now: 
     const settled = await settleLaunch(store, { thread: thread.id, folder: paths.folder, reason: "the thread is being removed", stop: true, clock: () => input.now, ...(input.io === undefined ? {} : { io: input.io }) });
     if (!settled.ok) return refuse("thread-running", settled.why);
   }
+  // A Ship in flight (its import running, or its merge armed) keeps the thread: its import ref holds the candidate the
+  // check task builds from. Cancelled, sent back, merged, refused or removed Ships don't.
+  if (store.handle.prepare("SELECT 1 FROM flexible_ship WHERE thread = ? AND state IN ('approved', 'armed', 'completed')").get(thread.id) !== undefined) return refuse("thread-shipping");
   // A group registered without a launch record (a build before custody): its files stay while it may run.
   const after = flexibleThread(store, thread.id)!;
   if (after.livePid !== null && processMayBeAlive(after.livePid, true)) return refuse("thread-running");
@@ -331,10 +341,27 @@ async function removeLocked(store: Store, input: { id: string; by: string; now: 
   let keepRef: "removed" | "already-gone" | "moved" = "already-gone";
   let project: string | null = null;
   try { project = realpathSync(thread.repo); recordedCommonDir(project); } catch { project = null; }
+  let shipRefs = 0, shipRefsLeft = 0;
   if (project !== null) {
     const removed = await build(project, ["update-ref", "--no-deref", "-d", thread.keepRef, thread.baseSha]);
     if (removed.code === 0) keepRef = "removed";
     else keepRef = (await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", thread.keepRef])).code === 0 ? "moved" : "already-gone";
+    // Its Ships' refs (flexible-ship.ts), each by compare-and-swap against what Toolroll recorded: every import ref
+    // still holding its Ship's candidate, and the thread's branch while it holds the newest standing import's. A ref
+    // someone moved is left as it is and said.
+    const ships = store.handle.prepare("SELECT import_ref, candidate, state FROM flexible_ship WHERE thread = ? ORDER BY seq").all(thread.id);
+    for (const ship of ships.filter(one => ["imported", "merged", "cancelled", "sent-back"].includes(String(one["state"])))) {
+      const gone = await build(project, ["update-ref", "--no-deref", "-d", String(ship["import_ref"]), String(ship["candidate"])]);
+      if (gone.code === 0) shipRefs++;
+      else if ((await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", String(ship["import_ref"])])).code === 0) shipRefsLeft++;
+    }
+    const standing = [...ships].reverse().find(one => ["imported", "merged", "cancelled", "sent-back"].includes(String(one["state"])));
+    if (standing !== undefined) {
+      const branch = `refs/heads/${flexibleThreadBranch(thread.id)}`;
+      const gone = await build(project, ["update-ref", "--no-deref", "-d", branch, String(standing["candidate"])]);
+      if (gone.code === 0) shipRefs++;
+      else if ((await read(project, ["rev-parse", "--verify", "--quiet", "--end-of-options", branch])).code === 0) shipRefsLeft++;
+    }
   }
   // Only the folder the record names, as the real folder under the threads root it was made as: a link planted in its
   // place is removed as a link, never followed.
@@ -343,7 +370,7 @@ async function removeLocked(store: Store, input: { id: string; by: string; now: 
     store.handle.prepare("UPDATE flexible_thread SET state = 'removed', ended_at = ?, end_detail = ? WHERE id = ? AND state = 'removing'")
       .run(input.now.toISOString(), keepRef === "moved" ? "the keep-ref had been moved by someone else and was left as it was" : null, thread.id);
     store.recordAction({ at: input.now.toISOString(), actor: input.by, repo: thread.repo, taskId: null, runId: null, source: "policy", action: "flexible thread repository removed", outcome: "removed",
-      detail: `thread ${thread.id} · keep-ref ${keepRef}` });
+      detail: `thread ${thread.id} · keep-ref ${keepRef}${shipRefs + shipRefsLeft > 0 ? ` · ship refs removed ${shipRefs}${shipRefsLeft > 0 ? `, ${shipRefsLeft} moved by someone else and left` : ""}` : ""}` });
   });
   return { ok: true, keepRef };
 }
@@ -545,16 +572,17 @@ async function probeContainment(launch: LaunchFence, paths: FlexibleThreadPaths,
 /** One thread's lock (git-views.ts lockCheckout: a file made exclusively in the folder every fence denies, holding this
  * process's id; across Toolroll's processes): launch admission, the spawn and its registration, and removal each run
  * wholly under it, so none of them sees the thread half-changed by another. */
-function withThreadLock<T>(id: string, work: () => Promise<T>): Promise<T> {
-  return withCheckoutLock(real(homedir()), `flexible-thread:${id}`, work);
+function withThreadLock<T>(id: string, work: () => Promise<T>, timeoutMs?: number): Promise<T> {
+  return withCheckoutLock(real(homedir()), `flexible-thread:${id}`, work, timeoutMs);
 }
 
 /** Run `work` under one thread's lock (the same one its launches, stops and removal take; re-entrant within this call),
- * so a level change and a turn start are wholly before or wholly after each other. */
-export async function withFlexibleThreadLock<T>(id: string, work: () => Promise<T>): Promise<T | FlexibleThreadRefusal> {
+ * so a level change and a turn start are wholly before or wholly after each other. `timeoutMs`: give up (throw) when
+ * another holder keeps it that long; absent, the lock's own wait. */
+export async function withFlexibleThreadLock<T>(id: string, work: () => Promise<T>, timeoutMs?: number): Promise<T | FlexibleThreadRefusal> {
   if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (!FLEXIBLE_THREAD_ID.test(id)) return refuse("thread-unknown");
-  return withThreadLock(id, work);
+  return withThreadLock(id, work, timeoutMs);
 }
 
 /** The start gate every thread launch runs behind (inside the sandbox): the agent itself runs only once Toolroll writes
