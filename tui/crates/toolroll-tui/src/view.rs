@@ -712,12 +712,16 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let Some(item) = item else {
+        // No task yet: the welcome, with the composer at its foot while a new task (or thread) is typed.
         let rest = Rect {
             y: area.y + 2,
-            height: area.height.saturating_sub(2),
+            height: area.height.saturating_sub(2 + composer_h),
             ..area
         };
         draw_first_run(f, app, rest);
+        if composer_h > 0 {
+            draw_composer(f, app, input_row, roomy);
+        }
         return;
     };
     // Head: the task (a link to its page in the console, ours: link.rs) and its badge, what's running it, its steps.

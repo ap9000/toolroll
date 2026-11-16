@@ -282,6 +282,19 @@ fn the_first_run_welcome_is_not_hijacked_by_the_engines_setup_step() {
         assert!(!shown.contains(never), "{never}\n{shown}");
     }
     insta::assert_snapshot!("first_run_welcome", shown);
+    // n opens the new-task box right there (scripts/tui-e2e.mjs waits for "New task: ").
+    app.key(key('n'));
+    assert!(matches!(app.mode, Mode::NewTask(..)), "{:?}", app.mode);
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("New task: ") && shown.contains("What would you like to work on?"),
+        "{shown}"
+    );
+    for c in "Add a subtract function".chars() {
+        app.key(key(c));
+    }
+    assert!(screen(&mut app, 120, 30).contains("Add a subtract function"));
+    insta::assert_snapshot!("first_run_new_task", screen(&mut app, 120, 30));
 }
 
 // ---- 4. help is the keymap; a key that does nothing says so --------------------------------------------------------
@@ -690,6 +703,55 @@ mod files {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(left.len(), 1, "{left:?}");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_folder_above_that_others_can_change_is_refused_and_nothing_is_made_under_it() {
+        let home = dir("ancestors");
+        for (mode, name) in [
+            (0o777, "shared"),
+            (0o770, "group"),
+            (0o1777, "sticky-below-home"),
+        ] {
+            let mid = home.join(name);
+            std::fs::create_dir_all(&mid).unwrap();
+            std::fs::set_permissions(&mid, std::fs::Permissions::from_mode(mode)).unwrap();
+            // A folder of its own (0700) under it, and one still to be made.
+            let conf = mid.join("conf");
+            std::fs::create_dir_all(&conf).unwrap();
+            std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o700)).unwrap();
+            for target in [
+                conf.join("tui.toml"),
+                mid.join("new").join("toolroll").join("tui.toml"),
+            ] {
+                let mut p = prefs_at(target.clone(), home.clone(), FileState::Missing);
+                let said = p.change(Choice::Density).unwrap_err();
+                assert!(said.contains("a folder above it"), "{name}: {said}");
+                assert!(said.contains(name), "{name}: {said}");
+                assert!(!target.exists(), "{name}: written");
+                // The change still holds for this session.
+                assert_eq!(
+                    p.settings.density,
+                    toolroll_tui::settings::Density::Comfortable
+                );
+            }
+            assert!(
+                !mid.join("new").exists(),
+                "{name}: a folder was made under it"
+            );
+        }
+        // The ordinary layout under the same home still writes.
+        let path = home.join(".config").join("toolroll").join("tui.toml");
+        let mut p = prefs_at(path.clone(), home.clone(), FileState::Missing);
+        assert!(p.change(Choice::Glyphs).is_ok());
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("glyphs = \"ascii\""));
+        for name in ["shared", "group", "sticky-below-home"] {
+            let _ =
+                std::fs::set_permissions(home.join(name), std::fs::Permissions::from_mode(0o700));
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 

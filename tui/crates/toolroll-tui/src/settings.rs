@@ -218,39 +218,150 @@ pub fn set_in_toml(text: &str, section: &str, key: &str, value: &str) -> String 
     out
 }
 
-/// Write tui.toml with `change` made to its text, safely: its folder is this user's and nobody else can change it
-/// (made, mode 0700, when missing); a file there is read through read_safely first (a link, a file someone else can
-/// change, or one too big is never written); the new text goes to a fresh temporary file (mode 0600, never following
-/// a link) in that folder, synced, then renamed over the name, so the file is never half-written. No file: a fresh one.
+/// Whether `dir` (an existing folder) and every folder above it, up to the root, can be trusted with a write to
+/// tui.toml: each one looked at with lstat on its real path, owned by this user or root, and changeable by nobody else;
+/// a shared folder with the sticky bit (/tmp) only strictly above the home folder (the reader's and the launcher's own
+/// rule). `dir` itself must be this user's. Anything else is named, in plain words.
+#[cfg(unix)]
+fn trusted_chain(dir: &Path, home: Option<&Path>, me: u32) -> Result<PathBuf, String> {
+    use std::os::unix::fs::MetadataExt;
+    let real = std::fs::canonicalize(dir).map_err(|_| "its folder couldn't be read".to_string())?;
+    let home = home.and_then(|h| std::fs::canonicalize(h).ok());
+    let mut at: Option<&Path> = Some(real.as_path());
+    while let Some(d) = at {
+        let m = std::fs::symlink_metadata(d)
+            .map_err(|_| "a folder above it couldn't be read".to_string())?;
+        let own = d == real.as_path();
+        let owner_ok = m.uid() == me || (!own && m.uid() == 0);
+        let shared = m.mode() & 0o022 != 0;
+        let above_home = home.as_deref().is_some_and(|h| h != d && h.starts_with(d));
+        let sticky_ok = !own && m.mode() & 0o1000 != 0 && above_home;
+        if !m.is_dir() || !owner_ok || (shared && !sticky_ok) {
+            return Err(if own {
+                "its folder can be changed by other people, or isn't yours".to_string()
+            } else {
+                format!(
+                    "a folder above it ({}) can be changed by other people, or isn't yours or the system's",
+                    clean(&d.display().to_string())
+                )
+            });
+        }
+        at = d.parent();
+    }
+    Ok(real)
+}
+
+/// Write tui.toml with `change` made to its text, safely. Every folder from the file's up to the root is trusted first
+/// (trusted_chain; before a missing folder is made, mode 0700, and again after). The folder is then opened (never
+/// through a link) and everything else is done relative to that open folder, so no folder swapped in by name can
+/// redirect it: the file there is read only when it is a plain file of this user's nobody else can change (a link is
+/// never written through), and the new text goes to a fresh temporary file in it (mode 0600, never following a link),
+/// synced, then renamed over the name in the same folder, so the file is never half-written. No file: a fresh one.
 #[cfg(unix)]
 pub fn write_safely(
     path: &Path,
     home: Option<&Path>,
     change: &dyn Fn(&str) -> String,
 ) -> Result<(), String> {
-    use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    use std::ffi::CString;
+    use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::DirBuilderExt;
     // SAFETY: geteuid has no preconditions.
     let me = unsafe { libc::geteuid() };
     let dir = path.parent().ok_or("it has no folder")?;
+    let name = path.file_name().ok_or("it has no name")?;
     if std::fs::symlink_metadata(dir).is_err() {
+        // The nearest folder that exists, and all above it, before anything is made under them.
+        let mut base = dir.parent();
+        while let Some(b) = base {
+            if std::fs::symlink_metadata(b).is_ok() {
+                break;
+            }
+            base = b.parent();
+        }
+        if let Some(b) = base {
+            trusted_chain(b, home, me).map_err(|why| {
+                if why.starts_with("its folder") {
+                    format!(
+                        "a folder above it ({}) can be changed by other people, or isn't yours",
+                        clean(&b.display().to_string())
+                    )
+                } else {
+                    why
+                }
+            })?;
+        }
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)
             .map_err(|_| "its folder couldn't be made".to_string())?;
     }
-    let m = std::fs::metadata(dir).map_err(|_| "its folder couldn't be read".to_string())?;
-    if !m.is_dir() || m.uid() != me || m.mode() & 0o022 != 0 {
+    let real = trusted_chain(dir, home, me)?;
+    let c = |bytes: &[u8]| CString::new(bytes).map_err(|_| "its name can't be used".to_string());
+    let dir_c = c(real.as_os_str().as_bytes())?;
+    // SAFETY: a valid C string; the descriptor is owned (closed) by OwnedFd from here.
+    let raw = unsafe {
+        libc::open(
+            dir_c.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw < 0 {
+        return Err("its folder couldn't be opened".into());
+    }
+    // SAFETY: raw is a descriptor this call just opened and nothing else owns.
+    let dfd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // The folder opened is the one judged (not the name, which could change in between).
+    // SAFETY: a zeroed stat is valid storage for fstat to fill.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: dfd is open; st is valid storage.
+    if unsafe { libc::fstat(dfd.as_raw_fd(), &mut st) } != 0
+        || st.st_mode & libc::S_IFMT != libc::S_IFDIR
+        || st.st_uid != me
+        || st.st_mode & 0o022 != 0
+    {
         return Err("its folder can be changed by other people, or isn't yours".into());
     }
-    let text = match std::fs::symlink_metadata(path) {
-        Ok(l) if l.file_type().is_symlink() => {
-            return Err("it is a link (a dotfile manager's?): change the file it points to".into())
+    let name_c = c(name.as_bytes())?;
+    // The file there now, opened through the folder, never following a link.
+    // SAFETY: dfd is open; name_c is a valid C string.
+    let fd = unsafe {
+        libc::openat(
+            dfd.as_raw_fd(),
+            name_c.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    let text = if fd < 0 {
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOENT) => FRESH_HEAD.to_string(),
+            Some(libc::ELOOP) => {
+                return Err(
+                    "it is a link (a dotfile manager's?): change the file it points to".into(),
+                )
+            }
+            _ => return Err("it couldn't be opened".into()),
         }
-        Ok(_) => read_safely(path, home)?.unwrap_or_default(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => FRESH_HEAD.to_string(),
-        Err(_) => return Err("it couldn't be opened".into()),
+    } else {
+        // SAFETY: fd was just opened by this call.
+        let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let m = file
+            .metadata()
+            .map_err(|_| "it couldn't be read".to_string())?;
+        use std::os::unix::fs::MetadataExt;
+        judge(m.file_type().is_file(), m.uid(), m.mode(), m.len(), me).map_err(str::to_string)?;
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "it couldn't be read".to_string())?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err("it is larger than 64 KB".into());
+        }
+        String::from_utf8(bytes).map_err(|_| "it isn't UTF-8 text".to_string())?
     };
     let new = change(&text);
     if new.len() as u64 > MAX_BYTES {
@@ -260,20 +371,41 @@ pub fn write_safely(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = dir.join(format!(".tui.toml.{}.{nanos}.tmp", std::process::id()));
+    let tmp_c = c(format!(".tui.toml.{}.{nanos}.tmp", std::process::id()).as_bytes())?;
+    // SAFETY: dfd is open; tmp_c is a valid C string; 0o600 is the mode for a new file.
+    let tfd = unsafe {
+        libc::openat(
+            dfd.as_raw_fd(),
+            tmp_c.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600 as libc::c_uint,
+        )
+    };
+    if tfd < 0 {
+        return Err("it couldn't be written".into());
+    }
     let written = (|| -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&tmp)?;
+        // SAFETY: tfd was just opened by this call.
+        let mut f = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(tfd) });
         f.write_all(new.as_bytes())?;
         f.sync_all()?;
-        std::fs::rename(&tmp, path)
+        // SAFETY: dfd is open; both names are valid C strings, in the same open folder.
+        if unsafe {
+            libc::renameat(
+                dfd.as_raw_fd(),
+                tmp_c.as_ptr(),
+                dfd.as_raw_fd(),
+                name_c.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     })();
     if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+        // SAFETY: dfd is open; tmp_c is a valid C string.
+        unsafe { libc::unlinkat(dfd.as_raw_fd(), tmp_c.as_ptr(), 0) };
         return Err("it couldn't be written".into());
     }
     Ok(())
