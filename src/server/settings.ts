@@ -1,5 +1,5 @@
 import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
-import { declareJustMe, installModeNow, sessionStandsIn, TEAM_FACT_WORDS } from "../install-mode.js";
+import { declareJustMe, installModeNow, sessionStandsIn, soloNow, TEAM_FACT_WORDS } from "../install-mode.js";
 import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
 import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
@@ -25,6 +25,7 @@ import { adapterPolicy } from "./route-policy.js";
 import { createHash } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { INSTALLATION_SCOPE } from "../agentconfig.js";
+import { checkEngineResponse, ENGINE_API_VERSION } from "../contracts/engine-api.js";
 import { rulesSummary } from "../approval-rules-ui.js";
 import { installMethod } from "../install-method.js";
 import { logEvent } from "../log.js";
@@ -103,7 +104,7 @@ import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeSta
 import { modelsHtml,modelsScript,type RoleView,type SuggestedView } from "../models-ui.js";
 import { acceptSuggestion, dismissSuggestion, grantWords, keepRule, modelName, ruleWords, rulesOf, setSuggestModels, startTrial, stopTrial, suggestionsFor, suggestionWords, suggestModelsOn, trialOffersFor, trialOfferWords, trialsOf, trialWords, turnOffRule } from "../route-rules.js";
 import type { RuleDoor } from "../route-store.js";
-import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,defaultAgentOf,fillDefaultRouting,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
+import { AGENT_PRESETS,ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,defaultAgentOf,fillDefaultRouting,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
 import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
 import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
 import { CHAT_APPROVE_ALL,CHECK_REPAIR_LIMIT,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
@@ -2529,6 +2530,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.models-watch": modelsAct("watch"),
     "settings.models-update": modelsAct("update"),
     "settings.models-agent": modelsSave,
+    "engine.models": modelsRead,
     "settings.models-apply": modelsApply,
     "settings.models-act": modelsAct("other"),
     "settings.models-accept": modelsRuleAct("accept"),
@@ -2709,6 +2711,33 @@ ${postForm("/settings/chat-approval/save", html`\
     const count = result.diff.length;
     const done = count === 0 ? "Nothing changed." : `${what}: ${count} change${count === 1 ? "" : "s"} saved for tasks filed from now on.`;
     return { key: "said", words: result.unresolved === null ? done : `${done} Some roles have no model yet, so new tasks can't be filed here.` };
+  }
+  /** GET /engine/models (the terminal workbench's Agents screen): the installation's planner, builder and reviewer as
+   * Settings → Models shows them (modelsView: the same words, choices and digest), and each default agent's preset as
+   * the fields a save posts. Changing them is POST /settings/models/agent, proved there as from the page. */
+  async function modelsRead(ctx: HandlerContext): Promise<void> {
+    const { who, response, now } = ctx;
+    if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
+    const operator = store.isInstanceOperator(who.name) && !store.isDemo();
+    const canChange = operator && (who.authority === "full" || soloNow(store));
+    const view = modelsView(canChange, who.session.csrf, now, null, null);
+    const keys = ["plan", "build", "review"] as const;
+    const roles = keys.map(key => {
+      const role = view.roles.find(one => one.key === key)!;
+      return { key, label: role.label, current: role.current, words: role.words,
+        choices: role.groups.map(group => ({ provider: group.provider, label: group.label, models: group.options.map(option => ({ value: option.value, label: option.label })) })) };
+    });
+    const build = rowAt(store, INSTALLATION_SCOPE, { phase: "build", tier: "routine" });
+    const presets = (["claude", "codex"] as const).map(agent => ({
+      agent, name: agent === "claude" ? "Claude Code" : "Codex", words: AGENT_PRESETS[agent].words,
+      fields: Object.fromEntries(SLOTS.map(slot => { const model = AGENT_PRESETS[agent].rows[slotKey(slot)]; return [slotKey(slot), model === null || model === undefined ? "clear" : `${agent}|${model}`]; })),
+    }));
+    const checked = checkScope(store, null);
+    response.setHeader("cache-control", "no-store");
+    return respond(response, 200, "application/json", JSON.stringify(checkEngineResponse("models", {
+      version: ENGINE_API_VERSION, canChange, digest: stateDigest(store, INSTALLATION_SCOPE), problem: checked.kind === "ok" ? null : browserWords(checked.problem),
+      roles, defaultAgent: build?.provider ?? null, presets,
+    })));
   }
   /** One save of the whole editor: every role at the scope, sets and clears, as one change. */
   async function modelsSave(ctx: HandlerContext): Promise<void> {

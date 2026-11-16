@@ -395,7 +395,7 @@ describe("where freshness may be honoured", () => {
       // server/engine-api.ts: starting a Flexible thread (pre-enable) is a person's yes to its terms card, proved as an
       // approval's is (a password typed now, or where the existing rules let it stand in, a session or the local owner's act).
       "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/engine-api.ts": 1, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
-      "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
+      "src/server/tasks.ts": 6, "src/server/terminals.ts": 2, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
     const chatRuns = files.find(one => one.path === "src/server/chat.ts")!.text.match(/freshFacts\.run\([^,]*,/g) ?? [];
@@ -560,7 +560,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>pushSubscribe@13": 1,
     // Starting a Flexible thread (pre-enable): the person's yes to its terms card, proved as an approval's is.
     "src/server/engine-api.ts#<module>": 2,
-    "src/server/engine-api.ts#createEngineHandlers@6>threadStart@11": 1,
+    "src/server/engine-api.ts#createEngineHandlers@6>threadStart@12": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
     // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
     // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
@@ -593,13 +593,13 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>discordAct@84><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@95><anonymous>@1": 1,
     // Settings → Models (spend-dashboard slice 3): the editor's save and a preset's or switch's apply.
-    "src/server/settings.ts#createSettingsHandlers@1>modelsApply@113": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsApply@114": 1,
     // Easy-start C5: turning local mode off is an operator's step-up from a full session, proved inside the write's transaction.
-    "src/server/settings.ts#createSettingsHandlers@1>localModeOff@114>turned:store.transact(_)@1": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>modelsSave@112": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>localModeOff@115>turned:store.transact(_)@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsSave@113": 1,
     // Results routing (slice 2): Settings → Models → Suggested's step-up acts (accept, keep, suggestions on), last in
     // the handlers so the reviewed positions above stay as they were.
-    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@117><anonymous>@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsRuleAct@118><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>policySave@51": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectDelete@50": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@48": 1,
@@ -618,7 +618,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTidyHandlers@3": 2,
     "src/server/tasks.ts#createTidyHandlers@3>applyPutAway@2": 1,
     // Live terminals: starting one is a step-up (a fresh password every time; never a remembered one).
-    "src/server/terminals.ts#createTerminalHandlers@2>start@14": 1,
+    "src/server/terminals.ts#createTerminalHandlers@2>start@16": 1,
+    // The Agents screen: an agent's own sign-in or confirmed install, proved as a terminal start is.
+    "src/server/terminals.ts#createTerminalHandlers@2>agentStart@17><anonymous>@1": 1,
     "src/task-outcome-cli.ts#<module>": 2,
     "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1,
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.
@@ -1005,10 +1007,10 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
     // Agent Baseline arc 1: Settings → Project → Network, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectNetwork@49": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@118": 1,
-    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@121": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFallback@119": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>projectFlexible@122": 1,
     // Solo or team: "It's just me" is a credential act from a full session, proved inside the declaration's transaction.
-    "src/server/settings.ts#createSettingsHandlers@1>justMe@115>said:store.transact(_)@1": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>justMe@116>said:store.transact(_)@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectWrites@104": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@105": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).

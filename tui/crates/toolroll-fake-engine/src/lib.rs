@@ -76,6 +76,12 @@ pub struct State {
     pub acts: Vec<Act>,
     /// Every act refused with this status and these words (None: kept).
     pub refuse_acts: Option<(u16, String)>,
+    /// A models save refused as Settings does (a redirect with `problem`), with these words.
+    pub refuse_models: Option<String>,
+    /// How many times the Agents screen asked to look again (POST /engine/agents/check).
+    pub agent_checks: usize,
+    /// The models read (GET /engine/models).
+    pub models: Value,
     /// Only completions refused so (a note saved, then Accept refused).
     pub refuse_complete: Option<(u16, String)>,
     /// Notes the console saved, by the request identity they came with (an unchanged retry saves nothing more, as the
@@ -487,6 +493,9 @@ pub fn scenario() -> State {
         contract: contract_digest(),
         acts: Vec::new(),
         refuse_acts: None,
+        refuse_models: None,
+        agent_checks: 0,
+        models: fixture("models.json"),
         refuse_complete: None,
         notes_saved: Vec::new(),
         session_ended: false,
@@ -546,6 +555,7 @@ impl FakeEngine {
             .route("/engine/hello", get(hello))
             .route("/work/rows", get(work))
             .route("/engine/agents", get(agents))
+            .route("/engine/models", get(models))
             .route("/t/{task}/steps", get(steps))
             .route("/t/{task}/diff", get(diff))
             .route("/agents/live/run/{run}", get(live_window))
@@ -666,6 +676,13 @@ async fn work(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
         return r;
     }
     json_answer(200, s.state.lock().unwrap().work.clone())
+}
+
+async fn models(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
+    if let Err(r) = admitted(&s, &headers, "/engine/models") {
+        return r;
+    }
+    json_answer(200, s.state.lock().unwrap().models.clone())
 }
 
 async fn agents(AxState(s): AxState<Shared>, headers: HeaderMap) -> Response {
@@ -899,6 +916,44 @@ async fn act(
     }
     if path == "/tasks/add" {
         return (StatusCode::SEE_OTHER, [("location", "/t/t-new")]).into_response();
+    }
+    // The Agents screen: looking again answers the agents read; an agent's own sign-in or install starts a terminal
+    // (an install only with the exact command confirmed); a models save answers as Settings does, with a redirect.
+    if path == "/engine/agents/check" {
+        st.agent_checks += 1;
+        return json_answer(200, st.agents.clone());
+    }
+    if let Some(kind) = path.strip_prefix("/term/agent/") {
+        let last = st.acts.last().cloned().unwrap();
+        let agent = last.field("agent").unwrap_or("").to_string();
+        let row = st.agents["agents"]
+            .as_array()
+            .and_then(|a| a.iter().find(|r| r["id"] == json!(agent)).cloned());
+        let Some(row) = row else {
+            return json_answer(
+                400,
+                json!({ "ok": false, "error": "Choose an agent Toolroll supports." }),
+            );
+        };
+        if kind == "install" && last.field("confirm") != row["setup"]["install"].as_str() {
+            return json_answer(
+                409,
+                json!({ "ok": false, "error": "Confirm the exact install command first." }),
+            );
+        }
+        st.terms.retain(|t| t["id"] != json!(TERM_ID));
+        return json_answer(200, json!({ "ok": true, "id": TERM_ID }));
+    }
+    if path == "/settings/models/agent" {
+        if let Some(words) = st.refuse_models.clone() {
+            let to = format!("/settings/models?problem={}", words.replace(' ', "+"));
+            return (StatusCode::SEE_OTHER, [("location", to)]).into_response();
+        }
+        return (
+            StatusCode::SEE_OTHER,
+            [("location", "/settings/models?said=Models+saved.")],
+        )
+            .into_response();
     }
     if path == "/term/start" {
         // A take-over names its task and build only (the console finds the project and commit in its records).

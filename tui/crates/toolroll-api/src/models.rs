@@ -618,6 +618,81 @@ pub struct AgentRow {
     pub sign_in: Option<String>,
     pub ready: bool,
     pub next: Option<String>,
+    pub setup: AgentSetup,
+}
+
+/// How an agent is added (agent-detect.ts AGENT_SETUP): Toolroll's own commands, whether the console runs its install
+/// or sign-in in a pane (`can_install`, `can_sign_in`), what key it needs and where, an ACP agent's one-time check.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSetup {
+    pub install: Option<String>,
+    #[serde(rename = "canInstall")]
+    pub can_install: bool,
+    #[serde(rename = "signIn")]
+    pub sign_in: Option<String>,
+    #[serde(rename = "canSignIn")]
+    pub can_sign_in: bool,
+    pub key: Option<String>,
+    pub check: Option<String>,
+    pub note: Option<String>,
+    /// For an npm install: the registry the person's own ~/.npmrc sends this package to, when not the public one.
+    pub registry: Option<String>,
+    /// That file may set another registry this can't follow.
+    #[serde(rename = "registryUnsure")]
+    pub registry_unsure: bool,
+}
+
+/// `GET /engine/models`: the installation's planner, builder and reviewer as Settings → Models shows them, the digest a
+/// change posts back (POST /settings/models/agent), and each default agent's preset as the fields that change posts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelsRead {
+    pub version: u32,
+    #[serde(rename = "canChange")]
+    pub can_change: bool,
+    pub digest: String,
+    pub problem: Option<String>,
+    pub roles: Vec<ModelRole>,
+    #[serde(rename = "defaultAgent")]
+    pub default_agent: Option<String>,
+    pub presets: Vec<AgentPreset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRole {
+    /// plan | build | review
+    pub key: String,
+    pub label: String,
+    /// "provider|model" as the form posts it; "" when not set.
+    pub current: String,
+    pub words: String,
+    pub choices: Vec<ModelChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelChoice {
+    pub provider: String,
+    pub label: String,
+    pub models: Vec<ModelOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelOption {
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentPreset {
+    pub agent: String,
+    pub name: String,
+    pub words: String,
+    pub fields: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

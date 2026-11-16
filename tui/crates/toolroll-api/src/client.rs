@@ -344,6 +344,25 @@ impl Client {
         )
     }
 
+    /// The installation's planner, builder and reviewer and what each may be (GET /engine/models).
+    pub async fn models(&self) -> Result<ModelsRead, ApiError> {
+        versioned(
+            self.get::<ModelsRead>("/engine/models", "the models")
+                .await?,
+            |r| r.version,
+        )
+    }
+
+    /// Look for this computer's agents again (POST /engine/agents/check: the console's bounded status checks, no model
+    /// call), and its answer: the agents read.
+    pub async fn agents_check(&self) -> Result<AgentsRead, ApiError> {
+        let text = self.post_form_json("/engine/agents/check", &[]).await?;
+        let read = serde_json::from_str::<AgentsRead>(&text).map_err(|_| {
+            ApiError::Contract("The agents' answer isn't what this version expects.".into())
+        })?;
+        versioned(read, |r| r.version)
+    }
+
     pub async fn work_rows(&self) -> Result<WorkRows, ApiError> {
         versioned(
             self.get::<WorkRows>("/work/rows", "your tasks").await?,
@@ -569,6 +588,17 @@ impl Client {
                 });
             }
         }
+        // A page's form answers with a redirect that says what happened (`?said=` or `?problem=`, as Settings does):
+        // its words, so a problem is never read as done.
+        if (300..400).contains(&status) {
+            if let Some((key, words)) = location.as_deref().and_then(said_of) {
+                return Ok(if key == "problem" {
+                    ActOutcome::Refused(words)
+                } else {
+                    ActOutcome::Done(words)
+                });
+            }
+        }
         Ok(if (200..400).contains(&status) {
             ActOutcome::Done(done.to_string())
         } else {
@@ -636,6 +666,37 @@ fn signal_of(ev: &SseEvent) -> Option<LiveSignal> {
         "reload" => Some(LiveSignal::Reload),
         _ => None,
     }
+}
+
+/// A redirect's `said` or `problem` words (percent-decoded, `+` as a space), which ever it carries; None for neither.
+pub fn said_of(location: &str) -> Option<(&'static str, String)> {
+    let query = location.split_once('?')?.1.split('#').next()?;
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=')?;
+        let key = match k {
+            "problem" => "problem",
+            "said" => "said",
+            _ => continue,
+        };
+        let bytes = v.replace('+', " ").into_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(b) =
+                    u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?, 16)
+                {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        return Some((key, String::from_utf8_lossy(&out).into_owned()));
+    }
+    None
 }
 
 fn session_gone(status: u16, location: Option<&str>) -> bool {

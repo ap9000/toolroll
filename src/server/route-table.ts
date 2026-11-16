@@ -190,6 +190,12 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "term.start": "take-over",
   "term.close": "take-over",
   "term.remove": "take-over",
+  // The Agents screen (terminal workbench): an agent's own sign-in or install in a pane, looking for agents again, and
+  // the installation's models on a solo install (each writer re-checks its exact act).
+  "term.agent-sign-in": "agent-sign-in",
+  "term.agent-install": "agent-install",
+  "engine.agents-check": "check-agents",
+  "settings.models-agent": "change-models",
   "task.act.archive": "archive-task",
   "task.act.restore": "archive-task",
   "projects.open": "add-project",
@@ -387,6 +393,10 @@ get("pages", "engine.hello", "/engine/hello", { limited: "unscoped", ...free });
 // The engine API's agents read (A0b instant start): the console's last look at this computer's coding agents, for a
 // browser or terminal session (the welcome's same facts; the background checks look, this read never starts a process).
 get("pages", "engine.agents", "/engine/agents", { limited: "unscoped", callers: ["cookie"], ...free });
+// The installation's model choices as data (Settings → Models' own view), for a browser or terminal session.
+get("settings", "engine.models", "/engine/models", { limited: "unscoped", callers: ["cookie"], ...free });
+// Look for this computer's agents again (the bounded status checks; no model call), for a browser or terminal session.
+post("pages", "engine.agents-check", "/engine/agents/check", { limited: "unscoped", callers: ["cookie"], ...free });
 get("pages", "search", "/search", { limited: "collection", ...free });
 // Retired pages (docs/plans/plain-toolroll.md P1.4): permanent redirects to Home and Tasks, admitted as their target is.
 const RETIRED = { limited: "collection", ...free, retired: true } as const;
@@ -553,6 +563,8 @@ post("settings", "settings.advanced", "/settings/advanced", { ...free, limited: 
 const CODING_ACT = { scope: "step-up", project: "coding", limited: "self" } as const;
 post("tasks", "code.start", "/code/start", CODING_ACT);
 post("tasks", "term.start", "/term/start", { ...TERM, scope: "step-up" });
+// An agent's own sign-in or install in a pane (the Agents screen): the same admission as a terminal, no project.
+for (const one of ["sign-in", "install"]) post("tasks", `term.agent-${one}`, `/term/agent/${one}`, { ...TERM, scope: "step-up" });
 for (const one of ["close", "remove"]) post("tasks", `term.${one}`, `^\\/term\\/${TERMINAL}\\/${one}$`, { ...TERM, sample: `/term/${"a".repeat(32)}/${one}` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
 // Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page

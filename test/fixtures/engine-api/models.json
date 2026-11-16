@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "canChange": true,
+  "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "problem": null,
+  "roles": [
+    {
+      "key": "plan",
+      "label": "Planner",
+      "current": "claude|claude-opus-5-5",
+      "words": "Claude · Claude Opus 5.5",
+      "choices": [
+        {
+          "provider": "claude",
+          "label": "Claude",
+          "models": [
+            {
+              "value": "claude-opus-5-5",
+              "label": "Claude Opus 5.5 · $$$"
+            },
+            {
+              "value": "claude-sonnet-5-5",
+              "label": "Claude Sonnet 5.5 · $$"
+            },
+            {
+              "value": "claude-haiku-5-5",
+              "label": "Claude Haiku 5.5 · $"
+            }
+          ]
+        },
+        {
+          "provider": "codex",
+          "label": "Codex",
+          "models": [
+            {
+              "value": "gpt-6-astra",
+              "label": "GPT-6 Astra · $$$"
+            },
+            {
+              "value": "gpt-6-sol",
+              "label": "GPT-6 Sol · $$"
+            },
+            {
+              "value": "gpt-6-luna",
+              "label": "GPT-6 Luna · $"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "build",
+      "label": "Builder for routine tasks",
+      "current": "claude|claude-sonnet-5-5",
+      "words": "Claude · Claude Sonnet 5.5",
+      "choices": [
+        {
+          "provider": "claude",
+          "label": "Claude",
+          "models": [
+            {
+              "value": "claude-opus-5-5",
+              "label": "Claude Opus 5.5 · $$$"
+            },
+            {
+              "value": "claude-sonnet-5-5",
+              "label": "Claude Sonnet 5.5 · $$"
+            },
+            {
+              "value": "claude-haiku-5-5",
+              "label": "Claude Haiku 5.5 · $"
+            }
+          ]
+        },
+        {
+          "provider": "codex",
+          "label": "Codex",
+          "models": [
+            {
+              "value": "gpt-6-astra",
+              "label": "GPT-6 Astra · $$$"
+            },
+            {
+              "value": "gpt-6-sol",
+              "label": "GPT-6 Sol · $$"
+            },
+            {
+              "value": "gpt-6-luna",
+              "label": "GPT-6 Luna · $"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "review",
+      "label": "Reviewer",
+      "current": "",
+      "words": "Follows the planner",
+      "choices": [
+        {
+          "provider": "claude",
+          "label": "Claude",
+          "models": [
+            {
+              "value": "claude-opus-5-5",
+              "label": "Claude Opus 5.5 · $$$"
+            },
+            {
+              "value": "claude-sonnet-5-5",
+              "label": "Claude Sonnet 5.5 · $$"
+            },
+            {
+              "value": "claude-haiku-5-5",
+              "label": "Claude Haiku 5.5 · $"
+            }
+          ]
+        },
+        {
+          "provider": "codex",
+          "label": "Codex",
+          "models": [
+            {
+              "value": "gpt-6-astra",
+              "label": "GPT-6 Astra · $$$"
+            },
+            {
+              "value": "gpt-6-sol",
+              "label": "GPT-6 Sol · $$"
+            },
+            {
+              "value": "gpt-6-luna",
+              "label": "GPT-6 Luna · $"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "defaultAgent": "claude",
+  "presets": [
+    {
+      "agent": "claude",
+      "name": "Claude Code",
+      "words": "Sized by job on Claude.",
+      "fields": {
+        "plan": "claude|claude-opus-5-5",
+        "build": "claude|claude-sonnet-5-5",
+        "review": "claude|claude-opus-5-5"
+      }
+    },
+    {
+      "agent": "codex",
+      "name": "Codex",
+      "words": "Sized by job on Codex.",
+      "fields": {
+        "plan": "codex|gpt-6-astra",
+        "build": "codex|gpt-6-sol",
+        "review": "codex|gpt-6-astra"
+      }
+    }
+  ]
+}

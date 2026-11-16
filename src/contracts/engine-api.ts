@@ -20,6 +20,7 @@
  *   POST /login/once                 a local-owner one-time link redeemed for a terminal client (linkRedemption)
  *   GET  /engine/hello               the handshake: this build and the contract's digest (hello)
  *   GET  /engine/agents              the coding agents on this computer and who the first task goes to (agents)
+ *   GET  /engine/models              the installation's planner, builder and reviewer and what each may be (models)
  *   GET  /term/state                 this session's live terminals (termState): the browser's Live page reads it too
  *   POST /term/start                 start one (termStarted); a take-over names its task and build (solo-workbench T4)
  *                                    and attaches through the console's one WebSocket, GET /term/<id>/socket
@@ -299,9 +300,49 @@ export const agentsReadSchema = z.object({
     ready: z.boolean(),
     /** What it still needs before it takes tasks; null when nothing. */
     next: z.string().nullable(),
+    /** How to add it (agent-detect.ts AGENT_SETUP, Toolroll's own constants): the exact commands, whether the console
+     * runs its install or sign-in in a pane for the person (POST /term/agent/install, /term/agent/sign-in), what key it
+     * needs and where, an ACP agent's one-time check, and a note. Empty in the summary view. */
+    setup: z.object({
+      install: z.string().nullable(),
+      canInstall: z.boolean(),
+      signIn: z.string().nullable(),
+      canSignIn: z.boolean(),
+      key: z.string().nullable(),
+      check: z.string().nullable(),
+      note: z.string().nullable(),
+      /** For an npm install: the registry the person's own ~/.npmrc sends this package to when it isn't the public one
+       * (agent-detect.ts npmRegistryOf; scheme, host and path only), and whether that file may set another one this
+       * can't follow. */
+      registry: z.string().nullable(),
+      registryUnsure: z.boolean(),
+    }),
   })),
   firstTask: z.object({ id: z.string(), name: z.string() }).nullable(),
   lines: z.array(z.string()),
+});
+
+/** `GET /engine/models`: the installation's model choices as Settings → Models shows them (server/settings.ts): the
+ * planner, the builder and the reviewer, each with what it is now and what it may be set to, the state digest a change
+ * posts back (POST /settings/models/agent), and each default agent's preset (every role, as one change). `canChange`:
+ * this session may change them (an instance operator; a local owner on a solo install). */
+export const modelsReadSchema = z.object({
+  version,
+  canChange: z.boolean(),
+  digest: z.string(),
+  problem: z.string().nullable(),
+  roles: z.array(z.object({
+    key: z.enum(["plan", "build", "review"]),
+    label: z.string(),
+    /** "provider|model" as the form posts it; "" when not set. */
+    current: z.string(),
+    words: z.string(),
+    choices: z.array(z.object({ provider: z.string(), label: z.string(), models: z.array(z.object({ value: z.string(), label: z.string() })) })),
+  })),
+  defaultAgent: z.string().nullable(),
+  presets: z.array(z.object({ agent: z.string(), name: z.string(), words: z.string(),
+    /** Every role the editor owns, as the form posts it ("provider|model", or "clear"). */
+    fields: z.record(z.string(), z.string()) })),
 });
 
 // ---- Live terminals (take over) -------------------------------------------------------------------------------------
@@ -365,8 +406,9 @@ export const ENGINE_RESPONSES = {
   refusal: { route: "every engine route's refusal", schema: engineRefusalSchema },
   hello: { route: "GET /engine/hello", schema: helloSchema },
   agents: { route: "GET /engine/agents", schema: agentsReadSchema },
+  models: { route: "GET /engine/models", schema: modelsReadSchema },
   termState: { route: "GET /term/state", schema: termStateSchema },
-  termStarted: { route: "POST /term/start", schema: termStartedSchema },
+  termStarted: { route: "POST /term/start, /term/agent/sign-in, /term/agent/install", schema: termStartedSchema },
 } as const;
 export type EngineResponseName = keyof typeof ENGINE_RESPONSES;
 export type LiveSessionWindow = z.infer<typeof liveSessionWindowSchema>;
@@ -380,6 +422,7 @@ export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
 export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
 export type LinkRedemption = z.infer<typeof linkRedemptionSchema>;
 export type AgentsRead = z.infer<typeof agentsReadSchema>;
+export type ModelsRead = z.infer<typeof modelsReadSchema>;
 export type TermState = z.infer<typeof termStateSchema>;
 
 type EngineReport = (route: string, issues: ContractIssue[]) => void;

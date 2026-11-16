@@ -1,5 +1,6 @@
 //! Toolroll's terminal workbench: a thin client of the local console. It renders and sends intents; every write is
 //! the browser's own form POST through toolroll-api, and the session lives in memory only.
+pub mod agents;
 pub mod app;
 pub mod guard;
 pub mod keys;

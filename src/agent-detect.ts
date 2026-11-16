@@ -27,7 +27,7 @@
  * models, model-choices.ts AGENT_PRESETS). Gemini CLI and OpenRouter need their models chosen first, and an ACP agent
  * needs its one-time check (acp-check.ts) and its models; their lines say so.
  */
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
@@ -274,4 +274,95 @@ export function detectionReport(detection: AgentDetection): string[] {
     "",
     ...detectionLines(detection),
   ];
+}
+
+// ---- Adding an agent (the terminal workbench's Agents screen) --------------------------------------------------------
+
+/** One command Toolroll may run for a person in a terminal pane: a program found as a trusted install on PATH
+ * (status-probe.ts resolveStatusBinary) and arguments that are Toolroll's own constants. */
+export type AgentCommand = { binary: string; args: readonly string[] };
+
+/**
+ * How each agent is added, all Toolroll's own constants (never text from the agent, a page or the environment):
+ *
+ * - `install`: the exact install command shown. `installRun`: the same command as a program and arguments, when it may
+ *   run in a pane after the person's confirm (npm installs only; a `curl … | bash` installer is shown, never run here).
+ * - `signIn` / `signInRun`: the agent's OWN sign-in, run in a pane: the provider's browser sign-in opens as usual and the
+ *   credential goes into the agent's own files; Toolroll never reads it.
+ * - `key`: an agent that runs on a key Toolroll stores (Gemini on an API key, OpenRouter): what to set and where.
+ * - `check`: an ACP agent's one-time check, shown to run (the console has no route that runs it).
+ * - `note`: anything else the person should know, in one sentence.
+ */
+export type AgentSetup = {
+  install: string | null;
+  installRun: AgentCommand | null;
+  signIn: string | null;
+  signInRun: AgentCommand | null;
+  key: string | null;
+  check: string | null;
+  note: string | null;
+};
+
+const npm = (pkg: string): { install: string; installRun: AgentCommand } => ({ install: `npm install -g ${pkg}`, installRun: { binary: "npm", args: ["install", "-g", pkg] } });
+const ACP_CHECK = (id: string): string => `toolroll agents check ${id} --model <model>`;
+
+export const AGENT_SETUP: Readonly<Record<ProviderId, AgentSetup>> = Object.freeze({
+  claude: { ...npm("@anthropic-ai/claude-code"), signIn: "claude auth login", signInRun: { binary: "claude", args: ["auth", "login"] }, key: null, check: null,
+    note: "Flexible threads bill your Claude plan through Toolroll's relay, which needs a long-lived token: run `claude setup-token` in your own terminal (it prints the token, so Toolroll never runs it for you)." },
+  codex: { ...npm("@openai/codex"), signIn: "codex login", signInRun: { binary: "codex", args: ["login"] }, key: null, check: null, note: null },
+  gemini: { ...npm("@google/gemini-cli"), signIn: "gemini", signInRun: { binary: "gemini", args: [] },
+    key: "Or run it on an API key: switch it with `toolroll keys auth gemini api-key`, then pipe the key in with `toolroll keys set gemini < key.txt` (or paste it in Settings → Agents in the browser).", check: null,
+    note: "Its sign-in starts Gemini CLI: choose Login with Google, finish in the browser, then type /quit." },
+  openrouter: { install: null, installRun: null, signIn: null, signInRun: null,
+    key: "It runs on an OpenRouter key through Codex: pipe the key in with `toolroll keys set openrouter < key.txt` (or paste it in Settings → Agents in the browser), then choose its models.", check: null,
+    note: "Install Codex first: OpenRouter runs through it." },
+  opencode: { ...npm("opencode-ai"), signIn: ACP_AGENTS.opencode.signIn, signInRun: { binary: "opencode", args: ["auth", "login"] }, key: null, check: ACP_CHECK("opencode"), note: null },
+  cursor: { install: "curl https://cursor.com/install -fsS | bash", installRun: null, signIn: ACP_AGENTS.cursor.signIn, signInRun: { binary: "cursor-agent", args: ["login"] }, key: null, check: ACP_CHECK("cursor"), note: null },
+  cline: { ...npm("cline"), signIn: ACP_AGENTS.cline.signIn, signInRun: { binary: "cline", args: ["auth"] }, key: null, check: ACP_CHECK("cline"), note: null },
+  qwen: { ...npm("@qwen-code/qwen-code"), signIn: ACP_AGENTS.qwen.signIn, signInRun: { binary: "qwen", args: [] }, key: null, check: ACP_CHECK("qwen"),
+    note: "Its sign-in starts Qwen Code: type /auth and finish in the browser, then /quit." },
+  goose: { install: "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash", installRun: null, signIn: ACP_AGENTS.goose.signIn,
+    signInRun: { binary: "goose", args: ["configure"] }, key: null, check: ACP_CHECK("goose"), note: null },
+});
+
+/** An agent's setup, or null for an id Toolroll doesn't support. */
+export function agentSetupOf(id: string): AgentSetup | null {
+  return Object.prototype.hasOwnProperty.call(AGENT_SETUP, id) ? AGENT_SETUP[id as ProviderId] : null;
+}
+
+/** Where npm would fetch `pkg` from, as the person's own `~/.npmrc` says (an install's confirm says it), mirroring npm's
+ * rule: for a scoped package (`@openai/codex`) the last `@scope:registry=` line wins; otherwise, and for an unscoped
+ * package, the last `registry=` line. Only those lines are read (never a token or any other line), and only a URL's
+ * scheme, host and path are kept. `unsure`: the file does something this doesn't follow (an environment variable
+ * `${…}`, a key it can't read, a value that isn't an http(s) URL): the confirm then says it may set another registry.
+ * Null url and not unsure: the public registry. */
+export function npmRegistryOf(home: string, pkg: string): { url: string | null; unsure: boolean } {
+  const file = join(home, ".npmrc");
+  try {
+    const seen = statSync(file);
+    if (!seen.isFile() || seen.size > 64 * 1024) return { url: null, unsure: seen.isFile() };
+  } catch { return { url: null, unsure: false }; }
+  let text: string;
+  try { text = readFileSync(file, "utf8"); } catch { return { url: null, unsure: true }; }
+  const scope = pkg.startsWith("@") ? pkg.split("/")[0]! : null;
+  let scoped: string | null = null, plain: string | null = null, unsure = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#") || line.startsWith(";") || line.startsWith("[")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim(), value = line.slice(eq + 1).trim().replace(/^"(.*)"$/, "$1");
+    const isRegistry = key === "registry" || /^@[^:]+:registry$/.test(key);
+    if (!isRegistry) { if (/registry/i.test(key) && !key.startsWith("//")) unsure = true; continue; }
+    if (value.includes("${")) { unsure = true; continue; }
+    if (key === "registry") plain = value;
+    else if (scope !== null && key === `${scope}:registry`) scoped = value;
+  }
+  const chosen = scoped ?? plain;
+  if (chosen === null) return { url: null, unsure };
+  let url: URL;
+  try { url = new URL(chosen); } catch { return { url: null, unsure: true }; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return { url: null, unsure: true };
+  if (url.hostname === "registry.npmjs.org") return { url: null, unsure };
+  return { url: `${url.protocol}//${url.host}${url.pathname}`.replace(/[\u0000-\u001f\u007f]/g, ""), unsure };
 }

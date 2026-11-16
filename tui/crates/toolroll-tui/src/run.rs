@@ -343,6 +343,21 @@ impl Loop {
             Effect::TermOpen { task, run } => {
                 drop(tokio::spawn(open_terminal(client, tx, task, run)));
             }
+            Effect::FetchModels => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Models(client.models().await));
+            })),
+            Effect::CheckAgents => drop(tokio::spawn(async move {
+                let _ = tx.send(Msg::Agents(client.agents_check().await));
+            })),
+            Effect::AgentTerm {
+                kind,
+                agent,
+                confirm,
+            } => {
+                drop(tokio::spawn(open_agent_terminal(
+                    client, tx, kind, agent, confirm,
+                )));
+            }
             Effect::TermSend { id, send } => {
                 // Only the terminal the pane shows: anything else is dropped.
                 if let Some((held, link)) = &self.term {
@@ -358,6 +373,48 @@ impl Loop {
             }
         }
         None
+    }
+}
+
+/// An agent's own sign-in or confirmed install (the Agents screen): the console starts its own command for that agent,
+/// answering the terminal's id, which is then attached; its pane is `agent:<id>`.
+async fn open_agent_terminal(
+    client: Client,
+    tx: mpsc::UnboundedSender<Msg>,
+    kind: String,
+    agent: String,
+    confirm: Option<String>,
+) {
+    let task = format!("agent:{agent}");
+    let fail = |e: ApiError| {
+        let _ = tx.send(Msg::TermOpened {
+            task: task.clone(),
+            run: 0,
+            result: Err(e),
+        });
+    };
+    let id = match client.term_agent(&kind, &agent, confirm.as_deref()).await {
+        Ok(id) => id,
+        Err(e) => return fail(e),
+    };
+    let (send, mut events, _held) = match client.term_connect(&id).await {
+        Ok(three) => three,
+        Err(e) => return fail(e),
+    };
+    if tx
+        .send(Msg::TermOpened {
+            task: task.clone(),
+            run: 0,
+            result: Ok((id.clone(), String::new(), crate::app::TermLink(send))),
+        })
+        .is_err()
+    {
+        return;
+    }
+    while let Some(event) = events.recv().await {
+        if tx.send(Msg::Term(id.clone(), event)).is_err() {
+            return;
+        }
     }
 }
 
