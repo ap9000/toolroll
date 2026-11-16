@@ -1,0 +1,18 @@
+# vt100 0.16.2 (https://github.com/doy/vt100-rust, MIT, by Jesse Luehrs), vendored with faster scrolling and fixes for
+# one-row and one-column screens. README says exactly what differs; crates/toolroll-tui/tests/vt100_same.rs checks this
+# copy against upstream 0.16.2 on the same input.
+[package]
+name = "toolroll-vt100"
+version = "0.16.2"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "vt100"
+path = "src/lib.rs"
+
+[dependencies]
+itoa = "1.0.15"
+unicode-width = "0.2.1"
+vte = "0.15.0"
