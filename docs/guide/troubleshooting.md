@@ -6,6 +6,14 @@ won't replace its command. Remove it, then install again:
 `npm uninstall -g standing-orders && npm install -g toolroll`. Your data
 stays where it is, and the `standing-orders` command comes back with Toolroll.
 
+**A task plans first when it looks small.** Task sizing by a quick model
+call is off by default: with it off, nothing calls a model before you
+approve, only clearly tiny tasks (a short goal naming one file, or a typo or
+rename, with no risky words) build without a plan, and the plan says
+"Planned first: task sizing is off". Turn it on in Settings → General, or
+run `toolroll config set task-sizing on`. Setting `TOOLROLL_NO_TASK_CLASSIFIER`
+in Toolroll's environment keeps it off whatever the setting says.
+
 **"Sorting needs an OpenRouter key."** Add one in Settings → AI providers →
 OpenRouter. **Check again** there tests it.
 

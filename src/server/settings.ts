@@ -160,6 +160,8 @@ import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup,parseIdle } from "../storage.js";
+import { setTaskSizing, taskSizingSetting } from "../task-sizing.js";
+import { localActNow } from "../local-owner.js";
 import { checkoutIdle,isDigestTime,leadQuickAnswersOn,liveBackupState,setCheckoutIdle,localModeOf,RESULT_SCREENSHOTS,setLeadQuickAnswers,setLiveBackupSettings,setLocalModeOff,type ResultScreenshots } from "../store.js";
 import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
 import { LIVE_EVERY } from "../backup-ui.js";
@@ -2593,6 +2595,7 @@ ${postForm("/settings/chat-approval/save", html`\
     "settings.lead-identity": leadIdentity,
     "settings.lead-about": leadAbout,
     "settings.lead-quick": leadQuick,
+    "settings.task-sizing": taskSizingAct,
     "settings.lead-promise-cancel": leadPromiseCancel,
     "settings.lead-on": leadOn,
     "settings.code-map": codeMapAct("switch"),
@@ -2808,6 +2811,28 @@ ${postForm("/settings/chat-approval/save", html`\
     if (!turned.ok) return back("problem", turned.reason === "not-on" ? "Local mode is already off." : "Only an instance operator can turn off local mode.");
     return done("said", "Local mode is off. This computer's browser signs in with your password now.");
   }
+  // Settings → General: task sizing by a quick model call, on or off. An instance operator's step-up (a solo session
+  // stands in, a team needs the password), or the laptop owner's own `task-sizing-switch` act, proved and written in one
+  // transaction; the choice is one strict on or off.
+  async function taskSizingAct(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.taskSizing);
+    const done = sayTo(response, "/settings/general?section=task-sizing");
+    const back = sayTo(response, "/settings/change/task-sizing");
+    if (["password", "enabled"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const wanted = body.get("enabled");
+    if (wanted !== "on" && wanted !== "off") return back("problem", "Choose on or off.");
+    const saved = store.transact(() => {
+      if (!store.isInstanceOperator(who.name)) return false;
+      if (who.authority !== "full" && localActNow(store, "task-sizing-switch") === null) return false;
+      if (!authenticateApprover(who, body.get("password") ?? "").ok) return false;
+      setTaskSizing(store, wanted === "on", who.name, now);
+      return true;
+    });
+    if (!saved) return back("problem", "Enter your Toolroll password to change task sizing.");
+    return done("said", wanted === "on" ? "Task sizing is on. Each new task is sized by a quick call to Claude Haiku before you approve." : "Task sizing is off. No model call before you approve; uncertain tasks get a plan first.");
+  }
   // Solo or team (install-mode.ts): "It's just me". A credential act (a password typed now, or a one-use provider
   // re-check; never a session) from a full session, proved and written in one transaction that re-reads every fact: a
   // second person, a token for someone else or a chat-app user added meanwhile refuses it.
@@ -2988,6 +3013,7 @@ ${postForm("/settings/chat-approval/save", html`\
     passwordless: () => sessionStandsIn(store),
     localModeOn: () => localModeOf(store)?.enabled === true,
     installMode: () => installModeNow(store),
+    taskSizing: () => taskSizingSetting(store),
   });
   /** What Computers' sections read (settings plan F2), none of it from the request. */
   const computersDeps = {

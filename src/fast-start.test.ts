@@ -4,6 +4,7 @@
  * refuses; a first dispatch past the window refuses; and completion, publication and merge all read one verified measure.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { sizingOn } from "../test/sizing-on.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,6 +46,7 @@ beforeEach(() => {
   BASE = git(REPO, "rev-parse", "HEAD");
   root = join(dir, "evidence");
   store = openStore(join(dir, "orders.db"));
+  sizingOn(store);
   const owner = addApprover(store, "owner", NOW);
   if (!owner.ok) throw new Error("no owner");
   password = owner.token;
@@ -139,6 +141,29 @@ describe("callers", () => {
   test("a viewer isn't an approver", async () => {
     store.handle.prepare("INSERT INTO approver (name, credential_hash, added_at, generation, role) VALUES ('watcher', 'x', ?, 1, 'viewer')").run(NOW.toISOString());
     expect(await prepare("Fix it", { actor: "watcher" })).toMatchObject({ eligible: false });
+  });
+});
+
+describe("task sizing off (the default): no model call before a yes, on any road", () => {
+  test("preview on every surface, a chat start and a filing's refinement never call the classifier; the quick start says why", async () => {
+    store.handle.prepare("DELETE FROM task_sizing_setting").run();
+    dropSizer();
+    const asked: string[] = [];
+    dropSizer = installFilingSizer(async input => { asked.push(input.title); return { size: "small", risky: false, reason: "one word" }; });
+    for (const via of ["console", "cli", "terminal-ui"] as const) expect(await prepare("Fix the typo in footer.txt", {}, via)).toEqual({ eligible: false, reason: "sizing-off" });
+    expect(await chatPrepare("Fix the typo in footer.txt")).toEqual({ eligible: false, reason: "sizing-off" });
+    const filed = fileTaskProposal(store, { id: "task-off", title: "Fix the typo in footer.txt", repo: REPO, goal: "Fix the typo in footer.txt", acceptance: fastAcceptance("Fix the typo in footer.txt"), filedVia: "chat", filedBy: { name: "owner", kind: "person" }, proposedVia: "mate" }, NOW);
+    if (!filed.ok) throw new Error(filed.message);
+    const { settleSizings } = await import("./task-sizing.js");
+    await settleSizings();
+    expect(asked).toEqual([]);
+    // Sized from the words alone, cautiously: a tiny change stays small, anything uncertain plans first.
+    expect(filed.sizing).toMatchObject({ size: "small", source: "heuristic", reason: "task sizing is off; a tiny change" });
+    const wider = fileTaskProposal(store, { id: "task-off-2", title: "Add a dark mode toggle", repo: REPO, goal: "Add a dark mode toggle", acceptance: fastAcceptance("Add a dark mode toggle"), filedVia: "chat", filedBy: { name: "owner", kind: "person" }, proposedVia: "mate" }, NOW);
+    if (!wider.ok) throw new Error(wider.message);
+    expect(wider.sizing).toMatchObject({ size: "medium", reason: "task sizing is off; planned first" });
+    await settleSizings();
+    expect(asked).toEqual([]);
   });
 });
 

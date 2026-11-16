@@ -220,6 +220,9 @@ const LOCAL_POSTS: Readonly<Record<string, LocalOwnerAct>> = Object.freeze({
   "settings.knowledge-tidy": "memory-review",
   // Settings → Advanced: the person's own view switch (advanced.ts re-checks this exact act at the write).
   "settings.advanced": "view-preference",
+  // Task sizing by a quick model call: an installation setting the laptop's owner may turn on or off (its handler proves
+  // the step-up and this exact act inside its write).
+  "settings.task-sizing": "task-sizing-switch",
   "agents.seen": "mark-seen",
   "agents.watch": "watch-agent",
 });
@@ -642,6 +645,9 @@ post("settings", "settings.passwordless-send", "/settings/passwordless", { calle
 post("settings", "settings.local-mode-off", "/settings/local-mode/off", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator turns off local mode.", "/settings/general?section=local-mode") });
 // Solo or team (install-mode.ts): "It's just me", an instance operator's credential act from a full session (a local owner
 // is refused); the handler proves the password and re-reads every fact in one transaction.
+// Task sizing by a quick model call (task-sizing.ts): an instance operator's step-up from a browser (a solo session stands
+// in; a team needs the password), or the laptop owner's own act.
+post("settings", "settings.task-sizing", "/settings/task-sizing", { scope: "step-up", limited: "deny", ...operator("An instance operator chooses how tasks are sized.", "/settings/general?section=task-sizing") });
 post("settings", "settings.just-me", "/settings/install-mode/solo", { callers: ["cookie"], scope: "step-up", ...operator("An instance operator says it's just them.", "/settings/general?section=install-mode") });
 // Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
 // automatically takes a typed password (the handler proves it as a credential act); asking again is one click.

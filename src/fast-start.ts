@@ -34,7 +34,10 @@ import { COMPLETION_ACTION, COMPLETION_BY_PERSON } from "./result-completion.js"
 import { approvalSummaryOf, summaryContextOf } from "./approval-summary.js";
 import { deployGateScope, machineActing, propose, releaseCheckScope, type ApproveResult, type Scope } from "./scope.js";
 import { BUILT_IN, withdrawApproval, type Store } from "./store.js";
-import { classifyTask, filingSizer, heuristicSizing } from "./task-sizing.js";
+import { classifyTask, filingSizer, filingSizing, heuristicSizing, SIZING_OFF_REASON, taskSizingOn } from "./task-sizing.js";
+
+/** A solo Just code start's size while task sizing is off and the words aren't clearly tiny: it builds as the person chose. */
+const JUST_CODE_SIZING_OFF = `${SIZING_OFF_REASON}; Just code, as you chose`;
 import { issueImported } from "./task-source.js";
 import { titleWithin } from "./task-text.js";
 import { viewedGitSync } from "./teardown-git.js";
@@ -64,11 +67,12 @@ export const FAST_PREVIEW_MS = 15 * 60_000;
  * token or an agent has no entry here. */
 export type FastVia = "console" | "terminal-ui" | "cli" | "chat";
 
-export type FastRefusal = "setting" | "size" | "classifier" | "plan" | "quality" | "rules" | "protected" | "password" | "release" | "trial" | "chain" | "monthly" | "policy" | "agents" | "machine" | "mode" | "limit" | "team";
+export type FastRefusal = "setting" | "size" | "classifier" | "sizing-off" | "plan" | "quality" | "rules" | "protected" | "password" | "release" | "trial" | "chain" | "monthly" | "policy" | "agents" | "machine" | "mode" | "limit" | "team";
 const FAST_WORDS: Readonly<Record<FastRefusal, string>> = {
   setting: "Small tasks don't start right away in this project.",
   size: "This looks bigger than a small change.",
   classifier: "Toolroll couldn't confirm this is a small change.",
+  "sizing-off": "Quick start needs task sizing, which is off.",
   plan: "This needs a plan first.",
   quality: "Strict checks need a plan first.",
   rules: "This project's approval rules need a plan first.",
@@ -137,6 +141,8 @@ export function fastStartRules(store: Store, input: FastInput & { taskId: string
   const account = store.accountOf(input.actor);
   if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(input.actor, input.repo)) return no("rules");
   // The description decides "small"; the classifier can only confirm it, and silence is no. (Solo's Just code is any size.)
+  // With task sizing off nothing confirms "small": silence is no, said as that (Solo's Just code is the person's own).
+  if (!solo && !taskSizingOn(store)) return no("sizing-off");
   if (!solo && heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return no("size");
   if (!solo && input.sizing.source !== "classifier") return no("classifier");
   if (!solo && (input.sizing.size !== "small" || input.sizing.risky)) return no("size");
@@ -218,16 +224,20 @@ export async function prepareFastStart(store: Store, input: FastInput & { via: E
   // A chat start is prepared in the lead's turn (prepareChatStart), bound to it.
   if ((input.via as FastVia) === "chat") return { eligible: false, reason: "rules" };
   if (!fastStartOn(store, input.repo)) return { eligible: false, reason: "setting" };
-  const small = heuristicSizing({ title: input.title, goal: input.title }).size === "small";
+  const small = filingSizing(store, { title: input.title, goal: input.title }).size === "small";
   // Solo's Just code (SOLO_START_RULE): any size, unless the person chose Plan first. Read for the form only; Build
   // derives the mode again inside its own transaction.
   const solo = input.planFirst !== true && soloNow(store);
-  if (!small && !solo) return { eligible: false, reason: "size" };
+  if (!small && !solo) return { eligible: false, reason: taskSizingOn(store) ? "size" : "sizing-off" };
   // A mode that auto-approves filings comes first: its own road, its own seal.
   const mode = store.activeMode(input.repo, now);
   if (mode !== null && /"autoApproveFiling":true/.test(mode.termsJson)) return { eligible: false, reason: "mode" };
-  const sizer = filingSizer();
-  const sizing = small ? await classifyTask({ title: input.title, goal: input.title }, sizer.sizer, sizer.budget) : heuristicSizing({ title: input.title, goal: input.title });
+  const sizer = filingSizer(store);
+  // Task sizing off: no model call before the yes; the words alone size it, cautiously.
+  const words = filingSizing(store, { title: input.title, goal: input.title });
+  // Solo's Just code builds without a plan by the person's own choice: its size says that, never "planned first".
+  const sizing = small && !sizer.off ? await classifyTask({ title: input.title, goal: input.title }, sizer.sizer, sizer.budget)
+    : sizer.off && words.size !== "small" ? { ...words, reason: JUST_CODE_SIZING_OFF } : words;
   const taskId = `task-${randomBytes(8).toString("hex")}`;
   const readUnder = (rule: StartRule) => dryRun(store, () => {
     const filed = fileIt(store, taskId, { ...input, sizing }, now);
@@ -237,7 +247,7 @@ export async function prepareFastStart(store: Store, input: FastInput & { via: E
   // A small change keeps the small start (and its backstops); on a solo install anything else is Just code.
   let rule: StartRule = small ? "small" : "solo";
   let read = readUnder(rule);
-  if (!read.ok && rule === "small" && solo && (read.reason === "size" || read.reason === "classifier" || read.reason === "plan")) read = readUnder(rule = "solo");
+  if (!read.ok && rule === "small" && solo && (read.reason === "size" || read.reason === "classifier" || read.reason === "sizing-off" || read.reason === "plan")) read = readUnder(rule = "solo");
   if (!read.ok) return { eligible: false, reason: read.reason };
   const preview = randomBytes(16).toString("hex");
   store.handle.prepare(`INSERT INTO fast_preview (id, actor, via, task_id, repo, title, permission, sizing_json, digest, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -501,10 +511,11 @@ export type ChatStartInput = { actor: string; repo: string; title: string; turn:
 export async function prepareChatStart(store: Store, input: ChatStartInput, now: Date): Promise<FastPreview> {
   if (!Number.isSafeInteger(input.turn) || input.turn < 1) return { eligible: false, reason: "rules" };
   if (!fastStartOn(store, input.repo)) return { eligible: false, reason: "setting" };
+  if (!taskSizingOn(store)) return { eligible: false, reason: "sizing-off" };
   if (heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return { eligible: false, reason: "size" };
   const mode = store.activeMode(input.repo, now);
   if (mode !== null && /"autoApproveFiling":true/.test(mode.termsJson)) return { eligible: false, reason: "mode" };
-  const sizer = filingSizer();
+  const sizer = filingSizer(store);
   const sizing = await classifyTask({ title: input.title, goal: input.title }, sizer.sizer, sizer.budget);
   const taskId = `task-${randomBytes(8).toString("hex")}`;
   const filing = { actor: input.actor, repo: input.repo, title: input.title };

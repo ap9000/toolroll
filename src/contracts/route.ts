@@ -48,6 +48,9 @@ export const taskSizingSchema = z.strictObject({
   risky: z.boolean(),
   source: z.enum(["classifier", "heuristic", "person"]),
   reason: limited("size reason", "sizeReason"),
+  /** Which classifier answered, by name ("Claude Haiku 5.5"): Toolroll's own words for the model it asked, never the
+   * model's. Only a classifier's answer carries it; older sizings have none. */
+  by: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 .:/~()_-]{0,79}$/).optional(),
 });
 
 /** An approver's explicit per-phase choice, recorded with attribution. */

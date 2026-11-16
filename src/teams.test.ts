@@ -3,6 +3,7 @@
  * with submit tokens, rooms that follow a team conversation. Scripted
  * fetchers only; no network. */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { sizingOn } from "../test/sizing-on.js";
 import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, sign as signBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -330,7 +331,7 @@ describe("Teams shared chat", () => {
 
   test("a Start card in Teams is never a tap: Teams reads card text as Markdown, so the card links to the review page and a yes sent through Teams starts nothing", async () => {
     expect(pairAs("alex", ALEX, DM_ALEX)).not.toBeNull();
-    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
     try {
       answers.push(
         { text: "", calls: [{ id: "g0", name: "get_capabilities", args: { repo: "r1" } }] },

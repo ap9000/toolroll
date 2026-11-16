@@ -10,6 +10,7 @@
  * Fixture transport, not a phone: nothing here is a live Telegram proof.
  */
 import { notifyPeople } from "./flow-people.js";
+import { sizingOn } from "../test/sizing-on.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
 import { replyToAsker } from "./subagent-desk.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
@@ -1446,7 +1447,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
     });
 
     test("a Start card: the lead's propose_start, Start work, then Yes, start work, files, approves and marks one small task, and wakes the builder", async () => {
-      const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+      const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
       try {
         answers.push(
           { text: "", calls: [{ id: "g0", name: "get_capabilities", args: { repo: "r1" } }] },
@@ -1575,7 +1576,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
 
   describe("a typed yes to a Start card (one-step-chat.md C5)", () => {
     let dropSizer: () => void = () => {};
-    beforeEach(() => { dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); });
+    beforeEach(() => { dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store); });
     afterEach(() => dropSizer());
     const START = { repo: "r1", title: "Fix the typo in the footer" };
     /** The lead drafts a Start card in its own turn; it goes out last, with the "reply yes" line. */

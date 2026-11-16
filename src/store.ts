@@ -869,6 +869,17 @@ CREATE TABLE IF NOT EXISTS steer_note_run (
 CREATE INDEX IF NOT EXISTS steer_note_run_by_run ON steer_note_run (run, note);
 `;
 
+/** Settings → General's "Size tasks with a quick model call": one row once a person chose; no row reads off
+ * (task-sizing.ts taskSizingSetting), so a new install and an upgraded one start with no model call before a yes. */
+export const TASK_SIZING_SCHEMA = `
+CREATE TABLE IF NOT EXISTS task_sizing_setting (
+  id         INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled    INTEGER NOT NULL CHECK (enabled IN (0,1)),
+  updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+
 export const CHAT_APPROVAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_approval_setting (
   approver             TEXT NOT NULL,
@@ -6105,6 +6116,8 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   db.exec(CHAT_DECIDE_SCHEMA);
   // An owner's lasting chat-approval setting (no version bump: additive only; absent means off).
   db.exec(CHAT_APPROVAL_SCHEMA);
+  // Task sizing by a quick model call (no version bump: additive only; absent means off).
+  db.exec(TASK_SIZING_SCHEMA);
   // v124: the live conversation: a project's "Show commands in the live view" (absent means off) and every run a
   // steering note reached (older notes simply have no rows). New tables only.
   db.exec(LIVE_DETAIL_SCHEMA);
@@ -6131,6 +6144,8 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   addColumn(db, "task_ref", "size_risky", "INTEGER CHECK (size_risky IN (0, 1))");
   addColumn(db, "task_ref", "size_source", "TEXT CHECK (size_source IN ('classifier','heuristic','person'))");
   addColumn(db, "task_ref", "size_reason", "TEXT");
+  // Which classifier answered, by Toolroll's own name for it (no version bump: additive; older sizes read none).
+  addColumn(db, "task_ref", "size_by", "TEXT");
   addColumn(db, "task_ref", "route_tier", "TEXT");
   widenPhaseTierSchema(db);
   db.exec(PHASE_TIER_ALTERNATE_SCHEMA);
@@ -7675,7 +7690,9 @@ function sizingOfRow(row: Record<string, unknown>): TaskSizing | null {
   if (!isTaskSize(row["size"])) return null;
   const source = row["size_source"];
   if (source !== "classifier" && source !== "heuristic" && source !== "person") return null;
-  return { size: row["size"], risky: Number(row["size_risky"] ?? 0) === 1, source, reason: row["size_reason"] == null ? "" : String(row["size_reason"]) };
+  const by = row["size_by"];
+  return { size: row["size"], risky: Number(row["size_risky"] ?? 0) === 1, source, reason: row["size_reason"] == null ? "" : String(row["size_reason"]),
+    ...(source === "classifier" && typeof by === "string" && /^[A-Za-z0-9][A-Za-z0-9 .:/~()_-]{0,79}$/.test(by) ? { by } : {}) };
 }
 
 function addColumn(db: Database, table: string, column: string, definition: string): void {
@@ -14731,8 +14748,8 @@ export class Store {
   /** Store a task's size (v2 routing); the next scope filing routes by it. */
   writeSizing(taskRef: number, sizing: TaskSizing): void {
     this.db
-      .prepare("UPDATE task_ref SET size = ?, size_risky = ?, size_source = ?, size_reason = ? WHERE id = ?")
-      .run(sizing.size, sizing.risky ? 1 : 0, sizing.source, sizing.reason.slice(0, 300), taskRef);
+      .prepare("UPDATE task_ref SET size = ?, size_risky = ?, size_source = ?, size_reason = ?, size_by = ? WHERE id = ?")
+      .run(sizing.size, sizing.risky ? 1 : 0, sizing.source, sizing.reason.slice(0, 300), sizing.by ?? null, taskRef);
   }
 
   /** Planning follows the size while nothing has run: a small change drops
@@ -14773,7 +14790,7 @@ export class Store {
       const scope = this.getScope(taskId);
       if (scope !== null && scope.approvedAt !== null && scope.approvedDigest === scope.digest) return { ok: false as const, reason: "approved" as const };
       const before = ref.sizing ?? null;
-      if (before !== null && before.size === sizing.size && before.risky === sizing.risky && before.source === sizing.source && before.reason === sizing.reason) {
+      if (before !== null && before.size === sizing.size && before.risky === sizing.risky && before.source === sizing.source && before.reason === sizing.reason && before.by === sizing.by) {
         return { ok: true as const, changed: false, planning: null };
       }
       this.writeSizing(ref.id, sizing);

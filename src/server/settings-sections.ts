@@ -244,6 +244,8 @@ export type GeneralDeps = {
   readonly localModeOn: () => boolean;
   /** The install's solo or team mode, as the server derives it now (install-mode.ts). */
   readonly installMode: () => InstallModeRead;
+  /** Task sizing by a quick model call, as saved (task-sizing.ts taskSizingSetting). */
+  readonly taskSizing: () => { on: boolean; byEnv: boolean };
 };
 
 const ACCENT_CHOICES = ACCENT_PRESETS.slice(0, 6);
@@ -414,6 +416,39 @@ function installModeSection(deps: GeneralDeps): SectionImpl<InstallModeSummary> 
   };
 }
 
+/** Settings → General's task sizing, said in words: off is the default. */
+export const TASK_SIZING_OFF_WORDS = "Off: no model call before you approve; uncertain tasks get a plan first.";
+export const TASK_SIZING_ON_WORDS = "On: before you approve, a quick call to Claude Haiku on your plan sizes each new task, and the plan says it did.";
+type TaskSizingSummary = { on: boolean; byEnv: boolean; canSwitch: boolean };
+/** Task sizing by a quick model call: its state in one line; an instance operator turns it on or off on its change
+ * document (a step-up). */
+function taskSizingSection(deps: GeneralDeps): SectionImpl<TaskSizingSummary> {
+  return {
+    loadSummary: ctx => {
+      const read = deps.taskSizing();
+      return { on: read.on && !read.byEnv, byEnv: read.byEnv, canSwitch: ctx.can["switch"] === true };
+    },
+    render: ({ declaration, summary, attrs }) => settingsSection({ id: "task-sizing", title: declaration.title, state: summary.on ? " · on" : " · off", attrs,
+      lead: summary.byEnv ? "Off: TOOLROLL_NO_TASK_CLASSIFIER is set on this computer, so no model call happens before you approve; uncertain tasks get a plan first." : summary.on ? TASK_SIZING_ON_WORDS : TASK_SIZING_OFF_WORDS,
+      ...(summary.canSwitch && !summary.byEnv ? { right: btn(summary.on ? "Turn off" : "Turn on", { sm: true, href: changeHref(declaration.changes[0]!) }) } : {}), body: html`` }),
+    refusal: "An instance operator changes how tasks are sized.",
+    renderChange: ({ declaration, summary, problem }) => {
+      const home = sectionHref(declaration);
+      const title = declaration.title;
+      const on = summary?.on === true;
+      const words = summary === null || summary.byEnv
+        ? html`${infoLine("TOOLROLL_NO_TASK_CLASSIFIER is set on this computer, so task sizing stays off.")}<div class="k-acts">${btn("Back to General", { href: home })}</div>`
+        : joinHtml([
+          html`<p>${on ? `Turn it off. ${TASK_SIZING_OFF_WORDS}` : "Turn it on. Before you approve, a quick call to Claude Haiku on your own plan sizes each new task: small ones build at once on a fast model, risky ones plan first, and the plan names the model that sized it."}</p>`,
+          problem === null ? "" : notice(problem),
+          kitSectionForm({ proof: "task-sizing", action: "/settings/task-sizing", id: "task-sizing-form", native: true, save: { label: on ? "Turn off" : "Turn on" }, confirm: on ? "Turn off task sizing" : "Turn on task sizing", hidden: { enabled: on ? "off" : "on" }, body: html`` }),
+          html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
+        ]);
+      return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), words)}</div>` };
+    },
+  };
+}
+
 /** General's sections, by id (settings-section-table.ts says who sees each). */
 export function generalSections(deps: GeneralDeps): SectionImpls {
   return {
@@ -422,6 +457,7 @@ export function generalSections(deps: GeneralDeps): SectionImpls {
     "your-password": yourPasswordSection(deps),
     version: versionSection(deps),
     "install-mode": installModeSection(deps),
+    "task-sizing": taskSizingSection(deps),
     advanced: advancedSection(),
     "local-mode": localModeSection(deps),
   } as unknown as SectionImpls;
