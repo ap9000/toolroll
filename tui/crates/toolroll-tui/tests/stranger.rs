@@ -126,7 +126,8 @@ fn a_queued_task_a_retry_waiting_and_finished_ones_are_listed_and_found() {
     for words in [
         "Up next",
         "Recent",
-        "Retrying in 2 min",
+        "Waiting",
+        "Last build failed",
         "Add a changelog entry",
         "Work  5",
     ] {
@@ -411,7 +412,7 @@ fn a_ready_agent_offers_sign_in_again_behind_a_confirm() {
     };
     assert_eq!(
         words,
-        "You're signed in as a Claude account. Start a new sign-in?"
+        "You're signed in to Claude Code (Claude account). Start a new sign-in?"
     );
     insta::assert_snapshot!("sign_in_again_confirm", screen(&mut app, 120, 34));
     assert_eq!(app.key(key('x')), vec![]);

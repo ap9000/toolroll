@@ -121,6 +121,16 @@ beforeAll(async () => {
     if (lease?.lease_id !== undefined) release(store, lease.lease_id, new Date());
   }
   store.setTaskState("t-fail", "failed", T0);
+  // A queued task whose last build failed, waiting out its backoff to try again.
+  const waitRun = started("t-wait", repoA, true);
+  store.finishRun(waitRun, { outcome: "failed", reason: "provider-protocol", now: new Date() } as never);
+  {
+    const waitRef = store.lookupRef("t-wait")!.id;
+    const lease = store.handle.prepare("SELECT lease_id FROM claim WHERE task_ref = ?").get(waitRef) as { lease_id?: string } | undefined;
+    if (lease?.lease_id !== undefined) release(store, lease.lease_id, new Date());
+    store.setTaskState("t-wait", "queued", T0);
+    store.holdOwned({ taskRef: waitRef, ownerKind: "backoff", ownerId: String(waitRef), reason: "retrying", until: new Date(Date.now() + 100_000) }, new Date());
+  }
   // This computer's sign-in check (stubbed, no process): Codex signed in, nothing else installed. Builds are already set
   // to Claude Code here, so the first task waits for it.
   const notFound = { code: 127, stdout: "", stderr: "", timedOut: false, notFound: true };
@@ -289,7 +299,7 @@ describe("every answer is its contract's shape", () => {
 
   test("a failed task's steps say why it stopped, what Retry binds to, and who approved it", async () => {
     const steps = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
-    expect(steps.failure).toEqual({ line: "A temporary problem on the machine stopped it.", failedInARow: 3, suggestion: expect.any(String) });
+    expect(steps.failure).toEqual({ line: "A temporary problem on the machine stopped it.", failedInARow: 3, suggestion: expect.any(String), agentSaid: null });
     const last = store.lastBuilderRun(store.lookupRef("t-fail")!.id)!;
     expect(steps.retry).toEqual({ run: last.id, digest: store.getScope("t-fail")!.digest });
     expect(steps.approval).toEqual({ by: "alex", you: true, automatic: false });
@@ -302,6 +312,25 @@ describe("every answer is its contract's shape", () => {
     // Every Work row the console sends is a closed group and tone (the client lists each one).
     const rows = workRowsSchema.parse((await read("operator", "/work/rows")).body);
     expect(rows.rows.find(row => row.id === "t-fail")).toBeDefined();
+  });
+
+  test("a task waiting to try again says when and why, on its steps and its Work row; a build's own start is sent", async () => {
+    const steps = stepCardsSchema.parse((await read("operator", "/t/t-wait/steps")).body);
+    expect(steps.waiting).toEqual({ retryAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), lastFailure: "The agent's reply could not be read" });
+    expect(Date.parse(steps.waiting!.retryAt!)).toBeGreaterThan(Date.now());
+    const rows = workRowsSchema.parse((await read("operator", "/work/rows")).body);
+    expect(rows.rows.find(row => row.id === "t-wait")?.waiting).toEqual(steps.waiting);
+    // Not waiting: a done task, a failed one.
+    expect(rows.rows.find(row => row.id === "t-done")?.waiting).toBeNull();
+    expect(stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body).waiting).toBeNull();
+    // The build card names its newest run's start besides its first's.
+    const fail = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
+    const build = fail.cards!.find(card => card.key === "build")!;
+    const newest = store.getRun(build.runs[0]!)!, first = store.getRun(build.runs.at(-1)!)!;
+    expect(build.latestStartedAt).toBe(newest.startedAt);
+    expect(build.startedAt).toBe(first.startedAt);
+    // What the agent said: nothing kept yet for these runs.
+    expect(fail.failure?.agentSaid).toBeNull();
   });
 
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {
@@ -398,6 +427,30 @@ describe("the local owner reads them with the session a terminal client redeems"
     const page = await world.send("/tasks/add", "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", "x-toolroll-key": body.key },
       new URLSearchParams({ csrf: body.csrf, title: "Fix the typo", repo: world.repo }).toString());
     expect(page.headers["content-type"]).toMatch(/^text\/html/);
+  });
+
+  test("the workbench stops a task retrying, and cancels only the state and build it showed", async () => {
+    const link = world.server.mintLocalLink()!;
+    const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
+    const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
+    const cookie = `${body.cookie.name}=${body.cookie.value}`;
+    const act = (path: string, fields: Record<string, string>) => world.send(path, "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded",
+      "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf: body.csrf, ...fields }).toString());
+    const ref = world.store.lookupRef("one")!.id;
+    // Stop retrying: an operator's hold, the task kept.
+    expect((await act("/t/one/hold", { reason: "stopped retrying from the terminal" })).status).toBe(303);
+    expect(world.store.activeHolds(ref, new Date()).map(hold => hold.ownerKind)).toContain("operator");
+    expect(world.store.getTask("one")?.state).toBe("queued");
+    // Cancel: what was shown is proved; anything else cancels nothing.
+    const stale = await act("/t/one/cancel", { state: "running", run: "none" });
+    expect(stale.status).toBe(409);
+    expect(JSON.parse(stale.body)).toEqual({ outcome: "refused", words: "This task changed since it was shown — look again before cancelling." });
+    expect((await act("/t/one/cancel", { state: "queued", run: "7" })).status).toBe(409);
+    expect((await act("/t/one/cancel", { state: "queued" })).status).toBe(400);
+    expect((await act("/t/one/cancel", { state: "queued", run: "07x" })).status).toBe(400);
+    expect(world.store.getTask("one")?.state).toBe("queued");
+    expect((await act("/t/one/cancel", { state: "queued", run: "none" })).status).toBe(303);
+    expect(world.store.getTask("one")?.state).toBe("cancelled");
   });
 
   test("a terminal client's act hears a refusal in place, in the page's own words; a browser's still gets the page", async () => {

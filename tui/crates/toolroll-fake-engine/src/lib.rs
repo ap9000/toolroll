@@ -372,6 +372,7 @@ pub fn steps_for(task: &str, title: &str, live_run: Option<i64>, review: Option<
                     card["state"] = json!("done");
                     card["mark"] = json!("done");
                     card["startedAt"] = json!(AT);
+                    card["latestStartedAt"] = json!(AT);
                     card["finishedAt"] = json!(AT);
                 }
                 "build" => {
@@ -380,6 +381,7 @@ pub fn steps_for(task: &str, title: &str, live_run: Option<i64>, review: Option<
                     card["sentence"] = json!("Building now");
                     card["agent"] = json!({ "provider": "claude", "model": "sonnet" });
                     card["startedAt"] = json!(AT);
+                    card["latestStartedAt"] = json!(AT);
                     card["finishedAt"] = Value::Null;
                     card["costUsd"] = json!(0.31);
                     card["runs"] = json!([run]);

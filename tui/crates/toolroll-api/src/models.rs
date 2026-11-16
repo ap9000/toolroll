@@ -324,6 +324,8 @@ pub struct WorkRow {
     pub detail: Option<String>,
     pub problem: Option<String>,
     pub need: Option<NeedRow>,
+    /// A queued task waiting to start again (null for every other row).
+    pub waiting: Option<Waiting>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -389,6 +391,8 @@ pub struct StepCard {
     pub in_chain: bool,
     pub agent: Option<Agent>,
     pub started_at: Option<String>,
+    /// When the step's newest run started (`started_at` is its first run's).
+    pub latest_started_at: Option<String>,
     pub finished_at: Option<String>,
     pub cost_usd: Option<f64>,
     pub runs: Vec<i64>,
@@ -437,6 +441,8 @@ pub struct StepCards {
     pub review: Option<Review>,
     /// Why a failed task stopped (null unless it failed).
     pub failure: Option<Failure>,
+    /// A queued task waiting to start again (null otherwise).
+    pub waiting: Option<Waiting>,
     /// What Retry posts to `/t/<task>/requeue` (null unless a failed task can be retried as it stands).
     pub retry: Option<RetryPins>,
     /// Who approved the task's scope (null while no approval stands).
@@ -450,6 +456,16 @@ pub struct Failure {
     pub line: String,
     pub failed_in_a_row: i64,
     pub suggestion: Option<String>,
+    /// The agent's last lines before it stopped, cleaned by the engine (at most 8).
+    pub agent_said: Option<Vec<String>>,
+}
+
+/// A queued task waiting to start again: when the next try is due, and the last build's failure in a line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Waiting {
+    pub retry_at: Option<String>,
+    pub last_failure: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

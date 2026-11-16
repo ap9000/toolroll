@@ -22,6 +22,7 @@
       "inChain": false,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -37,6 +38,7 @@
       "inChain": false,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -55,6 +57,7 @@
         "model": "sonnet"
       },
       "startedAt": "2026-11-15T04:43:27.065Z",
+      "latestStartedAt": "2026-11-15T04:43:27.065Z",
       "finishedAt": "2026-11-15T04:43:27.072Z",
       "costUsd": null,
       "runs": [
@@ -72,6 +75,7 @@
       "inChain": true,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -87,6 +91,7 @@
       "inChain": true,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -103,6 +108,7 @@
     }
   },
   "failure": null,
+  "waiting": null,
   "retry": null,
   "approval": {
     "by": "alex",

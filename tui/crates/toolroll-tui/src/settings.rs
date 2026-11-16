@@ -1098,6 +1098,8 @@ pub struct Prefs {
     pub reach: Reach,
     /// The background was asked for and not answered in time (the loop drops a late answer: theme::LateReply).
     pub late_reply: bool,
+    /// A change on the Settings screen was written to the file this session.
+    pub saved: bool,
 }
 
 impl Default for Prefs {
@@ -1114,6 +1116,7 @@ impl Default for Prefs {
             theme: Theme::default(),
             reach: Reach::default(),
             late_reply: false,
+            saved: false,
         }
     }
 }
@@ -1142,6 +1145,7 @@ impl Prefs {
             theme,
             reach,
             late_reply: false,
+            saved: false,
         }
     }
 
@@ -1197,6 +1201,7 @@ impl Prefs {
         }) {
             Ok(()) => {
                 self.file = FileState::Read;
+                self.saved = true;
                 Ok(format!("{now}. Saved to tui.toml."))
             }
             Err(why) => Err(format!(
@@ -1237,6 +1242,7 @@ impl Prefs {
             FileState::Missing => {
                 "not there yet: the defaults are used, and a change here makes it".to_string()
             }
+            FileState::Read if self.saved => "saved".to_string(),
             FileState::Read => "read".to_string(),
             FileState::Ignored(why) => format!("ignored: {why}"),
         };

@@ -13997,12 +13997,21 @@ export class Store {
     taskId: string,
     now: Date,
     reason?: string,
-  ): { ok: true } | { ok: false; reason: "unknown-task" | "claimed" | "already-terminal" | CancellationRefusal } {
+    /** What the person was shown when they said cancel (a terminal client's confirm): the task's state and its latest
+     * build (null: none). Proved here, in the cancel's own transaction: anything else refuses `changed`. */
+    seen?: { state: string; run: number | null },
+  ): { ok: true } | { ok: false; reason: "unknown-task" | "claimed" | "already-terminal" | "changed" | CancellationRefusal } {
     return this.transact(() => {
       const ref = this.db
         .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
         .get(BUILT_IN, taskId);
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
+      if (seen !== undefined) {
+        const state = this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"];
+        const last = this.db.prepare("SELECT MAX(id) AS id FROM run WHERE task_ref = ?").get(Number(ref["id"]))?.["id"];
+        const run = last === null || last === undefined ? null : Number(last);
+        if (String(state) !== seen.state || run !== seen.run) return { ok: false as const, reason: "changed" as const };
+      }
 
       if (this.hasLiveClaim(Number(ref["id"]), now)) return { ok: false as const, reason: "claimed" as const };
 

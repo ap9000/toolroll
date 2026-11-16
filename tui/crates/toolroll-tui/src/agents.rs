@@ -622,10 +622,13 @@ fn agent_of<'a>(app: &'a App, id: &str) -> Option<&'a AgentRow> {
     app.agents.as_ref()?.agents.iter().find(|a| a.id == id)
 }
 
-/// "You're signed in as a Claude account": what a new sign-in would replace.
+/// "You're signed in to Claude Code (Claude account)": what a new sign-in would replace.
 fn signed_in_as(a: &AgentRow) -> String {
     match a.how.as_deref().map(clean) {
-        Some(how) => format!("You're signed in as a {how}. Start a new sign-in?"),
+        Some(how) => format!(
+            "You're signed in to {} ({how}). Start a new sign-in?",
+            clean(&a.name)
+        ),
         None => format!("{} is signed in. Start a new sign-in?", clean(&a.name)),
     }
 }

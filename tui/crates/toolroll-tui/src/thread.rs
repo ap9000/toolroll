@@ -120,6 +120,7 @@ impl Threads {
                     need: None,
                     is_task: false,
                     thread: true,
+                    waiting: None,
                 }
             })
             .collect()

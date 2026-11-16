@@ -8,7 +8,7 @@
  * task's facts, never the whole Work projection or the task page); the diff reads the sealed patch and parses only the
  * file asked for, so the 2 MB result document is never built for a terminal.
  */
-import type { Run, Store, TaskFamily } from "./store.js";
+import { agentSaidOf, type Run, type Store, type TaskFamily } from "./store.js";
 import { failedAttemptSentence, latestFinishedAttempt, stopSuggestionOf } from "./needs-you.js";
 import { retryPinsOf } from "./local-owner-acts.js";
 import { assignmentOf, owedAcceptance, personCompletionRefusal, type AssignmentSnapshot } from "./assignment.js";
@@ -114,7 +114,8 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
     review: assignment !== null && assignment.state === "ready-to-check" && assignment.receipt !== null && assignment.receipt.taskId === current.id
       ? { run: assignment.receipt.runId, receipt: assignment.receipt.digest, source: revisionSourceOf(scope?.digest ?? null),
         accept: acceptFactsOf(store, assignment, viewer, evidenceRoot) } : null,
-    failure: current.state === "failed" ? failureOf(builds) : null,
+    failure: current.state === "failed" ? failureOf(store, builds) : null,
+    waiting: waitingOf(store, current.id, now),
     retry: current.state === "failed" ? (() => { const pins = retryPinsOf(store, current.id); return pins === null ? null : { run: pins.run, digest: pins.digest }; })() : null,
     approval: scope !== null && approved && scope.approvedBy !== null
       ? { by: scope.approvedBy, you: viewer !== null && scope.approvedBy === viewer, automatic: AUTOMATIC.has(String(scope.approvalBasis ?? "")) } : null,
@@ -124,7 +125,7 @@ export function stepCardsOf({ store, family, now, access, evidenceRoot, viewer =
 
 /** A failed task's latest finished build attempt in one plain line, how many attempts in a row failed (newest first,
  * stopping at the first that didn't), and its suggestion (needs-you.ts, the words the task page says). */
-function failureOf(builds: readonly Run[]): NonNullable<StepCards["failure"]> {
+function failureOf(store: Store, builds: readonly Run[]): NonNullable<StepCards["failure"]> {
   const last = latestFinishedAttempt(builds);
   let failedInARow = 0;
   for (const run of [...builds].sort((a, b) => b.id - a.id)) {
@@ -132,16 +133,32 @@ function failureOf(builds: readonly Run[]): NonNullable<StepCards["failure"]> {
     if (run.outcome !== "failed") break;
     failedInARow += 1;
   }
-  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : stopSuggestionOf(last.reason) };
+  return { line: failedAttemptSentence(last?.reason), failedInARow, suggestion: last === null ? null : stopSuggestionOf(last.reason),
+    agentSaid: last === null ? null : agentSaidOf(store, last.id) };
+}
+
+/** A queued task waiting to start again: when the next try is due (its backoff hold's end; null: when a builder is
+ * free) and the last build's failure in one short line. Null unless the task is queued and its last build failed or a
+ * backoff holds it. */
+export function waitingOf(store: Store, taskId: string, now: Date): StepCards["waiting"] {
+  if (store.getTask(taskId)?.state !== "queued") return null;
+  const ref = store.lookupRef(taskId);
+  if (ref === null) return null;
+  const backoff = store.activeHolds(ref.id, now).find(hold => hold.ownerKind === "backoff") ?? null;
+  const last = latestFinishedAttempt(store.runsFor(ref.id).filter(run => run.role === "builder" || run.role === "scout" || run.role === "repair"));
+  const failed = last !== null && last.outcome === "failed";
+  if (!failed && backoff === null) return null;
+  return { retryAt: backoff?.until ?? null, lastFailure: failed ? failedAttemptSentence(last.reason).replace(/[.\s]+$/, "") : null };
 }
 
 /** Who ran a step's latest run, when its runs started and ended, and their recorded cost together. Runs are newest first. */
-function runFacts(runs: readonly Run[]): Pick<StepCard, "agent" | "startedAt" | "finishedAt" | "costUsd" | "runs"> {
+function runFacts(runs: readonly Run[]): Pick<StepCard, "agent" | "startedAt" | "latestStartedAt" | "finishedAt" | "costUsd" | "runs"> {
   const latest = runs[0] ?? null;
   const costs = runs.map(run => run.costUsd).filter((one): one is number => typeof one === "number" && Number.isFinite(one));
   return {
     agent: latest === null ? null : { provider: latest.provider, model: latest.modelReported ?? latest.model ?? null },
     startedAt: runs.at(-1)?.startedAt ?? null,
+    latestStartedAt: latest?.startedAt ?? null,
     finishedAt: latest?.finishedAt ?? null,
     costUsd: costs.length === 0 ? null : Math.round(costs.reduce((sum, one) => sum + one, 0) * 1e6) / 1e6,
     runs: runs.map(run => run.id),
