@@ -5,7 +5,7 @@
  * sign-in is minted, the link on descriptor 3 only and only after the binary says crash dumps are off, the one ask on
  * descriptor 4, and how the binary's exit code ends the screen.
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -59,7 +59,7 @@ const recording = () => {
 describe.skipIf(!unix)("which screen opens", () => {
   test("the platform package from Toolroll's own install tree, its real path checked, once its self-check names this build's contract", () => {
     const { ran, selfCheck } = recording();
-    expect(chooseTuiBinary(base({ selfCheck }))).toEqual({ ok: true, binary: OWN });
+    expect(chooseTuiBinary(base({ selfCheck }))).toMatchObject({ ok: true, binary: OWN });
     expect(ran).toEqual([OWN]);
   });
 
@@ -67,7 +67,7 @@ describe.skipIf(!unix)("which screen opens", () => {
     const hoistRoot = join(dir, "hoist", "node_modules", "toolroll");
     mkdirSync(hoistRoot, { recursive: true });
     const hoisted = installAt(join(dir, "hoist", "node_modules", "@toolroll", "tui-darwin-arm64"));
-    expect(chooseTuiBinary(base({ packageRoot: hoistRoot }))).toEqual({ ok: true, binary: hoisted });
+    expect(chooseTuiBinary(base({ packageRoot: hoistRoot }))).toMatchObject({ ok: true, binary: hoisted });
     // Above Toolroll's tree (a node_modules an upward module search would find): not installed.
     const loose = join(dir, "loose", "project", "toolroll");
     mkdirSync(loose, { recursive: true });
@@ -88,7 +88,7 @@ describe.skipIf(!unix)("which screen opens", () => {
     const shipped = place(bundledBinary(root, "darwin-arm64"), "#!/bin/sh\n");
     expect(shipped).toBe(join(root, "dist", "tui", "darwin-arm64", "toolroll-tui"));
     const { ran, selfCheck } = recording();
-    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: shipped });
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toMatchObject({ ok: true, binary: shipped });
     // An explicit --tui-binary is the person's own choice, before the shipped one.
     const dev = place(join(dir, "shipped-dev", "toolroll-tui"), "#!/bin/sh\n");
     expect(chooseTuiBinary(base({ packageRoot: root, devBinary: dev, selfCheck }))).toMatchObject({ ok: true, binary: dev });
@@ -101,7 +101,59 @@ describe.skipIf(!unix)("which screen opens", () => {
     expect(ran).toEqual([shipped, dev]);
     // Gone (deleted from the install): the optional package is next.
     rmSync(shipped);
-    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: own });
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toMatchObject({ ok: true, binary: own });
+  });
+
+  /** Toolroll installed at a fresh root with a VALID optional package below the shipped binary: a refused shipped
+   * binary must never fall through to it. */
+  const withLower = (label: string) => {
+    const root = join(dir, "fallthrough", label, "node_modules", "toolroll");
+    const own = installAt(join(root, "node_modules", "@toolroll", "tui-darwin-arm64"));
+    return { root, own, shipped: bundledBinary(root, "darwin-arm64") };
+  };
+
+  test.each([
+    ["a dangling link where the binary is", (root: string, shipped: string) => { mkdirSync(dirname(shipped), { recursive: true }); symlinkSync(join(root, "gone"), shipped); }, /is a link: the binary the package ships must be inside it/],
+    ["a linked dist/tui (to a real, valid folder)", (root: string) => { const elsewhere = join(dirname(root), "elsewhere-tui"); place(join(elsewhere, "darwin-arm64", "toolroll-tui"), "#!/bin/sh\n"); mkdirSync(join(root, "dist"), { recursive: true }); symlinkSync(elsewhere, join(root, "dist", "tui")); }, /dist\/tui is a link/],
+    ["a linked binary (to a valid file inside the package)", (root: string, shipped: string) => { const real = place(join(root, "dist", "real-tui"), "#!/bin/sh\n"); mkdirSync(dirname(shipped), { recursive: true }); symlinkSync(real, shipped); }, /toolroll-tui is a link/],
+    ["a file where a folder belongs", (root: string) => { place(join(root, "dist", "tui"), "not a folder", 0o644); }, /dist\/tui isn't a folder/],
+    ["its folder writable by its group (umask 002)", (_root: string, shipped: string) => { place(shipped, "#!/bin/sh\n"); chmodSync(dirname(shipped), 0o775); }, /others can change .*darwin-arm64 \(group- or world-writable\)/],
+  ] as const)("refused, never falling through to a valid package below it: %s", (_what, make, problem) => {
+    const { root, shipped } = withLower(_what.replace(/[^a-z]+/g, "-"));
+    make(root, shipped);
+    const { ran, selfCheck } = recording();
+    expect(why(base({ packageRoot: root, selfCheck }))).toMatch(problem);
+    expect(ran).toEqual([]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("a folder on the way that can't be read (EACCES) refuses; it is not taken as absent", () => {
+    const { root, shipped } = withLower("eacces");
+    place(shipped, "#!/bin/sh\n");
+    const { ran, selfCheck } = recording();
+    chmodSync(join(root, "dist", "tui"), 0o000);
+    try {
+      expect(why(base({ packageRoot: root, selfCheck }))).toMatch(/can't be checked \(EACCES\)/);
+    } finally { chmodSync(join(root, "dist", "tui"), 0o755); }
+    expect(ran).toEqual([]);
+  });
+
+  test("a binary swapped for another file (a new inode) after its check is refused at the re-stat before the self-check result is used and at the re-stat right before the start (the instant after that re-stat is the accepted residual)", async () => {
+    const { root, shipped } = withLower("swapped");
+    place(shipped, "#!/bin/sh\n");
+    const marker = join(dir, "swapped-ran.txt");
+    const impostor = `#!/bin/sh\necho ran > '${marker}'\n`;
+    const swap = () => { const next = place(join(dirname(shipped), "next"), impostor); renameSync(next, shipped); };
+    // Swapped while its self-check ran: refused.
+    const during = chooseTuiBinary(base({ packageRoot: root, selfCheck: () => { swap(); return { status: 0, stdout: `toolroll-tui 1.0.0 contract ${CONTRACT}` }; } }));
+    expect(during).toMatchObject({ ok: false, why: "the terminal workbench changed while it was being checked" });
+    // Checked (a stand-in self-check: nothing runs), then swapped before the start: the start refuses ("changed") and
+    // the swapped-in file never runs.
+    const ok = chooseTuiBinary(base({ packageRoot: root }));
+    if (!ok.ok) throw new Error(ok.why);
+    swap();
+    const session: TuiSession = { owned: () => false, openBrowser: async () => "", shouldAskBackground: () => false, answerBackground: async () => "" };
+    expect(await runTuiBinary({ binary: ok.binary, identity: ok.identity, link: "http://127.0.0.1:1/login/once/x", session, project: null, stdio: ["ignore", "ignore", "ignore"] })).toBe("changed");
+    expect(existsSync(marker)).toBe(false);
   });
 
   test("npm prefixes: one owned by this user (nvm, Homebrew's Cellar) passes; a group- or world-writable prefix refuses; a sticky shared folder above it is fine", () => {
@@ -109,7 +161,7 @@ describe.skipIf(!unix)("which screen opens", () => {
     const root = join(prefix, "lib", "node_modules", "toolroll");
     const shipped = place(bundledBinary(root, "darwin-arm64"), "#!/bin/sh\n");
     const { ran, selfCheck } = recording();
-    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: shipped });
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toMatchObject({ ok: true, binary: shipped });
     // A world-writable prefix (anyone could swap lib/node_modules/toolroll underneath): refused, never run.
     chmodSync(prefix, 0o777);
     expect(why(base({ packageRoot: root, selfCheck }))).toMatch(new RegExp(`can't be trusted: others can change ${prefix} \\(group- or world-writable\\)$`));
@@ -118,7 +170,7 @@ describe.skipIf(!unix)("which screen opens", () => {
     // A sticky world-writable folder ABOVE the prefix (like /tmp) can't have the prefix renamed by others: fine.
     chmodSync(prefix, 0o755);
     chmodSync(dirname(prefix), 0o1777);
-    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: shipped });
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toMatchObject({ ok: true, binary: shipped });
     chmodSync(dirname(prefix), 0o755);
     if (process.getuid!() !== 0) {
       // Seen as another user's install (root-owned is the other accepted owner, which a test can't make): refused.
@@ -159,7 +211,7 @@ describe.skipIf(!unix)("which screen opens", () => {
       expect(why(base({ devBinary: bare, selfCheck }))).toBe("--tui-binary needs an absolute path");
     }
     expect(ran).toEqual([]);
-    expect(chooseTuiBinary(base({ devBinary: own, selfCheck }))).toEqual({ ok: true, binary: own, notice: `Using your own terminal workbench build at ${own} (--tui-binary)` });
+    expect(chooseTuiBinary(base({ devBinary: own, selfCheck }))).toMatchObject({ ok: true, binary: own, notice: `Using your own terminal workbench build at ${own} (--tui-binary)` });
     expect(ran).toEqual([own]);
     // A symlink runs as the real file it points at, and the real file's place is what is checked.
     const link = join(dir, "dev", "link-to-it");
@@ -248,7 +300,7 @@ describe.skipIf(!unix)("which screen opens", () => {
     expect(why(base({ packageRoot: root, selfCheck }))).toBe("the terminal workbench isn't installed on this computer");
     place(join(root, "tui", "Cargo.toml"), "[workspace]\n", 0o644);
     mkdirSync(join(root, ".git"));
-    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: built });
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toMatchObject({ ok: true, binary: built });
     expect(ran).toEqual([built]);
   });
 

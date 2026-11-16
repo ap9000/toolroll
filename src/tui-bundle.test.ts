@@ -4,9 +4,13 @@
  * self-check with this build's contract digest, and `npm pack` lists exactly those four. Each way to get it wrong is
  * one row here; the real binaries are checked by the publish job itself and by tui-bundle.yml.
  */
-import { describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test, vi } from "vitest";
 // @ts-expect-error plain ESM script without declarations
-import { binaryProblems, headerOf, packProblems, PLATFORMS, selfCheckProblems } from "../scripts/tui-build.mjs";
+import { adopt, binaryProblems, headerOf, packProblems, PLATFORMS, reportMismatches, selfCheckProblems, verify } from "../scripts/tui-build.mjs";
 
 type Problems = (name: string, input: { mode: number; isFile: boolean; bytes: Buffer; file?: string | null; lipo?: string | null; codesign?: string | null }) => string[];
 const problems = binaryProblems as Problems;
@@ -94,5 +98,51 @@ describe("the self-check and the package listing", () => {
     // One platform's lane checks only its own binary, and nothing else may ride along.
     expect(packProblems([files[2]!], ["linux-x64"])).toEqual([]);
     expect(packProblems(files, ["linux-x64"]).length).toBe(3);
+  });
+});
+
+describe("downloaded binaries are matched to their build's report before anything runs", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-tui-bundle-")));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const host = `${process.platform}-${process.arch}`;
+  const marker = join(dir, "ran.txt");
+  /** A stand-in that, if anything ever runs it, leaves a marker. */
+  const standIn = `#!/bin/sh\necho ran > '${marker}'\necho "toolroll-tui 1.0.0 contract ${CONTRACT}"\n`;
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  const lay = (folder: string, names: string[], text: string) => {
+    for (const name of names) { mkdirSync(join(folder, name), { recursive: true }); writeFileSync(join(folder, name, "toolroll-tui"), text); chmodSync(join(folder, name, "toolroll-tui"), 0o755); }
+  };
+  const report = (folder: string, name: string, digest: string) => { mkdirSync(folder, { recursive: true }); writeFileSync(join(folder, `${name}.json`), JSON.stringify({ platform: name, sha256: digest, self_check: `toolroll-tui 1.0.0 contract ${CONTRACT}` })); };
+
+  test.skipIf(!Object.hasOwn(PLATFORMS, host))("a hash mismatch refuses --adopt and --verify before the binary is ever run", async () => {
+    const from = join(dir, "from"), reports = join(dir, "reports"), into = join(dir, "pkg", "dist", "tui");
+    lay(from, [host], standIn);
+    report(reports, host, sha("a different build"));
+    expect(reportMismatches(from, reports, [host])).toEqual([expect.stringMatching(new RegExp(`^${host}: not the file its build reported`))]);
+    // No report at all refuses too, and so does --adopt without --reports.
+    expect(reportMismatches(from, join(dir, "no-reports"), [host])).toEqual([`${host}: no build report`]);
+    expect(adopt({ targets: [host], from, reports: null, into })).toBe(1);
+    expect(adopt({ targets: [host], from, reports, into })).toBe(1);
+    expect(existsSync(into)).toBe(false);
+    // In place (as verify sees the package): refused first, before the self-check or anything else runs.
+    lay(into, [host], standIn);
+    mkdirSync(join(dir, "pkg", "dist", "contracts"), { recursive: true });
+    writeFileSync(join(dir, "pkg", "dist", "contracts", "engine-api.js"), `export const engineContractDigest = () => "${CONTRACT}";\n`);
+    const said = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logged = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(await verify({ targets: [host], reports, packageRoot: join(dir, "pkg") })).toBe(1);
+      // Refused for the hash alone, before any other check (or the self-check, or npm pack) ran.
+      expect(said.mock.calls.map(call => String(call[0]))).toEqual([expect.stringMatching(new RegExp(`^REFUSED: ${host}: not the file its build reported`))]);
+      expect(logged).not.toHaveBeenCalled();
+    } finally { said.mockRestore(); logged.mockRestore(); }
+    expect(existsSync(marker)).toBe(false);
+    // The matching report: --adopt copies it in (0755) and still runs nothing.
+    rmSync(into, { recursive: true });
+    report(reports, host, sha(standIn));
+    expect(adopt({ targets: [host], from, reports, into })).toBe(0);
+    expect(readdirSync(join(into, host))).toEqual(["toolroll-tui"]);
+    expect(statSync(join(into, host, "toolroll-tui")).mode & 0o777).toBe(0o755);
+    expect(existsSync(marker)).toBe(false);
   });
 });

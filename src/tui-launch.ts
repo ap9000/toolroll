@@ -14,7 +14,10 @@
  *     sits in): never through Node's upward module search, never through PATH;
  *   - else a source checkout's own build (`tui/target/release/toolroll-tui`), only when Toolroll itself runs from that
  *     same checkout (this package's root has `.git` and `tui/Cargo.toml`).
- *   The first of these that is there is the one checked; a later one never stands in for a refused one.
+ *   The first of these that is there is the one checked; a later one never stands in for a refused one. "There" is
+ *   decided by lstat: only ENOENT (it, or a folder above it, doesn't exist) is "not there"; a dangling link, a folder
+ *   that can't be read or any other error refuses. The shipped binary must be INSIDE the package: no component from the
+ *   package root's real path down to it may be a link, and its real path must sit under that root.
  *   Whichever it is, its real path (symlinks resolved) must be a regular file owned by this user or root and not
  *   writable by group or others, in folders that are all owned by this user or root and not writable by group or others
  *   (an ancestor may be a sticky shared folder such as /tmp: nobody else can rename what is in it), and on macOS none of
@@ -26,6 +29,10 @@
  *   already controls Toolroll's JavaScript, so that tree is as trusted as this file. So an install owned by this user
  *   (Homebrew's Cellar, `npm i -g` under nvm or a person's own /opt/homebrew) and one owned by root (`sudo npm i -g`
  *   into /usr/local) both pass, and one others can write (a group- or world-writable npm prefix) is refused.
+ * - The checked file's identity (device, inode, size, modification time) is taken at the check and must be the same
+ *   before the self-check runs it and again right before the screen starts it; a different file is never run. That is
+ *   the limit of the proof: a process of this same user that can write the person's own install could still swap the
+ *   file in the instant left, as it could swap node or dist/*.js (an accepted residual).
  * - Self-check, a compatibility test only: `<binary> --version` must answer `toolroll-tui <v> contract <digest>` with
  *   this build's engine contract digest (contracts/engine-api.ts); a binary from another build, one that doesn't start
  *   (ENOEXEC, a crash), can't turn crash dumps off (exit 43) or doesn't answer in time is never handed a sign-in.
@@ -43,8 +50,8 @@
  * Every failure before the screen opens falls back to the classic screen with one line saying why.
  */
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnHoldingLink } from "./engine-handoff.js";
 import { trustedBinary } from "./trusted-path.js";
@@ -69,7 +76,9 @@ const KILL_AFTER_MS = 1_000;
 /** The line the binary says on descriptor 4 once crash dumps are off (tui/crates/toolroll-tui/src/guard.rs READY_LINE). */
 const READY = "protected";
 
-export type TuiChoice = { ok: true; binary: string; notice?: string } | { ok: false; why: string; notice?: string };
+/** What the checked binary was when it was checked; it must still be exactly that before it runs. */
+export type BinaryIdentity = { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint };
+export type TuiChoice = { ok: true; binary: string; identity: BinaryIdentity; notice?: string } | { ok: false; why: string; notice?: string };
 
 export type TuiChoiceInput = {
   env: NodeJS.ProcessEnv;
@@ -102,6 +111,54 @@ const defaultSelfCheck = (binary: string) => {
   return { status: ran.status, stdout: ran.stdout ?? "", ...(ran.error === undefined ? {} : { error: (ran.error as NodeJS.ErrnoException).code ?? ran.error.message }) };
 };
 
+/** A file's identity now (lstat: a link is its own identity), or null when it can't be read. */
+export function identityOf(path: string): BinaryIdentity | null {
+  try {
+    const st = lstatSync(path, { bigint: true });
+    return { dev: st.dev, ino: st.ino, size: st.size, mtimeNs: st.mtimeNs };
+  } catch { return null; }
+}
+const sameIdentity = (a: BinaryIdentity | null, b: BinaryIdentity): boolean => a !== null && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs;
+
+/** Whether a candidate is there: absent ONLY when it or a folder above it doesn't exist (ENOENT); any other answer
+ * (a dangling link, no permission, a file where a folder belongs) refuses, and a refused candidate never falls through. */
+type Presence = { kind: "absent" } | { kind: "present" } | { kind: "refused"; why: string };
+function presence(path: string): Presence {
+  try { lstatSync(path); return { kind: "present" }; } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? { kind: "absent" } : { kind: "refused", why: `${path} can't be checked (${code ?? "unreadable"})` };
+  }
+}
+
+/**
+ * The binary this package ships, which must be INSIDE the package: every component from the package root (its real
+ * path) down to the binary is lstat'ed and none may be a link; the binary's real path must sit under the root.
+ */
+function bundledCandidate(root: string, key: string): Presence & { path?: string } {
+  let realRoot: string;
+  try { realRoot = realpathSync(root); } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? { kind: "absent" } : { kind: "refused", why: `${root} can't be checked (${code ?? "unreadable"})` };
+  }
+  const parts = ["dist", "tui", key, "toolroll-tui"];
+  let at = realRoot;
+  for (const [i, part] of parts.entries()) {
+    at = join(at, part);
+    let st;
+    try { st = lstatSync(at); } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { kind: "absent" };
+      return { kind: "refused", why: `${at} can't be checked (${code ?? "unreadable"})` };
+    }
+    if (st.isSymbolicLink()) return { kind: "refused", why: `${at} is a link: the binary the package ships must be inside it` };
+    if (i < parts.length - 1 && !st.isDirectory()) return { kind: "refused", why: `${at} isn't a folder` };
+  }
+  let real: string;
+  try { real = realpathSync(at); } catch (error) { return { kind: "refused", why: `${at} can't be checked (${(error as NodeJS.ErrnoException).code ?? "unreadable"})` }; }
+  if (!real.startsWith(`${realRoot}${sep}`)) return { kind: "refused", why: `${at} isn't inside the package` };
+  return { kind: "present", path: at };
+}
+
 /** Where the platform package may be: only inside Toolroll's own install tree (see the header), never an upward search. */
 function packageCandidates(root: string, name: string): string[] {
   const parts = name.split("/");
@@ -111,15 +168,32 @@ function packageCandidates(root: string, name: string): string[] {
   return places;
 }
 
-/** The installed platform package's binary path, or null (a folder whose package.json names another package is none). */
-function installedPackageBinary(root: string, name: string): string | null {
+/** The installed platform package's binary: absent when no manifest is there (or it names another package); a manifest
+ * that is there but can't be read refuses. */
+function packageCandidate(root: string, name: string): Presence & { path?: string } {
   for (const place of packageCandidates(root, name)) {
-    try {
-      const manifest = JSON.parse(readFileSync(join(place, "package.json"), "utf8")) as { name?: unknown };
-      if (manifest.name === name) return join(place, "bin", "toolroll-tui");
-    } catch { /* not here */ }
+    const manifestPath = join(place, "package.json");
+    const there = presence(manifestPath);
+    if (there.kind === "absent") continue;
+    if (there.kind === "refused") return there;
+    let manifest: { name?: unknown };
+    try { manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown }; } catch (error) {
+      return { kind: "refused", why: `${manifestPath} can't be read (${(error as NodeJS.ErrnoException).code ?? "not JSON"})` };
+    }
+    if (manifest.name === name) return { kind: "present", path: join(place, "bin", "toolroll-tui") };
   }
-  return null;
+  return { kind: "absent" };
+}
+
+/** This checkout's own build, only when Toolroll runs from that checkout (.git and tui/Cargo.toml at its root). */
+function checkoutCandidate(root: string): Presence & { path?: string } {
+  for (const marker of [join(root, ".git"), join(root, "tui", "Cargo.toml")]) {
+    const there = presence(marker);
+    if (there.kind !== "present") return there;
+  }
+  const built = join(root, "tui", "target", "release", "toolroll-tui");
+  const there = presence(built);
+  return there.kind === "present" ? { kind: "present", path: built } : there;
 }
 
 /** Which screen to open, and when it's the classic one, why (one line). Reads nothing secret and mints nothing. */
@@ -146,13 +220,20 @@ export function chooseTuiBinary(input: TuiChoiceInput): TuiChoice {
     notice = `Using your own terminal workbench build at ${binary} (--tui-binary)`;
   } else {
     // In order: the binary this package ships, the optional platform package, this checkout's own build. The first
-    // that is there is the one checked (a refused one never falls through to the next).
-    const bundled = name === undefined ? null : bundledBinary(root, key);
-    const checkout = existsSync(join(root, ".git")) && existsSync(join(root, "tui", "Cargo.toml"));
-    const built = join(root, "tui", "target", "release", "toolroll-tui");
-    const found = (bundled !== null && existsSync(bundled) ? bundled : null)
-      ?? (name === undefined ? null : installedPackageBinary(root, name))
-      ?? (checkout && existsSync(built) ? built : null);
+    // that is there is the one checked; one that is there but refused (or can't be checked) never falls through.
+    const candidates = [
+      () => (name === undefined ? { kind: "absent" as const } : bundledCandidate(root, key)),
+      () => (name === undefined ? { kind: "absent" as const } : packageCandidate(root, name)),
+      () => checkoutCandidate(root),
+    ];
+    let found: string | null = null;
+    for (const candidate of candidates) {
+      const one: Presence & { path?: string } = candidate();
+      if (one.kind === "absent") continue;
+      if (one.kind === "refused") return note({ ok: false, why: `the terminal workbench can't be trusted: ${one.why}` });
+      found = one.path ?? null;
+      break;
+    }
     if (found === null) {
       if (name === undefined) return note({ ok: false, why: `the terminal workbench isn't built for ${input.platform}-${input.arch} yet` });
       return note({ ok: false, why: "the terminal workbench isn't installed on this computer" });
@@ -161,17 +242,23 @@ export function chooseTuiBinary(input: TuiChoiceInput): TuiChoice {
     if (!trusted.ok) return note({ ok: false, why: `the terminal workbench at ${found} can't be trusted: ${trusted.why}` });
     binary = trusted.real;
   }
-  // From here on only `binary` (the real path just checked) is run: the self-check, then the screen itself.
+  // From here on only `binary` (the real path just checked) is run, and only while it is still the file that was
+  // checked (same device, inode, size and modification time): the self-check, then the screen itself (runTuiBinary).
+  const identity = identityOf(binary);
+  if (identity === null) return note({ ok: false, why: `the terminal workbench at ${binary} can't be checked` }, notice);
   const check = (input.selfCheck ?? defaultSelfCheck)(binary);
   if (check.status === TUI_EXIT.unprotected) return note({ ok: false, why: "the terminal workbench couldn't turn off crash dumps on this computer" }, notice);
   if (check.status !== 0) return note({ ok: false, why: `the terminal workbench didn't start (${check.error ?? (check.status === null ? "no answer" : `exit ${check.status}`)})` }, notice);
   const said = /^toolroll-tui \S+ contract ([0-9a-f]{64})$/.exec(check.stdout.trim());
   if (said === null || said[1] !== input.contract) return note({ ok: false, why: "the terminal workbench is from another Toolroll version" }, notice);
-  return note({ ok: true, binary }, notice);
+  if (!sameIdentity(identityOf(binary), identity)) return note({ ok: false, why: "the terminal workbench changed while it was being checked" }, notice);
+  return note({ ok: true, binary, identity }, notice);
 }
 
 export type TuiRunInput = {
   binary: string;
+  /** What chooseTuiBinary checked: re-read right before the start, and a different file is never started. */
+  identity?: BinaryIdentity;
   /** The one-time link (requestLocalLink); it travels only over descriptor 3. */
   link: string;
   session: TuiSession;
@@ -189,14 +276,18 @@ export type TuiRunInput = {
   killAfterMs?: number;
 };
 
-/** How the binary ended: a screen exit, or "classic" (open the classic screen; it said why). */
-export type TuiRunEnd = TuiExit | "classic";
+/** How the binary ended: a screen exit, "classic" (open the classic screen; it said why), or "changed" (it isn't the
+ * file that was checked any more, so it was never started). */
+export type TuiRunEnd = TuiExit | "classic" | "changed";
 
 /** Run the binary until it ends, signals forwarded, its asks answered. */
 export async function runTuiBinary(input: TuiRunInput): Promise<TuiRunEnd> {
   const args = ["--control-fd", "4", ...(input.session.owned() ? ["--owned"] : []), ...(input.project === null ? [] : ["--project", input.project])];
   // The exact path chooseTuiBinary checked (absolute): never a name looked up on PATH.
   if (!isAbsolute(input.binary)) throw new Error("the terminal workbench is started only by its checked, absolute path");
+  // Right before the start: still exactly the file that was checked. (A process of this same user that can write the
+  // person's own install could still swap it in the instant left, as it could node or dist/*.js: an accepted residual.)
+  if (input.identity !== undefined && !sameIdentity(identityOf(input.binary), input.identity)) return "changed";
   const { child, send } = spawnHoldingLink(input.binary, args, input.link, {
     ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.stdio === undefined ? {} : { stdio: input.stdio }), control: true,

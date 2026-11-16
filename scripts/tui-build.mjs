@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * Terminal workbench packaging (solo-workbench plan T1). The Rust binary (tui/) ships INSIDE the `toolroll` package, at
- * `dist/tui/<platform>-<arch>/toolroll-tui`, for all four platforms below: publish.yml builds each on its own platform
- * (`--bundle`), places them (`--adopt`) and refuses to publish unless `--verify` passes. The launcher (src/tui-launch.ts)
+ * `dist/tui/<platform>-<arch>/toolroll-tui`, for all four platforms below. .github/workflows/package-build.yml (called by
+ * publish.yml and, on pull requests, tui-bundle.yml) builds each on its own platform (`--bundle`), then, in a job with
+ * no publishing right, places them once each matches its build's report (`--adopt`), refuses unless `--verify` passes
+ * and packs the tarball; publish.yml's privileged job only checks that tarball's sha256 and publishes it. The launcher (src/tui-launch.ts)
  * runs the bundled one for this machine after its trust checks and its self-check (`toolroll-tui <version> contract
  * <engine contract digest>`), and falls back to the classic Ink screen when there is none or it fails.
  *
@@ -12,11 +14,13 @@
  *       self-check, which must name the contract this tree was written against (test/fixtures/engine-api/schemas.json).
  *       --reports <dir>: one <platform>-<arch>.json per target (its sha256, size, self-check line), kept OUT of <dir> so
  *       nothing but the binaries is packed.
- *   node scripts/tui-build.mjs --adopt <dir> [--targets <list>]
+ *   node scripts/tui-build.mjs --adopt <dir> --reports <dir> [--targets <list>]
  *       Copy <dir>/<platform>-<arch>/toolroll-tui (built elsewhere, e.g. downloaded artifacts, whose modes are lost) into
- *       this package's dist/tui/<platform>-<arch>/toolroll-tui, mode 0755.
+ *       this package's dist/tui/<platform>-<arch>/toolroll-tui, mode 0755, each only once its sha256 is its build's
+ *       report's. Nothing is run.
  *   node scripts/tui-build.mjs --verify [--reports <dir>] [--targets <list>]
- *       Refuse (exit 1) unless every target's dist/tui binary is a regular 0755 file of exactly that target's
+ *       With --reports, first (before anything runs) each binary must be the exact file its build reported. Then
+ *       refuse (exit 1) unless every target's dist/tui binary is a regular 0755 file of exactly that target's
  *       architecture (its own header, and `file`/`lipo -archs` where present), a macOS one carries a code signature
  *       (`codesign -v --strict` on a Mac), a Linux one is static, and it answers the self-check with THIS build's engine
  *       contract digest (dist/contracts/engine-api.js engineContractDigest): run here for this machine's target, and the
@@ -222,46 +226,69 @@ function bundle({ targets, profile, dir, reports }) {
   return failed ? 1 : 0;
 }
 
-function adopt({ targets, from }) {
-  const into = join(root, "dist", "tui");
+/**
+ * Before anything runs: each target's binary at `dir` must be the exact file its build reported (sha256), and every
+ * target needs a report. Returns the problems (empty: all match). Reads only; executes nothing.
+ */
+export function reportMismatches(dir, reports, targets) {
+  const problems = [];
   for (const name of targets) {
-    const source = bundled(from, name);
-    if (!existsSync(source)) { console.error(`no ${name} binary at ${source}`); return 1; }
+    let report = null, bytes = null;
+    try { report = JSON.parse(readFileSync(join(reports, `${name}.json`), "utf8")); } catch { problems.push(`${name}: no build report`); continue; }
+    try { const st = lstatSync(bundled(dir, name)); if (st.isFile()) bytes = readFileSync(bundled(dir, name)); } catch { /* reported below */ }
+    if (bytes === null) { problems.push(`${name}: no binary at ${bundled(dir, name)}`); continue; }
+    if (report?.platform !== name || report?.sha256 !== sha256(bytes)) problems.push(`${name}: not the file its build reported (sha256 ${sha256(bytes).slice(0, 12)}…, report ${String(report?.sha256).slice(0, 12)}…)`);
+  }
+  return problems;
+}
+
+/** Copy downloaded binaries (their modes are lost) into `<into>/<platform>-<arch>/toolroll-tui`, mode 0755, each only
+ * once its sha256 matches its build's report; nothing is run. */
+export function adopt({ targets, from, reports, into = join(root, "dist", "tui") }) {
+  if (reports === null) { console.error("REFUSED: --adopt needs --reports (each binary is checked against its build's report first)"); return 1; }
+  const mismatched = reportMismatches(from, reports, targets);
+  if (mismatched.length > 0) { for (const one of mismatched) console.error(`REFUSED: ${one}`); return 1; }
+  for (const name of targets) {
     const folder = join(into, name);
-    if (existsSync(folder) && readdirSync(folder).some(one => one !== BINARY)) { console.error(`${folder} holds something besides ${BINARY}`); return 1; }
+    if (existsSync(folder) && readdirSync(folder).some(one => one !== BINARY)) { console.error(`REFUSED: ${folder} holds something besides ${BINARY}`); return 1; }
     mkdirSync(folder, { recursive: true });
-    copyFileSync(source, bundled(into, name));
+    copyFileSync(bundled(from, name), bundled(into, name));
     chmodSync(bundled(into, name), 0o755);
     console.log(`placed ${name}: dist/tui/${name}/${BINARY} (sha256 ${sha256(readFileSync(bundled(into, name)))})`);
   }
   return 0;
 }
 
-async function verify({ targets, reports }) {
+export async function verify({ targets, reports, packageRoot = root }) {
+  const into = join(packageRoot, "dist", "tui");
+  // First, before anything runs: with reports, each binary must be the file its build reported.
+  if (reports !== null) {
+    const mismatched = reportMismatches(into, reports, targets);
+    if (mismatched.length > 0) { for (const one of mismatched) console.error(`REFUSED: ${one}`); return 1; }
+  }
   const problems = [];
   // THIS build's contract: the engine module this package ships (so it is built first: npm run build).
-  const engine = join(root, "dist", "contracts", "engine-api.js");
+  const engine = join(packageRoot, "dist", "contracts", "engine-api.js");
   if (!existsSync(engine)) { console.error(`REFUSED: no ${engine} (build first: npm run build)`); return 1; }
   const contract = (await import(pathToFileURL(engine).href)).engineContractDigest();
-  const into = join(root, "dist", "tui");
   const checked = [];
   for (const name of targets) {
     const path = bundled(into, name);
     let stat;
     try { stat = lstatSync(path); } catch { problems.push(`${name}: no binary at dist/tui/${name}/${BINARY}`); continue; }
     const bytes = stat.isFile() ? readFileSync(path) : Buffer.alloc(0);
-    problems.push(...binaryProblems(name, { mode: stat.mode, isFile: stat.isFile(), bytes, ...toolsSay(name, path) }));
-    if (name === host()) problems.push(...selfCheckProblems(name, runSelfCheck(path), contract));
+    const found = binaryProblems(name, { mode: stat.mode, isFile: stat.isFile(), bytes, ...toolsSay(name, path) });
+    problems.push(...found);
+    // Run only a well-formed binary of this machine's own platform.
+    if (name === host() && found.length === 0) problems.push(...selfCheckProblems(name, runSelfCheck(path), contract));
     let report = null;
     if (reports !== null) { try { report = JSON.parse(readFileSync(join(reports, `${name}.json`), "utf8")); } catch { report = null; } }
-    if (report !== null) {
-      if (report.sha256 !== sha256(bytes)) problems.push(`${name}: its build's report is for another file (sha256 ${String(report.sha256).slice(0, 12)}…)`);
-      problems.push(...selfCheckProblems(name, report.self_check, contract));
-    } else if (name !== host()) problems.push(`${name}: no self-check recorded on its own platform (--reports)`);
+    if (report !== null) problems.push(...selfCheckProblems(name, report.self_check, contract));
+    else if (name !== host()) problems.push(`${name}: no self-check recorded on its own platform (--reports)`);
     checked.push({ platform: name, sha256: sha256(bytes), bytes: bytes.length });
   }
   // What `npm publish` would pack from this tree.
-  const packed = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, npm_config_update_notifier: "false" } });
+  const packed = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: packageRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, npm_config_update_notifier: "false" } });
   let listing = null;
   try { listing = JSON.parse(packed.stdout)[0]; } catch { problems.push(`npm pack --dry-run failed: ${`${packed.stderr ?? ""}`.trim().split("\n").slice(-3).join(" ")}`); }
   if (listing !== null && listing !== undefined) problems.push(...packProblems(listing.files ?? [], targets));
@@ -385,7 +412,7 @@ async function main(args) {
   if (args.includes("--adopt")) {
     const from = opt("--adopt", null);
     if (from === null || from.startsWith("--")) { console.error("--adopt needs a folder"); return 2; }
-    return adopt({ targets, from: resolve(from) });
+    return adopt({ targets, from: resolve(from), reports });
   }
   if (args.includes("--verify")) return verify({ targets, reports });
   return packages({ targets, profile, out: resolve(opt("--out", join(tui, "npm"))), smoke: opt("--smoke", null) });

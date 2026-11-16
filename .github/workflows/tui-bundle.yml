@@ -1,16 +1,21 @@
 name: Workbench bundle
 
-# The package a release publishes opens the terminal workbench it carries (scripts/tui-bundle-smoke.mjs): this
-# platform's Rust binary is built into dist/tui (scripts/tui-build.mjs --bundle, the same per-target build publish.yml
-# runs), checked as `npm publish` would pack it (--verify), then the checkout is packed and `npm i -g`'d into a
-# throwaway prefix with its own npm cache, and bare `toolroll` from that install must open the bundled workbench in a
-# real pseudo-terminal (scripts/tui-e2e.mjs --expect bundled, no --tui-binary). With the binary deleted from the install
-# it must open the classic Ink screen with the launcher's one-line notice. On Linux x64 and macOS arm64.
+# The package a release publishes, proved on the pull request before any tag:
+#
+#   - "workbench bundle / binary · <platform>" and "workbench bundle / assemble": the SAME jobs publish.yml calls
+#     (package-build.yml, the same runners and pinned actions and Rust): all four binaries built, signed (macOS) and
+#     self-checked on their own platforms, then matched to their reports before anything runs, bundled, checked
+#     (--verify) and packed, so a release is never their first run;
+#   - "workbench bundle · <os>": a packed install opens the workbench it carries (scripts/tui-bundle-smoke.mjs): this
+#     platform's binary built into dist/tui and checked (--bundle, --verify), the checkout packed and `npm i -g`'d into
+#     a throwaway prefix with its own npm cache, bare `toolroll` from that install must open the bundled workbench in a
+#     real pseudo-terminal (scripts/tui-e2e.mjs --expect bundled, no --tui-binary), and with the binary deleted from the
+#     install, the classic Ink screen with the launcher's one-line notice. On Linux x64 and macOS arm64.
 #
 # Which runs: pull requests that touch the workbench, its launcher or contract, what gets packed, or this proof, and by
-# hand. Advisory, like the install smoke: not one of REQUIRED_PR_CHECKS, and the release verdict leaves these jobs out
-# by name and workflow (release.ts ADVISORY_PR_CHECKS). publish.yml's own --verify is what refuses a release. No
-# secrets: it reads only, and needs the public npm registry for the package's dependencies.
+# hand. Advisory, like the install smoke: none is one of REQUIRED_PR_CHECKS, and the release verdict leaves them out by
+# name and workflow (release.ts ADVISORY_PR_CHECKS). publish.yml's own run of the same jobs is what refuses a release.
+# No secrets: it reads only, and needs the public npm registry for the package's dependencies.
 
 on:
   pull_request:
@@ -31,6 +36,8 @@ on:
       - "scripts/isolated-env.mjs"
       - "scripts/fixtures/pty-host.py"
       - ".github/workflows/publish.yml"
+      - ".github/workflows/package-build.yml"
+      - "tui/rust-toolchain.toml"
       - ".github/workflows/tui-bundle.yml"
   workflow_dispatch:
 
@@ -43,6 +50,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The package exactly as a release builds it, by the one definition publish.yml calls: the four binaries, then
+  # assembled, checked and packed (package-build.yml), with no publishing right.
+  binaries:
+    name: workbench bundle
+    permissions:
+      contents: read
+    uses: ./.github/workflows/package-build.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
   bundle:
     name: workbench bundle · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -63,7 +80,7 @@ jobs:
       TARGET: ${{ matrix.target }}
       CARGO_TERM_COLOR: never
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ env.TESTED_SHA }}
           persist-credentials: false
@@ -72,7 +89,7 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
           check-latest: true
@@ -96,8 +113,12 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build
-      - name: Toolchain
-        run: rustup toolchain install stable --profile minimal --target "$TARGET" && rustup default stable && cargo --version
+      - name: Toolchain (tui/rust-toolchain.toml's exact Rust)
+        run: |
+          toolchain="$(sed -n 's/^channel = "\(.*\)"$/\1/p' tui/rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --target "$TARGET"
+          cd tui && cargo --version && rustc --version
       - name: This platform's binary, into the package
         run: node scripts/tui-build.mjs --bundle dist/tui --targets "$PLATFORM"
       - name: Checked as npm publish would pack it

@@ -45,8 +45,13 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Toolchain
-        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy && rustup default stable && cargo --version
+      - name: Toolchain (tui/rust-toolchain.toml's exact Rust)
+        shell: bash
+        run: |
+          toolchain="$(sed -n 's/^channel = "\(.*\)"$/\1/p' tui/rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt,clippy
+          cd tui && cargo --version && rustc --version
       - name: Format
         working-directory: tui
         run: cargo fmt --all --check
