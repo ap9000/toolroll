@@ -9,10 +9,10 @@
  */
 import { createHash } from "node:crypto";
 import { isAcpProvider } from "./acp-agents.js";
-import { currentLocalOwner, localModeOn, localOwnerInFlight, localOwnerStandsNow } from "./local-owner.js";
+import { currentLocalOwner, localActNow, localModeOn, localOwnerInFlight, localOwnerStandsNow } from "./local-owner.js";
 import { INSTALLATION_SCOPE, resolvePhaseAgent, resolveRouteCandidates } from "./agentconfig.js";
 import { seenModels, type SeenModel } from "./model-catalog.js";
-import { sessionStandsIn } from "./install-mode.js";
+import { sessionStandsIn, soloNow } from "./install-mode.js";
 import { exactModelId, recommendRoute, routeProblems, type EarnedRule, type PhaseRoute, type RouteCandidates } from "./phase-routing.js";
 import { liveEarnedRules } from "./route-store.js";
 import { isProviderId, validateSpec } from "./provider.js";
@@ -352,7 +352,13 @@ function applyLocked(store: Store, input: ApplyInput, authority: ModelAuthority,
   {
     {
       const account = store.accountOf(authority.actor);
-      const standsNow = PERSON_PROOFS.has(authority.method) && ((authority.method !== "session" && authority.method !== "cli-login") || sessionStandsIn(store));
+      // A local owner (the terminal workbench's session) stands only on a solo install, acting now as exactly
+      // `change-models`, re-read here inside this transaction (local-owner.ts localActNow): never any other act, never
+      // a team install's local sign-in.
+      const local = authority.method === "local-owner" ? localActNow(store, "change-models") : null;
+      const standsNow = authority.method === "local-owner"
+        ? local !== null && local.account === authority.actor && soloNow(store)
+        : PERSON_PROOFS.has(authority.method) && ((authority.method !== "session" && authority.method !== "cli-login") || sessionStandsIn(store));
       if (account === null || account.revokedAt !== null || account.generation !== authority.generation || !store.isInstanceOperator(authority.actor) || !authority.live() || !standsNow) {
         throw new Refused({ ok: false, reason: "authority", problem: "Only an instance operator, signed in now, can change models." });
       }

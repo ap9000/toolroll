@@ -135,6 +135,9 @@ export const CONSOLE_FORMS = {
   threadStart: formContract("POST /agents/live/thread", ["repo", "message", "model", "terms", "password"]),
   // T4: a take-over names its task and build (task, run) instead of a project (repo).
   term: formContract("POST /term/start, /term/<terminal>/close, /term/<terminal>/remove", ["repo", "program", "password", "task", "run"]),
+  // The Agents screen: an agent's own sign-in, or its install with the exact command the person confirmed.
+  termAgent: formContract("POST /term/agent/sign-in, /term/agent/install", ["agent", "password", "confirm"]),
+  agentsCheck: formContract("POST /engine/agents/check", []),
   skillsRevise: formContract("POST /settings/skills/revise", ["run", "repo", "feedback", "nonce"]),
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo", "password"]),

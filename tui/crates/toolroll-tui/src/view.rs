@@ -273,6 +273,22 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         ..body
     };
     app.areas.split_x = body.x + split;
+    // The Agents screen is a screen of its own: one sheet across the body while it is open (agents.rs).
+    if app.agents_screen.is_some() {
+        app.areas.list = Rect::default();
+        app.areas.rows.clear();
+        app.areas.tabs.clear();
+        app.panes.areas = vec![];
+        let inner = sheet::sheet(f.buffer_mut(), body);
+        app.areas.right = inner;
+        crate::agents::draw(f, app, inner);
+        draw_status(f, app, status);
+        if app.prefs.settings.key_bar {
+            draw_keys(f, app, keys);
+        }
+        draw_overlay(f, app, area);
+        return;
+    }
     let list = sheet::sheet(f.buffer_mut(), left);
     draw_list(f, app, list);
     // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
@@ -995,8 +1011,20 @@ fn draw_first_run(f: &mut Frame, app: &App, area: Rect) {
         );
         lines.push(Line::raw(""));
         let new = key_name(app, Action::NewTask);
+        let agents_key = key_name(app, Action::Agents);
+        let mut acts = vec![];
         if !new.is_empty() {
-            lines.push(Line::from(vec![sheet::button("New task", &new, true)]));
+            acts.push(sheet::button("New task", &new, true));
+        }
+        if !agents_key.is_empty() {
+            if !acts.is_empty() {
+                acts.push(Span::raw("  "));
+            }
+            // The agents below: add one, sign in, choose who builds (agents.rs).
+            acts.push(sheet::button("Agents", &agents_key, false));
+        }
+        if !acts.is_empty() {
+            lines.push(Line::from(acts));
             lines.push(Line::raw(""));
         }
         if let Some(agents) = app.agents.as_ref() {
@@ -1957,6 +1985,9 @@ fn keys_name(app: &App, actions: &[Action]) -> String {
 /// The key bar: the five keys that matter most where the person is, then the palette, which has every other.
 fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     use Action::*;
+    if app.agents_screen.is_some() {
+        return crate::agents::bar_keys(app);
+    }
     let five: Vec<(&[Action], &'static str)> = match app.tab {
         Tab::Diff if app.thread_selected().is_none() => vec![
             (&[LineDown, LineUp], "line"),
@@ -2299,6 +2330,12 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         Mode::Build { .. } => return draw_build(f, app, area),
+        Mode::ConfirmInstall { .. } | Mode::PickModel(_) | Mode::ConfirmModels(_) => {
+            match crate::agents::dialog_lines(app, area) {
+                Some(shown) => shown,
+                None => return,
+            }
+        }
         Mode::StartThread(_) => return crate::thread::draw_start(f, app, area),
         Mode::ConfirmThread(_) => match crate::thread::confirm_lines(app, area) {
             Some(shown) => shown,

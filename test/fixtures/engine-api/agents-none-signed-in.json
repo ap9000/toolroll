@@ -2,15 +2,168 @@
   "version": 1,
   "checkedAt": "2026-11-15T09:12:04.118Z",
   "agents": [
-    { "id": "claude", "name": "Claude Code", "state": "signed-out", "how": null, "signIn": "claude auth login", "ready": false, "next": null },
-    { "id": "codex", "name": "Codex", "state": "unknown", "how": null, "signIn": "codex login", "ready": false, "next": null },
-    { "id": "gemini", "name": "Gemini CLI", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
-    { "id": "openrouter", "name": "OpenRouter", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
-    { "id": "opencode", "name": "OpenCode", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
-    { "id": "cursor", "name": "Cursor", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
-    { "id": "cline", "name": "Cline", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
-    { "id": "qwen", "name": "Qwen Code", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null },
-    { "id": "goose", "name": "Goose", "state": "not-installed", "how": null, "signIn": null, "ready": false, "next": null }
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "state": "signed-out",
+      "how": null,
+      "signIn": "claude auth login",
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "npm install -g @anthropic-ai/claude-code",
+        "canInstall": true,
+        "signIn": "claude auth login",
+        "canSignIn": true,
+        "key": null,
+        "check": null,
+        "note": "Flexible threads bill your Claude plan through Toolroll's relay, which needs a long-lived token: run `claude setup-token` in your own terminal (it prints the token, so Toolroll never runs it for you)."
+      }
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "state": "unknown",
+      "how": null,
+      "signIn": "codex login",
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "npm install -g @openai/codex",
+        "canInstall": true,
+        "signIn": "codex login",
+        "canSignIn": true,
+        "key": null,
+        "check": null,
+        "note": null
+      }
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "state": "not-installed",
+      "how": null,
+      "signIn": null,
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "npm install -g @google/gemini-cli",
+        "canInstall": true,
+        "signIn": "gemini",
+        "canSignIn": true,
+        "key": "Or run it on an API key: switch it with `toolroll keys auth gemini api-key`, then pipe the key in with `toolroll keys set gemini < key.txt` (or paste it in Settings → Agents in the browser).",
+        "check": null,
+        "note": "Its sign-in starts Gemini CLI: choose Login with Google, finish in the browser, then type /quit."
+      }
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "state": "not-installed",
+      "how": null,
+      "signIn": null,
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": null,
+        "canInstall": false,
+        "signIn": null,
+        "canSignIn": false,
+        "key": "It runs on an OpenRouter key through Codex: pipe the key in with `toolroll keys set openrouter < key.txt` (or paste it in Settings → Agents in the browser), then choose its models.",
+        "check": null,
+        "note": "Install Codex first: OpenRouter runs through it."
+      }
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "state": "not-installed",
+      "how": null,
+      "signIn": null,
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "npm install -g opencode-ai",
+        "canInstall": true,
+        "signIn": "opencode auth login",
+        "canSignIn": true,
+        "key": null,
+        "check": "toolroll agents check opencode --model <model>",
+        "note": null
+      }
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "state": "not-installed",
+      "how": null,
+      "signIn": null,
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "curl https://cursor.com/install -fsS | bash",
+        "canInstall": false,
+        "signIn": "cursor-agent login",
+        "canSignIn": true,
+        "key": null,
+        "check": "toolroll agents check cursor --model <model>",
+        "note": null
+      }
+    },
+    {
+      "id": "cline",
+      "name": "Cline",
+      "state": "not-installed",
+      "how": null,
+      "signIn": null,
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "npm install -g cline",
+        "canInstall": true,
+        "signIn": "cline auth",
+        "canSignIn": true,
+        "key": null,
+        "check": "toolroll agents check cline --model <model>",
+        "note": null
+      }
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen Code",
+      "state": "not-installed",
+      "how": null,
+      "signIn": null,
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "npm install -g @qwen-code/qwen-code",
+        "canInstall": true,
+        "signIn": "qwen (then /auth)",
+        "canSignIn": true,
+        "key": null,
+        "check": "toolroll agents check qwen --model <model>",
+        "note": "Its sign-in starts Qwen Code: type /auth and finish in the browser, then /quit."
+      }
+    },
+    {
+      "id": "goose",
+      "name": "Goose",
+      "state": "not-installed",
+      "how": null,
+      "signIn": null,
+      "ready": false,
+      "next": null,
+      "setup": {
+        "install": "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash",
+        "canInstall": false,
+        "signIn": "goose configure",
+        "canSignIn": true,
+        "key": null,
+        "check": "toolroll agents check goose --model <model>",
+        "note": null
+      }
+    }
   ],
   "firstTask": null,
   "lines": [

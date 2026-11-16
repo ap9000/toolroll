@@ -1041,9 +1041,10 @@ running = "#5aa9ff"
         );
         assert_eq!(s.colors, vec![(Role::Running, Rgb(0x5a, 0xa9, 0xff))]);
         // The keymap: a preset and an action's own keys (keys.rs holds its rules).
-        let (s, w) = parse("[keys]\npreset = \"emacs\"\naccept = [\"A\", \"a\"]\nkeys.stop = 3");
+        // (Z: A opens the Agents screen.)
+        let (s, w) = parse("[keys]\npreset = \"emacs\"\naccept = [\"Z\", \"a\"]\nkeys.stop = 3");
         assert_eq!(s.keymap.preset, crate::keys::Preset::Emacs);
-        assert_eq!(s.keymap.all_words(crate::keys::Action::Accept), "A, a");
+        assert_eq!(s.keymap.all_words(crate::keys::Action::Accept), "Z, a");
         assert_eq!(w.len(), 1, "{w:?}");
         // Dotted keys work too.
         let (s, w) = parse("notifications.finished = true\ncolors.failed = \"#f00\"");

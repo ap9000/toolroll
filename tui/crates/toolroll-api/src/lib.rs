@@ -4,6 +4,6 @@ pub mod models;
 pub mod sse;
 pub mod term;
 
-pub use client::{check_hello, redeem, ActOutcome, ApiError, Client, LiveSignal};
+pub use client::{check_hello, redeem, said_of, ActOutcome, ApiError, Client, LiveSignal};
 pub use models::*;
 pub use term::{Chunk, Held, TermEvent, TermSend, OUTPUT_BUDGET};

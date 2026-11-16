@@ -114,6 +114,22 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary"));
   }
 
+  /** POST /engine/agents/check (the Agents screen's Check again): this computer's agent CLIs asked again through the same
+   * bounded, non-spending status checks as Settings → Lead's Check now (at most every few seconds, waited for at most
+   * 8 s), then the same answer as GET /engine/agents. A form post with the session's form token, so no link or prefetch
+   * sets it off; a browser or terminal session only. */
+  async function agentsCheck(ctx: HandlerContext): Promise<void> {
+    const { who, response } = ctx;
+    if (who.via !== "cookie") return refusal(response, 403, "session");
+    if (Date.now() - runtime.leadRecheckedAt > 4_000) {
+      runtime.leadRecheckedAt = Date.now();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([runtime.checkLocalAgents(true), new Promise<void>(done => { timer = setTimeout(done, 8_000); timer.unref?.(); })]).finally(() => clearTimeout(timer));
+    }
+    const view = agentInventoryOf(who, store);
+    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary"));
+  }
+
   /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions only, like the Live grid). */
   async function liveRun(ctx: HandlerContext): Promise<void> {
     const { url, who, request, response } = ctx;
@@ -390,7 +406,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       try { if (flexible !== null) await closeFlexibleSessions(store, flexible); } finally { await launcher?.close(); }
     },
     registrations: [
-      ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
+      ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
         "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart }),
       ...handlersOf("tasks", { "task.steps": taskSteps, "task.diff": taskDiff }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),

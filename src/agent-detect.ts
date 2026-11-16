@@ -275,3 +275,57 @@ export function detectionReport(detection: AgentDetection): string[] {
     ...detectionLines(detection),
   ];
 }
+
+// ---- Adding an agent (the terminal workbench's Agents screen) --------------------------------------------------------
+
+/** One command Toolroll may run for a person in a terminal pane: a program found as a trusted install on PATH
+ * (status-probe.ts resolveStatusBinary) and arguments that are Toolroll's own constants. */
+export type AgentCommand = { binary: string; args: readonly string[] };
+
+/**
+ * How each agent is added, all Toolroll's own constants (never text from the agent, a page or the environment):
+ *
+ * - `install`: the exact install command shown. `installRun`: the same command as a program and arguments, when it may
+ *   run in a pane after the person's confirm (npm installs only; a `curl … | bash` installer is shown, never run here).
+ * - `signIn` / `signInRun`: the agent's OWN sign-in, run in a pane: the provider's browser sign-in opens as usual and the
+ *   credential goes into the agent's own files; Toolroll never reads it.
+ * - `key`: an agent that runs on a key Toolroll stores (Gemini on an API key, OpenRouter): what to set and where.
+ * - `check`: an ACP agent's one-time check, shown to run (the console has no route that runs it).
+ * - `note`: anything else the person should know, in one sentence.
+ */
+export type AgentSetup = {
+  install: string | null;
+  installRun: AgentCommand | null;
+  signIn: string | null;
+  signInRun: AgentCommand | null;
+  key: string | null;
+  check: string | null;
+  note: string | null;
+};
+
+const npm = (pkg: string): { install: string; installRun: AgentCommand } => ({ install: `npm install -g ${pkg}`, installRun: { binary: "npm", args: ["install", "-g", pkg] } });
+const ACP_CHECK = (id: string): string => `toolroll agents check ${id} --model <model>`;
+
+export const AGENT_SETUP: Readonly<Record<ProviderId, AgentSetup>> = Object.freeze({
+  claude: { ...npm("@anthropic-ai/claude-code"), signIn: "claude auth login", signInRun: { binary: "claude", args: ["auth", "login"] }, key: null, check: null,
+    note: "Flexible threads bill your Claude plan through Toolroll's relay, which needs a long-lived token: run `claude setup-token` in your own terminal (it prints the token, so Toolroll never runs it for you)." },
+  codex: { ...npm("@openai/codex"), signIn: "codex login", signInRun: { binary: "codex", args: ["login"] }, key: null, check: null, note: null },
+  gemini: { ...npm("@google/gemini-cli"), signIn: "gemini", signInRun: { binary: "gemini", args: [] },
+    key: "Or run it on an API key: switch it with `toolroll keys auth gemini api-key`, then pipe the key in with `toolroll keys set gemini < key.txt` (or paste it in Settings → Agents in the browser).", check: null,
+    note: "Its sign-in starts Gemini CLI: choose Login with Google, finish in the browser, then type /quit." },
+  openrouter: { install: null, installRun: null, signIn: null, signInRun: null,
+    key: "It runs on an OpenRouter key through Codex: pipe the key in with `toolroll keys set openrouter < key.txt` (or paste it in Settings → Agents in the browser), then choose its models.", check: null,
+    note: "Install Codex first: OpenRouter runs through it." },
+  opencode: { ...npm("opencode-ai"), signIn: ACP_AGENTS.opencode.signIn, signInRun: { binary: "opencode", args: ["auth", "login"] }, key: null, check: ACP_CHECK("opencode"), note: null },
+  cursor: { install: "curl https://cursor.com/install -fsS | bash", installRun: null, signIn: ACP_AGENTS.cursor.signIn, signInRun: { binary: "cursor-agent", args: ["login"] }, key: null, check: ACP_CHECK("cursor"), note: null },
+  cline: { ...npm("cline"), signIn: ACP_AGENTS.cline.signIn, signInRun: { binary: "cline", args: ["auth"] }, key: null, check: ACP_CHECK("cline"), note: null },
+  qwen: { ...npm("@qwen-code/qwen-code"), signIn: ACP_AGENTS.qwen.signIn, signInRun: { binary: "qwen", args: [] }, key: null, check: ACP_CHECK("qwen"),
+    note: "Its sign-in starts Qwen Code: type /auth and finish in the browser, then /quit." },
+  goose: { install: "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash", installRun: null, signIn: ACP_AGENTS.goose.signIn,
+    signInRun: { binary: "goose", args: ["configure"] }, key: null, check: ACP_CHECK("goose"), note: null },
+});
+
+/** An agent's setup, or null for an id Toolroll doesn't support. */
+export function agentSetupOf(id: string): AgentSetup | null {
+  return Object.prototype.hasOwnProperty.call(AGENT_SETUP, id) ? AGENT_SETUP[id as ProviderId] : null;
+}

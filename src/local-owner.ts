@@ -74,6 +74,19 @@ export const LOCAL_OWNER_ACTS = Object.freeze([
   // don't (a start above their password-free level still needs this proof); the start (engine-api.ts threadStart)
   // checks this exact act.
   "start-thread",
+  // The terminal workbench's Agents screen: look again for this computer's agents (the bounded, non-spending status
+  // checks every sign-in check uses); never a model call and nothing written but the detection's own answer.
+  "check-agents",
+  // Run an agent's OWN sign-in (`codex login`, `claude auth login`…) in a terminal pane for the person at this computer,
+  // from a fresh empty folder outside every project: the provider's browser sign-in opens and the credential goes into
+  // the agent's own files; Toolroll never reads it (server/terminals.ts agentStart).
+  "agent-sign-in",
+  // Install an agent with its own install command (npm install -g …), shown whole first and run only on the person's
+  // confirm of exactly that command, in a pane, from a fresh empty folder (server/terminals.ts agentStart).
+  "agent-install",
+  // Settings → Models from the terminal workbench on a solo install: which agent and model plans, builds and reviews
+  // (model-choices.ts applyModelChoices re-checks this exact act and solo inside its one transaction).
+  "change-models",
 ] as const);
 export type LocalOwnerAct = (typeof LOCAL_OWNER_ACTS)[number];
 const ACT_SET: ReadonlySet<string> = new Set(LOCAL_OWNER_ACTS);

@@ -145,3 +145,80 @@ async fn live_signals_name_the_room_that_changed() {
         .unwrap();
     assert_eq!(got, LiveSignal::Change("workspace".into()));
 }
+
+/// The Agents screen's roads against the stand-in console: the models read, looking again, an agent's own sign-in, an
+/// install only with its exact command, and a models save's redirect read as its words (a problem never as done).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_screens_roads() {
+    let engine = FakeEngine::start(scenario(), 0).await;
+    let client = redeem(&engine.link()).await.expect("redeem");
+    let models = client.models().await.unwrap();
+    assert!(models.can_change && models.roles.len() == 3);
+    let read = client.agents_check().await.unwrap();
+    assert_eq!(read.agents.len(), 9);
+    assert_eq!(engine.state.lock().unwrap().agent_checks, 1);
+    assert_eq!(
+        client
+            .term_agent("sign-in", "codex", None)
+            .await
+            .unwrap()
+            .len(),
+        32
+    );
+    assert_eq!(
+        client
+            .term_agent("install", "gemini", None)
+            .await
+            .unwrap_err(),
+        ApiError::Refused("Confirm the exact install command first.".into())
+    );
+    assert!(client
+        .term_agent(
+            "install",
+            "gemini",
+            Some("npm install -g @google/gemini-cli")
+        )
+        .await
+        .is_ok());
+    assert!(client.term_agent("run", "codex", None).await.is_err());
+    let saved = client
+        .act(
+            "/settings/models/agent",
+            &[("build", "codex|gpt-6-sol")],
+            "done",
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved, ActOutcome::Done("Models saved.".into()));
+    engine.state.lock().unwrap().refuse_models =
+        Some("Only an instance operator can change models.".into());
+    let refused = client
+        .act(
+            "/settings/models/agent",
+            &[("build", "codex|gpt-6-sol")],
+            "done",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        refused,
+        ActOutcome::Refused("Only an instance operator can change models.".into())
+    );
+}
+
+#[test]
+fn a_redirect_says_its_words() {
+    assert_eq!(
+        said_of("/settings/models?problem=Enter+your+Toolroll+password%2E#x"),
+        Some(("problem", "Enter your Toolroll password.".to_string()))
+    );
+    assert_eq!(
+        said_of("/settings/agents?said=the%20key%20is%20stored"),
+        Some(("said", "the key is stored".to_string()))
+    );
+    assert_eq!(said_of("/t/t-new"), None);
+    assert_eq!(
+        said_of("/x?problem=%E2%9C%93%zz"),
+        Some(("problem", "✓%zz".to_string()))
+    );
+}

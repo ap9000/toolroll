@@ -201,6 +201,34 @@ impl Client {
         }
     }
 
+    /// Start an agent's OWN sign-in or install in a pane (the Agents screen): `kind` is `sign-in` or `install`; an
+    /// install carries the exact command the person confirmed (`confirm`). What runs is the console's own constant for
+    /// that agent; nothing here names a program. Its id, or the console's words for why not.
+    pub async fn term_agent(
+        &self,
+        kind: &str,
+        agent: &str,
+        confirm: Option<&str>,
+    ) -> Result<String, ApiError> {
+        if kind != "sign-in" && kind != "install" {
+            return Err(ApiError::Refused("Sign in or install.".into()));
+        }
+        let mut fields = vec![("agent", agent)];
+        if let Some(c) = confirm {
+            fields.push(("confirm", c));
+        }
+        let text = self
+            .post_form_json(&format!("/term/agent/{kind}"), &fields)
+            .await?;
+        match serde_json::from_str::<TermStarted>(&text) {
+            Ok(TermStarted::Started { id, .. }) if term_id_ok(&id) => Ok(id),
+            Ok(TermStarted::Refused { error, .. }) => Err(ApiError::Refused(error)),
+            _ => Err(ApiError::Contract(
+                "The terminal's answer isn't what this version expects.".into(),
+            )),
+        }
+    }
+
     /// Attach to terminal `id`: what to send it, and what it says, until either side closes.
     pub async fn term_connect(
         &self,

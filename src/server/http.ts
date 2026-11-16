@@ -39,6 +39,9 @@ export type ServeOptions = {
   codingWorkspace?: CodingWorkspace;
   /** Live terminals (tests stand their own in; null turns them off). Default: one on a machine that runs agents. */
   terminalHost?: TerminalHost | null;
+  /** The environment an agent's own sign-in or install is resolved and started from (the Agents screen; terminals.ts
+   * agentStart): default this process's. Tests stand theirs in (a PATH of stand-in binaries). */
+  agentCommandEnv?: () => NodeJS.ProcessEnv;
   /** Read-only worker connections for heavy reads (read-executor.ts); 0 reads in-process. Default: off under tests. */
   readWorkers?: number;
   store: Store;

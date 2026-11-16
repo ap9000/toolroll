@@ -189,6 +189,9 @@ export type TerminalSummary = {
   /** A take-over: the task and build whose saved result it opened on (Toolroll's own record of both), else null. */
   task: string | null;
   run: number | null;
+  /** An agent's own sign-in or install (the Agents screen), with the agent's id: no project, no git, a fresh empty
+   * folder of its own; null for every other terminal. */
+  agent: { id: string; kind: "sign-in" | "install" } | null;
   repo: string;
   program: TerminalProgram;
   branch: string;
@@ -354,8 +357,8 @@ export class TerminalHost {
   }
 
   private summary(session: Session): TerminalSummary {
-    const { id, owner, generation, localGeneration, task, run, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup } = session;
-    return { id, owner, generation, localGeneration, task, run, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup };
+    const { id, owner, generation, localGeneration, task, run, agent, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup } = session;
+    return { id, owner, generation, localGeneration, task, run, agent: agent === null ? null : { ...agent }, repo, program, branch, worktree, startedAt, endedAt, exit, endedBy, cleanup };
   }
 
   /** This person's sessions, newest first. */
@@ -436,7 +439,7 @@ export class TerminalHost {
         throw error instanceof TerminalError ? error : new TerminalError(`The program couldn't start: ${error instanceof Error ? error.message : String(error)}`);
       }
       let resolveExited!: () => void;
-      const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
+      const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, agent: null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
         exited: new Promise(resolve => { resolveExited = resolve; }) };
       this.sessions.set(id, session);
@@ -470,6 +473,80 @@ export class TerminalHost {
       this.starting -= 1;
       if (reserved) this.ledger.release(id, null);
     }
+  }
+
+  /**
+   * An agent's own sign-in or install for the person at this computer (the Agents screen): `command` is a trusted
+   * install's real path and Toolroll's own arguments, `env` an environment built from nothing (status-probe.ts
+   * statusEnvironment: the person's real HOME so the agent saves its own login, a PATH of trusted folders, no Toolroll
+   * credential and no token). It runs from a fresh empty folder of its own under the terminal root (never a project, a
+   * worktree or git), shown and swept like any terminal, and the folder goes when it is removed. `admit` is asked right
+   * before the program starts; `exited` once it has ended (the screen's detection runs again then).
+   */
+  async startCommand({ name: owner, generation, localGeneration = null }: { name: string; generation: number; localGeneration?: number | null },
+    agent: { id: string; kind: "sign-in" | "install" }, command: { file: string; args: readonly string[] }, env: NodeJS.ProcessEnv,
+    size: { cols: number; rows: number } = { cols: 100, rows: 30 }, admit: () => string | null = () => null, exited: () => void = () => {}): Promise<TerminalSummary> {
+    if (this.stopped) throw new TerminalError("The console is stopping.");
+    if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
+    if (this.sessions.size + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
+    const id = randomBytes(16).toString("hex");
+    this.starting += 1;
+    let reserved = false;
+    try {
+      try { this.ledger.reserve(id); reserved = true; }
+      catch (error) { throw error instanceof TerminalError ? error : new TerminalError(error instanceof Error ? error.message : "No terminal can start right now."); }
+      mkdirSync(this.options.worktreeRoot, { recursive: true, mode: 0o700 });
+      const folder = join(this.options.worktreeRoot, `agent-${id}`);
+      mkdirSync(folder, { recursive: false, mode: 0o700 });
+      const cols = clamp(size.cols, COLS), rows = clamp(size.rows, ROWS);
+      let pty: Pty;
+      try {
+        if (this.stopped) throw new TerminalError("The console is stopping.");
+        const refused = admit();
+        if (refused !== null) throw new TerminalError(refused);
+        pty = this.options.spawn(command.file, [...command.args], { cwd: folder, env: { ...env, TERM: "xterm-256color", COLORTERM: "truecolor" }, cols, rows });
+      } catch (error) {
+        rmSync(folder, { recursive: true, force: true });
+        throw error instanceof TerminalError ? error : new TerminalError(`The program couldn't start: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      let resolveExited!: () => void;
+      const session: Session = { id, owner, generation, localGeneration, task: null, run: null, agent: { ...agent }, base: null, repo: "", program: "shell", branch: "", worktree: folder, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
+        exited: new Promise(resolve => { resolveExited = resolve; }) };
+      this.wire(session, () => { resolveExited(); try { exited(); } catch { /* the caller's own */ } });
+      this.sessions.set(id, session);
+      this.ledger.running(id);
+      reserved = false;
+      this.noteCustody();
+      this.options.record?.("start", this.summary(session));
+      return this.summary(session);
+    } finally {
+      this.starting -= 1;
+      if (reserved) this.ledger.release(id, null);
+    }
+  }
+
+  /** A started session's output and exit, as every terminal has them. */
+  private wire(session: Session, onExited: () => void): void {
+    const pty = session.pty!;
+    pty.onData(data => {
+      this.noteSoon();
+      const chunk = Buffer.from(data, "utf8");
+      if (!session.screen.write(data)) for (const viewer of session.viewers) { try { viewer.overflow?.(); } catch { /* gone */ } }
+      for (const viewer of session.viewers) { try { viewer.output(chunk); } catch { /* the viewer's own close handles it */ } }
+      this.flow(session);
+    });
+    pty.onExit(({ exitCode, signal }) => {
+      session.pty = null;
+      if (session.flowTimer !== null) { clearInterval(session.flowTimer); session.flowTimer = null; }
+      session.exitedAt = Date.now();
+      session.endedAt = this.clock().toISOString();
+      session.exit = { code: exitCode ?? null, signal: signal || null };
+      for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit.code, signal: session.exit.signal }); } catch { /* gone */ } }
+      this.options.record?.("exit", this.summary(session));
+      onExited();
+      if (session.closing === null) session.closing = this.sweep(session);
+    });
   }
 
   /**
@@ -766,7 +843,7 @@ export class TerminalHost {
     for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit?.code ?? null, signal: session.exit?.signal ?? null }); } catch { /* gone */ } }
     session.viewers.clear();
     session.screen.dispose();
-    if (session.base !== null) {
+    if (session.base !== null || session.agent !== null) {
       rmSync(session.worktree, { recursive: true, force: true });
       this.options.record?.("remove", this.summary(session));
       return;

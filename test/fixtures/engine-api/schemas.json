@@ -1,5 +1,5 @@
 {
-  "digest": "3133f758304689dc1947254e2339d8b09c1d92a67a2a39c40952d55c48e00550",
+  "digest": "f0c25df359d10cf1ddffbf192031662c7f7b9421ab8eb8689076126750a180bb",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2175,6 +2175,57 @@
                   "string",
                   "null"
                 ]
+              },
+              "setup": {
+                "type": "object",
+                "properties": {
+                  "install": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "canInstall": {
+                    "type": "boolean"
+                  },
+                  "signIn": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "canSignIn": {
+                    "type": "boolean"
+                  },
+                  "key": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "check": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "install",
+                  "canInstall",
+                  "signIn",
+                  "canSignIn",
+                  "key",
+                  "check",
+                  "note"
+                ],
+                "additionalProperties": false
               }
             },
             "required": [
@@ -2184,7 +2235,8 @@
               "how",
               "signIn",
               "ready",
-              "next"
+              "next",
+              "setup"
             ],
             "additionalProperties": false
           }
@@ -2225,6 +2277,148 @@
         "agents",
         "firstTask",
         "lines"
+      ],
+      "additionalProperties": false
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "canChange": {
+          "type": "boolean"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "enum": [
+                  "plan",
+                  "build",
+                  "review"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "current": {
+                "type": "string"
+              },
+              "words": {
+                "type": "string"
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "value": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "value",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "label",
+                    "models"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "current",
+              "words",
+              "choices"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "defaultAgent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "words": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "agent",
+              "name",
+              "words",
+              "fields"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "version",
+        "canChange",
+        "digest",
+        "problem",
+        "roles",
+        "defaultAgent",
+        "presets"
       ],
       "additionalProperties": false
     },

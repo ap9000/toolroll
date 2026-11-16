@@ -254,6 +254,16 @@ pub enum Mode {
     NewThread(String),
     /// A new thread's terms card, read whole before Enter starts it (thread.rs StartTerms).
     StartThread(crate::thread::StartTerms),
+    /// The Agents screen: an agent's install command, shown whole; only Enter here runs exactly it in a pane.
+    ConfirmInstall {
+        agent: String,
+        name: String,
+        command: String,
+    },
+    /// The Agents screen: choosing a role's model, or the default agent.
+    PickModel(crate::agents::Pick),
+    /// The Agents screen: a models change shown before → after; Enter saves exactly it (Settings → Models' write).
+    ConfirmModels(crate::agents::ModelsChange),
     /// A small task's exact terms: Enter builds (POST /tasks/fast), p files it to plan first, Esc files nothing.
     /// Build is a person's yes to exactly these terms, so every term is shown whole (wrapped, scrolled with j/k), and
     /// Enter builds only once the view has drawn the end of them (`seen_end`, set by view.rs, never by a key). The
@@ -306,6 +316,9 @@ pub fn take_over_scope(run: i64) -> String {
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
+/// Said when typing starts in an agent's own sign-in or install (the Agents screen).
+pub const TYPING_AGENT: &str =
+    "Typing in the agent's own sign-in. Ctrl-] comes back; Toolroll never reads what it saves.";
 pub const TYPING: &str =
     "Typing in a separate copy of the build. Your shell's own startup files run in it.";
 /// Said when Ctrl-] leaves the terminal.
@@ -418,6 +431,17 @@ pub enum Effect {
     },
     /// Let go of terminal `id`'s socket (the program keeps running in the console).
     TermDetach(String),
+    /// The installation's models (GET /engine/models), for the Agents screen.
+    FetchModels,
+    /// Look for this computer's agents again (POST /engine/agents/check), then the agents read.
+    CheckAgents,
+    /// An agent's own sign-in, or its confirmed install (`confirm`: the exact command shown), in a pane: started by
+    /// the console from its own command for that agent (POST /term/agent/<kind>), then attached.
+    AgentTerm {
+        kind: String,
+        agent: String,
+        confirm: Option<String>,
+    },
 }
 
 /// One read of a task's changes: which task, which build (None: the newest), and the request's generation. Its answer
@@ -500,6 +524,8 @@ pub enum Msg {
     },
     /// What terminal `id` said.
     Term(String, TermEvent),
+    /// The installation's models (the Agents screen).
+    Models(Result<toolroll_api::ModelsRead, ApiError>),
 }
 
 /// Where things were drawn last frame (for the mouse).
@@ -612,6 +638,8 @@ pub struct App {
     /// The agents on this computer (the first run's lines, shown while there are no tasks); None until read.
     pub agents: Option<AgentsRead>,
     pub fetching_agents: bool,
+    /// The Agents screen, while it is open (agents.rs).
+    pub agents_screen: Option<crate::agents::Screen>,
     pub work_again: bool,
     pub areas: Areas,
     /// The Live tab's lines for (transcript version, width): rebuilt only when either moves.
@@ -692,6 +720,7 @@ impl App {
             fetching_work: false,
             agents: None,
             fetching_agents: false,
+            agents_screen: None,
             work_again: false,
             areas: Areas::default(),
             line_cache: None,
@@ -762,7 +791,10 @@ impl App {
             Msg::Agents(read) => {
                 self.fetching_agents = false;
                 match read {
-                    Ok(read) => self.agents = Some(read),
+                    Ok(read) => {
+                        self.agents = Some(read);
+                        crate::agents::on_agents(self);
+                    }
                     // Only an ended session matters here: the lines are a first-run nicety, never a reason to stop.
                     Err(ApiError::SessionEnded) => return self.failed(ApiError::SessionEnded),
                     Err(_) => {}
@@ -940,7 +972,13 @@ impl App {
             Msg::Tick => self.tick(),
             Msg::TermOpened { task, run, result } => self.term_opened(task, run, result),
             Msg::Term(id, event) => self.term_event(id, event),
+            Msg::Models(read) => crate::agents::on_models(self, read),
         }
+    }
+
+    /// `failed`, for the Agents screen (agents.rs).
+    pub(crate) fn failed_pub(&mut self, e: ApiError) -> Vec<Effect> {
+        self.failed(e)
     }
 
     fn failed(&mut self, e: ApiError) -> Vec<Effect> {
@@ -967,6 +1005,9 @@ impl App {
     /// Re-read what's on screen after an act.
     fn refresh(&mut self) -> Vec<Effect> {
         let mut fx = self.fetch_work();
+        if self.agents_screen.is_some() {
+            fx.push(Effect::FetchModels);
+        }
         fx.extend(self.poll_thread());
         if let Some(id) = self
             .selected_item()
@@ -1492,7 +1533,14 @@ impl App {
             Mode::Fatal(_, code) => vec![Effect::Exit(code)],
             Mode::Copied => {
                 self.mode = Mode::Normal;
-                self.say(Tone::Said, "The hunk stays in your terminal's scrollback.");
+                self.say(
+                    Tone::Said,
+                    if self.agents_screen.is_some() {
+                        "The commands stay in your terminal's scrollback."
+                    } else {
+                        "The hunk stays in your terminal's scrollback."
+                    },
+                );
                 vec![Effect::ResumeScreen]
             }
             Mode::Help => {
@@ -1799,8 +1847,12 @@ impl App {
                     move |app, text| app.note(kind.clone(), text),
                 )
             }
+            Mode::Normal if self.agents_screen.is_some() => crate::agents::key(self, key),
             Mode::Normal => self.normal_key(key),
             Mode::TakeOver => vec![],
+            Mode::ConfirmInstall { .. } | Mode::PickModel(_) | Mode::ConfirmModels(_) => {
+                crate::agents::mode_key(self, key)
+            }
             Mode::ConfirmTakeOver { task, run } => match key.code {
                 KeyCode::Char('t') => {
                     self.mode = Mode::Normal;
@@ -2170,6 +2222,7 @@ impl App {
                 self.mode = Mode::Settings;
                 vec![]
             }
+            Action::Agents => crate::agents::open(self),
             Action::LineDown => {
                 self.move_cursor(1);
                 vec![]
@@ -3801,6 +3854,15 @@ impl App {
                     pane.attached(id);
                     pane.branch = clean(&branch);
                 }
+                // An agent's own sign-in or install: straight to typing while its screen is open.
+                if task.starts_with("agent:")
+                    && self.agents_screen.is_some()
+                    && matches!(self.mode, Mode::Normal)
+                {
+                    self.mode = Mode::TakeOver;
+                    self.say(Tone::Said, TYPING_AGENT);
+                    return vec![];
+                }
                 // Straight to typing, when the person is still looking at it.
                 if self.tab == Tab::Terminal
                     && self.pane_here().is_some()
@@ -3839,6 +3901,7 @@ impl App {
         let mut back = false;
         let mut said: Option<(Tone, String)> = None;
         let mut detach: Option<String> = None;
+        let mut agent_ended = false;
         match event {
             TermEvent::Output(chunk) => {
                 pane.input_full = false;
@@ -3853,10 +3916,15 @@ impl App {
             TermEvent::Exit { code, signal } => {
                 pane.link = Link::Ended { code, signal };
                 back = true;
-                said = Some((
-                    Tone::Said,
-                    "The terminal's program ended. Press t to open a new terminal.".into(),
-                ));
+                if pane.task.starts_with("agent:") {
+                    // An agent's own sign-in or install ended: look for this computer's agents again.
+                    agent_ended = true;
+                } else {
+                    said = Some((
+                        Tone::Said,
+                        "The terminal's program ended. Press t to open a new terminal.".into(),
+                    ));
+                }
             }
             TermEvent::InputFull => {
                 pane.input_full = true;
@@ -3887,7 +3955,11 @@ impl App {
         if let Some((tone, words)) = said {
             self.say(tone, words);
         }
-        detach.map(Effect::TermDetach).into_iter().collect()
+        let mut fx: Vec<Effect> = detach.map(Effect::TermDetach).into_iter().collect();
+        if agent_ended {
+            fx.extend(crate::agents::check_again(self));
+        }
+        fx
     }
 
     /// Bytes for the terminal the pane shows (only while live).

@@ -2466,7 +2466,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const liveHandlers = createLiveHandlers(handlerRuntime, { bus: liveBus, workspaceRevision, chatProjectOf: chatHandlers.chatProjectOf, projectSummaryFor, projectScopeFor });
   liveTurnStarted = liveHandlers.turnStarted;
   // The one upgrade this server takes is a terminal's socket (terminals.ts listens); anything else is dropped.
-  const terminalHandlers = createTerminalHandlers(handlerRuntime, { ...terminals, bus: liveBus, allowedHost, publicOrigin, forwardedSourceOf, server });
+  const terminalHandlers = createTerminalHandlers(handlerRuntime, { ...terminals, bus: liveBus, allowedHost, publicOrigin, forwardedSourceOf, server,
+    ...(options.agentCommandEnv === undefined ? {} : { agentEnv: options.agentCommandEnv }) });
   terminalClosing.close = terminalHandlers.close;
   const remoteHandlers = createRemoteHandlers(remoteRuntime);
   const registry = createHandlerRegistry([

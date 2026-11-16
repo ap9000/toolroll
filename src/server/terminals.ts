@@ -41,6 +41,9 @@ import { checkEngineResponse, type EngineResponseName } from "../contracts/engin
 import { projectName, rowVisible } from "../project.js";
 import { transportOf, type Transport } from "../public-access.js";
 import type { Store } from "../store.js";
+import { agentSetupOf } from "../agent-detect.js";
+import { excludedFolders, resolveStatusBinary, statusEnvironment, type StatusTrust } from "../status-probe.js";
+import { boundedAcl } from "../trusted-path.js";
 import type { ServeOptions } from "./http.js";
 import type { HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
@@ -69,6 +72,8 @@ export type TerminalDeps = {
   publicOrigin: URL | null;
   /** The console's server: its upgrade event is answered here. */
   server: Server;
+  /** The environment an agent's own sign-in or install is resolved and started from (default this process's). */
+  agentEnv?: () => NodeJS.ProcessEnv;
 };
 
 /** The console's terminal host: on a machine that runs agents, when this install has a pty library; else why not. */
@@ -121,6 +126,10 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
   const owned = (who: Operator, terminal: TerminalSummary | null): terminal is TerminalSummary =>
     terminal !== null && terminal.owner === who.name && terminal.generation === who.session.generation
     && terminal.localGeneration === (who.authority === "full" ? null : who.session.localGeneration);
+  /** A terminal this person may reach now: theirs, and its project still admitted (an agent's own sign-in or install
+   * has no project: being theirs is the whole rule). */
+  const reachable = (who: Operator, terminal: TerminalSummary | null): terminal is TerminalSummary =>
+    owned(who, terminal) && (terminal.agent !== null || projectAllowed(who.name, terminal.repo));
   const record = (event: string, who: string, terminal: { id: string; repo: string; program: TerminalProgram }) =>
     logEvent("info", `terminal.${event}`, { actor: who, terminal: terminal.id, repo: terminal.repo, program: terminal.program });
 
@@ -154,7 +163,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
   async function state(ctx: HandlerContext): Promise<void> {
     const who = operatorOf(ctx.who);
     if (who === null) return checked(ctx, 403, "refusal", { error: "operator" });
-    const sessions = deps.host === null ? [] : deps.host.list(who.name).filter(one => owned(who, one) && projectAllowed(who.name, one.repo));
+    const sessions = deps.host === null ? [] : deps.host.list(who.name).filter(one => one.agent === null && owned(who, one) && projectAllowed(who.name, one.repo));
     return checked(ctx, 200, "termState", {
       available: deps.host !== null, problem: deps.host === null ? deps.problem ?? "Terminals aren't available on this install." : null,
       programs: [...TERMINAL_PROGRAMS],
@@ -246,12 +255,78 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     }
   }
 
+  /**
+   * POST /term/agent/sign-in, /term/agent/install (the Agents screen): an agent's OWN sign-in (or install) for the
+   * person at this computer, in a pane. Admitted as a terminal is (an installation-wide operator's browser session, or
+   * a local owner's on a solo install, proved by its own `agent-sign-in` / `agent-install` act; never a token, a chat
+   * or another computer: the route takes cookies only and the socket re-proves all of it). What runs is Toolroll's own:
+   * the agent's command from AGENT_SETUP (never text from the request beyond the agent's id), started by the real path
+   * of a trusted install found on PATH exactly as the sign-in checks find it (status-probe.ts resolveStatusBinary: an
+   * untrusted first match runs nothing, a later one is never tried), with an environment built from nothing (the
+   * person's real HOME, so the agent keeps its own login; trusted PATH folders; no Toolroll credential, no token), from
+   * a fresh empty folder outside every project. An install runs only when the form carries exactly the command shown
+   * (`confirm`). When the program ends, this computer's agents are looked for again.
+   */
+  const agentStart = (kind: "sign-in" | "install") => async (ctx: HandlerContext): Promise<void> => {
+    const answer = (status: number, value: { ok: true; id: string } | { ok: false; error: string }) => checked(ctx, status, "termStarted", value);
+    const refused = refusal(ctx);
+    if (refused !== null) return answer(403, { ok: false, error: refused });
+    const who = ctx.who as Operator;
+    const body = readForm(ctx.posted, CONSOLE_FORMS.termAgent);
+    if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return answer(400, { ok: false, error: "Submit one value for each field." });
+    const agentId = body.get("agent") ?? "";
+    const setup = agentSetupOf(agentId);
+    if (setup === null) return answer(400, { ok: false, error: "Choose an agent Toolroll supports." });
+    const run = kind === "sign-in" ? setup.signInRun : setup.installRun;
+    const shown = kind === "sign-in" ? setup.signIn : setup.install;
+    if (run === null || shown === null) return answer(409, { ok: false, error: kind === "sign-in" ? "This agent signs in another way: its screen says how." : "Toolroll doesn't run this agent's installer: run the command shown in your own terminal." });
+    // Downloading software is the person's act: their yes is to exactly the command they were shown.
+    if (kind === "install" && body.get("confirm") !== shown) return answer(409, { ok: false, error: "Confirm the exact install command first." });
+    // The organisation's policy on running Claude Code or Codex in a person's own session holds for their sign-in too.
+    if (agentId === "claude" || agentId === "codex") {
+      const stopped = store.sessionPolicyRefusal(agentId, null, "live terminals");
+      if (stopped !== null) return answer(403, { ok: false, error: stopped });
+    }
+    const proved = runtime.authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return answer(403, { ok: false, error: "Enter your Toolroll password to start a terminal." });
+    if ((proved.method === "local-owner") !== (who.authority !== "full")) return answer(403, { ok: false, error: "Your access changed. Sign in again." });
+    // The program: a trusted install's real path, found as the sign-in checks find it, with their exclusions (every
+    // project, worktree and Toolroll's own folder, from Toolroll's records now).
+    const source = (deps.agentEnv ?? (() => process.env))();
+    const untrusted = await excludedFolders({ store });
+    if (untrusted === null) return answer(409, { ok: false, error: "Toolroll couldn't read its own records, so it won't start a program." });
+    const trust: StatusTrust = { path: source["PATH"] ?? "", uid: process.getuid?.(), untrusted, acl: boundedAcl(Date.now() + 3_000) };
+    const program = run.binary;
+    const found = resolveStatusBinary(program, trust);
+    if (!found.ok) return answer(409, { ok: false, error: found.missing ? `\`${program}\` isn't installed on this computer.` : `Toolroll won't run \`${program}\`: ${found.why}.` });
+    const env = statusEnvironment(source, trust);
+    const stillAllowed = (): string | null => {
+      const again = rereadBrowser(runtime, ctx.request, who);
+      if (again === null || operatorOf(again) === null) return "Your access changed. Sign in again.";
+      if (proved.method === "session" && !sessionStandsIn(store)) return "This install's sign-in rules changed. Enter your Toolroll password to start a terminal.";
+      if (proved.method === "local-owner" && (again.authority !== "local-owner" || again.session.localGeneration !== who.session.localGeneration)) return "Your access changed. Sign in again.";
+      // The binary is the one checked: asked again right before it starts, with fresh ACL answers.
+      const now = resolveStatusBinary(program, { ...trust, acl: boundedAcl(Date.now() + 3_000) });
+      if (!now.ok || now.real !== found.real) return `\`${program}\` changed while it was being checked. Try again.`;
+      return null;
+    };
+    try {
+      const owner = { name: who.name, generation: who.session.generation, localGeneration: who.authority === "full" ? null : who.session.localGeneration };
+      const terminal = await deps.host!.startCommand(owner, { id: agentId, kind }, { file: found.real, args: run.args }, env, undefined, stillAllowed,
+        () => { void runtime.checkLocalAgents(true); });
+      record(`agent-${kind}`, who.name, terminal);
+      return answer(200, { ok: true, id: terminal.id });
+    } catch (error) {
+      return answer(409, { ok: false, error: error instanceof TerminalError ? error.message : "The terminal didn't start." });
+    }
+  };
+
   const act = (verb: "close" | "remove") => async (ctx: HandlerContext): Promise<void> => {
     const refused = refusal(ctx);
     if (refused !== null) return json(ctx, 403, { ok: false, error: refused });
     const who = ctx.who as Operator;
     const terminal = deps.host!.get(TERMINAL_ID.exec(ctx.url.pathname)?.[1] ?? "");
-    if (!owned(who, terminal) || !projectAllowed(who.name, terminal.repo)) return json(ctx, 404, { ok: false, error: "No such terminal." });
+    if (!reachable(who, terminal)) return json(ctx, 404, { ok: false, error: "No such terminal." });
     try {
       if (verb === "close") await deps.host!.close(terminal.id);
       else await deps.host!.remove(terminal.id);
@@ -310,7 +385,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const keyed = runtime.browserKeys.check(who, request, null);
     if (keyed !== null) { refuseUpgrade(socket, keyed.status, keyed.message); return true; }
     const terminal = deps.host?.get(id) ?? null;
-    if (!owned(who, terminal) || !projectAllowed(who.name, terminal.repo)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
+    if (!reachable(who, terminal)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
     if (deps.host!.viewerCount(id) >= MAX_VIEWERS) { refuseUpgrade(socket, 429, `This terminal is open in ${MAX_VIEWERS} places already.`); return true; }
     wss.handleUpgrade(request, socket, head, ws => attach(ws, request, who, terminal));
     return true;
@@ -332,7 +407,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     };
     const prove = (): boolean => {
       const again = rereadBrowser(runtime, request, who);
-      const ok = again !== null && operatorOf(again) !== null && owned(who, host.get(terminal.id)) && projectAllowed(who.name, terminal.repo);
+      const ok = again !== null && operatorOf(again) !== null && reachable(who, host.get(terminal.id));
       if (ok) provedAt = Date.now();
       return ok;
     };
@@ -394,6 +469,8 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
       "term.session": async (ctx: HandlerContext) => page(ctx),
       "term.state": state,
       "term.start": start,
+      "term.agent-sign-in": agentStart("sign-in"),
+      "term.agent-install": agentStart("install"),
       "term.close": act("close"),
       "term.remove": act("remove"),
       "term.socket": socketWithoutUpgrade,
