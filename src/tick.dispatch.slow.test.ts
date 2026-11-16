@@ -530,7 +530,8 @@ describe("tick, against real git", () => {
     // The stand-in the stranger test used: no init line, its own words on stderr (after a sandbox note naming a path).
     const refusing: Runner = async () => ({ ...OK, code: 1, stdout: "", stderr: `${repo}/logs/claude.log: Operation not permitted\nclaude stand-in: refusing to run a model\n` });
     expect(await tick(runnerToken, [], refusing)).toBe(EXIT.failed);
-    expect(payload()).toMatchObject({ dispatched: [{ id: "t-said", outcome: "failed", reason: "agent-error — retry 1/3" }] });
+    // The agent's own error stops at once (the owner's rule): no automatic re-run, a person reads its words and retries.
+    expect(payload()).toMatchObject({ dispatched: [{ id: "t-said", outcome: "failed", reason: "agent-error — stalled" }] });
     const store = openStore(db);
     try {
       const failed = store.handle.prepare("SELECT id, reason, handoff FROM run WHERE outcome = 'failed' ORDER BY id DESC LIMIT 1").get()!;
@@ -540,7 +541,18 @@ describe("tick, against real git", () => {
       expect(agentSaidOf(store, Number(failed["id"]))).toEqual(["[path]: Operation not permitted", "claude stand-in: refusing to run a model"]);
       // The stop's words for a person: the agent's error, never the machine's.
       expect(RUN_REASON_WORDS["agent-error"]).toBe("the agent stopped with an error");
+      expect(store.getTask("t-said")?.state).toBe("failed");
+      expect(store.handle.prepare("SELECT reason FROM hold WHERE task_ref = ?").all(store.lookupRef("t-said")!.id).map(one => String(one["reason"])))
+        .toEqual(["agent-error — the agent stopped with an error; it isn't retried on its own"]);
     } finally { store.close(); }
+    // Nothing runs it again on its own: the next tick dispatches nothing for it, even after any backoff would have lapsed.
+    agentRan = [];
+    await run(tickArgs(runnerToken), agent, new Date(T0.getTime() + 60 * 60_000));
+    expect(agentRan).toEqual([]);
+    // A person's Retry runs it again.
+    expect(await run(["task", "requeue", "t-said", "--as", "alex", "--token", approverToken, "--json"])).toBe(EXIT.ok);
+    await run(tickArgs(runnerToken), agent, new Date(T0.getTime() + 61 * 60_000));
+    expect(agentRan).toHaveLength(1);
   });
 
   test("a harness that never comes up and says nothing stays the machine's problem, with nothing kept", async () => {

@@ -1057,8 +1057,8 @@ export type MalformedFinalize = { ok: true; incidentId: number } | { ok: false; 
 /** How a failed attempt is classified, per gnhf. Decides retry, backoff, or stall. */
 export type FailureClass =
   | "agent-reported"
-  /** The agent's own process ran and stopped with an error of its own before its harness came up. Strikes and backs
-   * off like every other class (MAX_STRIKES); its words are kept on the run. */
+  /** The agent's own process ran and stopped with an error of its own before its harness came up. Stops at once (a stall
+   * with its words kept on the run), never re-run on its own; a person chooses Retry. */
   | "agent-error"
   | "retryable-infra"
   | "no-op"
@@ -1265,8 +1265,12 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   }
 
   const strikes = store.addStrike(run.taskRef);
+  // The agent itself stopped with an error of its own (agent-error): stopped at once, never re-run on its own (the
+  // owner's rule, 2026-11-16). What the agent said is on the run; a person reads it and chooses Retry. A machine's or
+  // the harness's trouble (retryable-infra and the rest) keeps its automatic retries.
+  const agentStopped = failureClass === "agent-error";
 
-  if (strikes >= MAX_STRIKES) {
+  if (strikes >= MAX_STRIKES || agentStopped) {
     // The state first: a task a person already closed keeps its state, and then no incident, hold or page is
     // written either (closed-task-claims.md, decision B). The run's outcome, the release and the strike stand.
     const closedState = exhaustUnlessClosed(store, run, taskId, now);
@@ -1277,7 +1281,8 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
         taskRef: run.taskRef,
         ownerKind: "incident",
         ownerId: String(incidentId),
-        reason: `attempts-exhausted — ${strikes} consecutive failures, last: ${failureClass}`,
+        reason: agentStopped ? "agent-error — the agent stopped with an error; it isn't retried on its own"
+          : `attempts-exhausted — ${strikes} consecutive failures, last: ${failureClass}`,
         until: null,
       },
       now,
@@ -1289,8 +1294,10 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
         kind: "attempts-exhausted",
         pushClass: "attention",
         link: `/r/${runId}`,
-        subject: `${taskId} stalled after ${strikes} straight failures`,
-        body: `Last failure (${failureClass}): ${oneLine(message, 200)}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
+        subject: agentStopped ? `${taskId} stopped: the agent stopped with an error` : `${taskId} stalled after ${strikes} straight failures`,
+        body: agentStopped
+          ? `${oneLine(message, 200)}\nIt isn't retried on its own. Read what the agent said, then Retry (\`toolroll task requeue ${taskId}\`).`
+          : `Last failure (${failureClass}): ${oneLine(message, 200)}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
       },
       now,
     );

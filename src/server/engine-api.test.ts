@@ -16,7 +16,7 @@ import { mintApiToken } from "../api-tokens.js";
 import { register } from "../runner.js";
 import { addApprover, propose } from "../scope.js";
 import { createDecisionServer } from "../serve.js";
-import { openStore, type Store } from "../store.js";
+import { openStore, recordAgentSaid, type Store } from "../store.js";
 import { presented, T0 } from "../../test/serve-kit.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
 import * as reads from "../engine-reads.js";
@@ -331,6 +331,16 @@ describe("every answer is its contract's shape", () => {
     expect(build.startedAt).toBe(first.startedAt);
     // What the agent said: nothing kept yet for these runs.
     expect(fail.failure?.agentSaid).toBeNull();
+  });
+
+  test("what the agent said on its last failed attempt reaches the steps' failure, from the store, cleaned", async () => {
+    const last = store.lastBuilderRun(store.lookupRef("t-fail")!.id)!;
+    // Kept as the failure's disposal keeps it (store.ts recordAgentSaid), with what a raw tail could carry.
+    recordAgentSaid(store, last.id, ["\u001b[31m/Users/me/shop/app.ts: cannot read config\u001b[0m", "claude: refusing to run a model"]);
+    try {
+      const steps = stepCardsSchema.parse((await read("operator", "/t/t-fail/steps")).body);
+      expect(steps.failure?.agentSaid).toEqual(["[path]: cannot read config", "claude: refusing to run a model"]);
+    } finally { store.handle.prepare("UPDATE run SET agent_said_json = NULL WHERE id = ?").run(last.id); }
   });
 
   test("work rows, step cards, the diff and one file, and a LiveSession window", async () => {
