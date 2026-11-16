@@ -673,7 +673,7 @@ describe("the project switcher (board pass): one tap from any screen, forms with
 
     // No limit stays no limit; an odd cap comes back to the millionth.
     const open = await editorOf();
-    expect(open.page).toContain("<dt>May cost</dt><dd><p>no cap: an attempt runs until it finishes or reaches its time limit</p>");
+    expect(open.page).toContain("<dt>May cost</dt><dd><p>No spend cap · stops at its time limit (20 min without progress)</p>");
     expect(Object.fromEntries(open.hidden)["budget-microusd"]).toBe("none");
     expect((await save(open.hidden, "guard the payout path, plainly")).status).toBe(303);
     expect(store.getScope("t-keep")?.budgetMicrousd).toBeNull();

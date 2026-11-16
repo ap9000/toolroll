@@ -1996,7 +1996,7 @@ describe("the phase route on the console (v47): one projection on the task page,
     expect(ceremony).toMatch(/<dt>Agent<\/dt><dd><p>Claude Sonnet plans; Claude Opus builds and fixes[^<]* reviews \(large change: strongest agents plan and build\)<\/p>/);
     expect(ceremony.indexOf("<dt>Agent</dt>")).toBeLessThan(ceremony.indexOf('name="token"'));
     expect(ceremony).not.toContain("High risk");
-    expect(ceremony).toMatch(/<details class="approval-details terms-usual" data-terms-usual><summary>Your usual project settings<\/summary>.*<dt>Time limit<\/dt>/s);
+    expect(ceremony).toMatch(/<details class="approval-details terms-usual" data-terms-usual><summary>Your usual project settings: sandboxed, writes only its checkout, Default checks<\/summary>.*<dt>Time limit<\/dt>/s);
     expect(ceremony).not.toContain("--dangerously");
     expect(ceremony).not.toContain("unavailable");
     expect(ceremony).not.toContain("not yet checked");

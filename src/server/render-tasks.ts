@@ -645,7 +645,7 @@ export function summaryWarningsHtml(summary: ApprovalSummary): Html {
 /** The rest of what the yes binds, in plain words, one tap away: "Your usual project settings". */
 export function summaryUsualHtml(summary: ApprovalSummary): Html {
   if (summary.usual.length === 0) return html``;
-  return html`<details class="approval-details terms-usual" data-terms-usual><summary>${summary.usualLabel}</summary><dl class="approval-rows">${summary.usual.map(one =>
+  return html`<details class="approval-details terms-usual" data-terms-usual><summary>${summary.usualSummary === "" ? summary.usualLabel : `${summary.usualLabel}: ${summary.usualSummary}`}</summary><dl class="approval-rows">${summary.usual.map(one =>
     html`<div class="approval-row"><dt>${one.label}</dt><dd><p>${one.words}</p></dd></div>`)}</dl></details>`;
 }
 
