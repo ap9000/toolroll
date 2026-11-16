@@ -29,6 +29,7 @@
     "work.rows": {"kind":"data","path":"/work/rows","what":"Work's list rows and Needs-you groups (JSON, the engine API)"},
     "engine.hello": {"kind":"data","path":"/engine/hello","what":"the engine API's handshake: build and contract digest (JSON)"},
     "engine.agents": {"kind":"data","path":"/engine/agents","what":"the coding agents on this computer and who the first task goes to (JSON, the engine API)"},
+    "engine.models": {"kind":"data","path":"/engine/models","what":"which agent and model each step uses (JSON, the engine API; Settings → Models' own view)"},
     "search": {"kind":"page","path":"/search"},
     "inbox": {"kind":"alias","path":"/inbox","to":"/"},
     "work": {"kind":"alias","path":"/work","to":"/"},
