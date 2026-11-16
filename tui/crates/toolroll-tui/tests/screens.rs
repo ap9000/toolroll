@@ -654,7 +654,8 @@ fn mouse_selects_scrolls_and_drags_the_divider() {
         row: 5,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.split, 50);
+    // The list ends where the divider was dropped (its width counted from the frame's own edge).
+    assert_eq!(app.split, 49);
     // A click on a tab label switches to it.
     screen(&mut app, 120, 30);
     let (from, _, _) = *app

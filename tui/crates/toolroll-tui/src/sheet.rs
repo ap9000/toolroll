@@ -45,6 +45,29 @@ pub fn outline(buf: &mut Buffer, r: Rect, style: Style) {
     buf[(x1, y1)].set_symbol("╯").set_style(style);
 }
 
+/// The focused panel's outline, when panels share the screen: heavy lines in ink, bold (it reads in every theme, and
+/// without colour by its weight).
+pub fn outline_focus(buf: &mut Buffer, r: Rect) {
+    let r = r.intersection(buf.area);
+    if r.width < 2 || r.height < 2 {
+        return;
+    }
+    let style = theme::ink().add_modifier(ratatui::style::Modifier::BOLD);
+    let (x0, y0, x1, y1) = (r.x, r.y, r.right() - 1, r.bottom() - 1);
+    for x in x0 + 1..x1 {
+        buf[(x, y0)].set_symbol("━").set_style(style);
+        buf[(x, y1)].set_symbol("━").set_style(style);
+    }
+    for y in y0 + 1..y1 {
+        buf[(x0, y)].set_symbol("┃").set_style(style);
+        buf[(x1, y)].set_symbol("┃").set_style(style);
+    }
+    buf[(x0, y0)].set_symbol("┏").set_style(style);
+    buf[(x1, y0)].set_symbol("┓").set_style(style);
+    buf[(x0, y1)].set_symbol("┗").set_style(style);
+    buf[(x1, y1)].set_symbol("┛").set_style(style);
+}
+
 /// A sheet: paper filled (or, without fills, outlined in the line colour). Returns the area inside it: one row and two
 /// columns in from its edge either way, so the layout is the same at every depth.
 pub fn sheet(buf: &mut Buffer, r: Rect) -> Rect {

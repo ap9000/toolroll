@@ -348,7 +348,7 @@ fn help_lists_every_bound_key_from_the_keymap() {
 #[test]
 fn a_key_that_does_nothing_says_so() {
     let mut app = app_on(fake::scenario_work());
-    for c in ['c', 'b'] {
+    for c in ['c', 'v'] {
         assert_eq!(app.key(key(c)), vec![]);
         assert_eq!(
             status(&app),

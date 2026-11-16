@@ -123,6 +123,8 @@ struct Loop {
     /// The one terminal socket held (T4): the terminal the pane shows, by id. Dropping it closes the socket; the
     /// program keeps running in the console.
     term: Option<(String, mpsc::UnboundedSender<TermSend>)>,
+    /// A pane's text to open in the editor: run at the top of the loop (the key reader stopped while it runs).
+    editor: Option<(String, String)>,
 }
 
 /// Take over: this session's own terminal on that task's build (the console lists only its own), else a new one; listed
@@ -226,6 +228,7 @@ impl Loop {
         let client = self.client.clone();
         let tx = self.tx.clone();
         match fx {
+            Effect::OpenInEditor { name, text } => self.editor = Some((name, text)),
             Effect::FetchWork => drop(tokio::spawn(async move {
                 let _ = tx.send(Msg::Work(client.work_rows().await));
             })),
@@ -477,6 +480,7 @@ async fn event_loop(
         watch: None,
         watching: vec![],
         term: None,
+        editor: None,
     };
     // The launcher's answers on descriptor 4 (one JSON line each, capped): read on a thread of their own.
     if let Some(reader) = opts.control.as_ref().and_then(|c| c.try_clone().ok()) {
@@ -512,6 +516,14 @@ async fn event_loop(
     let links_on = crate::link::enabled(env.no_color, env.tmux, prefs.settings.tmux_passthrough);
     app.status = prefs.first_warning().map(|w| (crate::app::Tone::Said, w));
     app.split = prefs.settings.list_width();
+    app.side = prefs.settings.list_side;
+    // This project's view (viewstate.rs), keyed by a hash of the project the console runs for this terminal.
+    let view_path = crate::viewstate::path(env);
+    let view_key = crate::viewstate::project_key(opts.project.as_deref().unwrap_or("(no project)"));
+    let mut views = view_path
+        .as_deref()
+        .map(|p| crate::viewstate::load(p, env.home.as_deref()))
+        .unwrap_or_default();
     // A background answer that comes late is dropped, never read as keys (for about a second from now).
     let watch = if prefs.late_reply {
         Duration::from_secs(1)
@@ -520,6 +532,11 @@ async fn event_loop(
     };
     let mut late = crate::theme::LateReply::new(Instant::now() + watch);
     app.prefs = prefs;
+    if let Some((v, _)) = views.projects.get(&view_key).cloned() {
+        app.apply_view(v);
+    }
+    let mut view_saved = views.projects.get(&view_key).map(|(v, _)| v.clone());
+    let mut view_last = Instant::now();
     let mut titled: Option<i64> = None;
     // The workspace room, for as long as the screen is open.
     let workspace = lp.spawn_live(vec!["workspace".into()]);
@@ -566,7 +583,27 @@ async fn event_loop(
         Ok(done)
     };
 
-    // Where the person is, kept at most every two seconds while it changes, and on the way out (state.rs).
+    // Where the person is, kept at most every two seconds while it changes, and on the way out (state.rs), and this
+    // project's view the same way (viewstate.rs).
+    let mut keep_view = |app: &App, force: bool| {
+        let Some(path) = view_path.as_deref() else {
+            return;
+        };
+        if !app.loaded || matches!(app.mode, crate::app::Mode::Fatal(..)) {
+            return;
+        }
+        let now = app.view_now();
+        if view_saved.as_ref() == Some(&now)
+            || (!force && view_last.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        view_last = Instant::now();
+        views.put(&view_key, now.clone(), now_secs());
+        if crate::viewstate::save(path, env.home.as_deref(), &views).is_ok() {
+            view_saved = Some(now);
+        }
+    };
     let mut keep_place = |app: &App, force: bool| {
         let Some(path) = state_path.as_deref() else {
             return;
@@ -590,7 +627,24 @@ async fn event_loop(
                 exit = Some(code);
             }
         }
+        // A pane's text in the editor: the key reader is stopped first (dropped: its thread ends), so every key the
+        // person types goes to the editor; a fresh one takes over after.
+        if let Some((name, text)) = lp.editor.take() {
+            drop(std::mem::replace(&mut events, EventStream::new()));
+            let said = edit(term, &name, &text);
+            app.say(
+                if said.is_ok() {
+                    crate::app::Tone::Said
+                } else {
+                    crate::app::Tone::Refused
+                },
+                said.unwrap_or_else(|e| e),
+            );
+            last_frame = Some(draw(term, &mut app, &mut frames)?);
+            dirty = false;
+        }
         keep_place(&app, false);
+        keep_view(&app, false);
         if exit.is_some() {
             break;
         }
@@ -707,6 +761,7 @@ async fn event_loop(
         }
     }
     keep_place(&app, true);
+    keep_view(&app, true);
     workspace.abort();
     if let Some(h) = lp.watch.take() {
         h.abort();
@@ -741,5 +796,71 @@ fn local_utc_offset() -> i64 {
     #[cfg(not(unix))]
     {
         0
+    }
+}
+
+/// Open `text` in the person's editor (editor.rs): a private temporary file, the screen given back (raw mode off, the
+/// normal screen, the mouse and paste modes off), the editor run as a program and its arguments (no shell) and waited
+/// for, then the screen taken again and the file and its folder removed. Its words, either way.
+fn edit(term: &mut Term, name: &str, text: &str) -> Result<String, String> {
+    let var = |k: &str| std::env::var(k).ok();
+    let (program, args) =
+        crate::editor::editor_command(var("VISUAL").as_deref(), var("EDITOR").as_deref())
+            .ok_or_else(|| "Set $EDITOR (or $VISUAL) to open it in your editor.".to_string())?;
+    let (dir, file) = crate::editor::private_file(&std::env::temp_dir(), name, text)
+        .map_err(|_| "Couldn't make a private file for it.".to_string())?;
+    let kitty = KITTY.swap(false, Ordering::SeqCst);
+    {
+        let out = term.backend_mut();
+        if kitty {
+            let _ = crossterm::execute!(out, PopKeyboardEnhancementFlags);
+        }
+        let _ = crossterm::execute!(
+            out,
+            DisableBracketedPaste,
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        );
+    }
+    let _ = terminal::disable_raw_mode();
+    crate::editor::close_on_exec_all();
+    let ran = std::process::Command::new(&program)
+        .args(&args)
+        .arg(&file)
+        .status();
+    crate::editor::remove(&dir, &file);
+    let _ = terminal::enable_raw_mode();
+    {
+        let out = term.backend_mut();
+        let _ = crossterm::execute!(
+            out,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture
+        );
+        if kitty {
+            let _ = crossterm::execute!(
+                out,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            );
+            KITTY.store(true, Ordering::SeqCst);
+        }
+    }
+    // Every cell painted again, without asking the terminal anything (as ResumeScreen does).
+    let _ = term.draw(|f| {
+        let area = f.area();
+        f.buffer_mut().set_style(
+            area,
+            ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::HIDDEN),
+        );
+    });
+    match ran {
+        Ok(s) if s.success() => Ok("Back from your editor; its copy was removed.".into()),
+        Ok(_) => Err("Your editor ended with an error; its copy was removed.".into()),
+        Err(_) => Err(format!(
+            "Couldn't start {}: check $EDITOR.",
+            crate::text::clean(&program)
+        )),
     }
 }

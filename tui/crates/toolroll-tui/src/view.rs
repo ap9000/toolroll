@@ -306,22 +306,51 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         height: keys_h,
         ..status
     };
-    // The list's sheet, a one-cell gutter (the divider a drag moves), and the panels' sheets.
-    let split = app
-        .split
-        .min(body.width * 45 / 100)
-        .max(24)
-        .min(body.width.saturating_sub(28));
+    // The list's sheet, a one-cell gutter (the divider a drag moves), and the panels' sheets. The list is full, a slim
+    // rail of status marks, or hidden; on either side; set aside while a panel is zoomed or the window is narrow.
+    app.areas.body = body;
+    let narrow = area.width < NARROW_WIDTH;
+    let list_state = if app.zoom || narrow {
+        crate::viewstate::ListState::Hidden
+    } else {
+        app.list_state
+    };
+    let split = match list_state {
+        crate::viewstate::ListState::Full => app
+            .split
+            .min(body.width * 45 / 100)
+            .max(24)
+            .min(body.width.saturating_sub(28)),
+        crate::viewstate::ListState::Rail => RAIL_WIDTH,
+        crate::viewstate::ListState::Hidden => 0,
+    };
+    let gap = u16::from(split > 0);
+    let on_right = app.side == crate::viewstate::Side::Right;
     let left = Rect {
+        x: if on_right {
+            body.right().saturating_sub(split)
+        } else {
+            body.x
+        },
         width: split,
         ..body
     };
     let right = Rect {
-        x: body.x + split + 1,
-        width: body.width.saturating_sub(split + 1),
+        x: if on_right {
+            body.x
+        } else {
+            body.x + split + gap
+        },
+        width: body.width.saturating_sub(split + gap),
         ..body
     };
-    app.areas.split_x = body.x + split;
+    app.areas.split_x = if split == 0 {
+        u16::MAX
+    } else if on_right {
+        left.x.saturating_sub(1)
+    } else {
+        body.x + split
+    };
     // The Agents screen is a screen of its own: one sheet across the body while it is open (agents.rs).
     if app.agents_screen.is_some() {
         app.areas.list = Rect::default();
@@ -338,17 +367,44 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_overlay(f, app, area);
         return;
     }
-    let list = sheet::sheet(f.buffer_mut(), left);
-    draw_list(f, app, list);
+    match list_state {
+        crate::viewstate::ListState::Full => {
+            let list = sheet::sheet(f.buffer_mut(), left);
+            draw_list(f, app, list);
+        }
+        crate::viewstate::ListState::Rail => {
+            let list = sheet::sheet(f.buffer_mut(), left);
+            draw_rail(f, app, list);
+        }
+        crate::viewstate::ListState::Hidden => {
+            app.areas.list = Rect::default();
+            app.areas.rows.clear();
+        }
+    }
     // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
-    // watch their tasks.
-    let layout = app.panes.layout;
-    let places = crate::panes::places(layout, right);
-    app.panes.areas = places.clone();
-    for (slot, place) in places.iter().enumerate() {
+    // watch their tasks. Zoomed, or on a narrow window: the focused panel alone.
+    let alone = app.zoom || narrow;
+    let layout = if alone {
+        crate::panes::Layout::Focused
+    } else {
+        app.panes.layout
+    };
+    let places = crate::panes::places(layout, right, app.panes.ratio_x, app.panes.ratio_y);
+    app.panes.areas = if alone { vec![] } else { places.clone() };
+    let several = places.len() > 1;
+    for (i, place) in places.iter().enumerate() {
+        let slot = if alone { app.panes.focus } else { i };
         let inner = sheet::sheet(f.buffer_mut(), *place);
         if slot == app.panes.focus {
             draw_right(f, app, inner);
+            // Search: every match in this panel lit.
+            if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
+                crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
+            }
+            // With several panels, the focused one is outlined in ink, heavy (reads without colour too).
+            if several {
+                sheet::outline_focus(f.buffer_mut(), *place);
+            }
         } else {
             crate::panes::draw_watch(f, app, slot, inner);
         }
@@ -358,6 +414,48 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_keys(f, app, keys);
     }
     draw_overlay(f, app, area);
+}
+
+/// Below this many columns the screen is one column: the focused panel alone (the list hidden, splits set aside).
+pub const NARROW_WIDTH: u16 = 64;
+/// The list as a slim rail: its status marks and the needs-you count.
+pub const RAIL_WIDTH: u16 = 6;
+
+/// The list as a slim rail: the needs-you count on top, then each task's status mark in the list's order (the
+/// selected one lit, an unread one marked). Clicking a mark selects its task.
+fn draw_rail(f: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.list = area;
+    app.areas.rows.clear();
+    let mut lines: Vec<Line<'static>> = vec![];
+    let count = app.needs_count.max(0);
+    lines.push(Line::from(if count > 0 {
+        sheet::chip(&count.to_string())
+    } else {
+        Span::styled("0", dim())
+    }));
+    lines.push(Line::raw(""));
+    for (i, item) in app.items.iter().enumerate() {
+        if lines.len() >= area.height as usize {
+            break;
+        }
+        let (mark, style, _) = look_of(item);
+        let unread = if app.unread.contains(&item.id) {
+            "•"
+        } else {
+            " "
+        };
+        let l = Line::from(vec![
+            Span::styled(mark.to_string(), style),
+            Span::styled(unread.to_string(), ink()),
+        ]);
+        app.areas.rows.push((area.y + lines.len() as u16, Some(i)));
+        lines.push(if i == app.selected {
+            sheet::band(l, area.width as usize, selected())
+        } else {
+            l
+        });
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// The top bar, on the ground: Toolroll and the project, the cost line, then what's working and what needs you.
@@ -382,6 +480,29 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
             &format!("{} {working} working", marks().running),
             crate::theme::Role::Running,
         ));
+        right.push(Span::raw("  "));
+    }
+    // What is set aside, said where it can't be missed: zoomed, the list as a rail or hidden, unread tasks.
+    let narrow = f.area().width < NARROW_WIDTH;
+    let mut marks_on: Vec<String> = vec![];
+    if app.zoom {
+        marks_on.push("ZOOM".into());
+    }
+    if narrow {
+        marks_on.push("NARROW".into());
+    } else if !app.zoom {
+        match app.list_state {
+            crate::viewstate::ListState::Rail => marks_on.push("RAIL".into()),
+            crate::viewstate::ListState::Hidden => marks_on.push("LIST HIDDEN".into()),
+            crate::viewstate::ListState::Full => {}
+        }
+    }
+    for m in marks_on {
+        right.push(sheet::chip(&m));
+        right.push(Span::raw("  "));
+    }
+    if !app.unread.is_empty() && app.loaded {
+        right.push(Span::styled(format!("{} unread", app.unread.len()), ink()));
         right.push(Span::raw("  "));
     }
     right.push(needs);
@@ -576,13 +697,16 @@ fn card_lines(
     let room = w.saturating_sub(right_w + badge_w + 3);
     let title = fit(&item.title, room);
     let gap = w.saturating_sub(2 + width(&title) + right_w + badge_w);
-    let title_style = if item.section == Section::NeedsYou || here {
+    // Unread (finished, failed or answered since you last opened it): a dot after its mark, and its title in ink.
+    let unread = app.unread.contains(&item.id);
+    let title_style = if item.section == Section::NeedsYou || here || unread {
         ink().add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
     let mut first = vec![
-        Span::styled(format!("{mark} "), mark_style),
+        Span::styled(mark.to_string(), mark_style),
+        Span::styled(if unread { "•" } else { " " }, ink()),
         Span::styled(title, title_style),
         Span::raw(" ".repeat(gap)),
     ];
@@ -730,6 +854,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(composer_h),
     ])
     .areas(area);
+    app.areas.content = content;
     // The tab track: the tab on screen lit, the others on the fill.
     let mut spans = vec![];
     let mut x = tabs.x;
@@ -2201,6 +2326,30 @@ fn half_spans(
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Searching: the query, where it is among the matches, and its keys.
+    if let Mode::Search(s) = &app.mode {
+        let found = if s.query.is_empty() {
+            String::new()
+        } else if s.count == 0 {
+            "  no match".to_string()
+        } else {
+            format!("  {} of {}", s.at + 1, s.count)
+        };
+        let keys = if s.typing {
+            "  ⏎ keeps it · Esc leaves"
+        } else {
+            "  n next · N previous · ⏎ done · Esc leaves"
+        };
+        let line = Line::from(vec![
+            Span::styled("Search: ", ink()),
+            Span::raw(fit(&clean(&s.query), 40)),
+            Span::styled(if s.typing { "▏" } else { "" }, ink()),
+            Span::styled(found, ink()),
+            Span::styled(keys, dim()),
+        ]);
+        f.render_widget(Paragraph::new(fit_line(line, area.width as usize)), area);
+        return;
+    }
     let line = match &app.status {
         Some((Tone::Refused, words)) => Line::from(vec![
             Span::styled("Refused: ", ink()),
@@ -2433,13 +2582,11 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         .map(|r| cell(&r.keys, &r.words))
         .collect();
     lines.extend(columns(diff));
-    lines.push(Line::raw(""));
     let fixed: Vec<Vec<Line<'static>>> = crate::keys::FIXED_KEYS
         .iter()
         .map(|(k, w)| cell(k, w))
         .collect();
     lines.extend(columns(fixed));
-    lines.push(Line::raw(""));
     for l in wrap(
         &format!(
             "Keys: the {} preset. Change any in tui.toml under [keys], e.g. preset = \"vim\" or {} = \"{}\".",

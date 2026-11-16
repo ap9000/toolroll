@@ -5,15 +5,15 @@ expression: "text(&draw(&mut app, 110, 36))"
  Toolroll   shop   $1.84 today · plan 62%                                          ◐ 2 working    2 need you  
                                                                                                               
                                                                                                               
-   Work  5                                          Live    Steps    Diff    Terminal                         
-         ╭ Settings ───────────────────────────────────────────────────────────────────────────────╮          
-   Needs │ File  /home/me/.config/toolroll/tui.toml                                                │          
-         │       read                                                                              │ild #7    
-   ● Fix │                                                                                         │          
-     shop│ › Theme             terminal: its own colours, with dark roles (it didn't say its       │─ Ready   
-         │                     background)                                                         │───────── 
-   ● Add │   Density           compact                                                             │          
-     shop│   Glyphs            unicode                                                             │          
+   Work  ╭ Settings ───────────────────────────────────────────────────────────────────────────────╮          
+         │ File  /home/me/.config/toolroll/tui.toml                                                │          
+   Needs │       read                                                                              │          
+         │                                                                                         │ild #7    
+   ● Fix │ › Theme             terminal: its own colours, with dark roles (it didn't say its       │          
+     shop│                     background)                                                         │─ Ready   
+         │   Density           compact                                                             │───────── 
+   ● Add │   Glyphs            unicode                                                             │          
+     shop│   List side         left                                                                │          
          │   Notify: asks      on                                                                  │          
    Workin│   Notify: finished  off                                                                 │          
          │   Notify: failed    on                                                                  │          

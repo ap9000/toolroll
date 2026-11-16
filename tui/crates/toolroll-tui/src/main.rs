@@ -63,6 +63,8 @@ fn main() {
         .and_then(|n| n.parse::<i32>().ok())
         .filter(|n| *n > 2 && unsafe { libc_fstat_ok(*n) })
         .map(|n| unsafe { std::fs::File::from_raw_fd(n) });
+    // Never inherited by a program this screen starts (the editor): close-on-exec from here on.
+    toolroll_tui::editor::close_on_exec_all();
     // Protect, say so, and only then read the link (guard::start keeps this order; its tests prove it).
     let started = guard::start(
         guard::protect_from_dumps,
