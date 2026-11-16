@@ -1,5 +1,6 @@
 /** Scripted Slack API and membership runner. No live Slack acceptance is claimed. */
 import { cardContent } from "./chat-card-part.js";
+import { sizingOn } from "../test/sizing-on.js";
 import type { ChatCard } from "./contracts/chat-card.js";
 import { notifyPeople } from "./flow-people.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
@@ -1003,7 +1004,7 @@ describe("Slack shared chat", () => {
     expect(receive("status", { user: "USAM", channel: "DSAM" })).toBe(false);
   });
   test("a Start card confirms behind its yes in Slack: one small task filed, approved and marked, and the builder woken", async () => {
-    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
     try {
       const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects);
       if (!who.ok) throw Error("who");
@@ -1032,7 +1033,7 @@ describe("Slack shared chat", () => {
   });
 
   test("a Start card whose words Slack would turn into an emoji is never a tap in Slack: it opens the review page, and its hidden tokens start nothing", async () => {
-    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
     try {
       const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects);
       if (!who.ok) throw Error("who");

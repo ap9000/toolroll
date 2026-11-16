@@ -20,7 +20,7 @@ import { permissionPlainWords, scopeFullAccess } from "./chat-terms.js";
 import { checkAccessWords } from "./check-access.js";
 import { networkWords, unaccountedHosts } from "./egress.js";
 import { agentModelName } from "./model-names.js";
-import { makesNoPlan, NO_READINESS, projectRoute, routeFromJson, sizeWords, type PhaseRoute, type ReadinessLookup } from "./phase-routing.js";
+import { makesNoPlan, NO_READINESS, PLANNED_FIRST_REASON, projectRoute, routeFromJson, sizeWords, type PhaseRoute, type ReadinessLookup } from "./phase-routing.js";
 import { sandboxTermsWords } from "./project-sandbox.js";
 import { qualityModeTitle, type QualityMode } from "./quality.js";
 import { approvalOf, chainTermsLines, describeApproval, liveChainFromJson, releaseAsksAgainWords, releaseCheckSentence, releaseTermsSentence, type ExecutionProfile, type Scope } from "./scope.js";
@@ -298,6 +298,10 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   const agent = agentWords(route, profile);
   if (agent !== null) decisions.push({ label: "Agent", words: agent, fields: [...(route === null ? [] : ["route" as BoundField, ...route.legs.map(leg => `route.${leg.phase}` as BoundField)]), ...(profile === null ? [] : ["profile.provider", "profile.model"] as BoundField[])] });
 
+  // Who sized it: a quick model call before this yes (task sizing on), named, so the terms say a model was asked.
+  const sized = route?.size ?? null;
+  if (sized !== null && sized.source === "classifier" && sized.by !== undefined) decisions.push({ label: "Sized by", words: sized.by, fields: ["route"] });
+
   // What it may touch: the files, the network and the tools, a row each. Risky access (any host or a host beyond this
   // agent's own provider and whole registries, every local service, tools with full access) is marked `risky`: the web
   // sheet says it under "Before you approve", never folded.
@@ -358,6 +362,11 @@ export function approvalSummaryOf(scope: Scope, context: SummaryContext = NO_CON
   // they differ from the first agent's, so nothing a fallback may do is left unsaid.
   const chain = chainTermsLines(scope);
   if (chain.length > 0) warnings.push({ words: [...chain, ...fallbackDifferences(scope)].join(" "), fields: ["chain"] });
+
+  // Planned first because task sizing is off (no classifier to confirm it is small): said, with where to change it.
+  if (sized !== null && route !== null && sized.source === "heuristic" && sized.reason === PLANNED_FIRST_REASON && !makesNoPlan(sized, route.risk)) {
+    warnings.push({ words: "Planned first: task sizing is off (Settings → General)", fields: ["route"] });
+  }
 
   // The project's own approval rules.
   const rules = context.rules;

@@ -35,7 +35,7 @@ import type { Store } from "./store.js";
 import type { UnattendedPermissionMode } from "./scope.js";
 import type { QualityMode } from "./quality.js";
 import type { TaskSizing } from "./phase-routing.js";
-import { heuristicSizing, planningSignals, refineFiledSizing } from "./task-sizing.js";
+import { filingSizing, planningSignals, refineFiledSizing } from "./task-sizing.js";
 import { FolderUnavailable } from "./folder-gate.js";
 
 /** Provenance tokens are part of the audit surface: lowercase, bounded,
@@ -170,7 +170,7 @@ export function fileTaskProposal(
   const badText = validateTaskText(input);
   if (badText !== null) return badText;
   // Sized at once from the description; filing never waits for a model.
-  const sizing = input.sizing ?? heuristicSizing(input);
+  const sizing = input.sizing ?? filingSizing(store, input);
   const outOfScope = input.outOfScope ?? null;
   const touches = input.touches ?? [];
   const repo = checkRepo(input.repo, input.admittedRepos);

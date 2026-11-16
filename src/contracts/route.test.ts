@@ -99,10 +99,13 @@ describe("the sealed route contract", () => {
     assertContract({
       schema: taskSizingSchema,
       read: input => (!taskSizingSchema.safeParse(input).success ? { ok: false, lines: ["payload: not a sizing"] } : { ok: true }),
-      valid: [{ name: "a sizing", input: { size: "large", risky: true, source: "person", reason: "" } }],
+      valid: [{ name: "a sizing", input: { size: "large", risky: true, source: "person", reason: "" } },
+        // A classifier's answer names the model that answered (Toolroll's own words).
+        { name: "a classifier's sizing", input: { size: "small", risky: false, source: "classifier", reason: "one file", by: "Claude Haiku 5.5" } }],
       invalid: [
         { name: "an unknown size", input: { size: "huge", risky: false, source: "person", reason: "" }, paths: ["payload"] },
-        { name: "an extra key", input: { size: "small", risky: false, source: "person", reason: "", by: "x" }, paths: ["payload"] },
+        { name: "an extra key", input: { size: "small", risky: false, source: "person", reason: "", who: "x" }, paths: ["payload"] },
+        { name: "a classifier name with a line break", input: { size: "small", risky: false, source: "classifier", reason: "", by: "Claude\nHaiku" }, paths: ["payload"] },
       ],
     });
   });

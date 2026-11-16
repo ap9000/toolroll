@@ -66,6 +66,32 @@ function representative(): { name: string; scope: Scope; context: SummaryContext
   return made;
 }
 
+describe("task sizing in the terms", () => {
+  const sized = (id: string, sizing: Parameters<Store["applySizing"]>[1], goal: string): Scope => {
+    store.createTask({ id, title: id }, at);
+    store.placeTask(store.lookupRef(id)!.id, REPO);
+    expect(store.applySizing(id, sizing, { followPlanning: false }, at)).toMatchObject({ ok: true });
+    return propose(store, { taskId: id, goal, touches: [], outOfScope: null, acceptance: [criterion("c1", goal)], now: at });
+  };
+  test("on, and the classifier answered: the terms name the model that sized it, sealed in the route", () => {
+    const scope = sized("haiku", { size: "small", risky: false, source: "classifier", reason: "one file", by: "Claude Haiku 5.5" }, "Add a subtract function to math.js");
+    expect(linesOf(scope)).toMatch(/^ {2}Sized by {5}Claude Haiku 5\.5$/m);
+    expect(scope.proposedRouteJson).toContain('"by":"Claude Haiku 5.5"');
+    const jev = sized("jev", { size: "small", risky: false, source: "classifier", reason: "Jev is 90% sure", by: "Jev (OpenRouter)" }, "Add a subtract function to math.js");
+    expect(linesOf(jev)).toMatch(/^ {2}Sized by {5}Jev \(OpenRouter\)$/m);
+    // The words alone: no model is named.
+    const words = sized("words", { size: "small", risky: false, source: "heuristic", reason: "short and focused" }, "Add a subtract function to math.js");
+    expect(linesOf(words)).not.toMatch(/Sized by/);
+    expect(words.proposedRouteJson).not.toContain('"by"');
+  });
+  test("off, and it plans because of that: the terms say so, with where to change it; a tiny change says nothing", () => {
+    const planned = sized("planned", { size: "medium", risky: false, source: "heuristic", reason: "task sizing is off; planned first" }, "Add a dark mode toggle");
+    expect(linesOf(planned)).toMatch(/^ {2}Note {9}Planned first: task sizing is off \(Settings → General\)$/m);
+    const tiny = sized("tiny", { size: "small", risky: false, source: "heuristic", reason: "task sizing is off; a tiny change" }, "Fix the typo in footer.txt");
+    expect(linesOf(tiny)).not.toMatch(/Planned first/);
+  });
+});
+
 describe("the summary, short and plain", () => {
   test("representative scopes read as their decisions, what differs, every risk, and the usual settings by name", () => {
     const shown = Object.fromEntries(representative().map(one => [one.name, summaryLines(approvalSummaryOf(one.scope, one.context)).join("\n")]));

@@ -76,6 +76,27 @@ describe("install.sh starts Toolroll on the terminal, or says how", () => {
     expect(readFileSync(calls, "utf8").trimEnd().split("\n")).toEqual(["ls -g standing-orders --depth=0", "install -g toolroll@latest --no-fund --no-audit --loglevel=error"]);
   });
 
+  test("an old service set up from the standing-orders package is named, with the command that sets it up again; others aren't", async () => {
+    writeFileSync(join(stubs, "npm"), `#!/bin/sh\n[ "$1" = ls ] && exit 0\nexit 0\n`); chmodSync(join(stubs, "npm"), 0o755);
+    const agents = join(base, "home", "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, "com.standing-orders.watch.shop.plist"), "<string>/home/me/.npm-global/lib/node_modules/standing-orders/dist/bin.js</string>\n");
+    writeFileSync(join(agents, "com.example.other.plist"), "<string>/usr/local/bin/other</string>\n");
+    const units = join(base, "xdg", "systemd", "user");
+    mkdirSync(units, { recursive: true });
+    writeFileSync(join(units, "standing-orders-watch.service"), "ExecStart=/usr/bin/node /home/me/.npm-global/lib/node_modules/standing-orders/dist/bin.js watch\n");
+    const result = await run("sh", [INSTALL], { SO_NO_START: "1" });
+    expect(result.code, result.out).toBe(0);
+    const said = result.out.split("\n").filter(line => line.startsWith("Your Toolroll service"));
+    expect(said).toEqual([
+      `Your Toolroll service ran from the old package (${join(agents, "com.standing-orders.watch.shop.plist")}). Set it up again with toolroll daemon install (or toolroll background on to keep the whole app running) once this finishes.`,
+      `Your Toolroll service ran from the old package (${join(units, "standing-orders-watch.service")}). Set it up again with toolroll daemon install (or toolroll background on to keep the whole app running) once this finishes.`,
+    ]);
+    // Said before the package goes; the service files themselves are left as they were.
+    expect(result.out.indexOf("Your Toolroll service")).toBeLessThan(result.out.indexOf("Removing the older standing-orders package"));
+    expect(existsSync(join(agents, "com.standing-orders.watch.shop.plist"))).toBe(true);
+  });
+
   test("SO_NO_START=1 installs only and prints the quoted start command", async () => {
     const projects = join(base, "projects");
     const result = await run("sh", [INSTALL], { SO_NO_START: "1", SO_PROJECTS: projects });

@@ -59,16 +59,19 @@ describe("General, per persona", () => {
   test("each reads what it reads today, and an API token reads without the controls", async () => {
     const read = async (headers: Record<string, string>) => { const answer = await get("/settings/general", headers); expect(answer.status).toBe(200); return answer.text(); };
     const operator = await read({ cookie: sessions.operator.cookie });
-    expect(sectionsOf(operator)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "advanced"]);
+    expect(sectionsOf(operator)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "task-sizing", "advanced"]);
     const viewer = await read({ cookie: sessions.viewer.cookie });
-    expect(sectionsOf(viewer)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "advanced"]);
+    expect(sectionsOf(viewer)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "task-sizing", "advanced"]);
     expect(viewer).toContain("Forget now");
     expect(viewer).toContain('action="/settings/advanced"');
+    // Task sizing: everyone with installation access reads it; only an instance operator is offered the change.
+    expect(operator).toContain('href="/settings/change/task-sizing"');
+    expect(viewer).not.toContain('href="/settings/change/task-sizing"');
     const limited = await read({ cookie: sessions.limited.cookie });
     expect(sectionsOf(limited)).toEqual(["appearance", "this-browser", "your-password", "install-mode", "advanced"]);
     expect(limited).not.toContain("/settings/passwordless");
     const bearer = await read({ authorization: `Bearer ${token}` });
-    expect(sectionsOf(bearer)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "advanced"]);
+    expect(sectionsOf(bearer)).toEqual(["appearance", "this-browser", "your-password", "version", "install-mode", "task-sizing", "advanced"]);
     expect(bearer).not.toContain("Forget now");
     expect(bearer).not.toContain('action="/settings/advanced"');
   });

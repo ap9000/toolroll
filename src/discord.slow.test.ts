@@ -1,5 +1,6 @@
 /** Scripted Discord API and provider responses; no live account acceptance. */
 import { cardContent } from "./chat-card-part.js";
+import { sizingOn } from "../test/sizing-on.js";
 import type { ChatCard } from "./contracts/chat-card.js";
 import { describe, beforeEach, afterEach, expect, test, vi } from "vitest";
 import { htmlString } from "./html.js";
@@ -1030,7 +1031,7 @@ test("teammates pair their own Discord accounts, and status, task and help answe
   expect(receive("status", { author: { id: SAM }, channel_id: DSAM })).toBe(false);
 });
 test("a Start card confirms behind its yes in Discord: one small task filed, approved and marked, and the builder woken", async () => {
-  const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+  const dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
   try {
     const who = verifyApproverStanding(store, "alex", store.accountOf("alex")!.generation, projects);
     if (!who.ok) throw Error("who");

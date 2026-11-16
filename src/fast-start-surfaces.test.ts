@@ -4,6 +4,7 @@
  * Build; `task new` refuses a script, --json and a token.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { sizingOn } from "../test/sizing-on.js";
 import { join } from "node:path";
 import { installFilingSizer } from "./task-sizing.js";
 import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../test/local-owner-world.js";
@@ -14,7 +15,7 @@ import { approvalOf } from "./scope.js";
 
 let world: LocalWorld;
 let drop: () => void;
-beforeEach(async () => { world = await openLocalWorld(); drop = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); }, LOCAL_WORLD_SETUP_MS);
+beforeEach(async () => { world = await openLocalWorld(); drop = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(world.store); }, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { drop(); await world.close(); });
 
 const fieldOf = (html: string, name: string): string => new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1] ?? "";

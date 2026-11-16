@@ -39,7 +39,7 @@ const LIMITED_ACCESS = {
   'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
   'settings.group-general': 'unscoped', 'settings.group-agents': 'unscoped', 'settings.group-alerts': 'unscoped', 'settings.group-projects': 'unscoped', 'settings.group-access': 'unscoped', 'settings.group-system': 'unscoped', 'settings.group-advanced': 'unscoped', 'settings.group-computers': 'unscoped',
   // Settings change documents (settings plan v2 §2.2) carry their section's own policy; the handler admits the section again.
-  'settings.change.local-mode': 'unscoped', 'settings.change.register-computer': 'unscoped', 'settings.change.just-me': 'unscoped',
+  'settings.change.local-mode': 'unscoped', 'settings.change.register-computer': 'unscoped', 'settings.change.just-me': 'unscoped', 'settings.change.task-sizing': 'unscoped',
   'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
   'code.other': 'self', 'code.changes-read': 'self', 'code.ship-preview': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
   // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.

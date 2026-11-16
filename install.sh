@@ -118,6 +118,14 @@ package="${SO_PACKAGE:-toolroll@${SO_VERSION:-latest}}"
 # package also provides: npm refuses to install over it (EEXIST). So it is removed first, by name, and nothing else is;
 # the toolroll package brings the `standing-orders` command back, and your data stays where it is.
 if npm ls -g standing-orders --depth=0 >/dev/null 2>&1; then
+  # A service set up from the old package (`standing-orders daemon install`) runs that package's files: said first, by
+  # its file, with the command that sets it up again. Nothing here changes or removes the service itself.
+  for unit in "$HOME"/Library/LaunchAgents/*.plist "${XDG_CONFIG_HOME:-$HOME/.config}"/systemd/user/*.service; do
+    [ -f "$unit" ] || continue
+    if grep -q "node_modules/standing-orders/" "$unit" 2>/dev/null; then
+      say "Your Toolroll service ran from the old package ($unit). Set it up again with toolroll daemon install (or toolroll background on to keep the whole app running) once this finishes."
+    fi
+  done
   say "Removing the older standing-orders package first (npm uninstall -g standing-orders) …"
   if ! npm uninstall -g standing-orders --no-fund --no-audit --loglevel=error; then
     stop "npm couldn't remove the older standing-orders package. Run npm uninstall -g standing-orders yourself, then run this again."

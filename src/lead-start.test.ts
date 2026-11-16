@@ -5,6 +5,7 @@
  * is an ordinary task card with the reason.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { sizingOn } from "../test/sizing-on.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +47,7 @@ beforeEach(() => {
   repo = join(dir, "shop");
   mkdirSync(repo);
   store = openStore(join(dir, "orders.db"));
+  sizingOn(store);
   if (!addApprover(store, "alex", T0).ok) throw new Error("alex");
   for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "fixture", T0);
   store.upsertProject(repo, "shop", T0);

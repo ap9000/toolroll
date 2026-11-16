@@ -125,6 +125,12 @@ export function isTaskSize(value: unknown): value is TaskSize {
 
 /** Whether a task makes no plan: a small change that is not risky (on an
  * older route sealed at elevated or high risk, it always planned). */
+/** The start of a size's reason when task sizing (the quick model call) is off and the words alone sized it
+ * (task-sizing.ts cautiousSizing): the approval terms say why such a task plans first. */
+export const SIZING_OFF_REASON = "task sizing is off";
+/** The whole reason of a task that plans first because of it (the approval terms say so for exactly this reason). */
+export const PLANNED_FIRST_REASON = `${SIZING_OFF_REASON}; planned first`;
+
 export function makesNoPlan(size: TaskSizing | null | undefined, risk: RiskLevel): boolean {
   return size != null && size.size === "small" && !size.risky && risk === "routine";
 }
@@ -760,7 +766,8 @@ export function canonicalRouteJson(route: PhaseRoute): string {
     })),
     overrides: route.overrides.map(one => ({ phase: one.phase, provider: one.provider, model: one.model, by: one.by, at: one.at })),
     // v2 carries the size it was routed for; a v1 snapshot's bytes never change.
-    ...(route.version === 1 ? {} : { size: route.size === null ? null : { size: route.size.size, risky: route.size.risky, source: route.size.source, reason: route.size.reason } }),
+    // A classifier's name (`by`) is in the bytes only when present, so a size sealed without one keeps its digest.
+    ...(route.version === 1 ? {} : { size: route.size === null ? null : { size: route.size.size, risky: route.size.risky, source: route.size.source, reason: route.size.reason, ...(route.size.by === undefined ? {} : { by: route.size.by }) } }),
   });
 }
 

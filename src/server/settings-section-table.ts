@@ -108,6 +108,11 @@ export const SETTINGS_SECTIONS: readonly SectionDeclaration[] = Object.freeze([
   { id: "install-mode", area: "general", title: "Solo or team", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
     read: [], scope: {}, act: { "just-me": ["full-session", "operator"] }, changes: [{ id: "just-me", act: "just-me", proof: "install-solo" }],
     opens: false, scripts: [], oldIds: [] },
+  // Task sizing by a quick model call (task-sizing.ts): off by default; an instance operator's step-up turns it on or off
+  // on its own change document (a local owner's own act on a laptop install).
+  { id: "task-sizing", area: "general", title: "Size tasks with a quick model call (Claude Haiku, on your plan)", pinnedFrom: "settings.group-general", policy: GROUP_PAGE,
+    read: ["installation"], scope: {}, act: { switch: ["cookie-session", "operator"] }, changes: [{ id: "task-sizing", act: "switch", proof: "task-sizing" }],
+    opens: false, scripts: [], oldIds: [] },
   // Settings → Advanced retired to here (F0): the person's own switch, and every advanced page on request.
   { id: "advanced", area: "general", title: "Show advanced features", pinnedFrom: "settings.group-advanced", policy: GROUP_PAGE,
     read: [], scope: { "operator-pages": ["operator"] }, act: { switch: ["cookie-session"] }, changes: [], opens: true, scripts: [], oldIds: ["show-advanced"] },

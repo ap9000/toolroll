@@ -662,7 +662,8 @@ describe("decisions finish in the chat app", () => {
       noteYouiyouxFiled(store, [calm, wide], now);
       await pass();
       const card = script.cardWith(BOB, /^Approve all \(2\)$/);
-      const agent = "Agent: Claude Sonnet builds, fixes and reviews; Claude Sonnet plans only if you ask for a plan (small change: everyday model, no plan)";
+      // Task sizing is off by default: neither request is clearly tiny, so each plans first, and its terms say why.
+      const agent = "Planned first: task sizing is off (Settings → General)\n\nAgent: Claude Sonnet plans, builds, fixes and reviews (medium change: everyday agents)";
       const usual = "Your usual project settings: checks Default · writes only its checkout, its caches and its temp folder · reads your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written · time limit stops after 1000 turns or 20 min without progress · fixes on the same model, up to 4 turns and 5 min · project checks sandboxed";
       // One card for the pass, not one per request.
       expect(script.inChat(BOB).filter(call => call.method === "sendMessage" && String(call.params["text"]).includes("youiyoux change requests"))).toHaveLength(1);

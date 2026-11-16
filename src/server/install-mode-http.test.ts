@@ -14,6 +14,7 @@ import { createDecisionServer } from "../serve.js";
 import { openStore, type Store } from "../store.js";
 import { INSTALL_MODE_ACTION, installModeNow } from "../install-mode.js";
 import { setPasswordless } from "../passwordless.js";
+import { taskSizingOn } from "../task-sizing.js";
 
 let store: Store, server: Server, base: string, dir: string, password = "";
 let cookie = "", csrf = "";
@@ -58,6 +59,34 @@ async function drawn(id: string): Promise<{ nonce: string; digest: string; page:
 }
 const approved = (id: string) => store.getScope(id)?.approvedAt != null;
 
+const said = (answer: Response) => decodeURIComponent(answer.headers.get("location") ?? "").replace(/\+/g, " ");
+
+describe("Settings → General: task sizing by a quick model call", () => {
+  test("off by default; on a team install only the password changes it, on its change document", async () => {
+    expect(taskSizingOn(store)).toBe(false);
+    const page = await (await get("/settings/general")).text();
+    expect(page).toContain('data-section="task-sizing"');
+    expect(page).toContain("Size tasks with a quick model call (Claude Haiku, on your plan)");
+    expect(page).toContain("Off: no model call before you approve; uncertain tasks get a plan first.");
+    expect(page).toContain('href="/settings/change/task-sizing"');
+    const change = await (await get("/settings/change/task-sizing")).text();
+    expect(change).toContain('action="/settings/task-sizing"');
+    // Team: the session never stands in, and a wrong password changes nothing.
+    for (const typed of ["", "not-it"]) {
+      expect(said(await post("/settings/task-sizing", { enabled: "on", password: typed }))).toMatch(/^\/settings\/change\/task-sizing\?problem=Enter your Toolroll password/);
+      expect(taskSizingOn(store)).toBe(false);
+    }
+    expect(said(await post("/settings/task-sizing", { enabled: "maybe", password })).includes("Choose on or off")).toBe(true);
+    expect(said(await post("/settings/task-sizing", { enabled: "on", password }))).toContain("Task sizing is on");
+    expect(taskSizingOn(store)).toBe(true);
+    expect(store.handle.prepare("SELECT actor, outcome FROM action_ledger WHERE action = 'task sizing by a quick model call'").all()).toEqual([{ actor: "alex", outcome: "on" }]);
+    expect(said(await post("/settings/task-sizing", { enabled: "off", password }))).toContain("Task sizing is off");
+    expect(taskSizingOn(store)).toBe(false);
+    // The password typed here is remembered on this session: forgotten again, so what follows stands on the mode alone.
+    expect((await post("/session/forget-password", { return: "/settings/general" })).status).toBe(303);
+  });
+});
+
 describe("an existing install, then It's just me", () => {
   test("General says Team in one line and offers It's just me to its instance operator", async () => {
     const page = await (await get("/settings/general")).text();
@@ -97,6 +126,13 @@ describe("an existing install, then It's just me", () => {
     expect(form.page).not.toContain('name="token" type="password"');
     expect((await post(`/t/solo-one/approve`, { nonce: form.nonce, digest: form.digest, token: "" })).status).toBe(303);
     expect(approved("solo-one")).toBe(true);
+  });
+
+  test("solo: the session stands in for task sizing's step-up", async () => {
+    expect(said(await post("/settings/task-sizing", { enabled: "on", password: "" }))).toContain("Task sizing is on");
+    expect(taskSizingOn(store)).toBe(true);
+    expect(said(await post("/settings/task-sizing", { enabled: "off", password: "" }))).toContain("Task sizing is off");
+    expect(taskSizingOn(store)).toBe(false);
   });
 
   test("the race: drawn while solo, a person joins, then the press: refused under team rules", async () => {

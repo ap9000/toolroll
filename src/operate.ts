@@ -53,7 +53,7 @@ import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
 import { startLiveBackups } from "./live-backup.js";
 import { pushLimitSink } from "./provider-limits.js";
-import { heuristicSizing, installFilingSizer, ownerSizer, refineFiledSizing, settleSizings, type Sizer } from "./task-sizing.js";
+import { filingSizing, installFilingSizer, ownerSizer, refineFiledSizing, setTaskSizing, settleSizings, taskSizingSetting, type Sizer } from "./task-sizing.js";
 import { tierLines, tierReport } from "./tier-report.js";
 import { savingsLines, savingsReportOrError } from "./route-savings.js";
 import { limitsView } from "./limits-ui.js";
@@ -779,6 +779,10 @@ Agents — which provider and model each phase runs on
   toolroll config set|clear|show quick-answers --as <you> --token <t>
       quick answers on (set) or off (clear): plain status questions go to a
       faster model on the Claude membership; changes stay on the main model
+  toolroll config set task-sizing on|off --as <you> --token <t>
+      size each new task with a quick model call (Claude Haiku, on your
+      plan) before you approve; off, the default, sizes from the words alone
+      and plans anything uncertain (config show task-sizing says which)
   toolroll chat --as <you> [--repo <path>…] [--say "…"] [--end]
       [--ceiling-usd <n>] [--json]                 (password at the prompt;
       --token <t> only for scripts — it lands in shell history)
@@ -5563,6 +5567,8 @@ async function configCommand(
   const scope = repoGiven === undefined ? INSTALLATION_SCOPE : canonicalProject(repoGiven) ?? resolve(repoGiven);
   // Settings → Lead's "Quick answers use a faster model", the same switch (responsive-chat.md §8).
   if (phase === "quick-answers") return quickAnswersConfig(action ?? "show", repoGiven !== undefined, flags, context);
+  // Settings → General's task sizing, the same switch and the same step-up.
+  if (phase === "task-sizing") return taskSizingConfig(action ?? "show", positional[2], repoGiven !== undefined, flags, context);
 
   if (action === undefined || action === "show") {
     const installation = store.listPhaseConfig(INSTALLATION_SCOPE);
@@ -10941,7 +10947,7 @@ async function scopeTask(
         ref.sizing?.source === "person" || approvalOf(previous).approved ||
         previous?.proposedVia === "coordinator" || store.filedViaOf(id)?.startsWith("mcp:")) return null;
     const input = { title: store.getTask(id)!.title, goal, outOfScope: text(flags, "not") ?? null, touches };
-    const sized = store.applySizing(id, heuristicSizing(input), { followPlanning: true }, now);
+    const sized = store.applySizing(id, filingSizing(store, input), { followPlanning: true }, now);
     if (sized.ok) refinement = refineFiledSizing(store, id, input, true, context.clock);
     return null;
   }, () => false);
@@ -15208,4 +15214,33 @@ async function projectFlexibleCommand(positional: readonly string[], flags: Map<
   const done = turnFlexibleOff(store, { repo, by: acting.name, now: context.clock() });
   if (!done.ok) return fail(write, json, command, done.reason, done.message, EXIT.refused);
   return succeed(write, json, command, { repo, changed: done.changed, flexible: { state: "secure" } }, () => [done.changed ? `${repo} is Secure again. No new Flexible threads start.` : `${repo} is already Secure.`]);
+}
+
+/** `toolroll config set task-sizing on|off` and `config show task-sizing`: Settings → General's switch, proved as its
+ * route is (an instance operator's password, or the laptop owner's own act), checked and written in one transaction. */
+async function taskSizingConfig(action: string, value: string | undefined, repoGiven: boolean, flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const command = `config ${action}`;
+  if (repoGiven) return fail(write, json, command, "usage", "task sizing is installation-wide: no --repo", EXIT.usage);
+  const said = () => {
+    const read = taskSizingSetting(store);
+    const on = read.on && !read.byEnv;
+    return { payload: { taskSizing: { on, setting: read.on ? "on" : "off", byEnv: read.byEnv } }, lines: () => [read.byEnv
+      ? "Task sizing is off: TOOLROLL_NO_TASK_CLASSIFIER is set, so no model call happens before you approve; uncertain tasks get a plan first."
+      : on ? "Task sizing is on: each new task is sized by a quick call to Claude Haiku on your plan before you approve."
+      : "Task sizing is off: no model call before you approve; uncertain tasks get a plan first."] };
+  };
+  if (action === "show") { const shown = said(); return succeed(write, json, command, shown.payload, shown.lines); }
+  if (action !== "set" || (value !== "on" && value !== "off")) return fail(write, json, command, "usage", "`toolroll config set task-sizing on|off --as <you> --token <t>`", EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "changing task sizing takes `--as <you> --token <t>`", EXIT.usage);
+  const saved = store.transact(() => {
+    const verified = authenticateApprover(store, acting.name, acting.token);
+    if (!verified.ok || !store.isInstanceOperator(acting.name)) return false;
+    setTaskSizing(store, value === "on", acting.name, clock());
+    return true;
+  });
+  if (!saved) return fail(write, json, command, "unauthenticated", "an instance operator changes task sizing, with their password", EXIT.refused);
+  const shown = said();
+  return succeed(write, json, command, shown.payload, shown.lines);
 }

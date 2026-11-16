@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { sizingOn } from "../test/sizing-on.js";
 import {
   mkdtempSync,
   mkdirSync,
@@ -1148,7 +1149,7 @@ describe("the Start card", () => {
     for (const phase of ["plan", "build", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "fixture", now);
     store.upsertProject(repo, "shop", now);
     register(store, { name: "worker", host: "fixture", capacity: 4, repos: [repo], now, newToken: () => "tok" });
-    dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" }));
+    dropSizer = installFilingSizer(async () => ({ size: "small", risky: false, reason: "one word" })); sizingOn(store);
     const verified = verifyApproverStanding(store, "operator", store.accountOf("operator")!.generation, [repo]);
     if (!verified.ok) throw Error("identity");
     who = verified.who;
