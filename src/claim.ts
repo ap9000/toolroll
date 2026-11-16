@@ -1765,6 +1765,9 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
   store.finishRun(runId, { outcome: "failed", reason: kind === "malformed" ? malformedKind : oneLine(message, 120), now });
 
   if (kind === "malformed") {
+    // What failed its checks, field by field, kept on the run for the person who opens the task: the notification below
+    // is sent outside Toolroll and says it in Toolroll's own words.
+    if (message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: message });
     const incidentId = store.createIncident({ run: runId, kind: malformedKind }, now);
     store.holdOwned(
       {
@@ -1941,6 +1944,9 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
   store.finishRun(runId, { outcome: "failed", reason: kind === "malformed" ? malformedKind : oneLine(message, 120), now });
 
   if (kind === "malformed") {
+    // What failed its checks, field by field, kept on the run for the person who opens the task: the notification below
+    // is sent outside Toolroll and says it in Toolroll's own words.
+    if (message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: message });
     const incidentId = store.createIncident({ run: runId, kind: malformedKind }, now);
     store.holdOwned(
       {

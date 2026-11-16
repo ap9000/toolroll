@@ -141,14 +141,37 @@ function failureOf(store: Store, builds: readonly Run[]): NonNullable<StepCards[
  * free) and the last build's failure in one short line. Null unless the task is queued and its last build failed or a
  * backoff holds it. */
 export function waitingOf(store: Store, taskId: string, now: Date): StepCards["waiting"] {
-  if (store.getTask(taskId)?.state !== "queued") return null;
-  const ref = store.lookupRef(taskId);
-  if (ref === null) return null;
-  const backoff = store.activeHolds(ref.id, now).find(hold => hold.ownerKind === "backoff") ?? null;
-  const last = latestFinishedAttempt(store.runsFor(ref.id).filter(run => run.role === "builder" || run.role === "scout" || run.role === "repair"));
-  const failed = last !== null && last.outcome === "failed";
-  if (!failed && backoff === null) return null;
-  return { retryAt: backoff?.until ?? null, lastFailure: failed ? failedAttemptSentence(last.reason).replace(/[.\s]+$/, "") : null };
+  return waitingForTasks(store, [taskId], now).get(taskId) ?? null;
+}
+
+/**
+ * waitingOf for many tasks at once (the Work rows read): one statement whatever the number of rows, never a few per
+ * row. Tasks with nothing to wait on are absent.
+ */
+export function waitingForTasks(store: Store, taskIds: readonly string[], now: Date): Map<string, NonNullable<StepCards["waiting"]>> {
+  const out = new Map<string, NonNullable<StepCards["waiting"]>>();
+  const ids = [...new Set(taskIds)];
+  if (ids.length === 0) return out;
+  const at = now.toISOString();
+  // One statement: the queued built-in tasks among them, each with its earliest-held active backoff (activeHolds' order)
+  // and its latest finished build attempt (ended means a finish time or an outcome: latestFinishedAttempt).
+  const rows = store.handle.prepare(`SELECT task.id AS task,
+      EXISTS (SELECT 1 FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?)) AS held,
+      (SELECT hold.until FROM hold WHERE hold.task_ref = task_ref.id AND hold.owner_kind = 'backoff' AND (hold.until IS NULL OR hold.until > ?) ORDER BY hold.held_at, hold.id LIMIT 1) AS until,
+      (SELECT run.outcome FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS outcome,
+      (SELECT run.reason FROM run WHERE run.task_ref = task_ref.id AND run.role IN ('builder', 'scout', 'repair') AND (run.finished_at IS NOT NULL OR run.outcome IS NOT NULL) ORDER BY run.id DESC LIMIT 1) AS reason
+    FROM task JOIN task_ref ON task_ref.backend = 'built-in' AND task_ref.external_id = task.id
+    WHERE task.state = 'queued' AND task.id IN (${ids.map(() => "?").join(", ")})`).all(at, at, ...ids);
+  for (const row of rows) {
+    const failed = row["outcome"] === "failed";
+    const held = Number(row["held"]) === 1;
+    if (!failed && !held) continue;
+    out.set(String(row["task"]), {
+      retryAt: held && row["until"] != null ? String(row["until"]) : null,
+      lastFailure: failed ? failedAttemptSentence(row["reason"] == null ? null : String(row["reason"])).replace(/[.\s]+$/, "") : null,
+    });
+  }
+  return out;
 }
 
 /** Who ran a step's latest run, when its runs started and ended, and their recorded cost together. Runs are newest first. */
