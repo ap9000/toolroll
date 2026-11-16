@@ -1,5 +1,6 @@
 import { legacyNetwork, repositoryEcosystems, type NetworkProfile } from "./egress.js";
 import { flexibleAdoption } from "./flexible-merge-guard.js";
+import { agentSaidTail } from "./agent-said.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, localModeCap, type CheckAccess } from "./check-access.js";
 import { localModeOn } from "./local-owner.js";
 import { checkoutGit, refusal as gitRefusal } from "./teardown-git.js";
@@ -342,7 +343,9 @@ export type BuildResult =
       summary: string;
     }
   | { ok: true; parked: ParkPackage; branch: string }
-  | { ok: false; reason: BuildRefusal; message: string; problems?: Problem[] };
+  | { ok: false; reason: BuildRefusal; message: string; problems?: Problem[];
+      /** What the agent said on its way out of a failed attempt, cleaned (agent-said.ts): kept on the run. */
+      agentSaid?: string[] };
 
 export type BuildRefusal =
   | "skills-unavailable"
@@ -371,6 +374,9 @@ export type BuildRefusal =
   | "commit-failure"
   | "malformed-decision"
   | "provider-init"
+  /** The agent came up (its init signal seen) and then exited non-zero, not at a turn or budget ceiling: its own error,
+   * not the machine's ("the agent stopped with an error"). */
+  | "agent-error"
   | "setup"
   | "revision-brief"
   | "external"
@@ -1989,14 +1995,15 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
     };
   }
   if (result.initFailed) {
-    // The harness never initialized — config, auth, or install, observed
-    // structurally (the provider's init event never arrived and the turn
-    // has nothing to show). Not an agent's attempt: the distinct reason
-    // keeps a broken environment from counting as bad agent work.
+    // The harness never initialized, observed structurally (the provider's init event never arrived and the turn has
+    // nothing to show): config, auth, install or the machine, never proof of the agent's own error, whatever it printed.
+    // It stays retryable infrastructure; what it printed is kept, for the person's own Steps.
+    const said = agentSaidTail(result.stderr);
     return {
       ok: false,
       reason: "provider-init",
       message: `the provider harness never initialized — ${firstLine(result.stderr) || `exit ${result.code}`}`,
+      ...(said.length === 0 ? {} : { agentSaid: said }),
     };
   }
   // Toolroll ended a live session itself (live-input.ts): its turn budget was spent, or a paused session reached the
@@ -2010,7 +2017,11 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       const kept = await keepForNextAgent(captured);
       if (kept !== null) return kept;
     }
-    return { ok: false, reason: "agent", message: agentExitWords(result) };
+    // The agent came up (its init signal was seen: the structured evidence) and then exited non-zero: its own error,
+    // decided here from the exit and its ending, never from what it printed. A turn or budget ceiling isn't one.
+    const ceiling = result.ending?.subtype === "error_max_turns" || result.ending?.subtype === "error_max_budget_usd";
+    const said = agentSaidTail(result.stderr.trim() !== "" ? result.stderr : result.finalMessage);
+    return { ok: false, reason: ceiling ? "agent" : "agent-error", message: agentExitWords(result), ...(said.length === 0 ? {} : { agentSaid: said }) };
   }
   if (captured.live?.close === "turn-budget" && ![done, mailbox, captured.plan?.proposal].some(name => name !== undefined && existsSync(join(worktree, name)))) {
     return { ok: false, reason: "agent", message: agentExitWords({ ...result, ending: { subtype: "error_max_turns", turns: captured.live.maxTurns } }) };

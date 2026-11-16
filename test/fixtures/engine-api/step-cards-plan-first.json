@@ -22,6 +22,7 @@
       "inChain": true,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -37,6 +38,7 @@
       "inChain": true,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -55,6 +57,7 @@
         "model": null
       },
       "startedAt": "2026-11-15T04:43:27.075Z",
+      "latestStartedAt": "2026-11-15T04:43:27.075Z",
       "finishedAt": null,
       "costUsd": null,
       "runs": [
@@ -72,6 +75,7 @@
       "inChain": true,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -87,6 +91,7 @@
       "inChain": true,
       "agent": null,
       "startedAt": null,
+      "latestStartedAt": null,
       "finishedAt": null,
       "costUsd": null,
       "runs": []
@@ -94,6 +99,7 @@
   ],
   "review": null,
   "failure": null,
+  "waiting": null,
   "retry": null,
   "approval": null,
   "room": "task:t-b"

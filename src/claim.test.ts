@@ -1369,7 +1369,10 @@ describe("the failure taxonomy, fenced", () => {
     expect(store.getTask("t-1")?.state).toBe("queued");
     expect(store.openIncidents()).toMatchObject([{ kind: "commit-failure" }]);
     const note = store.listNotifications("pending").find(n => n.dedupeKey === `commit-failure:${run}`);
-    expect(note?.body).toContain("/w");
+    // What is sent outside Toolroll says where the work is in words; the checkout's folder is on the hold, inside it.
+    expect(note?.body).toContain("preserved, uncommitted, in the task's checkout");
+    expect(note?.body).not.toContain("/w");
+    expect(store.handle.prepare("SELECT reason FROM hold WHERE task_ref = ?").get(task)?.["reason"]).toContain("/w");
   });
 
   test("a superseded lease's failure seals nothing but the fenced run", () => {

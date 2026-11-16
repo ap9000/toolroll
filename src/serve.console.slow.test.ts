@@ -958,9 +958,31 @@ describe("the operations console", () => {
     store.placeTask(ref, "/repo/main");
     register(store, { name: "builder-1", host: "host", capacity: 2, repos: ["/repo/main"], now: new Date(), newToken: () => "tok-builder-1" });
     acquire(store, ref, "builder-1", { token: "tok-builder-1", now: new Date(), ttlMs: 60 * 60_000 });
-    const blocked = await post("/t/t-r/cancel", cookie, { csrf });
+    const blocked = await post("/t/t-r/cancel", cookie, { csrf, ...shownPins(store, "t-r") });
     expect(blocked.status).toBe(409);
     expect(store.getTask("t-r")?.state).not.toBe("cancelled");
+  });
+
+  test("the browser's cancel names what its page showed: none refuses, and an old page's cancel after a requeue is refused", async () => {
+    store.createTask({ id: "t-old", title: "old page" }, T0);
+    store.setTaskState("t-old", "failed", T0);
+    const cookie = await login();
+    const csrf = await csrfFrom(cookie);
+    // The confirmation the task page draws carries the state and latest build it was drawn against.
+    const page = await (await fetch(url("/t/t-old"), { headers: { cookie } })).text();
+    const drawn = { state: /name="state" value="([a-z-]+)"/.exec(page)?.[1] ?? "", run: /name="run" value="(none|[0-9]+)"/.exec(page)?.[1] ?? "" };
+    expect(drawn).toEqual({ state: "failed", run: "none" });
+    // No pins from a browser: refused, unchanged.
+    expect((await post("/t/t-old/cancel", cookie, { csrf })).status).toBe(400);
+    // Someone retried it since the page was drawn: the old page's cancel is refused.
+    expect(store.requeueTask("t-old", "alex", T0).ok).toBe(true);
+    const stale = await post("/t/t-old/cancel", cookie, { csrf, ...drawn });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).toContain("This task changed since it was shown");
+    expect(store.getTask("t-old")?.state).toBe("queued");
+    // The page as it is now cancels it.
+    expect((await post("/t/t-old/cancel", cookie, { csrf, ...shownPins(store, "t-old") })).status).toBe(303);
+    expect(store.getTask("t-old")?.state).toBe("cancelled");
   });
 
   test("coordinator cancellation requires a reason and retains the rejected draft", async () => {
@@ -972,18 +994,18 @@ describe("the operations console", () => {
     const cookie = await login();
     const csrf = await csrfFrom(cookie);
     const path = `/t/${filed.id}`;
-    const empty = await post(`${path}/cancel`, cookie, { csrf });
+    const empty = await post(`${path}/cancel`, cookie, { csrf, ...shownPins(store, filed.id) });
     expect(empty.status).toBe(400);
     expect(await empty.text()).toContain("Enter a reason for cancelling this coordinator filing.");
     const draft = "<superseded> " + "x".repeat(501);
-    const invalid = await post(`${path}/cancel`, cookie, { csrf, reason: draft });
+    const invalid = await post(`${path}/cancel`, cookie, { csrf, reason: draft, ...shownPins(store, filed.id) });
     expect(invalid.status).toBe(400);
     const refusedPage = await invalid.text();
     expect(refusedPage).toContain("&lt;superseded&gt; " + "x".repeat(501));
     expect(store.getTask(filed.id)?.state).toBe("queued");
     expect(store.handle.prepare("SELECT 1 FROM coordinator_event WHERE task_id = ? AND kind = 'dismissed'").get(filed.id)).toBeUndefined();
 
-    const cancelled = await post(`${path}/cancel`, cookie, { csrf, reason: "The smaller export task replaces this proposal." });
+    const cancelled = await post(`${path}/cancel`, cookie, { csrf, reason: "The smaller export task replaces this proposal.", ...shownPins(store, filed.id) });
     expect(cancelled.status).toBe(303);
     expect(store.getTask(filed.id)?.state).toBe("cancelled");
     expect(store.handle.prepare("SELECT detail FROM coordinator_event WHERE task_id = ? AND kind = 'dismissed'").get(filed.id))
@@ -3309,3 +3331,10 @@ describe("`toolroll serve` answers before any project folder does (the 0.9.83 de
     }
   });
 });
+
+/** What a task page's cancel confirmation carries for this task now (render-tasks.ts cancelPinsOf). */
+function shownPins(store: Store, taskId: string): { state: string; run: string } {
+  const ref = store.lookupRef(taskId)!;
+  const last = store.handle.prepare("SELECT MAX(id) AS id FROM run WHERE task_ref = ?").get(ref.id)?.["id"];
+  return { state: store.getTask(taskId)!.state, run: last === null || last === undefined ? "none" : String(last) };
+}

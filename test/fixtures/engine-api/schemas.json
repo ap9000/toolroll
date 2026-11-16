@@ -1,5 +1,5 @@
 {
-  "digest": "6daf140a99f39d0a1336246bd144393dbb5a5e0925b69e78c2d2449776b7bd1c",
+  "digest": "68b847e4b7ebe9f9d379d5443520db0d1496412381fdaf7b5c1f0bf53d82f489",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1063,6 +1063,35 @@
                     "type": "null"
                   }
                 ]
+              },
+              "waiting": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "retryAt": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "lastFailure": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "retryAt",
+                      "lastFailure"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -1079,7 +1108,8 @@
               "rank",
               "detail",
               "problem",
-              "need"
+              "need",
+              "waiting"
             ],
             "additionalProperties": false
           }
@@ -1494,6 +1524,12 @@
                       "null"
                     ]
                   },
+                  "latestStartedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "finishedAt": {
                     "type": [
                       "string",
@@ -1603,6 +1639,7 @@
                   "inChain",
                   "agent",
                   "startedAt",
+                  "latestStartedAt",
                   "finishedAt",
                   "costUsd",
                   "runs"
@@ -1701,12 +1738,56 @@
                     "string",
                     "null"
                   ]
+                },
+                "agentSaid": {
+                  "anyOf": [
+                    {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "line",
                 "failedInARow",
-                "suggestion"
+                "suggestion",
+                "agentSaid"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waiting": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "retryAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lastFailure": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "retryAt",
+                "lastFailure"
               ],
               "additionalProperties": false
             },
@@ -1780,6 +1861,7 @@
         "cards",
         "review",
         "failure",
+        "waiting",
         "retry",
         "approval",
         "room"

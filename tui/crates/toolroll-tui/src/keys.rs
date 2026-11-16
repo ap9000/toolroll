@@ -66,7 +66,8 @@ actions! {
     PreviousTab = "previous-tab", Global, Move, "Previous tab", ["backtab"];
     Steer = "steer", Global, Act, "Steer: send the running agent a note", ["s"];
     Pause = "pause", Global, Act, "Pause the build (again to resume)", ["p"];
-    Stop = "stop", Global, Act, "Stop the build", ["x"];
+    Stop = "stop", Global, Act, "Stop the build, or stop retrying a waiting task", ["x"];
+    CancelTask = "cancel-task", Global, Act, "Cancel task (asks first)", ["X"];
     Accept = "accept", Global, Act, "Accept the result", ["a"];
     SendBack = "send-back", Global, Act, "Send the result back, with a note (on a failed task: retry it)", ["r"];
     Retry = "retry", Global, Act, "Retry a failed task (Review and retry)", [];
@@ -267,6 +268,7 @@ pub fn help_rows(map: &Keymap) -> Vec<HelpRow> {
 fn help_words(a: Action) -> Option<&'static str> {
     Some(match a {
         Action::Open => "Open the changes, else the live output",
+        Action::Stop => "Stop the build, or its retries",
         Action::SendBack => "Send back with a note; retry if failed",
         Action::TakeOver => "Take over: a terminal on the build",
         Action::NextNeedsYou => "Next thing that needs you",
@@ -282,6 +284,9 @@ fn help_words(a: Action) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// Help's tui.toml example: an action and a key no preset binds (so the example never moves a key off another act).
+pub const HELP_EXAMPLE: (&str, &str) = ("accept", "f2");
 
 /// The keys no tui.toml can change, as help says them.
 pub const FIXED_KEYS: &[(&str, &str)] = &[

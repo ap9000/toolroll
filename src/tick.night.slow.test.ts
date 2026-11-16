@@ -119,7 +119,7 @@ describe("the outbox", () => {
     await exec("git", ["add", "."], { cwd: repo });
     await exec("git", ["commit", "-qm", "first"], { cwd: repo });
 
-    const broken: Runner = async () => ({ ...OK, code: 1, stdout: JSON.stringify({ type: "system", subtype: "init" }), stderr: "the model refused" });
+    const broken: Runner = async () => ({ ...OK, code: 1, stdout: "", stderr: "the model refused" });
     const runWith = (argv: string[]) => {
       const [command = "", ...rest] = argv;
       lines = [];
@@ -150,7 +150,8 @@ describe("the outbox", () => {
     expect(pages).toHaveLength(1);
     expect(pages[0]).toMatchObject({
       kind: "build-failed",
-      subject: "t-1: attempt failed (unknown), retry 1/3",
+      // A harness that never came up: retried, and said in Toolroll's own words.
+      subject: "t-1: attempt failed (retryable-infra), retry 1/3",
     });
   });
 });
@@ -168,7 +169,7 @@ describe("the morning briefing", () => {
     await concludeDone(cwd, args);
     return { ...OK, stdout: AGENT_SAID };
   };
-  const broken: Runner = async () => ({ ...OK, code: 1, stdout: JSON.stringify({ type: "system", subtype: "init" }), stderr: "the model refused" });
+  const broken: Runner = async () => ({ ...OK, code: 1, stdout: "", stderr: "the model refused" });
 
   const run = (argv: string[], runner: Runner = agent) => {
     const [command = "", ...rest] = argv;
@@ -237,7 +238,7 @@ describe("the morning briefing", () => {
     expect(report.tally.built).toHaveLength(1);
     expect(report.tally.built[0]).toMatchObject({ committed: true });
     expect(report.tally.failed).toHaveLength(1);
-    expect(report.tally.failed[0]).toMatchObject({ reason: "unknown" });
+    expect(report.tally.failed[0]).toMatchObject({ reason: "retryable-infra" });
     const seen = [report.tally.built[0].taskId, report.tally.failed[0].taskId].sort();
     expect(seen).toEqual(["t-bad", "t-good"]);
     // REVIEW was not read, and says so — not "zero PRs".

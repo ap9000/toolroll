@@ -75,7 +75,7 @@ export function excerpt(text: string | null | undefined, cap = 160): string {
   return clean.length > cap ? `${clean.slice(0, cap - 1).trimEnd()}…` : clean;
 }
 
-const PROVIDER_REASONS = new Set(["retryable-infra", "provider-init", "provider-protocol", "provider-unattested", "setup"]);
+const PROVIDER_REASONS = new Set(["retryable-infra", "agent-error", "provider-init", "provider-protocol", "provider-unattested", "setup"]);
 const TIMEOUT_WORDS = /made no observable progress|ran past \d+ minutes|timed out/i;
 
 /** Why one finished run is a problem, or null when it isn't. */

@@ -121,36 +121,43 @@ pub fn entries(app: &App) -> Vec<Entry> {
     out
 }
 
-/// How well `query` matches `text` (None: not at all): every query character in order, case-insensitively; runs of
-/// consecutive characters and starts of words score higher, an earlier first match a little higher.
+/// How well `query` matches `text` (None: not at all). Every word typed must appear in the text as written (case
+/// aside): scattered letters never match. Best first: the whole text, then the text starting with it, then each word
+/// typed starting a word of the text, then anywhere inside; an earlier match a little higher.
 pub fn score(query: &str, text: &str) -> Option<i64> {
-    let q: Vec<char> = query
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect();
+    let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Some(0);
     }
-    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let mut score = 0i64;
-    let mut at = 0usize;
-    let mut last: Option<usize> = None;
-    let mut first: Option<usize> = None;
-    for qc in q {
-        let found = (at..t.len()).find(|&i| t[i] == qc)?;
-        first.get_or_insert(found);
-        score += 1;
-        if last.is_some_and(|l| l + 1 == found) {
-            score += 5;
-        }
-        if found == 0 || !t[found - 1].is_alphanumeric() {
-            score += 3;
-        }
-        last = Some(found);
-        at = found + 1;
+    let t = text.to_lowercase();
+    if t == q {
+        return Some(4000);
     }
-    Some(score * 100 - first.unwrap_or(0) as i64)
+    if t.starts_with(&q) {
+        return Some(3000);
+    }
+    let starts: Vec<usize> = t
+        .char_indices()
+        .filter(|(i, c)| {
+            c.is_alphanumeric()
+                && (*i == 0 || !t[..*i].chars().last().is_some_and(char::is_alphanumeric))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let mut tier = 2000;
+    let mut first = usize::MAX;
+    for word in q.split_whitespace() {
+        let at_start = starts.iter().copied().find(|&i| t[i..].starts_with(word));
+        let at = match at_start {
+            Some(i) => i,
+            None => {
+                tier = 1000;
+                t.find(word)?
+            }
+        };
+        first = first.min(at);
+    }
+    Some(tier - first.min(999) as i64)
 }
 
 /// The lines matching what is typed, best first (ties keep the palette's order).
@@ -172,14 +179,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fuzzy_matching() {
+    fn words_match_never_scattered_letters() {
         assert!(score("acc", "Accept the result").is_some());
-        assert!(score("atr", "Accept the result").is_some());
+        assert!(score("the res", "Accept the result").is_some());
+        assert!(score("sult", "Accept the result").is_some());
+        // Scattered letters don't match (the stranger's "subtract" found Send the result back).
+        assert!(score("atr", "Accept the result").is_none());
+        assert!(score("subtract", "Send the result back, with a note").is_none());
         assert!(score("xyz", "Accept the result").is_none());
         assert!(score("", "anything").is_some());
-        // A run and a word start beat scattered letters.
-        assert!(score("acc", "Accept") > score("acc", "a cat climbs"));
-        assert!(score("new", "New task") > score("new", "Next window"));
+        // Whole, then starting with it, then a word start, then inside a word.
+        assert!(score("accept", "accept") > score("accept", "Accept the result"));
+        assert!(score("acc", "Accept the result") > score("res", "Accept the result"));
+        assert!(score("res", "Accept the result") > score("sult", "Accept the result"));
+        assert!(score("new", "New task") > score("new", "Renew it"));
         // Case doesn't matter.
         assert_eq!(score("ACC", "accept"), score("acc", "accept"));
     }

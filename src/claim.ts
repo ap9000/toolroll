@@ -29,6 +29,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { INFRASTRUCTURE_TERMINALS } from "./route-store.js";
+import { RUN_REASON_WORDS } from "./needs-you.js";
 import { authenticate, drainOf } from "./runner.js";
 import { pauseForAuth } from "./provider-auth.js";
 import {
@@ -1057,6 +1059,9 @@ export type MalformedFinalize = { ok: true; incidentId: number } | { ok: false; 
 /** How a failed attempt is classified, per gnhf. Decides retry, backoff, or stall. */
 export type FailureClass =
   | "agent-reported"
+  /** The agent came up and then stopped with an error of its own (builder.ts). Stops at once (a stall with its words
+   * kept on the run), never re-run on its own; a person chooses Retry. */
+  | "agent-error"
   | "retryable-infra"
   | "no-op"
   /** Run 2085: stopped before its handoff; the work was kept and the retry resumes it. Strikes like no-op. */
@@ -1223,7 +1228,7 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   // Out of plan on an approved chain: the walk moves on, no strike, and the next agent runs through the ordinary claim.
   // Anything else about this ending (fallback.ts says what closed the walk) stays the ordinary road below.
   // Only the agent's own exit moves: a lease, branch or HEAD law that failed, or a commit that failed, is that ending.
-  if (failureClass === "unknown") {
+  if (failureClass === "unknown" || failureClass === "agent-error") {
     const moved = moveOnIfExhausted(store, runId, taskId, now);
     if (moved !== null) {
       store.finishRun(runId, { outcome: "failed", reason: "usage-exhausted", now });
@@ -1254,7 +1259,9 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: the commit itself failed`,
-        body: `${oneLine(message, 200)}\nThe work is preserved, uncommitted, in ${args.worktree}. Prove it and \`toolroll task requeue ${taskId}\`.`,
+        // Toolroll's own words (sent outside Toolroll): the commit's output, which can carry a hook's or the agent's
+        // words, and the checkout's folder stay on the run.
+        body: `The commit itself failed. The work is preserved, uncommitted, in the task's checkout. Prove it and \`toolroll task requeue ${taskId}\`.`,
       },
       now,
     );
@@ -1262,8 +1269,13 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   }
 
   const strikes = store.addStrike(run.taskRef);
+  // The agent itself stopped with an error of its own (agent-error): stopped at once, never re-run on its own (the
+  // owner's rule, 2026-11-16). What the agent said is on the run; a person reads it and chooses Retry. A machine's or
+  // the harness's trouble (retryable-infra and the rest) keeps its automatic retries.
+  // Not when the gateway saw the provider end it (throttled, out of credits or plan): that is the provider's, and retries.
+  const agentStopped = failureClass === "agent-error" && !INFRASTRUCTURE_TERMINALS.has(run.terminalClass ?? "");
 
-  if (strikes >= MAX_STRIKES) {
+  if (strikes >= MAX_STRIKES || agentStopped) {
     // The state first: a task a person already closed keeps its state, and then no incident, hold or page is
     // written either (closed-task-claims.md, decision B). The run's outcome, the release and the strike stand.
     const closedState = exhaustUnlessClosed(store, run, taskId, now);
@@ -1274,7 +1286,8 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
         taskRef: run.taskRef,
         ownerKind: "incident",
         ownerId: String(incidentId),
-        reason: `attempts-exhausted — ${strikes} consecutive failures, last: ${failureClass}`,
+        reason: agentStopped ? "agent-error — the agent stopped with an error; it isn't retried on its own"
+          : `attempts-exhausted — ${strikes} consecutive failures, last: ${failureClass}`,
         until: null,
       },
       now,
@@ -1286,8 +1299,12 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
         kind: "attempts-exhausted",
         pushClass: "attention",
         link: `/r/${runId}`,
-        subject: `${taskId} stalled after ${strikes} straight failures`,
-        body: `Last failure (${failureClass}): ${oneLine(message, 200)}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
+        subject: agentStopped ? `${taskId} stopped: the agent stopped with an error` : `${taskId} stalled after ${strikes} straight failures`,
+        // Toolroll's own words, never the attempt's message (it can carry what the agent printed): this is sent to chat,
+        // push, email and webhooks. What the agent said is on the task, for the person who opens it.
+        body: agentStopped
+          ? `${outboundFailureWords(failureClass)}.\nIt isn't retried on its own. Read what the agent said on the task, then Retry (\`toolroll task requeue ${taskId}\`).`
+          : `Last failure (${failureClass}): ${outboundFailureWords(failureClass)}.\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
       },
       now,
     );
@@ -1320,7 +1337,8 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
       subject: failureClass === "no-handoff"
         ? `${taskId}: the agent stopped before handing off; its work was kept, retry ${strikes}/${MAX_STRIKES}`
         : `${taskId}: attempt failed (${failureClass}), retry ${strikes}/${MAX_STRIKES}`,
-      body: `${oneLine(message, 200)}\nNext attempt no earlier than ${until.toISOString()}.`,
+      // Toolroll's own words (sent outside Toolroll), never the attempt's message.
+      body: `${outboundFailureWords(failureClass)}.\nNext attempt no earlier than ${until.toISOString()}.`,
     },
     now,
   );
@@ -1747,6 +1765,9 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
   store.finishRun(runId, { outcome: "failed", reason: kind === "malformed" ? malformedKind : oneLine(message, 120), now });
 
   if (kind === "malformed") {
+    // What failed its checks, field by field, kept on the run for the person who opens the task: the notification below
+    // is sent outside Toolroll and says it in Toolroll's own words.
+    if (message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: message });
     const incidentId = store.createIncident({ run: runId, kind: malformedKind }, now);
     store.holdOwned(
       {
@@ -1766,7 +1787,8 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: the planner's ${args.malformed === "decision" ? "question" : "plan"} failed validation`,
-        body: `${oneLine(message, 300)}\nResolve the incident to let planning retry.`,
+        // Toolroll's own words, never the attempt's message (it can carry what the planner wrote): sent outside Toolroll.
+        body: `The planner's ${args.malformed === "decision" ? "question" : "plan"} failed its checks; what it wrote is on the task.\nResolve the incident to let planning retry.`,
       },
       now,
     );
@@ -1794,7 +1816,7 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: planning stalled after ${strikes} straight failures`,
-        body: `Last failure: ${oneLine(message, 200)}\nResolve the incident to let planning retry, or write the scope yourself.`,
+        body: `${OUTBOUND_ATTEMPT_WORDS.plan}\nResolve the incident to let planning retry, or write the scope yourself.`,
       },
       now,
     );
@@ -1821,7 +1843,7 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
       dedupeKey: `plan-run:${runId}:failed`,
       kind: "plan-failed",
       subject: `${taskId}: planning attempt failed, retry ${strikes}/${MAX_PLAN_STRIKES}`,
-      body: `${oneLine(message, 200)}\nNext attempt no earlier than ${until.toISOString()}.`,
+      body: `${OUTBOUND_ATTEMPT_WORDS.plan}\nNext attempt no earlier than ${until.toISOString()}.`,
     },
     now,
   );
@@ -1922,6 +1944,9 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
   store.finishRun(runId, { outcome: "failed", reason: kind === "malformed" ? malformedKind : oneLine(message, 120), now });
 
   if (kind === "malformed") {
+    // What failed its checks, field by field, kept on the run for the person who opens the task: the notification below
+    // is sent outside Toolroll and says it in Toolroll's own words.
+    if (message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: message });
     const incidentId = store.createIncident({ run: runId, kind: malformedKind }, now);
     store.holdOwned(
       {
@@ -1941,7 +1966,8 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: the scout's ${args.malformed === "decision" ? "question" : "report"} failed validation`,
-        body: `${oneLine(message, 300)}\nResolve the incident to let scouting retry.`,
+        // Toolroll's own words, never the attempt's message (it can carry what the scout wrote): sent outside Toolroll.
+        body: `The scout's ${args.malformed === "decision" ? "question" : "report"} failed its checks; what it wrote is on the task.\nResolve the incident to let scouting retry.`,
       },
       now,
     );
@@ -1972,7 +1998,7 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId} stalled after ${strikes} straight scouting failures`,
-        body: `Last failure: ${oneLine(message, 200)}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
+        body: `${OUTBOUND_ATTEMPT_WORDS.scout}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
       },
       now,
     );
@@ -1997,7 +2023,7 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
       dedupeKey: `run:${runId}:failed`,
       kind: "scout-failed",
       subject: `${taskId}: scouting attempt failed, retry ${strikes}/${MAX_STRIKES}`,
-      body: `${oneLine(message, 200)}\nNext attempt no earlier than ${until.toISOString()}.`,
+      body: `${OUTBOUND_ATTEMPT_WORDS.scout}\nNext attempt no earlier than ${until.toISOString()}.`,
     },
     now,
   );
@@ -2125,3 +2151,14 @@ export function acquireForCheckCleanup(store: Store, checkId: number, attempt: s
     return acquireLocked(store, bound, runner, options, "refuse");
   });
 }
+
+/** A build failure in Toolroll's own words, for what is sent outside Toolroll (chat, push, email, webhooks): never the
+ * attempt's message, which can carry what the agent printed. */
+function outboundFailureWords(failureClass: FailureClass): string {
+  const words = RUN_REASON_WORDS[failureClass] ?? "the attempt stopped";
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
+/** A planning or scouting attempt that failed, in Toolroll's own words, for what is sent outside Toolroll (chat, push,
+ * email, webhooks): never the attempt's message, which can carry what the agent wrote. The message stays on the run. */
+const OUTBOUND_ATTEMPT_WORDS = { plan: "The planning attempt stopped; what happened is on the task.", scout: "The scouting attempt stopped; what happened is on the task." } as const;

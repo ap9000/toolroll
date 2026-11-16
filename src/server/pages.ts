@@ -97,6 +97,7 @@ import { flowAsks, NO_HOME_ASKS, releaseAsks, setupAsks, type HomeAsks } from ".
 import { workIndexPage } from "../work-index.js";
 import { checkEngineResponse, ENGINE_API_VERSION, type WorkRows } from "../contracts/engine-api.js";
 import { readRunLive } from "./engine-api.js";
+import { waitingForTasks } from "../engine-reads.js";
 /** What Work borrows from the tasks handlers (tasks.ts): its list for an address, and the queue's order page. */
 export type WorkListDeps = { listFor: (ctx: HandlerContext) => Promise<WorkList | null>; showOrder: (ctx: HandlerContext) => Promise<void> };
 
@@ -1463,10 +1464,13 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     })();
     const needOf = (row: BrowserHomeRow) => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, state: row.state, ask: row.ask,
       ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
+    // Every row's wait, read at once (one statement, never a few per row: the wire budgets hold it).
+    const waiting = waitingForTasks(store, list.rows.map(row => row.id), now);
     const body: WorkRows = {
       version: ENGINE_API_VERSION, project: view.project, projectName: view.projectName, needsCount: view.needsCount, groups: list.groups,
       rows: list.rows.map(row => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, status: row.status, word: row.word, ask: row.ask,
-        chip: row.chip, group: row.group, rank: row.rank, detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need) })),
+        chip: row.chip, group: row.group, rank: row.rank, detail: row.detail, problem: row.problem, need: row.need === undefined ? null : needOf(row.need),
+        waiting: waiting.get(row.id) ?? null })),
       needs: view.needs.map(group => ({ key: group.key, label: group.label, count: group.count, rows: group.rows.map(needOf) })),
       next: list.pages.next, room: "workspace", spend,
     };

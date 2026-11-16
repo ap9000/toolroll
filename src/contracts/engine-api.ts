@@ -143,6 +143,10 @@ const needRowSchema = z.object({
   question: z.object({ id: z.number().int(), text: z.string(), recap: z.string(),
     options: z.array(z.object({ id: z.string(), label: z.string(), consequence: z.string(), recommended: z.boolean() })) }).nullable(),
 });
+/** A queued task waiting to start again after a failed build (engine-reads.ts waitingOf): when the next try is due
+ * (the backoff hold's own end; null: as soon as a builder is free) and the last build's failure in one short line
+ * (needs-you.ts failedAttemptSentence; null when the last build didn't fail). Read facts only. */
+export const waitingSchema = z.object({ retryAt: iso.nullable(), lastFailure: z.string().nullable() });
 /** A Work row's group (work-index.ts WorkIndexGroup): a Needs-you ask, building, or everything else. */
 export const WORK_ROW_GROUPS = ["decide", "review", "unblock", "building", "rest"] as const;
 /** A Work row's status tone (workspace-ui.ts StatusTone). */
@@ -165,6 +169,8 @@ const workRowSchema = z.object({
   problem: z.string().nullable(),
   /** What this waiting row asks; absent when it waits on nobody. */
   need: needRowSchema.nullable(),
+  /** A queued task waiting to try again (waitingSchema); null for every other row. */
+  waiting: waitingSchema.nullable(),
 });
 
 /** `GET /work/rows`: Work's list (`/`) as data, same grouping and Needs-you facts, under the same query keys. */
@@ -202,6 +208,8 @@ export const stepCardSchema = z.object({
   /** The agent behind the step's latest run, when one ran. */
   agent: z.object({ provider: z.string(), model: z.string().nullable() }).nullable(),
   startedAt: iso.nullable(),
+  /** When the step's newest run started (startedAt is its first run's): what "this build has run for" counts from. */
+  latestStartedAt: iso.nullable(),
   finishedAt: iso.nullable(),
   /** The step's runs' recorded cost together; null when none is recorded. */
   costUsd: z.number().nullable(),
@@ -243,7 +251,13 @@ export const stepCardsSchema = z.object({
   /** Why a failed task stopped, as the task page and `task show` say it: the latest finished attempt's reason in one
    * plain line (needs-you.ts failedAttemptSentence), the build attempts that failed in a row, and one suggestion. Null
    * unless the task failed. */
-  failure: z.object({ line: z.string(), failedInARow: z.number().int(), suggestion: z.string().nullable() }).nullable(),
+  failure: z.object({ line: z.string(), failedInARow: z.number().int(), suggestion: z.string().nullable(),
+    /** The last lines the agent wrote before it stopped, cleaned (store.ts agentSaidOf over agent-said.ts agentSaidTail:
+     * at most AGENT_SAID_LINES lines of plain text, each at most AGENT_SAID_CHARS characters, no folder or key); null
+     * when none was kept. */
+    agentSaid: z.array(z.string()).max(8).nullable() }).nullable(),
+  /** A queued task waiting to start again (waitingSchema); null otherwise. */
+  waiting: waitingSchema.nullable(),
   /** What Retry binds to (local-owner-acts.ts retryPinsOf): the latest build and the approved scope's digest, posted
    * to POST /t/<task>/requeue as `run` and `digest`, the same act the task page's Retry is (re-proved there). Null
    * unless the task failed and its approval stands as it is. */

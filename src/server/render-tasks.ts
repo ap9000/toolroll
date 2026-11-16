@@ -2670,7 +2670,7 @@ export function taskBodyParts(data: {
       ? postForm(`${taskHref(task.id)}/cancel`, joinHtml([
           data.coordinator == null ? "" : html`<label>Reason for cancellation<textarea name="reason" rows="3" maxlength="500" required>${data.cancelDraft ?? ""}</textarea></label>`,
           html`<button type="submit" class="danger">Confirm cancellation</button>`,
-        ]))
+        ]), { hidden: cancelPinsOf(task.state, data.runs) })
       : "";
   const cancelAct = cancelForm === "" ? "" : html`<details class="arm-danger"${data.cancelDraft === undefined ? "" : html` open`}><summary>Cancel task</summary>${cancelForm}</details>`;
   // Long sections fold, each with its count in the header: what needs
@@ -3386,4 +3386,10 @@ export function planVersionDetailsHtml(digest: string): Html {
  * agents card's "cannot be read" and its `config set` hint stay out of the way until an agent is signed in. */
 function agentlessRoute(dispatch: { summary: string } | null, route: RouteView | null | undefined): boolean {
   return dispatch?.summary === NO_AGENT_TITLE && route?.kind === "unreadable" && (route.problem ?? "").includes("has no exact model");
+}
+
+/** What a cancel confirmation was drawn against: the task's state and its latest run ("none" before any), proved again
+ * in the cancel's own transaction (store.ts cancelTask), so an old page never cancels a task that moved on. */
+export function cancelPinsOf(state: string, runs: readonly { id: number }[]): { state: string; run: string } {
+  return { state, run: runs.length === 0 ? "none" : String(Math.max(...runs.map(one => one.id))) };
 }

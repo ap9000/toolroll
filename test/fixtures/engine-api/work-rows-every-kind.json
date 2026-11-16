@@ -37,7 +37,8 @@
       "rank": 0,
       "detail": "A temporary problem on the machine stopped it.",
       "problem": null,
-      "need": null
+      "need": null,
+      "waiting": null
     },
     {
       "id": "t-retry",
@@ -60,7 +61,11 @@
       "rank": 2,
       "detail": "A temporary problem stopped the last attempt; it retries in 2 min.",
       "problem": null,
-      "need": null
+      "need": null,
+      "waiting": {
+        "retryAt": "2026-11-14T12:05:52.000Z",
+        "lastFailure": "The agent stopped with an error"
+      }
     },
     {
       "id": "t-queued",
@@ -83,7 +88,8 @@
       "rank": 2,
       "detail": "Waiting for a builder.",
       "problem": null,
-      "need": null
+      "need": null,
+      "waiting": null
     },
     {
       "id": "t-done",
@@ -106,7 +112,8 @@
       "rank": 3,
       "detail": "Accepted.",
       "problem": null,
-      "need": null
+      "need": null,
+      "waiting": null
     },
     {
       "id": "t-cancelled",
@@ -129,7 +136,8 @@
       "rank": 4,
       "detail": "Nothing else will run for this task.",
       "problem": null,
-      "need": null
+      "need": null,
+      "waiting": null
     }
   ],
   "needs": [

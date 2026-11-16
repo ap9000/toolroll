@@ -457,3 +457,11 @@ describe("every transport sends the safe version", () => {
     });
   });
 });
+
+describe("legacy webhooks carry plain words", () => {
+  test("Slack's and Discord's markup is escaped: nothing in a body can link, format or mention", async () => {
+    const { escapeFor } = await import("./webhooks.js");
+    expect(escapeFor("slack", "<https://evil.example|click> & <!channel>")).toBe("&lt;https://evil.example|click&gt; &amp; &lt;!channel&gt;");
+    expect(escapeFor("discord", "**bold** [link](https://evil.example) @everyone")).toBe("\\*\\*bold\\*\\* \\[link\\]\\(https://evil.example\\) @\u200beveryone");
+  });
+});

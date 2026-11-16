@@ -1081,9 +1081,13 @@ describe("scout tasks, against real git", () => {
     expect(await tick(runnerToken, planModeAgent({ kind: "report", report: bad }))).toBe(EXIT.failed);
     const store = openStore(db);
     expect(store.openIncidents().some(one => one.kind === "malformed-report")).toBe(true);
+    // Each field's path is kept on the run, read on the task; the notice (sent outside Toolroll) is Toolroll's own words.
+    const kept = String(store.handle.prepare("SELECT handoff FROM run WHERE reason = 'malformed-report' ORDER BY id DESC LIMIT 1").get()?.["handoff"] ?? "");
+    expect(kept).toContain("items[0].url: must be an http or https address");
+    expect(kept).not.toContain("unknown key");
     const notice = store.listNotifications("all").find(one => one.kind === "malformed-report")?.body;
-    expect(notice).toContain("items[0].url: must be an http or https address");
-    expect(notice).not.toContain("unknown key");
+    expect(notice).toContain("The scout's report failed its checks");
+    expect(notice).not.toContain("items[0].url");
     store.close();
   });
 

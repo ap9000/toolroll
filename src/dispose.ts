@@ -1,5 +1,6 @@
 // Assignment tracking grants no repair authority or attempts.
 import { STORAGE_HOLD_PREFIX } from "./needs-you.js";
+import { recordAgentSaid } from "./store.js";
 import { blockAfterSignedOut } from "./fallback.js";
 import { authorizeCheckOnly } from "./check-only.js";
 import { proposeNewRoute } from "./route-change.js";
@@ -116,6 +117,7 @@ const TICK_FAILURE_REASONS = new Set([
   "git",
   "commit-failure",
   "provider-init",
+  "agent-error",
   "setup",
   "revision-brief",
   "stopped",
@@ -388,6 +390,9 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     const failureClass: FailureClass =
       result.reason === "agent-reported"
         ? "agent-reported"
+        // The agent's own process ran and stopped with an error of its own: said as that, never as the machine's.
+        : result.reason === "agent-error"
+          ? "agent-error"
         : result.reason === "no-handoff"
           ? "no-handoff"
           : result.reason === "no-op" || result.reason === "moved-head" || result.reason === "moved-branch"
@@ -403,6 +408,8 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
     if (result.reason !== "agent-reported" && result.message.trim() !== "") {
       store.recordOutcomeFacts(runId, { handoff: result.message });
     }
+    // What the agent said on its way out, cleaned (agent-said.ts): the run keeps it for its failure panel.
+    if (result.agentSaid !== undefined && result.agentSaid.length > 0) recordAgentSaid(store, runId, result.agentSaid);
     if (leaseId === undefined) {
       store.finishRun(runId, { outcome: "failed", reason: result.reason, now: clock() });
       return { kind: "failed", failureClass, disposition: null, strikes: null, sealed: false, closedState: null };

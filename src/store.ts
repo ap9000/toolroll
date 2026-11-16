@@ -1,5 +1,6 @@
 import { verifyResultImage } from "./chat-evidence.js";
 import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
+import { agentSaidTail } from "./agent-said.js";
 import { mintSecret } from "./secret-mint.js";
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
@@ -28,6 +29,7 @@ import { V166_OBJECTS, V166_SCHEMA, V166_STEPS } from "./flexible-relay-schema.j
 import { V167_OBJECTS, V167_SCHEMA, V167_STEPS } from "./flexible-answers-schema.js";
 import { V168_OBJECTS, V168_SCHEMA, V168_STEPS } from "./flexible-ship-schema.js";
 import { V169_ADDED_COLUMNS, V169_SCHEMA, V169_STEPS } from "./task-sizing-schema.js";
+import { V170_ADDED_COLUMNS, V170_STEPS } from "./agent-said-schema.js";
 import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
@@ -1255,7 +1257,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v169 adds, and changes no saved row (task sizing by a quick model call): Settings → General's switch and the classifier
 // it was turned on for (task_sizing_setting, a new table: no row reads off), and which classifier answered a task's size
 // (task_ref.size_by: saved sizes read NULL). V169_SCHEMA, V169_ADDED_COLUMNS (task-sizing-schema.ts).
-export const SCHEMA_VERSION = 169;
+// v170 adds, and changes no saved row (the stranger test, round 2): what the agent said on its way out of a failed attempt
+// (run.agent_said_json: a saved run reads NULL). V170_ADDED_COLUMNS (agent-said-schema.ts).
+export const SCHEMA_VERSION = 170;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1393,7 +1397,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1657,7 +1661,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number] | (typeof V170_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2067,7 +2071,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS, V170_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6052,7 +6056,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db) ?? agentSaidShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6529,6 +6533,9 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   if (sizingDamaged !== null) throw new Error(`${file}: refusing to open — ${sizingDamaged}`);
   step("task-sizing-setting");
   step("task-sizing-columns");
+  // v170: what the agent said on its way out of a failed attempt (V170_ADDED_COLUMNS: saved runs read NULL). Idempotent.
+  for (const [table, columns] of Object.entries(V170_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  step("agent-said-column");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -13990,12 +13997,21 @@ export class Store {
     taskId: string,
     now: Date,
     reason?: string,
-  ): { ok: true } | { ok: false; reason: "unknown-task" | "claimed" | "already-terminal" | CancellationRefusal } {
+    /** What the person was shown when they said cancel (a terminal client's confirm): the task's state and its latest
+     * build (null: none). Proved here, in the cancel's own transaction: anything else refuses `changed`. */
+    seen?: { state: string; run: number | null },
+  ): { ok: true } | { ok: false; reason: "unknown-task" | "claimed" | "already-terminal" | "changed" | CancellationRefusal } {
     return this.transact(() => {
       const ref = this.db
         .prepare("SELECT id FROM task_ref WHERE backend = ? AND external_id = ?")
         .get(BUILT_IN, taskId);
       if (ref === undefined) return { ok: false as const, reason: "unknown-task" as const };
+      if (seen !== undefined) {
+        const state = this.db.prepare("SELECT state FROM task WHERE id = ?").get(taskId)?.["state"];
+        const last = this.db.prepare("SELECT MAX(id) AS id FROM run WHERE task_ref = ?").get(Number(ref["id"]))?.["id"];
+        const run = last === null || last === undefined ? null : Number(last);
+        if (String(state) !== seen.state || run !== seen.run) return { ok: false as const, reason: "changed" as const };
+      }
 
       if (this.hasLiveClaim(Number(ref["id"]), now)) return { ok: false as const, reason: "claimed" as const };
 
@@ -27669,4 +27685,31 @@ function taskSizingShapeProblem(db: Database): string | null {
   if (canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(V169_SCHEMA.trim().replace(/;$/, "")).trim()) return "the task sizing table has an unknown shape";
   if (!hasColumn(db, "task_ref", "size_by")) return "task_ref.size_by is missing";
   return null;
+}
+
+/** v170's column, as a current or resumed file must hold it (agent-said-schema.ts). Null when it does. */
+function agentSaidShapeProblem(db: Database): string | null {
+  return hasColumn(db, "run", "agent_said_json") ? null : "run.agent_said_json is missing";
+}
+
+/** Keep what the agent said on its way out of a failed attempt (agent-said.ts agentSaidTail, already cleaned): at most
+ * eight lines, re-cleaned here so nothing else can store more or other words. First write wins. */
+export function recordAgentSaid(store: Store, runId: number, lines: readonly string[]): void {
+  const kept = agentSaidTail(lines.join("\n"));
+  while (kept.length > 0 && JSON.stringify(kept).length > 4096) kept.shift();
+  if (kept.length === 0) return;
+  store.handle.prepare("UPDATE run SET agent_said_json = ? WHERE id = ? AND agent_said_json IS NULL").run(JSON.stringify(kept), runId);
+}
+
+/** What the agent said on its way out of a failed attempt, per run: its cleaned lines, or null when nothing was kept. */
+export function agentSaidOf(store: Store, runId: number): string[] | null {
+  const row = store.handle.prepare("SELECT agent_said_json FROM run WHERE id = ?").get(runId);
+  const raw = row?.["agent_said_json"];
+  if (typeof raw !== "string") return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value) || value.length === 0) return null;
+    const lines = agentSaidTail(value.filter((one): one is string => typeof one === "string").join("\n"));
+    return lines.length === 0 ? null : lines;
+  } catch { return null; }
 }
