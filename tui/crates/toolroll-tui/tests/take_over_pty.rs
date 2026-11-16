@@ -32,6 +32,16 @@ struct Run {
 
 impl Run {
     fn start(engine: &fake::FakeEngine, scratch: &std::path::Path, rows: u16, cols: u16) -> Run {
+        Run::start_with(engine, scratch, rows, cols, &[])
+    }
+
+    fn start_with(
+        engine: &fake::FakeEngine,
+        scratch: &std::path::Path,
+        rows: u16,
+        cols: u16,
+        args: &[&str],
+    ) -> Run {
         let link_file = scratch.join("link");
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -54,6 +64,7 @@ impl Run {
         let mut c = CommandBuilder::new("/bin/sh");
         c.args(["-c", "exec \"$0\" \"$@\" 3<\"$TR_LINK_FILE\""]);
         c.arg(BIN);
+        c.args(args);
         // An environment of its own: no home, no colour setting, nothing of the person's.
         c.env_clear();
         c.env("PATH", "/usr/bin:/bin");
@@ -268,5 +279,94 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     assert!(engine.state.lock().unwrap().term_refusals.is_empty());
     run.press("\x1d");
     no_leaks(&run.quit());
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// A busy program (32 MB/s asked, a build log's lines and `yes`'s) while someone types: the screen parses the output in
+/// turns, keys first, and keeps none of it back or out of order. Every byte the console sent was parsed (counted by the
+/// binary), every key reached the program in order, and the program's last redraw — written after the whole stream —
+/// is what the screen shows.
+#[test]
+fn a_busy_program_loses_no_output_while_someone_types() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut state = fake::scenario();
+    let mut chunks = vec![];
+    for i in 0..64usize {
+        let mut c = Vec::new();
+        while c.len() < 16 * 1024 {
+            if i % 2 == 0 {
+                c.extend_from_slice(b"y\r\n");
+            } else {
+                c.extend_from_slice(
+                    format!("\x1b[1;32m   Compiling\x1b[0m crate-{i} v0.1.0 \x1b[2m[{} of 64]\x1b[0m 日本\r\n", c.len())
+                        .as_bytes(),
+                );
+            }
+        }
+        chunks.push(c);
+    }
+    state.term_stream = chunks;
+    state.term_stream_repeat = 1 << 12;
+    state.term_stream_rate = 32_000_000;
+    state.term_stream_end = b"\r\nstream-end-7f3a\r\n".to_vec();
+    state.term_full_screen = true;
+    state.term_echo = false;
+    let engine = rt.block_on(fake::FakeEngine::start(state, 0));
+    let scratch = std::env::temp_dir().join(format!("toolroll-busy-pty-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let stats = scratch.join("stats.json");
+    let mut run = Run::start_with(
+        &engine,
+        &scratch,
+        40,
+        140,
+        &["--stats-out", stats.to_str().unwrap()],
+    );
+    run.press("j");
+    run.press("t");
+    run.wait_for("Opens your shell", 5);
+    run.press("t");
+    run.wait_for("Typing", 10);
+    run.wait_for("Compiling", 10);
+    let typed = "the quick brown fox";
+    for ch in typed.chars() {
+        run.press(&ch.to_string());
+    }
+    run.wait_for(&format!("\u{2301} {typed}"), 5);
+    engine.state.lock().unwrap().term_stream_stop = true;
+    run.wait_for("stream-end-7f3a", 20);
+    // The stream ended; a last key's redraw comes after all of it, and is what the top line shows.
+    run.press("!");
+    run.wait_for(&format!("\u{2301} {typed}!"), 5);
+    run.press("\x1d");
+    run.wait_for("Back to the workbench", 5);
+    run.quit();
+    let own: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&stats).unwrap()).unwrap();
+    let st = engine.state.lock().unwrap();
+    assert!(
+        st.term_stream_bytes > 4 << 20,
+        "only {} bytes streamed",
+        st.term_stream_bytes
+    );
+    assert_eq!(
+        own["term_bytes_parsed"].as_u64(),
+        Some(st.term_bytes_sent),
+        "the screen parsed a different number of bytes than the console sent"
+    );
+    let keys: String = st
+        .term_frames
+        .iter()
+        .filter_map(|f| serde_json::from_str::<serde_json::Value>(f).ok())
+        .filter(|v| v["t"] == "in")
+        .map(|v| v["d"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(keys, format!("{typed}!"));
+    drop(st);
     let _ = std::fs::remove_dir_all(&scratch);
 }

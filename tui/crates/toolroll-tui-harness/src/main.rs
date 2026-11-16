@@ -13,6 +13,10 @@
 //!       the real binary in a real PTY taking over the fake console's terminal (its scripted stream over the console's
 //!       socket protocol, a full-screen program redrawing a fixed input line under a busy scroll region): key written →
 //!       echoed on the parsed screen, the binary's own frame times, and every DEC 2026 frame checked for tearing.
+//!       --rate-mb R paces the program at R MB/s instead (0: idle), stops it after the typing, and checks that every byte
+//!       the console sent was parsed (`output_whole`).
+//!   toolroll-tui-harness echo-rates --bin <toolroll-tui> [--rates 0,8,16,32] [drive-term's options]
+//!       drive-term once at each rate, against the targets (echo p95 < 16 ms, frame p95 < 8 ms, output whole).
 //!   toolroll-tui-harness drive --bin <toolroll-tui> [--cols 200] [--rows 60] [--keys 300] [--interval-ms 40]
 //!       [--resizes N] [--records 20000] [--rate 200] [--stats-out F] [--screen-out F]
 //!       the real binary in a real PTY against the fake console (records streaming into the live build at --rate per
@@ -45,6 +49,7 @@ fn main() -> Result<()> {
         Some("drive") => drive(&args[1..]),
         Some("bench-term") => bench_term(&args[1..]),
         Some("drive-term") => drive_term(&args[1..]),
+        Some("echo-rates") => echo_rates(&args[1..]),
         _ => bail!("usage: bench | drive --bin <toolroll-tui>"),
     }
 }
@@ -240,6 +245,8 @@ struct Screen {
     /// The echo is looked for anywhere on screen (a terminal's), not in the steer box.
     expect_anywhere: bool,
     echo_ms: Vec<f64>,
+    /// When each echo was seen.
+    echo_at: Vec<Instant>,
     tail: Vec<u8>,
 }
 
@@ -306,11 +313,13 @@ impl Screen {
         buf.extend_from_slice(data);
         let mut start = 0;
         let mut i = 0;
+        let mut framed = false;
         while i + ESU.len() <= buf.len() {
             if &buf[i..i + ESU.len()] == ESU {
                 let end = i + ESU.len();
                 self.parser.process(&buf[start..end]);
                 self.esu += 1;
+                framed = true;
                 self.check_frame();
                 start = end;
                 i = end;
@@ -324,7 +333,11 @@ impl Screen {
             self.parser.process(&buf[start..process_to]);
         }
         self.tail = buf[process_to..].to_vec();
-        if let Some((want, at)) = &self.expect {
+        // A terminal's echo is looked for once a frame is whole (a terminal shows a DEC 2026 frame at its end; the
+        // binary's frames reach a pseudo-terminal 1 KiB at a time, and scanning the screen on every piece slowed the
+        // reading enough to hold the binary's own writes back).
+        let look = !self.expect_anywhere || framed;
+        if let (Some((want, at)), true) = (&self.expect, look) {
             let seen = if self.expect_anywhere {
                 self.contains(want)
             } else {
@@ -332,6 +345,7 @@ impl Screen {
             };
             if seen {
                 self.echo_ms.push(at.elapsed().as_secs_f64() * 1000.0);
+                self.echo_at.push(Instant::now());
                 self.expect = None;
             }
         }
@@ -442,6 +456,7 @@ fn drive(args: &[String]) -> Result<()> {
         expect: None,
         expect_anywhere: false,
         echo_ms: vec![],
+        echo_at: vec![],
         tail: vec![],
     }));
     let s2 = screen.clone();
@@ -469,6 +484,7 @@ fn drive(args: &[String]) -> Result<()> {
     let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut typed = String::new();
     let mut missed = 0;
+    let mut written: Vec<Instant> = vec![];
     for i in 0..keys {
         if typed.len() >= 60 {
             // Esc closes the box (nothing sent); s opens an empty one.
@@ -492,6 +508,7 @@ fn drive(args: &[String]) -> Result<()> {
             s.expect = Some((typed.clone(), Instant::now()));
             writer.write_all(&[ch as u8])?;
             writer.flush()?;
+            written.push(Instant::now());
         }
         let until = Instant::now() + Duration::from_secs(1);
         while screen.lock().unwrap().expect.is_some() {
@@ -677,6 +694,62 @@ fn bench_term(args: &[String]) -> Result<()> {
 }
 
 fn drive_term(args: &[String]) -> Result<()> {
+    let report = drive_term_once(args)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+/// The take-over echo at each program output rate (`--rates`, MB/s; 0: an idle program), one real-PTY run each, with
+/// the targets: key → echo p95 under 16 ms, the binary's frame p95 under 8 ms, and every byte the console sent parsed.
+fn echo_rates(args: &[String]) -> Result<()> {
+    let rates: Vec<f64> = arg(args, "--rates")
+        .unwrap_or_else(|| "0,8,16,32".into())
+        .split(',')
+        .map(|r| r.trim().parse::<f64>().context("--rates"))
+        .collect::<Result<_>>()?;
+    let mut runs = vec![];
+    let mut ok = true;
+    for rate in rates {
+        // drive-term's options as given, without --rates and its value.
+        let skip = args.iter().position(|a| a == "--rates");
+        let mut one: Vec<String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| skip.is_none_or(|k| *i != k && *i != k + 1))
+            .map(|(_, a)| a.clone())
+            .collect();
+        one.extend(["--rate-mb".into(), rate.to_string()]);
+        let r = drive_term_once(&one)?;
+        let echo = r["key_write_to_echo_on_screen"]["p95_ms"]
+            .as_f64()
+            .unwrap_or(f64::MAX);
+        let frame = r["binary_frame_time"]["p95_ms"]
+            .as_f64()
+            .unwrap_or(f64::MAX);
+        let whole = r["output_whole"].as_bool().unwrap_or(false);
+        let pass = echo < 16.0 && frame < 8.0 && whole && r["missed_echo"] == json!(0);
+        ok &= pass;
+        eprintln!(
+            "rate {rate:>5} MB/s  echo p95 {echo:>8.2} ms  frame p95 {frame:>6.2} ms  program {:>6} MB/s  whole {whole}  {}",
+            r["program_mb_per_s"],
+            if pass { "ok" } else { "OVER" }
+        );
+        runs.push(json!({ "rate_mb_per_s": rate, "pass": pass, "run": r }));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({ "pass": ok, "runs": runs }))?
+    );
+    if !ok {
+        bail!("a rate missed its target");
+    }
+    Ok(())
+}
+
+/// The end of a paced stream, written after it stops: once it is on screen, everything before it was parsed.
+const STREAM_END: &str = "stream-end-7f3a";
+
+fn drive_term_once(args: &[String]) -> Result<serde_json::Value> {
     let bin = arg(args, "--bin").context("--bin")?;
     let cols: u16 = num(args, "--cols", 200);
     let rows: u16 = num(args, "--rows", 60);
@@ -684,6 +757,8 @@ fn drive_term(args: &[String]) -> Result<()> {
     let interval: u64 = num(args, "--interval-ms", 40);
     let chunk: usize = num::<usize>(args, "--chunk-kb", 16) * 1024;
     let gap: u64 = num(args, "--gap-us", 1000);
+    // Paced at this many MB/s (10^6 bytes) instead of the gap; 0: no output but the echo.
+    let rate: Option<f64> = arg(args, "--rate-mb").and_then(|v| v.parse().ok());
     let scratch =
         std::env::temp_dir().join(format!("toolroll-harness-term-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
@@ -698,8 +773,21 @@ fn drive_term(args: &[String]) -> Result<()> {
     let total = (chunk as u64 * 1_000_000 / gap.max(1) * seconds) as usize;
     state.term_full_screen = true;
     state.term_echo = false;
-    state.term_stream = busy_terminal(total.min(2 << 30), chunk);
-    state.term_stream_gap_us = gap;
+    match rate {
+        Some(mb) => {
+            // A 32 MiB stream sent over and over, paced, stopped after the typing; then its end is written.
+            if mb > 0.0 {
+                state.term_stream = busy_terminal(32 << 20, chunk);
+                state.term_stream_repeat = 1 << 16;
+            }
+            state.term_stream_rate = (mb * 1e6) as u64;
+            state.term_stream_end = format!("\r\n{STREAM_END}\r\n").into_bytes();
+        }
+        None => {
+            state.term_stream = busy_terminal(total.min(2 << 30), chunk);
+            state.term_stream_gap_us = gap;
+        }
+    }
     let engine = rt.block_on(toolroll_fake_engine::FakeEngine::start(state, 0));
     let link_file = scratch.join("link");
     {
@@ -749,6 +837,7 @@ fn drive_term(args: &[String]) -> Result<()> {
         expect: None,
         expect_anywhere: true,
         echo_ms: vec![],
+        echo_at: vec![],
         tail: vec![],
     }));
     let s2 = screen.clone();
@@ -774,10 +863,13 @@ fn drive_term(args: &[String]) -> Result<()> {
     writer.write_all(b"t")?;
     writer.flush()?;
     wait_for(&screen, "Typing", 10)?;
-    wait_for(&screen, "Compiling", 15)?;
+    if rate != Some(0.0) {
+        wait_for(&screen, "Compiling", 15)?;
+    }
     let alphabet = b"abcdefghijklmnopqrstuvwxyz0123456789";
     let mut typed = String::new();
     let mut missed = 0;
+    let mut written: Vec<Instant> = vec![];
     for i in 0..keys {
         let ch = alphabet[i % alphabet.len()] as char;
         typed.push(ch);
@@ -790,6 +882,7 @@ fn drive_term(args: &[String]) -> Result<()> {
             s.expect = Some((typed.clone(), Instant::now()));
             writer.write_all(&[ch as u8])?;
             writer.flush()?;
+            written.push(Instant::now());
         }
         let until = Instant::now() + Duration::from_secs(1);
         while screen.lock().unwrap().expect.is_some() {
@@ -801,6 +894,11 @@ fn drive_term(args: &[String]) -> Result<()> {
             std::thread::sleep(Duration::from_micros(200));
         }
         std::thread::sleep(Duration::from_millis(interval));
+    }
+    // A paced stream is stopped, and its end waited for: everything the console sent is then on its way, in order.
+    if rate.is_some() {
+        engine.state.lock().unwrap().term_stream_stop = true;
+        wait_for(&screen, STREAM_END, 30)?;
     }
     // Ctrl-] back, then q quits (its frame times are written on the way out).
     writer.write_all(b"\x1d")?;
@@ -835,16 +933,36 @@ fn drive_term(args: &[String]) -> Result<()> {
         .filter(|f| f.contains("\"in\""))
         .count();
     let _ = std::fs::remove_dir_all(&scratch);
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "pty": format!("{cols}x{rows}"), "elapsed_s": (elapsed * 100.0).round() / 100.0,
-            "stream_chunk_bytes": chunk, "stream_gap_us": gap, "keys": keys, "missed_echo": missed, "typed_frames_sent": typed_frames,
-            "key_write_to_echo_on_screen": summary(s.echo_ms.clone()),
-            "binary_frame_time": own["frame_time"], "binary_key_to_flush": own["key_to_flush"],
-            "frames_checked": s.frames_checked, "torn_frames": s.torn.len(), "torn_examples": s.torn.iter().filter(|t| !t.is_empty()).collect::<Vec<_>>(),
-            "output_mb_per_s": ((s.bytes as f64 / elapsed / 1e6) * 100.0).round() / 100.0, "child": status,
-        }))?
-    );
-    Ok(())
+    // The program's own output rate (the stream as the console sent it, held back when the screen wasn't reading).
+    let program = match (st.term_stream_started, st.term_stream_ended) {
+        (Some(a), Some(b)) if b > a => {
+            ((st.term_stream_bytes as f64 / (b - a).as_secs_f64() / 1e6) * 100.0).round() / 100.0
+        }
+        _ => 0.0,
+    };
+    // The key's way to the console alone (written → its typed frame arrived), each key matched to its frame in order.
+    let upstream: Vec<f64> = written
+        .iter()
+        .zip(st.term_input_at.iter())
+        .map(|(w, at)| at.saturating_duration_since(*w).as_secs_f64() * 1000.0)
+        .collect();
+    // The echo's way back alone (the console wrote the redraw → it was on screen).
+    let back: Vec<f64> = s
+        .echo_at
+        .iter()
+        .zip(st.term_redraw_at.iter())
+        .map(|(seen, sent)| seen.saturating_duration_since(*sent).as_secs_f64() * 1000.0)
+        .collect();
+    // Whole: every output byte the console sent was parsed into the pane (none dropped; the end came last, so in order).
+    let parsed = own["term_bytes_parsed"].as_u64();
+    let whole = parsed == Some(st.term_bytes_sent);
+    Ok(json!({
+        "pty": format!("{cols}x{rows}"), "elapsed_s": (elapsed * 100.0).round() / 100.0,
+        "stream_chunk_bytes": chunk, "stream_gap_us": gap, "rate_mb_per_s": rate, "keys": keys, "missed_echo": missed, "typed_frames_sent": typed_frames,
+        "key_write_to_echo_on_screen": summary(s.echo_ms.clone()), "key_write_to_console": summary(upstream), "console_echo_to_screen": summary(back),
+        "binary_frame_time": own["frame_time"], "binary_key_to_flush": own["key_to_flush"],
+        "frames_checked": s.frames_checked, "torn_frames": s.torn.len(), "torn_examples": s.torn.iter().filter(|t| !t.is_empty()).collect::<Vec<_>>(),
+        "output_mb_per_s": ((s.bytes as f64 / elapsed / 1e6) * 100.0).round() / 100.0, "child": status,
+        "program_mb_per_s": program, "console_bytes_sent": st.term_bytes_sent, "term_bytes_parsed": parsed, "output_whole": whole,
+    }))
 }

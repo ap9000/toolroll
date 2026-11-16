@@ -24,13 +24,16 @@ unicode-width = "0.2"
 zeroize = "1"
 libc = "0.2"
 # A take-over's terminal (term.rs): the PTY's bytes go through this VT emulator into cells; never to the real terminal.
-vt100 = "0.16"
+# vt100 0.16.2 vendored with faster scrolling and edge-size fixes (tui/vendor/vt100/README says exactly what changed).
+vt100 = { package = "toolroll-vt100", path = "../../vendor/vt100" }
 # Syntax colours in the Diff tab: Sublime grammars with the pure-Rust regex engine (no C, so every target still links
 # without a cross compiler); no bundled themes (Toolroll maps scopes to its own few colours), no HTML, no YAML loader.
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 
 [dev-dependencies]
 insta = "1"
+# Upstream vt100, to check the vendored copy draws exactly what it draws (tests/vt100_same.rs).
+vt100-upstream = { package = "vt100", version = "=0.16.2" }
 portable-pty = "0.9"
 serde = { version = "1" }
 toolroll-fake-engine = { path = "../toolroll-fake-engine" }

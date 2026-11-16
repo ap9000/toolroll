@@ -3,9 +3,12 @@
 #   toolroll-tui          the screen (the shipped binary)
 #   toolroll-fake-engine  a stand-in console serving the contract's fixtures (tests and the harness; never shipped)
 #   toolroll-tui-harness  measures the binary in a real PTY (never shipped)
+#   vendor/vt100          the Terminal tab's VT emulator: upstream vt100 0.16.2, faster scrolling and edge fixes (its README)
 [workspace]
 resolver = "2"
 members = ["crates/toolroll-api", "crates/toolroll-tui", "crates/toolroll-fake-engine", "crates/toolroll-tui-harness"]
+# Third-party code kept as written (vendor/vt100: upstream's formatting and lints; its README lists our changes).
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
