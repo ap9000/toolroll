@@ -150,7 +150,9 @@ Codex implementation reviews (2 rounds max). Rust code gets clippy -D warnings, 
 Native Rust binary: ratatui 0.30.2 + crossterm 0.29 + tokio, a THIN CLIENT of the local Toolroll server (HTTP JSON + SSE
 `/live` for state and live records; the existing `/term/<id>/socket` WebSocket for real terminals), shipped inside the
 npm package as per-platform optionalDependencies (esbuild/Codex pattern), current Ink screen kept as fallback
-(`--omit=optional`, unknown platforms, Windows before its package, `--screen-reader`). Agrees with the owner's
+(`--omit=optional`, unknown platforms, Windows before its package, `--screen-reader`). As shipped (owner's decision,
+2026-11-15): the four binaries ride INSIDE the `toolroll` package at `dist/tui/<platform>-<arch>/toolroll-tui` (the
+`@toolroll/*` scope isn't registered), found first after `--tui-binary` by the launcher (src/tui-launch.ts). Agrees with the owner's
 Rust + ratatui choice; no strong reason against ratatui (only gap: no accessibility tree → keep Ink for screen readers).
 Both leading agent TUIs use exactly this stack: Codex CLI (codex-rs/tui: ratatui 0.30.2 scrolling-regions, crossterm 0.29,
 tokio, vt100, portable-pty 0.9, diffy+syntect, 1,536 insta snapshots) and herdr 0.9.5 (ratatui 0.30, crossterm 0.29,
@@ -192,7 +194,7 @@ tui/crates/toolroll-tui/      # event loop: tokio select over crossterm EventStr
 tui/crates/toolroll-api/      # reqwest (rustls, cookies) + own SSE parser; tokio-tungstenite for /term; serde models from zod
 tui/crates/toolroll-vt/       # terminal pane trait: tui-term 0.3.4/vt100 now; libghostty-vt behind a feature
 tui/crates/toolroll-diff/     # similar/diffy hunks + syntect; Codex diff_render.rs as the model
-scripts/tui-build.mjs         # packs per-platform npm dirs; publish.yml publishes them
+scripts/tui-build.mjs         # builds each platform's binary; publish.yml bundles all four in dist/tui and checks them
 ```
 Tests: ratatui TestBackend + insta snapshots per screen state; Codex's VT100Backend for escape-level tests; a fake engine
 (axum, recorded fixtures); PTY tests via portable-pty; contract fixtures checked by both zod and Rust types.

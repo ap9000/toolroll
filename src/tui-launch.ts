@@ -4,13 +4,17 @@
  *
  * - Which binary. The trust anchor is WHERE the binary lives, never what it prints and never what the environment says:
  *   - `TOOLROLL_SCREEN=classic` or `--screen-reader` choose the classic screen;
+ *   - a developer's own build only by an explicit trust decision on the command line: `--tui-binary <absolute path>`,
+ *     said in one line when used. `TOOLROLL_TUI_BINARY` is not read (a variable set in an environment is no decision);
+ *   - else the binary this package ships for this machine, `dist/tui/<platform>-<arch>/toolroll-tui` under this
+ *     package's own root (publish.yml builds and bundles all four). That root comes only from where this module itself
+ *     runs (import.meta.url, real path): never from the environment, the working folder or PATH;
  *   - else this machine's platform package (`@toolroll/tui-<platform>-<arch>`, an optional dependency), looked for only
  *     in Toolroll's own install tree (this package's own node_modules, or the node_modules folder this package itself
  *     sits in): never through Node's upward module search, never through PATH;
  *   - else a source checkout's own build (`tui/target/release/toolroll-tui`), only when Toolroll itself runs from that
- *     same checkout (this package's root has `.git` and `tui/Cargo.toml`);
- *   - a developer's own build only by an explicit trust decision on the command line: `--tui-binary <absolute path>`,
- *     said in one line when used. `TOOLROLL_TUI_BINARY` is not read (a variable set in an environment is no decision).
+ *     same checkout (this package's root has `.git` and `tui/Cargo.toml`).
+ *   The first of these that is there is the one checked; a later one never stands in for a refused one.
  *   Whichever it is, its real path (symlinks resolved) must be a regular file owned by this user or root and not
  *   writable by group or others, in folders that are all owned by this user or root and not writable by group or others
  *   (an ancestor may be a sticky shared folder such as /tmp: nobody else can rename what is in it), and on macOS none of
@@ -19,7 +23,9 @@
  *   refuses). On Linux a POSIX ACL granting write shows up in the group mode bits (its mask), so the mode check covers
  *   it. Then nobody but this
  *   user (or root) can replace it between the check and the start. Anyone able to write Toolroll's own install tree
- *   already controls Toolroll's JavaScript, so that tree is as trusted as this file.
+ *   already controls Toolroll's JavaScript, so that tree is as trusted as this file. So an install owned by this user
+ *   (Homebrew's Cellar, `npm i -g` under nvm or a person's own /opt/homebrew) and one owned by root (`sudo npm i -g`
+ *   into /usr/local) both pass, and one others can write (a group- or world-writable npm prefix) is refused.
  * - Self-check, a compatibility test only: `<binary> --version` must answer `toolroll-tui <v> contract <digest>` with
  *   this build's engine contract digest (contracts/engine-api.ts); a binary from another build, one that doesn't start
  *   (ENOEXEC, a crash), can't turn crash dumps off (exit 43) or doesn't answer in time is never handed a sign-in.
@@ -47,7 +53,8 @@ import type { TuiExit, TuiSession } from "./tui-contract.js";
 
 /** The exit codes the binary ends with (tui/crates/toolroll-tui/src/app.rs EXIT_*). */
 export const TUI_EXIT = { leave: 0, stop: 40, keep: 41, classic: 42, unprotected: 43 } as const;
-/** Platforms with a terminal workbench package (scripts/tui-build.mjs PLATFORMS). */
+/** Platforms with a terminal workbench build (scripts/tui-build.mjs PLATFORMS): its optional package's name. The same
+ * keys name the bundled binary's folder, dist/tui/<key>/toolroll-tui. */
 export const TUI_PACKAGES: Readonly<Record<string, string>> = Object.freeze({
   "darwin-arm64": "@toolroll/tui-darwin-arm64", "darwin-x64": "@toolroll/tui-darwin-x64",
   "linux-x64": "@toolroll/tui-linux-x64", "linux-arm64": "@toolroll/tui-linux-arm64",
@@ -81,7 +88,15 @@ export type TuiChoiceInput = {
   selfCheck?: (binary: string) => { status: number | null; stdout: string; error?: string };
 };
 
-const defaultRoot = (): string => join(dirname(fileURLToPath(import.meta.url)), "..");
+/** A package's root from one of its modules' URLs: the folder above the module's (dist/), by its real path. This
+ * launcher passes its own import.meta.url: only where it runs decides the root. */
+export const packageRootOf = (moduleUrl: string): string => {
+  const root = join(dirname(fileURLToPath(moduleUrl)), "..");
+  try { return realpathSync(root); } catch { return root; }
+};
+const defaultRoot = (): string => packageRootOf(import.meta.url);
+/** The binary this package ships for `key` (a TUI_PACKAGES key, never a caller's string). */
+export const bundledBinary = (root: string, key: string): string => join(root, "dist", "tui", key, "toolroll-tui");
 const defaultSelfCheck = (binary: string) => {
   const ran = spawnSync(binary, ["--version"], { encoding: "utf8", timeout: SELF_CHECK_MS, stdio: ["ignore", "pipe", "ignore"] });
   return { status: ran.status, stdout: ran.stdout ?? "", ...(ran.error === undefined ? {} : { error: (ran.error as NodeJS.ErrnoException).code ?? ran.error.message }) };
@@ -119,7 +134,8 @@ export function chooseTuiBinary(input: TuiChoiceInput): TuiChoice {
   if (input.screenReader) return note({ ok: false, why: "it works with screen readers" });
   const root = input.packageRoot ?? defaultRoot();
   const uid = input.uid ?? process.getuid?.();
-  const name = TUI_PACKAGES[`${input.platform}-${input.arch}`];
+  const key = `${input.platform}-${input.arch}`;
+  const name = Object.hasOwn(TUI_PACKAGES, key) ? TUI_PACKAGES[key] : undefined;
   let binary: string;
   let notice: string | undefined;
   if (input.devBinary !== undefined && input.devBinary !== null) {
@@ -129,10 +145,14 @@ export function chooseTuiBinary(input: TuiChoiceInput): TuiChoice {
     binary = trusted.real;
     notice = `Using your own terminal workbench build at ${binary} (--tui-binary)`;
   } else {
-    const fromPackage = name === undefined ? null : installedPackageBinary(root, name);
+    // In order: the binary this package ships, the optional platform package, this checkout's own build. The first
+    // that is there is the one checked (a refused one never falls through to the next).
+    const bundled = name === undefined ? null : bundledBinary(root, key);
     const checkout = existsSync(join(root, ".git")) && existsSync(join(root, "tui", "Cargo.toml"));
     const built = join(root, "tui", "target", "release", "toolroll-tui");
-    const found = fromPackage ?? (checkout && existsSync(built) ? built : null);
+    const found = (bundled !== null && existsSync(bundled) ? bundled : null)
+      ?? (name === undefined ? null : installedPackageBinary(root, name))
+      ?? (checkout && existsSync(built) ? built : null);
     if (found === null) {
       if (name === undefined) return note({ ok: false, why: `the terminal workbench isn't built for ${input.platform}-${input.arch} yet` });
       return note({ ok: false, why: "the terminal workbench isn't installed on this computer" });

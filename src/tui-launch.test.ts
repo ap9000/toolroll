@@ -9,9 +9,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { spawnSync } from "node:child_process";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { easyStartArgs } from "./easy-start-args.js";
-import { aclVerdictOf, chooseTuiBinary, runTuiBinary, trustedBinary, type TuiChoiceInput } from "./tui-launch.js";
+import { aclVerdictOf, bundledBinary, chooseTuiBinary, packageRootOf, runTuiBinary, trustedBinary, type TuiChoiceInput } from "./tui-launch.js";
 import type { TuiSession } from "./tui-contract.js";
 
 const CONTRACT = "c".repeat(64);
@@ -79,6 +80,65 @@ describe.skipIf(!unix)("which screen opens", () => {
     installAt(join(wrong, "node_modules", "@toolroll", "tui-darwin-arm64"), "@someone/else");
     expect(why(base({ packageRoot: wrong, selfCheck }))).toBe("the terminal workbench isn't installed on this computer");
     expect(ran).toEqual([]);
+  });
+
+  test("the binary the package ships (dist/tui/<platform>-<arch>) comes first; --tui-binary still beats it; a refused one never falls through", () => {
+    const root = join(dir, "shipped", "lib", "node_modules", "toolroll");
+    const own = installAt(join(root, "node_modules", "@toolroll", "tui-darwin-arm64"));
+    const shipped = place(bundledBinary(root, "darwin-arm64"), "#!/bin/sh\n");
+    expect(shipped).toBe(join(root, "dist", "tui", "darwin-arm64", "toolroll-tui"));
+    const { ran, selfCheck } = recording();
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: shipped });
+    // An explicit --tui-binary is the person's own choice, before the shipped one.
+    const dev = place(join(dir, "shipped-dev", "toolroll-tui"), "#!/bin/sh\n");
+    expect(chooseTuiBinary(base({ packageRoot: root, devBinary: dev, selfCheck }))).toMatchObject({ ok: true, binary: dev });
+    // Only this machine's folder: another platform's shipped binary is never run here.
+    expect(why(base({ packageRoot: root, platform: "linux", arch: "x64", selfCheck }))).toBe("the terminal workbench isn't installed on this computer");
+    // Others can change it: refused with the reason, and the optional package below it is NOT tried instead.
+    chmodSync(shipped, 0o775);
+    expect(why(base({ packageRoot: root, selfCheck }))).toBe(`the terminal workbench at ${shipped} can't be trusted: others can change it (group- or world-writable)`);
+    chmodSync(shipped, 0o755);
+    expect(ran).toEqual([shipped, dev]);
+    // Gone (deleted from the install): the optional package is next.
+    rmSync(shipped);
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: own });
+  });
+
+  test("npm prefixes: one owned by this user (nvm, Homebrew's Cellar) passes; a group- or world-writable prefix refuses; a sticky shared folder above it is fine", () => {
+    const prefix = join(dir, "prefixes", "lib-owned");
+    const root = join(prefix, "lib", "node_modules", "toolroll");
+    const shipped = place(bundledBinary(root, "darwin-arm64"), "#!/bin/sh\n");
+    const { ran, selfCheck } = recording();
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: shipped });
+    // A world-writable prefix (anyone could swap lib/node_modules/toolroll underneath): refused, never run.
+    chmodSync(prefix, 0o777);
+    expect(why(base({ packageRoot: root, selfCheck }))).toMatch(new RegExp(`can't be trusted: others can change ${prefix} \\(group- or world-writable\\)$`));
+    chmodSync(prefix, 0o775);
+    expect(why(base({ packageRoot: root, selfCheck }))).toMatch(/can't be trusted: others can change .*lib-owned/);
+    // A sticky world-writable folder ABOVE the prefix (like /tmp) can't have the prefix renamed by others: fine.
+    chmodSync(prefix, 0o755);
+    chmodSync(dirname(prefix), 0o1777);
+    expect(chooseTuiBinary(base({ packageRoot: root, selfCheck }))).toEqual({ ok: true, binary: shipped });
+    chmodSync(dirname(prefix), 0o755);
+    if (process.getuid!() !== 0) {
+      // Seen as another user's install (root-owned is the other accepted owner, which a test can't make): refused.
+      expect(why(base({ packageRoot: root, uid: process.getuid!() + 1, selfCheck }))).toMatch(/owned by another user/);
+    }
+    expect(ran).toEqual([shipped, shipped]);
+  });
+
+  test("the package root is where the launcher's own module really is: a symlinked install resolves to it, and the environment or working folder never moves it", () => {
+    const real = join(dir, "cellar", "toolroll", "1.0.0", "libexec", "lib", "node_modules", "toolroll");
+    place(join(real, "dist", "tui-launch.js"), "", 0o644);
+    symlinkSync(join(dir, "cellar", "toolroll", "1.0.0"), join(dir, "opt-toolroll"));
+    expect(packageRootOf(pathToFileURL(join(dir, "opt-toolroll", "libexec", "lib", "node_modules", "toolroll", "dist", "tui-launch.js")).href)).toBe(real);
+    // Without a test's packageRoot: a shipped binary planted where the environment points is never run.
+    const planted = join(dir, "planted-root");
+    place(bundledBinary(planted, "darwin-arm64"), `#!/bin/sh\necho "toolroll-tui 1.0.0 contract ${CONTRACT}"\n`);
+    const { ran, selfCheck } = recording();
+    const { packageRoot: _drop, ...rest } = base({ selfCheck, env: { PWD: planted, INIT_CWD: planted, npm_config_prefix: planted, TOOLROLL_ROOT: planted, NODE_PATH: join(planted, "dist") } });
+    chooseTuiBinary(rest);
+    expect(ran.filter(one => one.startsWith(planted))).toEqual([]);
   });
 
   test("TOOLROLL_TUI_BINARY chooses nothing (it is ignored, said in one line), even a file that would pass every check", () => {

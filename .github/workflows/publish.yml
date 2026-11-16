@@ -9,8 +9,9 @@
 # matching tag on the squash-merged commit once main's tree equals the gated
 # tree. The tag runs no tests again (docs/plans/test-matrix.md): the release
 # proof job reads GitHub's own record, with this workflow's read-only token,
-# and npm publication needs it. The coordinator waits for both jobs
-# (RELEASE_TAG_CHECKS).
+# and npm publication needs it. The terminal workbench's binaries are built
+# here, one job per platform, and the publisher bundles and checks them. The
+# coordinator waits for every job (RELEASE_TAG_CHECKS).
 name: Publish
 
 on:
@@ -71,8 +72,58 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS" --tag "$GITHUB_REF_NAME"
 
+  # The terminal workbench's binary for each platform the package carries (scripts/tui-build.mjs --bundle), each built,
+  # ad-hoc signed (macOS, checked with codesign -v) and self-checked ON its own platform, then handed to the publisher.
+  # It reads no secret and writes nothing but its artifact. Its four check names are RELEASE_TAG_CHECKS: the matrix
+  # fills them in because this job has no `if:` and no `needs:` (GitHub reports a SKIPPED matrix job once, under its
+  # name as written, with no platform in it), and src/ci-workflow.test.ts holds it that way.
+  workbench:
+    name: workbench binary · ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+          - platform: darwin-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      TARGET: ${{ matrix.target }}
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --target "$TARGET" && rustup default stable && cargo --version
+      - name: Build, sign and self-check on its own platform
+        run: node scripts/tui-build.mjs --bundle "$RUNNER_TEMP/workbench/bin" --reports "$RUNNER_TEMP/workbench/reports" --targets "$PLATFORM"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbench-${{ matrix.platform }}
+          path: ${{ runner.temp }}/workbench
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
-    needs: proof
+    needs: [proof, workbench]
     runs-on: ubuntu-latest
     permissions:
       contents: write # the GitHub release
@@ -110,6 +161,19 @@ jobs:
 
       # Build before the final tag read, so no lifecycle script delays the check-to-publish handoff.
       - run: npm run prepublishOnly
+
+      # The four workbench binaries go into the package (dist/tui/<platform>-<arch>/toolroll-tui), and nothing is
+      # published unless each is its platform's architecture, 0755, signed (macOS) or static (Linux), answers the
+      # self-check with THIS build's engine contract digest, and `npm pack --dry-run` lists exactly those four.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: workbench-*
+          path: ${{ runner.temp }}/workbench
+          merge-multiple: true
+      - name: Bundle the terminal workbench, and refuse to publish unless every binary checks out
+        run: |
+          node scripts/tui-build.mjs --adopt "$RUNNER_TEMP/workbench/bin"
+          node scripts/tui-build.mjs --verify --reports "$RUNNER_TEMP/workbench/reports"
       - name: Publish the proven commit while the remote tag still names it
         env:
           GITHUB_TOKEN: ${{ github.token }}

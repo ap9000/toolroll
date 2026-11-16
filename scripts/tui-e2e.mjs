@@ -6,7 +6,12 @@
  * files a task with `n`, watches the scripted provider build it, opens its changes, accepts it with `a`, and quits.
  *
  *   node scripts/tui-e2e.mjs [--port <n>] --out <empty folder> [--binary <toolroll-tui>] [--keep] [--no-model] [--browser]
+ *                            [--toolroll <installed dist/bin.js> --expect bundled|classic]
  *
+ * By default `toolroll` is this checkout's dist/bin.js, handed the workbench as --tui-binary. With --toolroll (an
+ * installed package's own dist/bin.js, scripts/tui-bundle-smoke.mjs) bare `toolroll` gets no --tui-binary, and
+ * --expect says what must open: `bundled`, the binary that package ships (dist/tui/<platform>-<arch>/toolroll-tui, seen
+ * running by its real path), or `classic`, the Ink screen with the launcher's one-line notice (its binary deleted).
  * Only the model is scripted (scripts/fixtures/scripted-provider.mjs). A throwaway HOME under --out, the database in a
  * short folder of this checkout (a socket path must fit), a port of its own (--port, else one the system hands out;
  * never 4180), stand-ins for every agent CLI,
@@ -80,11 +85,21 @@ export function preflightOf(env, { bin, realHome, where = whereIn }) {
   return { ok: problems.length === 0, home_is_throwaway: homeIsThrowaway, agents, ...(problems.length === 0 ? {} : { problems }) };
 }
 
-/** Every outcome the run needs; any false one fails the run (exit 1). */
-export function requiredOf(report, { modelFree, browser, raw, failure }) {
+/** The launcher's line when the package's own binary is gone (tui-launch.ts, easy-start.ts openTui). */
+export const CLASSIC_NOTICE = /Opening the classic screen: the terminal workbench isn't installed on this computer\./;
+
+/** Every outcome the run needs; any false one fails the run (exit 1). `expect`: flag (--tui-binary), bundled or classic. */
+export function requiredOf(report, { modelFree, browser, raw, failure, expect = "flag" }) {
+  const plain = String(raw).replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "");
+  if (expect === "classic") {
+    return { preflight: report.preflight?.ok === true, classic_notice: CLASSIC_NOTICE.test(plain), classic_screen: report.classic_screen === true,
+      no_workbench: report.workbench === false, quit: report.exit === "ended", no_failure: failure === null };
+  }
   return {
     preflight: report.preflight?.ok === true, workbench: report.workbench === true,
-    signed_in_by_flag: /Using your own terminal workbench build/.test(raw), quit: report.exit === "ended", no_failure: failure === null,
+    ...(expect === "bundled" ? { bundled_binary: report.bundled_process === true, no_flag: !/Using your own terminal workbench build/.test(plain) }
+      : { signed_in_by_flag: /Using your own terminal workbench build/.test(raw) }),
+    quit: report.exit === "ended", no_failure: failure === null,
     ...(modelFree ? { nothing_filed: report.filed === 0, ...(browser ? { browser_stand_in: report.browser_opened === true } : {}) }
       : { diff_shown: report.diff_shown === true, accept_dialog_shown: report.accept_dialog === true, accepted: report.accepted === true,
         task_done: report.final_state === "done", scripted_turns_only: (report.provider_turns ?? []).length > 0 }),
@@ -114,9 +129,16 @@ async function main() {
   if (!Number.isInteger(port) || port === 4180 || port < 1024) throw new Error("--port: a free port of your own, never 4180");
   const out = resolve(option("--out", ""));
   if (option("--out", "") === "" || (existsSync(out) && readdirSync(out).length > 0)) throw new Error("--out: an empty folder");
+  // Which `toolroll`: this checkout's, or an installed package's own dist/bin.js (then --expect says what must open).
+  const expect = option("--expect", "flag");
+  const toolroll = option("--toolroll", null);
+  if (!["flag", "bundled", "classic"].includes(expect) || (expect === "flag") !== (toolroll === null)) throw new Error("--toolroll <installed dist/bin.js> goes with --expect bundled|classic");
+  const toolrollJs = toolroll === null ? join(here, "dist", "bin.js") : realpathSync(resolve(toolroll));
+  // The binary that package ships for this machine: where it must be seen running (bundled).
+  const shipped = join(dirname(dirname(toolrollJs)), "dist", "tui", `${process.platform}-${process.arch}`, "toolroll-tui");
   // Handed to `toolroll` as --tui-binary (an explicit, absolute choice the launcher checks), never through the environment.
   const binary = resolve(option("--binary", join(here, "tui", "target", "release", "toolroll-tui")));
-  if (!existsSync(binary)) throw new Error(`no terminal workbench build at ${binary} (cd tui && cargo build --release)`);
+  if (expect === "flag" && !existsSync(binary)) throw new Error(`no terminal workbench build at ${binary} (cd tui && cargo build --release)`);
 
   // SAFETY (found by this script's first run, 2026-11-14): a build started on this checkout's console ran this computer's
   // own Claude Code (~/.local/bin/claude) under the person's own login (a session appeared in the real ~/.claude/projects)
@@ -135,7 +157,7 @@ async function main() {
   mkdirSync(dbDir);
   const db = join(dbDir, "orders.db");
   const screens = join(out, "screens.txt");
-  const report = { port, binary, steps: [], model_free: modelFree };
+  const report = { port, ...(expect === "flag" ? { binary } : { toolroll: toolrollJs, expect }), steps: [], model_free: modelFree };
 
   const TASK = "Add a subtract(a, b) function next to add in src/math.js, with a test.";
   const files = {
@@ -196,7 +218,7 @@ async function main() {
   const keys = openSync(fifo, fsConstants.O_RDWR);
   const word = text => `'${String(text).replace(/'/g, "'\\''")}'`;
   const python = ["/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"].find(one => existsSync(one)) ?? "python3";
-  const host = [python, join(here, "scripts", "fixtures", "pty-host.py"), rows, cols, fifo, log, pidFile, process.execPath, join(here, "dist", "bin.js"), "--port", port, "--tui-binary", binary].map(word).join(" ");
+  const host = [python, join(here, "scripts", "fixtures", "pty-host.py"), rows, cols, fifo, log, pidFile, process.execPath, toolrollJs, "--port", port, ...(expect === "flag" ? ["--tui-binary", binary] : [])].map(word).join(" ");
   spawn("/bin/sh", ["-c", `cd ${word(shop)} && exec ${host} > ${word(join(termDir, "host.log"))} 2>&1 < /dev/null &`], { stdio: "ignore", env, detached: true }).unref();
   let raw = "", offset = 0, answered = 0;
   const pump = () => {
@@ -237,13 +259,41 @@ async function main() {
   const type = async words => { for (const c of words) { term.write(c); await sleep(15); } };
   const sqlite = query => JSON.parse(execFileSync("sqlite3", ["-json", "-readonly", "-cmd", ".timeout 5000", db, query], { encoding: "utf8" }).trim() || "[]");
 
+  /** Whether a process of this terminal runs exactly `path` (its real path, as the launcher starts it). */
+  const running = path => {
+    let real;
+    try { real = realpathSync(path); } catch { return false; }
+    const ps = spawnSync("ps", ["-A", "-o", "command="], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } });
+    return (ps.stdout ?? "").split("\n").some(line => line.trim() === real || line.trim().startsWith(`${real} `));
+  };
+
   let failure = null;
   try {
+    if (expect === "classic") {
+      // The package's binary is gone: the launcher says why in one line, and the classic (Ink) screen opens instead.
+      await waitFor(/Nothing needs you|n new task · w browser/, "the classic screen", 120_000);
+      report.classic_screen = true;
+      // Never the workbench's own frame (its tabs, its footer); both screens draw with synchronized output, so that's no tell.
+      report.workbench = /Live {2,}Steps {2,}Diff|: {2}all actions/.test(raw.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, ""));
+      step("the classic screen", { notice: CLASSIC_NOTICE.test(raw.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "")) });
+      term.write("q");
+      await waitFor(/s stop · b background/, "the quit question", 10_000);
+      step("q: quit");
+      term.write("s");
+      const until = Date.now() + 60_000;
+      while (alive() && Date.now() < until) await sleep(200);
+      pump();
+      report.exit = alive() ? "still running" : "ended";
+      step("after quitting");
+      return;
+    }
     // 1. Bare `toolroll`: the console starts, the workbench opens signed in.
     await waitFor(/Toolroll/, "the workbench", 120_000);
     await waitFor(/Nothing yet|Needs you|Working/, "the work list", 60_000);
     report.workbench = !/Opening the classic screen/.test(raw) && /\u001b\[\?2026h/.test(raw);
-    step("the workbench, empty", { classic: /Opening the classic screen/.test(raw) });
+    // The binary the installed package ships is the one running (by its real path), not one handed over by flag.
+    if (expect === "bundled") report.bundled_process = running(shipped);
+    step("the workbench, empty", { classic: /Opening the classic screen/.test(raw), ...(expect === "bundled" ? { bundled_process: report.bundled_process } : {}) });
     if (modelFree) {
       // Nothing filed: n, a few words, Esc; w (the launcher opens the browser signed in: the opener stand-in records a
       // page); ? and back.
@@ -261,7 +311,7 @@ async function main() {
       report.browser_opened = existsSync(join(out, "opened.txt"));
       step("w: the browser");
       term.write("?");
-      await waitFor(/Press any key to close/, "help");
+      await waitFor(/Press any key to close|any other key to close/, "help");
       step("?: help");
       term.write("x");
       await sleep(300);
@@ -351,7 +401,7 @@ async function main() {
     report.provider_turns = provider.journal().map(one => one.role);
     report.opened = existsSync(join(out, "opened.txt"));
     // Every outcome the run needs, true or the run fails (exit 1).
-    report.required = requiredOf(report, { modelFree, browser: args.includes("--browser"), raw, failure });
+    report.required = requiredOf(report, { modelFree, browser: args.includes("--browser"), raw, failure, expect });
     const missing = Object.entries(report.required).filter(([, ok]) => !ok).map(([name]) => name);
     report.ok = missing.length === 0;
     writeFileSync(join(out, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
