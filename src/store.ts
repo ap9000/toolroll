@@ -875,6 +875,8 @@ export const TASK_SIZING_SCHEMA = `
 CREATE TABLE IF NOT EXISTS task_sizing_setting (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
   enabled    INTEGER NOT NULL CHECK (enabled IN (0,1)),
+  -- The classifier the person turned it on for: Claude Haiku on their plan, or Jev through their OpenRouter key.
+  sizer      TEXT CHECK (sizer IN ('claude','jev')),
   updated_by TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -13935,9 +13937,12 @@ export class Store {
     /** Approve & build again: requeue only while this exact build is the finished task's latest result and the scope
      * is still the one just approved, read inside this transaction ("moved" otherwise). */
     expect?: { run: number; scopeDigest: string },
+    /** A Retry pressed on a page: the build and plan the person saw (its latest build and the scope's digest), read
+     * inside this transaction, whatever the task's state (a failed task as much as a finished one); "stale" otherwise. */
+    pins?: { run: number; digest: string },
   ):
     | { ok: true; resolvedIncidents: number; rejectedRun: number | null }
-    | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" | "moved" | "archived" } {
+    | { ok: false; reason: "unknown-task" | "not-stalled" | "claimed" | "accepted-result" | "published" | "moved" | "archived" | "stale" } {
     return this.transact(() => {
       // Who may run again is one read, shared with the claim refusal's words (requeueEligibility, end of file).
       const eligible = requeueEligibility(this, taskId, now);
@@ -13947,6 +13952,12 @@ export class Store {
         const scope = this.db.prepare("SELECT digest, approved_digest FROM task_scope WHERE task_id = ?").get(taskId);
         if (state !== "done" || rejectedRun !== expect.run || scope === undefined || String(scope["digest"]) !== expect.scopeDigest ||
           scope["approved_digest"] !== scope["digest"]) return { ok: false as const, reason: "moved" as const };
+      }
+      if (pins !== undefined) {
+        const latest = this.lastBuilderRun(taskRef);
+        const scope = this.db.prepare("SELECT digest FROM task_scope WHERE task_id = ?").get(taskId);
+        if (latest === null || latest.id !== pins.run || scope === undefined || String(scope["digest"]) !== pins.digest ||
+          this.db.prepare("SELECT 1 AS hit FROM run WHERE task_ref = ? AND id > ? LIMIT 1").get(taskRef, pins.run) !== undefined) return { ok: false as const, reason: "stale" as const };
       }
 
       for (const incident of incidents) this.resolveIncidentLocked(incident, by, now);

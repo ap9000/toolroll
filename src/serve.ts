@@ -2227,7 +2227,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           }
           // Only for a Codex the last sign-in check saw signed in: a signed-out (or not yet checked) Codex is never started
           // for its servers (eight stranger 2).
-          if (SIGNED_IN_STATES.has(knownConnections.get("codex")?.state ?? "") && lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) waits.push(lastChecks.run(`codex-tools:${repo}`, () => codexServers(repo)));
+          // The last answer said signed in: asked again, fresh, right before Codex is started (a sign-out since is seen).
+          if (SIGNED_IN_STATES.has(knownConnections.get("codex")?.state ?? "") && lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) {
+            waits.push(lastChecks.run(`codex-tools:${repo}`, async () => SIGNED_IN_STATES.has((await connectionCheck("codex", true)).state) ? codexServers(repo) : null));
+          }
         }
         if (databaseFile !== null && lastChecks.due("storage", 30 * 60_000)) {
           waits.push(lastChecks.run("storage", () => checkoutPlan(store, storagePool(databaseFile), clock(), { manual: true })));

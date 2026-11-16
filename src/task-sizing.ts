@@ -40,7 +40,9 @@ export type SizingInput = { title: string; goal?: string | undefined; outOfScope
 export type { SizeAnswer } from "./contracts/task-sizing.js";
 /** One classifier: null (or a throw) is "no answer"; the signal ends at the budget. `by` names the model that answered,
  * in Toolroll's own words (the approval terms say "Sized by …"). */
-export type Sizer = (input: SizingInput, signal: AbortSignal) => Promise<(SizeAnswer & { by?: string }) | null>;
+export type Sizer = (input: SizingInput, signal: AbortSignal, only?: SizerChoice) => Promise<(SizeAnswer & { by?: string }) | null>;
+/** Which classifier a person consented to: Claude Haiku on their plan, or Jev through their OpenRouter key. */
+export type SizerChoice = "claude" | "jev";
 /** What the approval terms call `claude -p --model claude-haiku-5-5`. */
 export const CLAUDE_SIZER_NAME = "Claude Haiku 5.5";
 /** What the approval terms call Jev through OpenRouter. */
@@ -159,14 +161,24 @@ export function jevSizer(fetcher: typeof fetch, key: string): Sizer {
   };
 }
 
-/** The owner's own classifier: Jev when an OpenRouter key is set up, otherwise Claude on this computer's sign-in. */
-export function ownerSizer(fetcher: typeof fetch = fetch, keyOf: () => string | null = () => readProviderKey("openrouter")): Sizer {
-  const claude = claudeSizer();
-  return (input, signal) => {
+/** The owner's own classifier: Jev when an OpenRouter key is set up, otherwise Claude on this computer's sign-in. Given
+ * `only` (the classifier the person consented to), only that one is ever asked: never Jev without its key, and never
+ * Jev in Claude's place because a key was saved since. */
+export function ownerSizer(fetcher: typeof fetch = fetch, keyOf: () => string | null = () => readProviderKey("openrouter"), claude: Sizer = claudeSizer()): Sizer {
+  return (input, signal, only) => {
     const key = keyOf();
+    if (only === "claude") return claude(input, signal);
+    if (only === "jev") return key === null ? Promise.resolve(null) : jevSizer(fetcher, key)(input, signal);
     return key === null ? claude(input, signal) : jevSizer(fetcher, key)(input, signal);
   };
 }
+
+/** The classifier available right now: Jev when an OpenRouter key is saved, otherwise Claude Haiku on this plan. */
+export function availableSizer(keyOf: () => string | null = () => readProviderKey("openrouter")): SizerChoice {
+  return keyOf() === null ? "claude" : "jev";
+}
+/** What each classifier is called where a person chooses it. */
+export const SIZER_WORDS: Readonly<Record<SizerChoice, string>> = { claude: "Claude Haiku, on your plan", jev: "Jev via OpenRouter, your credit" };
 
 /**
  * Size one task within the budget: the classifier's answer, or — when it
@@ -205,9 +217,11 @@ export function installFilingSizer(sizer: Sizer, budgetMs = SIZING_BUDGET_MS): (
 let budget = SIZING_BUDGET_MS;
 /** The classifier this process files with, and its budget (fast-start.ts waits for it; null: no answer will come). With
  * task sizing off (the default) there is none, whatever is installed: no model call before a yes. */
-export const filingSizer = (store: Store): { sizer: Sizer | null; budget: number; off: boolean } => {
-  const on = taskSizingOn(store);
-  return { sizer: on ? installed : null, budget, off: !on };
+export const filingSizer = (store: Store, keyOf?: () => string | null): { sizer: Sizer | null; budget: number; off: boolean } => {
+  const read = taskSizingSetting(store, keyOf);
+  const sizer = installed;
+  // Only the classifier the person consented to, and only while it is the one available (taskSizingSetting).
+  return { sizer: read.on && sizer !== null && read.sizer !== null ? ((input, signal) => sizer(input, signal, read.sizer!)) : null, budget, off: !read.on };
 };
 
 /**
@@ -217,9 +231,12 @@ export const filingSizer = (store: Store): { sizer: Sizer | null; budget: number
  * chose planning explicitly.
  */
 export function refineFiledSizing(store: Store, taskId: string, input: SizingInput, followPlanning: boolean, clock: () => Date = () => new Date()): Promise<void> | null {
-  const sizer = installed;
-  // Task sizing off (the default): no model call, before a yes or after it.
-  if (sizer === null || !taskSizingOn(store)) return null;
+  const read = taskSizingSetting(store);
+  const installedSizer = installed;
+  // Task sizing off (the default), or the consented classifier no longer the one available: no model call.
+  if (installedSizer === null || !read.on || read.sizer === null) return null;
+  const consented = read.sizer;
+  const sizer: Sizer = (asked, signal) => installedSizer(asked, signal, consented);
   const work = classifyTask(input, sizer, budget)
     .then(sizing => { if (sizing.source === "classifier") store.applySizing(taskId, sizing, { followPlanning }, clock()); })
     .catch(() => undefined)
@@ -240,22 +257,37 @@ export { SIZING_OFF_REASON } from "./phase-routing.js";
 /** Whether a person turned task sizing on: off unless its one row says on, so a new install and an upgraded one that
  * never chose start with no model call before a yes. `byEnv`: TOOLROLL_NO_TASK_CLASSIFIER is set, which keeps the
  * classifier out of this process whatever the row says (operate.ts installs none). */
-export function taskSizingSetting(store: Store): { on: boolean; by: string | null; at: string | null; byEnv: boolean } {
+export function taskSizingSetting(store: Store, keyOf?: () => string | null): {
+  /** In effect now: turned on, for the classifier that is the one available now. */
+  on: boolean;
+  /** Turned on (the saved choice, whatever is available). */
+  chosen: boolean;
+  /** The classifier it was turned on for; null when off or never chosen. */
+  sizer: SizerChoice | null;
+  /** The classifier available right now (what turning it on would consent to). */
+  available: SizerChoice;
+  by: string | null; at: string | null; byEnv: boolean;
+} {
   const byEnv = envValue(process.env, "NO_TASK_CLASSIFIER") !== undefined;
+  const available = availableSizer(keyOf);
   let row: Record<string, unknown> | undefined;
   // A database opened read-only from before the table: nothing chosen, so off.
-  try { row = store.handle.prepare("SELECT enabled, updated_by, updated_at FROM task_sizing_setting WHERE id = 1").get(); } catch { row = undefined; }
-  if (row === undefined) return { on: false, by: null, at: null, byEnv };
-  return { on: Number(row["enabled"]) === 1, by: String(row["updated_by"]), at: String(row["updated_at"]), byEnv };
+  try { row = store.handle.prepare("SELECT enabled, sizer, updated_by, updated_at FROM task_sizing_setting WHERE id = 1").get(); } catch { row = undefined; }
+  if (row === undefined) return { on: false, chosen: false, sizer: null, available, by: null, at: null, byEnv };
+  const chosen = Number(row["enabled"]) === 1;
+  const sizer = row["sizer"] === "claude" || row["sizer"] === "jev" ? row["sizer"] : null;
+  // Never switched silently: on only for the classifier the person consented to, while it is the one available.
+  return { on: chosen && sizer !== null && sizer === available, chosen, sizer: chosen ? sizer : null, available, by: String(row["updated_by"]), at: String(row["updated_at"]), byEnv };
 }
 export const taskSizingOn = (store: Store): boolean => taskSizingSetting(store).on;
 
-/** Turn task sizing on or off, ledgered. The caller proved the person (an instance operator's step-up) in the same
- * transaction it calls this in. */
-export function setTaskSizing(store: Store, on: boolean, by: string, now: Date): void {
-  store.handle.prepare(`INSERT INTO task_sizing_setting (id, enabled, updated_by, updated_at) VALUES (1, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, updated_by = excluded.updated_by, updated_at = excluded.updated_at`).run(on ? 1 : 0, by, now.toISOString());
-  store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "task sizing by a quick model call", outcome: on ? "on" : "off", source: "policy", detail: null });
+/** Turn task sizing on for one classifier (the one the person was shown and consented to), or off, ledgered. The caller
+ * proved the person (an instance operator's step-up) in the same transaction it calls this in. */
+export function setTaskSizing(store: Store, on: SizerChoice | false, by: string, now: Date): void {
+  store.handle.prepare(`INSERT INTO task_sizing_setting (id, enabled, sizer, updated_by, updated_at) VALUES (1, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, sizer = excluded.sizer, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+    .run(on === false ? 0 : 1, on === false ? null : on, by, now.toISOString());
+  store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "task sizing by a quick model call", outcome: on === false ? "off" : `on: ${on}`, source: "policy", detail: null });
 }
 
 /** The words that can't be left to a guess with no classifier to flag them: anything they touch plans first. */

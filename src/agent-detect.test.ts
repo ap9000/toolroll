@@ -12,7 +12,7 @@ import { DETECT_TIMEOUT_MS, detectAgents, detectionLines, detectionReport, first
 import { agentsReadOf } from "./engine-reads.js";
 import { agentsReadSchema } from "./contracts/engine-api.js";
 import { answerStandsMs, createConnectionChecker, SIGNED_OUT_RECHECK_MS, signInFacts } from "./provider-connection.js";
-import { codexLimitsPass, readCodexLimits } from "./codex-limits.js";
+import { codexLimitsPass, codexSignedInNow, readCodexLimits } from "./codex-limits.js";
 import { openStore } from "./store.js";
 import { BACKGROUND_STATUS_TIMEOUT_MS, statusProbe } from "./status-probe.js";
 import { boundedAcl } from "./trusted-path.js";
@@ -167,6 +167,31 @@ describe("a signed-out agent is never started beyond its status command (eight s
       expect(await codexLimitsPass(store, { signedIn, read: async () => { reads += 1; return null; } })).toBe("read");
       expect(reads).toBe(1);
       // Nothing but the status command ever ran.
+      expect(new Set(ran())).toEqual(new Set(["codex login status"]));
+    } finally { store.close(); }
+  });
+});
+
+describe("a cached sign-in never starts Codex after a sign-out", () => {
+  test("signed in when the answer was cached, signed out since: the fresh check right before the start sees it, and nothing starts", async () => {
+    stub("codex", `[ "$1 $2" = "login status" ] || { echo started >&2; exit 0; }\necho 'Logged in using ChatGPT'`);
+    const now = Date.parse("2026-11-16T09:00:00.000Z");
+    const check = createConnectionChecker({ home, env: { PATH: bin, HOME: home }, clock: () => new Date(now) });
+    const store = openStore(":memory:");
+    try {
+      let reads = 0;
+      const read = async () => { reads += 1; return null; };
+      expect(await codexLimitsPass(store, { signedIn: () => codexSignedInNow(check), read })).toBe("read");
+      expect(reads).toBe(1);
+      // Signed out now; the cached answer (still fresh by the clock) says signed in.
+      stub("codex", `[ "$1 $2" = "login status" ] || { echo started >&2; exit 0; }\necho 'Not logged in'; exit 1`);
+      expect((await check("codex")).state).toBe("connected");
+      expect(await codexLimitsPass(store, { signedIn: () => codexSignedInNow(check), read })).toBe("skipped");
+      expect(reads).toBe(1);
+      // A signed-out answer keeps its back-off: the next pass asks nothing at all.
+      const asked = ran().length;
+      expect(await codexLimitsPass(store, { signedIn: () => codexSignedInNow(check), read })).toBe("skipped");
+      expect(ran()).toHaveLength(asked);
       expect(new Set(ran())).toEqual(new Set(["codex login status"]));
     } finally { store.close(); }
   });

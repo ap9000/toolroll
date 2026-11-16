@@ -46,6 +46,20 @@ test("eight stranger 2: a signed-out Codex is never started for its servers; onc
   await until(() => listed > 0);
 });
 
+test("eight stranger 2, review: signed in when last asked, signed out since: the fresh check before listing its servers sees it", async () => {
+  let codexAsked = 0, listed = 0;
+  const probe = async (file: string, args: readonly string[]) => {
+    seen.push(`probe ${file} ${args.join(" ")}`);
+    if (file === "codex") { codexAsked += 1; return codexAsked === 1 ? { code: 0, stdout: "Logged in using ChatGPT\n", stderr: "", timedOut: false, notFound: false } : { code: 1, stdout: "Not logged in\n", stderr: "", timedOut: false, notFound: false }; }
+    return { code: 1, stdout: JSON.stringify({ loggedIn: false }), stderr: "", timedOut: false, notFound: false };
+  };
+  world = await openQuietWorld(what => seen.push(what), { backgroundChecks: true, backgroundChecksMs: 50, connectionProbe: probe as never, codexToolList: async () => { listed += 1; return "[]"; } });
+  // The first pass saw it signed in; the next asks again, fresh, before listing, and hears signed out.
+  await until(() => codexAsked >= 2);
+  await new Promise(done => setTimeout(done, 300));
+  expect(listed).toBe(0);
+});
+
 test("the lead's follow pass settles a turn past its deadline, which no page visit does", async () => {
   world = await openQuietWorld(what => seen.push(what));
   const { cookie } = await world.signIn();

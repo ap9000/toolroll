@@ -2820,18 +2820,24 @@ ${postForm("/settings/chat-approval/save", html`\
     const body = readForm(posted, CONSOLE_FORMS.taskSizing);
     const done = sayTo(response, "/settings/general?section=task-sizing");
     const back = sayTo(response, "/settings/change/task-sizing");
-    if (["password", "enabled"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    if (["password", "enabled", "sizer"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
     const wanted = body.get("enabled");
     if (wanted !== "on" && wanted !== "off") return back("problem", "Choose on or off.");
-    const saved = store.transact(() => {
-      if (!store.isInstanceOperator(who.name)) return false;
-      if (who.authority !== "full" && localActNow(store, "task-sizing-switch") === null) return false;
-      if (!authenticateApprover(who, body.get("password") ?? "").ok) return false;
-      setTaskSizing(store, wanted === "on", who.name, now);
-      return true;
+    const shown = body.get("sizer");
+    const saved = store.transact((): "ok" | "proof" | "moved" => {
+      if (!store.isInstanceOperator(who.name)) return "proof";
+      if (who.authority !== "full" && localActNow(store, "task-sizing-switch") === null) return "proof";
+      if (!authenticateApprover(who, body.get("password") ?? "").ok) return "proof";
+      // On is consent to exactly the classifier the page showed, and it must still be the one available now.
+      const available = taskSizingSetting(store).available;
+      if (wanted === "on" && shown !== available) return "moved";
+      setTaskSizing(store, wanted === "on" ? available : false, who.name, now);
+      return "ok";
     });
-    if (!saved) return back("problem", "Enter your Toolroll password to change task sizing.");
-    return done("said", wanted === "on" ? "Task sizing is on. Each new task is sized by a quick call to Claude Haiku before you approve." : "Task sizing is off. No model call before you approve; uncertain tasks get a plan first.");
+    if (saved === "proof") return back("problem", "Enter your Toolroll password to change task sizing.");
+    if (saved === "moved") return back("problem", "Which model would size your tasks changed since you looked. Nothing changed; look again.");
+    const read = taskSizingSetting(store);
+    return done("said", wanted === "on" ? `Task sizing is on. Each new task is sized by ${read.available === "jev" ? "Jev through your OpenRouter key" : "a quick call to Claude Haiku on your plan"} before you approve.` : "Task sizing is off. No model call before you approve; uncertain tasks get a plan first.");
   }
   // Solo or team (install-mode.ts): "It's just me". A credential act (a password typed now, or a one-use provider
   // re-check; never a session) from a full session, proved and written in one transaction that re-reads every fact: a

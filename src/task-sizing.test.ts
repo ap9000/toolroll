@@ -13,7 +13,7 @@ import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { legOf, routeFromJson } from "./phase-routing.js";
 import {
-  cautiousSizing, tinyTask,
+  availableSizer, cautiousSizing, filingSizer, setTaskSizing, taskSizingSetting, tinyTask,
   classifyTask,
   claudeSizer,
   heuristicSizing,
@@ -239,9 +239,46 @@ test("config set task-sizing: off by default; an instance operator's password tu
     expect((await run(["set", "task-sizing", "on", "--as", "alex", "--token", "not-it"])).code).toBe(3);
     expect(JSON.parse((await run(["show", "task-sizing"])).out)).toMatchObject({ taskSizing: { on: false } });
     expect((await run(["set", "task-sizing", "maybe", "--as", "alex", "--token", alex.token])).code).toBe(2);
-    expect(JSON.parse((await run(["set", "task-sizing", "on", "--as", "alex", "--token", alex.token])).out)).toMatchObject({ ok: true, taskSizing: { on: true, setting: "on" } });
+    expect(JSON.parse((await run(["set", "task-sizing", "on", "--as", "alex", "--token", alex.token])).out)).toMatchObject({ ok: true, taskSizing: { on: true, setting: "on", sizer: "claude", available: "claude" } });
     expect(JSON.parse((await run(["set", "task-sizing", "off", "--as", "alex", "--token", alex.token])).out)).toMatchObject({ taskSizing: { on: false } });
     const check = openStore(file);
-    try { expect(check.handle.prepare("SELECT outcome FROM action_ledger WHERE action = 'task sizing by a quick model call'").all().map(row => row["outcome"])).toEqual(["on", "off"]); } finally { check.close(); }
+    try { expect(check.handle.prepare("SELECT outcome FROM action_ledger WHERE action = 'task sizing by a quick model call'").all().map(row => row["outcome"])).toEqual(["on: claude", "off"]); } finally { check.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+describe("consent names the classifier: only the one the person turned it on for is ever asked", () => {
+  const KEY = `sk-or-v1-${"a".repeat(64)}`;
+  test("an OpenRouter key saved after consenting to Claude never sends a task to Jev: sizing is off until they choose again", async () => {
+    const store = openStore(":memory:");
+    try {
+      let key: string | null = null;
+      setTaskSizing(store, availableSizer(() => key), "alex", new Date("2026-11-16T09:00:00.000Z"));
+      expect(taskSizingSetting(store, () => key)).toMatchObject({ on: true, sizer: "claude", available: "claude" });
+      key = KEY;
+      expect(taskSizingSetting(store, () => key)).toMatchObject({ on: false, chosen: true, sizer: "claude", available: "jev" });
+      expect(filingSizer(store, () => key)).toMatchObject({ sizer: null, off: true });
+      // And the classifier itself, asked for Claude, never reaches Jev whatever key is there.
+      const sent: string[] = [];
+      const fetcher = (async (url: string) => { sent.push(String(url)); return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
+      let claude = 0;
+      const answer = await ownerSizer(fetcher, () => key, async () => { claude += 1; return { size: "small", risky: false, reason: "x", by: "Claude Haiku 5.5" }; })({ title: "Fix it" }, new AbortController().signal, "claude");
+      expect(answer).toMatchObject({ by: "Claude Haiku 5.5" });
+      expect([claude, sent]).toEqual([1, []]);
+    } finally { store.close(); }
+  });
+  test("consenting to Jev and then removing the key turns sizing off; Claude is never asked in its place", async () => {
+    const store = openStore(":memory:");
+    try {
+      let key: string | null = KEY;
+      setTaskSizing(store, availableSizer(() => key), "alex", new Date("2026-11-16T09:00:00.000Z"));
+      expect(taskSizingSetting(store, () => key)).toMatchObject({ on: true, sizer: "jev" });
+      key = null;
+      expect(taskSizingSetting(store, () => key)).toMatchObject({ on: false, chosen: true, sizer: "jev", available: "claude" });
+      expect(filingSizer(store, () => key).sizer).toBeNull();
+      let claude = 0;
+      const fetcher = (async () => { throw new Error("no key, no Jev"); }) as unknown as typeof fetch;
+      expect(await ownerSizer(fetcher, () => key, async () => { claude += 1; return null; })({ title: "Fix it" }, new AbortController().signal, "jev")).toBeNull();
+      expect(claude).toBe(0);
+    } finally { store.close(); }
+  });
 });

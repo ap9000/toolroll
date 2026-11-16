@@ -811,6 +811,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Not a password: a code map check's "fresh" outcome, and release-carry's set of files added in the change.
     "src/code-map-build.ts#<module>": 1,
     "src/code-map-build.ts#checkCodeMap@13": 1,
+    // Codex's sign-in asked again, fresh, right before its app server starts (no password: a status command).
+    "src/codex-limits.ts#codexSignedInNow@6": 1,
     "src/release-carry.ts#changeRefusal@18": 2,
     "src/release-carry.ts#preflightCarry@21": 3,
   },

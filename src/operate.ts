@@ -57,7 +57,7 @@ import { filingSizing, installFilingSizer, ownerSizer, refineFiledSizing, setTas
 import { tierLines, tierReport } from "./tier-report.js";
 import { savingsLines, savingsReportOrError } from "./route-savings.js";
 import { limitsView } from "./limits-ui.js";
-import { startCodexLimits } from "./codex-limits.js";
+import { codexSignedInNow, startCodexLimits } from "./codex-limits.js";
 import { packageVersion, startMonitoring, targetOf } from "./monitoring.js";
 import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
@@ -4643,7 +4643,7 @@ async function startConsole(options: {
     // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
     startBackups(context.store, context.databaseFile),
     // Codex's app server only for a Codex signed in to its plan: the same cached sign-in check (eight stranger 2).
-    startCodexLimits(context.store, async () => (await signIns("codex")).state === "connected"),
+    startCodexLimits(context.store, () => codexSignedInNow(signIns)),
     // At most one anonymous look a day for a newer Toolroll (Settings → Updates can switch it off).
     startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {}),
   ];
@@ -4765,6 +4765,8 @@ async function requeueTask(
       published: `${id}'s last result is published; revise it through its pull request`,
       // Only an Approve & build again asks for an exact build; the CLI never does.
       moved: `${id} changed since its page was read; read it again`,
+      // Only a Retry pressed on a page pins the build it showed; the CLI never does.
+      stale: `${id} changed since its page was read; read it again`,
       archived: `${id} is put away — restore it with \`toolroll task restore ${id}\` first`,
     };
     return fail(write, json, "task requeue", result.reason, why[result.reason], EXIT.refused);
@@ -15225,9 +15227,11 @@ async function taskSizingConfig(action: string, value: string | undefined, repoG
   const said = () => {
     const read = taskSizingSetting(store);
     const on = read.on && !read.byEnv;
-    return { payload: { taskSizing: { on, setting: read.on ? "on" : "off", byEnv: read.byEnv } }, lines: () => [read.byEnv
+    const name = (one: "claude" | "jev") => one === "jev" ? "Jev via OpenRouter (your credit)" : "Claude Haiku (on your plan)";
+    return { payload: { taskSizing: { on, setting: read.chosen ? "on" : "off", sizer: read.sizer, available: read.available, byEnv: read.byEnv } }, lines: () => [read.byEnv
       ? "Task sizing is off: TOOLROLL_NO_TASK_CLASSIFIER is set, so no model call happens before you approve; uncertain tasks get a plan first."
-      : on ? "Task sizing is on: each new task is sized by a quick call to Claude Haiku on your plan before you approve."
+      : on ? `Task sizing is on: each new task is sized by ${name(read.sizer!)} before you approve.`
+      : read.chosen && read.sizer !== null ? `Task sizing is off: it was turned on for ${name(read.sizer)}, but ${name(read.available)} is the one available now, so nothing is sent. Run \`toolroll config set task-sizing on\` to choose it.`
       : "Task sizing is off: no model call before you approve; uncertain tasks get a plan first."] };
   };
   if (action === "show") { const shown = said(); return succeed(write, json, command, shown.payload, shown.lines); }
@@ -15237,7 +15241,8 @@ async function taskSizingConfig(action: string, value: string | undefined, repoG
   const saved = store.transact(() => {
     const verified = authenticateApprover(store, acting.name, acting.token);
     if (!verified.ok || !store.isInstanceOperator(acting.name)) return false;
-    setTaskSizing(store, value === "on", acting.name, clock());
+    // On consents to the classifier available now (said back below); never another later.
+    setTaskSizing(store, value === "on" ? taskSizingSetting(store).available : false, acting.name, clock());
     return true;
   });
   if (!saved) return fail(write, json, command, "unauthenticated", "an instance operator changes task sizing, with their password", EXIT.refused);
