@@ -1,5 +1,5 @@
 {
-  "digest": "68b847e4b7ebe9f9d379d5443520db0d1496412381fdaf7b5c1f0bf53d82f489",
+  "digest": "1bddda70d18e01a34604df7c618d5d6e5a16e0e0623690fd4339eda2c053e83b",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1783,10 +1783,57 @@
                     "string",
                     "null"
                   ]
+                },
+                "agentSaid": {
+                  "anyOf": [
+                    {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
                 "retryAt",
+                "lastFailure",
+                "agentSaid"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "held": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "lastFailure": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "reason",
                 "lastFailure"
               ],
               "additionalProperties": false
@@ -1862,6 +1909,7 @@
         "review",
         "failure",
         "waiting",
+        "held",
         "retry",
         "approval",
         "room"

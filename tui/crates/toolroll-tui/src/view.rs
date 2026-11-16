@@ -186,27 +186,8 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
     if !card.sentence.is_empty() {
         parts.push(clean(&card.sentence));
     }
-    // Counted from this build (not the first one, nor the filing); while waiting to try again, how long it has waited.
-    let running = steps.live_run.is_some() || card.state == "current";
-    if steps.waiting.is_some() && !running {
-        if let Some(end) = card.finished_at.as_deref().and_then(epoch) {
-            parts.push(duration(app.now - end));
-        }
-    } else if let Some(start) = card
-        .latest_started_at
-        .as_deref()
-        .or(card.started_at.as_deref())
-        .and_then(epoch)
-    {
-        let end = if running {
-            app.now
-        } else {
-            card.finished_at
-                .as_deref()
-                .and_then(epoch)
-                .unwrap_or(app.now)
-        };
-        parts.push(duration(end - start));
+    if let Some(secs) = build_clock(app, steps, card) {
+        parts.push(duration(secs));
     }
     if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
         parts.push(format!("${cost:.2}"));
@@ -218,6 +199,30 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
         });
     }
     Some(Line::from(Span::styled(parts.join(" · "), dim())))
+}
+
+/// The one clock for a step's current build, the same in the header and in Steps: running, since that build started;
+/// waiting (queued again, or held), since that build stopped; finished, how long it ran.
+pub fn build_clock(app: &App, steps: &StepCards, card: &StepCard) -> Option<i64> {
+    let start = card
+        .latest_started_at
+        .as_deref()
+        .or(card.started_at.as_deref())
+        .and_then(epoch);
+    let end = card.finished_at.as_deref().and_then(epoch);
+    let running = card.mark == "live" || (card.key == "build" && steps.live_run.is_some());
+    // (Only the build waits to try again; a plan or an approval that finished says how long it took.)
+    let waiting = !running && card.key == "build" && steps.task.state == "queued";
+    if running {
+        return start.map(|s| app.now - s);
+    }
+    if waiting {
+        return end.map(|e| app.now - e);
+    }
+    match (start, end) {
+        (Some(s), Some(e)) => Some(e - s),
+        _ => None,
+    }
 }
 
 /// A line cut to `w` cells with an ellipsis (ratatui would cut it silently).
@@ -1365,6 +1370,23 @@ fn new_task_hint(app: &App, plan: bool, w: usize) -> Line<'static> {
 
 fn draw_live(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let w = area.width as usize;
+    // A failed task with output: why it stopped and what the agent said first, the output under it.
+    let has_output = app.transcript.run.is_some()
+        && !(app.transcript.main.is_empty() && app.transcript.sub.is_empty());
+    let area = if has_output && app.steps_here().is_some_and(|s| s.failure.is_some()) {
+        let mut top = failure_lines(app, w);
+        top.push(Line::from(Span::styled("─".repeat(w), line())));
+        // At most two thirds of the pane (its rule included), so some of the output always shows under it.
+        let h = (top.len() as u16).min(area.height * 2 / 3).min(area.height);
+        f.render_widget(Paragraph::new(top), Rect { height: h, ..area });
+        Rect {
+            y: area.y + h,
+            height: area.height - h,
+            ..area
+        }
+    } else {
+        area
+    };
     let t = &app.transcript;
     if t.run.is_none() || (t.main.is_empty() && t.sub.is_empty()) {
         // A failed task: why it stopped and how to retry, before anything else.
@@ -1514,23 +1536,17 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
         let mut c: Vec<Line<'static>> = vec![];
         let (mark, mark_style) = mark_of(card);
         let (outcome, outcome_style) = outcome_of(card);
-        let mut right = vec![Span::styled(outcome, outcome_style)];
-        // The step's newest run: how long it ran (or has run, while live).
-        if let Some(start) = card
-            .latest_started_at
-            .as_deref()
-            .or(card.started_at.as_deref())
-            .and_then(epoch)
-        {
-            let end = if card.mark == "live" {
-                app.now
+        // A failed task's stuck build failed (never "stuck").
+        let outcome =
+            if outcome == "stuck" && matches!(steps.task.state.as_str(), "failed" | "cancelled") {
+                "failed"
             } else {
-                card.finished_at
-                    .as_deref()
-                    .and_then(epoch)
-                    .unwrap_or(app.now)
+                outcome
             };
-            right.push(Span::styled(format!(" · {}", duration(end - start)), dim()));
+        let mut right = vec![Span::styled(outcome, outcome_style)];
+        // The step's current build, on the header's own clock (build_clock).
+        if let Some(secs) = build_clock(app, steps, card) {
+            right.push(Span::styled(format!(" · {}", duration(secs)), dim()));
         }
         if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
             right.push(Span::styled(format!(" · ${cost:.2}"), dim()));
@@ -1663,15 +1679,11 @@ fn failure_lines(app: &App, w: usize) -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled(l, dim())));
         }
     }
-    lines.extend(agent_said_lines(failure, w));
+    lines.extend(agent_said_lines(failure.agent_said.as_ref(), w));
     lines.push(Line::raw(""));
     let retry = key_name(app, Action::SendBack);
     if steps.retry.is_some() && !retry.is_empty() {
-        lines.push(Line::from(sheet::act(
-            &retry,
-            "Retry (Review and retry)",
-            true,
-        )));
+        lines.push(Line::from(sheet::act(&retry, "Retry", true)));
     } else {
         for l in wrap(
             "It can't be retried here as it stands: press w to review it in the browser.",
@@ -1683,21 +1695,65 @@ fn failure_lines(app: &App, w: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// A waiting task's Live and Steps words: why the last build stopped, when the next try is, and the keys that stop it.
+/// What waiting_lines says: its lines, what the agent said, and the two keys it offers.
+type WaitingWords<'a> = (
+    Vec<String>,
+    Option<&'a Vec<String>>,
+    [(Action, &'static str); 2],
+);
+
+/// A held or waiting task's Live and Steps words. Held (a person stopped it): "On hold · you stopped retrying", its last
+/// failure, and Resume; never a next try. Waiting: why the last build stopped, when the next one starts, what the agent
+/// said, and the keys that stop it.
 fn waiting_lines(app: &App, w: usize) -> Vec<Line<'static>> {
-    let Some(wait) = app.steps_here().and_then(|s| s.waiting.as_ref()) else {
+    let Some(steps) = app.steps_here() else {
         return vec![];
     };
-    let mut lines: Vec<Line<'static>> = wrap(&waiting_words(wait, app.now), w)
-        .into_iter()
-        .map(|l| Line::from(Span::styled(l, ink())))
-        .collect();
+    let (head, said, acts): WaitingWords =
+        if let Some(held) = steps.held.as_ref().filter(|_| steps.live_run.is_none()) {
+            let who = if held.reason == crate::app::HOLD_REASON {
+                "On hold · you stopped retrying".to_string()
+            } else {
+                format!("On hold · {}", clean(&held.reason))
+            };
+            let mut head = vec![who];
+            if let Some(why) = held.last_failure.as_deref() {
+                head.push(format!("Last build failed · {}", clean(why)));
+            }
+            head.push("Nothing more runs until you resume it.".into());
+            (
+                head,
+                None,
+                [
+                    (Action::Stop, "Resume retrying"),
+                    (Action::CancelTask, "Cancel task"),
+                ],
+            )
+        } else if let Some(wait) = steps.waiting.as_ref() {
+            (
+                vec![waiting_words(&wait.facts(), app.now)],
+                wait.agent_said.as_ref(),
+                [
+                    (Action::Stop, "Stop retrying"),
+                    (Action::CancelTask, "Cancel task"),
+                ],
+            )
+        } else {
+            return vec![];
+        };
+    let mut lines: Vec<Line<'static>> = vec![];
+    for (i, h) in head.iter().enumerate() {
+        for l in wrap(h, w) {
+            lines.push(Line::from(Span::styled(
+                l,
+                if i == 0 { ink() } else { dim() },
+            )));
+        }
+    }
+    lines.extend(agent_said_lines(said, w));
     lines.push(Line::raw(""));
     let mut keys = vec![];
-    for (action, words) in [
-        (Action::Stop, "Stop retrying"),
-        (Action::CancelTask, "Cancel task"),
-    ] {
+    for (action, words) in acts {
         let k = key_name(app, action);
         if k.is_empty() {
             continue;
@@ -1718,8 +1774,8 @@ pub const AGENT_SAID_SHOWN: usize = 8;
 
 /// "What the agent said": the engine's cleaned tail of the agent's last output, cleaned again, each line cut to the
 /// width (never wrapped into more), at most AGENT_SAID_SHOWN of them.
-fn agent_said_lines(failure: &toolroll_api::Failure, w: usize) -> Vec<Line<'static>> {
-    let Some(said) = failure.agent_said.as_ref().filter(|s| !s.is_empty()) else {
+fn agent_said_lines(said: Option<&Vec<String>>, w: usize) -> Vec<Line<'static>> {
+    let Some(said) = said.filter(|s| !s.is_empty()) else {
         return vec![];
     };
     let mut lines = vec![
@@ -2398,6 +2454,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     let retry = !review && app.retry_pins().is_some();
     let live = app.live_run().is_some();
     let waiting = !live && app.queued_here();
+    let held = !live && app.held_here().is_some();
     let acts = |v: &mut Vec<(&'static [Action], &'static str)>| {
         if live {
             v.push((&[Steer], "steer"));
@@ -2407,6 +2464,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             v.push((&[SendBack], "send back"));
         } else if retry {
             v.push((&[SendBack], "retry"));
+        } else if held {
+            v.push((&[Stop], "resume"));
         } else if waiting {
             v.push((&[Stop], "stop retrying"));
         }
@@ -2743,7 +2802,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::raw(""),
             ];
             if let Some(wait) = app.steps_here().and_then(|s| s.waiting.as_ref()) {
-                for l in wrap(&waiting_words(wait, app.now), w) {
+                for l in wrap(&waiting_words(&wait.facts(), app.now), w) {
                     lines.push(Line::raw(l));
                 }
                 lines.push(Line::raw(""));
@@ -2757,10 +2816,37 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::raw(""));
             lines.push(Line::from(sheet::act("Enter", "Stop retrying", true)));
             lines.push(Line::from(Span::styled(
-                "Any other key keeps it retrying.",
+                "Any other key changes nothing.",
                 dim(),
             )));
             (" Stop retrying ", lines)
+        }
+        Mode::ConfirmResume { .. } => {
+            let w = (area.width as usize).saturating_sub(10).clamp(24, 72);
+            let mut lines = vec![
+                Line::raw(""),
+                Line::from(Span::styled("Resume retrying this task?", ink())),
+                Line::raw(""),
+            ];
+            if let Some(why) = app.held_here().and_then(|h| h.last_failure.as_deref()) {
+                for l in wrap(&format!("Last build failed · {}", clean(why)), w) {
+                    lines.push(Line::raw(l));
+                }
+                lines.push(Line::raw(""));
+            }
+            for l in wrap(
+                "Your hold is released: it tries again when a builder is free, on the same branch, under your approval. It may cost again.",
+                w,
+            ) {
+                lines.push(Line::raw(l));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(sheet::act("Enter", "Resume retrying", true)));
+            lines.push(Line::from(Span::styled(
+                "Any other key changes nothing.",
+                dim(),
+            )));
+            (" Resume ", lines)
         }
         Mode::ConfirmCancel {
             title, state, run, ..
@@ -2771,9 +2857,19 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(Span::styled(l, ink())));
             }
             lines.push(Line::raw(""));
-            let shown = match run {
-                Some(r) => format!("It is {} · its latest build is #{r}.", clean(state)),
-                None => format!("It is {} · no build has run yet.", clean(state)),
+            // Its real state as the screen shows it, and its current build (the one every surface names).
+            let steps = app.steps_here();
+            let now_state = match state.as_str() {
+                "queued" if steps.is_some_and(|s| s.held.is_some()) => "on hold".to_string(),
+                "queued" if steps.is_some_and(|s| s.waiting.is_some()) => {
+                    "waiting to retry".to_string()
+                }
+                "running" => "building".to_string(),
+                other => clean(other),
+            };
+            let shown = match app.current_build().or(*run) {
+                Some(r) => format!("It is {now_state} · its latest build is #{r}."),
+                None => format!("It is {now_state} · no build has run yet."),
             };
             lines.push(Line::raw(shown));
             lines.push(Line::raw(""));
@@ -2785,23 +2881,21 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
             }
             lines.push(Line::raw(""));
             lines.push(Line::from(sheet::act("Enter", "Cancel task", true)));
-            lines.push(Line::from(Span::styled("Any other key keeps it.", dim())));
+            lines.push(Line::from(Span::styled(
+                "Any other key changes nothing.",
+                dim(),
+            )));
             (" Cancel task ", lines)
         }
         Mode::ConfirmRetry { run, .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 76);
             // Build numbers are the console's own (shared by every task), so the new build's is known once it starts:
             // what is said is which attempt it is, and the build it follows.
-            let attempt = app
-                .steps_here()
-                .and_then(|s| s.cards.as_ref())
-                .and_then(|c| c.iter().find(|c| c.key == "build"))
-                .map_or(1, |c| c.runs.len())
-                + 1;
+            let after = app.current_build().unwrap_or(*run);
             let mut lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
-                    format!("Retry: starts a new build, attempt {attempt}, after build #{run}."),
+                    format!("Retry: starts a new build after build #{after}."),
                     ink(),
                 )),
                 Line::raw(""),

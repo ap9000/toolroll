@@ -8766,11 +8766,16 @@ export class Store {
    * The CLI's unhold lifts only the operator's own hold. A task still held by
    * an open decision stays held — the way out of that hold is answering it.
    */
-  unhold(taskRef: number, mutation: Mutation = {}, now?: Date): boolean {
+  unhold(taskRef: number, mutation: Mutation = {}, now?: Date,
+    /** The hold a person was shown (a terminal client's Resume): released only while it is still this task's own
+     * operator hold, read in this transaction; false otherwise, and nothing is released. */
+    seenHold?: number): boolean {
     return this.once(
       mutation,
       "unhold",
       () => this.transact(() => {
+        if (seenHold !== undefined && this.db.prepare("SELECT 1 AS hit FROM hold WHERE id = ? AND task_ref = ? AND owner_kind = 'operator'")
+          .get(seenHold, taskRef) === undefined) return false;
         // The operator's own hold, and the storage check's (dispose.ts holdForStorage): a person's "Try again".
         const { changes } = this.db
           .prepare("DELETE FROM hold WHERE task_ref = ? AND (owner_kind = 'operator' OR (owner_kind = 'backoff' AND owner_id = 'storage:' || task_ref))")

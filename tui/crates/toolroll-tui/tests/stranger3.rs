@@ -101,7 +101,7 @@ fn x_on_a_waiting_task_stops_retrying_after_a_confirm() {
     // Any other key keeps it retrying.
     app.key(key('x'));
     assert_eq!(app.key(key('q')), vec![]);
-    assert_eq!(status(&app), "It keeps retrying.");
+    assert_eq!(status(&app), "Nothing changed.");
 }
 
 #[test]
@@ -206,6 +206,11 @@ fn failed_steps(said: Value) -> Value {
     s["failure"] = json!({ "line": "The agent stopped with an error.", "failedInARow": 3,
         "suggestion": "Retry as it is; if it stops the same way, try another agent.", "agentSaid": said });
     s["retry"] = json!({ "run": 3, "digest": "d".repeat(64) });
+    for card in s["cards"].as_array_mut().unwrap() {
+        if card["key"] == "build" {
+            card["runs"] = json!([3]);
+        }
+    }
     s
 }
 
@@ -246,7 +251,7 @@ fn what_the_agent_said_is_shown_cleaned_and_capped() {
     app.key(key('r'));
     let shown = screen(&mut app, 120, 34);
     assert!(
-        shown.contains("Retry: starts a new build, attempt 2, after build #3."),
+        shown.contains("Retry: starts a new build after build #3."),
         "{shown}"
     );
 }

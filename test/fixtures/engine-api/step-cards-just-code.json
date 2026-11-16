@@ -109,6 +109,7 @@
   },
   "failure": null,
   "waiting": null,
+  "held": null,
   "retry": null,
   "approval": {
     "by": "alex",

@@ -1927,7 +1927,12 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         return redirect(response, taskHref(taskId));
       }
       case "unhold": {
-        store.unhold(ref.id);
+        // A terminal client's Resume names the hold it showed: released only while that exact hold stands (proved in
+        // the release's own transaction). A browser's form names none and releases as before.
+        const shown = readForm(posted, CONSOLE_FORMS.taskUnhold).get("hold");
+        if (shown !== null && !/^[1-9][0-9]{0,15}$/.test(shown)) return taskScreen(response, who, taskId, "not resumed: name the hold that was shown", 400);
+        const released = store.unhold(ref.id, {}, now, shown === null ? undefined : Number(shown));
+        if (shown !== null && !released) return taskScreen(response, who, taskId, "This task's hold changed since it was shown — look again before resuming.", 409);
         return redirect(response, taskHref(taskId));
       }
       case "stop-carrying": {

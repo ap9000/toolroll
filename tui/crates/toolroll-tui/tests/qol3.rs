@@ -641,7 +641,8 @@ fn accept_with_notes_switched_is_shown_before_enter() {
 }
 
 /// A dialog acts only once it was drawn, exactly as it is, in the last frame: a window too small to draw it (or two
-/// keys in one read) never confirms anything. Esc still closes it.
+/// keys in one read) never confirms anything. Esc still closes it. (Answer, stop, cancel, stop retrying, resume,
+/// accept, build terms.)
 #[test]
 fn an_undrawn_dialog_takes_no_keys() {
     use toolroll_tui::app::{ReviewPin, UNDRAWN};
@@ -677,6 +678,17 @@ fn an_undrawn_dialog_takes_no_keys() {
             Box::new(|a: &mut App| {
                 a.mode = Mode::ConfirmHold {
                     task: "t-live".into(),
+                };
+            }),
+            code(KeyCode::Enter),
+        ),
+        (
+            "resume",
+            "t-live",
+            Box::new(|a: &mut App| {
+                a.mode = Mode::ConfirmResume {
+                    task: "t-live".into(),
+                    hold: 41,
                 };
             }),
             code(KeyCode::Enter),

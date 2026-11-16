@@ -335,7 +335,9 @@ fn a_busy_program_loses_no_output_while_someone_types() {
     run.wait_for("Opens your shell", 5);
     run.press("t");
     run.wait_for("Typing", 10);
-    run.wait_for("Compiling", 10);
+    // The stream has started. Wait on its `y` lines: a 16 KiB `y` chunk fills the pane for most of the stream, so a
+    // `Compiling` line is on screen only between chunks, and a slow runner's read can keep landing on `y`.
+    run.wait_for("\u{2502}y", 10);
     let typed = "the quick brown fox";
     for ch in typed.chars() {
         run.press(&ch.to_string());
