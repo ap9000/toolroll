@@ -83,6 +83,35 @@ deprecated: they still work for this release, hidden from help and the
 console, print one warning when used, and are removed in the next minor
 release.
 
+### Restyle the workbench by asking your agent
+
+In your own conversation in the console on this computer, ask the lead to
+change how the terminal workbench looks: "use the dark theme", "make it look
+like a sumi-e ink painting", "show the age and cost columns", "less motion".
+It reads the look first (`toolroll_view_read`: the settings, what may change,
+the theme roles and a short styling guide), then writes the change to your
+`~/.config/toolroll/tui.toml` (`toolroll_view_set`). A running workbench shows
+it within a second.
+
+- A look it makes up is saved as a theme of its own (a `[themes.<name>]`
+  table: a built-in base and role colours), so you can switch back to it.
+- Contrast is kept: a change that makes text or a status too faint, or two
+  statuses look alike, is refused with the reason.
+- Keys are never changed this way: an agent can't remap accept or cancel.
+  Change keys yourself in tui.toml's `[keys]` or the workbench's Settings
+  screen.
+- Only your own conversation in the console, from this computer, can do it:
+  never a team chat, Telegram, a token, another person, or a task's agents.
+  Each change is in the action history, at most 10 a minute.
+
+Undo from the terminal:
+
+```sh
+toolroll view                    # the theme in use and your saved themes
+toolroll view theme set dark     # switch theme (built in, or one you saved)
+toolroll view reset              # back to the defaults; the old file is kept as tui.toml.bak
+```
+
 ## Telegram
 
 Settings → Telegram: paste a bot token from @BotFather, then send the bot the

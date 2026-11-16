@@ -50,6 +50,17 @@ unsafe fn libc_fstat_ok(fd: i32) -> bool {
 fn main() {
     toolroll_tui::stats::started();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `view read | set | reset`: the workbench's look without a screen (view_cli.rs). No sign-in is read or held here.
+    if args.first().map(String::as_str) == Some("view") {
+        use std::io::Read;
+        let mut input = String::new();
+        if args.get(1).map(String::as_str) == Some("set") {
+            let _ = std::io::stdin().take(64 * 1024).read_to_string(&mut input);
+        }
+        let (code, out) = toolroll_tui::view_cli::main(&args[1..], &input);
+        println!("{out}");
+        std::process::exit(code);
+    }
     if args.first().map(String::as_str) == Some("--version") {
         // The self-check proves the protection works here too: a binary that can't turn crash dumps off answers with
         // its reason and EXIT_UNPROTECTED, and the launcher mints nothing for it.

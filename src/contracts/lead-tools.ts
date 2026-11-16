@@ -53,6 +53,18 @@ export const acceptance = z.array(acceptanceCriterionSchema).min(1).max(ACCEPTAN
 /** A note the operator's own words fill (revise feedback, steering, a flow card's note). */
 const note = z.string().max(LIMITS.note, { error: issue => overBy(LIMITS.note, issue.input) }).describe(`At most ${LIMITS.note} characters; longer is refused with its length, not cut.`);
 export const CODE_MAP_VIEWS = ["overview", "area", "file", "search"] as const;
+/** A saved theme's name, as the workbench accepts it (view-tools.ts THEME_NAME). */
+const VIEW_THEME_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+/** The workbench's theme roles (tui/crates/toolroll-tui/src/theme.rs Role), each to a #rrggbb colour. */
+export const VIEW_ROLES = ["paper", "ink", "muted", "line", "selection", "selection-ink", "needs-you", "running", "passed", "failed",
+  "ground", "raised", "fill", "running-soft", "passed-soft", "failed-soft"] as const;
+const viewHex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+const viewColors = z.strictObject({
+  paper: viewHex.optional(), ink: viewHex.optional(), muted: viewHex.optional(), line: viewHex.optional(), selection: viewHex.optional(),
+  "selection-ink": viewHex.optional(), "needs-you": viewHex.optional(), running: viewHex.optional(), passed: viewHex.optional(),
+  failed: viewHex.optional(), ground: viewHex.optional(), raised: viewHex.optional(), fill: viewHex.optional(),
+  "running-soft": viewHex.optional(), "passed-soft": viewHex.optional(), "failed-soft": viewHex.optional(),
+} satisfies Record<(typeof VIEW_ROLES)[number], z.ZodType>);
 /** Task states a list filters by. */
 export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;
 
@@ -184,6 +196,26 @@ export const LEAD_TOOL_INPUTS = {
   }),
   propose_answer: z.strictObject({ decision: id, option: text("answerOption").min(1), rationale: text("answerRationale") }),
   propose_cancel: z.strictObject({ task: taskRef, reason: text("proposalReason") }),
+  // The person's own workbench look (view-tools.ts): data only, checked again by the workbench's own writer.
+  toolroll_view_read: z.strictObject({}),
+  toolroll_view_set: z.strictObject({
+    theme: z.string().regex(VIEW_THEME_NAME).optional().describe("A built-in theme (terminal, light, dark, high-contrast) or a saved theme's name."),
+    save_theme: z.strictObject({
+      name: z.string().regex(VIEW_THEME_NAME).describe("Lowercase letters, digits and dashes, at most 32; not a built-in theme's name."),
+      base: z.enum(["terminal", "light", "dark", "high-contrast"]),
+      colors: viewColors.optional(),
+      use: z.boolean().optional().describe("true: switch to it now."),
+    }).optional(),
+    colors: viewColors.optional().describe("Role colours laid over the theme."),
+    density: z.enum(["compact", "comfortable"]).optional(),
+    glyphs: z.enum(["unicode", "ascii", "nerd"]).optional(),
+    columns: z.array(z.enum(["agent", "step", "age", "cost", "project"])).max(5).optional(),
+    list_side: z.enum(["left", "right"]).optional(),
+    reduced_motion: z.boolean().optional(),
+    key_bar: z.boolean().optional(),
+    show_costs: z.boolean().optional(),
+    notifications: z.strictObject({ asks: z.boolean().optional(), finished: z.boolean().optional(), failed: z.boolean().optional() }).optional(),
+  }),
 } as const;
 
 export type LeadToolName = keyof typeof LEAD_TOOL_INPUTS;
@@ -320,6 +352,8 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_agents: proposed("agents", { task: str }),
   propose_answer: proposed("answer", { decision: int, option: str }),
   propose_cancel: proposed("cancel", { task: str }),
+  toolroll_view_read: z.looseObject({ settings: z.looseObject({}), allowed: z.looseObject({}), roles: list, themes: z.looseObject({}), guide: str }),
+  toolroll_view_set: z.looseObject({ changed: z.array(str), said: str }),
 } as const satisfies Record<LeadToolName, z.ZodType>;
 
 /**

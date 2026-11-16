@@ -511,8 +511,12 @@ pub struct Settings {
     pub list_side: crate::viewstate::Side,
     /// The mouse resting over a panel focuses it (off: a click does).
     pub focus_follows_mouse: bool,
-    /// Role colours, in the file's order.
+    /// Role colours, in the file's order: a saved theme's roles first, then `[colors]` (which win).
     pub colors: Vec<(Role, Rgb)>,
+    /// The saved theme in use (`theme = "<name>"` naming a `[themes.<name>]` table), when one is.
+    pub theme_label: Option<String>,
+    /// The file's saved themes, `[themes.<name>]`: a built-in base and role colours (data only).
+    pub saved_themes: Vec<SavedTheme>,
     /// The keymap: a preset and the file's own keys (keys.rs).
     pub keymap: crate::keys::Keymap,
 }
@@ -556,6 +560,8 @@ impl Default for Settings {
             list_side: crate::viewstate::Side::Left,
             focus_follows_mouse: false,
             colors: vec![],
+            theme_label: None,
+            saved_themes: vec![],
             keymap: crate::keys::Keymap::default(),
         }
     }
@@ -699,7 +705,11 @@ fn entries(text: &str) -> (Vec<Entry>, Vec<String>) {
         }
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             let name = name.trim();
-            if bare_key(name) {
+            // A saved theme's own table, `[themes.<name>]` (its name checked where it is read: theme_name_ok).
+            let saved = name
+                .strip_prefix("themes.")
+                .is_some_and(|t| bare_key(t) && !t.contains('.'));
+            if bare_key(name) || saved {
                 section = name.to_string();
             } else {
                 warnings.push(format!("Line {n} isn't understood, so it was ignored."));
@@ -754,6 +764,7 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
     let mut seen: Vec<(String, String)> = vec![];
     let mut preset: Option<(usize, crate::keys::Written)> = None;
     let mut overrides: Vec<(usize, String, crate::keys::Written)> = vec![];
+    let mut wanted_theme: Option<(usize, String)> = None;
     for (n, section, key, v) in entries {
         let section = if section == "colours" {
             "colors".to_string()
@@ -794,12 +805,55 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
                 Value::Str(t) if ThemeName::from_key(t).is_some() => {
                     s.theme = ThemeName::from_key(t).unwrap_or(ThemeName::Terminal)
                 }
+                // A saved theme's name: resolved once every `[themes.*]` table is read (below).
+                Value::Str(t) if theme_name_ok(t) => wanted_theme = Some((n, t.clone())),
                 _ => bad(
                     &mut warnings,
-                    "terminal, light, dark or high-contrast",
+                    "terminal, light, dark, high-contrast or a theme saved under [themes.<name>]",
                     "terminal",
                 ),
             },
+            (table, field) if table.starts_with("themes.") => {
+                let theme = &table["themes.".len()..];
+                if !theme_name_ok(theme) {
+                    warnings.push(format!(
+                        "Line {n}: \"{}\" can't be a theme's name (letters, digits and dashes, at most {THEME_NAME_MAX}, not a built-in theme's), so it was ignored.",
+                        fit(&clean(theme), 24)
+                    ));
+                    continue;
+                }
+                let at = match s.saved_themes.iter().position(|t| t.name == theme) {
+                    Some(i) => i,
+                    None => {
+                        s.saved_themes.push(SavedTheme {
+                            name: theme.to_string(),
+                            base: ThemeName::Dark,
+                            roles: vec![],
+                        });
+                        s.saved_themes.len() - 1
+                    }
+                };
+                match (field, Role::from_key(field), &v) {
+                    ("base", _, Value::Str(b)) if ThemeName::from_key(b).is_some() => {
+                        s.saved_themes[at].base = ThemeName::from_key(b).unwrap_or(ThemeName::Dark)
+                    }
+                    ("base", _, _) => warnings.push(format!(
+                        "Line {n}: a theme's base can be terminal, light, dark or high-contrast, not {}; using dark.",
+                        v.shown()
+                    )),
+                    (_, Some(r), Value::Str(c)) if Rgb::parse(c).is_some() => {
+                        s.saved_themes[at].roles.push((r, Rgb::parse(c).unwrap_or(Rgb(0, 0, 0))))
+                    }
+                    (_, Some(_), _) => warnings.push(format!(
+                        "Line {n}: {key} needs a colour like \"#1a2b3c\", not {}; the base's own is used.",
+                        v.shown()
+                    )),
+                    (_, None, _) => warnings.push(format!(
+                        "Line {n}: a theme holds base and colours only; {} was ignored.",
+                        fit(&clean(field), 24)
+                    )),
+                }
+            }
             ("", "density") => match &v {
                 Value::Str(d) if d == "compact" => s.density = Density::Compact,
                 Value::Str(d) if d == "comfortable" => s.density = Density::Comfortable,
@@ -889,10 +943,66 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
             }
         }
     }
+    // A saved theme named by `theme`: its base, and its roles under `[colors]` (which win, being later).
+    if let Some((n, name)) = wanted_theme {
+        match s.saved_themes.iter().find(|t| t.name == name) {
+            Some(t) => {
+                s.theme = t.base;
+                s.theme_label = Some(t.name.clone());
+                let mut colors = t.roles.clone();
+                colors.append(&mut s.colors);
+                s.colors = colors;
+            }
+            None => {
+                // In the file's line order, with the others.
+                let line_of = |w: &String| {
+                    w.strip_prefix("Line ")
+                        .and_then(|r| r.split(':').next())
+                        .and_then(|d| d.parse::<usize>().ok())
+                        .unwrap_or(usize::MAX)
+                };
+                let at = warnings
+                    .iter()
+                    .position(|w| line_of(w) > n)
+                    .unwrap_or(warnings.len());
+                warnings.insert(
+                    at,
+                    format!(
+                        "Line {n}: theme \"{}\" isn't built in, and there's no [themes.{}] table; using terminal.",
+                        fit(&clean(&name), 24),
+                        fit(&clean(&name), 24)
+                    ),
+                );
+            }
+        }
+    }
     let (keymap, key_warnings) = crate::keys::Keymap::build(preset, &overrides);
     s.keymap = keymap;
     warnings.extend(key_warnings);
     (s, warnings)
+}
+
+/// The longest name a saved theme may have.
+pub const THEME_NAME_MAX: usize = 32;
+
+/// Whether `name` can name a saved theme: a lowercase letter, then letters, digits and dashes, at most THEME_NAME_MAX,
+/// and never a built-in theme's name.
+pub fn theme_name_ok(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && name.len() <= THEME_NAME_MAX
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && ThemeName::from_key(name).is_none()
+}
+
+/// A theme saved in tui.toml (`[themes.<name>]`): its built-in base and its role colours. Data only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedTheme {
+    pub name: String,
+    pub base: ThemeName,
+    pub roles: Vec<(Role, Rgb)>,
 }
 
 fn known(name: &str) -> bool {
@@ -1245,6 +1355,52 @@ impl Prefs {
 
     /// Change one setting (the Settings screen's Enter): for this session at once, and written to tui.toml. The words
     /// say what happened; Err when the file wasn't written (the change still holds for this session).
+    /// tui.toml changed on disk: read it again with the same safe, strict reader. Ok: the words for what changed (to
+    /// show), now in use. Err: why it wasn't used; the last good settings stay.
+    pub fn reload(&mut self) -> Result<String, String> {
+        let Some(path) = self.path.clone() else {
+            return Err("there's no home folder to read tui.toml from".into());
+        };
+        let next = match read_safely(&path, self.home.as_deref()) {
+            Ok(None) => Settings::default(),
+            Ok(Some(text)) => {
+                let (s, warnings) = parse(&text);
+                if let Some(first) = warnings.first() {
+                    return Err(format!(
+                        "tui.toml wasn't used, so your settings stay ({}).",
+                        first.trim_end_matches('.').replacen("Line ", "line ", 1)
+                    ));
+                }
+                s
+            }
+            Err(why) => {
+                return Err(format!(
+                    "tui.toml wasn't used, so your settings stay (it was ignored: {why})."
+                ))
+            }
+        };
+        let changes = settings_changes(&self.settings, &next);
+        self.settings = next;
+        let (theme, warnings) = Theme::build(
+            self.settings.theme,
+            self.depth,
+            self.background,
+            &self.settings.colors,
+        );
+        self.theme = theme;
+        self.color_warnings = warnings;
+        self.file = if path.exists() {
+            FileState::Read
+        } else {
+            FileState::Missing
+        };
+        Ok(if changes.is_empty() {
+            "Your workbench settings changed.".to_string()
+        } else {
+            format!("Your workbench settings changed: {}", changes.join(", "))
+        })
+    }
+
     pub fn change(&mut self, choice: Choice) -> Result<String, String> {
         let value = choice.step(&mut self.settings);
         if choice == Choice::Theme {
@@ -1507,6 +1663,60 @@ impl RowFacts {
     }
 }
 
+/// What differs between two settings, in a few words each ("theme dark → sumi"), at most four.
+pub fn settings_changes(a: &Settings, b: &Settings) -> Vec<String> {
+    let theme = |s: &Settings| {
+        s.theme_label
+            .clone()
+            .unwrap_or_else(|| s.theme.key().to_string())
+    };
+    let density = |s: &Settings| match s.density {
+        Density::Compact => "compact",
+        Density::Comfortable => "comfortable",
+    };
+    let columns = |s: &Settings| {
+        s.columns
+            .iter()
+            .map(|c| c.key())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let on = |b: bool| if b { "on" } else { "off" };
+    let mut out = vec![];
+    let mut differ = |what: &str, x: String, y: String| {
+        if x != y {
+            out.push(format!("{what} {x} → {y}"));
+        }
+    };
+    differ("theme", theme(a), theme(b));
+    differ("density", density(a).into(), density(b).into());
+    differ("glyphs", a.glyphs.key().into(), b.glyphs.key().into());
+    differ("columns", columns(a), columns(b));
+    differ(
+        "list side",
+        a.list_side.key().into(),
+        b.list_side.key().into(),
+    );
+    differ(
+        "reduced motion",
+        on(a.reduced_motion).into(),
+        on(b.reduced_motion).into(),
+    );
+    differ("key bar", on(a.key_bar).into(), on(b.key_bar).into());
+    differ("costs", on(a.show_costs).into(), on(b.show_costs).into());
+    if a.colors != b.colors && theme(a) == theme(b) {
+        out.push("colours".into());
+    }
+    if a.notify != b.notify {
+        out.push("notifications".into());
+    }
+    if a.keymap != b.keymap {
+        out.push("keys".into());
+    }
+    out.truncate(4);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1608,7 +1818,7 @@ running = "#5aa9ff"
         assert_eq!(s.columns, vec![Column::Step]);
         assert!(s.colors.is_empty());
         assert_eq!(warnings, vec![
-            "Line 1: theme can be terminal, light, dark or high-contrast, not \"solarized\"; using terminal.".to_string(),
+            "Line 1: theme \"solarized\" isn't built in, and there's no [themes.solarized] table; using terminal.".to_string(),
             "Line 2: density can be compact or comfortable, not 3; using compact.".into(),
             "Line 3: bell can be true or false, not \"yes\"; using true.".into(),
             "Line 4: \"mood\" isn't a column (agent, step, age, cost or project), so it was left out.".into(),

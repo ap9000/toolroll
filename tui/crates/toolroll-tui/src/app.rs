@@ -449,6 +449,33 @@ pub fn attempt_of(steps: &StepCards, run: i64) -> Option<usize> {
     }
 }
 
+/// tui.toml is looked at every this many ticks (a second).
+pub const SETTINGS_EVERY: u64 = 4;
+
+/// What says tui.toml changed: its length, modification time (nanoseconds), device and inode; zeros when it isn't there.
+pub type SettingsSig = (u64, i128, u64, u64);
+
+/// tui.toml's signature now (never following a link: a link is read, and refused, by the reader).
+pub fn settings_sig(path: &std::path::Path) -> SettingsSig {
+    let Ok(m) = std::fs::symlink_metadata(path) else {
+        return (0, 0, 0, 0);
+    };
+    let at = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i128)
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let (dev, ino) = {
+        use std::os::unix::fs::MetadataExt;
+        (m.dev(), m.ino())
+    };
+    #[cfg(not(unix))]
+    let (dev, ino) = (0, 0);
+    (m.len(), at, dev, ino)
+}
+
 /// How long a status said in answer to the person is held against background reads (status_held).
 pub const STATUS_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
 /// Said when Ctrl-] leaves the terminal.
@@ -802,6 +829,8 @@ pub struct App {
     pub utc_offset_secs: i64,
     /// When the status line was last said, and whether a key came since (status_held).
     pub said_at: Option<std::time::Instant>,
+    /// What tui.toml looked like when last read (watch_settings): its size, time and file, None before the first look.
+    pub settings_sig: Option<SettingsSig>,
     /// A task just filed here: selected once the work list lists it (its detail shown).
     pub filed: Option<String>,
     /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
@@ -902,6 +931,7 @@ impl App {
             agents_screen: None,
             utc_offset_secs: 0,
             said_at: None,
+            settings_sig: None,
             filed: None,
             said_for: None,
             key_since_said: true,
@@ -1762,6 +1792,10 @@ impl App {
 
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
+        // tui.toml looked at once a second: a change (its size, time or file) is read again, strictly, and said.
+        if self.ticks.is_multiple_of(SETTINGS_EVERY) {
+            self.watch_settings();
+        }
         let gathered = self
             .notifier
             .tick(&self.all_items, self.now)
@@ -1796,6 +1830,29 @@ impl App {
         }
         fx.extend(gathered);
         fx
+    }
+
+    /// tui.toml changed on disk (another editor, or the person's lead through `toolroll-tui view set`): read again with
+    /// the same strict reader; a bad file keeps the last good settings and says why.
+    pub fn watch_settings(&mut self) {
+        let Some(path) = self.prefs.path.clone() else {
+            return;
+        };
+        let now = settings_sig(&path);
+        match self.settings_sig {
+            None => self.settings_sig = Some(now),
+            Some(was) if was == now => {}
+            Some(_) => {
+                self.settings_sig = Some(now);
+                match self.prefs.reload() {
+                    Ok(words) => {
+                        self.line_cache = None;
+                        self.say(Tone::Said, words);
+                    }
+                    Err(why) => self.say(Tone::Refused, why),
+                }
+            }
+        }
     }
 
     /// The rooms that say when what's on screen changed (the watched panels' too).
