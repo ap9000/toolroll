@@ -2,7 +2,7 @@
 source: crates/toolroll-tui/tests/screens.rs
 expression: "screen(&mut app, 120, 30)"
 ---
-"┌ Toolroll · shop ────────────────────────────────────────────────────────────────────────────────── Nothing needs you ┐"
+"┌ Toolroll · shop ───────────────────────────────────────────────────────── $1.84 today · plan 62% · Nothing needs you ┐"
 "│Nothing yet.                        │Live · Steps · Diff · Terminal                                                   │"
 "│                                    │                                                                                 │"
 "│                                    │                                                                                 │"
@@ -30,5 +30,5 @@ expression: "screen(&mut app, 120, 30)"
 "│                                    │                                                                                 │"
 "│                                    │                                                                                 │"
 "│                                                                                                                      │"
-"│j/k move  ⏎ open  s steer  p pause  x stop  1-9 answer  a accept  r send back  t take over  n new  ? help  q quit     │"
+"│j/k move  ⏎ open  s steer  a accept  n new  : all actions                                                             │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"

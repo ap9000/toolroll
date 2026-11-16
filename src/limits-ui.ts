@@ -91,6 +91,23 @@ export function usageChipOf(windows: Parameters<typeof limitsView>[0], now: Date
   return { text, tone: old ? "neutral" : toneOf(top.usedPercent, top.reached), stale, href: "/", title: `What the providers last reported: ${text}` };
 }
 
+/**
+ * The terminal's cost line (engine-api.ts workRows `spend`): today's spend (the UTC day of the Spend page's own items;
+ * unpriced work counts as nothing) and the fullest subscription window still current (a window whose reset has passed
+ * is not measured again yet, so it is left out). An operator's view, as the Limits view is: the caller decides who.
+ */
+export function spendLineOf(
+  items: readonly { at: string; microusd: number | null }[],
+  windows: readonly { usedPercent: number; resetsAt: string | null; reached: boolean }[],
+  now: Date,
+): { todayUsd: number; planPercent: number | null } {
+  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const micro = items.reduce((sum, one) => { const at = Date.parse(one.at); return Number.isFinite(at) && at >= dayStart && at <= now.getTime() ? sum + (one.microusd ?? 0) : sum; }, 0);
+  const current = windows.filter(one => one.resetsAt === null || Date.parse(one.resetsAt) > now.getTime());
+  const top = current.reduce<number | null>((max, one) => Math.max(max ?? 0, one.reached ? 100 : one.usedPercent), null);
+  return { todayUsd: Math.round(micro / 10_000) / 100, planPercent: top === null ? null : Math.round(Math.min(100, Math.max(0, top))) };
+}
+
 /** The same tiles for the page without scripts. */
 export function limitsHtml(limits: BrowserLimits | null): Html {
   if (limits === null) return html``;

@@ -274,10 +274,10 @@ async function main() {
     step("typing a new task");
     term.write("\r");
     // A small task: its exact terms, and Enter is Build (the page's own fast start, as data).
-    await waitFor(/Build approves exactly this|Filed\. A plan comes first\.|Refused: /, "the filing's answer");
+    await waitFor(/Build approves exactly this|Filed\. (A plan comes first|Just code)|Refused: /, "the filing's answer");
     step("New task's answer");
     if (/Refused: /.test(text())) throw new Error(`filing was refused: ${/Refused: (.*?)\s*│/.exec(text())?.[1]}`);
-    report.road = /Build approves exactly this/.test(text()) ? "build" : "plan";
+    report.road = /Build approves exactly this/.test(text()) ? "build" : /Filed\. Just code/.test(text()) ? "just-code" : "plan";
     if (report.road === "build") {
       term.write("\r");
       await waitFor(/Building it\.|Refused: /, "Build's answer");
