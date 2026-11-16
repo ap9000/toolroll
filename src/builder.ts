@@ -1,5 +1,6 @@
 import { legacyNetwork, repositoryEcosystems, type NetworkProfile } from "./egress.js";
 import { flexibleAdoption } from "./flexible-merge-guard.js";
+import { agentSaidTail } from "./agent-said.js";
 import { CHECK_ACCESS_DEFAULT, checkAccessHere, checkNetworkOf, localModeCap, type CheckAccess } from "./check-access.js";
 import { localModeOn } from "./local-owner.js";
 import { checkoutGit, refusal as gitRefusal } from "./teardown-git.js";
@@ -342,7 +343,9 @@ export type BuildResult =
       summary: string;
     }
   | { ok: true; parked: ParkPackage; branch: string }
-  | { ok: false; reason: BuildRefusal; message: string; problems?: Problem[] };
+  | { ok: false; reason: BuildRefusal; message: string; problems?: Problem[];
+      /** What the agent said on its way out of a failed attempt, cleaned (agent-said.ts): kept on the run. */
+      agentSaid?: string[] };
 
 export type BuildRefusal =
   | "skills-unavailable"
@@ -371,6 +374,9 @@ export type BuildRefusal =
   | "commit-failure"
   | "malformed-decision"
   | "provider-init"
+  /** The agent's process ran and exited non-zero with error output of its own before its harness came up (its own
+   * error, not the machine's: "the agent stopped with an error"). */
+  | "agent-error"
   | "setup"
   | "revision-brief"
   | "external"
@@ -1989,10 +1995,14 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
     };
   }
   if (result.initFailed) {
-    // The harness never initialized — config, auth, or install, observed
-    // structurally (the provider's init event never arrived and the turn
-    // has nothing to show). Not an agent's attempt: the distinct reason
-    // keeps a broken environment from counting as bad agent work.
+    // The harness never initialized, observed structurally (the provider's init event never arrived and the turn has
+    // nothing to show). When the agent's own process ran, exited non-zero and said why, that is the agent stopping with
+    // an error of its own (its words are kept); with nothing said, it stays the harness that never came up. Neither is
+    // bad agent work: both keep their infrastructure execution class (route-store.ts).
+    const said = agentSaidTail(result.stderr);
+    if (result.code !== 0 && !result.notFound && said.length > 0) {
+      return { ok: false, reason: "agent-error", message: `the agent stopped with an error — ${said.at(-1)}`, agentSaid: said };
+    }
     return {
       ok: false,
       reason: "provider-init",
@@ -2010,7 +2020,8 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       const kept = await keepForNextAgent(captured);
       if (kept !== null) return kept;
     }
-    return { ok: false, reason: "agent", message: agentExitWords(result) };
+    const said = agentSaidTail(result.stderr.trim() !== "" ? result.stderr : result.finalMessage);
+    return { ok: false, reason: "agent", message: agentExitWords(result), ...(said.length === 0 ? {} : { agentSaid: said }) };
   }
   if (captured.live?.close === "turn-budget" && ![done, mailbox, captured.plan?.proposal].some(name => name !== undefined && existsSync(join(worktree, name)))) {
     return { ok: false, reason: "agent", message: agentExitWords({ ...result, ending: { subtype: "error_max_turns", turns: captured.live.maxTurns } }) };

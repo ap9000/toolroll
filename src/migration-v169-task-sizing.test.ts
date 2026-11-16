@@ -36,7 +36,7 @@ const version = (store: ReturnType<typeof openStore>) => store.handle.prepare("S
 
 describe("v169", () => {
   test("fresh: the table, no row (off), update-safe", () => {
-    expect(SCHEMA_VERSION).toBe(169);
+    expect(SCHEMA_VERSION).toBe(170);
     expect(UPDATE_SAFE_MIGRATIONS).toContain(169);
     expect(updateSafeSchema(168)).toBe(true);
     expect(V169_STEPS).toEqual(["task-sizing-setting", "task-sizing-columns"]);
@@ -50,7 +50,7 @@ describe("v169", () => {
     const file = v168File();
     const upgraded = openStore(file);
     try {
-      expect(version(upgraded)).toBe(169);
+      expect(version(upgraded)).toBe(170);
       expect(taskSizingSetting(upgraded, () => null).on).toBe(false);
       expect(upgraded.lookupRef("sized")!.sizing).toEqual({ size: "small", risky: false, source: "heuristic", reason: "short and focused" });
       expect(upgraded.handle.prepare("SELECT size_by FROM task_ref").get()?.["size_by"]).toBeNull();
@@ -62,7 +62,7 @@ describe("v169", () => {
     expect(() => openStore(file, { migrationStep: one => { if (one === step) throw new Error("crash"); } })).toThrow(/crash/);
     const resumed = openStore(file);
     try {
-      expect(version(resumed)).toBe(169);
+      expect(version(resumed)).toBe(170);
       expect(resumed.handle.prepare("SELECT COUNT(*) AS n FROM task_sizing_setting").get()?.["n"]).toBe(0);
     } finally { resumed.close(); }
   });

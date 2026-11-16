@@ -422,7 +422,7 @@ export function summaryLines(summary: ApprovalSummary): string[] {
     ...summary.warnings.map(one => `${pad("Note")}${one.words}`),
     // One plain line, then each setting whole on a line of its own (a screen may fold those under the first).
     ...(summary.usual.length === 0 ? [] : [`${pad("Usual")}${summary.usualSummary === "" ? summary.usualLabel : `${summary.usualLabel}: ${summary.usualSummary}`}`,
-      ...summary.usual.map(one => `${indent}${one.label}: ${one.words}`)]),
+      ...summary.usual.filter(one => !saidInUsualSummary(one, summary.usualSummary)).map(one => `${indent}${one.label}: ${one.words}`)]),
   ];
 }
 
@@ -539,4 +539,10 @@ export function approvalSummaryFor(store: Store, taskId: string, now: Date, evid
 export function shipSummaryOf(digest: string, decisions: SummaryRow[], warnings: SummaryNote[]): ApprovalSummary {
   const key = createHash("sha256").update(JSON.stringify({ v: 2, kind: "flexible-ship", digest, decisions, warnings }), "utf8").digest("hex").slice(0, 32);
   return { revision: null, revisionNotes: [], revisionChanges: [], decisions, why: null, differs: [], warnings, usual: [], usualLabel: USUAL_LABEL, usualSummary: "", key };
+}
+
+/** Whether the usual settings' one plain line already says this row whole (the checks level: "Default checks"), so a text
+ * surface needn't say it twice. Only an exact restatement counts; every other row stays on its own line. */
+function saidInUsualSummary(row: SummaryRow, usualSummary: string): boolean {
+  return row.label === "Checks" && usualSummary.split(", ").includes(`${row.words} checks`);
 }

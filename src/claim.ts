@@ -1057,6 +1057,9 @@ export type MalformedFinalize = { ok: true; incidentId: number } | { ok: false; 
 /** How a failed attempt is classified, per gnhf. Decides retry, backoff, or stall. */
 export type FailureClass =
   | "agent-reported"
+  /** The agent's own process ran and stopped with an error of its own before its harness came up. Strikes and backs
+   * off like every other class (MAX_STRIKES); its words are kept on the run. */
+  | "agent-error"
   | "retryable-infra"
   | "no-op"
   /** Run 2085: stopped before its handoff; the work was kept and the retry resumes it. Strikes like no-op. */
@@ -1223,7 +1226,7 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
   // Out of plan on an approved chain: the walk moves on, no strike, and the next agent runs through the ordinary claim.
   // Anything else about this ending (fallback.ts says what closed the walk) stays the ordinary road below.
   // Only the agent's own exit moves: a lease, branch or HEAD law that failed, or a commit that failed, is that ending.
-  if (failureClass === "unknown") {
+  if (failureClass === "unknown" || failureClass === "agent-error") {
     const moved = moveOnIfExhausted(store, runId, taskId, now);
     if (moved !== null) {
       store.finishRun(runId, { outcome: "failed", reason: "usage-exhausted", now });
