@@ -48,7 +48,7 @@ import { runTokensCommand } from "./tokens-cli.js";
 import { startTokenNotices } from "./token-notices.js";
 import { liftAuthPause, openAuthPauses, signInGate, signInWords, startSignInProbes, type SignInGate } from "./provider-auth.js";
 import { createConnectionChecker } from "./provider-connection.js";
-import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
+import { agentsSignedOutLines, checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
 import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin, type OnboardIo } from "./agent-onboard.js";
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
 import { startLiveBackups } from "./live-backup.js";
@@ -4624,6 +4624,8 @@ async function startConsole(options: {
     store: context.store, settings: () => readMonitoring(dirname(context.databaseFile)),
     instance: options.publicUrl ?? hostname(), version: packageVersion(),
   });
+  // One sign-in check for the loops beside the console, so its cache answers them all.
+  const signIns = createConnectionChecker({ store: context.store });
   // Every loop beside the console stops when it does, through one close listener (one each pushed the server past
   // Node's ten-listener warning, printed on every Ctrl-C).
   const besideConsole: (() => void)[] = [
@@ -4633,10 +4635,11 @@ async function startConsole(options: {
     // v111: API tokens: 7- and 1-day expiry notices to their person, and the end of each rotated token, a pass a minute.
     startTokenNotices(context.store),
     // A paused provider's sign-in is checked every two minutes (no model, nothing spent); the pause lifts when it works.
-    startSignInProbes(context.store, createConnectionChecker({ store: context.store })),
+    startSignInProbes(context.store, signIns),
     // Sprint 8: scheduled backups, a pass a minute; its lease also tells a restore that the console is running.
     startBackups(context.store, context.databaseFile),
-    startCodexLimits(context.store),
+    // Codex's app server only for a Codex signed in to its plan: the same cached sign-in check (eight stranger 2).
+    startCodexLimits(context.store, async () => (await signIns("codex")).state === "connected"),
     // At most one anonymous look a day for a newer Toolroll (Settings → Updates can switch it off).
     startUpdateChecks(context.store, dirname(context.databaseFile), PACKAGE_VERSION, installMethod(context.installBin).updateCommand, context.releaseIo ?? {}),
   ];
@@ -9322,8 +9325,12 @@ async function statusCommand(
   const line = updateLine(release, current, method.updateCommand);
   const update = release === null ? {} : { update: { current, latest: release.version, security: release.security, updateCommand: method.updateCommand, url: release.url } };
   // One line when an integration is Broken, from the last checks only: status never waits on a check.
-  const brokenIntegrations = await savedIntegrations(context).then(list => list.filter(one => one.state === "broken"), () => []);
+  const savedList = await savedIntegrations(context).catch((): Integration[] => []);
+  const brokenIntegrations = savedList.filter(one => one.state === "broken");
   const brokenLine = integrationsBrokenLine(brokenIntegrations);
+  // An agent signed out is said as such, with its sign-in command, never as a Broken integration (eight stranger 2).
+  const signedOutLines = agentsSignedOutLines(savedList);
+  const signedOut = signedOutLines.length === 0 ? {} : { agentsSignedOut: signedOutLines };
   const integrations = brokenIntegrations.length === 0 ? {} : { integrations: { broken: brokenIntegrations.map(one => ({ key: one.key, name: one.name, fix: one.action.kind === "fix" ? one.action.words : null })) } };
   // An update waiting, on what, and the action: before anything else, as it holds up new work.
   const waiting = waitingUpdate(context.databaseFile, run => context.store.stopQuiescenceProblem(run) !== null, context.clock());
@@ -9341,7 +9348,7 @@ async function statusCommand(
   const laptop = { laptop: await laptopStatus(context.store, context.databaseFile, context.laptopSeams) };
   // Nothing else on this computer is left to notice a builder that died: a look at status brings it back when it may.
   if (!laptop.laptop.running && laptop.laptop.background === "on" && !machineActing()) await restartOwnBuilder(context.store, context.databaseFile, context.laptopSeams, context.clock()).catch(() => null);
-  return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
+  return succeed(context.write, context.json, command, { ...status, projects, ...laptop, ...update, ...integrations, ...signedOut, ...updateWaiting, ...unsentReplies, ...(legacyWebhookWarning === null ? {} : { legacyWebhookWarning }) }, () => [...(waiting === null ? [] : [waiting.words]), ...(unsentLine === null ? [] : [unsentLine]), ...renderInstallationStatus(status), ...(projectsLine === null ? [] : [projectsLine]), ...(line === null ? [] : [line]), ...signedOutLines, ...(brokenLine === null ? [] : [brokenLine]), ...(legacyWebhookWarning === null ? [] : [legacyWebhookWarning])]);
 }
 
 function unsentRepliesLine(unsent: readonly { since: string; error: string | null }[]): string | null {

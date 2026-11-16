@@ -360,7 +360,8 @@ async function probeAgent(io: IntegrationIo, provider: ProviderId): Promise<Prob
   switch (connection.state) {
     case "connected": case "key-works": case "key-present": return { outcome: "ok", account, detail };
     case "not-installed": return { outcome: "absent", problem: `The ${name} CLI isn't installed on this computer.` };
-    case "signed-out": return { outcome: "failed", account, problem: `${name} isn't signed in. Run ${command}.`, fix: { command } };
+    // Signed out isn't broken (eight stranger 2): the agent simply isn't set up here yet, and the row says how.
+    case "signed-out": return { outcome: "absent", problem: agentSignedOutWords(command) };
     case "missing-key": return { outcome: "failed", problem: `${name} is set to use an API key, and none is saved. Run ${command}.`, fix: { command } };
     case "key-refused": return { outcome: "failed", problem: `${name} refused the saved API key. Save a new one with ${command}.`, fix: { command } };
     default: return { outcome: "ok", account, detail: "Signed in; the account couldn't be read" };
@@ -561,6 +562,15 @@ export async function checkIntegrations(io: IntegrationIo, keys?: readonly strin
     recordIntegrationCheck(io.store, target.key, result, clock());
   }));
   return integrationsNow(io);
+}
+
+/** What an agent row says while its CLI is signed out: "signed out (run `codex login`)". */
+export const agentSignedOutWords = (command: string): string => `signed out (run \`${command}\`)`;
+const SIGNED_OUT_DETAIL = /^signed out \(run `[^`]+`\)$/;
+
+/** One line per agent whose CLI the last check saw signed out ("Codex · signed out (run `codex login`)"), for `status`. */
+export function agentsSignedOutLines(list: readonly Integration[]): string[] {
+  return list.filter(one => one.group === "agents" && one.state === "not-set-up" && one.detail !== null && SIGNED_OUT_DETAIL.test(one.detail)).map(one => `${one.name} · ${one.detail}`);
 }
 
 /** The one line `status` and `onboard` add when something is Broken; null when nothing is. */

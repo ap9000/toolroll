@@ -28,6 +28,24 @@ test("the background pass asks this computer, lifts the sign-in pause, turns the
   await vi.waitFor(async () => expect((await world!.send("/settings/storage", "GET", { cookie })).body).toContain("Task folders use"), { timeout: 10_000 });
 });
 
+test("eight stranger 2: a signed-out Codex is never started for its servers; once signed in, the background pass lists them", async () => {
+  let later = 0, codexIn = false, listed = 0;
+  const probe = async (file: string, args: readonly string[]) => {
+    seen.push(`probe ${file} ${args.join(" ")}`);
+    if (file === "codex") return codexIn ? { code: 0, stdout: "Logged in using ChatGPT\n", stderr: "", timedOut: false, notFound: false } : { code: 1, stdout: "Not logged in\n", stderr: "", timedOut: false, notFound: false };
+    return { code: 1, stdout: JSON.stringify({ loggedIn: false }), stderr: "", timedOut: false, notFound: false };
+  };
+  world = await openQuietWorld(what => seen.push(what), { backgroundChecks: true, backgroundChecksMs: 50, clock: () => new Date(Date.now() + later),
+    connectionProbe: probe as never, codexToolList: async () => { listed += 1; return "[]"; } });
+  await until(() => seen.filter(one => one === "probe codex login status").length >= 1);
+  // Several passes while it is signed out: never asked for its servers.
+  await new Promise(done => setTimeout(done, 400));
+  expect(listed).toBe(0);
+  codexIn = true;
+  later = 60 * 60_000;
+  await until(() => listed > 0);
+});
+
 test("the lead's follow pass settles a turn past its deadline, which no page visit does", async () => {
   world = await openQuietWorld(what => seen.push(what));
   const { cookie } = await world.signIn();
