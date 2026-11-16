@@ -38,34 +38,38 @@ pub fn pane_text(app: &mut App) -> Option<(&'static str, Vec<String>)> {
                 .map(|s| s.content.as_ref())
                 .collect::<String>(),
         )
+        .trim_end()
+        .to_string()
+    };
+    // The width the pane was last drawn at (its text wraps as drawn); 80 before any frame.
+    let w = match app.areas.content.width {
+        0 => 80,
+        w => w as usize,
     };
     match app.tab {
+        // Live: what is drawn above the output (a failure, what the agent said, a wait), then the whole output.
         Tab::Live => {
-            let lines = match &app.line_cache {
-                Some(c) => c.lines.iter().map(line_text).collect(),
-                None => crate::transcript::lines(&app.transcript, 200, 0)
-                    .iter()
-                    .map(line_text)
-                    .collect(),
-            };
+            let item = app.selected_item().cloned()?;
+            let (head, output) = crate::view::live_head(app, &item, w);
+            let mut lines: Vec<String> = head.iter().map(line_text).collect();
+            app.live_head_lines = lines.len();
+            if output {
+                lines.extend(
+                    crate::transcript::lines(&app.transcript, w, 0)
+                        .iter()
+                        .map(line_text),
+                );
+            }
             Some(("live", lines))
         }
-        Tab::Steps => {
-            let steps = app.steps_here()?;
-            let mut out = vec![];
-            if let Some(h) = &steps.headline {
-                out.push(clean(h));
-            }
-            for c in steps.cards.iter().flatten() {
-                out.push(clean(&c.label));
-                out.push(clean(&c.sentence));
-            }
-            if let Some(f) = &steps.failure {
-                out.push(clean(&f.line));
-                out.extend(f.agent_said.iter().flatten().map(|l| clean(l)));
-            }
-            Some(("steps", out))
-        }
+        // Steps: exactly the lines the tab draws.
+        Tab::Steps => Some((
+            "steps",
+            crate::view::steps_lines(app, w)
+                .iter()
+                .map(line_text)
+                .collect(),
+        )),
         Tab::Diff => {
             let code = app.code.as_ref()?;
             let text = |i: usize| {

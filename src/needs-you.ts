@@ -38,7 +38,9 @@ export const startBuilderHref = (taskId: string | null): string =>
 export const START_BUILDER_COMMAND = "toolroll up";
 /** `build`: the run a sentence names; `provider`: the agent that signed out; `task`: another task it names (an
  * earlier version); `retry`: when Toolroll tries again, in words ("in 4 minutes"). */
-export type NeedContext = { build?: number | null; provider?: string | null; task?: string | null; retry?: string | null };
+export type NeedContext = { build?: number | null; provider?: string | null; task?: string | null; retry?: string | null;
+  /** Which attempt on its task that build was (1: the task's first): said with the build, "attempt 3 (build #5)". */
+  attempt?: number | null };
 
 /** `useReason`: which recorded reasons say what is needed better than the default words. */
 type Need = { sentence: (context: NeedContext) => string; action: NeedAction; useReason?: (reason: string) => boolean;
@@ -46,7 +48,8 @@ type Need = { sentence: (context: NeedContext) => string; action: NeedAction; us
   withReason?: (reason: string) => string };
 const always = (): boolean => true;
 
-const build = (context: NeedContext): string => context.build == null ? "the last build" : `build #${context.build}`;
+const build = (context: NeedContext): string => context.build == null ? "the last build"
+  : context.attempt == null ? `build #${context.build}` : `attempt ${context.attempt} (build #${context.build})`;
 const Build = (context: NeedContext): string => context.build == null ? "The last build" : `Build #${context.build}`;
 
 export const NEEDS: Readonly<Record<NeedKey, Need>> = {

@@ -545,3 +545,10 @@ test("a blocker's reason that already says what to do is said once (never \"Fix 
   expect(needSentence("fix-dependency", once)).toBe(once);
   expect(needSentence("fix-dependency", "design-tokens was cancelled before it finished")).toBe(once);
 });
+
+test("a retry names the task's own attempt with the build, as the workbench does", () => {
+  expect(WAITS["retry-later"]({ build: 5, attempt: 3, retry: "in 4 minutes" })).toBe("Waiting: Toolroll retries attempt 3 (build #5) in 4 minutes.");
+  // No attempt known: the build alone; no build: the last build.
+  expect(WAITS["retry-later"]({ build: 5, retry: "soon" })).toBe("Waiting: Toolroll retries build #5 soon.");
+  expect(WAITS["retry-later"]({ retry: "soon" })).toBe("Waiting: Toolroll retries the last build soon.");
+});
