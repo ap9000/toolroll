@@ -245,7 +245,7 @@ export type GeneralDeps = {
   /** The install's solo or team mode, as the server derives it now (install-mode.ts). */
   readonly installMode: () => InstallModeRead;
   /** Task sizing by a quick model call, as saved (task-sizing.ts taskSizingSetting). */
-  readonly taskSizing: () => { on: boolean; byEnv: boolean };
+  readonly taskSizing: () => { on: boolean; chosen: boolean; sizer: "claude" | "jev" | null; available: "claude" | "jev"; byEnv: boolean };
 };
 
 const ACCENT_CHOICES = ACCENT_PRESETS.slice(0, 6);
@@ -418,30 +418,37 @@ function installModeSection(deps: GeneralDeps): SectionImpl<InstallModeSummary> 
 
 /** Settings → General's task sizing, said in words: off is the default. */
 export const TASK_SIZING_OFF_WORDS = "Off: no model call before you approve; uncertain tasks get a plan first.";
-export const TASK_SIZING_ON_WORDS = "On: before you approve, a quick call to Claude Haiku on your plan sizes each new task, and the plan says it did.";
-type TaskSizingSummary = { on: boolean; byEnv: boolean; canSwitch: boolean };
+const SIZER_NAME = { claude: "Claude Haiku, on your plan", jev: "Jev via OpenRouter, your credit" } as const;
+const SIZER_SHORT = { claude: "Claude Haiku", jev: "Jev via OpenRouter" } as const;
+type TaskSizingSummary = { on: boolean; byEnv: boolean; canSwitch: boolean; sizer: "claude" | "jev" | null; available: "claude" | "jev"; moved: boolean };
 /** Task sizing by a quick model call: its state in one line; an instance operator turns it on or off on its change
  * document (a step-up). */
 function taskSizingSection(deps: GeneralDeps): SectionImpl<TaskSizingSummary> {
   return {
     loadSummary: ctx => {
       const read = deps.taskSizing();
-      return { on: read.on && !read.byEnv, byEnv: read.byEnv, canSwitch: ctx.can["switch"] === true };
+      return { on: read.on && !read.byEnv, byEnv: read.byEnv, canSwitch: ctx.can["switch"] === true, sizer: read.sizer, available: read.available, moved: read.chosen && !read.on };
     },
-    render: ({ declaration, summary, attrs }) => settingsSection({ id: "task-sizing", title: declaration.title, state: summary.on ? " · on" : " · off", attrs,
-      lead: summary.byEnv ? "Off: TOOLROLL_NO_TASK_CLASSIFIER is set on this computer, so no model call happens before you approve; uncertain tasks get a plan first." : summary.on ? TASK_SIZING_ON_WORDS : TASK_SIZING_OFF_WORDS,
-      ...(summary.canSwitch && !summary.byEnv ? { right: btn(summary.on ? "Turn off" : "Turn on", { sm: true, href: changeHref(declaration.changes[0]!) }) } : {}), body: html`` }),
+    render: ({ summary, attrs }) => settingsSection({ id: "task-sizing", title: `Size tasks with a quick model call (${SIZER_NAME[summary.on && summary.sizer !== null ? summary.sizer : summary.available]})`, state: summary.on ? " · on" : " · off", attrs,
+      lead: summary.byEnv ? "Off: TOOLROLL_NO_TASK_CLASSIFIER is set on this computer, so no model call happens before you approve; uncertain tasks get a plan first."
+        : summary.on ? `On: before you approve, a quick call to ${SIZER_SHORT[summary.sizer!]} sizes each new task, and the plan names it.`
+        : summary.moved && summary.sizer !== null ? `Off: you turned it on for ${SIZER_SHORT[summary.sizer]}, but ${SIZER_SHORT[summary.available]} is the one available now, so nothing is sent. Turn it on again to choose it. Uncertain tasks get a plan first.`
+        : TASK_SIZING_OFF_WORDS,
+      ...(summary.canSwitch && !summary.byEnv ? { right: btn(summary.on ? "Turn off" : "Turn on", { sm: true, href: "/settings/change/task-sizing" }) } : {}), body: html`` }),
     refusal: "An instance operator changes how tasks are sized.",
     renderChange: ({ declaration, summary, problem }) => {
       const home = sectionHref(declaration);
-      const title = declaration.title;
       const on = summary?.on === true;
+      const choice = summary === null ? "claude" : on && summary.sizer !== null ? summary.sizer : summary.available;
+      const title = `Size tasks with a quick model call (${SIZER_NAME[choice]})`;
       const words = summary === null || summary.byEnv
         ? html`${infoLine("TOOLROLL_NO_TASK_CLASSIFIER is set on this computer, so task sizing stays off.")}<div class="k-acts">${btn("Back to General", { href: home })}</div>`
         : joinHtml([
-          html`<p>${on ? `Turn it off. ${TASK_SIZING_OFF_WORDS}` : "Turn it on. Before you approve, a quick call to Claude Haiku on your own plan sizes each new task: small ones build at once on a fast model, risky ones plan first, and the plan names the model that sized it."}</p>`,
+          html`<p>${on ? `Turn it off. ${TASK_SIZING_OFF_WORDS}` : choice === "jev"
+            ? "Turn it on. Before you approve, each new task's words go to Jev through your OpenRouter key (your credit) to size it: small ones build at once on a fast model, risky ones plan first, and the plan names the model that sized it. Only Jev is asked; if the key goes, sizing turns itself off."
+            : "Turn it on. Before you approve, a quick call to Claude Haiku on your own plan sizes each new task: small ones build at once on a fast model, risky ones plan first, and the plan names the model that sized it. Only Claude is asked; if an OpenRouter key is saved later, sizing turns itself off until you choose again."}</p>`,
           problem === null ? "" : notice(problem),
-          kitSectionForm({ proof: "task-sizing", action: "/settings/task-sizing", id: "task-sizing-form", native: true, save: { label: on ? "Turn off" : "Turn on" }, confirm: on ? "Turn off task sizing" : "Turn on task sizing", hidden: { enabled: on ? "off" : "on" }, body: html`` }),
+          kitSectionForm({ proof: "task-sizing", action: "/settings/task-sizing", id: "task-sizing-form", native: true, save: { label: on ? "Turn off" : "Turn on" }, confirm: on ? "Turn off task sizing" : "Turn on task sizing", hidden: { enabled: on ? "off" : "on", sizer: choice }, body: html`` }),
           html`<div class="k-acts">${btn("Cancel", { variant: "ghost", href: home })}</div>`,
         ]);
       return { title, body: html`<div data-kit-page>${phoneHeader(title, { back: home })}${doc(docHeader({ title, back: [home, "General"], same: true }), words)}</div>` };

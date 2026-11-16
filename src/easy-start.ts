@@ -152,6 +152,8 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
   // below has no terminal of its own, so it never initialises anything itself.
   let local = seams.localMode();
   if ((local === "candidate" || local === "absent") && !first.ok && first.state === "none") {
+    // Too deep for the socket: said before anything else runs, the sandbox probe included.
+    if (refusedTooDeep()) return EXIT.refused;
     // l1: a new install on a Linux computer missing the sandbox's programs stops here, before anything is made: no
     // account, no database written (a candidate stays one), so once they are installed the next start is password-free.
     const sandbox = await seams.sandbox();
@@ -160,7 +162,6 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
       for (const line of missingSandboxToolsWords(sandbox.missing)) write(line);
       return EXIT.refused;
     }
-    if (refusedTooDeep()) return EXIT.refused;
     if (await seams.initLocal()) local = "on";
   }
   // A database that could not be made password-free (no fence, an account that appeared meanwhile, a console running):

@@ -1829,7 +1829,17 @@ describe("the task detail (portfolio arc, slice 1c): the attempt panel, the rail
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "";
     const retry = (fields: Record<string, string>) => fetch(url("/t/t-broke/requeue"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
-    expect((await retry({ context: suggestion, note: "" })).status).toBe(303);
+    // The build and plan the page showed are proved at the press for a full session too: stale ones refuse, unchanged.
+    const pins = view.retry!.pins!;
+    for (const stale of [{ run: String(earlier), digest: pins.digest }, { run: String(pins.run), digest: "0".repeat(32) }, { run: String(pins.run), digest: "" }]) {
+      const refused = await retry({ context: suggestion, note: "", ...stale });
+      expect(refused.status).toBe(409);
+      expect(await refused.text()).toContain("This task changed since you looked. Review it again.");
+      expect(store.getTask("t-broke")?.state).toBe("failed");
+    }
+    expect(store.listSteerNotes(ref)).toEqual([]);
+    // The matching ones: a failed task's latest build and the plan it ran, retried.
+    expect((await retry({ context: suggestion, note: "", run: String(pins.run), digest: pins.digest })).status).toBe(303);
     expect(store.getTask("t-broke")?.state).toBe("queued");
     expect(store.listSteerNotes(ref).map(one => one.note)).toEqual([suggestion]);
     expect(typedNotesFor(store, "t-broke", 8)).toEqual([]);

@@ -141,23 +141,25 @@ export function fastStartRules(store: Store, input: FastInput & { taskId: string
   const account = store.accountOf(input.actor);
   if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(input.actor, input.repo)) return no("rules");
   // The description decides "small"; the classifier can only confirm it, and silence is no. (Solo's Just code is any size.)
-  // With task sizing off nothing confirms "small": silence is no, said as that (Solo's Just code is the person's own).
-  if (!solo && !taskSizingOn(store)) return no("sizing-off");
-  if (!solo && heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return no("size");
-  if (!solo && input.sizing.source !== "classifier") return no("classifier");
-  if (!solo && (input.sizing.size !== "small" || input.sizing.risky)) return no("size");
+  // With task sizing off nothing confirms "small": silence is no, said as that once the stronger reasons (protected work
+  // and the project's rules) have had their say (Solo's Just code is the person's own).
+  const sizingOff = !solo && !taskSizingOn(store);
+  if (!solo && !sizingOff && heuristicSizing({ title: input.title, goal: input.title }).size !== "small") return no("size");
+  if (!solo && !sizingOff && input.sizing.source !== "classifier") return no("classifier");
+  if (!solo && !sizingOff && (input.sizing.size !== "small" || input.sizing.risky)) return no("size");
   const scope = store.getScope(input.taskId);
   if (scope === null) return no("plan");
   if (issueImported(store, input.taskId)) return no("plan");
   if (scope.profileState === "unresolved" || scope.profile == null) return no("agents");
   const route = routeFromJson(scope.proposedRouteJson ?? null);
   if (route === null) return no("agents");
-  if (!solo && !makesNoPlan(input.sizing, route.risk)) return no("plan");
+  if (!solo && !sizingOff && !makesNoPlan(input.sizing, route.risk)) return no("plan");
   if ((scope.qualityMode ?? "default") !== "default") return no("quality");
   if (scope.proposedChainJson != null) return no("chain");
   const rules = store.approvalRules(input.repo);
   if (rules.notRequester) return no("rules");
   if (isProtectedWork(rules, scope.touches)) return no("protected");
+  if (sizingOff) return no("sizing-off");
   const gate = store.approvalGate(input.taskId, input.actor, "person");
   if (gate.verdict !== "seal" || gate.protectedWork) return no("rules");
   if (deployGateScope(scope) || releaseCheckScope(scope) || releaseCiHoldOf(store, input.taskId) !== null) return no("release");

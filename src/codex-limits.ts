@@ -131,3 +131,13 @@ export async function codexLimitsPass(store: Store, seams: { signedIn: () => Pro
   if (reading !== null && seams.stopped?.() !== true) store.recordProviderLimits(reading, new Date());
   return "read";
 }
+
+/**
+ * Whether Codex is signed in to its plan right now, for the moment before its app server starts: the cached answer
+ * first (so a signed-out Codex keeps its back-off and nothing is asked), then, only when that says signed in, a fresh
+ * status check awaited here (a sign-out since the cached answer is seen before anything starts).
+ */
+export async function codexSignedInNow(check: (provider: "codex", fresh?: boolean) => Promise<{ state: string }>): Promise<boolean> {
+  if ((await check("codex")).state !== "connected") return false;
+  return (await check("codex", true)).state === "connected";
+}

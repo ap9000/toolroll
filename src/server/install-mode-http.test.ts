@@ -73,13 +73,19 @@ describe("Settings → General: task sizing by a quick model call", () => {
     expect(change).toContain('action="/settings/task-sizing"');
     // Team: the session never stands in, and a wrong password changes nothing.
     for (const typed of ["", "not-it"]) {
-      expect(said(await post("/settings/task-sizing", { enabled: "on", password: typed }))).toMatch(/^\/settings\/change\/task-sizing\?problem=Enter your Toolroll password/);
+      expect(said(await post("/settings/task-sizing", { enabled: "on", sizer: "claude", password: typed }))).toMatch(/^\/settings\/change\/task-sizing\?problem=Enter your Toolroll password/);
       expect(taskSizingOn(store)).toBe(false);
     }
     expect(said(await post("/settings/task-sizing", { enabled: "maybe", password })).includes("Choose on or off")).toBe(true);
-    expect(said(await post("/settings/task-sizing", { enabled: "on", password }))).toContain("Task sizing is on");
+    expect(change).toContain('name="sizer" value="claude"');
+    // On is consent to exactly the classifier the page showed: another (or none) changes nothing.
+    for (const sizer of ["jev", ""]) {
+      expect(said(await post("/settings/task-sizing", { enabled: "on", sizer, password }))).toContain("changed since you looked");
+      expect(taskSizingOn(store)).toBe(false);
+    }
+    expect(said(await post("/settings/task-sizing", { enabled: "on", sizer: "claude", password }))).toContain("Task sizing is on");
     expect(taskSizingOn(store)).toBe(true);
-    expect(store.handle.prepare("SELECT actor, outcome FROM action_ledger WHERE action = 'task sizing by a quick model call'").all()).toEqual([{ actor: "alex", outcome: "on" }]);
+    expect(store.handle.prepare("SELECT actor, outcome FROM action_ledger WHERE action = 'task sizing by a quick model call'").all()).toEqual([{ actor: "alex", outcome: "on: claude" }]);
     expect(said(await post("/settings/task-sizing", { enabled: "off", password }))).toContain("Task sizing is off");
     expect(taskSizingOn(store)).toBe(false);
     // The password typed here is remembered on this session: forgotten again, so what follows stands on the mode alone.
@@ -129,7 +135,7 @@ describe("an existing install, then It's just me", () => {
   });
 
   test("solo: the session stands in for task sizing's step-up", async () => {
-    expect(said(await post("/settings/task-sizing", { enabled: "on", password: "" }))).toContain("Task sizing is on");
+    expect(said(await post("/settings/task-sizing", { enabled: "on", sizer: "claude", password: "" }))).toContain("Task sizing is on");
     expect(taskSizingOn(store)).toBe(true);
     expect(said(await post("/settings/task-sizing", { enabled: "off", password: "" }))).toContain("Task sizing is off");
     expect(taskSizingOn(store)).toBe(false);

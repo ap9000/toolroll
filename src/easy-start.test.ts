@@ -136,6 +136,7 @@ describe("bare toolroll at a terminal", () => {
     const deep = "the database's folder is too deep for Toolroll's socket (177 of at most 103 bytes)";
     for (const local of ["absent", "candidate", "on"] as const) {
       const { seams, calls, lines, inits } = scripted({ proofs: [NONE], local: [local], deep });
+      seams.sandbox = async () => { throw Error("must not probe the sandbox"); };
       expect(await runEasyStart("start", bare, seams)).toBe(3);
       expect(lines).toEqual([`Toolroll can't start: ${deep}.`]);
       // Nothing started, nothing waited for, nothing initialised.
@@ -159,7 +160,8 @@ describe("bare toolroll at a terminal", () => {
     const seams = defaultEasyStartSeams({ databaseFile: join(folder, "orders.db"), write: line => lines.push(line), build: "x", cwd: root, admit: async () => 0 });
     const spawned: string[] = [];
     const code = await runEasyStart("start", bare, { ...seams, spawnUp: args => { spawned.push(args.join(" ")); throw Error("must not start"); },
-      sandbox: async () => ({ missing: [], problem: null }), initLocal: async () => { throw Error("must not initialise"); }, serviceInstalled: () => false });
+      // Nothing runs before the refusal: not even the sandbox probe.
+      sandbox: async () => { throw Error("must not probe the sandbox"); }, initLocal: async () => { throw Error("must not initialise"); }, serviceInstalled: () => false });
     expect(code).toBe(3);
     expect(spawned).toEqual([]);
     expect(lines).toHaveLength(1);
@@ -470,6 +472,8 @@ describe("l1: a Linux computer missing the sandbox's programs (stranger test, Ub
     const out: string[] = [];
     const code = await main([], line => out.push(line), { operate: { databaseFile: file }, easyStart: { terminal: true, underAgent: false, seams: {
       sandbox: async () => ({ missing: ["socat"], problem: null }),
+      // This folder's own depth isn't what this test is about (a temp folder can be deep): its socket fits.
+      socketProblem: () => null,
       // Never a real `up` from a test, even if the stop regressed: those starts fail here instead.
       spawnUp: () => { throw Error("started an up"); }, runUpForeground: async () => { throw Error("started an up"); },
     } } });
