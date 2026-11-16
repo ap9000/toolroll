@@ -614,3 +614,46 @@ fn the_screen_as_it_was_counts_and_is_never_dropped_silently() {
     assert_eq!(fx, vec![Effect::TermDetach(ID.into())]);
     assert_eq!(app.status.as_ref().unwrap().1, toolroll_tui::term::TOO_MUCH);
 }
+
+#[test]
+fn t_pressed_before_the_steps_are_read_goes_on_once_they_are() {
+    // The list read and t-done chosen, its steps not yet answered: t says it is reading, and nothing starts.
+    let state = fake::scenario();
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    app.now = NOW;
+    app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    let i = app.items.iter().position(|i| i.id == "t-done").unwrap();
+    for _ in 0..i {
+        app.key(key('j'));
+    }
+    assert_eq!(app.key(key('t')), vec![]);
+    assert_eq!(app.tab, Tab::Terminal);
+    assert_eq!(app.mode, Mode::Normal);
+    // The steps come: the confirm opens (still nothing started until t again).
+    let fx = app.update(Msg::Steps(
+        "t-done".into(),
+        Ok(parse(state.steps["t-done"].clone())),
+    ));
+    assert!(
+        fx.iter().all(|e| !matches!(e, Effect::TermOpen { .. })),
+        "{fx:?}"
+    );
+    assert!(
+        matches!(app.mode, Mode::ConfirmTakeOver { .. }),
+        "{:?}",
+        app.mode
+    );
+    // Moving away first drops the wish: another task's steps open nothing.
+    let mut away = App::new(false, Some("/home/me/shop".into()));
+    away.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    for _ in 0..i {
+        away.key(key('j'));
+    }
+    away.key(key('t'));
+    away.key(key('k'));
+    away.update(Msg::Steps(
+        "t-done".into(),
+        Ok(parse(state.steps["t-done"].clone())),
+    ));
+    assert_eq!(away.mode, Mode::Normal);
+}

@@ -622,6 +622,9 @@ pub struct App {
     pub term: Option<Pane>,
     /// The builds (task, build) whose take-over the person said yes to here (ConfirmTakeOver), each asked once.
     pub confirmed: HashSet<(String, i64)>,
+    /// `t` was pressed on this task before its steps were read: the take-over goes on (its confirm first, as ever) once
+    /// they are, while the person is still on that task's Terminal tab with nothing else open.
+    take_over_wanted: Option<String>,
     ticks: u64,
     counter: u64,
 }
@@ -695,6 +698,7 @@ impl App {
             now: 0,
             term: None,
             confirmed: HashSet::new(),
+            take_over_wanted: None,
             ticks: 0,
             counter: 0,
         }
@@ -818,7 +822,7 @@ impl App {
                     && self.diff.as_ref().map(|d| d.run) != Some(waiting)
                     && self.diff_wanted.as_ref().map(|a| a.run) != Some(waiting)
                 {
-                    fx.push(self.ask_diff(task));
+                    fx.push(self.ask_diff(task.clone()));
                 }
                 fx.push(Effect::Watch(self.rooms()));
                 fx.extend(
@@ -826,6 +830,14 @@ impl App {
                         .into_iter()
                         .filter(|e| !matches!(e, Effect::Watch(_))),
                 );
+                // A `t` pressed before these steps were read: the same take-over now (its confirm first), only while
+                // the person is still on this task's Terminal tab with no dialog open.
+                if self.take_over_wanted.take().as_deref() == Some(task.as_str())
+                    && self.tab == Tab::Terminal
+                    && self.mode == Mode::Normal
+                {
+                    fx.extend(self.take_over());
+                }
                 fx
             }
             Msg::Steps(_, Err(e)) => self.failed(e),
@@ -1385,6 +1397,7 @@ impl App {
     pub(crate) fn selection_changed(&mut self) -> Vec<Effect> {
         // Another task: let go of this one's terminal (it keeps running in the console; t on it again reattaches).
         let detached = self.drop_term();
+        self.take_over_wanted = None;
         self.steps = None;
         self.transcript = Transcript::default();
         self.diff = None;
@@ -3724,9 +3737,11 @@ impl App {
             }
         }
         let Some(steps) = self.steps.as_ref() else {
-            self.say(Tone::Said, "Reading this task — press t again in a moment.");
+            self.take_over_wanted = Some(item.id.clone());
+            self.say(Tone::Said, "Reading this task…");
             return vec![];
         };
+        self.take_over_wanted = None;
         let newest_build = steps
             .cards
             .iter()
