@@ -116,6 +116,12 @@ pub enum Filter {
     NeedsMe,
     /// What moved today.
     Today,
+    /// What agents are working on (and what is up next).
+    Working,
+    /// What failed.
+    Failed,
+    /// What finished.
+    Done,
     /// One project, picked by name in the palette (not remembered).
     Project(String),
 }
@@ -128,6 +134,9 @@ impl Filter {
             Filter::ThisProject => "this-project",
             Filter::NeedsMe => "needs-me",
             Filter::Today => "today",
+            Filter::Working => "working",
+            Filter::Failed => "failed",
+            Filter::Done => "done",
         }
     }
     pub fn from_key(key: &str) -> Option<Filter> {
@@ -136,6 +145,9 @@ impl Filter {
             "this-project" => Filter::ThisProject,
             "needs-me" => Filter::NeedsMe,
             "today" => Filter::Today,
+            "working" => Filter::Working,
+            "failed" => Filter::Failed,
+            "done" => Filter::Done,
             _ => return None,
         })
     }
@@ -146,6 +158,9 @@ impl Filter {
             Filter::ThisProject => Some(Action::FilterThisProject),
             Filter::NeedsMe => Some(Action::FilterNeedsMe),
             Filter::Today => Some(Action::FilterToday),
+            Filter::Working => Some(Action::FilterWorking),
+            Filter::Failed => Some(Action::FilterFailed),
+            Filter::Done => Some(Action::FilterDone),
             Filter::Project(_) => None,
         }
     }
@@ -156,6 +171,9 @@ impl Filter {
             Filter::ThisProject => Some("This project".into()),
             Filter::NeedsMe => Some("Needs me".into()),
             Filter::Today => Some("Today".into()),
+            Filter::Working => Some("Working".into()),
+            Filter::Failed => Some("Failed".into()),
+            Filter::Done => Some("Done".into()),
             Filter::Project(p) => Some(p.clone()),
         }
     }
@@ -170,6 +188,9 @@ impl Filter {
             }),
             Filter::NeedsMe => item.section == Section::NeedsYou,
             Filter::Today => age_secs(&item.age).is_some_and(|s| s < 86_400),
+            Filter::Working => matches!(item.section, Section::Working | Section::UpNext),
+            Filter::Failed => item.tone == "problem" || item.word == "Failed",
+            Filter::Done => item.section == Section::Recent && item.tone == "done",
             Filter::Project(p) => item.project.as_deref() == Some(p.as_str()),
         }
     }
@@ -275,6 +296,8 @@ pub const DIFF_DISAGREES: &str =
 /// Said when `a` opens the changes first: Accept is a yes to the diff on screen, so it is shown before it is asked.
 pub const SHOW_CHANGES_FIRST: &str = "Here are its changes — press a again to accept them.";
 pub const QUESTION_CHANGED: &str = "This question changed — look again.";
+/// Said when a dialog's key comes but the dialog wasn't on screen in the last frame (a window too small to draw it).
+pub const UNDRAWN: &str = "Make the window bigger to see this first.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -362,6 +385,8 @@ pub enum Mode {
     Sending(String),
     /// The screen was given back to the terminal so a copied hunk can be selected in its scrollback; any key returns.
     Copied,
+    /// Searching the focused pane (search.rs): its query and where it is among the matches.
+    Search(crate::search::Search),
     Help,
     /// The settings in use and their file (settings.rs): read-only, but `t` changes the theme for the session.
     Settings,
@@ -378,9 +403,9 @@ pub enum Mode {
     },
 }
 
-/// What opening a take-over means, said before the first one on a build (its number goes after "build #").
-pub fn take_over_scope(run: i64) -> String {
-    format!("Opens your shell in a separate copy of build #{run}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
+/// What opening a take-over means, said before the first one on a build (`attempt`: "attempt 2", attempt_words).
+pub fn take_over_scope(attempt: &str) -> String {
+    format!("Opens your shell in a separate copy of {attempt}. Your shell's startup files and any project hooks they load (e.g. direnv) will run there.")
 }
 
 /// Said when a take-over starts typing (the key bar, or the pane's line, says how to come back).
@@ -389,6 +414,8 @@ pub const TYPING_AGENT: &str =
     "Typing in the agent's own sign-in. Ctrl-] comes back; Toolroll never reads what it saves.";
 pub const TYPING: &str =
     "Typing in a separate copy of the build. Your shell's own startup files run in it.";
+/// Two presses on the divider within this: the list back to its usual width.
+pub const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 /// What Esc on a dialog that changes a task says: nothing was sent.
 pub const NOTHING_CHANGED: &str = "Nothing changed.";
 /// The reason the workbench's Stop retrying gives its hold (and how it knows a hold is that one).
@@ -403,6 +430,23 @@ pub fn current_build_of(steps: &StepCards) -> Option<i64> {
         .find(|c| c.key == "build")
         .and_then(|c| c.runs.first().copied())
         .or(steps.live_run)
+}
+
+/// A build's attempt number on its task (1: the task's first build), from the build card's builds, newest first. The
+/// console's build ids count across every task, so a person reads this one: a task's first build is "attempt 1".
+pub fn attempt_of(steps: &StepCards, run: i64) -> Option<usize> {
+    let runs = &steps
+        .cards
+        .iter()
+        .flatten()
+        .find(|c| c.key == "build")?
+        .runs;
+    match runs.iter().position(|r| *r == run) {
+        Some(at) => Some(runs.len() - at),
+        // The live build before the card lists it: the next attempt.
+        None if steps.live_run == Some(run) => Some(runs.len() + 1),
+        None => None,
+    }
 }
 
 /// How long a status said in answer to the person is held against background reads (status_held).
@@ -502,6 +546,12 @@ pub enum Effect {
     /// The live rooms for what's on screen now (besides `workspace`).
     Watch(Vec<String>),
     OpenBrowser,
+    /// Open this text (a pane's own, already cleaned) in the person's editor: a private temporary file, the screen
+    /// given back to the editor and taken again after (editor.rs, run.rs).
+    OpenInEditor {
+        name: String,
+        text: String,
+    },
     Notify(String),
     Exit(i32),
     /// Take over (T4): find this session's terminal on that task's build (GET /term/state), else start one
@@ -624,6 +674,10 @@ pub struct Areas {
     pub rows: Vec<(u16, Option<usize>)>,
     pub tabs: Vec<(u16, u16, Tab)>,
     pub right: Rect,
+    /// The focused panel's content (under its head): where a search's matches are lit.
+    pub content: Rect,
+    /// The list and panels together (for the divider's drag, whichever side the list is on).
+    pub body: Rect,
     pub split_x: u16,
     /// The links drawn this frame (only ours: link.rs), written clickable after it.
     pub links: Vec<crate::link::LinkArea>,
@@ -701,6 +755,22 @@ pub struct App {
     /// The left column's width in cells (dragged with the mouse).
     pub split: u16,
     pub dragging: bool,
+    /// The list: full, a slim rail, or hidden (viewstate.rs), and which side it is on.
+    pub list_state: crate::viewstate::ListState,
+    pub side: crate::viewstate::Side,
+    /// The focused panel alone, everything else set aside (z again comes back).
+    pub zoom: bool,
+    /// When the divider was last pressed (a second press soon after resets the list's width).
+    pub divider_down: Option<std::time::Instant>,
+    /// Finished, failed or answered tasks not opened since (shown marked, counted in the top bar).
+    pub unread: std::collections::BTreeSet<String>,
+    /// Where a needs-you jump left from (jump-back returns there).
+    pub jump_from: Option<String>,
+    /// The search last made in this pane (its query stays lit after Enter until Esc).
+    pub search: Option<crate::search::Search>,
+    /// The dialog drawn in the last frame, as `dialog_key` names it (view.rs sets it each frame; None when no dialog
+    /// was drawn, the window too small among the reasons). A dialog's keys act only when it is exactly this one.
+    pub drawn_dialog: Option<String>,
     /// Quitting stops the agents this terminal started.
     pub owned: bool,
     /// Where a new task goes (the launcher's repository).
@@ -732,6 +802,8 @@ pub struct App {
     pub utc_offset_secs: i64,
     /// When the status line was last said, and whether a key came since (status_held).
     pub said_at: Option<std::time::Instant>,
+    /// A task just filed here: selected once the work list lists it (its detail shown).
+    pub filed: Option<String>,
     /// The task the status line spoke about and its state then (None: not read yet), for status_follows.
     pub said_for: Option<(String, Option<String>)>,
     pub key_since_said: bool,
@@ -805,6 +877,14 @@ impl App {
             status: None,
             split: 46,
             dragging: false,
+            list_state: crate::viewstate::ListState::Full,
+            side: crate::viewstate::Side::Left,
+            zoom: false,
+            divider_down: None,
+            unread: std::collections::BTreeSet::new(),
+            jump_from: None,
+            search: None,
+            drawn_dialog: None,
             owned,
             project,
             prefs: crate::settings::Prefs::default(),
@@ -822,6 +902,7 @@ impl App {
             agents_screen: None,
             utc_offset_secs: 0,
             said_at: None,
+            filed: None,
             said_for: None,
             key_since_said: true,
             settings_row: 0,
@@ -876,6 +957,14 @@ impl App {
     }
 
     /// The selected task's current build: its newest build attempt, the one the header, Steps and list name.
+    /// "attempt N" for a build of the selected task (attempt_of); "this attempt" when its steps don't list it.
+    pub fn attempt_words(&self, run: i64) -> String {
+        match self.steps_here().and_then(|s| attempt_of(s, run)) {
+            Some(n) => format!("attempt {n}"),
+            None => "this attempt".into(),
+        }
+    }
+
     pub fn current_build(&self) -> Option<i64> {
         current_build_of(self.steps_here()?)
     }
@@ -1020,7 +1109,12 @@ impl App {
                 self.fetching_work = false;
                 self.failed(e)
             }
-            Msg::Steps(task, Ok(steps)) => {
+            Msg::Steps(task, Ok(mut steps)) => {
+                // A cancelled or finished task waits on nothing: no hold to resume, no next try (whatever a read says).
+                if matches!(steps.task.state.as_str(), "cancelled" | "done") {
+                    steps.held = None;
+                    steps.waiting = None;
+                }
                 // A watched panel's task (panes.rs), besides or instead of the selected one.
                 let mut watched = self.watch_steps(&task, &steps);
                 if !watched.is_empty() || self.panes.watches().any(|w| w.task == task) {
@@ -1154,6 +1248,15 @@ impl App {
                 self.sent_thread();
                 self.refresh()
             }
+            Msg::Acted(Ok(ActOutcome::Filed { words, task })) => {
+                // The new task is opened once it is listed, and what was said is about it (status_follows: once it
+                // fails or finishes, "Building it." goes).
+                self.say(Tone::Said, words);
+                self.said_for = Some((task.clone(), None));
+                self.filed = Some(task);
+                self.sent_thread();
+                self.refresh()
+            }
             Msg::Acted(Ok(ActOutcome::Refused(words))) => {
                 self.say(Tone::Refused, words);
                 self.sent_thread();
@@ -1261,6 +1364,7 @@ impl App {
     fn got_work(&mut self, rows: WorkRows) -> Vec<Effect> {
         self.fetching_work = false;
         let before = self.selected_id();
+        let selected_before = before.clone();
         self.project_name = clean(&rows.project_name);
         // The first-run steps the welcome offers aren't counted as needing you (covered_by_welcome).
         let covered = rows
@@ -1271,9 +1375,34 @@ impl App {
             .count() as i64;
         self.needs_count = (rows.needs_count - covered).max(0);
         self.spend = rows.spend.clone();
+        let was: std::collections::HashMap<String, (Section, String, bool)> = self
+            .all_items
+            .iter()
+            .map(|i| {
+                (
+                    i.id.clone(),
+                    (i.section, i.word.clone(), i.question().is_some()),
+                )
+            })
+            .collect();
         self.all_items = items_of(&rows);
         self.all_items.extend(self.threads.items());
         sort_sections(&mut self.all_items);
+        // Unread: a task that finished, failed, or had its question answered since the last read, unless it is the one
+        // open now. It stays marked until it is opened (viewstate.rs keeps it).
+        if self.loaded {
+            for i in self.all_items.iter().filter(|i| i.is_task && !i.thread) {
+                let Some((section, word, asked)) = was.get(&i.id) else {
+                    continue;
+                };
+                let finished = *section != Section::Recent && i.section == Section::Recent;
+                let failed = i.word == "Failed" && word != "Failed";
+                let answered = *asked && i.question().is_none() && i.section != Section::NeedsYou;
+                if (finished || failed || answered) && before.as_deref() != Some(i.id.as_str()) {
+                    self.unread.insert(i.id.clone());
+                }
+            }
+        }
         let first = !self.loaded;
         // Where the last run left off: its filter and layout, then its task (state.rs).
         let restore = if first { self.restore.take() } else { None };
@@ -1295,6 +1424,18 @@ impl App {
             Some(task) if self.items.iter().any(|i| i.id == task) => Some(task),
             _ => before,
         };
+        // A task just filed here: selected once listed (a filter that hides it set aside), its detail shown.
+        let before = match self.filed.clone() {
+            Some(task) if self.all_items.iter().any(|i| i.id == task) => {
+                self.filed = None;
+                if !self.items.iter().any(|i| i.id == task) {
+                    self.filter = Filter::All;
+                    self.items = self.filtered();
+                }
+                Some(task)
+            }
+            _ => before,
+        };
         // Keep the same task selected when it is still listed.
         self.selected = before
             .as_ref()
@@ -1305,7 +1446,7 @@ impl App {
             fx.extend(self.resume(r));
         }
         let after = self.selected_id();
-        if after != before || first {
+        if after != selected_before || first {
             fx.extend(self.selection_changed());
         } else if let Some(id) = self
             .selected_item()
@@ -1670,6 +1811,11 @@ impl App {
     }
 
     pub(crate) fn selection_changed(&mut self) -> Vec<Effect> {
+        // Opened: no longer unread.
+        if let Some(id) = self.selected_id() {
+            self.unread.remove(&id);
+        }
+        self.search = None;
         // Another task: let go of this one's terminal (it keeps running in the console; t on it again reattaches).
         let detached = self.drop_term();
         self.take_over_wanted = None;
@@ -1769,6 +1915,14 @@ impl App {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.quit();
         }
+        // A dialog acts only once it was on screen, exactly as it is now, in the last frame (a window too small draws
+        // none, and two keys in one read meet a dialog never drawn). Esc still closes it.
+        if let Some(k) = self.dialog_key() {
+            if self.drawn_dialog.as_ref() != Some(&k) && key.code != KeyCode::Esc {
+                self.say(Tone::Refused, UNDRAWN);
+                return vec![];
+            }
+        }
         match self.mode.clone() {
             Mode::Fatal(_, code) => vec![Effect::Exit(code)],
             Mode::Copied => {
@@ -1806,7 +1960,11 @@ impl App {
                     }
                     KeyCode::Enter | KeyCode::Char(' ') => {
                         let choice = crate::settings::Choice::ALL[self.settings_row.min(rows - 1)];
-                        match self.prefs.change(choice) {
+                        let said = self.prefs.change(choice);
+                        if choice == crate::settings::Choice::ListSide {
+                            self.side = self.prefs.settings.list_side;
+                        }
+                        match said {
                             Ok(words) => self.say(Tone::Said, words),
                             Err(words) => self.say(Tone::Refused, words),
                         }
@@ -2163,6 +2321,7 @@ impl App {
             }
             Mode::Normal if self.agents_screen.is_some() => crate::agents::key(self, key),
             Mode::Normal => self.normal_key(key),
+            Mode::Search(s) => self.search_key(key, s),
             Mode::TakeOver => vec![],
             Mode::ConfirmInstall { .. }
             | Mode::PickModel(_)
@@ -2535,7 +2694,92 @@ impl App {
                 self.mode = Mode::Palette(crate::palette::Palette::default());
                 vec![]
             }
-            Action::NextNeedsYou => self.next_needs_you(),
+            Action::NextNeedsYou => self.next_needs_you(true),
+            Action::PreviousNeedsYou => self.next_needs_you(false),
+            Action::JumpBack => match self.jump_from.take() {
+                Some(id) if self.all_items.iter().any(|i| i.id == id) => {
+                    self.jump_from = self.selected_id();
+                    self.say(Tone::Said, "Back where you were.");
+                    self.show_task(&id)
+                }
+                _ => {
+                    self.say(Tone::Said, "Nowhere to go back to: jump with ! first.");
+                    vec![]
+                }
+            },
+            Action::Search => match crate::search::pane_text(self) {
+                Some(_) => {
+                    self.mode = Mode::Search(crate::search::Search {
+                        query: String::new(),
+                        typing: true,
+                        at: 0,
+                        count: 0,
+                    });
+                    vec![]
+                }
+                None => {
+                    self.say(Tone::Said, "Nothing to search here.");
+                    vec![]
+                }
+            },
+            Action::OpenInEditor => match crate::search::pane_text(self) {
+                Some((name, lines)) if !lines.is_empty() => {
+                    let mut text = lines.join("\n");
+                    text.push('\n');
+                    self.say(Tone::Said, "Opening it in your editor…");
+                    vec![Effect::OpenInEditor {
+                        name: name.to_string(),
+                        text,
+                    }]
+                }
+                _ => {
+                    self.say(Tone::Said, "Nothing here to open in an editor.");
+                    vec![]
+                }
+            },
+            Action::ListNarrower | Action::ListWider => {
+                self.resize(if action == Action::ListWider { 1 } else { -1 });
+                vec![]
+            }
+            Action::Equalize => {
+                self.panes.ratio_x = 50;
+                self.panes.ratio_y = 50;
+                self.split = self.prefs.settings.list_width();
+                self.say(Tone::Said, "Even splits, and the list at its usual width.");
+                vec![]
+            }
+            Action::ListCycle => {
+                self.list_state = self.list_state.next();
+                let words = match self.list_state {
+                    crate::viewstate::ListState::Full => "The list, in full.",
+                    crate::viewstate::ListState::Rail => {
+                        "The list as a slim rail: b again hides it."
+                    }
+                    crate::viewstate::ListState::Hidden => "The list is hidden: b shows it again.",
+                };
+                self.say(Tone::Said, words);
+                vec![]
+            }
+            Action::Zoom => {
+                self.zoom = !self.zoom;
+                self.say(
+                    Tone::Said,
+                    if self.zoom {
+                        "Zoomed: this panel alone. z comes back."
+                    } else {
+                        "Back from zoom."
+                    },
+                );
+                vec![]
+            }
+            Action::ListSide => {
+                self.side = self.side.other();
+                self.say(
+                    Tone::Said,
+                    format!("The list is on the {} now.", self.side.key()),
+                );
+                vec![]
+            }
             Action::ScrollUp | Action::ScrollDown => {
                 let up = action == Action::ScrollUp;
                 if diff_here {
@@ -2597,6 +2841,9 @@ impl App {
             Action::FilterThisProject => self.set_filter(Filter::ThisProject),
             Action::FilterNeedsMe => self.set_filter(Filter::NeedsMe),
             Action::FilterToday => self.set_filter(Filter::Today),
+            Action::FilterWorking => self.set_filter(Filter::Working),
+            Action::FilterFailed => self.set_filter(Filter::Failed),
+            Action::FilterDone => self.set_filter(Filter::Done),
             Action::NextTheme => {
                 self.prefs.cycle_theme();
                 self.line_cache = None;
@@ -2658,6 +2905,106 @@ impl App {
                 self.rerow();
                 vec![]
             }
+        }
+    }
+
+    /// `<` / `>`: with one panel, the list narrower or wider (2 columns a key); with panels side by side or in a grid,
+    /// the focused panel narrower or wider (the split it shares moves). Kept per project (viewstate.rs).
+    fn resize(&mut self, by: i64) {
+        use crate::panes::{Layout, RATIO_STEP};
+        let split = self.panes.layout != Layout::Focused && !self.zoom;
+        if split {
+            // The focused panel's column: left (0, 2) grows by moving the split right.
+            let left = self.panes.focus.is_multiple_of(2);
+            let toward = if left == (by > 0) { 1 } else { -1 };
+            let next = i64::from(self.panes.ratio_x) + toward * i64::from(RATIO_STEP);
+            self.panes.ratio_x = next.clamp(20, 80) as u16;
+            self.say(
+                Tone::Said,
+                format!("Split at {}%: = evens it.", self.panes.ratio_x),
+            );
+            return;
+        }
+        if self.list_state != crate::viewstate::ListState::Full {
+            self.say(Tone::Said, "The list isn't shown in full: b shows it.");
+            return;
+        }
+        let next = i64::from(self.split) + by * 2;
+        self.split = next.clamp(24, 120) as u16;
+        self.say(
+            Tone::Said,
+            format!("List {} columns wide: = sets it back.", self.split),
+        );
+    }
+
+    /// A key while searching (search.rs): typing builds the query; Enter keeps it and n / N step through the matches;
+    /// Esc leaves. Only these keys, while it is open.
+    fn search_key(&mut self, key: KeyEvent, mut s: crate::search::Search) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let mut step: i64 = 0;
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.search = None;
+                self.status = None;
+                return vec![];
+            }
+            KeyCode::Enter if s.typing => {
+                s.typing = false;
+            }
+            KeyCode::Enter => {
+                // Done: the matches stay lit until Esc or another task.
+                self.mode = Mode::Normal;
+                self.search = Some(s);
+                return vec![];
+            }
+            KeyCode::Backspace if s.typing => {
+                s.query.pop();
+                s.at = 0;
+            }
+            KeyCode::Char('n') if !s.typing && !ctrl => step = 1,
+            KeyCode::Char('N') if !s.typing && !ctrl => step = -1,
+            KeyCode::Char(c) if s.typing && !ctrl => {
+                if s.query.chars().count() < crate::search::MAX_QUERY && !c.is_control() {
+                    s.query.push(c);
+                }
+                s.at = 0;
+            }
+            _ => {}
+        }
+        // Find, and move the pane to, the current match.
+        let lines = crate::search::pane_text(self)
+            .map(|(_, l)| l)
+            .unwrap_or_default();
+        let found = crate::search::matching(&lines, &s.query);
+        s.count = found.len();
+        if found.is_empty() {
+            s.at = 0;
+        } else {
+            let n = found.len() as i64;
+            s.at = (s.at as i64 + step).rem_euclid(n) as usize;
+            self.show_line(found[s.at], lines.len());
+        }
+        self.search = Some(s.clone());
+        self.mode = Mode::Search(s);
+        vec![]
+    }
+
+    /// Bring line `i` (of `total`) of the focused pane into view.
+    fn show_line(&mut self, i: usize, total: usize) {
+        match self.tab {
+            Tab::Live => {
+                self.follow = false;
+                self.scroll = total.saturating_sub(i + 3);
+            }
+            Tab::Diff => self.diff_cursor = i.min(self.rows.len().saturating_sub(1)),
+            Tab::Terminal => {
+                if let Some(pane) = self.term.as_mut().filter(|p| !p.sensitive) {
+                    let up = total.saturating_sub(i + 3) as i64;
+                    pane.scroll_by(up - pane.scroll as i64);
+                }
+            }
+            Tab::Steps => {}
         }
     }
 
@@ -2781,7 +3128,7 @@ impl App {
     }
 
     /// `!`: the next thing waiting on you, oldest first, round and round (the filter set aside when it hides it).
-    fn next_needs_you(&mut self) -> Vec<Effect> {
+    fn next_needs_you(&mut self, forward: bool) -> Vec<Effect> {
         let mut waiting: Vec<(usize, &Item)> = self
             .all_items
             .iter()
@@ -2796,10 +3143,19 @@ impl App {
         waiting.sort_by_key(|(at, i)| (std::cmp::Reverse(age_secs(&i.age).unwrap_or(-1)), *at));
         let ids: Vec<String> = waiting.iter().map(|(_, i)| i.id.clone()).collect();
         let here = self.selected_id();
-        let next = match here.and_then(|id| ids.iter().position(|w| *w == id)) {
-            Some(at) => (at + 1) % ids.len(),
-            None => 0,
+        let at = here
+            .as_ref()
+            .and_then(|id| ids.iter().position(|w| w == id));
+        let next = match (at, forward) {
+            (Some(at), true) => (at + 1) % ids.len(),
+            (Some(at), false) => (at + ids.len() - 1) % ids.len(),
+            (None, true) => 0,
+            (None, false) => ids.len() - 1,
         };
+        // Where this jump left from (not a needs-you task itself): jump-back returns there. The list's order stays.
+        if at.is_none() {
+            self.jump_from = here;
+        }
         let id = ids[next].clone();
         let fx = self.show_task(&id);
         let words = format!("{} of {} waiting on you.", next + 1, ids.len());
@@ -2828,6 +3184,89 @@ impl App {
             self.tab = r.tab;
         }
         fx
+    }
+
+    /// The dialog open now, named so a frame can say it drew exactly this one: every mode but the few that only type,
+    /// move or read (fail-closed: a dialog added later is gated until it is listed here). Its scroll and whether its end
+    /// was seen are left out (they change as it is read); Accept's "notes go with it" is part of it.
+    pub fn dialog_key(&self) -> Option<String> {
+        match &self.mode {
+            Mode::Normal
+            | Mode::Steer(_)
+            | Mode::Note(..)
+            | Mode::NewTask(..)
+            | Mode::NewThread(_)
+            | Mode::SendBack(..)
+            | Mode::Palette(_)
+            | Mode::PickModel(_)
+            | Mode::Search(_)
+            | Mode::Help
+            | Mode::Copied
+            | Mode::Sending(_)
+            | Mode::Fatal(..)
+            | Mode::TakeOver => None,
+            Mode::Build {
+                title,
+                preview,
+                digest,
+                terms,
+                ..
+            } => Some(format!("Build {title:?} {preview:?} {digest:?} {terms:?}")),
+            Mode::SendReview {
+                pin, typed, text, ..
+            } => Some(format!("SendReview {pin:?} {typed:?} {text:?}")),
+            Mode::ConfirmAccept(pin) => {
+                Some(format!("ConfirmAccept {pin:?} {}", self.accept_attach))
+            }
+            other => Some(format!("{other:?}")),
+        }
+    }
+
+    /// This project's view as the view file keeps it (viewstate.rs): ids and our own words only.
+    pub fn view_now(&self) -> crate::viewstate::View {
+        let default_side = self.prefs.settings.list_side;
+        crate::viewstate::View {
+            list_width: (self.split != self.prefs.settings.list_width()).then_some(self.split),
+            list: self.list_state,
+            side: (self.side != default_side).then_some(self.side),
+            layout: self.panes.layout,
+            ratio_x: self.panes.ratio_x,
+            ratio_y: self.panes.ratio_y,
+            tab: self.tab,
+            task: self
+                .selected_item()
+                .map(|i| i.id.clone())
+                .filter(|id| crate::state::safe_id(id)),
+            // Only tasks still listed are kept (the file never grows with tasks gone).
+            unread: self
+                .unread
+                .iter()
+                .filter(|id| self.all_items.iter().any(|i| &i.id == *id) || !self.loaded)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// This project's remembered view, on launch: the list's width, state and side, the splits, and the unread marks
+    /// at once; its layout, tab and task through the resume road once the work list is in.
+    pub fn apply_view(&mut self, v: crate::viewstate::View) {
+        if let Some(w) = v.list_width {
+            self.split = w;
+        }
+        self.list_state = v.list;
+        self.side = v.side.unwrap_or(self.prefs.settings.list_side);
+        self.panes.ratio_x = v.ratio_x;
+        self.panes.ratio_y = v.ratio_y;
+        self.unread = v.unread.into_iter().collect();
+        let mut r = self.restore.take().unwrap_or_default();
+        r.layout = v.layout;
+        r.tab = v.tab;
+        if v.task.is_some() && r.task != v.task {
+            r.task = v.task;
+            r.scroll = 0;
+            r.diff_file = 0;
+        }
+        self.restore = Some(r);
     }
 
     /// Where the person is now, as the state file keeps it (state.rs): ids and our own words only.
@@ -3071,7 +3510,7 @@ impl App {
                 ("run", run.to_string()),
                 ("key", key),
             ],
-            format!("Note sent to build #{run}."),
+            format!("Note sent to {}.", self.attempt_words(run)),
         )
     }
 
@@ -3094,9 +3533,9 @@ impl App {
             path,
             fields,
             if resume {
-                format!("Resuming build #{run}.")
+                format!("Resuming {}.", self.attempt_words(run))
             } else {
-                format!("Pausing build #{run}.")
+                format!("Pausing {}.", self.attempt_words(run))
             },
         )
     }
@@ -3122,8 +3561,11 @@ impl App {
                 ("return", "task".into()),
             ],
             match self.current_build() {
-                Some(n) => format!("Retrying: a new build starts after build #{n}."),
-                None => "Retrying: a new build starts.".to_string(),
+                Some(n) => format!(
+                    "Retrying: a new attempt starts after {}.",
+                    self.attempt_words(n)
+                ),
+                None => "Retrying: a new attempt starts.".to_string(),
             },
         )
     }
@@ -3204,7 +3646,7 @@ impl App {
         self.act(
             path,
             vec![("run", run.to_string()), ("return", "task".into())],
-            format!("Stopping build #{run}."),
+            format!("Stopping {}.", self.attempt_words(run)),
         )
     }
 
@@ -3528,7 +3970,7 @@ impl App {
         }
         let saved = self.pending.get(&key).is_some_and(|p| p.saved);
         match result {
-            Ok(ActOutcome::Done(words)) => {
+            Ok(ActOutcome::Done(words) | ActOutcome::Filed { words, .. }) => {
                 // The draft is done with: its notes and every identity kept for it.
                 self.drafts.remove(&(task.clone(), run));
                 self.pending
@@ -3636,6 +4078,19 @@ impl App {
                         ..self.areas.list
                     })
                 {
+                    // A second press soon after the first: the list back to its usual width.
+                    let now = std::time::Instant::now();
+                    if self
+                        .divider_down
+                        .is_some_and(|t| now.duration_since(t) < DOUBLE_CLICK)
+                    {
+                        self.divider_down = None;
+                        self.dragging = false;
+                        self.split = self.prefs.settings.list_width();
+                        self.say(Tone::Said, "The list is back to its usual width.");
+                        return vec![];
+                    }
+                    self.divider_down = Some(now);
                     self.dragging = true;
                     return vec![];
                 }
@@ -3658,8 +4113,32 @@ impl App {
                 vec![]
             }
             MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
-                self.split = x.clamp(20, 90);
+                // A drag is not the first half of a double click.
+                self.divider_down = None;
+                let body = self.areas.body;
+                let w = if self.side == crate::viewstate::Side::Right {
+                    body.right().saturating_sub(x + 1)
+                } else {
+                    x.saturating_sub(body.x)
+                };
+                self.split = w.clamp(24, 120);
                 vec![]
+            }
+            // Focus follows the mouse (tui.toml, off by default): resting over another panel focuses it. Never while
+            // typing in a terminal or with a dialog open, so keys can't be redirected under the person's hands.
+            MouseEventKind::Moved
+                if self.prefs.settings.focus_follows_mouse && self.mode == Mode::Normal =>
+            {
+                match self
+                    .panes
+                    .areas
+                    .iter()
+                    .position(|r| inside(*r))
+                    .filter(|s| *s != self.panes.focus)
+                {
+                    Some(slot) => self.focus_pane(slot),
+                    None => vec![],
+                }
             }
             MouseEventKind::Up(_) => {
                 self.dragging = false;
@@ -4328,7 +4807,8 @@ impl App {
         let mut fx = self.drop_term();
         self.term = Some(Pane::opening(task.clone(), run));
         self.tab = Tab::Terminal;
-        self.status = Some((Tone::Said, format!("Opening a terminal on build #{run}…")));
+        let words = format!("Opening a terminal on {}…", self.attempt_words(run));
+        self.status = Some((Tone::Said, words));
         fx.push(Effect::TermOpen { task, run });
         fx
     }

@@ -63,7 +63,10 @@ pub fn entries(app: &App) -> Vec<Entry> {
             Action::FilterAll
             | Action::FilterThisProject
             | Action::FilterNeedsMe
-            | Action::FilterToday => {
+            | Action::FilterToday
+            | Action::FilterWorking
+            | Action::FilterFailed
+            | Action::FilterDone => {
                 let on = app.filter.action() == Some(spec.action);
                 format!("{}{}", spec.label, if on { " (on)" } else { "" })
             }

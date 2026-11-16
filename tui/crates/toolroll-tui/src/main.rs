@@ -48,6 +48,7 @@ unsafe fn libc_fstat_ok(fd: i32) -> bool {
 }
 
 fn main() {
+    toolroll_tui::stats::started();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--version") {
         // The self-check proves the protection works here too: a binary that can't turn crash dumps off answers with
@@ -63,6 +64,20 @@ fn main() {
         .and_then(|n| n.parse::<i32>().ok())
         .filter(|n| *n > 2 && unsafe { libc_fstat_ok(*n) })
         .map(|n| unsafe { std::fs::File::from_raw_fd(n) });
+    // Never inherited by a program this screen starts (the editor): close-on-exec from here on. When every descriptor
+    // can't be checked, the launcher's two are marked by number (and checked); the editor checks again before it starts,
+    // and is refused if it still can't be sure.
+    #[cfg(unix)]
+    if toolroll_tui::editor::isolate().is_err() {
+        let control_fd = arg(&args, "--control-fd").and_then(|n| n.parse::<i32>().ok());
+        for fd in [Some(3), control_fd]
+            .into_iter()
+            .flatten()
+            .filter(|fd| *fd > 2)
+        {
+            let _ = toolroll_tui::editor::cloexec(fd);
+        }
+    }
     // Protect, say so, and only then read the link (guard::start keeps this order; its tests prove it).
     let started = guard::start(
         guard::protect_from_dumps,
@@ -86,6 +101,7 @@ fn main() {
         }
         Ok(Some(link)) => link,
     };
+    toolroll_tui::stats::mark("link_read");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -99,7 +115,10 @@ fn main() {
             }
         };
         drop(link);
-        let fatal = match client.hello().await {
+        toolroll_tui::stats::mark("signed_in");
+        let hello = client.hello().await;
+        toolroll_tui::stats::mark("hello_read");
+        let fatal = match hello {
             Ok(hello) => toolroll_api::check_hello(&hello).err().map(|words| {
                 (
                     format!("{words} Opening the classic screen instead."),

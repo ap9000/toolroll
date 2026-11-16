@@ -164,7 +164,31 @@ fn step_line_with(app: &App, steps: &StepCards, times: bool, join: &str) -> Line
     Line::from(spans)
 }
 
-/// "claude sonnet · Building now · 4m 12s · $0.31 · build #7".
+/// A build card's words while its task waits: on a person's hold, or to try again after a failed build (None: neither).
+/// The engine's card says "Stopped" or "Waiting to start"; a person reads where it stands and the attempt it follows.
+pub fn build_wait(steps: &StepCards, card: &StepCard) -> Option<&'static str> {
+    if card.key != "build" || steps.live_run.is_some() || steps.task.state != "queued" {
+        return None;
+    }
+    if steps.held.is_some() {
+        Some("On hold")
+    } else if steps.waiting.is_some() && !card.runs.is_empty() {
+        Some("Waiting to retry")
+    } else {
+        None
+    }
+}
+
+/// "Fix" → "Fix" ("attempt 2" → "Attempt 2").
+fn upper_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// "claude sonnet · Building now · 4m 12s · $0.31 · attempt 2"; waiting, "Waiting to retry · 21s · after attempt 2".
 fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
     let card = steps
         .cards
@@ -183,7 +207,10 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
             .to_string(),
         );
     }
-    if !card.sentence.is_empty() {
+    let wait = build_wait(steps, card);
+    if let Some(words) = wait {
+        parts.push(words.to_string());
+    } else if !card.sentence.is_empty() {
         parts.push(clean(&card.sentence));
     }
     if let Some(secs) = build_clock(app, steps, card) {
@@ -192,10 +219,16 @@ fn facts_line(app: &App, steps: &StepCards) -> Option<Line<'static>> {
     if let Some(cost) = card.cost_usd.filter(|_| app.prefs.settings.show_costs) {
         parts.push(format!("${cost:.2}"));
     }
-    if let Some(run) = card.runs.first() {
-        parts.push(match card.runs.len() {
-            0 | 1 => format!("build #{run}"),
-            n => format!("build #{run} ({} before)", n - 1),
+    // The task's own attempt number (the console's build ids count across tasks); waiting, the one it follows.
+    if let Some(n) = card
+        .runs
+        .first()
+        .and_then(|r| crate::app::attempt_of(steps, *r))
+    {
+        parts.push(if wait.is_some() {
+            format!("after attempt {n}")
+        } else {
+            format!("attempt {n}")
         });
     }
     Some(Line::from(Span::styled(parts.join(" · "), dim())))
@@ -252,6 +285,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(pane) = app.term.as_mut() {
         pane.drawn = false;
     }
+    // No dialog on screen until draw_overlay draws one this frame (a window too small draws none).
+    app.drawn_dialog = None;
     draw_frame(f, app);
     let dialog = !matches!(
         app.mode,
@@ -311,22 +346,51 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         height: keys_h,
         ..status
     };
-    // The list's sheet, a one-cell gutter (the divider a drag moves), and the panels' sheets.
-    let split = app
-        .split
-        .min(body.width * 45 / 100)
-        .max(24)
-        .min(body.width.saturating_sub(28));
+    // The list's sheet, a one-cell gutter (the divider a drag moves), and the panels' sheets. The list is full, a slim
+    // rail of status marks, or hidden; on either side; set aside while a panel is zoomed or the window is narrow.
+    app.areas.body = body;
+    let narrow = area.width < NARROW_WIDTH;
+    let list_state = if app.zoom || narrow {
+        crate::viewstate::ListState::Hidden
+    } else {
+        app.list_state
+    };
+    let split = match list_state {
+        crate::viewstate::ListState::Full => app
+            .split
+            .min(body.width * 45 / 100)
+            .max(24)
+            .min(body.width.saturating_sub(28)),
+        crate::viewstate::ListState::Rail => RAIL_WIDTH,
+        crate::viewstate::ListState::Hidden => 0,
+    };
+    let gap = u16::from(split > 0);
+    let on_right = app.side == crate::viewstate::Side::Right;
     let left = Rect {
+        x: if on_right {
+            body.right().saturating_sub(split)
+        } else {
+            body.x
+        },
         width: split,
         ..body
     };
     let right = Rect {
-        x: body.x + split + 1,
-        width: body.width.saturating_sub(split + 1),
+        x: if on_right {
+            body.x
+        } else {
+            body.x + split + gap
+        },
+        width: body.width.saturating_sub(split + gap),
         ..body
     };
-    app.areas.split_x = body.x + split;
+    app.areas.split_x = if split == 0 {
+        u16::MAX
+    } else if on_right {
+        left.x.saturating_sub(1)
+    } else {
+        body.x + split
+    };
     // The Agents screen is a screen of its own: one sheet across the body while it is open (agents.rs).
     if app.agents_screen.is_some() {
         app.areas.list = Rect::default();
@@ -343,17 +407,44 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_overlay(f, app, area);
         return;
     }
-    let list = sheet::sheet(f.buffer_mut(), left);
-    draw_list(f, app, list);
+    match list_state {
+        crate::viewstate::ListState::Full => {
+            let list = sheet::sheet(f.buffer_mut(), left);
+            draw_list(f, app, list);
+        }
+        crate::viewstate::ListState::Rail => {
+            let list = sheet::sheet(f.buffer_mut(), left);
+            draw_rail(f, app, list);
+        }
+        crate::viewstate::ListState::Hidden => {
+            app.areas.list = Rect::default();
+            app.areas.rows.clear();
+        }
+    }
     // One panel, or two to four (panes.rs): each its own sheet; the focused one is the workbench's own, the others
-    // watch their tasks.
-    let layout = app.panes.layout;
-    let places = crate::panes::places(layout, right);
-    app.panes.areas = places.clone();
-    for (slot, place) in places.iter().enumerate() {
+    // watch their tasks. Zoomed, or on a narrow window: the focused panel alone.
+    let alone = app.zoom || narrow;
+    let layout = if alone {
+        crate::panes::Layout::Focused
+    } else {
+        app.panes.layout
+    };
+    let places = crate::panes::places(layout, right, app.panes.ratio_x, app.panes.ratio_y);
+    app.panes.areas = if alone { vec![] } else { places.clone() };
+    let several = places.len() > 1;
+    for (i, place) in places.iter().enumerate() {
+        let slot = if alone { app.panes.focus } else { i };
         let inner = sheet::sheet(f.buffer_mut(), *place);
         if slot == app.panes.focus {
             draw_right(f, app, inner);
+            // Search: every match in this panel lit.
+            if let Some(q) = app.search.as_ref().map(|s| s.query.clone()) {
+                crate::search::highlight(f.buffer_mut(), app.areas.content, &q);
+            }
+            // With several panels, the focused one is outlined in ink, heavy (reads without colour too).
+            if several {
+                sheet::outline_focus(f.buffer_mut(), *place);
+            }
         } else {
             crate::panes::draw_watch(f, app, slot, inner);
         }
@@ -363,6 +454,48 @@ fn draw_frame(f: &mut Frame, app: &mut App) {
         draw_keys(f, app, keys);
     }
     draw_overlay(f, app, area);
+}
+
+/// Below this many columns the screen is one column: the focused panel alone (the list hidden, splits set aside).
+pub const NARROW_WIDTH: u16 = 64;
+/// The list as a slim rail: its status marks and the needs-you count.
+pub const RAIL_WIDTH: u16 = 6;
+
+/// The list as a slim rail: the needs-you count on top, then each task's status mark in the list's order (the
+/// selected one lit, an unread one marked). Clicking a mark selects its task.
+fn draw_rail(f: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.list = area;
+    app.areas.rows.clear();
+    let mut lines: Vec<Line<'static>> = vec![];
+    let count = app.needs_count.max(0);
+    lines.push(Line::from(if count > 0 {
+        sheet::chip(&count.to_string())
+    } else {
+        Span::styled("0", dim())
+    }));
+    lines.push(Line::raw(""));
+    for (i, item) in app.items.iter().enumerate() {
+        if lines.len() >= area.height as usize {
+            break;
+        }
+        let (mark, style, _) = look_of(item);
+        let unread = if app.unread.contains(&item.id) {
+            "•"
+        } else {
+            " "
+        };
+        let l = Line::from(vec![
+            Span::styled(mark.to_string(), style),
+            Span::styled(unread.to_string(), ink()),
+        ]);
+        app.areas.rows.push((area.y + lines.len() as u16, Some(i)));
+        lines.push(if i == app.selected {
+            sheet::band(l, area.width as usize, selected())
+        } else {
+            l
+        });
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// The top bar, on the ground: Toolroll and the project, the cost line, then what's working and what needs you.
@@ -387,6 +520,29 @@ fn draw_top(f: &mut Frame, app: &App, area: Rect) {
             &format!("{} {working} working", marks().running),
             crate::theme::Role::Running,
         ));
+        right.push(Span::raw("  "));
+    }
+    // What is set aside, said where it can't be missed: zoomed, the list as a rail or hidden, unread tasks.
+    let narrow = f.area().width < NARROW_WIDTH;
+    let mut marks_on: Vec<String> = vec![];
+    if app.zoom {
+        marks_on.push("ZOOM".into());
+    }
+    if narrow {
+        marks_on.push("NARROW".into());
+    } else if !app.zoom {
+        match app.list_state {
+            crate::viewstate::ListState::Rail => marks_on.push("RAIL".into()),
+            crate::viewstate::ListState::Hidden => marks_on.push("LIST HIDDEN".into()),
+            crate::viewstate::ListState::Full => {}
+        }
+    }
+    for m in marks_on {
+        right.push(sheet::chip(&m));
+        right.push(Span::raw("  "));
+    }
+    if !app.unread.is_empty() && app.loaded {
+        right.push(Span::styled(format!("{} unread", app.unread.len()), ink()));
         right.push(Span::raw("  "));
     }
     right.push(needs);
@@ -581,13 +737,16 @@ fn card_lines(
     let room = w.saturating_sub(right_w + badge_w + 3);
     let title = fit(&item.title, room);
     let gap = w.saturating_sub(2 + width(&title) + right_w + badge_w);
-    let title_style = if item.section == Section::NeedsYou || here {
+    // Unread (finished, failed or answered since you last opened it): a dot after its mark, and its title in ink.
+    let unread = app.unread.contains(&item.id);
+    let title_style = if item.section == Section::NeedsYou || here || unread {
         ink().add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
     let mut first = vec![
-        Span::styled(format!("{mark} "), mark_style),
+        Span::styled(mark.to_string(), mark_style),
+        Span::styled(if unread { "•" } else { " " }, ink()),
         Span::styled(title, title_style),
         Span::raw(" ".repeat(gap)),
     ];
@@ -735,6 +894,7 @@ fn draw_right(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(composer_h),
     ])
     .areas(area);
+    app.areas.content = content;
     // The tab track: the tab on screen lit, the others on the fill.
     let mut spans = vec![];
     let mut x = tabs.x;
@@ -1049,7 +1209,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, roomy: bool) {
                 .steps
                 .as_ref()
                 .and_then(|s| s.live_run)
-                .map(|r| format!(" (it goes to build #{r})"))
+                .map(|r| format!(" (it goes to {})", app.attempt_words(r)))
                 .unwrap_or_default();
             spans.push(Span::styled(
                 fit(&format!("Steer the agent: a note{run}"), room_all),
@@ -1416,6 +1576,13 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 outcome
             };
+        // Waiting on a person's hold, or to retry: said so (never "waiting" over "Stopped").
+        let wait = build_wait(steps, card);
+        let outcome = match wait {
+            Some("On hold") => "on hold",
+            Some(_) => "waiting to retry",
+            None => outcome,
+        };
         let mut right = vec![Span::styled(outcome, outcome_style)];
         // The step's current build, on the header's own clock (build_clock).
         if let Some(secs) = build_clock(app, steps, card) {
@@ -1439,7 +1606,7 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
         ];
         head.extend(right);
         c.push(fit_line(Line::from(head), w));
-        if !card.sentence.is_empty() {
+        if !card.sentence.is_empty() && wait.is_none() {
             for l in wrap(&clean(&card.sentence), w.saturating_sub(2)) {
                 c.push(Line::raw(format!("  {l}")));
             }
@@ -1456,12 +1623,14 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
                 .to_string(),
             );
         }
-        match card.runs.as_slice() {
-            [] => {}
-            [one] => facts.push(format!("build #{one}")),
-            [newest, rest @ ..] => {
-                facts.push(format!("build #{newest} (and {} before)", rest.len()))
-            }
+        // The task's attempt, and the console's own build id beside it (here only: the details).
+        if let Some(newest) = card.runs.first() {
+            let n = card.runs.len();
+            facts.push(if wait.is_some() {
+                format!("after attempt {n} (build #{newest})")
+            } else {
+                format!("attempt {n} (build #{newest})")
+            });
         }
         if !facts.is_empty() {
             c.push(fit_line(
@@ -1474,7 +1643,13 @@ fn draw_steps(f: &mut Frame, app: &App, area: Rect) {
             if let Some(review) = &steps.review {
                 c.push(fit_line(
                     Line::from(vec![
-                        Span::styled(format!("  Build #{} waits for you: ", review.run), ink()),
+                        Span::styled(
+                            format!(
+                                "  {} waits for you: ",
+                                upper_first(&app.attempt_words(review.run))
+                            ),
+                            ink(),
+                        ),
                         Span::styled("a accepts · r sends back · t takes over", dim()),
                     ]),
                     w,
@@ -2257,6 +2432,30 @@ fn half_spans(
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+    // Searching: the query, where it is among the matches, and its keys.
+    if let Mode::Search(s) = &app.mode {
+        let found = if s.query.is_empty() {
+            String::new()
+        } else if s.count == 0 {
+            "  no match".to_string()
+        } else {
+            format!("  {} of {}", s.at + 1, s.count)
+        };
+        let keys = if s.typing {
+            "  ⏎ keeps it · Esc leaves"
+        } else {
+            "  n next · N previous · ⏎ done · Esc leaves"
+        };
+        let line = Line::from(vec![
+            Span::styled("Search: ", ink()),
+            Span::raw(fit(&clean(&s.query), 40)),
+            Span::styled(if s.typing { "▏" } else { "" }, ink()),
+            Span::styled(found, ink()),
+            Span::styled(keys, dim()),
+        ]);
+        f.render_widget(Paragraph::new(fit_line(line, area.width as usize)), area);
+        return;
+    }
     let line = match &app.status {
         Some((Tone::Refused, words)) => Line::from(vec![
             Span::styled("Refused: ", ink()),
@@ -2492,13 +2691,11 @@ fn help_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         .map(|r| cell(&r.keys, &r.words))
         .collect();
     lines.extend(columns(diff));
-    lines.push(Line::raw(""));
     let fixed: Vec<Vec<Line<'static>>> = crate::keys::FIXED_KEYS
         .iter()
         .map(|(k, w)| cell(k, w))
         .collect();
     lines.extend(columns(fixed));
-    lines.push(Line::raw(""));
     for l in wrap(
         &format!(
             "Keys: the {} preset. Change any in tui.toml under [keys], e.g. preset = \"vim\" or {} = \"{}\".",
@@ -2591,7 +2788,18 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
+/// The dialog over the screen, if any; the frame says it drew exactly this one (App::dialog_key), unless it can't be.
 fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
+    // Named after it is drawn (drawing a card marks how far it was read); draw_dialog clears the mark when it can't
+    // draw the dialog open now.
+    app.drawn_dialog = Some(String::new());
+    draw_dialog(f, app, area);
+    if app.drawn_dialog.is_some() {
+        app.drawn_dialog = app.dialog_key();
+    }
+}
+
+fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
         Mode::Help => (" Keys ", help_lines(app, area)),
         Mode::Palette(_) => (" Commands ", palette_lines(app, area)),
@@ -2623,7 +2831,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let w = (area.width as usize).saturating_sub(10).clamp(20, 72);
             let mut lines = vec![Line::raw("")];
             lines.extend(
-                wrap(&crate::app::take_over_scope(*run), w)
+                wrap(&crate::app::take_over_scope(&app.attempt_words(*run)), w)
                     .into_iter()
                     .map(|l| Line::from(Span::styled(l, ink()))),
             );
@@ -2700,16 +2908,17 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             // Its real state as the screen shows it, and its current build (the one every surface names).
             let steps = app.steps_here();
             let now_state = match state.as_str() {
-                "queued" if steps.is_some_and(|s| s.held.is_some()) => "on hold".to_string(),
+                "queued" if steps.is_some_and(|s| s.held.is_some()) => "is on hold".to_string(),
                 "queued" if steps.is_some_and(|s| s.waiting.is_some()) => {
-                    "waiting to retry".to_string()
+                    "is waiting to retry".to_string()
                 }
-                "running" => "building".to_string(),
-                other => clean(other),
+                "running" => "is building".to_string(),
+                "failed" => "failed".to_string(),
+                other => format!("is {}", clean(other)),
             };
             let shown = match app.current_build().or(*run) {
-                Some(r) => format!("It is {now_state} · its latest build is #{r}."),
-                None => format!("It is {now_state} · no build has run yet."),
+                Some(r) => format!("It {now_state} · its latest is {}.", app.attempt_words(r)),
+                None => format!("It {now_state} · nothing has run yet."),
             };
             lines.push(Line::raw(shown));
             lines.push(Line::raw(""));
@@ -2729,13 +2938,15 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Mode::ConfirmRetry { run, .. } => {
             let w = (area.width as usize).saturating_sub(10).clamp(24, 76);
-            // Build numbers are the console's own (shared by every task), so the new build's is known once it starts:
-            // what is said is which attempt it is, and the build it follows.
+            // The console's build ids count across every task: what is said is the attempt it follows, on this task.
             let after = app.current_build().unwrap_or(*run);
             let mut lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
-                    format!("Retry: starts a new build after build #{after}."),
+                    format!(
+                        "Retry: starts a new attempt after {}.",
+                        app.attempt_words(after)
+                    ),
                     ink(),
                 )),
                 Line::raw(""),
@@ -2751,8 +2962,17 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                 }
                 lines.push(Line::raw(""));
             }
+            // "Repeated failures" only when there were (2 or more in a row): one failure is just a failure.
+            let repeated = app
+                .steps_here()
+                .and_then(|s| s.failure.as_ref())
+                .is_some_and(|f| f.failed_in_a_row >= 2);
             for l in wrap(
-                "It clears the repeated failures and starts again under your approval, keeping the branch and workspace. It may cost again.",
+                if repeated {
+                    "It clears the repeated failures and starts again under your approval, keeping the branch and workspace. It may cost again."
+                } else {
+                    "It starts again under your approval, keeping the branch and workspace. It may cost again."
+                },
                 w,
             ) {
                 lines.push(Line::raw(l));
@@ -2766,7 +2986,10 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             " Stop ",
             vec![
                 Line::raw(""),
-                Line::from(Span::styled(format!("Stop build #{run}?"), ink())),
+                Line::from(Span::styled(
+                    format!("Stop {}?", app.attempt_words(*run)),
+                    ink(),
+                )),
                 Line::raw(""),
                 Line::from(sheet::act("y", "Stop it", true)),
                 Line::from(Span::styled("Any other key keeps it running.", dim())),
@@ -2784,6 +3007,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                         .map(|o| (q.clone(), o.clone()))
                 })
             else {
+                app.drawn_dialog = None;
                 return;
             };
             // The question, the answer and what it does, every word (wrapped, never cut): a person's yes to exactly
@@ -2844,7 +3068,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let mut lines = vec![
                 Line::raw(""),
                 Line::from(Span::styled(
-                    format!("Accept the result of build #{run}?"),
+                    format!("Accept the result of {}?", app.attempt_words(run)),
                     ink(),
                 )),
                 Line::raw(""),
@@ -2959,10 +3183,11 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             let w = (area.width as usize).saturating_sub(8).min(84);
             let notes = app.notes_of(&pin.task, pin.run);
             let room_lines = (area.height as usize).saturating_sub(12).max(1);
+            let attempt = app.attempt_words(pin.run);
             let head = if notes.is_empty() {
-                format!("Send back build #{}, saying what to change:", pin.run)
+                format!("Send back {attempt}, saying what to change:")
             } else {
-                format!("Send back build #{} with:", pin.run)
+                format!("Send back {attempt} with:")
             };
             let mut lines = vec![
                 Line::raw(""),
@@ -3270,6 +3495,12 @@ fn draw_send_review(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     let w = area.width as usize;
     let typing = app.mode == Mode::TakeOver;
+    // Its attempt on this task, named before the pane is borrowed.
+    let attempt = app
+        .term
+        .as_ref()
+        .map(|p| app.attempt_words(p.run))
+        .unwrap_or_default();
     let Some(pane) = app.term.as_mut().filter(|p| p.task == item.id) else {
         let words = if item.is_task {
             "Take over: a real terminal in a separate copy of this task's latest build. Press t to open it; Ctrl-] comes back here, and the terminal keeps running in Toolroll."
@@ -3321,9 +3552,9 @@ fn draw_terminal(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
     };
     // Said plainly: a separate copy at that build, on its own branch.
     let place = if pane.branch.is_empty() {
-        format!("separate copy at build #{}", pane.run)
+        format!("separate copy at {attempt}")
     } else {
-        format!("separate copy at build #{} on {}", pane.run, pane.branch)
+        format!("separate copy at {attempt} on {}", pane.branch)
     };
     // What it's doing first (and how far back it's scrolled); where it is after, cut first when the pane is narrow.
     let state = if fills && style.bg.is_some() {

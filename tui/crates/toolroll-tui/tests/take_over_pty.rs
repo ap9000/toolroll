@@ -198,7 +198,7 @@ fn take_over_type_leave_and_reattach_in_a_real_terminal() {
     run.press("j");
     // The first t says what it opens; nothing starts until the second.
     run.press("t");
-    run.wait_for("Opens your shell in a separate copy of build #2.", 5);
+    run.wait_for("Opens your shell in a separate copy of attempt 1.", 5);
     assert!(engine.acts().iter().all(|a| a.path != "/term/start"));
     run.press("t");
     let shown = run.wait_for("$ ", 10);
@@ -335,9 +335,27 @@ fn a_busy_program_loses_no_output_while_someone_types() {
     run.wait_for("Opens your shell", 5);
     run.press("t");
     run.wait_for("Typing", 10);
-    // The stream has started. Wait on its `y` lines: a 16 KiB `y` chunk fills the pane for most of the stream, so a
-    // `Compiling` line is on screen only between chunks, and a slow runner's read can keep landing on `y`.
-    run.wait_for("\u{2502}y", 10);
+    // The stream has started: the console's own fact (bytes it streamed), never which kind of line happens to fill
+    // the pane at the moment the screen is read (either chunk can, on a loaded machine).
+    // (term_stream_started is set just before the first chunk goes; the bytes sent then grow past what was sent before.)
+    let until = Instant::now() + Duration::from_secs(20);
+    let mut before: Option<u64> = None;
+    loop {
+        let (started, sent) = {
+            let st = engine.state.lock().unwrap();
+            (st.term_stream_started.is_some(), st.term_bytes_sent)
+        };
+        match before {
+            Some(b) if sent > b => break,
+            None if started => before = Some(sent),
+            _ => {}
+        }
+        assert!(
+            Instant::now() < until,
+            "the console never started the stream"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let typed = "the quick brown fox";
     for ch in typed.chars() {
         run.press(&ch.to_string());

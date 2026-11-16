@@ -90,6 +90,7 @@ fn stop_retrying_stops_the_countdown_at_once() {
     let mut app = on(waiting_steps());
     assert!(screen(&mut app, 160, 34).contains("next try in 1m 40s"));
     app.key(key('x'));
+    screen(&mut app, 160, 34);
     let fx = app.key(code(KeyCode::Enter));
     assert!(
         matches!(&fx[..], [Effect::Act { path, .. }] if path == "/t/t-retry/hold"),
@@ -190,22 +191,25 @@ fn the_confirm_the_toast_the_header_and_steps_name_one_build() {
     let mut app = on(s);
     let shown = screen(&mut app, 160, 34);
     // Failed: how long that build ran (12:02:32 to 12:03:32), its number, and "failed" (never "stuck").
-    assert!(shown.contains("1m 00s · build #9 (2 before)"), "{shown}");
+    assert!(shown.contains("1m 00s · attempt 3"), "{shown}");
     app.key(code(KeyCode::Tab));
     let steps_tab = screen(&mut app, 160, 34);
     assert!(steps_tab.contains("failed · 1m 00s"), "{steps_tab}");
     assert!(!steps_tab.contains("stuck"), "{steps_tab}");
     app.key(key('r'));
-    assert!(screen(&mut app, 120, 34).contains("Retry: starts a new build after build #9."));
+    assert!(screen(&mut app, 120, 34).contains("Retry: starts a new attempt after attempt 3."));
     let fx = app.key(code(KeyCode::Enter));
     assert!(
-        matches!(&fx[..], [Effect::Act { done, .. }] if done == "Retrying: a new build starts after build #9."),
+        matches!(&fx[..], [Effect::Act { done, .. }] if done == "Retrying: a new attempt starts after attempt 3."),
         "{fx:?}"
     );
     // Waiting: since that build stopped (12:03:32), in the header and in Steps alike.
     let mut app = on(waiting_steps());
     let shown = screen(&mut app, 160, 34);
-    assert!(shown.contains("40s · build #9 (2 before)"), "{shown}");
+    assert!(
+        shown.contains("Waiting to retry · 40s · after attempt 3"),
+        "{shown}"
+    );
     app.key(code(KeyCode::Tab));
     assert!(screen(&mut app, 160, 34).contains("· 40s"));
 }
@@ -240,12 +244,12 @@ fn building_it_goes_once_the_task_has_failed() {
 #[test]
 fn cancel_says_the_real_state_and_build() {
     for (steps, words) in [
-        (held_steps(41), "It is on hold · its latest build is #9."),
+        (held_steps(41), "It is on hold · its latest is attempt 3."),
         (
             waiting_steps(),
-            "It is waiting to retry · its latest build is #9.",
+            "It is waiting to retry · its latest is attempt 3.",
         ),
-        (steps("queued"), "It is queued · its latest build is #9."),
+        (steps("queued"), "It is queued · its latest is attempt 3."),
     ] {
         let mut app = on(steps);
         app.key(key('X'));
@@ -282,10 +286,7 @@ fn a_cancelled_task_keeps_its_builds_and_ends_cancelled() {
         shown.contains("Cancelled") && !shown.contains("Stopped"),
         "{shown}"
     );
-    assert!(
-        shown.contains("build #9 (and 1 before)") || shown.contains("build #9"),
-        "{shown}"
-    );
+    assert!(shown.contains("attempt 2 (build #9)"), "{shown}");
     assert!(
         shown.contains("Cancelled: nothing else will run for this task."),
         "{shown}"

@@ -218,7 +218,7 @@ fn retry_posts_exactly_the_build_and_scope_shown_after_its_confirm() {
                 ("digest".into(), "d".repeat(64)),
                 ("return".into(), "task".into())
             ],
-            done: "Retrying: a new build starts after build #3.".into(),
+            done: "Retrying: a new attempt starts after attempt 1.".into(),
         }]
     );
     // Any other key: nothing is posted.
@@ -356,7 +356,7 @@ fn help_lists_every_bound_key_from_the_keymap() {
 #[test]
 fn a_key_that_does_nothing_says_so() {
     let mut app = app_on(fake::scenario_work());
-    for c in ['c', 'b'] {
+    for c in ['c', 'v'] {
         assert_eq!(app.key(key(c)), vec![]);
         assert_eq!(
             status(&app),
@@ -809,6 +809,7 @@ fn the_settings_screen_changes_a_choice_with_enter() {
     app.key(key('?'));
     app.key(key('s'));
     assert_eq!(app.mode, Mode::Settings);
+    screen(&mut app, 120, 30);
     app.key(key('j'));
     app.key(code(KeyCode::Enter));
     // No settings file here (no home): the change holds for the session, said plainly.

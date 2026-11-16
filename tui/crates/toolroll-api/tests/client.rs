@@ -217,6 +217,21 @@ fn a_redirect_says_its_words() {
         Some(("said", "the key is stored".to_string()))
     );
     assert_eq!(said_of("/t/t-new"), None);
+    // A filing's redirect names the new task: plain ids only.
+    use toolroll_api::client::filed_task;
+    assert_eq!(filed_task("/t/task-9aee53f2"), Some("task-9aee53f2".into()));
+    assert_eq!(filed_task("/t/t-new#steps"), Some("t-new".into()));
+    for bad in [
+        "/t/",
+        "/t/a/b",
+        "/t/..",
+        "/t/a?x=1",
+        "/x/t-new",
+        "https://evil/t/x",
+        "/t/a%2Fb",
+    ] {
+        assert_eq!(filed_task(bad), None, "{bad}");
+    }
     assert_eq!(
         said_of("/x?problem=%E2%9C%93%zz"),
         Some(("problem", "✓%zz".to_string()))

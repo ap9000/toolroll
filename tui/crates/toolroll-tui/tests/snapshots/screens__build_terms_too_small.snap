@@ -2,7 +2,7 @@
 source: crates/toolroll-tui/tests/screens.rs
 expression: small
 ---
-" Toolroll  · shop                 ◐ 2 working   2 need you  "
+" Toolroll  · shop       ◐ 2 working   NARROW    2 need you  "
 "╭─╭ New task ────────────────────────────────────────────╮─╮"
 "│ │ These terms are too long to show here — press w to   │ │"
 "│ │ review them in the browser.                          │ │"

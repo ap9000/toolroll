@@ -117,7 +117,7 @@ fn cancel_asks_first_and_posts_the_state_and_build_shown() {
         shown.contains("Cancel “Rename the config loader”?"),
         "{shown}"
     );
-    assert!(shown.contains("its latest build is #9"), "{shown}");
+    assert!(shown.contains("its latest is attempt "), "{shown}");
     insta::assert_snapshot!("cancel_confirm", shown);
     assert_eq!(
         app.key(code(KeyCode::Enter)),
@@ -166,8 +166,11 @@ fn a_waiting_task_says_why_and_when_in_the_list_live_and_steps() {
         shown.contains("x  Stop retrying") && shown.contains("X  Cancel task"),
         "{shown}"
     );
-    // How long it has waited since this build, which build, and how many before.
-    assert!(shown.contains("40s · build #9 (2 before)"), "{shown}");
+    // How long it has waited since the attempt it follows, and which attempt that was on this task.
+    assert!(
+        shown.contains("Waiting to retry · 40s · after attempt 3"),
+        "{shown}"
+    );
     insta::assert_snapshot!("waiting_live", shown);
     app.key(code(KeyCode::Tab));
     let wide = screen(&mut app, 200, 40);
@@ -192,7 +195,7 @@ fn a_running_build_counts_from_its_own_start() {
     app.update(Msg::Steps("t-live".into(), Ok(parse(s))));
     let shown = screen(&mut app, 160, 34);
     assert!(
-        shown.contains("Building now · 40s ·") && shown.contains("build #9 (1 before)"),
+        shown.contains("Building now · 40s ·") && shown.contains("attempt 2"),
         "{shown}"
     );
     assert!(!shown.contains("1h 04m"), "{shown}");
@@ -251,7 +254,7 @@ fn what_the_agent_said_is_shown_cleaned_and_capped() {
     app.key(key('r'));
     let shown = screen(&mut app, 120, 34);
     assert!(
-        shown.contains("Retry: starts a new build after build #3."),
+        shown.contains("Retry: starts a new attempt after attempt 1."),
         "{shown}"
     );
 }

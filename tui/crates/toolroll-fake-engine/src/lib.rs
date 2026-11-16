@@ -955,7 +955,8 @@ async fn act(
             return json_answer(status, json!({ "outcome": "refused", "words": words }));
         }
     }
-    if path == "/tasks/add" {
+    // Filing answers with the new task's page, as the console does (a small task's Build too).
+    if path == "/tasks/add" || path == "/tasks/fast" {
         return (StatusCode::SEE_OTHER, [("location", "/t/t-new")]).into_response();
     }
     // The Agents screen: looking again answers the agents read; an agent's own sign-in or install starts a terminal

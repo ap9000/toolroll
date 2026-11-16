@@ -301,6 +301,7 @@ fn keys_go_only_to_the_focused_panel() {
     // Stop: the focused panel's build, never the watched one's.
     app.key(key('x'));
     assert_eq!(app.mode, Mode::ConfirmStop(fake::LIVE_RUN));
+    screen(&mut app, 160, 34);
     let fx = app.key(key('y'));
     assert!(
         shape(&fx)
@@ -366,6 +367,7 @@ fn typing_in_a_terminal_stops_when_focus_moves() {
     let fx = app.key(key('L'));
     answer(&mut app, fx);
     app.key(key('t'));
+    screen(&mut app, 160, 34);
     app.key(key('t'));
     app.update(Msg::TermOpened {
         task: "t-done".into(),

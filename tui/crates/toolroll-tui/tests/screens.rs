@@ -112,6 +112,7 @@ fn open_accept(app: &mut App) {
         "{:?}",
         app.status
     );
+    screen(app, 120, 30);
 }
 
 fn screen(app: &mut App, w: u16, h: u16) -> String {
@@ -228,7 +229,7 @@ fn steering() {
         panic!("{fx:?}")
     };
     assert_eq!(path, "/t/t-live/steer");
-    assert_eq!(done, "Note sent to build #7.");
+    assert_eq!(done, "Note sent to attempt 1.");
     let field = |k: &str| fields.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
     assert_eq!(
         field("note").as_deref(),
@@ -426,7 +427,7 @@ fn stop_and_pause_and_new_task() {
         vec![Effect::Act {
             path: "/t/t-live/stop".into(),
             fields: vec![("run".into(), "7".into()), ("return".into(), "task".into())],
-            done: "Stopping build #7.".into()
+            done: "Stopping attempt 1.".into()
         }]
     );
     assert_eq!(app.key(key('x')), vec![]);
@@ -438,7 +439,7 @@ fn stop_and_pause_and_new_task() {
     };
     assert_eq!(
         (path.as_str(), done.as_str()),
-        ("/t/t-live/pause", "Pausing build #7.")
+        ("/t/t-live/pause", "Pausing attempt 1.")
     );
     assert!(fields.iter().any(|(k, v)| k == "request" && v.len() >= 8));
     app.mode = Mode::Normal;
@@ -654,7 +655,8 @@ fn mouse_selects_scrolls_and_drags_the_divider() {
         row: 5,
         modifiers: KeyModifiers::NONE,
     });
-    assert_eq!(app.split, 50);
+    // The list ends where the divider was dropped (its width counted from the frame's own edge).
+    assert_eq!(app.split, 49);
     // A click on a tab label switches to it.
     screen(&mut app, 120, 30);
     let (from, _, _) = *app
@@ -755,10 +757,8 @@ fn an_answer_is_sent_only_after_it_was_shown_whole() {
     app.key(key('1'));
     // Not drawn yet: Enter sends nothing.
     assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
-    assert_eq!(
-        app.status.as_ref().unwrap().1,
-        toolroll_tui::app::ANSWER_TOO_LONG
-    );
+    assert_eq!(app.status.as_ref().unwrap().1, toolroll_tui::app::UNDRAWN);
+    app.key(code(KeyCode::Esc));
     // Too small to hold it: still nothing.
     app.key(key('1'));
     let small = screen(&mut app, 60, 9);
@@ -922,6 +922,7 @@ fn accept_never_approves_a_diff_other_than_the_one_shown() {
     // Now the diff, the pin and the receipt agree: Accept posts build 3's receipt.
     assert_eq!(app.key(key('a')), vec![]);
     assert!(matches!(&app.mode, Mode::ConfirmAccept(pin) if pin.run == 3));
+    screen(&mut app, 120, 30);
     assert_eq!(
         app.key(code(KeyCode::Enter)),
         vec![Effect::Act {
@@ -972,6 +973,11 @@ fn accept_never_approves_a_diff_other_than_the_one_shown() {
         source: "b".repeat(64),
         totals: None,
     });
+    // Never drawn: refused as unseen.
+    assert!(no_act(app.key(code(KeyCode::Enter))));
+    assert_eq!(app.status.as_ref().unwrap().1, toolroll_tui::app::UNDRAWN);
+    // Drawn: Accept still rechecks the diff at Enter.
+    screen(&mut app, 120, 30);
     assert!(no_act(app.key(code(KeyCode::Enter))));
     assert_eq!(app.status.as_ref().unwrap().1, DIFF_DISAGREES);
 }

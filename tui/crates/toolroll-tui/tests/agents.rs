@@ -342,6 +342,7 @@ fn the_default_agent_moves_every_role_to_its_preset() {
     app.key(code(KeyCode::Enter));
     app.key(key('j'));
     app.key(code(KeyCode::Enter));
+    screen(&mut app, 120, 34);
     let fx = app.key(code(KeyCode::Enter));
     let [Effect::Act { fields, .. }] = &fx[..] else {
         panic!("{fx:?}")

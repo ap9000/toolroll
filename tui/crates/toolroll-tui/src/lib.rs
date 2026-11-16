@@ -2,6 +2,7 @@
 //! the browser's own form POST through toolroll-api, and the session lives in memory only.
 pub mod agents;
 pub mod app;
+pub mod editor;
 pub mod guard;
 pub mod keys;
 pub mod link;
@@ -10,6 +11,7 @@ pub mod palette;
 pub mod panes;
 pub mod review;
 pub mod run;
+pub mod search;
 pub mod settings;
 pub mod sheet;
 pub mod state;
@@ -21,6 +23,7 @@ pub mod theme;
 pub mod thread;
 pub mod transcript;
 pub mod view;
+pub mod viewstate;
 
 /// `--version`'s line, which the launcher's self-check reads (tui-launch.ts): this build and its engine contract.
 pub fn version_line() -> String {

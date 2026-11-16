@@ -69,16 +69,18 @@ pub enum Choice {
     Theme,
     Density,
     Glyphs,
+    ListSide,
     Asks,
     Finished,
     Failed,
 }
 
 impl Choice {
-    pub const ALL: [Choice; 6] = [
+    pub const ALL: [Choice; 7] = [
         Choice::Theme,
         Choice::Density,
         Choice::Glyphs,
+        Choice::ListSide,
         Choice::Asks,
         Choice::Finished,
         Choice::Failed,
@@ -88,6 +90,7 @@ impl Choice {
             Choice::Theme => "Theme",
             Choice::Density => "Density",
             Choice::Glyphs => "Glyphs",
+            Choice::ListSide => "List side",
             Choice::Asks => "Notify: asks",
             Choice::Finished => "Notify: finished",
             Choice::Failed => "Notify: failed",
@@ -99,6 +102,7 @@ impl Choice {
             Choice::Theme => ("", "theme"),
             Choice::Density => ("", "density"),
             Choice::Glyphs => ("", "glyphs"),
+            Choice::ListSide => ("", "list-side"),
             Choice::Asks => ("notifications", "asks"),
             Choice::Finished => ("notifications", "finished"),
             Choice::Failed => ("notifications", "failed"),
@@ -124,6 +128,10 @@ impl Choice {
                 s.glyphs = Glyphs::ALL[(at + 1) % Glyphs::ALL.len()];
                 format!("\"{}\"", s.glyphs.key())
             }
+            Choice::ListSide => {
+                s.list_side = s.list_side.other();
+                format!("\"{}\"", s.list_side.key())
+            }
             Choice::Asks => flip(&mut s.notify.asks),
             Choice::Finished => flip(&mut s.notify.finished),
             Choice::Failed => flip(&mut s.notify.failed),
@@ -136,6 +144,7 @@ impl Choice {
             Choice::Theme => s.theme.key().to_string(),
             Choice::Density => s.density.key().to_string(),
             Choice::Glyphs => s.glyphs.key().to_string(),
+            Choice::ListSide => s.list_side.key().to_string(),
             Choice::Asks => on(s.notify.asks),
             Choice::Finished => on(s.notify.finished),
             Choice::Failed => on(s.notify.failed),
@@ -223,7 +232,7 @@ pub fn set_in_toml(text: &str, section: &str, key: &str, value: &str) -> String 
 /// a shared folder with the sticky bit (/tmp) only strictly above the home folder (the reader's and the launcher's own
 /// rule). `dir` itself must be this user's. Anything else is named, in plain words.
 #[cfg(unix)]
-fn trusted_chain(dir: &Path, home: Option<&Path>, me: u32) -> Result<PathBuf, String> {
+pub(crate) fn trusted_chain(dir: &Path, home: Option<&Path>, me: u32) -> Result<PathBuf, String> {
     use std::os::unix::fs::MetadataExt;
     let real = std::fs::canonicalize(dir).map_err(|_| "its folder couldn't be read".to_string())?;
     let home = home.and_then(|h| std::fs::canonicalize(h).ok());
@@ -261,6 +270,20 @@ fn trusted_chain(dir: &Path, home: Option<&Path>, me: u32) -> Result<PathBuf, St
 pub fn write_safely(
     path: &Path,
     home: Option<&Path>,
+    change: &dyn Fn(&str) -> String,
+) -> Result<(), String> {
+    write_within(path, home, FRESH_HEAD, MAX_BYTES, false, change)
+}
+
+/// write_safely's road for any file of ours: `fresh` is the text a missing file starts from, `max` its size cap, and
+/// `private` (the view state, view.rs-adjacent viewstate.rs) also refuses a file there that others can read.
+#[cfg(unix)]
+pub(crate) fn write_within(
+    path: &Path,
+    home: Option<&Path>,
+    fresh: &str,
+    max: u64,
+    private: bool,
     change: &dyn Fn(&str) -> String,
 ) -> Result<(), String> {
     use std::ffi::CString;
@@ -337,7 +360,7 @@ pub fn write_safely(
     };
     let text = if fd < 0 {
         match std::io::Error::last_os_error().raw_os_error() {
-            Some(libc::ENOENT) => FRESH_HEAD.to_string(),
+            Some(libc::ENOENT) => fresh.to_string(),
             Some(libc::ELOOP) => {
                 return Err(
                     "it is a link (a dotfile manager's?): change the file it points to".into(),
@@ -352,26 +375,41 @@ pub fn write_safely(
             .metadata()
             .map_err(|_| "it couldn't be read".to_string())?;
         use std::os::unix::fs::MetadataExt;
-        judge(m.file_type().is_file(), m.uid(), m.mode(), m.len(), me).map_err(str::to_string)?;
+        if private && m.mode() & 0o077 != 0 {
+            return Err("other people can read it".into());
+        }
+        judge(
+            m.file_type().is_file(),
+            m.uid(),
+            m.mode(),
+            m.len().min(max),
+            me,
+        )
+        .map_err(str::to_string)?;
         let mut bytes = Vec::new();
         (&mut file)
-            .take(MAX_BYTES + 1)
+            .take(max + 1)
             .read_to_end(&mut bytes)
             .map_err(|_| "it couldn't be read".to_string())?;
-        if bytes.len() as u64 > MAX_BYTES {
-            return Err("it is larger than 64 KB".into());
+        if bytes.len() as u64 > max {
+            return Err("it is too large".into());
         }
         String::from_utf8(bytes).map_err(|_| "it isn't UTF-8 text".to_string())?
     };
     let new = change(&text);
-    if new.len() as u64 > MAX_BYTES {
-        return Err("it would be larger than 64 KB".into());
+    if new.len() as u64 > max {
+        return Err("it would be too large".into());
     }
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp_c = c(format!(".tui.toml.{}.{nanos}.tmp", std::process::id()).as_bytes())?;
+    let tmp_c = c(format!(
+        ".{}.{}.{nanos}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    )
+    .as_bytes())?;
     // SAFETY: dfd is open; tmp_c is a valid C string; 0o600 is the mode for a new file.
     let tfd = unsafe {
         libc::openat(
@@ -469,6 +507,10 @@ pub struct Settings {
     pub reduced_motion: bool,
     /// Inside tmux, send desktop notifications (wrapped for its passthrough); off: the bell only.
     pub tmux_passthrough: bool,
+    /// Which side the list is on (the view file remembers a side changed in the workbench, per project).
+    pub list_side: crate::viewstate::Side,
+    /// The mouse resting over a panel focuses it (off: a click does).
+    pub focus_follows_mouse: bool,
     /// Role colours, in the file's order.
     pub colors: Vec<(Role, Rgb)>,
     /// The keymap: a preset and the file's own keys (keys.rs).
@@ -511,6 +553,8 @@ impl Default for Settings {
             bell: true,
             reduced_motion: false,
             tmux_passthrough: false,
+            list_side: crate::viewstate::Side::Left,
+            focus_follows_mouse: false,
             colors: vec![],
             keymap: crate::keys::Keymap::default(),
         }
@@ -772,6 +816,16 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
             ("", "bell") => flag(&mut warnings, &mut s.bell),
             ("", "reduced-motion") => flag(&mut warnings, &mut s.reduced_motion),
             ("", "tmux-passthrough") => flag(&mut warnings, &mut s.tmux_passthrough),
+            ("", "focus-follows-mouse" | "focus_follows_mouse") => {
+                flag(&mut warnings, &mut s.focus_follows_mouse)
+            }
+            ("", "list-side" | "list_side") => match &v {
+                Value::Str(side) if crate::viewstate::Side::from_key(side).is_some() => {
+                    s.list_side =
+                        crate::viewstate::Side::from_key(side).unwrap_or(crate::viewstate::Side::Left)
+                }
+                _ => bad(&mut warnings, "left or right", "left"),
+            },
             ("", "columns") => match &v {
                 Value::List(names) => {
                     let mut cols = vec![];
@@ -852,6 +906,10 @@ fn known(name: &str) -> bool {
         "bell",
         "reduced-motion",
         "tmux-passthrough",
+        "focus-follows-mouse",
+        "focus_follows_mouse",
+        "list-side",
+        "list_side",
         "notifications.asks",
         "notifications.finished",
         "notifications.failed",
@@ -1056,6 +1114,13 @@ pub fn load(env: &Env) -> (Settings, Option<PathBuf>, FileState, Vec<String>) {
     }
 }
 
+/// Whether the terminal speaks the keyboard protocol, from the start ask: yes only when it said so; no when it answered
+/// without it, or answered nothing in time (it won't answer the keyboard ask either); None when it wasn't asked (not a
+/// terminal, or not asked here), and crossterm asks on its own.
+pub fn keyboard_of(answers: Option<crate::theme::Answers>) -> Option<bool> {
+    answers.map(|a| a.answered && a.keyboard)
+}
+
 /// Everything the screen needs from its surroundings, at start: the settings, the colours the terminal shows, its
 /// background (asked only from a local terminal with colour on: raw mode, before anything reads the keyboard), and
 /// where notifications go.
@@ -1063,16 +1128,20 @@ pub fn start(env: &Env) -> Prefs {
     let (settings, path, file, warnings) = load(env);
     let depth = env.depth();
     let ask = depth != Depth::Off && !env.ssh;
-    let background = if ask {
-        crate::theme::ask_background(std::time::Duration::from_millis(150))
+    let answers = if ask {
+        crate::theme::ask_terminal(std::time::Duration::from_millis(150))
     } else {
         None
     };
+    let background = answers.and_then(|a| a.background);
     let reach = Reach::of(env, settings.tmux_passthrough);
     let mut prefs = Prefs::new(settings, path, file, warnings, depth, background, reach);
     prefs.home = env.home.clone();
     // Asked and not answered in time: an answer may still come, and must not be read as keys (theme::LateReply).
     prefs.late_reply = ask && background.is_none();
+    // The keyboard protocol, from the same ask: known once the terminal answered (a terminal that answered nothing
+    // within the ask won't answer the keyboard ask either). Not asked: crossterm asks on its own (run.rs).
+    prefs.keyboard = keyboard_of(answers);
     prefs
 }
 
@@ -1098,6 +1167,8 @@ pub struct Prefs {
     pub reach: Reach,
     /// The background was asked for and not answered in time (the loop drops a late answer: theme::LateReply).
     pub late_reply: bool,
+    /// Whether the terminal speaks the keyboard protocol, from the start ask (None: not asked here).
+    pub keyboard: Option<bool>,
     /// A change on the Settings screen was written to the file this session.
     pub saved: bool,
 }
@@ -1116,6 +1187,7 @@ impl Default for Prefs {
             theme: Theme::default(),
             reach: Reach::default(),
             late_reply: false,
+            keyboard: None,
             saved: false,
         }
     }
@@ -1145,6 +1217,7 @@ impl Prefs {
             theme,
             reach,
             late_reply: false,
+            keyboard: None,
             saved: false,
         }
     }

@@ -73,6 +73,9 @@ pub struct Panes {
     pub slots: Vec<Option<Watch>>,
     /// Where each panel was drawn last frame (for the mouse).
     pub areas: Vec<Rect>,
+    /// The first column's share of the width, and the first row's of the height (percent, 20..=80; 50: even).
+    pub ratio_x: u16,
+    pub ratio_y: u16,
 }
 
 impl Default for Panes {
@@ -82,9 +85,14 @@ impl Default for Panes {
             focus: 0,
             slots: vec![None],
             areas: vec![],
+            ratio_x: 50,
+            ratio_y: 50,
         }
     }
 }
+
+/// Splits move this much (percent) a key.
+pub const RATIO_STEP: u16 = 5;
 
 impl Panes {
     pub fn watches(&self) -> impl Iterator<Item = &Watch> {
@@ -107,9 +115,11 @@ pub fn run_of(steps: &StepCards) -> Option<i64> {
 
 /// The panels' places in the area given: one, two side by side, or a grid of four (rows first), with a one-cell rule
 /// between them (the ground shows through it, or a rule's outline when there are no fills).
-pub fn places(layout: Layout, area: Rect) -> Vec<Rect> {
-    let half_w = area.width.saturating_sub(1) / 2;
-    let half_h = area.height.saturating_sub(1) / 2;
+pub fn places(layout: Layout, area: Rect, ratio_x: u16, ratio_y: u16) -> Vec<Rect> {
+    let rx = u32::from(ratio_x.clamp(20, 80));
+    let ry = u32::from(ratio_y.clamp(20, 80));
+    let half_w = (u32::from(area.width.saturating_sub(1)) * rx / 100) as u16;
+    let half_h = (u32::from(area.height.saturating_sub(1)) * ry / 100) as u16;
     let left = |y: u16, h: u16| Rect {
         x: area.x,
         y,
@@ -210,6 +220,8 @@ impl App {
             focus,
             slots,
             areas: vec![],
+            ratio_x: self.panes.ratio_x,
+            ratio_y: self.panes.ratio_y,
         };
         self.line_cache = None;
         self.say(crate::app::Tone::Said, layout.words());

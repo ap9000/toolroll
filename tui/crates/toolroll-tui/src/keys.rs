@@ -76,6 +76,10 @@ actions! {
     NewTask = "new-task", Global, Act, "New task", ["n"];
     NewThread = "new-thread", Global, Act, "New thread", ["T"];
     NextNeedsYou = "next-needs-you", Global, Move, "Next thing that needs you (oldest first)", ["!"];
+    PreviousNeedsYou = "previous-needs-you", Global, Move, "Previous thing that needs you", ["@"];
+    JumpBack = "jump-back", Global, Move, "Back to where you were before jumping", ["'"];
+    Search = "search", Global, Act, "Search this pane (Live, Steps, Diff, Terminal)", ["/"];
+    OpenInEditor = "open-in-editor", Global, Act, "Open this pane's text in your $EDITOR", ["ctrl-e"];
     Palette = "palette", Global, Act, "Every action, task, project and setting", [":", "ctrl-k"];
     ScrollUp = "scroll-up", Global, Move, "Scroll up", ["pgup", "u"];
     ScrollDown = "scroll-down", Global, Move, "Scroll down", ["pgdn", "d"];
@@ -87,6 +91,12 @@ actions! {
     Layout = "layout", Global, Layout, "Next layout (focused, side by side, grid of four)", ["L"];
     NextPane = "next-pane", Global, Layout, "Next pane", ["o"];
     PreviousPane = "previous-pane", Global, Layout, "Previous pane", ["O"];
+    ListNarrower = "list-narrower", Global, Layout, "Narrower list (or the focused panel, when split)", ["<"];
+    ListWider = "list-wider", Global, Layout, "Wider list (or the focused panel, when split)", [">"];
+    Equalize = "equalize", Global, Layout, "Even splits, and the list at its usual width", ["="];
+    ListCycle = "list-cycle", Global, Layout, "List: full, a slim rail, or hidden", ["b"];
+    Zoom = "zoom", Global, Layout, "Zoom: the focused panel alone (again to come back)", ["z"];
+    ListSide = "list-side", Global, Layout, "Move the list to the other side", [];
     LayoutFocused = "layout-focused", Global, Layout, "Focused: one panel", [];
     LayoutSideBySide = "layout-side-by-side", Global, Layout, "Side by side: two panels", [];
     LayoutGrid = "layout-grid", Global, Layout, "Grid of four panels", [];
@@ -94,6 +104,9 @@ actions! {
     FilterThisProject = "filter-this-project", Global, Filter, "This project", [];
     FilterNeedsMe = "filter-needs-me", Global, Filter, "Needs me", [];
     FilterToday = "filter-today", Global, Filter, "Today", [];
+    FilterWorking = "filter-working", Global, Filter, "Needs: working", [];
+    FilterFailed = "filter-failed", Global, Filter, "Needs: failed", [];
+    FilterDone = "filter-done", Global, Filter, "Needs: done", [];
     NextTheme = "next-theme", Global, Setting, "Next theme, for this session", [];
     Costs = "costs", Global, Setting, "Show or hide costs, for this session", [];
     KeyBar = "key-bar", Global, Setting, "Show or hide the key bar, for this session", [];
@@ -172,7 +185,6 @@ impl Preset {
                 (Action::ScrollDown, &["ctrl-d", "ctrl-f"]),
                 (Action::ScrollUp, &["ctrl-u", "ctrl-b"]),
                 (Action::NextPane, &["ctrl-w"]),
-                (Action::Palette, &["/"]),
             ],
             Preset::Emacs => &[
                 (Action::MoveDown, &["ctrl-n"]),
@@ -195,6 +207,16 @@ impl Preset {
 /// Actions help shows as one row ("j/k  Move through the list"): the pair, and the row's words.
 const PAIRS: &[(Action, Action, &str)] = &[
     (Action::MoveDown, Action::MoveUp, "Move through the list"),
+    (
+        Action::NextNeedsYou,
+        Action::PreviousNeedsYou,
+        "Next / previous that needs you",
+    ),
+    (
+        Action::ListNarrower,
+        Action::ListWider,
+        "Narrower / wider list (or split)",
+    ),
     (Action::NextTab, Action::PreviousTab, "Next / previous tab"),
     (Action::ScrollUp, Action::ScrollDown, "Scroll up / down"),
     (
@@ -272,7 +294,12 @@ fn help_words(a: Action) -> Option<&'static str> {
         Action::Stop => "Stop the build, or its retries",
         Action::SendBack => "Send back with a note; retry if failed",
         Action::TakeOver => "Take over: a terminal on the build",
-        Action::NextNeedsYou => "Next thing that needs you",
+        Action::JumpBack => "Back to where you were",
+        Action::Search => "Search this pane",
+        Action::OpenInEditor => "Open this pane in $EDITOR",
+        Action::Equalize => "Even splits, usual list width",
+        Action::ListCycle => "List: full, rail, hidden",
+        Action::Zoom => "Zoom the focused panel",
         Action::Palette => "Every action, task and setting",
         Action::Copy => "Copy to your terminal's scrollback",
         Action::Help => "These keys",

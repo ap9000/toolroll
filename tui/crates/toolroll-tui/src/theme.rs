@@ -897,9 +897,8 @@ pub fn ascii_of(c: char) -> Option<char> {
     Some(match c {
         '─' | '━' | '═' => '-',
         '│' | '┃' | '║' | '▏' => '|',
-        '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' | '╭' | '╮' | '╰' | '╯' => {
-            '+'
-        }
+        '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' | '╭' | '╮' | '╰' | '╯' | '┏' | '┓'
+        | '┗' | '┛' => '+',
         '·' => '|',
         '…' => '~',
         '↓' => 'v',
@@ -908,6 +907,7 @@ pub fn ascii_of(c: char) -> Option<char> {
         '—' | '–' | '−' => '-',
         '‖' => '=',
         '●' => '*',
+        '•' => '*',
         '◐' => '~',
         '✓' => '+',
         '✕' => 'x',
@@ -1028,11 +1028,45 @@ pub fn parse_osc11(bytes: &[u8]) -> Option<Rgb> {
     parts.next().is_none().then_some(c)
 }
 
-/// Ask the terminal for its background (OSC 11), followed by a device-attributes ask (DA1) that every terminal
-/// answers, so a terminal that ignores OSC 11 is known at once; at most `wait`. Only from a terminal on both ends, in
-/// raw mode, before anything else reads the keyboard. None: it didn't say.
+/// What the terminal said when asked at start (ask_terminal): its background, whether it answered at all (the
+/// device-attributes ask every terminal answers), and whether it speaks the keyboard protocol that tells Esc and
+/// Alt-keys apart (its `CSI ? u` answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Answers {
+    pub background: Option<Rgb>,
+    pub answered: bool,
+    pub keyboard: bool,
+}
+
+/// The answers in what came back: OSC 11's colour, a `CSI ? <flags> u` keyboard answer, and the DA1 answer
+/// (`CSI ? … c`) that ends them.
+pub fn parse_answers(bytes: &[u8]) -> Answers {
+    let csi_q = |end: u8| {
+        bytes.windows(3).enumerate().any(|(i, w)| {
+            w == b"\x1b[?" && {
+                let rest = &bytes[i + 3..];
+                let n = rest
+                    .iter()
+                    .take_while(|b| b.is_ascii_digit() || **b == b';')
+                    .count();
+                rest.get(n) == Some(&end)
+            }
+        })
+    };
+    Answers {
+        background: parse_osc11(bytes),
+        answered: csi_q(b'c'),
+        keyboard: csi_q(b'u'),
+    }
+}
+
+/// Ask the terminal for its background (OSC 11) and its keyboard protocol (`CSI ? u`), followed by a
+/// device-attributes ask (DA1) that every terminal answers, so a terminal that ignores either is known at once; at
+/// most `wait`. One ask for both: a terminal that answers nothing costs `wait` once, never a second, longer wait for the
+/// keyboard ask (crossterm's own waits two seconds). Only from a terminal on both ends, in raw mode, before anything
+/// else reads the keyboard. None: not a terminal.
 #[cfg(unix)]
-pub fn ask_background(wait: std::time::Duration) -> Option<Rgb> {
+pub fn ask_terminal(wait: std::time::Duration) -> Option<Answers> {
     use std::io::Write;
     use std::time::Instant;
     // SAFETY: isatty only inspects the descriptors.
@@ -1040,7 +1074,7 @@ pub fn ask_background(wait: std::time::Duration) -> Option<Rgb> {
         return None;
     }
     let mut out = std::io::stdout();
-    out.write_all(b"\x1b]11;?\x07\x1b[c").ok()?;
+    out.write_all(b"\x1b]11;?\x07\x1b[?u\x1b[c").ok()?;
     out.flush().ok()?;
     let deadline = Instant::now() + wait;
     let mut got: Vec<u8> = Vec::with_capacity(128);
@@ -1066,18 +1100,16 @@ pub fn ask_background(wait: std::time::Duration) -> Option<Rgb> {
             break;
         }
         got.extend_from_slice(&buf[..n as usize]);
-        // The DA1 answer (ESC [ ? … c) comes after the OSC 11 one, when there is one.
-        if let Some(i) = got.windows(3).position(|w| w == b"\x1b[?") {
-            if got[i..].contains(&b'c') {
-                break;
-            }
+        // The DA1 answer (ESC [ ? … c) comes after the others, when there are any.
+        if parse_answers(&got).answered {
+            break;
         }
     }
-    parse_osc11(&got)
+    Some(parse_answers(&got))
 }
 
 #[cfg(not(unix))]
-pub fn ask_background(_wait: std::time::Duration) -> Option<Rgb> {
+pub fn ask_terminal(_wait: std::time::Duration) -> Option<Answers> {
     None
 }
 
@@ -1218,6 +1250,36 @@ mod tests {
         );
         assert_eq!(parse_osc11(b"\x1b[?62;22c"), None);
         assert_eq!(parse_osc11(b"\x1b]11;rgb:zz/00/00\x07"), None);
+        // One ask, three answers: the colour, the keyboard protocol, and DA1 that ends them.
+        let all = parse_answers(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07\x1b[?1u\x1b[?62;22c");
+        assert_eq!(
+            all,
+            Answers {
+                background: Some(Rgb(0x1e, 0x1e, 0x2e)),
+                answered: true,
+                keyboard: true
+            }
+        );
+        // A terminal that only answers DA1: answered, no keyboard protocol, no colour.
+        assert_eq!(
+            parse_answers(b"\x1b[?62;c"),
+            Answers {
+                background: None,
+                answered: true,
+                keyboard: false
+            }
+        );
+        // What the screen does with them: the keyboard protocol only when the terminal said so, and no second ask
+        // (crossterm's two-second one) once the start ask was made; not asked: crossterm asks.
+        use crate::settings::keyboard_of;
+        assert_eq!(keyboard_of(Some(all)), Some(true));
+        assert_eq!(keyboard_of(Some(parse_answers(b"\x1b[?62;c"))), Some(false));
+        assert_eq!(keyboard_of(Some(Answers::default())), Some(false));
+        assert_eq!(keyboard_of(None), None);
+        // Nothing (or half an answer): not answered.
+        assert_eq!(parse_answers(b""), Answers::default());
+        assert!(!parse_answers(b"\x1b[?62;").answered);
+        assert!(!parse_answers(b"\x1b[?1x u").keyboard);
         assert_eq!(parse_osc11(b"\x1b]11;rgb:00/00/00/00\x07"), None);
     }
 
