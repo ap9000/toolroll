@@ -801,6 +801,7 @@ fn the_settings_screen_changes_a_choice_with_enter() {
     app.key(key('?'));
     app.key(key('s'));
     assert_eq!(app.mode, Mode::Settings);
+    screen(&mut app, 120, 30);
     app.key(key('j'));
     app.key(code(KeyCode::Enter));
     // No settings file here (no home): the change holds for the session, said plainly.

@@ -296,6 +296,8 @@ pub const DIFF_DISAGREES: &str =
 /// Said when `a` opens the changes first: Accept is a yes to the diff on screen, so it is shown before it is asked.
 pub const SHOW_CHANGES_FIRST: &str = "Here are its changes — press a again to accept them.";
 pub const QUESTION_CHANGED: &str = "This question changed — look again.";
+/// Said when a dialog's key comes but the dialog wasn't on screen in the last frame (a window too small to draw it).
+pub const UNDRAWN: &str = "Make the window bigger to see this first.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -726,6 +728,9 @@ pub struct App {
     pub jump_from: Option<String>,
     /// The search last made in this pane (its query stays lit after Enter until Esc).
     pub search: Option<crate::search::Search>,
+    /// The dialog drawn in the last frame, as `dialog_key` names it (view.rs sets it each frame; None when no dialog
+    /// was drawn, the window too small among the reasons). A dialog's keys act only when it is exactly this one.
+    pub drawn_dialog: Option<String>,
     /// Quitting stops the agents this terminal started.
     pub owned: bool,
     /// Where a new task goes (the launcher's repository).
@@ -835,6 +840,7 @@ impl App {
             unread: std::collections::BTreeSet::new(),
             jump_from: None,
             search: None,
+            drawn_dialog: None,
             owned,
             project,
             prefs: crate::settings::Prefs::default(),
@@ -1776,6 +1782,14 @@ impl App {
         }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.quit();
+        }
+        // A dialog acts only once it was on screen, exactly as it is now, in the last frame (a window too small draws
+        // none, and two keys in one read meet a dialog never drawn). Esc still closes it.
+        if let Some(k) = self.dialog_key() {
+            if self.drawn_dialog.as_ref() != Some(&k) && key.code != KeyCode::Esc {
+                self.say(Tone::Refused, UNDRAWN);
+                return vec![];
+            }
         }
         match self.mode.clone() {
             Mode::Fatal(_, code) => vec![Effect::Exit(code)],
@@ -3012,6 +3026,42 @@ impl App {
             self.tab = r.tab;
         }
         fx
+    }
+
+    /// The dialog open now, named so a frame can say it drew exactly this one: every mode but the few that only type,
+    /// move or read (fail-closed: a dialog added later is gated until it is listed here). Its scroll and whether its end
+    /// was seen are left out (they change as it is read); Accept's "notes go with it" is part of it.
+    pub fn dialog_key(&self) -> Option<String> {
+        match &self.mode {
+            Mode::Normal
+            | Mode::Steer(_)
+            | Mode::Note(..)
+            | Mode::NewTask(..)
+            | Mode::NewThread(_)
+            | Mode::SendBack(..)
+            | Mode::Palette(_)
+            | Mode::PickModel(_)
+            | Mode::Search(_)
+            | Mode::Help
+            | Mode::Copied
+            | Mode::Sending(_)
+            | Mode::Fatal(..)
+            | Mode::TakeOver => None,
+            Mode::Build {
+                title,
+                preview,
+                digest,
+                terms,
+                ..
+            } => Some(format!("Build {title:?} {preview:?} {digest:?} {terms:?}")),
+            Mode::SendReview {
+                pin, typed, text, ..
+            } => Some(format!("SendReview {pin:?} {typed:?} {text:?}")),
+            Mode::ConfirmAccept(pin) => {
+                Some(format!("ConfirmAccept {pin:?} {}", self.accept_attach))
+            }
+            other => Some(format!("{other:?}")),
+        }
     }
 
     /// This project's view as the view file keeps it (viewstate.rs): ids and our own words only.

@@ -61,6 +61,7 @@ fn taken_over() -> App {
     // The first t says what opening it means; the second opens it.
     assert_eq!(app.key(key('t')), vec![]);
     assert!(matches!(app.mode, Mode::ConfirmTakeOver { .. }));
+    screen(&mut app, 120, 30);
     let fx = app.key(key('t'));
     assert_eq!(
         fx,
@@ -236,6 +237,7 @@ fn a_running_build_has_nothing_saved_to_take_over() {
 fn the_console_saying_no_or_closing_is_said_plainly() {
     let mut app = app_on("t-done");
     app.key(key('t'));
+    screen(&mut app, 120, 30);
     app.key(key('t'));
     app.update(Msg::TermOpened {
         task: "t-done".into(),

@@ -618,3 +618,133 @@ fn tui_toml_takes_the_side_and_focus_follows_mouse() {
     assert_eq!(s.list_side, Side::Left);
     assert_eq!(warns.len(), 1);
 }
+
+/// Accept's "the notes go with it" is part of the dialog: switched without a frame between, Enter waits for it to be
+/// shown.
+#[test]
+fn accept_with_notes_switched_is_shown_before_enter() {
+    use toolroll_tui::app::{ReviewPin, UNDRAWN};
+    let mut app = on("t-done");
+    app.mode = Mode::ConfirmAccept(ReviewPin {
+        task: "t-done".into(),
+        run: 2,
+        receipt: "a".repeat(64),
+        source: "b".repeat(64),
+        totals: None,
+    });
+    screen(&mut app, 120, 30);
+    let before = app.dialog_key();
+    app.accept_attach = true;
+    assert_ne!(app.dialog_key(), before);
+    assert_eq!(app.key(code(KeyCode::Enter)), vec![]);
+    assert_eq!(said(&app), UNDRAWN);
+}
+
+/// A dialog acts only once it was drawn, exactly as it is, in the last frame: a window too small to draw it (or two
+/// keys in one read) never confirms anything. Esc still closes it.
+#[test]
+fn an_undrawn_dialog_takes_no_keys() {
+    use toolroll_tui::app::{ReviewPin, UNDRAWN};
+    type Opens = Box<dyn Fn(&mut App)>;
+    let dialogs: Vec<(&str, &str, Opens, KeyEvent)> = vec![
+        (
+            "answer",
+            "t-ask",
+            Box::new(|a: &mut App| {
+                a.key(key('1'));
+            }),
+            code(KeyCode::Enter),
+        ),
+        (
+            "stop",
+            "t-live",
+            Box::new(|a: &mut App| {
+                a.key(key('x'));
+            }),
+            key('y'),
+        ),
+        (
+            "cancel",
+            "t-live",
+            Box::new(|a: &mut App| {
+                a.key(key('X'));
+            }),
+            code(KeyCode::Enter),
+        ),
+        (
+            "stop retrying",
+            "t-live",
+            Box::new(|a: &mut App| {
+                a.mode = Mode::ConfirmHold {
+                    task: "t-live".into(),
+                };
+            }),
+            code(KeyCode::Enter),
+        ),
+        (
+            "accept",
+            "t-done",
+            Box::new(|a: &mut App| {
+                a.mode = Mode::ConfirmAccept(ReviewPin {
+                    task: "t-done".into(),
+                    run: 2,
+                    receipt: "a".repeat(64),
+                    source: "b".repeat(64),
+                    totals: None,
+                });
+            }),
+            code(KeyCode::Enter),
+        ),
+        (
+            "build terms",
+            "t-live",
+            Box::new(|a: &mut App| {
+                a.mode = Mode::Build {
+                    title: "Fix it".into(),
+                    preview: "p".into(),
+                    digest: "d".repeat(64),
+                    terms: vec![("Agent".into(), "claude sonnet".into())],
+                    scroll: 0,
+                    seen_end: true,
+                };
+            }),
+            code(KeyCode::Enter),
+        ),
+    ];
+    for (what, task, open, confirm) in dialogs {
+        // Too small to draw anything.
+        let mut app = on(task);
+        open(&mut app);
+        let opened = app.mode.clone();
+        assert!(app.dialog_key().is_some(), "{what}");
+        screen(&mut app, 30, 6);
+        assert_eq!(app.drawn_dialog, None, "{what}");
+        assert_eq!(app.key(confirm), vec![], "{what}");
+        assert_eq!(said(&app), UNDRAWN, "{what}");
+        assert_eq!(app.mode, opened, "{what}: still open, nothing done");
+        // Opened and confirmed in one read (no frame between): the same.
+        let mut app = on(task);
+        screen(&mut app, 120, 30);
+        open(&mut app);
+        assert_eq!(app.key(confirm), vec![], "{what}");
+        assert_eq!(said(&app), UNDRAWN, "{what}");
+        // Drawn once, then a frame too small: no longer on screen, so refused again.
+        let mut app = on(task);
+        open(&mut app);
+        screen(&mut app, 120, 30);
+        assert!(app.drawn_dialog.is_some(), "{what}");
+        screen(&mut app, 30, 6);
+        assert_eq!(app.key(confirm), vec![], "{what}");
+        assert_eq!(said(&app), UNDRAWN, "{what}");
+        // Esc closes it, drawn or not.
+        app.key(code(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal, "{what}");
+        // Drawn: the dialog is the one on screen, and its keys reach it.
+        let mut app = on(task);
+        open(&mut app);
+        screen(&mut app, 120, 30);
+        assert_eq!(app.drawn_dialog, app.dialog_key(), "{what}");
+        app.key(confirm);
+        assert_ne!(said(&app), UNDRAWN, "{what}");
+    }
+}

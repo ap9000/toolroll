@@ -63,8 +63,20 @@ fn main() {
         .and_then(|n| n.parse::<i32>().ok())
         .filter(|n| *n > 2 && unsafe { libc_fstat_ok(*n) })
         .map(|n| unsafe { std::fs::File::from_raw_fd(n) });
-    // Never inherited by a program this screen starts (the editor): close-on-exec from here on.
-    toolroll_tui::editor::close_on_exec_all();
+    // Never inherited by a program this screen starts (the editor): close-on-exec from here on. When every descriptor
+    // can't be checked, the launcher's two are marked by number (and checked); the editor checks again before it starts,
+    // and is refused if it still can't be sure.
+    #[cfg(unix)]
+    if toolroll_tui::editor::isolate().is_err() {
+        let control_fd = arg(&args, "--control-fd").and_then(|n| n.parse::<i32>().ok());
+        for fd in [Some(3), control_fd]
+            .into_iter()
+            .flatten()
+            .filter(|fd| *fd > 2)
+        {
+            let _ = toolroll_tui::editor::cloexec(fd);
+        }
+    }
     // Protect, say so, and only then read the link (guard::start keeps this order; its tests prove it).
     let started = guard::start(
         guard::protect_from_dumps,

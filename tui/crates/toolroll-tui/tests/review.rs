@@ -546,6 +546,11 @@ fn notes_are_pinned_to_the_result_shown() {
         scroll,
         seen_end,
     };
+    // Not the dialog drawn: refused before anything else is looked at.
+    assert!(!sends(&app.key(code(KeyCode::Enter))));
+    assert_eq!(app.status.as_ref().unwrap().1, toolroll_tui::app::UNDRAWN);
+    // Drawn as it is now: the receipt is rechecked at Enter.
+    screen(&mut app, 120, 34);
     assert!(!sends(&app.key(code(KeyCode::Enter))));
     assert_eq!(app.status.as_ref().unwrap().1, RESULT_CHANGED);
     // A dialog pinned to another receipt than the one waiting never posts (rechecked at Enter, not only on refresh).
@@ -567,6 +572,7 @@ fn notes_are_pinned_to_the_result_shown() {
     };
     pin.receipt = "c".repeat(64);
     app.mode = Mode::ConfirmAccept(pin);
+    screen(&mut app, 120, 34);
     assert!(!sends(&app.key(code(KeyCode::Enter))));
     assert_eq!(app.status.as_ref().unwrap().1, RESULT_CHANGED);
     // The notes behind the review changed after it was made: what was shown is no longer what would go, so nothing goes.
@@ -911,6 +917,7 @@ fn send_back_with_words_only_is_reviewed_to_the_end() {
 
 fn submit_accept(app: &mut App) -> (Vec<SendAct>, String) {
     app.key(key('a'));
+    screen(app, 120, 34);
     app.key(key('t'));
     screen(app, 120, 34);
     let fx = app.key(code(KeyCode::Enter));

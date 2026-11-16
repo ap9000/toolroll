@@ -179,6 +179,7 @@ async fn accept_with_notes_saves_them_then_completes() {
     note(&mut app, &client, "round to cents").await;
     let fx = app.key(key('a'));
     pump(&mut app, &client, fx).await;
+    screen(&mut app, 120, 34);
     app.key(key('t'));
     let shown = screen(&mut app, 120, 34);
     assert!(
@@ -259,6 +260,7 @@ async fn a_lost_or_refused_answer_never_saves_the_notes_twice() {
     note(&mut app, &client, "round to cents").await;
     let submit = |app: &mut App| {
         app.key(key('a'));
+        screen(app, 120, 34);
         app.key(key('t'));
         screen(app, 120, 34);
         app.key(enter())

@@ -84,6 +84,8 @@ pub async fn run(client: Client, mut opts: Options) -> std::io::Result<i32> {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore();
+        // An export the editor had: removed (release builds abort, so no destructor runs).
+        crate::editor::remove_live();
         prev(info);
     }));
     terminal::enable_raw_mode()?;
@@ -519,6 +521,9 @@ async fn event_loop(
     app.side = prefs.settings.list_side;
     // This project's view (viewstate.rs), keyed by a hash of the project the console runs for this terminal.
     let view_path = crate::viewstate::path(env);
+    // Where a pane's text may go for the editor (editor.rs), and any export left by a screen that ended abruptly.
+    let export_places = crate::editor::places(env);
+    crate::editor::reclaim(&export_places);
     let view_key = crate::viewstate::project_key(opts.project.as_deref().unwrap_or("(no project)"));
     let mut views = view_path
         .as_deref()
@@ -631,7 +636,7 @@ async fn event_loop(
         // person types goes to the editor; a fresh one takes over after.
         if let Some((name, text)) = lp.editor.take() {
             drop(std::mem::replace(&mut events, EventStream::new()));
-            let said = edit(term, &name, &text);
+            let said = edit(term, &name, &text, &export_places);
             app.say(
                 if said.is_ok() {
                     crate::app::Tone::Said
@@ -799,16 +804,22 @@ fn local_utc_offset() -> i64 {
     }
 }
 
-/// Open `text` in the person's editor (editor.rs): a private temporary file, the screen given back (raw mode off, the
-/// normal screen, the mouse and paste modes off), the editor run as a program and its arguments (no shell) and waited
-/// for, then the screen taken again and the file and its folder removed. Its words, either way.
-fn edit(term: &mut Term, name: &str, text: &str) -> Result<String, String> {
+/// Open `text` in the person's editor (editor.rs): everything refused before the screen is given up (no editor named,
+/// a descriptor that can't be kept from it, no trusted private place); then the screen given back (raw mode off, the
+/// normal screen, the mouse and paste modes off), the editor run as a program and its arguments (no shell) on the
+/// export re-checked just before, and waited for; the screen taken again; the export removed (said truthfully when it
+/// can't be). Its words, either way.
+#[cfg(unix)]
+fn edit(
+    term: &mut Term,
+    name: &str,
+    text: &str,
+    places: &[std::path::PathBuf],
+) -> Result<String, String> {
     let var = |k: &str| std::env::var(k).ok();
-    let (program, args) =
-        crate::editor::editor_command(var("VISUAL").as_deref(), var("EDITOR").as_deref())
-            .ok_or_else(|| "Set $EDITOR (or $VISUAL) to open it in your editor.".to_string())?;
-    let (dir, file) = crate::editor::private_file(&std::env::temp_dir(), name, text)
-        .map_err(|_| "Couldn't make a private file for it.".to_string())?;
+    let editor = crate::editor::editor_command(var("VISUAL").as_deref(), var("EDITOR").as_deref());
+    let launch =
+        crate::editor::prepare(name, text, editor, places, Box::new(crate::editor::isolate))?;
     let kitty = KITTY.swap(false, Ordering::SeqCst);
     {
         let out = term.backend_mut();
@@ -824,12 +835,10 @@ fn edit(term: &mut Term, name: &str, text: &str) -> Result<String, String> {
         );
     }
     let _ = terminal::disable_raw_mode();
-    crate::editor::close_on_exec_all();
-    let ran = std::process::Command::new(&program)
-        .args(&args)
-        .arg(&file)
-        .status();
-    crate::editor::remove(&dir, &file);
+    let ran = launch.command().map(|mut c| {
+        c.status()
+            .map_err(|_| format!("Couldn't start {}: check $EDITOR.", clean(&launch.program)))
+    });
     let _ = terminal::enable_raw_mode();
     {
         let out = term.backend_mut();
@@ -855,12 +864,25 @@ fn edit(term: &mut Term, name: &str, text: &str) -> Result<String, String> {
             ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::HIDDEN),
         );
     });
-    match ran {
-        Ok(s) if s.success() => Ok("Back from your editor; its copy was removed.".into()),
-        Ok(_) => Err("Your editor ended with an error; its copy was removed.".into()),
-        Err(_) => Err(format!(
-            "Couldn't start {}: check $EDITOR.",
-            crate::text::clean(&program)
-        )),
+    let removed = launch.finish();
+    let note = match &removed {
+        Ok(()) => "its copy was removed.".to_string(),
+        Err(why) => format!("{why}."),
+    };
+    match ran.and_then(|r| r) {
+        Ok(s) if s.success() && removed.is_ok() => Ok(format!("Back from your editor; {note}")),
+        Ok(s) if s.success() => Err(format!("Back from your editor, but {note}")),
+        Ok(_) => Err(format!("Your editor ended with an error; {note}")),
+        Err(why) => Err(format!("{why} ({note})")),
     }
+}
+
+#[cfg(not(unix))]
+fn edit(
+    _term: &mut Term,
+    _name: &str,
+    _text: &str,
+    _places: &[std::path::PathBuf],
+) -> Result<String, String> {
+    Err("Opening an editor isn't supported here.".into())
 }

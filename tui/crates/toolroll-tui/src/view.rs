@@ -247,6 +247,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(pane) = app.term.as_mut() {
         pane.drawn = false;
     }
+    // No dialog on screen until draw_overlay draws one this frame (a window too small draws none).
+    app.drawn_dialog = None;
     draw_frame(f, app);
     let dialog = !matches!(
         app.mode,
@@ -2679,7 +2681,18 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
+/// The dialog over the screen, if any; the frame says it drew exactly this one (App::dialog_key), unless it can't be.
 fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
+    // Named after it is drawn (drawing a card marks how far it was read); draw_dialog clears the mark when it can't
+    // draw the dialog open now.
+    app.drawn_dialog = Some(String::new());
+    draw_dialog(f, app, area);
+    if app.drawn_dialog.is_some() {
+        app.drawn_dialog = app.dialog_key();
+    }
+}
+
+fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let (title, lines): (&str, Vec<Line<'static>>) = match &app.mode {
         Mode::Help => (" Keys ", help_lines(app, area)),
         Mode::Palette(_) => (" Commands ", palette_lines(app, area)),
@@ -2837,6 +2850,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
                         .map(|o| (q.clone(), o.clone()))
                 })
             else {
+                app.drawn_dialog = None;
                 return;
             };
             // The question, the answer and what it does, every word (wrapped, never cut): a person's yes to exactly
