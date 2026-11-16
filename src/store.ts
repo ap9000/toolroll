@@ -27,6 +27,7 @@ import { V165_OBJECTS, V165_SCHEMA, V165_STEPS } from "./flexible-launch-schema.
 import { V166_OBJECTS, V166_SCHEMA, V166_STEPS } from "./flexible-relay-schema.js";
 import { V167_OBJECTS, V167_SCHEMA, V167_STEPS } from "./flexible-answers-schema.js";
 import { V168_OBJECTS, V168_SCHEMA, V168_STEPS } from "./flexible-ship-schema.js";
+import { V169_ADDED_COLUMNS, V169_SCHEMA, V169_STEPS } from "./task-sizing-schema.js";
 import { endLapsedFlexible } from "./flexible.js";
 import { refArchived, taskArchived, taskCancelled } from "./task-archive.js";
 export { refArchived, taskArchived } from "./task-archive.js";
@@ -869,19 +870,6 @@ CREATE TABLE IF NOT EXISTS steer_note_run (
 CREATE INDEX IF NOT EXISTS steer_note_run_by_run ON steer_note_run (run, note);
 `;
 
-/** Settings → General's "Size tasks with a quick model call": one row once a person chose; no row reads off
- * (task-sizing.ts taskSizingSetting), so a new install and an upgraded one start with no model call before a yes. */
-export const TASK_SIZING_SCHEMA = `
-CREATE TABLE IF NOT EXISTS task_sizing_setting (
-  id         INTEGER PRIMARY KEY CHECK (id = 1),
-  enabled    INTEGER NOT NULL CHECK (enabled IN (0,1)),
-  -- The classifier the person turned it on for: Claude Haiku on their plan, or Jev through their OpenRouter key.
-  sizer      TEXT CHECK (sizer IN ('claude','jev')),
-  updated_by TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-`;
-
 export const CHAT_APPROVAL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS chat_approval_setting (
   approver             TEXT NOT NULL,
@@ -1264,7 +1252,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // its exact terms, its controlled import and what followed, and the project's refs as last read for each thread
 // (flexible_ship and flexible_ref_snapshot, new tables; flexible-ship-schema.ts). Nothing writes them while Flexible
 // isn't available.
-export const SCHEMA_VERSION = 168;
+// v169 adds, and changes no saved row (task sizing by a quick model call): Settings → General's switch and the classifier
+// it was turned on for (task_sizing_setting, a new table: no row reads off), and which classifier answered a task's size
+// (task_ref.size_by: saved sizes read NULL). V169_SCHEMA, V169_ADDED_COLUMNS (task-sizing-schema.ts).
+export const SCHEMA_VERSION = 169;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1402,7 +1393,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1666,7 +1657,7 @@ export const V147_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 });
 /** The v147 migration's steps after the epoch, in order: a test seam (OpenOptions.migrationStep) may stop after each. */
 export const V147_STEPS = Object.freeze(["epoch", "local-mode", "password-set", "web-session", "console-instance"] as const);
-export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number];
+export type MigrationStep = (typeof V147_STEPS)[number] | (typeof V148_STEPS)[number] | (typeof V149_STEPS)[number] | (typeof V150_STEPS)[number] | (typeof V151_STEPS)[number] | (typeof V152_STEPS)[number] | (typeof V153_STEPS)[number] | (typeof V154_STEPS)[number] | (typeof V156_STEPS)[number] | (typeof V155_STEPS)[number] | (typeof V157_STEPS)[number] | (typeof V158_STEPS)[number] | (typeof V159_STEPS)[number] | (typeof V160_STEPS)[number] | (typeof V161_STEPS)[number] | (typeof V162_STEPS)[number] | (typeof V163_STEPS)[number] | (typeof V164_STEPS)[number] | (typeof V165_STEPS)[number] | (typeof V166_STEPS)[number] | (typeof V167_STEPS)[number] | (typeof V168_STEPS)[number] | (typeof V169_STEPS)[number];
 /**
  * v148 (docs/plans/results-routing.md): every table the results-routing arc uses, landed at once because a current
  * store runs no DDL. Slice 1 writes run_cohort, route_record and models_generation; route_rule, route_exposure* and
@@ -2076,7 +2067,7 @@ export { V156_STEPS };
 export { V157_STEPS };
 export { V158_STEPS };
 export { V159_STEPS };
-export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS };
+export { V160_STEPS, V161_STEPS, V162_STEPS, V163_STEPS, V164_STEPS, V165_STEPS, V166_STEPS, V167_STEPS, V168_STEPS, V169_STEPS };
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
  * release a person approved: one row per generation, changed only by compare-and-swap on `rev`, with a lease whose
@@ -6061,7 +6052,7 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   // runs. Everything below runs once, on the way up from an older version (a fresh file is at v107 by now).
   // A file from the first v155 builds (finding.source without 'lead') takes the v155 steps again, as a resumed epoch does.
   if (preflight === SCHEMA_VERSION && !findingSourcesStale(db)) {
-    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db);
+    const missing = codeMapShapeProblem(db) ?? viewPreferenceShapeProblem(db) ?? flexibleTermsShapeProblem(db) ?? flexibleThreadShapeProblem(db) ?? typedByPersonShapeProblem(db) ?? flexibleTurnsShapeProblem(db) ?? flexibleLaunchShapeProblem(db) ?? flexibleRelayShapeProblem(db) ?? flexibleAnswersShapeProblem(db) ?? flexibleShipShapeProblem(db) ?? taskSizingShapeProblem(db);
     if (missing !== null) throw new Error(`${file}: refusing to open — ${missing}, though the schema says v${SCHEMA_VERSION}`);
     db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     return new Store(db);
@@ -6118,8 +6109,6 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   db.exec(CHAT_DECIDE_SCHEMA);
   // An owner's lasting chat-approval setting (no version bump: additive only; absent means off).
   db.exec(CHAT_APPROVAL_SCHEMA);
-  // Task sizing by a quick model call (no version bump: additive only; absent means off).
-  db.exec(TASK_SIZING_SCHEMA);
   // v124: the live conversation: a project's "Show commands in the live view" (absent means off) and every run a
   // steering note reached (older notes simply have no rows). New tables only.
   db.exec(LIVE_DETAIL_SCHEMA);
@@ -6146,8 +6135,6 @@ function initializeStore(db: Database, file: string, options: OpenOptions = {}):
   addColumn(db, "task_ref", "size_risky", "INTEGER CHECK (size_risky IN (0, 1))");
   addColumn(db, "task_ref", "size_source", "TEXT CHECK (size_source IN ('classifier','heuristic','person'))");
   addColumn(db, "task_ref", "size_reason", "TEXT");
-  // Which classifier answered, by Toolroll's own name for it (no version bump: additive; older sizes read none).
-  addColumn(db, "task_ref", "size_by", "TEXT");
   addColumn(db, "task_ref", "route_tier", "TEXT");
   widenPhaseTierSchema(db);
   db.exec(PHASE_TIER_ALTERNATE_SCHEMA);
@@ -6534,6 +6521,14 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   const shipDamaged = flexibleShipShapeProblem(db);
   if (shipDamaged !== null) throw new Error(`${file}: refusing to open — ${shipDamaged}`);
   step("flexible-ship");
+  // v169: task sizing's switch (a new table) and which classifier answered a size (V169_ADDED_COLUMNS: saved rows read
+  // NULL). Idempotent; a table already here (a resumed epoch, a later upgrade) must be exactly this shape.
+  db.exec(V169_SCHEMA);
+  for (const [table, columns] of Object.entries(V169_ADDED_COLUMNS)) for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  const sizingDamaged = taskSizingShapeProblem(db);
+  if (sizingDamaged !== null) throw new Error(`${file}: refusing to open — ${sizingDamaged}`);
+  step("task-sizing-setting");
+  step("task-sizing-columns");
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -27663,5 +27658,15 @@ function flexibleShipShapeProblem(db: Database): string | null {
     const want = statements.find(one => new RegExp(`^CREATE (?:UNIQUE )?${type.toUpperCase()} IF NOT EXISTS ${name}\\b`).test(one));
     if (want === undefined || canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(want).trim()) return `the Flexible ship ${type} ${name} has an unknown shape`;
   }
+  return null;
+}
+
+/** v169's table and column, as a current or resumed file must hold them (task-sizing-schema.ts): the switch's table in
+ * exactly this build's DDL, and task_ref.size_by. Null when they are; else what is wrong, in words. */
+function taskSizingShapeProblem(db: Database): string | null {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'task_sizing_setting'").get();
+  if (row === undefined) return "the task sizing table is missing";
+  if (canonicalDdl(String(row["sql"]).replace(/;$/, "")).trim() !== canonicalDdl(V169_SCHEMA.trim().replace(/;$/, "")).trim()) return "the task sizing table has an unknown shape";
+  if (!hasColumn(db, "task_ref", "size_by")) return "task_ref.size_by is missing";
   return null;
 }
