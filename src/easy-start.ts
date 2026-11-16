@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { requestLocalLink, type AttachProof } from "./console-instance.js";
+import { instanceSocketTooLong, requestLocalLink, type AttachProof } from "./console-instance.js";
 import { backgroundInstalled, backgroundOn, startInstalledService } from "./laptop-background.js";
 import { proveConsoleReadOnly } from "./quick-start.js";
 import { backgroundAsked, installationCreatedBy, localModeCandidate, localModeOf, openStore, openStoreReadOnly, recordBackgroundAsked } from "./store.js";
@@ -48,6 +48,9 @@ export type EasyStartSeams = {
   write: (line: string) => void;
   /** Prove this database's console live (read only). */
   prove: () => Promise<AttachProof>;
+  /** Why no console started on this database could ever be found (its folder is too deep for the socket,
+   * console-instance.ts instanceSocketTooLong), with the fix; null when its socket fits. */
+  socketProblem: () => string | null;
   /** Local mode as saved now: on, off, no database yet (a new install), or a database with no account and no local-mode
    * state that this person's start may still make password-free (eight W2: `welcome`, `status` or `repos add` ran first). */
   localMode: () => "on" | "off" | "absent" | "candidate";
@@ -123,6 +126,16 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
     write(`Toolroll can't open: ${first.message}.`);
     return EXIT.refused;
   }
+  // A database too deep for the console's socket: a console started on it could never be found, so the screen would
+  // wait for one until it gave up. Said at once, with the fix, before anything is made or started. Only the browser
+  // roads that need no socket go on: a password install, and --web's own foreground `up` (it opens the browser itself).
+  const refusedTooDeep = (): boolean => {
+    if (first.ok || (args.web && !seams.serviceInstalled())) return false;
+    const deep = seams.socketProblem();
+    if (deep === null) return false;
+    write(`Toolroll can't start: ${deep}.`);
+    return true;
+  };
 
   // Attaching to a console already running: this folder's repository joins it, as bare `toolroll` always did.
   const joinRepo = async (): Promise<number> => {
@@ -147,11 +160,13 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
       for (const line of missingSandboxToolsWords(sandbox.missing)) write(line);
       return EXIT.refused;
     }
+    if (refusedTooDeep()) return EXIT.refused;
     if (await seams.initLocal()) local = "on";
   }
   // A database that could not be made password-free (no fence, an account that appeared meanwhile, a console running):
   // today's password road, never the laptop road.
   if (local === "candidate") local = "off";
+  if (local !== "off" && refusedTooDeep()) return EXIT.refused;
 
   // An install with passwords: today's flow, in the browser, where the person signs in. Nothing here writes.
   if (local === "off") {
@@ -356,6 +371,7 @@ export function defaultEasyStartSeams(options: {
     cwd,
     write: options.write,
     prove: () => proveConsoleReadOnly(file, options.build),
+    socketProblem: () => instanceSocketTooLong(file),
     localMode: () => localModeRead(file),
     initLocal: async () => (await import("./operate.js")).easyStartInitLocalMode(file, {
       stdin: process.stdin.isTTY === true, stdout: process.stdout.isTTY === true, agent: underAgent(process.env), json: false,

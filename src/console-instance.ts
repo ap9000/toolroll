@@ -123,7 +123,9 @@ export function runDirProblem(dir: string, uid = process.getuid?.() ?? -1, mustE
 export function instanceSocketTooLong(databaseFile: string): string | null {
   const needs = Buffer.byteLength(join(instanceRunDir(databaseFile), "0123456789abcdef.sock"));
   if (needs <= SOCKET_PATH_MAX) return null;
-  return `the database's folder is too deep for Toolroll's socket (${needs} of at most ${SOCKET_PATH_MAX} bytes), so nothing can find a console started on it — move it to a shorter folder (for example ~/.toolroll) or start with --db at a shorter path`;
+  // The longest folder (as its real path) a database can sit in and still have a socket beside it.
+  const folderMax = SOCKET_PATH_MAX - Buffer.byteLength(`/${INSTANCE_DIR}/0123456789abcdef.sock`);
+  return `the database's folder is too deep for Toolroll's socket (${needs} of at most ${SOCKET_PATH_MAX} bytes), so nothing can find a console started on it — move it to a shorter folder (at most ${folderMax} bytes long), or point TOOLROLL_DB at an orders.db in one: \`TOOLROLL_DB=/short/folder/orders.db toolroll\``;
 }
 /** A socket path that binds exactly (no truncation), named as a console names its own. */
 export function socketPathProblem(path: string): string | null {

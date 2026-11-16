@@ -284,7 +284,7 @@ test("a database too deep for a socket: the console says why nothing can find it
   const deep = join(dir, "d".repeat(60), "e".repeat(60));
   mkdirSync(deep, { recursive: true, mode: 0o700 });
   const file = join(deep, "orders.db");
-  const words = /too deep for Toolroll's socket .* move it to a shorter folder/;
+  const words = /too deep for Toolroll's socket .* move it to a shorter folder \(at most \d+ bytes long\), or point TOOLROLL_DB at an orders\.db in one/;
   expect(instanceSocketTooLong(file)).toMatch(words);
   expect(instanceSocketTooLong(databaseFile)).toBeNull();
   // The console's start: no socket, and the reason is the fix, not a bare path.
