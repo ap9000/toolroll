@@ -404,6 +404,26 @@ fn a_hostile_program_cannot_make_the_emulator_panic() {
     assert!(!out.contains("\x1b]"));
 }
 
+/// A dialog drawn over the terminal (help here) takes it off screen: no size is sent for it while it is covered.
+#[test]
+fn a_dialog_over_the_terminal_takes_it_off_screen() {
+    let mut app = taken_over();
+    screen(&mut app, 120, 30);
+    app.key(ctrl(']'));
+    assert_eq!(app.mode, Mode::Normal);
+    screen(&mut app, 120, 30);
+    assert!(app.term.as_ref().is_some_and(|p| p.drawn));
+    app.key(key('?'));
+    assert_eq!(app.mode, Mode::Help);
+    screen(&mut app, 120, 30);
+    assert!(!app.term.as_ref().unwrap().drawn, "drawn under the dialog");
+    assert_eq!(
+        app.term_resize(),
+        None,
+        "a size sent for a covered terminal"
+    );
+}
+
 #[test]
 fn a_terminal_off_screen_takes_no_keys_until_t() {
     let sends = |fx: &[Effect]| {
