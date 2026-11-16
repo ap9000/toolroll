@@ -817,3 +817,28 @@ fn the_settings_screen_changes_a_choice_with_enter() {
     assert!(shown.contains("› Density"), "{shown}");
     insta::assert_snapshot!("settings_changeable", shown);
 }
+
+#[test]
+fn what_was_just_said_holds_against_a_background_reads_trouble() {
+    let mut app = app_on(fake::scenario_work());
+    let trouble = || ApiError::Refused("Couldn't read the live output (run).".into());
+    // Said in answer to a key: a background read failing right after doesn't replace it.
+    app.key(key('c'));
+    let said = status(&app);
+    assert!(app.status_held());
+    app.update(Msg::Steps("t-ask".into(), Err(trouble())));
+    assert_eq!(status(&app), said);
+    // The person's next key lets it go: the next trouble is said.
+    app.key(key('j'));
+    app.update(Msg::Steps("t-done".into(), Err(trouble())));
+    assert_eq!(status(&app), "Couldn't read the live output (run).");
+    // And after the hold (3 s), even with no key.
+    app.key(key('c'));
+    app.said_at = Some(std::time::Instant::now() - toolroll_tui::app::STATUS_HOLD);
+    app.update(Msg::Steps("t-done".into(), Err(trouble())));
+    assert_eq!(status(&app), "Couldn't read the live output (run).");
+    // An ended session still ends the screen at once.
+    app.key(key('c'));
+    app.update(Msg::Steps("t-done".into(), Err(ApiError::SessionEnded)));
+    assert!(matches!(app.mode, Mode::Fatal(..)), "{:?}", app.mode);
+}
