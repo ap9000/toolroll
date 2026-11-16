@@ -2034,7 +2034,9 @@ impl App {
     pub fn run_action(&mut self, action: Action) -> Vec<Effect> {
         let item = self.selected_item().cloned();
         let diff_here = self.tab == Tab::Diff && self.thread_selected().is_none();
-        let terminal_here = self.tab == Tab::Terminal && self.term.is_some();
+        // (An agent's sign-in pane is never the Terminal tab's, and never copied.)
+        let terminal_here =
+            self.tab == Tab::Terminal && self.term.as_ref().is_some_and(|p| !p.sensitive);
         match action {
             Action::MoveDown => self.select(self.selected + 1),
             Action::MoveUp => self.select(self.selected.saturating_sub(1)),
@@ -3917,8 +3919,11 @@ impl App {
                 pane.link = Link::Ended { code, signal };
                 back = true;
                 if pane.task.starts_with("agent:") {
-                    // An agent's own sign-in or install ended: look for this computer's agents again.
+                    // An agent's own sign-in or install ended: nothing of it is kept (its pane goes), and this
+                    // computer's agents are looked for again.
                     agent_ended = true;
+                    pane.forget();
+                    detach = pane.id.clone();
                 } else {
                     said = Some((
                         Tone::Said,
@@ -3957,6 +3962,7 @@ impl App {
         }
         let mut fx: Vec<Effect> = detach.map(Effect::TermDetach).into_iter().collect();
         if agent_ended {
+            self.term = None;
             fx.extend(crate::agents::check_again(self));
         }
         fx

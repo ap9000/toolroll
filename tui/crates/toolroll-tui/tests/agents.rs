@@ -233,11 +233,22 @@ fn install_runs_only_after_its_confirm_of_exactly_that_command() {
     insta::assert_snapshot!("agents_install_confirm", shown);
     // A registry the person's ~/.npmrc names (not the public one) is said in the confirm.
     let mut read = app.agents.clone().unwrap();
-    read.npm_registry = Some("https://npm.example.corp/repo/".into());
-    app.agents = Some(read);
+    let gemini = read.agents.iter_mut().find(|a| a.id == "gemini").unwrap();
+    gemini.setup.registry = Some("https://npm.example.corp/repo/".into());
+    app.agents = Some(read.clone());
     let shown = screen(&mut app, 120, 34);
     assert!(
         shown.contains("Registry: https://npm.example.corp/repo/ (from your ~/.npmrc)"),
+        "{shown}"
+    );
+    // A file it can't follow (an environment variable, say): said plainly, never a guess.
+    let gemini = read.agents.iter_mut().find(|a| a.id == "gemini").unwrap();
+    gemini.setup.registry = None;
+    gemini.setup.registry_unsure = true;
+    app.agents = Some(read);
+    let shown = screen(&mut app, 120, 34);
+    assert!(
+        shown.contains("Your ~/.npmrc may set a different registry."),
         "{shown}"
     );
     // Any other key cancels: nothing runs.
@@ -368,4 +379,68 @@ fn check_again_asks_the_console_and_agent_text_is_drawn_inert() {
     );
     app.update(Msg::Agents(Ok(parse(fake::fixture("agents.json")))));
     assert!(!app.agents_screen.as_ref().unwrap().checking);
+}
+
+/// A sign-in's output is kept nowhere here: no scrollback, never copied, and the pane (its screen and all) is gone once
+/// the program ends or the screen closes.
+#[test]
+fn a_sign_in_pane_keeps_nothing_once_it_ends_or_closes() {
+    let token = "sk-ant-oat01-FAKE-0123456789abcdef";
+    for ending in ["exit", "close"] {
+        let mut app = open(fake::fixture("agents.json"));
+        select(&mut app, "codex");
+        app.key(key('s'));
+        app.update(Msg::TermOpened {
+            task: "agent:codex".into(),
+            run: 0,
+            result: Ok((
+                fake::TERM_ID.into(),
+                String::new(),
+                TermLink(tokio::sync::mpsc::unbounded_channel().0),
+            )),
+        });
+        app.update(Msg::Term(
+            fake::TERM_ID.into(),
+            TermEvent::Hello {
+                cols: 80,
+                rows: 5,
+                ended: false,
+            },
+        ));
+        let mut long = String::new();
+        for i in 0..40 {
+            long.push_str(&format!("line {i}\r\n"));
+        }
+        long.push_str(&format!("Your token: {token}\r\n"));
+        app.update(Msg::Term(
+            fake::TERM_ID.into(),
+            TermEvent::Output(long.into_bytes().into()),
+        ));
+        assert!(screen(&mut app, 120, 34).contains(token));
+        // No scrollback: the 40 lines above the 5-row screen were never kept.
+        let pane = app.term.as_mut().unwrap();
+        pane.parser.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(pane.parser.screen().scrollback(), 0, "scrollback kept");
+        pane.parser.screen_mut().set_scrollback(0);
+        // And it is never copied (the copy action and `y` read nothing of it).
+        assert!(pane.sensitive && pane.text_lines().is_empty());
+        app.mode = Mode::Normal;
+        let fx = if ending == "exit" {
+            app.update(Msg::Term(
+                fake::TERM_ID.into(),
+                TermEvent::Exit {
+                    code: Some(0),
+                    signal: None,
+                },
+            ))
+        } else {
+            app.key(code(KeyCode::Esc))
+        };
+        assert!(
+            fx.contains(&Effect::TermDetach(fake::TERM_ID.into())),
+            "{ending}: {fx:?}"
+        );
+        assert!(app.term.is_none(), "{ending}: the pane is kept");
+        assert!(!screen(&mut app, 120, 34).contains(token), "{ending}");
+    }
 }

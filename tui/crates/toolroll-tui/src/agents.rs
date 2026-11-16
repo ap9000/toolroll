@@ -168,6 +168,7 @@ pub fn close(app: &mut App) -> Vec<Effect> {
         if app.mode == Mode::TakeOver {
             app.mode = Mode::Normal;
         }
+        // The pane (its screen and all) goes; letting go of its one page ends it on the console too.
         if let Some(id) = app.term.take().and_then(|p| p.id) {
             return vec![Effect::TermDetach(id)];
         }
@@ -266,7 +267,9 @@ fn start_pane(app: &mut App, agent: &str, kind: &str, confirm: Option<String>) -
         fx.push(Effect::TermDetach(id));
     }
     app.mode = Mode::Normal;
-    app.term = Some(crate::term::Pane::opening(format!("agent:{agent}"), 0));
+    app.term = Some(crate::term::Pane::opening_sensitive(format!(
+        "agent:{agent}"
+    )));
     app.say(
         Tone::Said,
         if kind == "install" {
@@ -548,7 +551,11 @@ fn change_of(app: &App, p: &Pick) -> Option<ModelsChange> {
 pub fn dialog_lines(app: &App, area: Rect) -> Option<(&'static str, Vec<Line<'static>>)> {
     let w = (area.width as usize).saturating_sub(10).clamp(24, 88);
     match &app.mode {
-        Mode::ConfirmInstall { name, command, .. } => {
+        Mode::ConfirmInstall {
+            agent,
+            name,
+            command,
+        } => {
             let mut lines = vec![Line::raw("")];
             lines.push(Line::from(Span::styled(
                 format!("Install {name}? This runs:"),
@@ -567,12 +574,24 @@ pub fn dialog_lines(app: &App, area: Rect) -> Option<(&'static str, Vec<Line<'st
                 for piece in wrap("It runs with your own npm settings (~/.npmrc: registry, proxy, sign-in). The package's install scripts run.", w) {
                     lines.push(Line::from(Span::styled(piece, ink())));
                 }
-                if let Some(registry) = app.agents.as_ref().and_then(|a| a.npm_registry.as_deref())
-                {
+                let setup = app
+                    .agents
+                    .as_ref()
+                    .and_then(|a| a.agents.iter().find(|x| &x.id == agent))
+                    .map(|a| &a.setup);
+                if let Some(registry) = setup.and_then(|s| s.registry.as_deref()) {
                     for piece in wrap(
                         &format!("Registry: {} (from your ~/.npmrc)", clean(registry)),
                         w,
                     ) {
+                        lines.push(Line::from(Span::styled(
+                            piece,
+                            ink().add_modifier(Modifier::BOLD),
+                        )));
+                    }
+                }
+                if setup.is_some_and(|s| s.registry_unsure) {
+                    for piece in wrap("Your ~/.npmrc may set a different registry.", w) {
                         lines.push(Line::from(Span::styled(
                             piece,
                             ink().add_modifier(Modifier::BOLD),

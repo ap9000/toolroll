@@ -58,6 +58,8 @@ pub struct Pane {
     pub area: Rect,
     /// The console's branch for it (its own copy's branch), for the pane's line.
     pub branch: String,
+    /// An agent's own sign-in or install (the Agents screen): no scrollback, never copied, and dropped when it ends.
+    pub sensitive: bool,
     /// The last frame drew this terminal on screen (view.rs sets it each frame). Nothing reaches the terminal while it
     /// isn't drawn — a window too small, another tab, a dialog over it.
     pub drawn: bool,
@@ -85,6 +87,7 @@ impl Pane {
             id: None,
             link: Link::Opening,
             parser: vt100::Parser::new(24, 80, SCROLLBACK_LINES),
+            sensitive: false,
             held: Vec::new(),
             held_bytes: 0,
             sent: None,
@@ -137,6 +140,22 @@ impl Pane {
 
     /// `hello`: the screen so far was drawn at the console's size; parse it at that size, then go live (the next frame
     /// sends this pane's own size, and the program redraws for it).
+    /// An agent's own sign-in or install: like `opening`, with no scrollback at all.
+    pub fn opening_sensitive(task: String) -> Pane {
+        let mut pane = Pane::opening(task, 0);
+        pane.parser = vt100::Parser::new(24, 80, 0);
+        pane.sensitive = true;
+        pane
+    }
+
+    /// Nothing of what it showed is kept: an empty screen, nothing held.
+    pub fn forget(&mut self) {
+        let (rows, cols) = self.parser.screen().size();
+        self.parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
+        self.held.clear();
+        self.held_bytes = 0;
+    }
+
     pub fn hello(&mut self, cols: u16, rows: u16, ended: bool) {
         self.parser.screen_mut().set_size(rows.max(1), cols.max(1));
         for chunk in std::mem::take(&mut self.held) {
@@ -179,6 +198,10 @@ impl Pane {
 
     /// The scrollback and the screen as plain lines, oldest first, cleaned (for the terminal's own scrollback: copy).
     pub fn text_lines(&mut self) -> Vec<String> {
+        // A sign-in is never copied anywhere.
+        if self.sensitive {
+            return vec![];
+        }
         let (_, cols) = self.parser.screen().size();
         let screen = self.parser.screen_mut();
         screen.set_scrollback(usize::MAX);

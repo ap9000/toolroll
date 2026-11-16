@@ -636,6 +636,11 @@ pub struct AgentSetup {
     pub key: Option<String>,
     pub check: Option<String>,
     pub note: Option<String>,
+    /// For an npm install: the registry the person's own ~/.npmrc sends this package to, when not the public one.
+    pub registry: Option<String>,
+    /// That file may set another registry this can't follow.
+    #[serde(rename = "registryUnsure")]
+    pub registry_unsure: bool,
 }
 
 /// `GET /engine/models`: the installation's planner, builder and reviewer as Settings → Models shows them, the digest a
@@ -709,9 +714,6 @@ pub struct AgentsRead {
     #[serde(rename = "firstTask")]
     pub first_task: Option<FirstTask>,
     pub lines: Vec<String>,
-    /// The npm registry the person's own ~/.npmrc names when it isn't the public one (an npm install's confirm says it).
-    #[serde(rename = "npmRegistry")]
-    pub npm_registry: Option<String>,
 }
 
 // ---- Live terminals (take over) -------------------------------------------------------------------------------------

@@ -19,7 +19,9 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, realpathS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
-import { TerminalHost, type Pty, type TerminalViewer } from "../live-terminal.js";
+import { DatabaseSync } from "node:sqlite";
+import WebSocket from "ws";
+import { MAX_LIVE_TERMINALS, TerminalHost, type Pty, type TerminalViewer } from "../live-terminal.js";
 import { agentsReadSchema, linkRedemptionSchema, modelsReadSchema, termStartedSchema } from "../contracts/engine-api.js";
 import { mintApiToken } from "../api-tokens.js";
 import { hashPassword } from "../scope.js";
@@ -56,17 +58,18 @@ beforeAll(async () => {
   mkdirSync(writable); chmodSync(writable, 0o777);
   for (const name of ["codex", "npm", "claude"]) script(trusted, name);
   script(writable, "codex");
-  // A launcher whose interpreter is found on PATH (`env fakenode`), both trusted.
-  script(launcher, "codex", "#!/usr/bin/env fakenode --no-warnings");
+  // A launcher whose interpreter is found on PATH (a bare `env fakenode`), both trusted stand-ins.
+  script(launcher, "codex", "#!/usr/bin/env fakenode");
   interpreter(launcher, "fakenode");
   root = realpathSync(mkdtempSync(join(tmpdir(), "so-agent-term-")));
   const spawn = (file: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Pty => {
     let exited: ((exit: { exitCode: number }) => void) | null = null;
     let output: ((data: string) => void) | null = null;
     spawned.push({ file, args, cwd: options.cwd, env: options.env, exit: code => exited?.({ exitCode: code }), emit: text => output?.(text) });
-    return { pid: 2_147_000_000, tty: null, pendingInput: () => 0, onData: listener => { output = listener; }, onExit: listener => { exited = listener; }, write() {}, resize() {}, kill() {} };
+    // Killed (by a close, or nobody attaching in time): it exits, as a program does.
+    return { pid: 2_147_000_000, tty: null, pendingInput: () => 0, onData: listener => { output = listener; }, onExit: listener => { exited = listener; }, write() {}, resize() {}, kill() { exited?.({ exitCode: 137 }); } };
   };
-  host = new TerminalHost({ spawn, worktreeRoot: join(root, "live"), processes: () => new Map(), closeGraceMs: 1 });
+  host = new TerminalHost({ spawn, worktreeRoot: join(root, "live"), processes: () => new Map(), closeGraceMs: 1, sensitiveAttachMs: 5_000 });
   world = await openLocalWorld({
     browserKey: true,
     terminalHost: host,
@@ -83,7 +86,13 @@ afterAll(async () => {
   rmSync(bins, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 });
-afterEach(() => { spawned.length = 0; path = ""; });
+/** Every agent pane this file started, ended and gone (they are removed when they end; one may run at a time). */
+const agentPanes = () => host.list("alex").filter(one => one.agent !== null);
+afterEach(async () => {
+  for (const one of spawned) one.exit(0);
+  await expect.poll(() => agentPanes().length, { timeout: 10_000 }).toBe(0);
+  spawned.length = 0; path = "";
+});
 
 type Session = { cookie: string; csrf: string; key: string | null };
 /** The terminal workbench's own session: the console's local link, redeemed by a terminal client (A0). */
@@ -104,7 +113,7 @@ const start = async (kind: "sign-in" | "install", form: Record<string, string>, 
   return { status: answer.status, body };
 };
 
-test("an agent's sign-in runs exactly the trusted install with Toolroll's own arguments, from an empty folder, with no Toolroll credential", async () => {
+test("a sign-in runs a stand-in trusted binary with Toolroll's own arguments, from an empty folder, with no Toolroll credential (stand-ins only; no real agent CLI)", async () => {
   path = trusted;
   const answer = await start("sign-in", { agent: "codex" });
   expect(answer).toEqual({ status: 200, body: { ok: true, id: expect.stringMatching(/^[0-9a-f]{32}$/) } });
@@ -122,11 +131,25 @@ test("an agent's sign-in runs exactly the trusted install with Toolroll's own ar
   expect(JSON.stringify(one!.env)).not.toContain("never-handed-on");
 });
 
-test("a launcher's interpreter is pinned: its real path runs with the script's, never the script by itself", async () => {
+test("a stand-in launcher's interpreter is pinned: its real path runs with the script's, never the script by itself", async () => {
   path = launcher;
   expect((await start("sign-in", { agent: "codex" })).status).toBe(200);
-  expect(spawned.map(one => [one.file, one.args])).toEqual([[realpathSync(join(launcher, "fakenode")), ["--no-warnings", realpathSync(join(launcher, "codex")), "login"]]]);
+  expect(spawned.map(one => [one.file, one.args])).toEqual([[realpathSync(join(launcher, "fakenode")), [realpathSync(join(launcher, "codex")), "login"]]]);
   expect(spawned[0]!.env["PATH"]).toBe(launcher);
+});
+
+test("a launcher whose first line passes its interpreter arguments runs nothing", async () => {
+  const dir = join(bins, "flags");
+  mkdirSync(dir, { mode: 0o755 });
+  interpreter(dir, "fakenode");
+  path = dir;
+  for (const first of ["#!/usr/bin/env -S fakenode --require=/tmp/x.js", "#!/usr/bin/env fakenode --require=/tmp/x.js", `#!${realpathSync(join(dir, "fakenode"))} --inspect`]) {
+    script(dir, "codex", first);
+    const answer = await start("sign-in", { agent: "codex" });
+    expect(answer.status, first).toBe(409);
+    expect(answer.body, first).toMatchObject({ ok: false, error: expect.stringMatching(/passes its interpreter arguments/) });
+  }
+  expect(spawned).toEqual([]);
 });
 
 test("a `node` linked into a project checkout never runs, though its PATH folder is trusted", async () => {
@@ -163,6 +186,74 @@ test("an install runs only on the confirm of exactly the command shown", async (
   expect(spawned.map(one => [one.file, one.args])).toEqual([[realpathSync("/bin/sh"), [realpathSync(join(trusted, "npm")), "install", "-g", "@openai/codex"]]]);
 });
 
+test("an unattached sign-in that prints a token and ends leaves nothing behind; one nobody attaches to ends by itself", async () => {
+  path = trusted;
+  const first = (await start("sign-in", { agent: "codex" })).body as { id: string };
+  spawned[0]!.emit("Your token: sk-ant-oat01-FAKE-not-a-real-token-0123456789\r\n");
+  expect(host.heldBytes(first.id)).toBeGreaterThan(0);
+  spawned[0]!.exit(0);
+  expect(host.heldBytes(first.id)).toBe(0);
+  expect(await host.replay(first.id)).toBe("");
+  // Removed once it ended (well before the wait for its page would have ended it).
+  await expect.poll(() => host.get(first.id), { timeout: 2_500 }).toBeNull();
+  spawned.length = 0;
+  // Nobody attaches: ended and dropped after the wait (5 s here, 30 s in a console).
+  const second = (await start("sign-in", { agent: "codex" })).body as { id: string };
+  spawned[0]!.emit("secret-ish output\r\n");
+  await expect.poll(() => host.get(second.id), { timeout: 10_000 }).toBeNull();
+  expect(host.heldBytes(second.id)).toBe(0);
+});
+
+test("more than the held cap before the page attaches: dropped, and the page is told", async () => {
+  path = trusted;
+  const { id } = (await start("sign-in", { agent: "codex" })).body as { id: string };
+  spawned[0]!.emit("x".repeat(300 * 1024));
+  expect(host.heldBytes(id)).toBe(0);
+  const seen: string[] = [];
+  host.attach(id, { output: data => seen.push(data.toString("utf8")), control: () => {} });
+  expect(seen.join("")).toContain("earlier output was dropped");
+});
+
+test("repeated sign-ins never use up a person's terminals; a second one while one runs is refused politely", async () => {
+  path = trusted;
+  for (let i = 0; i < 20; i += 1) {
+    const { id } = (await start("sign-in", { agent: "codex" })).body as { id: string };
+    spawned.at(-1)!.exit(0);
+    await expect.poll(() => host.get(id), { timeout: 2_500 }).toBeNull();
+  }
+  // A project terminal still starts (the 16 kept and 8 running are a person's terminals, not sign-ins).
+  const project = await host.start({ name: "alex", generation: world.store.accountOf("alex")!.generation }, world.repo, "shell");
+  expect(project.agent).toBeNull();
+  await host.close(project.id);
+  await host.remove(project.id).catch(() => {});
+  spawned.length = 0;
+  expect((await start("sign-in", { agent: "codex" })).status).toBe(200);
+  expect(await start("sign-in", { agent: "claude" })).toEqual({ status: 409, body: { ok: false, error: "A sign-in or install is already open. Finish it (or close it) first." } });
+  // While it runs, a person still has all their running terminals.
+  const owner = { name: "alex", generation: world.store.accountOf("alex")!.generation };
+  const mine: string[] = [];
+  for (let i = 0; i < MAX_LIVE_TERMINALS; i += 1) mine.push((await host.start(owner, world.repo, "shell")).id);
+  for (const id of mine) { await host.close(id); await host.remove(id).catch(() => {}); }
+});
+
+test("the agent socket closes once the session is no longer this console start's workbench (its terminal epoch changed)", async () => {
+  path = trusted;
+  const who = await workbench();
+  const { id } = (await start("sign-in", { agent: "codex" }, who)).body as { id: string };
+  const ws = new WebSocket(`ws://127.0.0.1:${world.port}/term/${id}/socket`, ["toolroll", `toolroll.key.${who.key}`],
+    { headers: { cookie: who.cookie, origin: world.origin, host: `127.0.0.1:${world.port}` } });
+  const closed = new Promise<number>(resolve => ws.on("close", code => resolve(code)));
+  const hello = new Promise<void>((resolve, reject) => { ws.on("message", (data, binary) => { if (!binary && String(data).includes("hello")) resolve(); }); ws.on("unexpected-response", (_, response) => reject(Error(`refused ${response.statusCode}`))); });
+  await hello;
+  // Another console start re-keys the saved session (its epoch is no longer this start's): the next proof closes it.
+  const db = new DatabaseSync(join(world.configDir, "state.db"));
+  try { db.exec("PRAGMA busy_timeout = 5000"); db.prepare("UPDATE web_session SET key_epoch = 'terminal:another-start' WHERE account = 'alex'").run(); } finally { db.close(); }
+  spawned[0]!.emit("more output\r\n");
+  expect(await closed).toBe(4401);
+  // And it ends with its socket: nothing of it stays.
+  await expect.poll(() => host.get(id), { timeout: 10_000 }).toBeNull();
+});
+
 test("a sign-in pane keeps nothing: no replay, one page once, nothing held after it ends", async () => {
   path = trusted;
   const answer = await start("sign-in", { agent: "codex" });
@@ -180,9 +271,9 @@ test("a sign-in pane keeps nothing: no replay, one page once, nothing held after
   expect(seen.join("")).toContain("still waiting");
   // A second page, or the same one again, is refused.
   expect(() => host.attach(id, { output: () => {}, control: () => {} })).toThrow(/one place only/);
+  // Its one page let go: it ends and is gone (it can't be shown again).
   detach();
-  expect(() => host.attach(id, { output: () => {}, control: () => {} })).toThrow(/one place only/);
-  spawned[0]!.exit(0);
+  await expect.poll(() => host.get(id), { timeout: 10_000 }).toBeNull();
   expect(await host.replay(id)).toBe("");
   // Never listed with projects' terminals.
   const who = await workbench();

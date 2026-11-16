@@ -137,9 +137,16 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
    * loopback request with no proxy header. Every fact is the server's own; no header a client sends decides it. Read at
    * the start, right before the spawn, at the socket's upgrade and at every re-proof.
    */
-  const workbenchNow = (request: IncomingMessage, who: Who | null): boolean =>
-    who?.via === "cookie" && who.authority === "local-owner" && who.session.keyEpoch === `${TERMINAL_EPOCH}${runtime.keyEpoch}`
-      && soloNow(store) && runtime.fromThisComputer(request) && operatorOf(who) !== null;
+  /** The terminal workbench's own session, on this console start: its cached copy AND its saved row carry this start's
+   * terminal epoch (the saved row read now, so a session another process re-keyed or ended stops here too). */
+  const workbenchNow = (request: IncomingMessage, who: Who | null): boolean => {
+    if (who?.via !== "cookie" || who.authority !== "local-owner") return false;
+    const epoch = `${TERMINAL_EPOCH}${runtime.keyEpoch}`;
+    if (who.session.keyEpoch !== epoch) return false;
+    const hash = runtime.sessions.hashOf(who.session);
+    if (hash === null || store.webSession(hash)?.keyEpoch !== epoch) return false;
+    return soloNow(store) && runtime.fromThisComputer(request) && operatorOf(who) !== null;
+  };
   const record = (event: string, who: string, terminal: { id: string; repo: string; program: TerminalProgram }) =>
     logEvent("info", `terminal.${event}`, { actor: who, terminal: terminal.id, repo: terminal.repo, program: terminal.program });
 

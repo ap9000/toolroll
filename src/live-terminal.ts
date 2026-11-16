@@ -244,9 +244,19 @@ type Session = TerminalSummary & {
   attachedOnce: boolean;
   early: Buffer[];
   earlyBytes: number;
+  /** More than SENSITIVE_EARLY_BYTES came before the page attached: what was held is gone, and the page is told. */
+  dropped: boolean;
+  /** Ends a sensitive pane nobody attached to within SENSITIVE_ATTACH_MS. */
+  attachTimer: NodeJS.Timeout | null;
 };
 /** What a sensitive pane holds for its one page before that page attaches (it attaches within a moment of the start). */
 export const SENSITIVE_EARLY_BYTES = 256 * 1024;
+/** A sensitive pane nobody attached to by then is ended and dropped, with whatever it printed. */
+export const SENSITIVE_ATTACH_MS = 30_000;
+/** At most this many agent sign-ins or installs at once (they don't count toward a person's terminals). */
+export const MAX_AGENT_PANES = 1;
+/** What the page that attaches hears when output was dropped before it came. */
+export const DROPPED_WORDS = "\r\n[Toolroll: earlier output was dropped]\r\n";
 
 /**
  * Where a console's terminals are written down for the updater, which runs as another process (terminal-catalog.ts):
@@ -282,6 +292,8 @@ export type TerminalHostOptions = {
   /** Lines above the screen a terminal keeps for a page that attaches later (SCREEN_SCROLLBACK_LINES). */
   scrollbackLines?: number;
   closeGraceMs?: number;
+  /** How long a sensitive pane waits for its page (SENSITIVE_ATTACH_MS; tests make it short). */
+  sensitiveAttachMs?: number;
   ledger?: TerminalLedger;
   /** The process table (tests stand a failing one in); null when it can't be read. */
   processes?: () => ProcessTable | null;
@@ -382,9 +394,15 @@ export class TerminalHost {
     return session === undefined ? null : this.summary(session);
   }
 
+  /** A person's terminals running now (agent sign-ins and installs aside: they have their own limit). */
   private running(): number {
-    return [...this.sessions.values()].filter(one => one.endedAt === null).length;
+    return [...this.sessions.values()].filter(one => one.endedAt === null && one.agent === null).length;
   }
+  /** Terminals kept (agent panes aside: each is removed when it ends). */
+  private kept(): number {
+    return [...this.sessions.values()].filter(one => one.agent === null).length;
+  }
+  private startingAgents = 0;
 
   /**
    * Make the worktree and start the program in it. `admit` is asked again right before the program starts (after the
@@ -401,7 +419,7 @@ export class TerminalHost {
     if (this.stopped) throw new TerminalError("The console is stopping.");
     if (!TERMINAL_PROGRAMS.includes(program)) throw new TerminalError("Choose Claude, Codex or a shell.");
     if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
-    if (this.sessions.size + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
+    if (this.kept() + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
     // A take-over's shell starts from a short list of the person's own settings, not the console's whole environment;
     // the person's login shell then reads its own startup files, as any new terminal does (the pane says so).
     const roots = [this.options.worktreeRoot, ...(this.options.buildWritable?.() ?? []), ...this.moreBuildWritable.flatMap(more => more())];
@@ -452,7 +470,7 @@ export class TerminalHost {
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, agent: null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
-        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: false, attachedOnce: false, early: [], earlyBytes: 0 };
+        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: false, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
       this.sessions.set(id, session);
       this.ledger.running(id);
       reserved = false;
@@ -498,10 +516,10 @@ export class TerminalHost {
     agent: { id: string; kind: "sign-in" | "install" }, command: { file: string; args: readonly string[] }, env: NodeJS.ProcessEnv,
     size: { cols: number; rows: number } = { cols: 100, rows: 30 }, admit: () => string | null = () => null, exited: () => void = () => {}): Promise<TerminalSummary> {
     if (this.stopped) throw new TerminalError("The console is stopping.");
-    if (this.running() + this.starting >= (this.options.maxSessions ?? MAX_LIVE_TERMINALS)) throw new TerminalError(`At most ${this.options.maxSessions ?? MAX_LIVE_TERMINALS} terminals can run at once. Close one first.`);
-    if (this.sessions.size + this.starting >= MAX_KEPT_TERMINALS) throw new TerminalError(`${MAX_KEPT_TERMINALS} terminals are kept already. Remove an ended one first.`);
+    const open = [...this.sessions.values()].filter(one => one.agent !== null).length;
+    if (open + this.startingAgents >= MAX_AGENT_PANES) throw new TerminalError("A sign-in or install is already open. Finish it (or close it) first.");
     const id = randomBytes(16).toString("hex");
-    this.starting += 1;
+    this.startingAgents += 1;
     let reserved = false;
     try {
       try { this.ledger.reserve(id); reserved = true; }
@@ -523,19 +541,43 @@ export class TerminalHost {
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: null, run: null, agent: { ...agent }, base: null, repo: "", program: "shell", branch: "", worktree: folder, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, 0), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
-        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: true, attachedOnce: false, early: [], earlyBytes: 0 };
+        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: true, attachedOnce: false, early: [], earlyBytes: 0, dropped: false, attachTimer: null };
       this.wire(session, () => { resolveExited(); try { exited(); } catch { /* the caller's own */ } });
       this.sessions.set(id, session);
       this.ledger.running(id);
       reserved = false;
       this.noteCustody();
+      // Nobody attached in time: it ends, and what it printed goes with it.
+      session.attachTimer = setTimeout(() => {
+        session.attachTimer = null;
+        if (session.attachedOnce) return;
+        this.forgetScreen(session);
+        void this.close(session.id, "console").then(() => this.drop(session));
+      }, this.options.sensitiveAttachMs ?? SENSITIVE_ATTACH_MS);
+      session.attachTimer.unref?.();
       this.options.record?.("start", this.summary(session));
       return this.summary(session);
     } finally {
-      this.starting -= 1;
+      this.startingAgents -= 1;
       if (reserved) this.ledger.release(id, null);
     }
   }
+
+  /** An agent pane, ended and swept: removed outright (nothing of it is kept, and its folder goes). */
+  private drop(session: Session): void {
+    if (this.sessions.get(session.id) !== session) return;
+    if (session.attachTimer !== null) { clearTimeout(session.attachTimer); session.attachTimer = null; }
+    this.sessions.delete(session.id);
+    this.ledger.forget(session.id);
+    session.viewers.clear();
+    this.forgetScreen(session);
+    session.screen.dispose();
+    rmSync(session.worktree, { recursive: true, force: true });
+    this.options.record?.("remove", this.summary(session));
+  }
+
+  /** What a sensitive pane holds now for a page not yet attached, in bytes (0 once it attached or ended). */
+  heldBytes(id: string): number { return this.sessions.get(id)?.earlyBytes ?? 0; }
 
   /** A started session's output and exit, as every terminal has them. */
   private wire(session: Session, onExited: () => void): void {
@@ -545,7 +587,10 @@ export class TerminalHost {
       const chunk = Buffer.from(data, "utf8");
       if (session.sensitive) {
         // Never mirrored: straight to its one page, or held for it (in memory, briefly) until it attaches.
-        if (!session.attachedOnce && session.earlyBytes + chunk.byteLength <= SENSITIVE_EARLY_BYTES) { session.early.push(chunk); session.earlyBytes += chunk.byteLength; }
+        if (!session.attachedOnce) {
+          if (session.earlyBytes + chunk.byteLength <= SENSITIVE_EARLY_BYTES && !session.dropped) { session.early.push(chunk); session.earlyBytes += chunk.byteLength; }
+          else { session.early = []; session.earlyBytes = 0; session.dropped = true; }
+        }
       } else if (!session.screen.write(data)) for (const viewer of session.viewers) { try { viewer.overflow?.(); } catch { /* gone */ } }
       for (const viewer of session.viewers) { try { viewer.output(chunk); } catch { /* the viewer's own close handles it */ } }
       this.flow(session);
@@ -561,6 +606,8 @@ export class TerminalHost {
       if (session.sensitive) this.forgetScreen(session);
       onExited();
       if (session.closing === null) session.closing = this.sweep(session);
+      // An agent pane ends whole: swept, then removed.
+      if (session.agent !== null) void session.closing.then(() => this.drop(session));
     });
   }
 
@@ -655,18 +702,24 @@ export class TerminalHost {
   private attachOnce(session: Session, viewer: TerminalViewer): () => void {
     if (session.attachedOnce) throw new TerminalError("This sign-in is open in one place only.");
     session.attachedOnce = true;
+    if (session.attachTimer !== null) { clearTimeout(session.attachTimer); session.attachTimer = null; }
     session.viewers.add(viewer);
     const early = session.early;
     session.early = [];
     session.earlyBytes = 0;
     try {
       viewer.control({ t: "hello", cols: session.cols, rows: session.rows, program: session.program, ended: session.endedAt !== null });
+      if (session.dropped) viewer.output(Buffer.from(DROPPED_WORDS, "utf8"));
       for (const chunk of early) viewer.output(chunk);
       if (session.exit !== null) viewer.control({ t: "exit", code: session.exit.code, signal: session.exit.signal });
     } catch { /* the viewer's own close handles it */ }
     early.length = 0;
     this.flow(session);
-    return () => { session.viewers.delete(viewer); this.flow(session); };
+    // Its one page let go (the Agents screen closed, the pane went): it can't be shown again, so it ends and goes.
+    return () => {
+      session.viewers.delete(viewer);
+      void this.close(session.id, "owner").then(() => this.drop(session));
+    };
   }
 
   /** A sensitive pane's ended: nothing it printed is kept (no mirror, nothing held). */

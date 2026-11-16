@@ -16,7 +16,6 @@
  * agent's network and storage come from this console's launcher (flexible-launcher.ts).
  */
 import { homedir } from "node:os";
-import { npmRegistryOf } from "../agent-detect.js";
 import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
 import { boardRunOf } from "../agent-board.js";
@@ -113,7 +112,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     // The inventory policy /welcome shares (welcome.ts agentInventoryOf): each agent for an instance operator, who the
     // first task goes to for anyone else's session.
     const view = agentInventoryOf(who, store);
-    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? npmRegistryOf(process.env["HOME"] ?? homedir()) : null));
+    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? process.env["HOME"] ?? homedir() : null));
   }
 
   /** POST /engine/agents/check (the Agents screen's Check again): this computer's agent CLIs asked again through the same
@@ -129,7 +128,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
       await Promise.race([runtime.checkLocalAgents(true), new Promise<void>(done => { timer = setTimeout(done, 8_000); timer.unref?.(); })]).finally(() => clearTimeout(timer));
     }
     const view = agentInventoryOf(who, store);
-    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? npmRegistryOf(process.env["HOME"] ?? homedir()) : null));
+    return sendChecked(response, 200, "agents", agentsReadOf(runtime.localAgents, view === "full" ? "full" : "summary", view === "full" ? process.env["HOME"] ?? homedir() : null));
   }
 
   /** GET /agents/live/run/<id>: a run's LiveSession window (browser sessions only, like the Live grid). */

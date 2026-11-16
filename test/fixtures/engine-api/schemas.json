@@ -1,5 +1,5 @@
 {
-  "digest": "37036d6557a007360fcfe81178685ac946314d58dc7f679f57ac11a1b3f28339",
+  "digest": "53b7ed1125a73f940e9a076d2fecb9c9432f3f1c12aeb3f4f30946e34951bffb",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2214,6 +2214,15 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "registry": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "registryUnsure": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -2223,7 +2232,9 @@
                   "canSignIn",
                   "key",
                   "check",
-                  "note"
+                  "note",
+                  "registry",
+                  "registryUnsure"
                 ],
                 "additionalProperties": false
               }
@@ -2269,12 +2280,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "npmRegistry": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [
@@ -2282,8 +2287,7 @@
         "checkedAt",
         "agents",
         "firstTask",
-        "lines",
-        "npmRegistry"
+        "lines"
       ],
       "additionalProperties": false
     },

@@ -330,25 +330,39 @@ export function agentSetupOf(id: string): AgentSetup | null {
   return Object.prototype.hasOwnProperty.call(AGENT_SETUP, id) ? AGENT_SETUP[id as ProviderId] : null;
 }
 
-/** The npm registry the person's own `~/.npmrc` names, when it isn't the public one (an install's confirm says it):
- * only the `registry=` line is read (never a token or any other line), and only its scheme, host and path are kept, never
- * a user, password or query. Null for the public registry, no setting, or a file that isn't a small plain file. */
-export function npmRegistryOf(home: string): string | null {
+/** Where npm would fetch `pkg` from, as the person's own `~/.npmrc` says (an install's confirm says it), mirroring npm's
+ * rule: for a scoped package (`@openai/codex`) the last `@scope:registry=` line wins; otherwise, and for an unscoped
+ * package, the last `registry=` line. Only those lines are read (never a token or any other line), and only a URL's
+ * scheme, host and path are kept. `unsure`: the file does something this doesn't follow (an environment variable
+ * `${…}`, a key it can't read, a value that isn't an http(s) URL): the confirm then says it may set another registry.
+ * Null url and not unsure: the public registry. */
+export function npmRegistryOf(home: string, pkg: string): { url: string | null; unsure: boolean } {
   const file = join(home, ".npmrc");
   try {
     const seen = statSync(file);
-    if (!seen.isFile() || seen.size > 64 * 1024) return null;
-  } catch { return null; }
+    if (!seen.isFile() || seen.size > 64 * 1024) return { url: null, unsure: seen.isFile() };
+  } catch { return { url: null, unsure: false }; }
   let text: string;
-  try { text = readFileSync(file, "utf8"); } catch { return null; }
-  for (const line of text.split(/\r?\n/)) {
-    const found = /^\s*registry\s*=\s*"?([^"\s;#]+)"?\s*(?:[;#].*)?$/.exec(line);
-    if (found === null) continue;
-    let url: URL;
-    try { url = new URL(found[1]!); } catch { return "an address Toolroll can't read"; }
-    if (url.protocol !== "https:" && url.protocol !== "http:") return "an address Toolroll can't read";
-    if (url.hostname === "registry.npmjs.org") return null;
-    return `${url.protocol}//${url.host}${url.pathname}`.replace(/[\u0000-\u001f\u007f]/g, "");
+  try { text = readFileSync(file, "utf8"); } catch { return { url: null, unsure: true }; }
+  const scope = pkg.startsWith("@") ? pkg.split("/")[0]! : null;
+  let scoped: string | null = null, plain: string | null = null, unsure = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#") || line.startsWith(";") || line.startsWith("[")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim(), value = line.slice(eq + 1).trim().replace(/^"(.*)"$/, "$1");
+    const isRegistry = key === "registry" || /^@[^:]+:registry$/.test(key);
+    if (!isRegistry) { if (/registry/i.test(key) && !key.startsWith("//")) unsure = true; continue; }
+    if (value.includes("${")) { unsure = true; continue; }
+    if (key === "registry") plain = value;
+    else if (scope !== null && key === `${scope}:registry`) scoped = value;
   }
-  return null;
+  const chosen = scoped ?? plain;
+  if (chosen === null) return { url: null, unsure };
+  let url: URL;
+  try { url = new URL(chosen); } catch { return { url: null, unsure: true }; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return { url: null, unsure: true };
+  if (url.hostname === "registry.npmjs.org") return { url: null, unsure };
+  return { url: `${url.protocol}//${url.host}${url.pathname}`.replace(/[\u0000-\u001f\u007f]/g, ""), unsure };
 }

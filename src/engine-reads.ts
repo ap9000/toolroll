@@ -21,7 +21,7 @@ import { terminalDiffView } from "./result-evidence-readers.js";
 import { parseReviewDiff } from "./server/render-results.js";
 import { revisionSourceOf } from "./result-review.js";
 import { DIFF_CONTEXT_MAX, ENGINE_API_VERSION, type AgentsRead, type ResultDiff, type ResultDiffContext, type ResultDiffFile, type StepCard, type StepCards } from "./contracts/engine-api.js";
-import { agentSetupOf, detectionLines, NO_AGENT_YET, type AgentDetection } from "./agent-detect.js";
+import { agentSetupOf, detectionLines, NO_AGENT_YET, npmRegistryOf, type AgentDetection } from "./agent-detect.js";
 import { scanPatchForSecrets } from "./evidence.js";
 import { fastCompletionProblem } from "./fast-start.js";
 import { viewedGitSync } from "./teardown-git.js";
@@ -290,23 +290,26 @@ export function resultDiffContextOf(store: Store, evidenceRoot: string, taskId: 
 }
 
 /** An agent's setup as the agents read says it: Toolroll's own commands (agent-detect.ts AGENT_SETUP). */
-export function setupOf(id: string): AgentsRead["agents"][number]["setup"] {
+export function setupOf(id: string, home: string | null = null): AgentsRead["agents"][number]["setup"] {
   const setup = agentSetupOf(id);
-  if (setup === null) return { install: null, canInstall: false, signIn: null, canSignIn: false, key: null, check: null, note: null };
-  return { install: setup.install, canInstall: setup.installRun !== null, signIn: setup.signIn, canSignIn: setup.signInRun !== null, key: setup.key, check: setup.check, note: setup.note };
+  if (setup === null) return { install: null, canInstall: false, signIn: null, canSignIn: false, key: null, check: null, note: null, registry: null, registryUnsure: false };
+  const pkg = setup.installRun?.binary === "npm" ? setup.installRun.args[2] ?? null : null;
+  const registry = pkg === null || home === null ? { url: null, unsure: false } : npmRegistryOf(home, pkg);
+  return { install: setup.install, canInstall: setup.installRun !== null, signIn: setup.signIn, canSignIn: setup.signInRun !== null, key: setup.key, check: setup.check, note: setup.note,
+    registry: registry.url, registryUnsure: registry.unsure };
 }
 
 /** `GET /engine/agents`: the last detection of this computer's agents (agent-detect.ts) as the contract says it; null
  * (not looked for yet) reads as no agents and the "looking" line. */
-export function agentsReadOf(detection: AgentDetection | null, view: "full" | "summary" = "full", npmRegistry: string | null = null): AgentsRead {
-  const agents = (detection?.agents ?? []).map(one => ({ id: one.id, name: one.name, state: one.state, how: one.how, signIn: one.signIn, ready: one.ready, next: one.next, setup: setupOf(one.id) }));
+export function agentsReadOf(detection: AgentDetection | null, view: "full" | "summary" = "full", home: string | null = null): AgentsRead {
+  const agents = (detection?.agents ?? []).map(one => ({ id: one.id, name: one.name, state: one.state, how: one.how, signIn: one.signIn, ready: one.ready, next: one.next, setup: setupOf(one.id, home) }));
   const first = detection?.firstTask ?? null;
   const firstTask = first === null ? null : { id: first, name: agents.find(one => one.id === first)?.name ?? first };
   // Summary (a person who isn't an instance operator, server/welcome.ts agentInventoryOf): who the first task goes to,
   // never which agents this computer has.
   if (view === "summary") {
     const lines = firstTask !== null ? [`Your first task goes to ${firstTask.name}.`] : detection === null ? detectionLines(null) : [NO_AGENT_YET];
-    return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents: [], firstTask, lines, npmRegistry: null };
+    return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents: [], firstTask, lines };
   }
-  return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents, firstTask, lines: detectionLines(detection), npmRegistry };
+  return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents, firstTask, lines: detectionLines(detection) };
 }

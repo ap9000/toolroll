@@ -20,9 +20,10 @@
  *   all the way up (nothing writable by others, no ACL that lets anyone change it), outside every folder above as
  *   written and as its real path; it is handed on as that checked real path. Any other is left out (the CLI's own
  *   default applies). Its working folder is a fresh, empty folder of this check's own, removed after.
- * - A launcher's interpreter (resolveLaunch): a script's `#!/usr/bin/env node` or absolute interpreter is resolved by the
- *   same rules, and what runs is that interpreter's real path with the script's real path, never the script itself, with
- *   a PATH of the interpreter's folder and the trusted folders; a `node` linked into a project never runs.
+ * - A launcher's interpreter (resolveLaunch): a script's bare `#!/usr/bin/env node` or absolute interpreter is resolved
+ *   by the same rules, and what runs is that interpreter's real path with the script's real path, never the script
+ *   itself, with a PATH of the interpreter's folder and the trusted folders; a `node` linked into a project never runs,
+ *   and a first line that passes its interpreter arguments (`env -S …`, `--require=…`) runs nothing.
  * - Bounded: every step, the ACL reads included, sits inside one deadline; the command runs in a process group of its
  *   own, ended at the deadline by that group's exact id (SIGTERM, then SIGKILL), so anything it started goes with it;
  *   whatever its group still holds when it exits is ended too.
@@ -190,9 +191,10 @@ export function shebangOf(script: string): { kind: "absolute"; path: string; arg
   const [first, ...rest] = words;
   if (first === undefined || !isAbsolute(first)) return null;
   if (first.split(sep).at(-1) === "env") {
-    const named = rest[0] === "-S" ? rest.slice(1) : rest;
+    // `env -S NAME …` splits more words into the interpreter's arguments: kept as arguments, so it is refused below.
+    const named = rest[0] === "-S" ? [...rest.slice(1, 2), "-S", ...rest.slice(2)] : rest;
     const [name, ...args] = named;
-    if (name === undefined || !/^[A-Za-z0-9._+-]+$/.test(name) || args.some(one => !/^[A-Za-z0-9._=/:+-]+$/.test(one))) return null;
+    if (name === undefined || !/^[A-Za-z0-9._+-]+$/.test(name)) return null;
     return { kind: "env", name, args };
   }
   return { kind: "absolute", path: first, args: rest };
@@ -216,6 +218,8 @@ export function resolveLaunch(binary: string, trust: StatusTrust): Launch {
   const refused = (why: string): Launch => ({ ok: false, missing: false, why });
   const bang = shebangOf(found.real);
   if (bang === null) return refused("its first line doesn't name an interpreter Toolroll can check");
+  // Only a bare interpreter: words after it (`env -S …`, `--require=…`) would change what that interpreter loads first.
+  if (bang.args.length > 0) return refused(`its first line passes its interpreter arguments (${bang.args.join(" ").slice(0, 60)}), which Toolroll doesn't run`);
   let interpreter: string;
   if (bang.kind === "env") {
     const named = resolveStatusBinary(bang.name, trust);
@@ -229,7 +233,7 @@ export function resolveLaunch(binary: string, trust: StatusTrust): Launch {
     interpreter = file.real;
   }
   if (isScript(interpreter)) return refused("its interpreter is itself a script");
-  return { ok: true, file: interpreter, args: [...bang.args, found.real], folders: [dirname(interpreter)], real: found.real };
+  return { ok: true, file: interpreter, args: [found.real], folders: [dirname(interpreter)], real: found.real };
 }
 
 /** A launch's PATH: its interpreter's folder, then the trusted folders (trustedPathOf), each once. */

@@ -17,7 +17,9 @@
         "canSignIn": true,
         "key": null,
         "check": null,
-        "note": "Flexible threads bill your Claude plan through Toolroll's relay, which needs a long-lived token: run `claude setup-token` in your own terminal (it prints the token, so Toolroll never runs it for you)."
+        "note": "Flexible threads bill your Claude plan through Toolroll's relay, which needs a long-lived token: run `claude setup-token` in your own terminal (it prints the token, so Toolroll never runs it for you).",
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -35,7 +37,9 @@
         "canSignIn": true,
         "key": null,
         "check": null,
-        "note": null
+        "note": null,
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -53,7 +57,9 @@
         "canSignIn": true,
         "key": "Or run it on an API key: switch it with `toolroll keys auth gemini api-key`, then pipe the key in with `toolroll keys set gemini < key.txt` (or paste it in Settings → Agents in the browser).",
         "check": null,
-        "note": "Its sign-in starts Gemini CLI: choose Login with Google, finish in the browser, then type /quit."
+        "note": "Its sign-in starts Gemini CLI: choose Login with Google, finish in the browser, then type /quit.",
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -71,7 +77,9 @@
         "canSignIn": false,
         "key": "It runs on an OpenRouter key through Codex: pipe the key in with `toolroll keys set openrouter < key.txt` (or paste it in Settings → Agents in the browser), then choose its models.",
         "check": null,
-        "note": "Install Codex first: OpenRouter runs through it."
+        "note": "Install Codex first: OpenRouter runs through it.",
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -89,7 +97,9 @@
         "canSignIn": true,
         "key": null,
         "check": "toolroll agents check opencode --model <model>",
-        "note": null
+        "note": null,
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -107,7 +117,9 @@
         "canSignIn": true,
         "key": null,
         "check": "toolroll agents check cursor --model <model>",
-        "note": null
+        "note": null,
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -125,7 +137,9 @@
         "canSignIn": true,
         "key": null,
         "check": "toolroll agents check cline --model <model>",
-        "note": null
+        "note": null,
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -143,7 +157,9 @@
         "canSignIn": true,
         "key": null,
         "check": "toolroll agents check qwen --model <model>",
-        "note": "Its sign-in starts Qwen Code: type /auth and finish in the browser, then /quit."
+        "note": "Its sign-in starts Qwen Code: type /auth and finish in the browser, then /quit.",
+        "registry": null,
+        "registryUnsure": false
       }
     },
     {
@@ -161,7 +177,9 @@
         "canSignIn": true,
         "key": null,
         "check": "toolroll agents check goose --model <model>",
-        "note": null
+        "note": null,
+        "registry": null,
+        "registryUnsure": false
       }
     }
   ],
@@ -169,6 +187,5 @@
   "lines": [
     "Sign in to Claude Code: run `claude auth login`",
     "Sign in to Codex: run `codex login` (its sign-in couldn't be checked)"
-  ],
-  "npmRegistry": null
+  ]
 }

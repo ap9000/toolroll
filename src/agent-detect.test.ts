@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { DETECT_TIMEOUT_MS, detectAgents, detectionLines, detectionReport, firstRunAgentLines, type AgentDetection } from "./agent-detect.js";
+import { DETECT_TIMEOUT_MS, detectAgents, detectionLines, detectionReport, firstRunAgentLines, npmRegistryOf, type AgentDetection } from "./agent-detect.js";
 import { agentsReadOf } from "./engine-reads.js";
 import { agentsReadSchema } from "./contracts/engine-api.js";
 import { createConnectionChecker, signInFacts } from "./provider-connection.js";
@@ -447,5 +447,39 @@ describe("round 3: location variables are handed on as their checked real paths,
       expect(existsSync(join(dir, "executed"))).toBe(false);
       rmSync(join(state, "repos.json"), { force: true });
     }
+  });
+});
+
+describe("the registry an install's confirm names (npmRegistryOf mirrors npm's own rule)", () => {
+  const withNpmrc = (text: string | null, pkg: string) => {
+    const home = mkdtempSync(join(tmpdir(), "so-npmrc-"));
+    try {
+      if (text !== null) writeFileSync(join(home, ".npmrc"), text);
+      return npmRegistryOf(home, pkg);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  };
+  test("no file, or only the public registry: nothing to say", () => {
+    expect(withNpmrc(null, "@openai/codex")).toEqual({ url: null, unsure: false });
+    expect(withNpmrc("registry=https://registry.npmjs.org/\n", "opencode-ai")).toEqual({ url: null, unsure: false });
+  });
+  test("the LAST unscoped registry= line wins, and only its scheme, host and path are kept", () => {
+    expect(withNpmrc("registry=https://first.example/\nregistry=https://user:pw@last.example/npm/?x=1\n", "opencode-ai"))
+      .toEqual({ url: "https://last.example/npm/", unsure: false });
+  });
+  test("for a scoped package, the scope's own @scope:registry= wins over registry=; another scope's never applies", () => {
+    const text = "@openai:registry=https://scoped.example/\nregistry=https://plain.example/\n@google:registry=https://other.example/\n";
+    expect(withNpmrc(text, "@openai/codex")).toEqual({ url: "https://scoped.example/", unsure: false });
+    expect(withNpmrc(text, "@qwen-code/qwen-code")).toEqual({ url: "https://plain.example/", unsure: false });
+    expect(withNpmrc(text, "opencode-ai")).toEqual({ url: "https://plain.example/", unsure: false });
+    expect(withNpmrc("@openai:registry=https://a.example/\n@openai:registry=https://b.example/\n", "@openai/codex")).toEqual({ url: "https://b.example/", unsure: false });
+  });
+  test("what it can't follow says so instead of naming a wrong registry: ${…}, a non-URL, an unreadable key", () => {
+    expect(withNpmrc("registry=${MY_REGISTRY}\n", "opencode-ai")).toEqual({ url: null, unsure: true });
+    expect(withNpmrc("registry=https://npm.example/${TEAM}/\n", "opencode-ai")).toEqual({ url: null, unsure: true });
+    expect(withNpmrc("registry=not a url\n", "opencode-ai")).toEqual({ url: null, unsure: true });
+    expect(withNpmrc("registry=file:///etc/\n", "opencode-ai")).toEqual({ url: null, unsure: true });
+    expect(withNpmrc("Registry=https://odd.example/\n", "opencode-ai")).toEqual({ url: null, unsure: true });
+    // A token line is never read as a registry, and never makes it unsure.
+    expect(withNpmrc("//npm.example/:_authToken=secret\nregistry=https://npm.example/\n", "opencode-ai")).toEqual({ url: "https://npm.example/", unsure: false });
   });
 });
