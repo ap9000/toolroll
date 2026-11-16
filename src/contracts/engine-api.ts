@@ -315,6 +315,9 @@ export const agentsReadSchema = z.object({
   })),
   firstTask: z.object({ id: z.string(), name: z.string() }).nullable(),
   lines: z.array(z.string()),
+  /** The npm registry the person's own ~/.npmrc names when it isn't the public one (agent-detect.ts npmRegistryOf): an
+   * npm install's confirm says where the package comes from. Scheme, host and path only; null otherwise. */
+  npmRegistry: z.string().nullable(),
 });
 
 /** `GET /engine/models`: the installation's model choices as Settings → Models shows them (server/settings.ts): the

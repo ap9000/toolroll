@@ -26,7 +26,7 @@ import { randomBytes } from "node:crypto";
 import { STATUS_CODES, type IncomingMessage, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import type { Duplex } from "node:stream";
-import { KEY_PROTOCOL } from "./mutation-key.js";
+import { KEY_PROTOCOL, TERMINAL_EPOCH } from "./mutation-key.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { readForm, CONSOLE_FORMS } from "../contracts/console-api.js";
 import { html, htmlString } from "../html.js";
@@ -42,7 +42,7 @@ import { projectName, rowVisible } from "../project.js";
 import { transportOf, type Transport } from "../public-access.js";
 import type { Store } from "../store.js";
 import { agentSetupOf } from "../agent-detect.js";
-import { excludedFolders, resolveStatusBinary, statusEnvironment, type StatusTrust } from "../status-probe.js";
+import { excludedFolders, launchPath, resolveLaunch, statusEnvironment, type StatusTrust } from "../status-probe.js";
 import { boundedAcl } from "../trusted-path.js";
 import type { ServeOptions } from "./http.js";
 import type { HandlerContext } from "./handler-context.js";
@@ -128,14 +128,26 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     && terminal.localGeneration === (who.authority === "full" ? null : who.session.localGeneration);
   /** A terminal this person may reach now: theirs, and its project still admitted (an agent's own sign-in or install
    * has no project: being theirs is the whole rule). */
-  const reachable = (who: Operator, terminal: TerminalSummary | null): terminal is TerminalSummary =>
-    owned(who, terminal) && (terminal.agent !== null || projectAllowed(who.name, terminal.repo));
+  const reachable = (who: Operator, terminal: TerminalSummary | null, request: IncomingMessage): terminal is TerminalSummary =>
+    owned(who, terminal) && (terminal.agent !== null ? workbenchNow(request, who) : projectAllowed(who.name, terminal.repo));
+  /**
+   * An agent's own sign-in or install is the terminal workbench's alone (the person at this computer in their own
+   * terminal): the session the workbench redeemed (its key epoch `terminal:<this console start>`, written only by the
+   * terminal link's redemption, mutation-key.ts issueForClient), a local owner's, on a solo install, over a direct
+   * loopback request with no proxy header. Every fact is the server's own; no header a client sends decides it. Read at
+   * the start, right before the spawn, at the socket's upgrade and at every re-proof.
+   */
+  const workbenchNow = (request: IncomingMessage, who: Who | null): boolean =>
+    who?.via === "cookie" && who.authority === "local-owner" && who.session.keyEpoch === `${TERMINAL_EPOCH}${runtime.keyEpoch}`
+      && soloNow(store) && runtime.fromThisComputer(request) && operatorOf(who) !== null;
   const record = (event: string, who: string, terminal: { id: string; repo: string; program: TerminalProgram }) =>
     logEvent("info", `terminal.${event}`, { actor: who, terminal: terminal.id, repo: terminal.repo, program: terminal.program });
 
   const json = (ctx: HandlerContext, status: number, value: unknown) => respond(ctx.response, status, "application/json", JSON.stringify(value));
   /** The answers a terminal client reads (engine-api.ts termState, termStarted, refusal), checked as they are sent. */
   const checked = (ctx: HandlerContext, status: number, name: EngineResponseName, value: unknown) => json(ctx, status, checkEngineResponse(name, value));
+  /** Said to anything but the terminal workbench's own session asking for an agent's sign-in or install pane. */
+  const WORKBENCH_ONLY = "Sign in to agents from your own terminal: run toolroll there";
   /** Said to a local owner's session on an install that isn't solo (or whose local sign-in lapsed). */
   const LOCAL_TEAM = "Taking over works while you're the only person using this Toolroll. Set a password (run `toolroll password set`) and sign in with it.";
   const refusal = (ctx: HandlerContext): string | null => {
@@ -272,6 +284,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const refused = refusal(ctx);
     if (refused !== null) return answer(403, { ok: false, error: refused });
     const who = ctx.who as Operator;
+    if (!workbenchNow(ctx.request, who)) return answer(403, { ok: false, error: WORKBENCH_ONLY });
     const body = readForm(ctx.posted, CONSOLE_FORMS.termAgent);
     if ([...new Set(body.keys())].some(key => body.sent.getAll(key).length !== 1)) return answer(400, { ok: false, error: "Submit one value for each field." });
     const agentId = body.get("agent") ?? "";
@@ -297,22 +310,25 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     if (untrusted === null) return answer(409, { ok: false, error: "Toolroll couldn't read its own records, so it won't start a program." });
     const trust: StatusTrust = { path: source["PATH"] ?? "", uid: process.getuid?.(), untrusted, acl: boundedAcl(Date.now() + 3_000) };
     const program = run.binary;
-    const found = resolveStatusBinary(program, trust);
+    // The program, and for a launcher script its interpreter, each a trusted install: the interpreter's real path runs
+    // with the script's (status-probe.ts resolveLaunch), never the script by itself.
+    const found = resolveLaunch(program, trust);
     if (!found.ok) return answer(409, { ok: false, error: found.missing ? `\`${program}\` isn't installed on this computer.` : `Toolroll won't run \`${program}\`: ${found.why}.` });
-    const env = statusEnvironment(source, trust);
+    const env = { ...statusEnvironment(source, trust), PATH: launchPath(found, trust) };
     const stillAllowed = (): string | null => {
       const again = rereadBrowser(runtime, ctx.request, who);
       if (again === null || operatorOf(again) === null) return "Your access changed. Sign in again.";
       if (proved.method === "session" && !sessionStandsIn(store)) return "This install's sign-in rules changed. Enter your Toolroll password to start a terminal.";
       if (proved.method === "local-owner" && (again.authority !== "local-owner" || again.session.localGeneration !== who.session.localGeneration)) return "Your access changed. Sign in again.";
-      // The binary is the one checked: asked again right before it starts, with fresh ACL answers.
-      const now = resolveStatusBinary(program, { ...trust, acl: boundedAcl(Date.now() + 3_000) });
-      if (!now.ok || now.real !== found.real) return `\`${program}\` changed while it was being checked. Try again.`;
+      if (!workbenchNow(ctx.request, again)) return WORKBENCH_ONLY;
+      // The program is the one checked: asked again right before it starts, with fresh ACL answers.
+      const now = resolveLaunch(program, { ...trust, acl: boundedAcl(Date.now() + 3_000) });
+      if (!now.ok || now.real !== found.real || now.file !== found.file) return `\`${program}\` changed while it was being checked. Try again.`;
       return null;
     };
     try {
       const owner = { name: who.name, generation: who.session.generation, localGeneration: who.authority === "full" ? null : who.session.localGeneration };
-      const terminal = await deps.host!.startCommand(owner, { id: agentId, kind }, { file: found.real, args: run.args }, env, undefined, stillAllowed,
+      const terminal = await deps.host!.startCommand(owner, { id: agentId, kind }, { file: found.file, args: [...found.args, ...run.args] }, env, undefined, stillAllowed,
         () => { void runtime.checkLocalAgents(true); });
       record(`agent-${kind}`, who.name, terminal);
       return answer(200, { ok: true, id: terminal.id });
@@ -326,7 +342,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     if (refused !== null) return json(ctx, 403, { ok: false, error: refused });
     const who = ctx.who as Operator;
     const terminal = deps.host!.get(TERMINAL_ID.exec(ctx.url.pathname)?.[1] ?? "");
-    if (!reachable(who, terminal)) return json(ctx, 404, { ok: false, error: "No such terminal." });
+    if (!reachable(who, terminal, ctx.request)) return json(ctx, 404, { ok: false, error: "No such terminal." });
     try {
       if (verb === "close") await deps.host!.close(terminal.id);
       else await deps.host!.remove(terminal.id);
@@ -385,7 +401,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     const keyed = runtime.browserKeys.check(who, request, null);
     if (keyed !== null) { refuseUpgrade(socket, keyed.status, keyed.message); return true; }
     const terminal = deps.host?.get(id) ?? null;
-    if (!reachable(who, terminal)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
+    if (!reachable(who, terminal, request)) { refuseUpgrade(socket, 404, "No such terminal."); return true; }
     if (deps.host!.viewerCount(id) >= MAX_VIEWERS) { refuseUpgrade(socket, 429, `This terminal is open in ${MAX_VIEWERS} places already.`); return true; }
     wss.handleUpgrade(request, socket, head, ws => attach(ws, request, who, terminal));
     return true;
@@ -407,7 +423,7 @@ export function createTerminalHandlers(runtime: ServerRuntime, deps: TerminalDep
     };
     const prove = (): boolean => {
       const again = rereadBrowser(runtime, request, who);
-      const ok = again !== null && operatorOf(again) !== null && reachable(who, host.get(terminal.id));
+      const ok = again !== null && operatorOf(again) !== null && reachable(again as Operator, host.get(terminal.id), request);
       if (ok) provedAt = Date.now();
       return ok;
     };

@@ -235,7 +235,18 @@ type Session = TerminalSummary & {
   viewers: Set<TerminalViewer>;
   closing: Promise<void> | null;
   exited: Promise<void>;
+  /**
+   * An agent's own sign-in or install (credential-sensitive): its screen is never mirrored or replayed, it keeps no
+   * scrollback, one page attaches once (the one that started it), what it printed before that page attached is held in
+   * memory only until then, and all of it is dropped when the program ends.
+   */
+  sensitive: boolean;
+  attachedOnce: boolean;
+  early: Buffer[];
+  earlyBytes: number;
 };
+/** What a sensitive pane holds for its one page before that page attaches (it attaches within a moment of the start). */
+export const SENSITIVE_EARLY_BYTES = 256 * 1024;
 
 /**
  * Where a console's terminals are written down for the updater, which runs as another process (terminal-catalog.ts):
@@ -441,7 +452,7 @@ export class TerminalHost {
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: from?.task ?? null, run: from?.run ?? null, agent: null, base: from === null ? null : base, repo, program, branch, worktree, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
         pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(worktree), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
-        exited: new Promise(resolve => { resolveExited = resolve; }) };
+        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: false, attachedOnce: false, early: [], earlyBytes: 0 };
       this.sessions.set(id, session);
       this.ledger.running(id);
       reserved = false;
@@ -511,8 +522,8 @@ export class TerminalHost {
       }
       let resolveExited!: () => void;
       const session: Session = { id, owner, generation, localGeneration, task: null, run: null, agent: { ...agent }, base: null, repo: "", program: "shell", branch: "", worktree: folder, startedAt: this.clock().toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null,
-        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, this.options.scrollbackLines), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
-        exited: new Promise(resolve => { resolveExited = resolve; }) };
+        pty, leader: pty.pid, tty: pty.tty, known: new Map(), exitedAt: null, worktreeReal: realpathSync(folder), startedMs: Date.now(), residentsOnly: false, residentsSeen: new Map(), cols, rows, screen: new ScreenMirror(cols, rows, 0), paused: false, flowTimer: null, attaching: 0, viewers: new Set(), closing: null,
+        exited: new Promise(resolve => { resolveExited = resolve; }), sensitive: true, attachedOnce: false, early: [], earlyBytes: 0 };
       this.wire(session, () => { resolveExited(); try { exited(); } catch { /* the caller's own */ } });
       this.sessions.set(id, session);
       this.ledger.running(id);
@@ -532,7 +543,10 @@ export class TerminalHost {
     pty.onData(data => {
       this.noteSoon();
       const chunk = Buffer.from(data, "utf8");
-      if (!session.screen.write(data)) for (const viewer of session.viewers) { try { viewer.overflow?.(); } catch { /* gone */ } }
+      if (session.sensitive) {
+        // Never mirrored: straight to its one page, or held for it (in memory, briefly) until it attaches.
+        if (!session.attachedOnce && session.earlyBytes + chunk.byteLength <= SENSITIVE_EARLY_BYTES) { session.early.push(chunk); session.earlyBytes += chunk.byteLength; }
+      } else if (!session.screen.write(data)) for (const viewer of session.viewers) { try { viewer.overflow?.(); } catch { /* gone */ } }
       for (const viewer of session.viewers) { try { viewer.output(chunk); } catch { /* the viewer's own close handles it */ } }
       this.flow(session);
     });
@@ -544,6 +558,7 @@ export class TerminalHost {
       session.exit = { code: exitCode ?? null, signal: signal || null };
       for (const viewer of session.viewers) { try { viewer.control({ t: "exit", code: session.exit.code, signal: session.exit.signal }); } catch { /* gone */ } }
       this.options.record?.("exit", this.summary(session));
+      if (session.sensitive) this.forgetScreen(session);
       onExited();
       if (session.closing === null) session.closing = this.sweep(session);
     });
@@ -599,6 +614,7 @@ export class TerminalHost {
   attach(id: string, viewer: TerminalViewer): () => void {
     const session = this.sessions.get(id);
     if (session === undefined) throw new TerminalError("No such terminal.");
+    if (session.sensitive) return this.attachOnce(session, viewer);
     if (session.viewers.size >= MAX_VIEWERS) throw new TerminalError(`This terminal is open in ${MAX_VIEWERS} places already. Close one of them.`);
     const held: ({ output: Buffer } | { control: TerminalControl })[] = [];
     let live = false, heldBytes = 0, attaching = true;
@@ -632,6 +648,41 @@ export class TerminalHost {
       live = true;
     });
     return () => { session.viewers.delete(gate); done(); this.flow(session); };
+  }
+
+  /** A sensitive pane's one page: what it printed so far (held in memory for this page alone), then live output; no
+   * screen is ever replayed, and no second page attaches. */
+  private attachOnce(session: Session, viewer: TerminalViewer): () => void {
+    if (session.attachedOnce) throw new TerminalError("This sign-in is open in one place only.");
+    session.attachedOnce = true;
+    session.viewers.add(viewer);
+    const early = session.early;
+    session.early = [];
+    session.earlyBytes = 0;
+    try {
+      viewer.control({ t: "hello", cols: session.cols, rows: session.rows, program: session.program, ended: session.endedAt !== null });
+      for (const chunk of early) viewer.output(chunk);
+      if (session.exit !== null) viewer.control({ t: "exit", code: session.exit.code, signal: session.exit.signal });
+    } catch { /* the viewer's own close handles it */ }
+    early.length = 0;
+    this.flow(session);
+    return () => { session.viewers.delete(viewer); this.flow(session); };
+  }
+
+  /** A sensitive pane's ended: nothing it printed is kept (no mirror, nothing held). */
+  private forgetScreen(session: Session): void {
+    session.early = [];
+    session.earlyBytes = 0;
+    session.screen.dispose();
+    session.screen = new ScreenMirror(session.cols, session.rows, 0);
+  }
+
+  /** What a page attaching now would be shown first (the screen mirror's snapshot); "" for a sensitive pane, which is
+   * never replayed. */
+  replay(id: string): Promise<string> {
+    const session = this.sessions.get(id);
+    if (session === undefined || session.sensitive) return Promise.resolve("");
+    return new Promise(done => session.screen.snapshot(done));
   }
 
   /**

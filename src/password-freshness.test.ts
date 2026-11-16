@@ -618,9 +618,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/tasks.ts#createTidyHandlers@3": 2,
     "src/server/tasks.ts#createTidyHandlers@3>applyPutAway@2": 1,
     // Live terminals: starting one is a step-up (a fresh password every time; never a remembered one).
-    "src/server/terminals.ts#createTerminalHandlers@2>start@15": 1,
+    "src/server/terminals.ts#createTerminalHandlers@2>start@16": 1,
     // The Agents screen: an agent's own sign-in or confirmed install, proved as a terminal start is.
-    "src/server/terminals.ts#createTerminalHandlers@2>agentStart@16><anonymous>@1": 1,
+    "src/server/terminals.ts#createTerminalHandlers@2>agentStart@17><anonymous>@1": 1,
     "src/task-outcome-cli.ts#<module>": 2,
     "src/task-outcome-cli.ts#runTaskMergeCommand@2": 1,
     // Passwordless (docs/plans/passwordless.md): reviewed new sites.

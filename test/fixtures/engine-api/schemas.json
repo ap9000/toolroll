@@ -1,5 +1,5 @@
 {
-  "digest": "f0c25df359d10cf1ddffbf192031662c7f7b9421ab8eb8689076126750a180bb",
+  "digest": "37036d6557a007360fcfe81178685ac946314d58dc7f679f57ac11a1b3f28339",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -2269,6 +2269,12 @@
           "items": {
             "type": "string"
           }
+        },
+        "npmRegistry": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2276,7 +2282,8 @@
         "checkedAt",
         "agents",
         "firstTask",
-        "lines"
+        "lines",
+        "npmRegistry"
       ],
       "additionalProperties": false
     },

@@ -225,7 +225,21 @@ fn install_runs_only_after_its_confirm_of_exactly_that_command() {
         shown.contains("npm install -g @google/gemini-cli") && shown.contains("Install it"),
         "{shown}"
     );
+    assert!(
+        shown.contains("your own npm settings (~/.npmrc: registry, proxy, sign-in)")
+            && shown.contains("install scripts run"),
+        "{shown}"
+    );
     insta::assert_snapshot!("agents_install_confirm", shown);
+    // A registry the person's ~/.npmrc names (not the public one) is said in the confirm.
+    let mut read = app.agents.clone().unwrap();
+    read.npm_registry = Some("https://npm.example.corp/repo/".into());
+    app.agents = Some(read);
+    let shown = screen(&mut app, 120, 34);
+    assert!(
+        shown.contains("Registry: https://npm.example.corp/repo/ (from your ~/.npmrc)"),
+        "{shown}"
+    );
     // Any other key cancels: nothing runs.
     assert_eq!(app.key(key('x')), vec![]);
     assert_eq!(app.mode, Mode::Normal);

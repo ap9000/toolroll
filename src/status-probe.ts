@@ -20,6 +20,9 @@
  *   all the way up (nothing writable by others, no ACL that lets anyone change it), outside every folder above as
  *   written and as its real path; it is handed on as that checked real path. Any other is left out (the CLI's own
  *   default applies). Its working folder is a fresh, empty folder of this check's own, removed after.
+ * - A launcher's interpreter (resolveLaunch): a script's `#!/usr/bin/env node` or absolute interpreter is resolved by the
+ *   same rules, and what runs is that interpreter's real path with the script's real path, never the script itself, with
+ *   a PATH of the interpreter's folder and the trusted folders; a `node` linked into a project never runs.
  * - Bounded: every step, the ACL reads included, sits inside one deadline; the command runs in a process group of its
  *   own, ended at the deadline by that group's exact id (SIGTERM, then SIGKILL), so anything it started goes with it;
  *   whatever its group still holds when it exits is ended too.
@@ -169,6 +172,73 @@ export function resolveStatusBinary(binary: string, trust: StatusTrust): Resolve
   return { ok: false, missing: true };
 }
 
+/** A launcher's interpreter as its first line names it: an absolute program, or `env NAME` (`env -S NAME …` too), with
+ * the words after it; null for a first line this doesn't read (it then runs nothing). Read without following a final
+ * symlink, at most 256 bytes. */
+export function shebangOf(script: string): { kind: "absolute"; path: string; args: string[] } | { kind: "env"; name: string; args: string[] } | null {
+  let fd: number | null = null;
+  let head: string;
+  try {
+    fd = openSync(script, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const buffer = Buffer.alloc(256);
+    const read = readSync(fd, buffer, 0, 256, 0);
+    head = buffer.subarray(0, read).toString("utf8");
+  } catch { return null; } finally { if (fd !== null) closeSync(fd); }
+  const end = head.indexOf("\n");
+  if (!head.startsWith("#!") || end < 0) return null;
+  const words = head.slice(2, end).replace(/\r$/, "").trim().split(/[ \t]+/).filter(one => one !== "");
+  const [first, ...rest] = words;
+  if (first === undefined || !isAbsolute(first)) return null;
+  if (first.split(sep).at(-1) === "env") {
+    const named = rest[0] === "-S" ? rest.slice(1) : rest;
+    const [name, ...args] = named;
+    if (name === undefined || !/^[A-Za-z0-9._+-]+$/.test(name) || args.some(one => !/^[A-Za-z0-9._=/:+-]+$/.test(one))) return null;
+    return { kind: "env", name, args };
+  }
+  return { kind: "absolute", path: first, args: rest };
+}
+
+/** How to start a binary with nothing left to the environment: the program to run (its real path), the words before the
+ * caller's own, and the folders its PATH may hold besides the trusted ones. */
+export type Launch = { ok: true; file: string; args: string[]; folders: string[]; real: string } | { ok: false; missing: true } | { ok: false; missing: false; why: string };
+
+/**
+ * resolveStatusBinary, and then, for a launcher script, its interpreter resolved by the same rules: `env NAME` is
+ * looked up on PATH (the first match, trusted, outside every untrusted folder as written and as its real path), an
+ * absolute interpreter checked in place. What runs is that interpreter's real path with the script's real path as its
+ * first word, never the script by itself: nothing a PATH or a symlink says after this check picks the interpreter. An
+ * interpreter that is itself a script, or a first line this doesn't read, runs nothing.
+ */
+export function resolveLaunch(binary: string, trust: StatusTrust): Launch {
+  const found = resolveStatusBinary(binary, trust);
+  if (!found.ok) return found;
+  if (!isScript(found.real)) return { ok: true, file: found.real, args: [], folders: [dirname(found.real)], real: found.real };
+  const refused = (why: string): Launch => ({ ok: false, missing: false, why });
+  const bang = shebangOf(found.real);
+  if (bang === null) return refused("its first line doesn't name an interpreter Toolroll can check");
+  let interpreter: string;
+  if (bang.kind === "env") {
+    const named = resolveStatusBinary(bang.name, trust);
+    if (!named.ok) return refused(named.missing ? `its interpreter \`${bang.name}\` isn't on PATH` : `its interpreter \`${bang.name}\`: ${named.why}`);
+    interpreter = named.real;
+  } else {
+    if (trust.uid === undefined) return refused("who owns it can't be checked on this system");
+    const file = trustedBinary(bang.path, trust.uid, trust.acl);
+    if (!file.ok) return refused(`its interpreter ${bang.path}: ${file.why}`);
+    if (trust.untrusted.some(root => inside(file.real, root) || inside(resolve(bang.path), root))) return refused("its interpreter is inside a project, worktree or Toolroll's own folder");
+    interpreter = file.real;
+  }
+  if (isScript(interpreter)) return refused("its interpreter is itself a script");
+  return { ok: true, file: interpreter, args: [...bang.args, found.real], folders: [dirname(interpreter)], real: found.real };
+}
+
+/** A launch's PATH: its interpreter's folder, then the trusted folders (trustedPathOf), each once. */
+export function launchPath(launch: { folders: readonly string[] }, trust: StatusTrust): string {
+  const kept: string[] = [];
+  for (const one of [...launch.folders, ...trustedPathOf(trust).split(delimiter)]) if (one !== "" && !kept.includes(one) && !trust.untrusted.some(root => inside(one, root))) kept.push(one);
+  return kept.join(delimiter);
+}
+
 /** The PATH a status command gets: the trusted, absolute folders of `trust.path`, outside every untrusted folder. */
 export function trustedPathOf(trust: StatusTrust): string {
   if (trust.uid === undefined) return "";
@@ -290,17 +360,17 @@ export function statusProbe(options: StatusProbeOptions = {}): (file: string, ar
     const aclFor = options.aclFor ?? ((at: number) => boundedAcl(at));
     const trustWith = (acl: AclReader | null): StatusTrust => ({ path: env["PATH"] ?? "", uid: options.uid ?? process.getuid?.(), untrusted, acl });
     const trust = trustWith(aclFor(deadline));
-    const found = resolveStatusBinary(file, trust);
+    const found = resolveLaunch(file, trust);
     if (!found.ok) return found.missing ? NOT_FOUND : REFUSED;
-    const childEnv = statusEnvironment(env, trust);
-    // Checked again right before the start, with fresh ACL answers: the same real path, still trusted.
-    const again = resolveStatusBinary(file, trustWith(aclFor(deadline)));
-    if (!again.ok || again.real !== found.real) return REFUSED;
+    const childEnv = { ...statusEnvironment(env, trust), PATH: launchPath(found, trust) };
+    // Checked again right before the start, with fresh ACL answers: the same program and script, still trusted.
+    const again = resolveLaunch(file, trustWith(aclFor(deadline)));
+    if (!again.ok || again.real !== found.real || again.file !== found.file) return REFUSED;
     // A fresh, empty working folder of this check's own, gone after it.
     let cwd: string;
     try { cwd = mkdtempSync(join(tmpdir(), "toolroll-status-")); } catch { return REFUSED; }
     try {
-      return await runBoundedStatus(found.real, args, { env: childEnv, cwd, timeoutMs: deadline - Date.now(), maxBuffer: Math.min(runOptions?.maxBuffer ?? STATUS_MAX_BUFFER, STATUS_MAX_BUFFER) });
+      return await runBoundedStatus(found.file, [...found.args, ...args], { env: childEnv, cwd, timeoutMs: deadline - Date.now(), maxBuffer: Math.min(runOptions?.maxBuffer ?? STATUS_MAX_BUFFER, STATUS_MAX_BUFFER) });
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

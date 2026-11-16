@@ -709,6 +709,9 @@ pub struct AgentsRead {
     #[serde(rename = "firstTask")]
     pub first_task: Option<FirstTask>,
     pub lines: Vec<String>,
+    /// The npm registry the person's own ~/.npmrc names when it isn't the public one (an npm install's confirm says it).
+    #[serde(rename = "npmRegistry")]
+    pub npm_registry: Option<String>,
 }
 
 // ---- Live terminals (take over) -------------------------------------------------------------------------------------

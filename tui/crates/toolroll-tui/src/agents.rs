@@ -562,7 +562,26 @@ pub fn dialog_lines(app: &App, area: Rect) -> Option<(&'static str, Vec<Line<'st
                 )));
             }
             lines.push(Line::raw(""));
-            for piece in wrap("It downloads software from its publisher and runs it as you, in a pane here. Toolroll never runs it without this yes.", w) {
+            if command.starts_with("npm ") {
+                // npm reads the person's own settings, rightly theirs: said, with a registry that isn't the public one.
+                for piece in wrap("It runs with your own npm settings (~/.npmrc: registry, proxy, sign-in). The package's install scripts run.", w) {
+                    lines.push(Line::from(Span::styled(piece, ink())));
+                }
+                if let Some(registry) = app.agents.as_ref().and_then(|a| a.npm_registry.as_deref())
+                {
+                    for piece in wrap(
+                        &format!("Registry: {} (from your ~/.npmrc)", clean(registry)),
+                        w,
+                    ) {
+                        lines.push(Line::from(Span::styled(
+                            piece,
+                            ink().add_modifier(Modifier::BOLD),
+                        )));
+                    }
+                }
+                lines.push(Line::raw(""));
+            }
+            for piece in wrap("It downloads software from its publisher and runs it as you, in a pane here. Toolroll passes it none of its own credentials, and never runs it without this yes.", w) {
                 lines.push(Line::from(Span::styled(piece, dim())));
             }
             lines.push(Line::raw(""));

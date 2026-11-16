@@ -298,7 +298,7 @@ export function setupOf(id: string): AgentsRead["agents"][number]["setup"] {
 
 /** `GET /engine/agents`: the last detection of this computer's agents (agent-detect.ts) as the contract says it; null
  * (not looked for yet) reads as no agents and the "looking" line. */
-export function agentsReadOf(detection: AgentDetection | null, view: "full" | "summary" = "full"): AgentsRead {
+export function agentsReadOf(detection: AgentDetection | null, view: "full" | "summary" = "full", npmRegistry: string | null = null): AgentsRead {
   const agents = (detection?.agents ?? []).map(one => ({ id: one.id, name: one.name, state: one.state, how: one.how, signIn: one.signIn, ready: one.ready, next: one.next, setup: setupOf(one.id) }));
   const first = detection?.firstTask ?? null;
   const firstTask = first === null ? null : { id: first, name: agents.find(one => one.id === first)?.name ?? first };
@@ -306,7 +306,7 @@ export function agentsReadOf(detection: AgentDetection | null, view: "full" | "s
   // never which agents this computer has.
   if (view === "summary") {
     const lines = firstTask !== null ? [`Your first task goes to ${firstTask.name}.`] : detection === null ? detectionLines(null) : [NO_AGENT_YET];
-    return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents: [], firstTask, lines };
+    return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents: [], firstTask, lines, npmRegistry: null };
   }
-  return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents, firstTask, lines: detectionLines(detection) };
+  return { version: ENGINE_API_VERSION, checkedAt: detection?.checkedAt ?? null, agents, firstTask, lines: detectionLines(detection), npmRegistry };
 }

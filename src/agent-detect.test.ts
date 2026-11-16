@@ -279,8 +279,9 @@ describe("a status command runs only from a trusted install, with nothing of thi
     }
     const seen = readFileSync(dump, "utf8");
     for (const [name, value] of Object.entries(canaries)) { expect(seen, name).not.toContain(name); expect(seen, name).not.toContain(value); }
-    // Its PATH: this test's trusted folder only (by its real path).
-    expect(seen).toMatch(new RegExp(`PATH=["']?${realpathSync(bin).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']?$`, "m"));
+    // Its PATH: the launcher's pinned interpreter's folder (its `#!/bin/sh`), then this test's trusted folder (by real paths).
+    const escape = (one: string) => one.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    expect(seen).toMatch(new RegExp(`PATH=["']?${escape(realpathSync("/bin"))}:${escape(realpathSync(bin))}["']?$`, "m"));
     expect(seen).toContain("CLAUDE_CONFIG_DIR");
   });
 

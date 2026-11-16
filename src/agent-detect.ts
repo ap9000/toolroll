@@ -27,7 +27,7 @@
  * models, model-choices.ts AGENT_PRESETS). Gemini CLI and OpenRouter need their models chosen first, and an ACP agent
  * needs its one-time check (acp-check.ts) and its models; their lines say so.
  */
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, type AcpProviderId } from "./acp-agents.js";
@@ -328,4 +328,27 @@ export const AGENT_SETUP: Readonly<Record<ProviderId, AgentSetup>> = Object.free
 /** An agent's setup, or null for an id Toolroll doesn't support. */
 export function agentSetupOf(id: string): AgentSetup | null {
   return Object.prototype.hasOwnProperty.call(AGENT_SETUP, id) ? AGENT_SETUP[id as ProviderId] : null;
+}
+
+/** The npm registry the person's own `~/.npmrc` names, when it isn't the public one (an install's confirm says it):
+ * only the `registry=` line is read (never a token or any other line), and only its scheme, host and path are kept, never
+ * a user, password or query. Null for the public registry, no setting, or a file that isn't a small plain file. */
+export function npmRegistryOf(home: string): string | null {
+  const file = join(home, ".npmrc");
+  try {
+    const seen = statSync(file);
+    if (!seen.isFile() || seen.size > 64 * 1024) return null;
+  } catch { return null; }
+  let text: string;
+  try { text = readFileSync(file, "utf8"); } catch { return null; }
+  for (const line of text.split(/\r?\n/)) {
+    const found = /^\s*registry\s*=\s*"?([^"\s;#]+)"?\s*(?:[;#].*)?$/.exec(line);
+    if (found === null) continue;
+    let url: URL;
+    try { url = new URL(found[1]!); } catch { return "an address Toolroll can't read"; }
+    if (url.protocol !== "https:" && url.protocol !== "http:") return "an address Toolroll can't read";
+    if (url.hostname === "registry.npmjs.org") return null;
+    return `${url.protocol}//${url.host}${url.pathname}`.replace(/[\u0000-\u001f\u007f]/g, "");
+  }
+  return null;
 }

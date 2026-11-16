@@ -169,5 +169,6 @@
   "lines": [
     "Sign in to Claude Code: run `claude auth login`",
     "Sign in to Codex: run `codex login` (its sign-in couldn't be checked)"
-  ]
+  ],
+  "npmRegistry": null
 }
