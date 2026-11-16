@@ -74,6 +74,22 @@ export function hostAllowed(host: string, hosts: readonly string[]): boolean {
   return hosts.some(entry => entry === name || (entry.startsWith("*.") && name.endsWith(entry.slice(1))));
 }
 
+/**
+ * `work`'s answer, or null the moment `signal` aborts (the proxy closing) if that comes first. Each call subscribes on its
+ * own and unsubscribes the moment either settles, so a finished request leaves nothing attached to the proxy: a proxy
+ * that serves thousands of requests holds no more than the ones still pending.
+ */
+export function untilClosed<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T | null> {
+  if (signal.aborted) return Promise.resolve(null);
+  return new Promise<T | null>((resolve, reject) => {
+    const aborted = (): void => resolve(null);
+    signal.addEventListener("abort", aborted, { once: true });
+    let pending: Promise<T>;
+    try { pending = work(); } catch (error) { signal.removeEventListener("abort", aborted); reject(error); return; }
+    pending.then(value => { signal.removeEventListener("abort", aborted); resolve(value); }, error => { signal.removeEventListener("abort", aborted); reject(error); });
+  });
+}
+
 /** Whether `host` is a host name an open proxy may reach: a name as normalizeHost reads one (never a wildcard, never an
  * address: those are refused there before anything resolves). */
 function anyHostByName(host: string): boolean {
@@ -321,7 +337,6 @@ export async function startEgressProxy(options: {
   // destroyed on arrival. Nothing the proxy started outlives its close.
   const closing = new AbortController();
   const isClosed = (): boolean => closing.signal.aborted;
-  const afterClose = new Promise<null>(done => closing.signal.addEventListener("abort", () => done(null), { once: true }));
   const secret = randomBytes(24).toString("base64url");
   const expected = Buffer.from(secret);
   const sockets = new Set<Socket>();
@@ -353,7 +368,7 @@ export async function startEgressProxy(options: {
     if (options.open === true ? !anyHostByName(host) : !hostAllowed(host, options.hosts)) return { ok: false, why: "not an approved host" };
     let addresses: readonly string[];
     try {
-      const found = await Promise.race([lookup(normalizeHost(host)!), afterClose]);
+      const found = await untilClosed(closing.signal, () => lookup(normalizeHost(host)!));
       if (found === null || isClosed()) return { ok: false, why: "the proxy closed" };
       addresses = found;
     } catch { return { ok: false, why: "the host does not resolve" }; }

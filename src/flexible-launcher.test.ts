@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { startEgressProxy, type EgressProxy } from "./egress.js";
@@ -285,7 +285,7 @@ describe("the real start path: limits before storage, one thread per start, noth
     expect(world.store.handle.prepare("SELECT status FROM thread_turn WHERE request_key = ?").all(`start:${KEY}`).map(row => row["status"])).toEqual(["withdrawn"]);
   });
 
-  test("the same start posted twice makes one thread: the second gets the first one back", async () => {
+  test("the same start posted twice makes one thread: while the first is still starting the second is refused, never told it started", async () => {
     plantTerms();
     let release: () => void = () => {};
     const gate = new Promise<void>(open => { release = open; });
@@ -294,12 +294,38 @@ describe("the real start path: limits before storage, one thread per start, noth
     // The first start's thread is recorded (its turn reserved) before its repository is made; the second post then finds it.
     await until(() => world.store.handle.prepare("SELECT COUNT(*) AS n FROM thread_turn WHERE request_key = ?").get(`start:${KEY}`)!["n"] === 1);
     const second = await start(launcher);
-    expect(second).toMatchObject({ ok: true, replayed: true });
+    expect(second).toMatchObject({ ok: false, reason: "start-in-progress" });
     release();
-    await first;
-    const made = world.store.handle.prepare("SELECT id FROM flexible_thread WHERE id <> ?").all(T1).map(row => String(row["id"]));
-    expect(made).toHaveLength(1);
-    expect(second.ok && second.thread).toBe(made[0]);
+    expect(await first).toMatchObject({ ok: false });
+    expect(world.store.handle.prepare("SELECT COUNT(*) AS n FROM flexible_thread WHERE id <> ?").get(T1)!["n"]).toBe(1);
+    // That start launched nothing and was cleaned up: the same card again makes a fresh one (and isn't told it started).
+    expect(await start(launcher)).toMatchObject({ ok: false, reason: "storage" });
+    expect(leftovers().rows.every(row => row["state"] === "removed")).toBe(true);
+  });
+
+  test("a refusal after the turn began but before its agent launched leaves no ready thread, and repeating the card isn't told it started", async () => {
+    plantTerms();
+    // The launch's configuration folder is sabotaged once the thread exists (a link where Toolroll makes a folder), so
+    // the start is refused after its turn began and before anything is spawned.
+    const { launcher } = counted(async () => {
+      for (const name of readdirSync(join(world.state, "threads")).filter(one => /^[0-9a-f]{32}$/.test(one) && one !== T1)) {
+        const cache = join(world.state, "threads", name, "cache");
+        try { symlinkSync(world.dir, join(cache, "provider")); } catch { /* planted already */ }
+      }
+      return STORAGE;
+    });
+    const refused = await start(launcher);
+    expect(refused).toMatchObject({ ok: false, reason: "setup-failed" });
+    const turns = world.store.handle.prepare("SELECT status, started_at FROM thread_turn WHERE request_key = ?").all(`start:${KEY}`).map(row => ({ ...row }));
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!["started_at"]).not.toBeNull();
+    const left = leftovers();
+    expect(left.rows.every(row => row["state"] === "removed")).toBe(true);
+    expect(left.folders).toEqual([]);
+    expect(left.refs).toBe("");
+    const again = await start(launcher);
+    expect(again.ok).toBe(false);
+    expect(leftovers().rows.filter(row => row["state"] !== "removed")).toEqual([]);
   });
 
   test("billing: the card's kind must be the relay credential's kind now, or nothing is made; with no credential nothing starts", async () => {
@@ -341,6 +367,40 @@ describe("admission opens only a new thread's first turn while it is being made"
     expect(ask("m-a")).toMatchObject({ ok: false, reason: "thread-not-ready" });
     expect(ask("m-b", true)).toMatchObject({ ok: true });
     expect(ask("m-c", true)).toMatchObject({ ok: false, reason: "thread-not-ready" });
+  });
+});
+
+describe("a proxy that fails to close stays listed and is tried again (more)", () => {
+  const fakeProxy = (close: () => Promise<void>) => ({ url: "http://run:x@127.0.0.1:1", secret: "x", port: 1, counts: () => ({ connections: 0, refused: 0, hosts: [], otherHosts: 0 }), close });
+
+  test("a close that throws synchronously is tried again, and closes on the retry", async () => {
+    let fails = 1, closed = 0;
+    const proxy = fakeProxy((() => { if (fails-- > 0) throw new Error("busy"); closed++; return Promise.resolve(); }) as () => Promise<void>);
+    const made = createFlexibleLauncher(world.store, { storage: async () => STORAGE, startProxy: async () => proxy });
+    if (!("prepare" in made)) throw new Error(made.message);
+    const prepared = await made.prepare({ id: T1, repo: world.project });
+    if (!prepared.ok) throw new Error(prepared.message);
+    await expect(Promise.resolve(prepared.network.close())).rejects.toThrow("busy");
+    expect(made.open()).toBe(1);
+    await prepared.network.close();
+    expect(made.open()).toBe(0);
+    expect(closed).toBe(1);
+  });
+
+  test("a shutdown while a launch is still being prepared tracks its proxy, and a later shutdown retries a failed close", async () => {
+    let fails = 1, closed = 0, letStart: () => void = () => {};
+    const started = new Promise<void>(go => { letStart = go; });
+    const proxy = fakeProxy(async () => { if (fails-- > 0) throw new Error("busy"); closed++; });
+    const made = createFlexibleLauncher(world.store, { storage: async () => STORAGE, startProxy: async () => { await started; return proxy; } });
+    if (!("prepare" in made)) throw new Error(made.message);
+    const preparing = made.prepare({ id: T1, repo: world.project });
+    await made.close();
+    letStart();
+    expect(await preparing).toMatchObject({ ok: false, reason: "no-network" });
+    expect(made.open()).toBe(1);
+    await made.close();
+    expect(made.open()).toBe(0);
+    expect(closed).toBe(1);
   });
 });
 

@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "vitest";
 import { createServer, request, type Server } from "node:http";
 import { connect, createServer as createTcpServer, type Server as TcpServer, type Socket } from "node:net";
 import { connectFirst } from "./scout-net.js";
+import { getEventListeners } from "node:events";
+import { untilClosed } from "./egress.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -256,6 +258,32 @@ describe("the run's own proxy", () => {
     expect(await connectFirst(["127.0.0.1"], (quiet.address() as { port: number }).port, 1_000, aborted.signal)).toBeNull();
     await new Promise(done => setTimeout(done, 30));
     expect(touched).toBe(0);
+  });
+
+  test("a finished request leaves nothing attached to the proxy: its lookup's cancellation goes when the lookup settles", async () => {
+    // Thousands of lookups on one proxy's signal: answered, failed and thrown alike leave no listener behind.
+    const controller = new AbortController();
+    for (let n = 0; n < 5_000; n++) {
+      expect(await untilClosed(controller.signal, async () => ["127.0.0.1"])).toEqual(["127.0.0.1"]);
+      await expect(untilClosed(controller.signal, async () => { throw new Error("no such host"); })).rejects.toThrow("no such host");
+    }
+    // A lookup that throws before it even returns a promise: a rejection, never a throw, and nothing left attached.
+    await expect(untilClosed(controller.signal, () => { throw new Error("sync"); })).rejects.toThrow("sync");
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    // One still pending is cancelled by the close, and leaves nothing either.
+    const pending = untilClosed(controller.signal, () => new Promise<string[]>(() => {}));
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+    controller.abort();
+    expect(await pending).toBeNull();
+    expect(await untilClosed(controller.signal, async () => ["x"])).toBeNull();
+    // Through a real proxy: hundreds of approved requests, then nothing left listening on its close.
+    const port = await upstream();
+    let signal: AbortSignal | null = null;
+    const proxy = await startEgressProxy({ hosts: ["approved.example"], lookup: async () => ["127.0.0.1"], addressAllowed: () => true, upstreamPort: () => port,
+      connect: (_addresses, to, closing) => { signal = closing; return new Promise(resolve => { const socket = connect(to, "127.0.0.1", () => resolve(socket)); socket.on("error", () => resolve(null)); }); } });
+    closers.push(() => proxy.close());
+    for (let n = 0; n < 300; n++) expect((await get(proxy, "http://approved.example/", { host: "approved.example", "proxy-authorization": auth(proxy) })).status).toBe(200);
+    expect(getEventListeners(signal!, "abort")).toHaveLength(0);
   });
 
   test("a plain request may name port 80 in its Host", async () => {

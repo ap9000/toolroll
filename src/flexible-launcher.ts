@@ -94,10 +94,14 @@ export function createFlexibleLauncher(store: Pick<Store, "projectNetwork">, sea
   const closerOf = (proxy: EgressProxy): (() => Promise<void>) => {
     let closing: Promise<void> | null = null;
     return () => {
-      closing ??= (async () => {
-        try { await proxy.close(); live.delete(proxy); } catch (error) { closing = null; throw error; }
-      })();
-      return closing;
+      if (closing !== null) return closing;
+      // One attempt at a time, shared by every caller; a close that throws (even synchronously: the async wrapper turns
+      // it into a rejection) leaves the proxy listed and the next call tries again.
+      const attempt: Promise<void> = (async () => { await proxy.close(); })().then(
+        () => { live.delete(proxy); },
+        (error: unknown) => { if (closing === attempt) closing = null; throw error; });
+      closing = attempt;
+      return attempt;
     };
   };
   return {
@@ -116,9 +120,10 @@ export function createFlexibleLauncher(store: Pick<Store, "projectNetwork">, sea
       }
       let proxy: EgressProxy;
       try { proxy = await startProxy(network.mode === "open" ? { hosts: [], open: true } : { hosts: network.hosts }); } catch { return refuse("no-network"); }
-      if (closed) { await proxy.close(); return refuse("no-network"); }
+      // Listed before anything else, so a shutdown that came while it was starting (or later) closes it, and retries it.
       const close = closerOf(proxy);
       live.set(proxy, close);
+      if (closed) { try { await close(); } catch { /* still listed: the next close retries it */ } return refuse("no-network"); }
       return { ok: true, storage, network: { proxyPort: proxy.port, token: proxy.secret, proxyEnv: proxyEnv(proxy, "proxy-only"), close } };
     },
     async close() {

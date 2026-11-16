@@ -43,7 +43,7 @@ import { withCheckoutLock } from "./git-views.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
 import type { FlexibleClock } from "./flexible-turns.js";
-import { defaultCustodyIO, holdLaunch, recordGateShut, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
+import { defaultCustodyIO, holdLaunch, recordGateShut, recordLaunchOpened, recordLive, recordNeverStarted, recordSpawning, settleLaunch, unsettledLaunch, type FlexibleLaunchMeta, type SettleResult } from "./flexible-launch.js";
 import { readProjectRefs, saveRefSnapshot } from "./flexible-refs.js";
 import { projectRowKnown, type Store } from "./store.js";
 import { poolRootOf, type Runner } from "./worktree.js";
@@ -720,6 +720,14 @@ async function spawnLocked(store: Store, input: FlexibleThreadSpawnInput, file: 
     stopUnopenedLaunch(child);
     recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: `stopped before it ran: ${shut}` });
     return refuse("thread-not-ready", shut);
+  }
+  // The launch is recorded as opened before the gate opens: a record that can't be written keeps it shut.
+  try { recordLaunchOpened(store, { launch: record.id, thread: input.id, turn: input.launch.turn }); }
+  catch {
+    try { child.stdin?.destroy(); } catch { /* already closed */ }
+    stopUnopenedLaunch(child);
+    recordGateShut(store, { launch: record.id, thread: input.id, pid: pid!, detail: "stopped before it ran: its launch couldn't be recorded" });
+    return refuse("thread-not-ready", "its launch couldn't be recorded");
   }
   child.stdin!.write("start\n");
   return { ok: true, pid: pid!, launchId: record.id, launch, fenceDigest, child };

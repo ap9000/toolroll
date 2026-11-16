@@ -43,7 +43,7 @@ import {
   type FlexibleRequestCard, type FlexibleRequestKind,
 } from "./flexible-answers.js";
 import { startIdentityOf, type CustodyIO } from "./flexible-custody.js";
-import { defaultCustodyIO } from "./flexible-launch.js";
+import { defaultCustodyIO, flexibleTurnLaunched } from "./flexible-launch.js";
 import { flexibleRelayBilling, startFlexibleRelay, type FlexibleRelayServer } from "./flexible-relay.js";
 import { flexibleThread, prepareFlexibleThread, removeFlexibleThread, stopFlexibleThreadAgent } from "./flexible-thread.js";
 import { admitFlexibleTurn, finishFlexibleTurn, flexibleTurn, withdrawFlexibleTurn, type FlexibleClock } from "./flexible-turns.js";
@@ -572,11 +572,19 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
   let turn: string | null = null;
   const prepared = await prepareFlexibleThread(store, { repo: input.repo, base: "HEAD", by: input.by.name, now: clock(),
     reserve: id => {
-      const same = store.handle.prepare(`SELECT t.id AS turn, t.thread AS thread FROM thread_turn t JOIN flexible_thread f ON f.id = t.thread
-        WHERE t.owner = ? AND t.request_key = ? AND t.status <> 'withdrawn' AND f.state IN ('preparing', 'ready') ORDER BY t.admitted_at LIMIT 1`).get(input.by.name, requestKey);
+      const same = store.handle.prepare(`SELECT t.id AS turn, t.thread AS thread, t.status AS status FROM thread_turn t JOIN flexible_thread f ON f.id = t.thread
+        WHERE t.owner = ? AND t.request_key = ? AND t.status <> 'withdrawn' AND f.state IN ('preparing', 'ready') ORDER BY t.admitted_at DESC LIMIT 1`).get(input.by.name, requestKey);
       if (same !== undefined) {
-        replay = { thread: String(same["thread"]), turn: String(same["turn"]) };
-        return { ok: false as const, reason: "replayed", message: "This thread has already started." };
+        // The same start again: its thread back only when its agent really launched (its start gate opened), never
+        // because its turn began. One still on its way is refused in plain words; one that ended without launching
+        // anything doesn't count, and this start is made afresh.
+        if (flexibleTurnLaunched(store, String(same["turn"]))) {
+          replay = { thread: String(same["thread"]), turn: String(same["turn"]) };
+          return { ok: false as const, reason: "replayed", message: "This thread has already started." };
+        }
+        if (same["status"] === "admitted" || same["status"] === "running") {
+          return { ok: false as const, reason: "start-in-progress", message: "This thread is still starting. Nothing new was started; look at your threads in a moment." };
+        }
       }
       const billing = flexibleRelayBilling(store);
       if (!billing.ok) return billing;
@@ -610,12 +618,12 @@ export async function startFlexibleThread(store: Store, sessions: FlexibleSessio
   return { ok: true, thread, turn: first, replayed: false };
 }
 
-/** A new thread whose first turn launched nothing: the turn withdrawn, its session (relay) stopped, its repository and
- * keep-ref removed (F2a removeFlexibleThread, which refuses while anything of an agent may still run, so a thread
- * whose agent did start is left as it is). */
+/** A new thread whose start was refused (or threw), at whatever point: before its turn began, after it began but
+ * before its agent launched, or after a launch nothing could attach to. The turn withdrawn if it hadn't begun, its
+ * session stopped (any agent of it stopped and its exit verified, its relay closed), its repository and keep-ref
+ * removed (F2a removeFlexibleThread, which refuses while anything of an agent may still run). */
 async function discardRefusedStart(store: Store, sessions: FlexibleSessions, input: { thread: string; turn: string; by: string; detail: string; clock: FlexibleClock }): Promise<void> {
-  try { withdrawFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, detail: input.detail.slice(0, 500), clock: input.clock }); } catch { /* already ended */ }
-  if (flexibleTurn(store, input.turn)?.startedAt != null) return;
+  try { withdrawFlexibleTurn(store, { turn: input.turn, holder: sessions.holder, detail: input.detail.slice(0, 500), clock: input.clock }); } catch { /* already begun or ended */ }
   try { await stopFlexibleThreadSession(store, sessions, { thread: input.thread, reason: "its start was refused", clock: input.clock }); } catch { /* nothing ran */ }
   try { await removeFlexibleThread(store, { id: input.thread, by: input.by, now: input.clock() }); } catch { /* left for its owner to remove */ }
 }
