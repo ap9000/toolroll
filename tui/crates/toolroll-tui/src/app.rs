@@ -673,7 +673,7 @@ impl App {
             file_wanted: None,
             diff_gen: 0,
             status: None,
-            split: 36,
+            split: 46,
             dragging: false,
             owned,
             project,

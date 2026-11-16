@@ -2,61 +2,76 @@
 source: crates/toolroll-tui/tests/look.rs
 expression: "themed(ThemeName::Terminal, Depth::TrueColor, Some(Rgb(255, 255, 255)))"
 ---
-┌ Toolroll · shop ──────────────────────────────────────────── $1.84 today · plan 62% · 2 need you ┐
-│Needs you 2                         │Live · Steps · Diff · Terminal                               │
-│● Fix the login redirect    Question│Upgrade the test runner                                      │
-│● Add CSV export              Result│claude sonnet · Building now · 4m 12s · $0.31 · build #7     │
-│                                    │Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready            │
-│Working 2                           │  Started.                                                   │
-│◐ Upgrade the test runner   Building│  Reading the test setup before switching runners.           │
-│◐ Rate-limit middleware     Planning│✓ Edited vitest.config.ts  +14 −3                            │
-│                                    │✓ Asked a helper: Check the CSV export edge cases            │
-│Done today 1                        │  ┌ Helper: Check the CSV export edge cases                  │
-│✓ Bump dependencies         Complete│  │  Empty rows export as a header line only.                │
-│                                    │  │· Read src/export.ts                                      │
-│                                    │  └ Helper finished                                          │
-│                                    │✓ Ran npm test  212 passed (3.1 s)                           │
-│                                    │  Tests pass on the new runner. Removing the old config next.│
-│                                    │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                    │                                                             │
-│                                                                                                  │
-│j/k move  ⏎ open  s steer  a accept  n new  : all actions                                         │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Toolroll   shop   $1.84 today · plan 62%                                ◐ 2 working    2 need you  
+                                                                                                    
+   Work  5                                        Live    Steps    Diff    Terminal                 
+                                                Upgrade the test runner   Building                  
+   Needs you 2                                  claude sonnet · Building now · 4m 12s · $0.31 · …   
+   ● Fix the login redirect       Question      Plan ✓ · Approval ✓ · Build ◐ 4m · Checks · Ready   
+     shop · 3m ago                                                                                  
+   ● Add CSV export                 Result        Worked · 3 steps                                  
+     shop · 12m ago                               ✓ Edited vitest.config.ts  +14 −3                 
+                                                  ✓ Asked a helper: Check the CSV export edge       
+   Working 2                                        cases                                           
+   ◐ Upgrade the test runner      Building          ┌ Helper: Check the CSV export edge cases       
+     shop · 2m ago                                  │  Empty rows export as a header line only.     
+   ◐ Rate-limit middleware        Planning          │· Read src/export.ts                           
+     shop · 7m ago                                  └ Helper finished                               
+                                                  ✓ Ran npm test  212 passed (3.1 s)                
+   Done today 1                                                                                     
+   ✓ Bump dependencies            Complete                                                          
+     shop · 3h ago                              Tests pass on the new runner. Removing the old      
+                                                config next.                                        
+                                                                                                    
+                                                                                                    
+                                                                                                    
+   j/k  move   ⏎  open   s  steer   a  accept   n  new   :  all actions                             
 
-abbbbbbbbbaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacccccccccccccccccccccccccbbbbbbbbbbba
-abbbbbbbbbccdddddddddddddddddddddddddaeeeeccccccccccccccccccccccccccddddddddddddddddddddddddddddddda
-abbbbbbbbbbbbbbbbbbbbbbbbddddccccccccabbbbbbbbbbbbbbbbbbbbbbbdddddddddddddddddddddddddddddddddddddda
-abbbbbbbbbbbbbbbbddddddddddddddccccccaccccccccccccccccccccccccccccccccccccccccccccccccccccccccddddda
-addddddddddddddddddddddddddddddddddddadddddfcccdddddddddfcccddddddgccccccccccccccccccccdddddddddddda
-abbbbbbbccdddddddddddddddddddddddddddaccccccccccddddddddddddddddddddddddddddddddddddddddddddddddddda
-ahhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-aggddddddddddddddddddddddddddccccccccaffdddddddddddddddddddddddccccccccdddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaffddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-abbbbbbbbbbccddddddddddddddddddddddddaccccbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbdddddddddddddddddda
-affddddddddddddddddddddddddddccccccccacccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddacccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddacccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaffddddddddddddccccccccccccccccccccddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-addddddddddddddddddddddddddddddddddddaddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-adddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddda
-abbbcccccddbcccccddbccccccddbcccccccddbccccddbccccccccccccddddddddddddddddddddddddddddddddddddddddda
+abbbbbbbbaaccccccddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeaaffffffffffffa
+aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+agghhhhhiiiggggggggggggggggggggggggggggggggggaggjjjjjjjjiiiiiiiiiiiiiiiiiiiiiiiiiiiiigggggggggggggga
+aggggggggggggggggggggggggggggggggggggggggggggagghhhhhhhhhhhhhhhhhhhhhhhggeeeeeeeeeegggggggggggggggga
+agghhhhhhhhhfffggggggggggggggggggggggggggggggaggkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkgga
+agghhhhhhhhhhhhhhhhhhhhhhhhggggggffffffffffggaggggggglkkkggggggggglkkkggggggmkkkkkkkkkkkkkkkkkkkkgga
+aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggnnoooooooooooooooonnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggkkkkkkkkkkkkkkkkggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnqqqqqqqqnnnnnnnnnnnnnngga
+aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+agghhhhhhhiiiggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggrrsssssssssssssssssssssssttttteeeeeeeeeeggaggnnqqqquuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuunnnngga
+aggvvvvvvvvvvvvvvvtttttttttttttttttttttttttggaggnnqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggmmggggggggggggggggggggggggggggeeeeeeeeeeggaggnnqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggnnqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnqqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnngga
+agghhhhhhhhhhiiigggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggllggggggggggggggggggggggggggggwwwwwwwwwwggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aacccccdddddaacccdddddaacccddddddaacccdddddddaacccddddaacccddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
-a = fg #d4d4d4 bg terminal
-b = fg terminal bg terminal bold
-c = fg #666666 bg terminal
-d = fg terminal bg terminal
-e = fg terminal bg terminal bold underlined
-f = fg #218358 bg terminal
-g = fg #0d74ce bg terminal
-h = fg #171717 bg #d4d4d4
+a = fg terminal bg #ededed
+b = fg terminal bg #ededed bold
+c = fg terminal bg #ebebeb bold
+d = fg #666666 bg #ededed
+e = fg #0d74ce bg #ddecf8
+f = fg terminal bg terminal bold reversed
+g = fg terminal bg terminal
+h = fg terminal bg terminal bold
+i = fg #666666 bg #ebebeb
+j = fg #171717 bg #d4d4d4 bold
+k = fg #666666 bg terminal
+l = fg #218358 bg terminal
+m = fg #0d74ce bg terminal
+n = fg terminal bg #f7f7f7
+o = fg #666666 bg #f7f7f7 bold
+p = fg #218358 bg #f7f7f7
+q = fg #666666 bg #f7f7f7
+r = fg #0d74ce bg #d4d4d4
+s = fg terminal bg #d4d4d4 bold
+t = fg #171717 bg #d4d4d4
+u = fg terminal bg #f7f7f7 bold
+v = fg #666666 bg #d4d4d4
+w = fg #218358 bg #e0eee8

@@ -272,9 +272,106 @@ pub fn lines(t: &Transcript, width: usize, from: usize) -> Vec<Line<'static>> {
     }
     let main: Vec<&LiveRecord> = tail.iter().filter(|r| r.stream().is_none()).collect();
     let mut out = vec![];
-    record_lines(&mut out, &main, &done, "", width, &children, &subs, !t.live);
+    // The agent's words as paragraphs; the steps between them grouped into one raised card, "Worked · 3 steps".
+    let inner = width.saturating_sub(4).max(8);
+    let mut group: Vec<Line<'static>> = vec![];
+    let mut steps = 0usize;
+    let mut working = false;
+    let flush = |out: &mut Vec<Line<'static>>,
+                 group: &mut Vec<Line<'static>>,
+                 steps: &mut usize,
+                 working: &mut bool| {
+        if group.is_empty() {
+            return;
+        }
+        let head = format!(
+            "{} · {} {}",
+            if *working { "Working" } else { "Worked" },
+            steps,
+            if *steps == 1 { "step" } else { "steps" }
+        );
+        card(out, head, std::mem::take(group), width);
+        *steps = 0;
+        *working = false;
+    };
+    for r in main {
+        match r {
+            LiveRecord::Say { t: said, .. } => {
+                flush(&mut out, &mut group, &mut steps, &mut working);
+                for text in said {
+                    for l in wrap(&clean(text), width.max(8)) {
+                        out.push(Line::raw(l));
+                    }
+                    out.push(Line::raw(""));
+                }
+            }
+            LiveRecord::Step { id, s, .. } => {
+                steps += 1;
+                // Still going: no answer yet, and (for a helper's step) a helper not yet ended.
+                let helpers_running = children.get(id).is_some_and(|streams| {
+                    streams.iter().any(|st| stream_end(&subs, *st).is_none())
+                });
+                let unanswered = !done.contains_key(&(*s, id.clone()))
+                    && (!children.contains_key(id) || helpers_running);
+                if t.live && unanswered {
+                    working = true;
+                }
+                record_lines(
+                    &mut group,
+                    &[r],
+                    &done,
+                    "",
+                    inner,
+                    &children,
+                    &subs,
+                    !t.live,
+                );
+            }
+            _ => {
+                let mut said = vec![];
+                record_lines(&mut said, &[r], &done, "", width, &children, &subs, !t.live);
+                if said.is_empty() {
+                    continue;
+                }
+                flush(&mut out, &mut group, &mut steps, &mut working);
+                out.extend(said);
+            }
+        }
+    }
+    flush(&mut out, &mut group, &mut steps, &mut working);
     for s in orphans {
         sub_lines(&mut out, s, &subs, &done, "", width, !t.live);
     }
     out
+}
+
+/// A card of steps: its head, then its lines two columns in, on a raised block a row taller than its words (without
+/// fills: the head, the lines indented, and a blank line after).
+fn card(out: &mut Vec<Line<'static>>, head: String, lines: Vec<Line<'static>>, width: usize) {
+    let fills = crate::theme::fills();
+    let raised = crate::theme::raised();
+    let pad = |l: Line<'static>| -> Line<'static> {
+        let mut spans = vec![Span::raw("  ")];
+        spans.extend(l.spans);
+        let l = Line::from(spans);
+        if fills {
+            crate::sheet::band(l, width, raised)
+        } else {
+            l
+        }
+    };
+    if fills {
+        out.push(pad(Line::raw("")));
+    }
+    out.push(pad(Line::from(Span::styled(
+        head,
+        dim().add_modifier(ratatui::style::Modifier::BOLD),
+    ))));
+    for l in lines {
+        out.push(pad(l));
+    }
+    if fills {
+        out.push(pad(Line::raw("")));
+    }
+    out.push(Line::raw(""));
 }
