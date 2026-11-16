@@ -1457,7 +1457,9 @@ export function createPagesHandlers(runtime: ServerRuntime, work: WorkListDeps) 
     // The cost line: the Limits view's own audience (an instance operator on a browser-style session), else nothing.
     const spend = (() => {
       if (who.via !== "cookie" || !store.isInstanceOperator(who.name)) return null;
-      try { return spendLineOf(store.monthSpendCached(now).items, store.providerLimits(), now); } catch { return null; }
+      // Today's items only (one read of the day, never the month's), and the plan windows the providers last reported.
+      const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+      try { return spendLineOf(store.spendBetween(dayStart, new Date(now.getTime() + 1).toISOString()), store.providerLimits(), now); } catch { return null; }
     })();
     const needOf = (row: BrowserHomeRow) => ({ id: row.id, title: row.title, href: row.href, project: row.project, age: row.age, state: row.state, ask: row.ask,
       ...(row.group === undefined ? {} : { group: row.group }), reason: row.reason, line: row.line, action: row.action, question: row.question });
