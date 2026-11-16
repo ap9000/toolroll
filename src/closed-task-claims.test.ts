@@ -255,6 +255,27 @@ describe("strikes used up on a closed task", () => {
     notifications: count("SELECT COUNT(*) AS n FROM notification"),
   });
 
+  test("a scout's failures never send its words out: backoff, stall and a malformed report all speak in Toolroll's words", () => {
+    const ref = task("t-1");
+    approved("t-1");
+    const said = "SCOUT-SAID: see /Users/me/shop/notes.md and the token abc123";
+    const sent = () => store.handle.prepare("SELECT subject, body FROM notification").all().map(row => `${String(row["subject"])}\n${String(row["body"])}`).join("\n");
+    for (const [n, at] of [[1, 0], [2, 10 * 60_000], [3, 30 * 60_000]] as const) {
+      const run = attempt(ref, `lease-${n}`, later(at), "scout");
+      finalize(store, `lease-${n}`, { kind: "scout-failure", runId: run, taskId: "t-1", failure: "failure", message: said, now: later(at + 1_000) });
+      store.handle.prepare("DELETE FROM hold WHERE task_ref = ? AND owner_kind = 'backoff'").run(ref);
+    }
+    expect(sent()).toContain("The scouting attempt stopped");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM notification WHERE kind = 'attempts-exhausted'").get()?.["n"]).toBe(1);
+    store.handle.prepare("DELETE FROM hold WHERE task_ref = ?").run(ref);
+    store.handle.prepare("UPDATE task_ref SET strikes = 0 WHERE id = ?").run(ref);
+    store.setTaskState("t-1", "queued", later(40 * 60_000));
+    const bad = attempt(ref, "lease-4", later(40 * 60_000), "scout");
+    finalize(store, "lease-4", { kind: "scout-failure", runId: bad, taskId: "t-1", failure: "malformed", malformed: "report", message: said, now: later(40 * 60_000 + 1_000) });
+    expect(sent()).toContain("The scout's report failed its checks");
+    expect(sent()).not.toContain("SCOUT-SAID");
+  });
+
   for (const role of ["builder", "scout"] as const) {
     for (const state of CLOSED) {
       test(`${role}, task ${state} while the claim was live: its state stays, no incident, hold or page`, () => {

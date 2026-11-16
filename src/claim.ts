@@ -1259,7 +1259,9 @@ function sealFailure(store: Store, leaseId: string, args: FailureSeal): FailureD
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: the commit itself failed`,
-        body: `${oneLine(message, 200)}\nThe work is preserved, uncommitted, in ${args.worktree}. Prove it and \`toolroll task requeue ${taskId}\`.`,
+        // Toolroll's own words (sent outside Toolroll): the commit's output, which can carry a hook's or the agent's
+        // words, and the checkout's folder stay on the run.
+        body: `The commit itself failed. The work is preserved, uncommitted, in the task's checkout. Prove it and \`toolroll task requeue ${taskId}\`.`,
       },
       now,
     );
@@ -1782,7 +1784,8 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: the planner's ${args.malformed === "decision" ? "question" : "plan"} failed validation`,
-        body: `${oneLine(message, 300)}\nResolve the incident to let planning retry.`,
+        // Toolroll's own words, never the attempt's message (it can carry what the planner wrote): sent outside Toolroll.
+        body: `The planner's ${args.malformed === "decision" ? "question" : "plan"} failed its checks; what it wrote is on the task.\nResolve the incident to let planning retry.`,
       },
       now,
     );
@@ -1810,7 +1813,7 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: planning stalled after ${strikes} straight failures`,
-        body: `Last failure: ${oneLine(message, 200)}\nResolve the incident to let planning retry, or write the scope yourself.`,
+        body: `${OUTBOUND_ATTEMPT_WORDS.plan}\nResolve the incident to let planning retry, or write the scope yourself.`,
       },
       now,
     );
@@ -1837,7 +1840,7 @@ function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): 
       dedupeKey: `plan-run:${runId}:failed`,
       kind: "plan-failed",
       subject: `${taskId}: planning attempt failed, retry ${strikes}/${MAX_PLAN_STRIKES}`,
-      body: `${oneLine(message, 200)}\nNext attempt no earlier than ${until.toISOString()}.`,
+      body: `${OUTBOUND_ATTEMPT_WORDS.plan}\nNext attempt no earlier than ${until.toISOString()}.`,
     },
     now,
   );
@@ -1957,7 +1960,8 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId}: the scout's ${args.malformed === "decision" ? "question" : "report"} failed validation`,
-        body: `${oneLine(message, 300)}\nResolve the incident to let scouting retry.`,
+        // Toolroll's own words, never the attempt's message (it can carry what the scout wrote): sent outside Toolroll.
+        body: `The scout's ${args.malformed === "decision" ? "question" : "report"} failed its checks; what it wrote is on the task.\nResolve the incident to let scouting retry.`,
       },
       now,
     );
@@ -1988,7 +1992,7 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
         pushClass: "attention",
         link: `/r/${runId}`,
         subject: `${taskId} stalled after ${strikes} straight scouting failures`,
-        body: `Last failure: ${oneLine(message, 200)}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
+        body: `${OUTBOUND_ATTEMPT_WORDS.scout}\nIt will not be retried. Read the runs, then \`toolroll task requeue ${taskId}\`.`,
       },
       now,
     );
@@ -2013,7 +2017,7 @@ function sealScoutFailure(store: Store, leaseId: string, args: ScoutFailureSeal)
       dedupeKey: `run:${runId}:failed`,
       kind: "scout-failed",
       subject: `${taskId}: scouting attempt failed, retry ${strikes}/${MAX_STRIKES}`,
-      body: `${oneLine(message, 200)}\nNext attempt no earlier than ${until.toISOString()}.`,
+      body: `${OUTBOUND_ATTEMPT_WORDS.scout}\nNext attempt no earlier than ${until.toISOString()}.`,
     },
     now,
   );
@@ -2148,3 +2152,7 @@ function outboundFailureWords(failureClass: FailureClass): string {
   const words = RUN_REASON_WORDS[failureClass] ?? "the attempt stopped";
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
+
+/** A planning or scouting attempt that failed, in Toolroll's own words, for what is sent outside Toolroll (chat, push,
+ * email, webhooks): never the attempt's message, which can carry what the agent wrote. The message stays on the run. */
+const OUTBOUND_ATTEMPT_WORDS = { plan: "The planning attempt stopped; what happened is on the task.", scout: "The scouting attempt stopped; what happened is on the task." } as const;

@@ -99,6 +99,28 @@ describe("sign-in pauses", () => {
   };
   const authNotices = () => store.handle.prepare("SELECT dedupe_key, kind, subject, body FROM notification WHERE kind IN ('auth-expired', 'auth-restored') ORDER BY id").all();
 
+  test("no outbound body carries an attempt's own words: a planner's backoff, stall and malformed plan, and a failed commit", () => {
+    const said = "AGENT-SAID: see /Users/me/shop/notes.md and https://x.example/?token=abc";
+    const sent = () => store.handle.prepare("SELECT subject, body FROM notification").all().map(row => `${String(row["subject"])}\n${String(row["body"])}`).join("\n");
+    const plan = (taskId: string) => {
+      const one = attempt(taskId, "claude", "planner");
+      return finalize(store, one.lease, { kind: "plan-failure", runId: one.runId, taskId, failure: "failure", message: said, now: at(1_500) });
+    };
+    expect(plan("t-plan-1")).toMatchObject({ ok: true, disposition: "backoff" });
+    // The last strike: planning stalls.
+    store.handle.prepare("UPDATE task_ref SET plan_strikes = 2 WHERE id = ?").run(store.refFor("built-in", "t-plan-2").id);
+    expect(plan("t-plan-2")).toMatchObject({ ok: true, disposition: "exhausted" });
+    const malformed = attempt("t-plan-3", "claude", "planner");
+    expect(finalize(store, malformed.lease, { kind: "plan-failure", runId: malformed.runId, taskId: "t-plan-3", failure: "malformed", message: said, now: at(1_500) })).toMatchObject({ ok: true, disposition: "malformed-incident" });
+    const build = attempt("t-commit");
+    expect(finalize(store, build.lease, { kind: "failure", runId: build.runId, taskId: "t-commit", failureClass: "commit-failure", message: said, worktree: "/Users/me/pool/t-commit", now: at(1_000) })).toMatchObject({ ok: true, disposition: "commit-incident" });
+    const words = sent();
+    expect(words).toContain("The planning attempt stopped");
+    expect(words).toContain("The planner's plan failed its checks");
+    expect(words).toContain("The commit itself failed");
+    expect(words).not.toMatch(/AGENT-SAID|\/Users\/me|token=abc/);
+  });
+
   test("c2: an auth-expired run takes no strike and no retry, requeues its task, and pauses only its provider", () => {
     const { ref, runId, sealed } = failAuth("t-1");
     expect(sealed).toEqual({ ok: true, disposition: "auth-expired", provider: "claude" });
