@@ -19,6 +19,7 @@ import { processMayBeAlive } from "./process-liveness.js";
 import { readDesktopRecoveryView, readDesktopUpdateJournal, supervisorPidsOf, updateRequestIs, type DesktopRecoveryView, type DesktopUpdateJournal, type DesktopUpdatePhase } from "./contracts/update-journal.js";
 import type { ContractIssue } from "./contracts/contract.js";
 import { sleep as defaultSleep } from "./sleep.js";
+import { durableJson } from "./durable-json.js";
 
 /** Loaded on first use (as backup.ts and store.ts do), so modules that only import this one (the console,
  * and tests that load it in a browser-like environment) never need `node:sqlite` itself. */
@@ -57,18 +58,8 @@ const payload = (j: UpdateJournal) => join(j.workDir, "Updater.app");
 const standby = (j: UpdateJournal) => join(j.workDir, "Standby.app");
 const atInstalled = (bundle: DesktopBundle, j: UpdateJournal) => ({ ...bundle, path: j.old.path });
 
-/** Durable receipts are private and independent of the app being replaced. */
-export function durableJson(file: string, value: unknown): void {
-  const temp = `${file}.${randomUUID()}.tmp`;
-  const fd = openSync(temp, "wx", 0o600);
-  try { writeFileSync(fd, JSON.stringify(value, null, 2)); fsyncSync(fd); }
-  finally { closeSync(fd); }
-  renameSync(temp, file);
-  if (process.platform !== "win32") {
-    const directory = openSync(dirname(file), "r");
-    try { fsyncSync(directory); } finally { closeSync(directory); }
-  }
-}
+/** Durable receipts are private and independent of the app being replaced (src/durable-json.ts; still exported here). */
+export { durableJson };
 function save(j: UpdateJournal, phase: Phase, detail: string): void {
   j.phase = phase; j.detail = detail; j.updatedAt = new Date().toISOString();
   durableJson(join(j.workDir, "receipt.json"), j); durableJson(journalPath(j.stateDir), j);

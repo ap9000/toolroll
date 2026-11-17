@@ -21,7 +21,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { durableJson } from "./desktop-update.js";
+import { durableJson } from "./durable-json.js";
 import { removeUpdateGate, updateGateOwned } from "./desktop-update-gate.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { BEFORE_SWAP, RELEASED } from "./deploy-phase.js";
