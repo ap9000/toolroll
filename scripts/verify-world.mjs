@@ -1,8 +1,17 @@
 /** Runtime verification's throwaway computer. No processes start on import. */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+// Suppress only SQLite's experimental notice in this reader, preserving every other warning.
+const emitWarning = process.emitWarning;
+process.emitWarning = function (warning, ...args) {
+  if (String(warning).includes('SQLite is an experimental feature')
+    && (args[0] === 'ExperimentalWarning' || args[0]?.type === 'ExperimentalWarning')) return;
+  return emitWarning.call(this, warning, ...args);
+};
+let DatabaseSync;
+try { ({ DatabaseSync } = await import('node:sqlite')); }
+finally { process.emitWarning = emitWarning; }
 import { AGENT_CLIS, assertIsolated, isolatedEnvironment } from './isolated-env.mjs';
 import { SAFE_GIT_BASE } from './deploy-git.mjs';
 import { scriptedProvider } from './fixtures/scripted-provider.mjs';
@@ -55,6 +64,9 @@ export function createWorld(root, scenario = 'smoke', outer = process.env) {
   const exe = (name, text) => { writeFileSync(join(world.bin, name), text, { mode: 0o755 }); chmodSync(join(world.bin, name), 0o755); };
   // Reuse the scripted provider's wire protocol, auth detection and fenced-build spool handling.
   const provider = scriptedProvider(join(root, 'provider'), { homes: [world.home] });
+  // Bake the flag into the actual provider shim: fenced builds need not forward NODE_* variables.
+  const shim = provider.shims.claude;
+  writeFileSync(shim, readFileSync(shim, 'utf8').replace(word(process.execPath), `${word(process.execPath)} --no-warnings`));
   const math = 'export const add = (a, b) => a + b;\nexport const subtract = (a, b) => a - b;\n';
   const test = "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { subtract } from '../src/math.js';\ntest('subtracts', () => assert.equal(subtract(5, 2), 3));\n";
   provider.add('runtime-verification', { role: 'builder', when: [/subtract\(a, b\)/], times: scenario === 'agent-error' ? undefined : 1,

@@ -40,6 +40,19 @@ export function validateMap(map, source) {
     }
     for (const key of entry.dialogKeys ?? []) if (!map.dialogKeys[key]) throw new Error(`Undeclared dialog key: ${key}`);
   }
+  const checked = new Set(), visiting = new Set();
+  const visit = entry => {
+    if (visiting.has(entry.id)) throw new Error(`Cyclic dependency: ${entry.id}`);
+    if (checked.has(entry.id)) return;
+    visiting.add(entry.id);
+    for (const id of entry.dependsOn ?? []) {
+      const dependency = map.features.find(f => f.id === id);
+      if (!dependency || dependency.scenario !== entry.scenario) throw new Error(`Invalid dependency ${id} for ${entry.id}`);
+      visit(dependency);
+    }
+    visiting.delete(entry.id); checked.add(entry.id);
+  };
+  for (const entry of map.features) visit(entry);
   for (const entry of map.intentionallyUnmapped) {
     const spec = actions.get(entry.action);
     if (!spec || !entry.reason || covered.has(entry.action)) throw new Error(`Invalid unmapped action: ${entry.action}`);
@@ -50,9 +63,10 @@ export function validateMap(map, source) {
   return true;
 }
 export function parseArgs(args) {
-  const options = { scenarios: [], features: [], keep: false, tarball: null, out: null };
+  const options = { scenarios: [], features: [], keep: false, help: false, tarball: null, out: null };
   for (let i = 0; i < args.length; i++) {
     const name = args[i];
+    if (name === '--help' || name === '-h') { options.help = true; continue; }
     if (name === '--keep') { options.keep = true; continue; }
     if (!['--scenario', '--features', '--tarball', '--out'].includes(name) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`Invalid argument: ${name}`);
     const value = args[++i];
@@ -65,13 +79,66 @@ export function parseArgs(args) {
   for (const id of options.features) if (!featureMap.features.some(f => f.id === id)) throw new Error(`Unknown feature: ${id}`);
   return options;
 }
+export function usage() {
+  return `Usage: node scripts/verify.mjs [options]
+
+  --help, -h          Show this help without starting verification
+  --scenario <name>   Select a scenario (repeatable)
+  --features <ids>    Select comma-separated feature ids (repeatable)
+  --tarball <path>    Install and verify this package with scripts disabled
+  --out <folder>      Write evidence to an empty folder (in-repo: evidence/)
+  --keep              Retain the temporary world after stopping its processes
+
+Scenarios: ${SCENARIOS.join(', ')}
+Features by scenario:
+${SCENARIOS.map(s => `  ${s}: ${featureMap.features.filter(f => f.scenario === s).map(f => f.id).join(', ')}`).join('\n')}
+
+No selectors runs every feature. Both selectors run their intersection.
+Dependencies run as needed; only selected features receive verdicts.
+Example: node scripts/verify.mjs --features welcome,new-task,help
+`;
+}
+export function reportSummary(report) {
+  const failed = report.features.filter(f => f.status !== 'PASS');
+  return `PASS ${report.features.length - failed.length} · FAIL ${failed.length} of ${report.features.length}`
+    + (failed.length ? `\nFailing ids: ${failed.map(f => f.id).join(', ')}` : '');
+}
+export const expectedFailureReason = scenario => scenario === 'agent-error' ? 'agent-error' : 'retryable-infra';
+
+/** Run declared prerequisites once, but never let one failure suppress independent checks. */
+export async function runFeatures(selected, map, context, exerciseFeature = exercise, reset = toBase) {
+  const results = new Map();
+  const visit = async feature => {
+    if (results.has(feature.id)) return results.get(feature.id);
+    const start = Date.now();
+    let result;
+    for (const id of feature.dependsOn ?? []) {
+      const prerequisite = await visit(map.features.find(f => f.id === id));
+      if (prerequisite.status !== 'PASS') {
+        result = { status: 'FAIL', excerpt: '', error: `Prerequisite failed: ${id}` };
+        break;
+      }
+    }
+    if (!result) try {
+      await reset(context.term, context.world);
+      result = { status: 'PASS', ...await exerciseFeature(feature, context) };
+    } catch (error) {
+      result = { status: 'FAIL', excerpt: context.term.screen.text(), error: error.message };
+    }
+    result = { id: feature.id, scenario: feature.scenario, elapsedMs: Date.now() - start, ...result };
+    results.set(feature.id, result);
+    return result;
+  };
+  for (const feature of selected) await visit(feature);
+  return selected.map(f => results.get(f.id));
+}
 export function finishReport(report) {
   report.ok = report.sessions.length > 0 && report.features.length > 0 && report.features.every(f => f.status === 'PASS')
     && report.sessions.every(s => s.outbound?.status === 'PASS' && !s.error && !s.cleanupError);
   return report;
 }
 export function reportMarkdown(report) {
-  return `# Runtime verification\n\n${report.ok ? 'PASS' : 'FAIL'} · ${report.features.length} features\n\n`
+  return `# Runtime verification\n\n${reportSummary(report)}\n\nOverall: ${report.ok ? 'PASS' : 'FAIL'}\n\n`
     + report.sessions.map(s => `- ${s.scenario}: first text ${s.timings.firstTextMs ?? 'unseen'} ms; workbench ${s.timings.workbenchMs ?? 'unseen'} ms; outbound ${s.outbound?.status ?? 'FAIL'}${s.error ? `; ${s.error}` : ''}${s.cleanupError ? `; cleanup: ${s.cleanupError}` : ''}`).join('\n') + '\n\n'
     + report.features.map(f => `## ${f.id}: ${f.status}\n\n${f.error ?? f.state ?? ''}\n\n\`\`\`text\n${f.excerpt}\n\`\`\`\n`).join('\n');
 }
@@ -219,8 +286,8 @@ export async function retryAttempt(term, lastRun, taskId, waitFor = until) {
 
 /** Back to the workbench's own screen between features: Esc out of any screen or dialog a feature left open (the
  * Agents screen, help, the palette, Settings, a composer), waiting on the screen fact each time, never a fixed sleep. */
-const OVERLAY = /Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel/;
-async function toBase(term) {
+const OVERLAY = /Esc\s+back|New task:|New thread:| Commands | Keys | Settings |Send back .*saying|Esc\s+cancel|Build approves exactly this:|Any other key cancels/;
+async function toBase(term, world = null) {
   for (let tries = 0; tries < 4 && OVERLAY.test(term.text()); tries++) {
     const before = term.text();
     // The Agents screen closes on A as well as Esc; use it when that screen is the one showing.
@@ -228,6 +295,14 @@ async function toBase(term) {
     await until(() => term.text() !== before, 'the screen answered', 10_000).catch(() => {});
   }
   if (OVERLAY.test(term.text())) throw new Error('Could not return to the workbench screen between features');
+  // Every feature starts on the Live tab: the Diff review keeps its own keys (Esc and n stay there).
+  if (!world) return;
+  const tab = () => { try { return Object.values(JSON.parse(readFileSync(join(world.env.XDG_STATE_HOME, 'toolroll/view.json'), 'utf8')).projects ?? {})[0]?.tab; } catch { return undefined; } };
+  for (let presses = 0; tab() !== undefined && tab() !== 'live'; presses++) {
+    if (presses >= 6) throw new Error('The Live tab never came back into focus between features');
+    const before = tab();
+    term.send('\t'); await until(() => tab() !== before, 'the tab moved', 10_000);
+  }
 }
 
 async function exercise(feature, context) {
@@ -269,7 +344,7 @@ async function exercise(feature, context) {
       const before = projectView()?.tab;
       term.send('\t'); await until(() => projectView()?.tab !== before, 'failure tab changed');
     }
-    const expected = world.scenario === 'agent-error' ? 'agent-error' : 'provider-init';
+    const expected = expectedFailureReason(world.scenario);
     if (!lastRun().reason?.includes(expected)) throw new Error(`Expected ${expected}, got ${lastRun().reason}`);
   };
   let shown, state;
@@ -298,7 +373,32 @@ async function exercise(feature, context) {
     case 'build': await build(); shown = term.text(); break;
     case 'result': await ready(); shown = term.text(); break;
     case 'search': await ready(); shown = await press('/', /Search:/); term.send('subtract'); await wait(/subtract/); term.send('\r'); await normal(); break;
-    case 'export': await ready(); term.send('\x05'); await until(() => existsSync(join(world.root, 'editor.txt')) && /subtract/.test(readFileSync(join(world.root, 'editor.txt'), 'utf8')), 'editor export'); shown = term.text(); state = 'editor contains subtract'; break;
+    case 'export': {
+      await ready();
+      // Multiple visible panes do not imply the Diff is focused. A single panel and an acknowledged Diff tab do.
+      await palette('Focused: one panel');
+      for (let presses = 0; projectView()?.tab !== 'diff'; presses++) {
+        if (presses >= 6) throw new Error('The Diff tab never came into focus');
+        const before = projectView()?.tab;
+        term.send('\t'); await until(() => projectView()?.tab !== before, 'export tab changed');
+      }
+      await wait(/src\/math.js|test\/math.test.js/);
+      const output = join(world.root, 'editor.txt');
+      rmSync(output, { force: true });
+      term.send('\x05');
+      await until(() => {
+        if (/Nothing here to open in an editor/.test(term.text())) throw new Error('Focused pane refused editor export');
+        return existsSync(output) && /subtract/.test(readFileSync(output, 'utf8'));
+      }, 'editor export output file');
+      shown = term.text(); state = 'editor contains subtract';
+      // Leave the Live tab focused again, as every later feature expects (n does not open the composer from Diff).
+      for (let presses = 0; projectView()?.tab !== 'live'; presses++) {
+        if (presses >= 6) throw new Error('The Live tab never came back into focus');
+        const before = projectView()?.tab;
+        term.send('\t'); await until(() => projectView()?.tab !== before, 'export tab restored');
+      }
+      break;
+    }
     case 'take-over': await ready(); shown = await press('t', / Open build shell /); await press('t', /back to the workbench/); term.send('printf \"VERIFY_TERMINAL_OK\\n\"\r'); await wait(/VERIFY_TERMINAL_OK/); term.send('\x1d'); await wait(/Toolroll/); break;
     case 'send-back': await ready(); await press('r', /Send back/); term.send('Please add a test for negative numbers.'); shown = await press('enter', /Build #.*goes back/); await press('enter', /Sent back\. The revision is filed\./); context.built = true; await until(() => task().id !== context.task, 'revision task saved'); context.task = task().id; break;
     case 'accept': await ready(); shown = await press('a', /Accept the result of/); await press('enter', /Marked complete\.|Accepted\./); await until(() => task()?.state === 'done', 'task completion'); context.finished = true; break;
@@ -342,6 +442,13 @@ async function exercise(feature, context) {
       shown = await wait(/[●•·]/); term.send('!');
       await until(() => projectView()?.task === context.task && !projectView()?.unread?.includes(context.task), 'visiting task clears unread dot');
       state = 'unread task id saved then cleared on visit'; break;
+    }
+    case 'equalize': {
+      // Assert the saved outcome: equal splits can already be the current state.
+      term.send('=');
+      await until(() => projectView()?.ratioX === 50 && projectView()?.ratioY === 50
+        && /Even splits, and the list at its usual width/.test(term.text()), 'equal splits restored');
+      shown = await wait(new RegExp(feature.expected)); state = 'saved splits are 50%'; break;
     }
     default: {
       const action = feature.actions[0]; const before = JSON.stringify(stableView()), screenBefore = term.text();
@@ -405,20 +512,7 @@ export async function verify(options) {
           term.recordPids(); if (!session.timings.workbenchMs) session.timings = { firstTextMs: term.firstTextMs, workbenchMs: Date.now() - term.started };
         } };
         await context.relaunch();
-        for (const feature of features) {
-          const start = Date.now();
-          try {
-            if (interrupted) throw new Error(interrupted);
-            if (features.indexOf(feature) > 0) await toBase(context.term);
-            const evidence = await exercise(feature, context);
-            report.features.push({ id: feature.id, scenario, status: 'PASS', elapsedMs: Date.now() - start, ...evidence });
-          } catch (error) {
-            report.features.push({ id: feature.id, scenario, status: 'FAIL', elapsedMs: Date.now() - start, excerpt: context.term.screen.text(), error: error.message });
-            // Preserve truthful failures without typing dependent actions into an unknown dialog.
-            for (const pending of features.slice(features.indexOf(feature) + 1)) report.features.push({ id: pending.id, scenario, status: 'FAIL', excerpt: '', error: `Prerequisite failed: ${feature.id}` });
-            break;
-          }
-        }
+        report.features.push(...await runFeatures(features, featureMap, context));
         await context.term.quit();
       } catch (error) {
         session.error = error.message;
@@ -445,6 +539,10 @@ export async function verify(options) {
   return report;
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { const report = await verify(parseArgs(process.argv.slice(2))); console.log(`${report.ok ? 'PASS' : 'FAIL'}: ${report.features.length} features`); process.exitCode = report.ok ? 0 : 1; }
+  try {
+    const options = parseArgs(process.argv.slice(2));
+    if (options.help) console.log(usage());
+    else { const report = await verify(options); console.log(reportSummary(report)); if (!report.ok) console.log('Overall: FAIL (see report for session checks)'); process.exitCode = report.ok ? 0 : 1; }
+  }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }

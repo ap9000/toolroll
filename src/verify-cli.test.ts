@@ -8,7 +8,7 @@ import { excludedFolders, resolveLaunch, statusProbe } from './status-probe.js';
 // @ts-expect-error shared scripted provider contracts
 import { pickRule } from '../scripts/fixtures/scripted-provider.mjs';
 // @ts-expect-error plain ESM verification command
-import { confirmBuild, featureMap, finishReport, keymapSpecs, parseArgs, reportMarkdown, retryAttempt, taskApproval, validateMap } from '../scripts/verify.mjs';
+import { confirmBuild, featureMap, finishReport, keymapSpecs, parseArgs, reportMarkdown, retryAttempt, taskApproval, validateMap, expectedFailureReason, reportSummary, runFeatures, usage } from '../scripts/verify.mjs';
 // @ts-expect-error plain ESM world builder
 import { assertAgentStandIns, checkedEnv, checkOutbound, createWorld, readConsole } from '../scripts/verify-world.mjs';
 
@@ -226,4 +226,70 @@ test('selection is explicit and rejects unknown features, scenarios and flags', 
   expect(parseArgs(['--scenario', 'smoke', '--scenario', 'narrow', '--features', 'welcome,new-task', '--keep']))
     .toMatchObject({ scenarios: ['smoke', 'narrow'], features: ['welcome', 'new-task'], keep: true });
   for (const args of [['--scenario', 'real'], ['--features', 'typo'], ['--out'], ['--real']]) expect(() => parseArgs(args)).toThrow();
+});
+
+
+test('help is accepted without selecting a runtime and lists every available selector', () => {
+  for (const flag of ['--help', '-h']) expect(parseArgs([flag])).toMatchObject({ help: true });
+  expect(parseArgs([]).help).toBe(false);
+  const help = usage();
+  for (const option of ['--help', '--scenario', '--features', '--tarball', '--out', '--keep']) expect(help).toContain(option);
+  for (const feature of featureMap.features) {
+    expect(help).toContain(feature.id);
+    expect(help).toContain(feature.scenario);
+  }
+});
+
+test.each([[18, 17], [35, 0], [0, 35], [0, 0]])('summary counts %i passes and %i failures separately', (passed, failed) => {
+  const report = { features: [
+    ...Array.from({ length: passed }, (_, i) => ({ id: `pass-${i}`, status: 'PASS' })),
+    ...Array.from({ length: failed }, (_, i) => ({ id: `fail-${i}`, status: 'FAIL' })),
+  ] };
+  const summary = reportSummary(report);
+  expect(summary.split('\n')[0]).toBe(`PASS ${passed} · FAIL ${failed} of ${passed + failed}`);
+  if (failed) expect(summary.split('\n')[1]).toBe(`Failing ids: ${report.features.filter(f => f.status === 'FAIL').map(f => f.id).join(', ')}`);
+  else expect(summary).not.toContain('Failing ids:');
+});
+
+test('only declared dependents fail with a prerequisite; independent features reset and run after failure', async () => {
+  const features = [
+    { id: 'result', scenario: 'success' },
+    { id: 'accept', scenario: 'success', dependsOn: ['result'] },
+    { id: 'threads', scenario: 'success' },
+    { id: 'help', scenario: 'success' },
+  ];
+  const term = { screen: { text: () => 'failure evidence' } };
+  const ran: string[] = [];
+  let resets = 0;
+  const exercise = async (feature: { id: string }) => {
+    expect(resets).toBe(ran.length + 1);
+    ran.push(feature.id);
+    if (feature.id === 'result') throw new Error('result unavailable');
+    return { excerpt: feature.id };
+  };
+  // A dependent selection runs its prerequisite even when the prerequisite was not selected.
+  const results = await runFeatures(features.slice(1), { features }, { term }, exercise, async () => { resets++; });
+  expect(ran).toEqual(['result', 'threads', 'help']);
+  expect(results.map((r: any) => [r.id, r.status, r.error])).toEqual([
+    ['accept', 'FAIL', 'Prerequisite failed: result'], ['threads', 'PASS', undefined], ['help', 'PASS', undefined],
+  ]);
+  const all = await runFeatures(features, { features }, { term }, async (f: { id: string }) => ({ excerpt: f.id }), async () => {});
+  expect(all.map((r: any) => r.status)).toEqual(['PASS', 'PASS', 'PASS', 'PASS']);
+  expect(featureMap.features.find((f: any) => f.id === 'accept').dependsOn).toContain('result');
+  for (const dependency of ['missing', 'accept']) {
+    const invalid = structuredClone(featureMap);
+    invalid.features.find((f: any) => f.id === 'result').dependsOn = [dependency];
+    expect(() => validateMap(invalid, keymap)).toThrow(/dependency/);
+  }
+});
+
+test.each([
+  ['never-initialized', 'retryable-infra'],
+  ['agent-error', 'agent-error'],
+])('saved run failure reason for %s is %s', (scenario, reason) => {
+  expect(expectedFailureReason(scenario)).toBe(reason);
+  if (scenario === 'never-initialized') {
+    const feature = featureMap.features.find((f: any) => f.id === scenario);
+    expect(new RegExp(feature.expected).test('the provider harness never initialized — exited before initialization')).toBe(true);
+  }
 });
