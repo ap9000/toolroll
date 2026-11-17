@@ -36,13 +36,18 @@ export const ENV_ALLOWED = /^(PATH|HOME|USER|LOGNAME|LANG|TERM|TMPDIR|BROWSER|XD
 /** The agent CLIs that must resolve to their stand-ins (or nowhere) inside the child environment. */
 export const AGENT_CLIS = ["claude", "codex", "gemini", "opencode", "cursor-agent"];
 
+/** Shared console settings for a scripted laptop world; no worker or approval bypass. */
+export function scriptedConsoleEnv(db) {
+  return { TOOLROLL_DB: db, TOOLROLL_SECRET_STORE: "files", TOOLROLL_STORAGE_SWEEP: "off", TOOLROLL_NO_PLAN_PROBE: "1" };
+}
+export const FILING_ANSWER = /Build approves exactly this:[\s\S]*Esc files nothing\.|Filed\. (A plan comes first|Just code)|Refused: /;
+
 /** The child environment, built from nothing: the stand-ins first on PATH, then only the system folders. */
 export function childEnv({ bin, home, tmp, db, xdg, git }) {
   return {
     PATH: `${bin}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, USER: "sam", LOGNAME: "sam", LANG: "en_US.UTF-8", TERM: "xterm-256color",
     TMPDIR: tmp, ...xdg, BROWSER: join(bin, "browser"),
-    TOOLROLL_DB: db, TOOLROLL_BROWSER_COMMAND: join(bin, "open-browser"), TOOLROLL_SECRET_STORE: "files",
-    TOOLROLL_STORAGE_SWEEP: "off", TOOLROLL_NO_PLAN_PROBE: "1", ...git,
+    ...scriptedConsoleEnv(db), TOOLROLL_BROWSER_COMMAND: join(bin, "open-browser"), ...git,
   };
 }
 
@@ -325,7 +330,7 @@ async function main() {
     step("typing a new task");
     term.write("\r");
     // A small task: its exact terms, and Enter is Build (the page's own fast start, as data).
-    await waitFor(/Build approves exactly this|Filed\. (A plan comes first|Just code)|Refused: /, "the filing's answer");
+    await waitFor(FILING_ANSWER, "the filing's answer");
     step("New task's answer");
     if (/Refused: /.test(text())) throw new Error(`filing was refused: ${/Refused: (.*?)(?:\s*│|\s{2,}|$)/m.exec(text())?.[1]}`);
     report.road = /Build approves exactly this/.test(text()) ? "build" : /Filed\. Just code/.test(text()) ? "just-code" : "plan";

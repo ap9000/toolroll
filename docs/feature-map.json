@@ -1,0 +1,777 @@
+{
+  "version": 1,
+  "keymap": "tui/crates/toolroll-tui/src/keys.rs",
+  "dialogKeys": {
+    "f": "Mode::Build in app.rs: approval Usual fold",
+    "s": "Mode::Help: settings",
+    "enter": "Dialog confirmation; never remappable"
+  },
+  "scenarios": {
+    "smoke": "Empty first run; no model turns",
+    "success": "Scripted Claude build; signed-out Codex",
+    "agent-error": "Scripted Claude init followed by error result",
+    "never-initialized": "Claude auth works; turn exits before init",
+    "signed-out": "Codex login status refuses; no provider turns",
+    "narrow": "Empty first run at 60 columns"
+  },
+  "features": [
+    {
+      "id": "welcome",
+      "screen": "Work",
+      "reach": "Launch toolroll in a new project",
+      "expected": "What would you like to work on\\?",
+      "scenario": "smoke",
+      "actions": [],
+      "keys": []
+    },
+    {
+      "id": "new-task",
+      "screen": "Work",
+      "reach": "n; describe a change; Esc keeps it unfiled",
+      "expected": "New task:",
+      "scenario": "smoke",
+      "actions": [
+        "new-task"
+      ],
+      "keys": [
+        "n"
+      ]
+    },
+    {
+      "id": "agents",
+      "screen": "Agents",
+      "reach": "A; inspect detected agents; Esc",
+      "expected": "Agents\\s+checked",
+      "scenario": "smoke",
+      "actions": [
+        "agents"
+      ],
+      "keys": [
+        "A"
+      ]
+    },
+    {
+      "id": "signed-out",
+      "screen": "Agents",
+      "reach": "A; inspect Codex without signing in",
+      "expected": "[Nn]ot signed in|signed out",
+      "scenario": "signed-out",
+      "actions": [
+        "agents"
+      ],
+      "keys": [
+        "A"
+      ]
+    },
+    {
+      "id": "palette",
+      "screen": "Commands",
+      "reach": ":; search actions; Esc",
+      "expected": "Commands",
+      "scenario": "smoke",
+      "actions": [
+        "palette"
+      ],
+      "keys": [
+        ":",
+        "ctrl-k"
+      ]
+    },
+    {
+      "id": "help",
+      "screen": "Keys",
+      "reach": "?; inspect key help; any key closes",
+      "expected": "Press s for settings",
+      "scenario": "smoke",
+      "actions": [
+        "help"
+      ],
+      "keys": [
+        "?"
+      ]
+    },
+    {
+      "id": "settings",
+      "screen": "Settings",
+      "reach": "? then dialog key s; Esc",
+      "expected": "Settings",
+      "scenario": "smoke",
+      "actions": [
+        "settings",
+        "help"
+      ],
+      "keys": [
+        "?"
+      ],
+      "dialogKeys": [
+        "s"
+      ]
+    },
+    {
+      "id": "approval",
+      "screen": "Build",
+      "reach": "n; enter task; Enter opens exact terms",
+      "expected": "Build approves exactly this:",
+      "scenario": "success",
+      "actions": [
+        "new-task"
+      ],
+      "keys": [
+        "n"
+      ]
+    },
+    {
+      "id": "approval-fold",
+      "screen": "Build",
+      "reach": "At approval: f unfolds Usual; f folds it again",
+      "expected": "Build approves exactly this:",
+      "scenario": "success",
+      "actions": [],
+      "keys": [],
+      "dialogKeys": [
+        "f"
+      ]
+    },
+    {
+      "id": "build",
+      "screen": "Work",
+      "reach": "Read all approval terms; Enter starts the approved build",
+      "expected": "Building it\\.|Ready|Result",
+      "scenario": "success",
+      "actions": [],
+      "keys": [],
+      "dialogKeys": [
+        "enter"
+      ]
+    },
+    {
+      "id": "result",
+      "screen": "Diff",
+      "reach": "Wait for Ready; Enter opens changes",
+      "expected": "src/math.js",
+      "scenario": "success",
+      "actions": [
+        "open"
+      ],
+      "keys": [
+        "enter"
+      ]
+    },
+    {
+      "id": "search",
+      "screen": "Diff",
+      "reach": "/; type subtract; Enter; Esc",
+      "expected": "Search:",
+      "scenario": "success",
+      "actions": [
+        "search"
+      ],
+      "keys": [
+        "/"
+      ]
+    },
+    {
+      "id": "export",
+      "screen": "Diff",
+      "reach": "Ctrl-E exports current pane to stand-in editor",
+      "expected": "src/math.js",
+      "scenario": "success",
+      "actions": [
+        "open-in-editor"
+      ],
+      "keys": [
+        "ctrl-e"
+      ],
+      "state": "editor contains subtract"
+    },
+    {
+      "id": "take-over",
+      "screen": "Terminal",
+      "reach": "t; read scope; t opens terminal; Ctrl-] returns",
+      "expected": "Take over",
+      "scenario": "success",
+      "actions": [
+        "take-over"
+      ],
+      "keys": [
+        "t"
+      ]
+    },
+    {
+      "id": "agent-error",
+      "screen": "Live",
+      "reach": "Approve a build whose Claude initializes then returns an error",
+      "expected": "The agent stopped with an error\\.[\\s\\S]*What the agent said[\\s\\S]*VERIFY_AGENT_WORDS_7f3a",
+      "scenario": "agent-error",
+      "actions": [],
+      "keys": [],
+      "state": "run failure differs from never-initialized"
+    },
+    {
+      "id": "never-initialized",
+      "screen": "Steps",
+      "reach": "Approve a build whose Claude exits before initialization",
+      "expected": "[Nn]ever.*initial|could not start|before.*initial",
+      "scenario": "never-initialized",
+      "actions": [],
+      "keys": [],
+      "state": "run records no initialization"
+    },
+    {
+      "id": "retry-wait",
+      "screen": "Steps",
+      "reach": "After failure, inspect next retry and reason",
+      "expected": "Last build failed.*next try",
+      "scenario": "never-initialized",
+      "actions": [],
+      "keys": []
+    },
+    {
+      "id": "stop-resume",
+      "screen": "Steps",
+      "reach": "x; Enter stops retries; x; Enter resumes",
+      "expected": "Resume retrying this task\\?",
+      "scenario": "never-initialized",
+      "actions": [
+        "stop",
+        "resume"
+      ],
+      "keys": [
+        "x"
+      ]
+    },
+    {
+      "id": "retry",
+      "screen": "Steps",
+      "reach": "On a failed task: r; review attempt and approval; Enter",
+      "expected": "Retry",
+      "scenario": "agent-error",
+      "actions": [
+        "retry",
+        "send-back"
+      ],
+      "keys": [
+        "r"
+      ]
+    },
+    {
+      "id": "cancel",
+      "screen": "Work",
+      "reach": "X; read task cancellation; Enter cancels",
+      "expected": "Cancel",
+      "scenario": "never-initialized",
+      "actions": [
+        "cancel-task"
+      ],
+      "keys": [
+        "X"
+      ]
+    },
+    {
+      "id": "threads",
+      "screen": "Work",
+      "reach": "T; describe thread; Enter files it",
+      "expected": "New thread:",
+      "scenario": "success",
+      "actions": [
+        "new-thread"
+      ],
+      "keys": [
+        "T"
+      ]
+    },
+    {
+      "id": "layout",
+      "screen": "Work",
+      "reach": "L",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [
+        "layout"
+      ],
+      "keys": [
+        "L"
+      ],
+      "state": "saved view changes, or equalize restores defaults"
+    },
+    {
+      "id": "narrower",
+      "screen": "Work",
+      "reach": "<",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [
+        "list-narrower"
+      ],
+      "keys": [
+        "<"
+      ],
+      "state": "saved view changes, or equalize restores defaults"
+    },
+    {
+      "id": "wider",
+      "screen": "Work",
+      "reach": ">",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [
+        "list-wider"
+      ],
+      "keys": [
+        ">"
+      ],
+      "state": "saved view changes, or equalize restores defaults"
+    },
+    {
+      "id": "equalize",
+      "screen": "Work",
+      "reach": "=",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [
+        "equalize"
+      ],
+      "keys": [
+        "="
+      ],
+      "state": "saved view changes, or equalize restores defaults"
+    },
+    {
+      "id": "list",
+      "screen": "Work",
+      "reach": "b",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [
+        "list-cycle"
+      ],
+      "keys": [
+        "b"
+      ],
+      "state": "saved view changes, or equalize restores defaults"
+    },
+    {
+      "id": "zoom",
+      "screen": "Work",
+      "reach": "z",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [
+        "zoom"
+      ],
+      "keys": [
+        "z"
+      ],
+      "state": "saved view changes, or equalize restores defaults"
+    },
+    {
+      "id": "list-side",
+      "screen": "Work",
+      "reach": "Palette: Move the list to the other side",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [
+        "list-side"
+      ],
+      "keys": [],
+      "state": "saved view changes, or equalize restores defaults"
+    },
+    {
+      "id": "narrow",
+      "screen": "Work",
+      "reach": "Launch at 60 columns (below 64); inspect single-panel fallback",
+      "expected": "Toolroll",
+      "scenario": "narrow",
+      "actions": [],
+      "keys": [],
+      "state": "terminal is 60 columns wide"
+    },
+    {
+      "id": "jumps",
+      "screen": "Work",
+      "reach": "! next needing you; @ previous; ' back",
+      "expected": "Toolroll",
+      "scenario": "success",
+      "actions": [
+        "next-needs-you",
+        "previous-needs-you",
+        "jump-back"
+      ],
+      "keys": [
+        "!",
+        "@",
+        "'"
+      ],
+      "state": "selected task returns to jump origin"
+    },
+    {
+      "id": "unread",
+      "screen": "Work",
+      "reach": "Start a second build; select another thread; wait for its unread dot; jump to the task to clear it",
+      "expected": "[\u25cf\u2022\u00b7]",
+      "scenario": "success",
+      "actions": [],
+      "keys": [],
+      "state": "unread saved then cleared on visit"
+    },
+    {
+      "id": "restore",
+      "screen": "Work",
+      "reach": "Change layout; quit; relaunch same world",
+      "expected": "Toolroll",
+      "scenario": "smoke",
+      "actions": [],
+      "keys": [],
+      "state": "view.json selection and layout restored"
+    },
+    {
+      "id": "task-show",
+      "screen": "CLI",
+      "reach": "toolroll task show <id>",
+      "expected": "subtract|Ready|done",
+      "scenario": "success",
+      "actions": [],
+      "keys": [],
+      "state": "CLI reads the same task id"
+    },
+    {
+      "id": "send-back",
+      "screen": "Diff",
+      "reach": "r; write feedback; Enter reviews exact feedback; Enter sends",
+      "expected": "Build #.*goes back",
+      "scenario": "success",
+      "actions": [
+        "send-back"
+      ],
+      "keys": [
+        "r"
+      ]
+    },
+    {
+      "id": "accept",
+      "screen": "Diff",
+      "reach": "Open Ready result; a; inspect attempt; Enter accepts",
+      "expected": "Accept the result of",
+      "scenario": "success",
+      "actions": [
+        "accept"
+      ],
+      "keys": [
+        "a"
+      ]
+    }
+  ],
+  "intentionallyUnmapped": [
+    {
+      "action": "move-down",
+      "keys": [
+        "j",
+        "down"
+      ],
+      "feature": "Next item in the list",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "move-up",
+      "keys": [
+        "k",
+        "up"
+      ],
+      "feature": "Previous item in the list",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "next-tab",
+      "keys": [
+        "tab"
+      ],
+      "feature": "Next tab (Live, Steps, Diff, Terminal)",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "previous-tab",
+      "keys": [
+        "backtab"
+      ],
+      "feature": "Previous tab",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "steer",
+      "keys": [
+        "s"
+      ],
+      "feature": "Steer: send the running agent a note",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "pause",
+      "keys": [
+        "p"
+      ],
+      "feature": "Pause the build (again to resume)",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "scroll-up",
+      "keys": [
+        "pgup",
+        "u"
+      ],
+      "feature": "Scroll up",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "scroll-down",
+      "keys": [
+        "pgdn",
+        "d"
+      ],
+      "feature": "Scroll down",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "follow",
+      "keys": [
+        "end",
+        "G"
+      ],
+      "feature": "Follow the newest (the end)",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "copy",
+      "keys": [
+        "y"
+      ],
+      "feature": "Copy to your terminal's scrollback (a hunk, or the terminal)",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "browser",
+      "keys": [
+        "w"
+      ],
+      "feature": "Open Toolroll in your browser",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "quit",
+      "keys": [
+        "q"
+      ],
+      "feature": "Quit",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "next-pane",
+      "keys": [
+        "o"
+      ],
+      "feature": "Next pane",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "previous-pane",
+      "keys": [
+        "O"
+      ],
+      "feature": "Previous pane",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "layout-focused",
+      "keys": [],
+      "feature": "Focused: one panel",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "layout-side-by-side",
+      "keys": [],
+      "feature": "Side by side: two panels",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "layout-grid",
+      "keys": [],
+      "feature": "Grid of four panels",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "filter-all",
+      "keys": [],
+      "feature": "Everything",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "filter-this-project",
+      "keys": [],
+      "feature": "This project",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "filter-needs-me",
+      "keys": [],
+      "feature": "Needs me",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "filter-today",
+      "keys": [],
+      "feature": "Today",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "filter-working",
+      "keys": [],
+      "feature": "Needs: working",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "filter-failed",
+      "keys": [],
+      "feature": "Needs: failed",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "filter-done",
+      "keys": [],
+      "feature": "Needs: done",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "next-theme",
+      "keys": [],
+      "feature": "Next theme, for this session",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "costs",
+      "keys": [],
+      "feature": "Show or hide costs, for this session",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "key-bar",
+      "keys": [],
+      "feature": "Show or hide the key bar, for this session",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "line-down",
+      "keys": [
+        "j",
+        "down"
+      ],
+      "feature": "Next line",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "line-up",
+      "keys": [
+        "k",
+        "up"
+      ],
+      "feature": "Previous line",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "top",
+      "keys": [
+        "home",
+        "g"
+      ],
+      "feature": "First line of the file",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "next-hunk",
+      "keys": [
+        "]"
+      ],
+      "feature": "Next hunk",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "previous-hunk",
+      "keys": [
+        "["
+      ],
+      "feature": "Previous hunk",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "next-file",
+      "keys": [
+        "}"
+      ],
+      "feature": "Next file",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "previous-file",
+      "keys": [
+        "{"
+      ],
+      "feature": "Previous file",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "next-note",
+      "keys": [
+        "n"
+      ],
+      "feature": "Next note",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "previous-note",
+      "keys": [
+        "N"
+      ],
+      "feature": "Previous note",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "note",
+      "keys": [
+        "c"
+      ],
+      "feature": "A note on the line or hunk (kept here until you send)",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "remove-note",
+      "keys": [
+        "backspace",
+        "delete"
+      ],
+      "feature": "Remove the note under the cursor",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "more-above",
+      "keys": [
+        "e"
+      ],
+      "feature": "More lines above the hunk",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "more-below",
+      "keys": [
+        "E"
+      ],
+      "feature": "More lines below the hunk",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    },
+    {
+      "action": "side-by-side",
+      "keys": [
+        "v"
+      ],
+      "feature": "Side by side (on a wide window)",
+      "reason": "Outside this runtime slice; listed here as a coverage gap. The Rust keymap and workbench tests remain separate."
+    }
+  ]
+}
