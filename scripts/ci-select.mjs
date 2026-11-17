@@ -23,8 +23,8 @@
  *     shared test helpers, workflows, scripts, generated files and contracts, the Rust contract);
  *   - a changed path outside INERT has nothing in the graph that reaches it: a file only read by a computed path or a
  *     folder walk can't be matched to its readers, so its change runs everything.
- * ALWAYS lists what runs on every pull request whatever it changed: the attack suite, the gate tests, and every test
- * that walks the repository's folders (a walk reads files no literal names).
+ * What runs on every pull request whatever it changed: the attack suite, the gate tests, every test that walks the
+ * repository's folders (a walk reads files no literal names), and ALWAYS_FILES.
  *
  * Trust: like the shard verifier, CI runs the trusted base revision's copy of this file, over the candidate's tree. It
  * reads files and runs git with no config, hooks or external diff; it runs nothing of the candidate's.
@@ -68,11 +68,39 @@ export const GATES = [
   /^src\/server\/(?:route-policy|handler-registry|destinations|get-quiet)[^/]*\.test\.ts$/, /^src\/serve\.(?:routes|retired)\.test\.ts$/,
   /^src\/[^/]*adapter[^/]*\.test\.ts$/, /^src\/contracts\/[^/]*\.test\.ts$/,
 ];
+/** Files that always run by name, each with why: a failure in CI on a change the graph says it can't reach (the
+ * backtest's zero-miss rule, docs/plans/ci-speed-2.md). Add one only from such a failure, with the run that showed it. */
+export const ALWAYS_FILES = {
+  // #427 (run 43752708686): it reserves a free port and binds it later, and lost it to another process (EADDRINUSE) on
+  // a change to src/acp-gateway.slow.test.ts alone. A race no import or path reaches.
+  "src/up.slow.test.ts": "failed on a change it can't reach (a port race, #427)",
+};
 /** The attack suite: always run. */
 export const ATTACKS = /^test\/attacks\//;
-/** A file walks folders when it lists one; it reads the repository when it anchors a path on its own location. */
-const WALKS = /\b(?:readdirSync|readdir|opendirSync|opendir|globSync|glob|walk)\s*\(/;
+/**
+ * Whether a file walks the repository: it lists a folder (readdir, opendir, glob, or a helper of its own that lists one)
+ * by a path from its own location (import.meta, __dirname or process.cwd(), or a name assigned from one, two steps deep:
+ * `const REPO = join(import.meta.dirname, "..")`, `const src = join(REPO, "src")`) or from one of the checkout's
+ * top-level folders by name (`walk("src")`). Listing a temp folder isn't walking the repository.
+ */
+const LISTS = /\b(?:readdirSync|readdir|opendirSync|opendir|globSync|glob)\s*\(/;
 const ANCHORED = /import\.meta\.(?:dirname|url|filename)|__dirname|process\.cwd\(\)/;
+const TOP_FOLDER = /["'`](?:\.\.\/)*(?:src|scripts|test|docs|\.github|tui|design|evals|dist|assets|desktop)(?:\/[^"'`]*)?["'`]/;
+const ASSIGNED = /\b(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*([^;\n]*)/g;
+const HELPER = /\b(?:function\s+(\w+)\s*\(|(?:const|let)\s+(\w+)\s*=\s*(?:\([^)]*\)|\w+)(?:\s*:\s*[\w[\]<>, ]+)?\s*=>)/g;
+
+export function walksRepository(text) {
+  if (!LISTS.test(text)) return false;
+  const names = new Set();
+  const named = value => ANCHORED.test(value) || TOP_FOLDER.test(value) || [...names].some(name => new RegExp(`\\b${name}\\b`).test(value));
+  for (let round = 0; round < 2; round++) for (const match of text.matchAll(ASSIGNED)) if (ANCHORED.test(match[2]) || [...names].some(name => new RegExp(`\\b${name}\\b`).test(match[2]))) names.add(match[1]);
+  // The file's own listing helpers: a function whose first lines list a folder.
+  const listers = ["readdirSync", "readdir", "opendirSync", "opendir", "globSync", "glob"];
+  for (const match of text.matchAll(HELPER)) if (LISTS.test(text.slice(match.index, match.index + 400))) listers.push(match[1] ?? match[2]);
+  const call = new RegExp(`\\b(?:${[...new Set(listers)].join("|")})\\s*\\(([^\\n]{0,240})`, "g");
+  for (const match of text.matchAll(call)) if (named(match[1])) return true;
+  return false;
+}
 
 const SPECIFIER = [
   /\bfrom\s*["']([^"'\n]+)["']/g,
@@ -177,7 +205,7 @@ export function buildGraph(tree) {
     // "AGENTS.md" or "package.json" there means a file of the project it works on, not of this checkout.
     for (const literal of literals) for (const to of named(literal)) if (to !== file && (runsByName || (!CODE.test(to) && to.startsWith("src/")))) out.add(to);
     if (runsByName && /["'`/]dist["'`/]/.test(text)) dist.add(file);
-    if (WALKS.test(text) && ANCHORED.test(text)) walkers.add(file);
+    if (walksRepository(text)) walkers.add(file);
     edges.set(file, [...out].sort());
   }
   return { files, edges, walkers, dist, unresolved };
@@ -210,6 +238,7 @@ export function fullTrigger(path) {
 export function alwaysReason(file, walks) {
   if (ATTACKS.test(file)) return "the attack suite";
   if (GATES.some(re => re.test(file))) return "a gate test";
+  if (Object.hasOwn(ALWAYS_FILES, file)) return ALWAYS_FILES[file];
   if (walks) return "walks the repository's folders";
   return null;
 }
@@ -257,6 +286,8 @@ export function plan({ event, headRef, entries, tree, tests }) {
     if (build && srcChanged) reasons[test] = "runs the build, and src/ changed";
   }
   const files = Object.keys(reasons).sort();
+  // A lane can hold none of the selection: then it runs whole (a shard with no files would prove nothing).
+  if (files.length === 0) return full("the selection holds none of these files");
   return { mode: "selected", why: `${changed.length} changed path${changed.length === 1 ? "" : "s"}`, changed: [...changed].sort(), files, reasons };
 }
 

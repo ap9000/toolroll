@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 import { inventory } from "../scripts/ci-shards.mjs";
-import { diskTree, FULL_TRIGGERS, fullTrigger, plan, references, resolveImport } from "../scripts/ci-select.mjs";
+import { ALWAYS_FILES, diskTree, FULL_TRIGGERS, fullTrigger, plan, references, resolveImport, walksRepository } from "../scripts/ci-select.mjs";
 
 type Tree = Record<string, string>;
 const treeOf = (files: Tree) => ({ list: () => Object.keys(files), read: (path: string) => files[path] ?? null });
@@ -123,6 +123,15 @@ describe("what a selected plan holds", () => {
     expect(planFor(anchored, modified("docs/plans/p.md")).files).toContain("src/root.test.ts");
   });
 
+  test("a lane plans its share of the selection; a lane that holds none of it runs whole", () => {
+    const lane = ["src/b.test.ts", "src/c.test.ts", "test/attacks/x.test.ts"];
+    const laneOnly = (entries: unknown) => plan({ event: "pull_request", headRef: "x", entries, tree: treeOf(world), tests: lane }) as Plan;
+    expect(laneOnly(modified("src/a.ts")).files).toEqual(["src/b.test.ts", "test/attacks/x.test.ts"]);
+    const none = plan({ event: "pull_request", headRef: "x", entries: modified("src/a.ts"), tree: treeOf(world), tests: ["src/c.test.ts"] }) as Plan;
+    expect(none.mode).toBe("full");
+    expect(none.files).toEqual(["src/c.test.ts"]);
+  });
+
   test("the same inputs give the same plan, sorted", () => {
     const one = planFor(world, modified("src/a.ts", "docs/plans/p.md"));
     const two = planFor(Object.fromEntries(Object.entries(world).reverse()), modified("docs/plans/p.md", "src/a.ts"));
@@ -139,6 +148,16 @@ describe("how the graph reads source", () => {
     ].join("\n");
     expect(references(text).imports).toEqual(["../y.js", "./m.js", "./r.cjs", "./side.js", "./worker.js", "./x.js", "./z.js"]);
     expect(references('join(root, "test", "fixtures", "cli")').literals).toContain("test/fixtures/cli");
+  });
+
+  test("a walk of the repository is one from its own location or a top-level folder; listing a temp folder isn't", () => {
+    expect(walksRepository('const all = readdirSync(import.meta.dirname);')).toBe(true);
+    expect(walksRepository('const REPO = join(import.meta.dirname, "..");\nconst src = join(REPO, "src");\nfor (const f of readdirSync(src)) {}')).toBe(true);
+    expect(walksRepository('const files = (dir: string): string[] => readdirSync(dir).flatMap(one => [one]);\nconst all = files(join(root, "src"));')).toBe(true);
+    expect(walksRepository('const walk = (dir: string) => readdirSync(dir);\nwalk("scripts");')).toBe(true);
+    // Found in this checkout: src/up.slow.test.ts lists its run folder and uses process.cwd() only as a spawn's cwd.
+    expect(walksRepository('const previous = process.cwd();\nexpect(readdirSync(instanceRunDir(db))).toEqual([]);')).toBe(false);
+    expect(walksRepository('const dir = mkdtempSync(join(tmpdir(), "x"));\nexpect(readdirSync(dir)).toEqual([]);')).toBe(false);
   });
 
   test("TypeScript's .js specifiers resolve to .ts and .tsx, a folder to its index, and nothing outside the tree", () => {
@@ -161,6 +180,12 @@ describe("in this checkout", () => {
     expect(result.mode).toBe("selected");
     for (const file of tests.filter(one => one.startsWith("test/attacks/"))) expect(result.files, file).toContain(file);
     for (const file of ["src/ci-workflow.test.ts", "src/ci-shards.test.ts", "src/ci-select.test.ts", "src/password-freshness.test.ts", "src/public-hygiene.test.ts"]) expect(result.files).toContain(file);
+  });
+
+  test("every file named to always run exists and says why", () => {
+    for (const [file, why] of Object.entries(ALWAYS_FILES)) { expect(tests, file).toContain(file); expect(why.length).toBeGreaterThan(10); }
+    const result = plan({ event: "pull_request", headRef: "x", entries: modified("docs/plans/ci-speed-2.md"), tree, tests }) as Plan;
+    for (const file of Object.keys(ALWAYS_FILES)) expect(result.files).toContain(file);
   });
 
   test("a change to the store reaches its own tests and the CLI's", () => {

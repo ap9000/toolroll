@@ -533,8 +533,8 @@ describe("the CI workflows", () => {
         // macOS runs its lane (the nightly every file), and its join judges that lane.
         expect(suite?.run, `${file} ${shard}`).toContain(`--env CI=true --env TOOLROLL_REQUIRE_NATIVE=${platform}${platform === "darwin" ? ' --env TOOLROLL_TEST_LANE="$LANE"' : ""} --report`);
         expect(suite?.env, `${file} ${shard}`).toEqual(platform === "darwin" ? { LANE: "${{ inputs.macos_lane || 'macos' }}" } : undefined);
-        // ci.yml's Linux join also takes the test selection's plan when TEST_SELECTION is enforce (docs/plans/ci-speed-2.md).
-        const planned = file === "ci.yml" && platform === "linux" ? ' "\\$\\{planned\\[@\\]\\}"' : "";
+        // ci.yml's joins also take the test selection's plan when TEST_SELECTION is enforce (docs/plans/ci-speed-2.md).
+        const planned = file === "ci.yml" ? ' "\\$\\{planned\\[@\\]\\}"' : "";
         expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}${planned}$`));
       }
       expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-latest");
@@ -1305,8 +1305,9 @@ describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until
 
   test("one switch: the workflow's TEST_SELECTION, advisory today", () => {
     expect(raw.env).toEqual({ TEST_SELECTION: "advisory" });
-    // Nothing else reads a selection: the macOS lane, the release candidate's Node 22 and the git lanes run as before.
-    for (const id of ["macos-shard", "macos", "node-latest", "git-floor", "git-247"]) expect(JSON.stringify(workflow("ci.yml").jobs[id]), id).not.toMatch(/ci-select|TEST_SELECTION|ci-test-selection/);
+    // Nothing else reads a selection: the release candidate's Node 22, the newest Node's SQLite checks and the git lanes
+    // run as before.
+    for (const id of ["node-latest", "git-floor", "git-247"]) expect(JSON.stringify(workflow("ci.yml").jobs[id]), id).not.toMatch(/ci-select|TEST_SELECTION|ci-test-selection/);
     expect(JSON.stringify(workflow("release-candidate.yml"))).not.toMatch(/ci-select|TEST_SELECTION|ci-test-selection/);
   });
 
@@ -1332,6 +1333,24 @@ describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until
     expect(run).toContain('--out "$RUNNER_TEMP/selection.json" --summary "$GITHUB_STEP_SUMMARY"');
     expect(steps.findIndex(one => one.name === "Test selection")).toBeLessThan(steps.findIndex(one => one.name === "Every shard ran the whole suite"));
     expect(runsOf(joinJob).at(-1)).toContain('planned=(); if [ "$TEST_SELECTION" = enforce ]; then planned=(--plan "$RUNNER_TEMP/selection.json"); fi');
+  });
+
+  test("the macOS lane: its shards plan the lane's share of the same selection, and its join holds them to its own plan for the lane", () => {
+    const macShard = workflow("ci.yml").jobs["macos-shard"]!, macJoin = workflow("ci.yml").jobs["macos"]!;
+    const steps = macShard.steps ?? [];
+    const at = steps.findIndex(one => one.name === "Test selection");
+    expect(at).toBeGreaterThan(steps.findIndex(one => one.with?.["path"] === ".trusted-base"));
+    expect(at).toBeLessThan(steps.findIndex(one => (one.run ?? "").includes(" prepare ")));
+    const run = steps[at]!.run!;
+    expect(run.split("\n")[0]).toBe("rm -f .ci-test-selection");
+    expect(run).toContain('--lane "$LANE" --list "$RUNNER_TEMP/selected.txt"');
+    expect(run.trimEnd().split("\n").at(-1)).toBe('cp "$RUNNER_TEMP/selected.txt" .ci-test-selection');
+    expect(steps[at]!.env?.["LANE"]).toBe("${{ inputs.macos_lane || 'macos' }}");
+    expect(macJoin.steps?.[0]?.with).toMatchObject({ "fetch-depth": 0, "persist-credentials": false });
+    const plan = step(macJoin, "Test selection")!;
+    expect(plan.run).toContain('--lane "$LANE" --out "$RUNNER_TEMP/selection.json" --summary "$GITHUB_STEP_SUMMARY"');
+    expect(plan.env?.["LANE"]).toBe("${{ inputs.macos_lane || 'macos' }}");
+    expect(runsOf(macJoin).at(-1)).toContain('planned=(); if [ "$TEST_SELECTION" = enforce ]; then planned=(--plan "$RUNNER_TEMP/selection.json"); fi');
   });
 
   test("vitest.config.ts reads the list only in CI, and an empty or missing list is the whole suite", () => {
