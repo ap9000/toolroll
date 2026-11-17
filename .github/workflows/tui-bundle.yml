@@ -137,4 +137,6 @@ jobs:
         timeout-minutes: 15
         env:
           TMPDIR: ${{ runner.temp }}
-        run: node scripts/verify.mjs --features welcome,new-task,help,agents,palette,settings,layout,zoom,search --out "$RUNNER_TEMP/verify"
+        run: |
+          node scripts/verify.mjs --features welcome,new-task,help,agents,palette,settings,layout,zoom,search --out "$RUNNER_TEMP/verify" \
+            || { echo "::stop-commands::verify-report-${{ github.run_id }}"; cat "$RUNNER_TEMP/verify/report.md" "$RUNNER_TEMP/verify/screens.txt" 2>/dev/null | head -400; echo "::verify-report-${{ github.run_id }}::"; exit 1; }
