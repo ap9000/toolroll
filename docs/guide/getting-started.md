@@ -194,7 +194,11 @@ side diff on a wide window. Notes stay with the result until you send them.
 
 Use **Move the list to the other side** in the palette to put it on the
 right. Settings → **List side** sets the default. The file setting is
-`list_side = "right"` (also accepted as `list-side`; use `"left"` to return).
+`list-side = "right"` (also accepted as `list_side`; use `"left"` to return).
+For `list-side`/`list_side` and `focus-follows-mouse`/`focus_follows_mouse`,
+the kebab-case spelling wins when both are present, regardless of order.
+An invalid kebab-case value uses the default. Saving writes the kebab-case
+key and keeps snake-case entries and their comments untouched.
 
 Below 64 columns, the workbench shows one column. Enter opens a task from
 the list, Esc returns to the list, and `b` switches between list and task.
@@ -282,7 +286,8 @@ toolroll view reset              # default look; keep your keys and back up the 
 ```
 
 Reset preserves `[keys]`, including comments, and keeps each previous file
-as `tui.toml.bak.<timestamp>.<number>` beside `tui.toml`.
+as `tui.toml.bak-<date>T<time>` (UTC) beside `tui.toml`; a file already at the
+defaults is left alone, with no backup.
 You can also [ask chat to restyle the workbench](chat-and-phone.md#restyle-the-workbench-by-asking-your-agent).
 
 Desktop notifications inside tmux need both `tmux-passthrough = true` and

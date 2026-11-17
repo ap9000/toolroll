@@ -1,5 +1,5 @@
 {
-  "digest": "54fe6e2c53072fd55f32e2202a0c5987020605097795c811df98cfdf0abe1a74",
+  "digest": "9ca3fa96fdea87bc87bf0dc419632e3ec733a8bc49bf76e2bc5ab030a2c68257",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1723,6 +1723,34 @@
             }
           ]
         },
+        "shell": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "why": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "run",
+                "why"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "failure": {
           "anyOf": [
             {
@@ -1910,6 +1938,7 @@
         "liveRun",
         "cards",
         "review",
+        "shell",
         "failure",
         "waiting",
         "held",
