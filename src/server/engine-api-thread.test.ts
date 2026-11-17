@@ -1,5 +1,5 @@
 /**
- * The engine API's Flexible thread roads (F3) over HTTP, with the constant mocked on (tests only, vi.mock; the build's
+ * The engine API's Flexible thread roads (F3) over HTTP, with the switch mocked on (tests only, vi.mock; the build's
  * constant is false and flexible-disabled.test.ts proves every road refuses then): a thread's LiveSession window and
  * the list are its owner's only (another approver, the instance operator and a token read nothing), its facts parse as
  * the contract says, and an answer reaches the agent only as its owner's, naming the card digest they were shown. A
@@ -24,7 +24,7 @@ import { randomBytes } from "node:crypto";
 import { FLEXIBLE_RELAY_CREDENTIAL } from "../flexible-relay.js";
 import { writeHeldSecret } from "../tool-secret-store.js";
 
-vi.mock("../flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../flexible-available.js", async original => ({ ...await original<typeof import("../flexible-available.js")>(), flexibleAvailable: () => true }));
 // The console's own host, kept where the test can attach a scripted agent to it (the real opener, called as the console
 // calls it); and hooks run in the middle of a read and between a decision and its send (a session ending right there).
 const held = vi.hoisted(() => ({ sessions: null as unknown, duringRead: null as (() => void) | null, afterDecide: null as (() => void) | null }));

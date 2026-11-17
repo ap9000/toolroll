@@ -24,19 +24,23 @@ import { recordRunCheckLevel } from "./check-levels.js";
 import { publishPass, sweepMerges, type PublishExec } from "./publish.js";
 import { followPullRequests, mergePullRequest, savePublishing } from "./pull-request-flow.js";
 import { runOperate } from "./operate.js";
+import { run } from "./exec.js";
 import { taskBranch } from "./names.js";
 import { propose } from "./scope.js";
 import { FLEXIBLE_CANDIDATE_FIXED, flexibleAdoption } from "./flexible-merge-guard.js";
 import type { Store } from "./store.js";
 import { tgit, threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 
-vi.mock("./flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+// Interactive agent threads' switch as the test sets it (on unless a test turns it off), read where the product reads it.
+const switched = vi.hoisted(() => ({ on: true }));
+vi.mock("./flexible-available.js", async original => ({ ...await original<typeof import("./flexible-available.js")>(), flexibleAvailable: () => switched.on }));
 
 const NOW = new Date("2026-11-15T12:00:00.000Z");
 let world: ThreadWorld, store: Store, token: string, samToken: string, root: string;
 let thread: FlexibleThreadRow, paths: FlexibleThreadPaths;
 
 beforeEach(async () => {
+  switched.on = true;
   world = threadWorld();
   store = allowWhereUnfenced(world.store);
   root = join(world.dir, "evidence");
@@ -234,6 +238,24 @@ describe("one press", () => {
   });
 });
 
+describe("interactive agent threads off: past work can be inspected and imported, never armed", () => {
+  test("the terms card reads the candidate; the press imports it into its quarantined ref and stops before arming; on again, a new Ship arms", async () => {
+    const candidate = commit({ "a.txt": "off\n" });
+    switched.on = false;
+    const shown = await terms();
+    expect(shown.terms.candidate).toBe(candidate);
+    const pressed = await press(shown);
+    expect(pressed).toMatchObject({ ok: false, reason: "not-available" });
+    expect(ships()).toEqual([{ seq: 1, state: "imported", reason: null, task_id: null }]);
+    expect(projectRefs()).toContain(`${flexibleImportRef(thread.id, 1)} ${candidate}`);
+    expect(store.lookupRef(flexibleShipTaskId(shown.digest))).toBeNull();
+    switched.on = true;
+    const again = await press(await terms());
+    expect(again).toMatchObject({ ok: true });
+    expect(ships().map(one => one.state)).toEqual(["imported", "armed"]);
+  });
+});
+
 describe("the armed merge", () => {
   test("merges only after green on the exact candidate: waits while unbuilt, completes and owes the PR, then merges that head", async () => {
     const { candidate, taskId, ship } = await shipped();
@@ -362,6 +384,36 @@ describe("the armed merge", () => {
     expect(await step(off.taskId, gh.exec)).toMatchObject({ ok: false, reason: "cancelled" });
     expect(state(off.ship)).toBe("cancelled");
     expect(gh.merges()).toEqual([]);
+  });
+
+  test("interactive agent threads turned off while the base is read: nothing completes, no pull request is owed; on again, it completes", async () => {
+    const one = await shipped();
+    built(one.taskId, one.candidate);
+    // The switch goes off during the async git read that comes before the completion transaction.
+    const runner: typeof run = async (file, args, options) => { if (args.includes("merge-base")) switched.on = false; return run(file, args, options); };
+    switched.on = true;
+    expect(await mergeArmedFlexible(store, { taskId: one.taskId, root, clock: () => NOW, runner })).toMatchObject({ ok: true, state: "waiting" });
+    expect(state(one.ship)).toBe("armed");
+    expect(store.pendingPublications()).toEqual([]);
+    expect(actions(one.taskId)).not.toContain("flexible ship completed");
+    switched.on = true;
+    expect(await step(one.taskId)).toMatchObject({ ok: true, state: "completed" });
+  });
+
+  test("interactive agent threads turned off while GitHub is read before the merge: no reservation, nothing merges; on again, it merges", async () => {
+    const one = await shipped();
+    const gh = github(one.candidate, { view: () => { switched.on = false; } });
+    built(one.taskId, one.candidate);
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "completed" });
+    await publishPass(store, { repo: world.project, exec: gh.exec, clock: () => NOW, evidenceRoot: root });
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "waiting" });
+    expect(state(one.ship)).toBe("completed");
+    expect(actions(one.taskId)).not.toContain("flexible merge reserved");
+    expect(gh.merges()).toEqual([]);
+    // Off, the watch loop's step refuses before anything; on again, the same Ship merges.
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: false, reason: "not-available" });
+    switched.on = true;
+    expect(await step(one.taskId, gh.exec)).toMatchObject({ ok: true, state: "merged" });
   });
 
   test("the person's account changing while GitHub is read before the merge refuses it", async () => {

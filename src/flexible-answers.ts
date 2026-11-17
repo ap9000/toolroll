@@ -13,8 +13,10 @@
  *      └─(turn ended, agent stopped, Toolroll restarted)─▶ withdrawn
  *
  * The rules this module keeps:
- * - Nothing here works while FLEXIBLE_AVAILABLE is false: every entry point refuses with `not-available` first. No
- *   route, CLI command, MCP tool or chat action reaches it yet (F3 wires the thread view).
+ * - Recording a request, a person's decision and a send check the interactive agent threads' switch
+ *   (flexible-available.ts flexibleAvailable: off unless a person turned them on) first; revoking, expiring,
+ *   cancelling, acknowledging and recovering never do. No route, CLI command, MCP tool or chat action reaches it but
+ *   the thread view (F3).
  * - Two stores, one decision id. The request and its answer live in the coding catalog (a separate database: in
  *   production `<database>.coding.sqlite`, beside coding sessions), the decision and its intent in the main database
  *   (thread_decision, v167, and an append-only action_ledger row). The decision id is made once and written once on
@@ -54,7 +56,7 @@ import { closeSync, constants as fsConstants, lstatSync, openSync, realpathSync 
 import { basename, dirname, join, relative, isAbsolute } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Writable } from "node:stream";
-import { FLEXIBLE_AVAILABLE } from "./flexible-available.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import { flexibleDelegationAtUse, FLEXIBLE_LEVELS, FLEXIBLE_UNAVAILABLE, isFlexibleLevel } from "./flexible.js";
 import { flexibleLaunch } from "./flexible-launch.js";
 import { flexibleTurn, type FlexibleClock } from "./flexible-turns.js";
@@ -131,7 +133,6 @@ export type FlexibleAnswerConnection = {
  * stream's handle) or by the deadline, whichever is first. A stream that isn't writable takes nothing. Bytes still
  * queued at the deadline may yet go out: that answer is uncertain. */
 export function streamAnswerSender(stream: Writable): FlexibleAnswerConnection["send"] | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   return (bytes, { deadlineMs, signal }) => new Promise<FlexibleSendResult>(resolve => {
     if (stream.destroyed || !stream.writable || signal.aborted) { resolve({ written: 0, complete: false }); return; }
     let settled = false;
@@ -288,7 +289,6 @@ function fileProblem(path: string): string | null {
  * swap an entry between those checks and the open: an attacker who can do that already owns Toolroll's state.
  */
 export function openFlexibleAnswerCatalog(store: Store): { ok: true; catalog: FlexibleAnswerCatalog } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const database = store.databaseFile();
   if (database === null || !isAbsolute(database)) return refuse("catalog-unsafe");
   const folder = dirname(database), file = join(folder, `${basename(database)}.coding.sqlite`);
@@ -498,7 +498,7 @@ export type FlexibleRequestInput = {
  */
 export function recordFlexibleRequest(store: Store, catalog: FlexibleAnswerCatalog, input: FlexibleRequestInput):
   { ok: true; request: string; token: string; requestDigest: string } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (![input.thread, input.turn, input.connection].every(id => typeof id === "string" && ID.test(id)) || typeof input.holder !== "string" || !HOLDER.test(input.holder)
     || typeof input.requestRef !== "string" || !REF.test(input.requestRef) || cardProblem(input.kind, input.card) !== null
     || (input.correlation != null && (typeof input.correlation !== "string" || !REF.test(input.correlation)))) return refuse("invalid-request");
@@ -575,7 +575,7 @@ export function decideFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalo
   decision: FlexibleDecision; answers?: unknown; clock?: FlexibleClock;
   /** The person's own session (the surface that proved them), re-read inside the decision's transaction: false refuses. */
   held?: () => boolean }): Decided | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (input.by?.kind !== "person") return refuse("not-a-person");
   if (typeof input.request !== "string" || !ID.test(input.request) || typeof input.token !== "string" || !/^[0-9a-f]{64}$/.test(input.token)
     || typeof input.shownDigest !== "string" || typeof input.by.name !== "string" || !Number.isSafeInteger(input.by.generation)
@@ -586,7 +586,6 @@ export function decideFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalo
 
 /** Toolroll decides a request by a recorded rule (FLEXIBLE_ANSWER_RULES): only ever a decline or a cancel. */
 export function decideFlexibleAnswerByPolicy(store: Store, catalog: FlexibleAnswerCatalog, input: { request: string; rule: FlexibleAnswerRule; clock?: FlexibleClock }): Decided | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.request !== "string" || !ID.test(input.request) || !Object.hasOwn(FLEXIBLE_ANSWER_RULES, input.rule)) return refuse("invalid-request");
   return decide(store, catalog, input, { source: "policy", rule: input.rule }, FLEXIBLE_ANSWER_RULES[input.rule], undefined);
 }
@@ -618,7 +617,7 @@ export async function sendFlexibleAnswer(store: Store, catalog: FlexibleAnswerCa
    * answer is not-sent (bound to the decision by its caller, which decides and sends with the same session). */
   held?: () => boolean }):
   Promise<{ ok: true; state: "sent"; decisionId: string } | FlexibleAnswerRefusal> {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
+  if (!flexibleAvailable(store)) return refuse("not-available");
   if (typeof input.request !== "string" || !ID.test(input.request) || typeof input.holder !== "string" || !HOLDER.test(input.holder)
     || typeof input.connection?.id !== "string" || typeof input.connection.frame !== "function" || typeof input.connection.send !== "function"
     || (input.writeMs !== undefined && (!Number.isSafeInteger(input.writeMs) || input.writeMs < 1 || input.writeMs > 60_000))
@@ -761,7 +760,6 @@ const stoppable = (decision: DecisionRow | null, row: RequestRow | null): boolea
  */
 export function cancelFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalog, input: { request: string; by: { kind: "person"; name: string; generation: number }; clock?: FlexibleClock }):
   { ok: true; state: "not-sent" } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (input.by?.kind !== "person") return refuse("not-a-person");
   if (typeof input.request !== "string" || !ID.test(input.request) || typeof input.by.name !== "string" || !Number.isSafeInteger(input.by.generation)) return refuse("invalid-request");
   return store.transact(() => {
@@ -786,7 +784,6 @@ export function cancelFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalo
  */
 export function revokeFlexibleAnswers(store: Store, catalog: FlexibleAnswerCatalog, input: { thread: string; turn?: string; connection?: string; reason: string; clock?: FlexibleClock }):
   { ok: true; withdrawn: number; notSent: number } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (![input.thread, ...(input.turn === undefined ? [] : [input.turn]), ...(input.connection === undefined ? [] : [input.connection])].every(id => typeof id === "string" && ID.test(id))
     || typeof input.reason !== "string" || input.reason.length < 1 || input.reason.length > 200) return refuse("invalid-request");
   return store.transact(() => {
@@ -816,7 +813,6 @@ export function revokeFlexibleAnswers(store: Store, catalog: FlexibleAnswerCatal
  * a sent answer on that connection is delivered. Nothing else moves. */
 export function ackFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalog, input: { connection: string; requestRef: string; clock?: FlexibleClock }):
   { ok: true; delivered: boolean } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.connection !== "string" || !ID.test(input.connection) || typeof input.requestRef !== "string" || !REF.test(input.requestRef)) return refuse("invalid-request");
   return store.transact(() => {
     const at = (input.clock ?? systemClock)().toISOString();
@@ -834,7 +830,6 @@ export function ackFlexibleAnswer(store: Store, catalog: FlexibleAnswerCatalog, 
  * ambiguous infers nothing. */
 export function noteFlexibleToolActivity(store: Store, catalog: FlexibleAnswerCatalog, input: { connection: string; turn: string; correlation: string; clock?: FlexibleClock }):
   { ok: true; delivered: string | null; matched: number } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (![input.connection, input.turn].every(id => typeof id === "string" && ID.test(id)) || typeof input.correlation !== "string" || !REF.test(input.correlation)) return refuse("invalid-request");
   return store.transact(() => {
     const at = (input.clock ?? systemClock)().toISOString();
@@ -855,7 +850,6 @@ export function noteFlexibleToolActivity(store: Store, catalog: FlexibleAnswerCa
  * other still sending). A send still running in this process is left alone.
  */
 export function expireFlexibleAnswers(store: Store, catalog: FlexibleAnswerCatalog, input: { clock?: FlexibleClock; ackMs?: number; writeMs?: number } = {}): { ok: true; uncertain: number } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const ackMs = input.ackMs ?? FLEXIBLE_ANSWER_ACK_MS, writeMs = input.writeMs ?? FLEXIBLE_ANSWER_WRITE_MS;
   if (!Number.isSafeInteger(ackMs) || ackMs < 0 || !Number.isSafeInteger(writeMs) || writeMs < 0) return refuse("invalid-request");
   return store.transact(() => {
@@ -906,7 +900,6 @@ export function expireFlexibleAnswers(store: Store, catalog: FlexibleAnswerCatal
  */
 export function recoverFlexibleAnswersOf(store: Store, catalog: FlexibleAnswerCatalog, input: { holder: string; clock?: FlexibleClock }):
   { ok: true; withdrawn: number; uncertain: number; notSent: number } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (typeof input.holder !== "string" || !HOLDER.test(input.holder)) return refuse("invalid-request");
   return store.transact(() => {
     const at = (input.clock ?? systemClock)().toISOString();
@@ -945,7 +938,6 @@ export function recoverFlexibleAnswersOf(store: Store, catalog: FlexibleAnswerCa
  * provider's, never a person's or Toolroll's approval, and nothing is sent. Only while that turn runs on that launch. */
 export function recordFlexibleProviderDecision(store: Store, input: { thread: string; turn: string; connection: string; holder: string; requestRef: string; decision: "accept" | "decline"; provider: string; clock?: FlexibleClock }):
   { ok: true; decisionId: string } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   if (![input.thread, input.turn, input.connection].every(id => typeof id === "string" && ID.test(id)) || typeof input.holder !== "string" || !HOLDER.test(input.holder)
     || typeof input.requestRef !== "string" || !REF.test(input.requestRef) || (input.decision !== "accept" && input.decision !== "decline")
     || typeof input.provider !== "string" || !/^[a-z][a-z0-9-]{0,39}$/.test(input.provider)) return refuse("invalid-request");
@@ -972,7 +964,6 @@ export type FlexibleRequestView = { request: string; turn: string; connection: s
 /** A thread's requests, newest last (at most `limit`, default 20): every one still open, then the latest that ended, of
  * `turn` when given. Reads the coding catalog only; nothing moves. The caller admits the reader (the thread's owner). */
 export function flexibleRequestsOf(catalog: FlexibleAnswerCatalog, input: { thread: string; turn?: string; limit?: number }): { ok: true; requests: FlexibleRequestView[] } | FlexibleAnswerRefusal {
-  if (!FLEXIBLE_AVAILABLE) return refuse("not-available");
   const limit = input.limit ?? 20;
   if (typeof input.thread !== "string" || !ID.test(input.thread) || (input.turn !== undefined && (typeof input.turn !== "string" || !ID.test(input.turn)))
     || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) return refuse("invalid-request");

@@ -1,5 +1,5 @@
 /**
- * Starting a Flexible thread over HTTP (pre-enable), with the constant mocked on (tests only, vi.mock; the build's is
+ * Starting a Flexible thread over HTTP (pre-enable), with the switch mocked on (tests only, vi.mock; the build's is
  * false and flexible-disabled.test.ts proves the road refuses then): a person's yes to exact terms. Without a key the
  * road answers the terms card and makes nothing; the start names the card's key, which is made again at the moment of
  * use (a project, network or terms that moved in between is a stale key, refused); the yes is proved as an approval's
@@ -21,7 +21,7 @@ import { randomBytes } from "node:crypto";
 import { FLEXIBLE_RELAY_CREDENTIAL } from "../flexible-relay.js";
 import { writeHeldSecret } from "../tool-secret-store.js";
 
-vi.mock("../flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../flexible-available.js", async original => ({ ...await original<typeof import("../flexible-available.js")>(), flexibleAvailable: () => true }));
 const held = vi.hoisted(() => ({ starts: [] as Record<string, unknown>[] }));
 vi.mock("../flexible-session.js", async importOriginal => {
   const real = await importOriginal<typeof import("../flexible-session.js")>();

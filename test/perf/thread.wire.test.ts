@@ -1,7 +1,7 @@
 /**
  * Wire budgets for the Flexible thread roads (F3; `npm run test:perf:wire`, docs/TESTING.md "Wire budgets"): what a
  * terminal client's thread reads cost, held to committed ceilings (thread-wire-ceilings.json) like the engine API's own
- * reads in wire.wire.test.ts. The constant is mocked on here only (vi.mock; the build's is false): a thread with a long
+ * reads in wire.wire.test.ts. The constant is mocked on here only (vi.mock; the default is off): a thread with a long
  * transcript and a few questions, read cold (every record and its facts), polled unchanged (no records, facts left out
  * as `known`), listed, and held as a long poll (`wait=1`) woken by the agent's next words (pre-enable push: the
  * terminal waits instead of polling every 250 ms). Bytes and SQL statements are gated; server time is gated at the
@@ -23,7 +23,7 @@ import { flexibleDigestOf, flexibleTermsJson, type FlexibleTerms } from "../../s
 import { admitFlexibleTurn, beginFlexibleTurn } from "../../src/flexible-turns.js";
 import { attachFlexibleAgent, startFlexibleThreadSession, type FlexibleSessions } from "../../src/flexible-session.js";
 
-vi.mock("../../src/flexible-available.js", () => ({ FLEXIBLE_AVAILABLE: true }));
+vi.mock("../../src/flexible-available.js", async original => ({ ...await original<typeof import("../../src/flexible-available.js")>(), flexibleAvailable: () => true }));
 const held = vi.hoisted(() => ({ sessions: null as unknown }));
 vi.mock("../../src/flexible-session.js", async importOriginal => {
   const real = await importOriginal<typeof import("../../src/flexible-session.js")>();

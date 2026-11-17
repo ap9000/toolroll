@@ -1607,7 +1607,9 @@ impl Prefs {
 
     /// The settings screen (`?` then `s`, or Settings in the palette): the choices it changes first (the one at
     /// `cursor` marked), then the rest in use, and the file they come from. Every line wraps; none is cut.
-    pub fn screen(&self, width: usize, cursor: usize) -> Vec<Line<'static>> {
+    /// `threads`: interactive agent threads as the console last said (None: not known yet), shown read-only: it is an
+    /// installation setting, changed in the browser or the CLI.
+    pub fn screen(&self, width: usize, cursor: usize, threads: Option<bool>) -> Vec<Line<'static>> {
         let ink = crate::theme::ink;
         let dim = crate::theme::dim;
         let on = |b: bool| if b { "on" } else { "off" };
@@ -1735,6 +1737,7 @@ impl Prefs {
             ("Bell", on(s.bell).to_string()),
             ("Reduced motion", on(s.reduced_motion).to_string()),
             ("Delivered", self.reach.words().to_string()),
+            ("Agent threads", threads_words(threads)),
         ];
         for (label, words) in rest {
             row(&mut lines, "", label, &words, false);
@@ -1763,6 +1766,15 @@ impl Prefs {
             dim(),
         )));
         lines
+    }
+}
+
+/// Interactive agent threads (beta) on the settings screen: as the console last said, and where to change it.
+pub fn threads_words(threads: Option<bool>) -> String {
+    match threads {
+        Some(true) => "on (beta). Change it in the browser or with `toolroll config set flexible off`".into(),
+        Some(false) => "off (beta). Change it in the browser or with `toolroll config set flexible on`".into(),
+        None => "not known yet (beta). Change it in the browser or with `toolroll config set flexible on`".into(),
     }
 }
 

@@ -25,6 +25,7 @@ import type { FlexibleLevel } from "./flexible.js";
 import { interruptFlexibleThreadTurns, type FlexibleClock } from "./flexible-turns.js";
 import { currentMachineId } from "./machine-identity.js";
 import { relayCancel } from "./flexible-relay-cancel.js";
+import { flexibleAvailable } from "./flexible-available.js";
 import type { Store } from "./store.js";
 
 export const FLEXIBLE_AGENT_PROVIDERS = ["claude", "codex", "gemini", "openrouter"] as const;
@@ -118,9 +119,23 @@ export function recordGateShut(store: Store, input: { launch: string; thread: st
 const LAUNCHED = "flexible agent launched";
 /** Record that a launch's start gate is opening: its agent runs from here. Written before the gate opens (a write that
  * fails keeps it shut). Its turn counts as launched only from this record, never from the turn having begun. */
-export function recordLaunchOpened(store: Store, input: { launch: string; thread: string; turn: string | null; clock?: FlexibleClock }): void {
-  store.recordAction({ at: (input.clock ?? (() => new Date()))().toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: LAUNCHED, outcome: "launched",
-    detail: `turn ${input.turn ?? "none"} · thread ${input.thread} · launch ${input.launch}` });
+/**
+ * The launch's final reservation, immediately before its start gate opens: one write transaction (serialized with every
+ * other write, the interactive agent threads switch's included) that reads the switch (flexible-available.ts), runs the
+ * caller's own last re-check (its turn, level and authority) and records the launch as opened. Null: opened, and the
+ * gate may open; otherwise why it stays shut, and nothing was recorded.
+ */
+export function reserveLaunchOpen(store: Store, input: { launch: string; thread: string; turn: string | null; clock?: FlexibleClock; check: () => string | null }): string | null {
+  return store.transact((): string | null => {
+    if (!flexibleAvailable(store)) return "interactive agent threads were turned off";
+    const why = input.check();
+    if (why !== null) return why;
+    const live = store.handle.prepare("SELECT 1 AS live FROM flexible_thread_launch WHERE id = ? AND thread = ? AND state = 'live'").get(input.launch, input.thread);
+    if (live === undefined) return "its launch is no longer live";
+    store.recordAction({ at: (input.clock ?? (() => new Date()))().toISOString(), actor: "toolroll", repo: null, taskId: null, runId: null, source: "policy", action: LAUNCHED, outcome: "launched",
+      detail: `turn ${input.turn ?? "none"} · thread ${input.thread} · launch ${input.launch}` });
+    return null;
+  });
 }
 /** Whether a turn's agent was really launched (a launch of it opened its start gate), as opposed to the turn having begun. */
 export function flexibleTurnLaunched(store: Store, turn: string): boolean {
