@@ -1840,18 +1840,20 @@ mod tests {
     }
 
     /// The walker refuses a link at any depth of the path: each folder is opened with O_NOFOLLOW from its parent.
+    /// The test's own base stands in for the home folder, so a shared sticky temp folder above it (Linux's /tmp) is
+    /// allowed the way a real home's ancestors are.
     #[cfg(unix)]
     #[test]
     fn the_walk_refuses_a_linked_folder_at_every_depth() {
         let me = unsafe { libc::geteuid() };
         let (base, c) = chain("links");
-        assert!(walk_trusted(&c, None, me, false).unwrap().is_some());
+        assert!(walk_trusted(&c, Some(&base), me, false).unwrap().is_some());
         for (i, part) in ["a", "a/b", "a/b/c"].iter().enumerate() {
             let real = base.join(part);
             let moved = base.join(format!("moved-{i}"));
             std::fs::rename(&real, &moved).unwrap();
             std::os::unix::fs::symlink(&moved, &real).unwrap();
-            let why = walk_trusted(&c, None, me, false).unwrap_err();
+            let why = walk_trusted(&c, Some(&base), me, false).unwrap_err();
             assert!(why.contains("is a link or not a folder"), "{part}: {why}");
             std::fs::remove_file(&real).unwrap();
             std::fs::rename(&moved, &real).unwrap();
@@ -1861,7 +1863,7 @@ mod tests {
         for part in ["a", "a/b", "a/b/c"] {
             std::fs::set_permissions(base.join(part), std::fs::Permissions::from_mode(0o770))
                 .unwrap();
-            assert!(walk_trusted(&c, None, me, false).is_err(), "{part}");
+            assert!(walk_trusted(&c, Some(&base), me, false).is_err(), "{part}");
             std::fs::set_permissions(base.join(part), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
         }
@@ -1877,7 +1879,7 @@ mod tests {
         let me = unsafe { libc::geteuid() };
         let (base, c) = chain("swap");
         std::fs::write(c.join("tui.toml"), "theme = \"dark\"\n").unwrap();
-        let held = walk_trusted(&c, None, me, false).unwrap().unwrap();
+        let held = walk_trusted(&c, Some(&base), me, false).unwrap().unwrap();
         std::fs::rename(base.join("a/b"), base.join("a/b-old")).unwrap();
         std::fs::create_dir_all(base.join("a/b/c")).unwrap();
         std::fs::write(base.join("a/b/c/tui.toml"), "theme = \"light\"\n").unwrap();
