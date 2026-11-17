@@ -382,7 +382,11 @@ export async function verify(options) {
           cli = join(world.prefix, 'lib/node_modules/toolroll/dist/bin.js'); binary = null;
           if (!existsSync(join(dirname(cli), 'tui', `${process.platform}-${process.arch}`, 'toolroll-tui'))) throw new Error('Tarball has no bundled workbench for this platform');
         }
-        if (!existsSync(cli) || (binary && !existsSync(binary))) throw new Error('Build the checkout and workbench before verification');
+        // A checkout whose workbench is bundled into dist/tui (as CI's bundle job and npm pack do) needs no developer
+        // build: the launcher finds the bundled binary exactly as an installed package would.
+        const bundled = join(repo, 'dist/tui', `${process.platform}-${process.arch}`, 'toolroll-tui');
+        if (binary && !existsSync(binary) && existsSync(bundled)) binary = null;
+        if (!existsSync(cli) || (binary && !existsSync(binary))) throw new Error('Build the checkout and workbench (cargo build --release, or tui-build --bundle) before verification');
         const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
         session.candidate = { cliSha256: hash(cli), workbenchSha256: hash(binary ?? join(dirname(cli), 'tui', `${process.platform}-${process.arch}`, 'toolroll-tui')),
           ...(options.tarball ? { tarballSha256: hash(options.tarball) } : {}) };
