@@ -1,0 +1,44 @@
+name: Guard checks
+
+# Advisory. Execute only the base's checker and its base-owned imports; no candidate code or dependencies run.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guard-checks-${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-')) && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  guards:
+    name: guard checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+      - name: Check added lines with the base rules
+        shell: bash
+        run: |
+          judge=.trusted-base/scripts/guard-checks.mjs
+          if [ ! -f "$judge" ]; then
+            echo "::warning::the base revision has no guard checker yet; merge the checker before relying on this advisory job"
+            exit 0
+          fi
+          node "$judge" check --root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$TESTED_SHA" --summary "$GITHUB_STEP_SUMMARY"

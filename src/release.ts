@@ -119,6 +119,7 @@ export const ADVISORY_PR_CHECKS: Readonly<Record<string, string>> = {
   // Protect the judges (scripts/gate-changes.mjs): a pull request that changes a gate file without disclosing it in a
   // Gate-change trailer fails it; the person deciding the release reads it, the release doesn't wait for it.
   "gate changes": ".github/workflows/gate-changes.yml",
+  "guard checks": ".github/workflows/guard-checks.yml",
 };
 
 /**
