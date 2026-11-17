@@ -4,6 +4,10 @@
 //! other key is kept, and the file is replaced whole (a temporary file renamed over it, mode 0600) under the same
 //! ownership rules the reader keeps.
 //!
+//! `list-side` / `list_side` and `focus-follows-mouse` / `focus_follows_mouse` accept either spelling. When both
+//! occur, kebab-case wins regardless of line order (an invalid value uses the default). Writes set kebab-case,
+//! preserving snake-case lines and their comments untouched. Repeats of the same spelling still use the first.
+//!
 //! Strict: a key it doesn't know is named in a warning and ignored; a value it can't use falls back to the default,
 //! saying so; a line it can't read is skipped, saying so. The file is read only when it is a plain file owned by this
 //! user that nobody else can change, in a folder nobody else can change; otherwise it is ignored, saying why.
@@ -157,8 +161,10 @@ pub const FRESH_HEAD: &str = "# Toolroll's terminal workbench settings. The Sett
 
 /// tui.toml's text with one setting set to `value` (already written as TOML): the line that sets it is rewritten in
 /// place (its indentation and comment kept), else the line is added to its section (the section made when missing).
+/// Writes use kebab-case for accepted snake-case aliases; alias lines are left untouched.
 /// Every other line, comment and key is kept as it was.
 pub fn set_in_toml(text: &str, section: &str, key: &str, value: &str) -> String {
+    let key = canonical_key(section, key);
     let dotted = format!("{section}.{key}");
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let mut current = String::new();
@@ -906,6 +912,15 @@ fn entries(text: &str) -> (Vec<Entry>, Vec<String>) {
     (out, warnings)
 }
 
+/// Only these top-level settings accept snake-case aliases. Other tables and keys keep their own names.
+fn canonical_key<'a>(section: &str, key: &'a str) -> &'a str {
+    match (section, key) {
+        ("", "list_side") => "list-side",
+        ("", "focus_follows_mouse") => "focus-follows-mouse",
+        _ => key,
+    }
+}
+
 /// Settings from the file's text, and a plain warning for everything not used.
 pub fn parse(text: &str) -> (Settings, Vec<String>) {
     let mut s = Settings::default();
@@ -914,7 +929,17 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
     let mut preset: Option<(usize, crate::keys::Written)> = None;
     let mut overrides: Vec<(usize, String, crate::keys::Written)> = vec![];
     let mut wanted_theme: Option<(usize, String)> = None;
-    for (n, section, key, v) in entries {
+    for (n, section, key, v) in entries.iter().cloned() {
+        // Kebab-case wins regardless of line order, even when its value is invalid. Keep the alias in the file,
+        // but do not validate or apply it: writes only change (or add) the canonical spelling.
+        let canonical = canonical_key(&section, &key);
+        if canonical != key
+            && entries
+                .iter()
+                .any(|(_, sec, k, _)| sec == &section && k == canonical)
+        {
+            continue;
+        }
         let section = if section == "colours" {
             "colors".to_string()
         } else {
@@ -2060,6 +2085,70 @@ running = "#5aa9ff"
         let (s, w) = parse("notifications.finished = true\ncolors.failed = \"#f00\"");
         assert!(w.is_empty() && s.notify.finished);
         assert_eq!(s.colors, vec![(Role::Failed, Rgb(255, 0, 0))]);
+    }
+
+    #[test]
+    fn kebab_case_settings_win_over_snake_case_in_either_order() {
+        for (key, alias, preferred, ignored) in [
+            ("list-side", "list_side", "\"right\"", "\"left\""),
+            (
+                "focus-follows-mouse",
+                "focus_follows_mouse",
+                "true",
+                "false",
+            ),
+        ] {
+            let (want, _) = parse(&format!("{key} = {preferred}\n"));
+            assert_eq!(
+                parse(&format!("{alias} = {preferred}\n")),
+                (want.clone(), vec![])
+            );
+            for text in [
+                format!("{key} = {preferred}\n{alias} = {ignored}\n"),
+                format!("{alias} = {ignored}\n{key} = {preferred}\n"),
+            ] {
+                assert_eq!(parse(&text), (want.clone(), vec![]), "{text}");
+                // An invalid canonical value still wins and uses the default.
+                let (got, warnings) =
+                    parse(&text.replace(preferred, "42").replace(ignored, preferred));
+                assert_eq!(got, Settings::default());
+                assert_eq!(warnings.len(), 1, "{warnings:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn writes_read_back_with_both_spellings_and_keep_the_alias_untouched() {
+        for (key, alias, old, new) in [
+            ("list-side", "list_side", "\"left\"", "\"right\""),
+            (
+                "focus-follows-mouse",
+                "focus_follows_mouse",
+                "false",
+                "true",
+            ),
+        ] {
+            let (want, _) = parse(&format!("{key} = {new}\n"));
+            let alias_line = format!("  {alias} = {old}   # keep this exactly\n");
+            for text in [
+                format!("{key} = {old}  # canonical\n{alias_line}"),
+                format!("{alias_line}{key} = {old}  # canonical\n"),
+                alias_line.clone(),
+            ] {
+                // Either API spelling writes the canonical key, even in alias-only files.
+                for written_key in [key, alias] {
+                    let text =
+                        format!("# settings\n{text}bell = true\n[notifications]\nasks = true\n");
+                    let out = set_in_toml(&text, "", written_key, new);
+                    assert!(out.starts_with("# settings\n"), "{out}");
+                    assert!(out.contains("bell = true\n"), "{out}");
+                    assert!(out.contains("[notifications]\nasks = true\n"), "{out}");
+                    assert_eq!(parse(&out), (want.clone(), vec![]), "{out}");
+                    assert!(out.contains(&alias_line), "{out}");
+                    assert_eq!(set_in_toml(&out, "", written_key, new), out);
+                }
+            }
+        }
     }
 
     #[test]
