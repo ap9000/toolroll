@@ -521,6 +521,8 @@ pub struct Transcript {
 /// The Live tab's laid-out lines: for which transcript version, width and first record, and when.
 pub struct LineCache {
     pub version: u64,
+    /// The look the lines were coloured with: a new theme (a reload of tui.toml, `t`) lays them out again.
+    pub look: (crate::theme::Theme, crate::theme::Glyphs),
     pub width: usize,
     pub from: usize,
     pub built: std::time::Instant,

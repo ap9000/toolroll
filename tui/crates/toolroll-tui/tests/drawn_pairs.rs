@@ -1,16 +1,15 @@
-//! The colour pairs the screen actually draws, found by drawing it: every role given a colour of its own, the main
-//! screens drawn, and each cell's text and background read back as roles. Every pair found must be in
-//! theme::DRAWN_PAIRS, the one table the contrast check reads (Theme::problem), so a screen can't start drawing a pair
-//! the check doesn't know.
+//! The colour pairs the screen actually draws, found by drawing it (common/pairs.rs, which every test that draws a
+//! screen also calls): here every item on every tab, every layout (list full, rail, hidden; one, two and four panels;
+//! zoomed; the list on the right; no key bar; compact), toasts, and dialogs, each at three sizes. Every pair found must
+//! be one theme::DRAWN_PAIRS (or CODE_ACCENT_ON, SAME_ROLE_DRAWN) lists, and a colour that is no role fails.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::backend::TestBackend;
-use ratatui::style::{Color, Modifier};
-use ratatui::Terminal;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use toolroll_fake_engine as fake;
-use toolroll_tui::app::{App, Effect, Msg, Tab};
-use toolroll_tui::theme::{self, Depth, Paint, Rgb, Role, Theme, ThemeName};
+use toolroll_tui::app::{App, Effect, Msg, Tab, Tone};
+use toolroll_tui::theme::{self, Depth, Paint, Role, Theme, ThemeName};
 
 const NOW: i64 = 1_794_657_852;
 
@@ -73,117 +72,131 @@ fn answer(app: &mut App, fx: Vec<Effect>) {
     }
 }
 
-/// A theme whose every role has a colour no other role has (and no colour any role shares), and how to read them back.
-fn unique() -> (Theme, HashMap<(u8, u8, u8), Role>) {
-    let (mut t, _) = Theme::build(ThemeName::Dark, Depth::TrueColor, None, &[]);
-    let mut back = HashMap::new();
-    for (i, role) in Role::ALL.iter().enumerate() {
-        let c = Rgb(10 + i as u8 * 13, 3 + i as u8 * 7, 250 - i as u8 * 11);
-        t.palette.set(*role, Paint::Rgb(c));
-        back.insert((c.0, c.1, c.2), *role);
+const SIZES: [(u16, u16); 3] = [(160, 44), (100, 30), (60, 20)];
+
+/// The scenario's workbench with `select` selected, as a person reaches it.
+fn on(select: &str) -> App {
+    let mut app = App::new(false, Some("/home/me/shop".into()));
+    app.now = NOW;
+    let fx = app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
+    answer(&mut app, fx);
+    let at = app.items.iter().position(|i| i.id == select).unwrap();
+    while app.selected < at {
+        let fx = app.key(key('j'));
+        answer(&mut app, fx);
     }
-    t.reference = Rgb(10, 3, 250);
-    (t, back)
+    app
 }
 
-/// The roles drawn: (text, background) for every cell with a glyph, reversal undone, in role terms where both are
-/// roles (a cell's own default background is the paper the sheets were filled with).
-fn pairs(
-    app: &mut App,
-    back: &HashMap<(u8, u8, u8), Role>,
-    w: u16,
-    h: u16,
-    into: &mut BTreeSet<(Role, Role)>,
-) {
-    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
-    let role = |c: Color| match c {
-        Color::Rgb(r, g, b) => back.get(&(r, g, b)).copied(),
-        Color::Reset => Some(Role::Paper),
-        _ => None,
-    };
-    for cell in term.backend().buffer().content() {
-        if cell.symbol().trim().is_empty() {
-            continue;
-        }
-        let (mut fg, mut bg) = (cell.fg, cell.bg);
-        if cell.modifier.contains(Modifier::REVERSED) {
-            std::mem::swap(&mut fg, &mut bg);
-        }
-        if let (Some(f), Some(b)) = (role(fg), role(bg)) {
-            if f != b {
-                into.insert((f, b));
-            }
-        }
+fn keys(app: &mut App, keys: &str) {
+    for c in keys.chars() {
+        let k = match c {
+            '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            '\n' => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            c => key(c),
+        };
+        let fx = app.key(k);
+        answer(app, fx);
     }
 }
 
-fn scenes() -> Vec<(&'static str, App)> {
+/// Every scene, by name: each item on each tab, each layout, toasts and dialogs.
+fn scenes() -> Vec<(String, App)> {
+    let items = ["t-ask", "t-done", "t-live", "t-rate", "t-old"];
     let mut out = vec![];
-    for select in ["t-ask", "t-done", "t-live", "t-rate", "t-old"] {
-        let mut app = App::new(false, Some("/home/me/shop".into()));
-        app.now = NOW;
-        let fx = app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
-        answer(&mut app, fx);
-        let at = app.items.iter().position(|i| i.id == select).unwrap();
-        while app.selected < at {
-            let fx = app.key(key('j'));
-            answer(&mut app, fx);
-        }
+    for select in items {
         for tab in [Tab::Live, Tab::Steps, Tab::Diff, Tab::Terminal] {
-            let mut a = App::new(false, Some("/home/me/shop".into()));
-            a.now = NOW;
-            let fx = a.update(Msg::Work(Ok(parse(fake::scenario_work()))));
-            answer(&mut a, fx);
-            while a.selected < at {
-                let fx = a.key(key('j'));
-                answer(&mut a, fx);
+            let mut app = on(select);
+            while app.tab != tab {
+                keys(&mut app, "\t");
             }
-            // Tab moves through Live → Steps → Diff → Terminal.
-            while a.tab != tab {
-                let fx = a.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-                answer(&mut a, fx);
-            }
-            out.push((select, a));
+            out.push((format!("{select} {tab:?}"), app));
         }
-        out.push((select, app));
+        // Layouts: the list as a rail and hidden, two and four panels, zoomed.
+        for (name, k) in [
+            ("rail", "b"),
+            ("hidden", "bb"),
+            ("two", "L"),
+            ("four", "LL"),
+            ("zoom", "z"),
+            ("four zoomed", "LLz"),
+        ] {
+            let mut app = on(select);
+            keys(&mut app, k);
+            out.push((format!("{select} {name}"), app));
+        }
+        // The list on the right; no key bar and compact.
+        let mut right = on(select);
+        right.prefs.settings.list_side = toolroll_tui::viewstate::Side::Right;
+        out.push((format!("{select} right"), right));
+        let mut bare = on(select);
+        bare.prefs.settings.key_bar = false;
+        bare.prefs.settings.density = toolroll_tui::settings::Density::Compact;
+        out.push((format!("{select} no key bar, compact"), bare));
+        // Toasts: said and refused.
+        for tone in [Tone::Said, Tone::Refused] {
+            let mut app = on(select);
+            app.status = Some((tone, "Saved: a toast's words.".into()));
+            out.push((format!("{select} toast {tone:?}"), app));
+        }
     }
-    // Dialogs and screens over them.
-    for keys in ["?", ":", "n", "X", "x", "?s", "1", "b", "LL"] {
-        let mut app = App::new(false, Some("/home/me/shop".into()));
-        app.now = NOW;
-        let fx = app.update(Msg::Work(Ok(parse(fake::scenario_work()))));
-        answer(&mut app, fx);
-        for c in keys.chars() {
-            let fx = app.key(key(c));
-            answer(&mut app, fx);
-        }
-        out.push(("dialog", app));
+    // Dialogs, opened as a person opens them (the rest are drawn by the suites that open them, which check too).
+    for (select, k) in [
+        ("t-live", "?"),
+        ("t-live", ":"),
+        ("t-live", "n"),
+        ("t-live", "T"),
+        ("t-live", "s"),
+        ("t-live", "x"),
+        ("t-live", "X"),
+        ("t-live", "/"),
+        ("t-live", "q"),
+        ("t-live", "?s"),
+        ("t-live", "A"),
+        ("t-ask", "1"),
+        ("t-ask", "2"),
+        ("t-done", "a"),
+        ("t-done", "aa"),
+        ("t-done", "r"),
+        ("t-rate", "r"),
+        ("t-done", "\t\t\tc"),
+        ("t-live", "t"),
+    ] {
+        let mut app = on(select);
+        keys(&mut app, k);
+        out.push((format!("{select} keys {k:?}"), app));
     }
     out
 }
 
 #[test]
 fn every_pair_the_screen_draws_is_one_the_contrast_check_reads() {
-    let (t, back) = unique();
     let mut found = BTreeSet::new();
-    for (_, mut app) in scenes() {
-        app.prefs.theme = t;
-        for (w, h) in [(160, 40), (100, 30)] {
-            pairs(&mut app, &back, w, h, &mut found);
+    for (name, mut app) in scenes() {
+        for (w, h) in SIZES {
+            // Drawn first in its own theme, as a person sees it: whatever the screen keeps between frames (laid-out
+            // lines) must follow a change of theme, never carry the old one's colours.
+            let mut term =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            term.draw(|f| toolroll_tui::view::draw(f, &mut app))
+                .unwrap();
+            let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pairs::check(&mut app, w, h)
+            }));
+            match drawn {
+                Ok(p) => found.extend(p),
+                Err(_) => panic!("scene {name} at {w}x{h} (above)"),
+            }
         }
     }
-    let table: BTreeSet<(Role, Role)> = theme::DRAWN_PAIRS
-        .iter()
-        .map(|(f, b, _)| (*f, *b))
-        .collect();
-    let missing: Vec<_> = found.difference(&table).collect();
+    // The table isn't padding: most of it is drawn by these scenes.
+    let table = pairs::checked();
     assert!(
-        missing.is_empty(),
-        "drawn but not checked (add them to theme::DRAWN_PAIRS): {missing:?}\nall drawn: {found:?}"
+        found.len() * 3 >= table.len() * 2,
+        "{} of {}: {found:?}",
+        found.len(),
+        table.len()
     );
-    // The table isn't padding: most of it is drawn by these screens.
-    assert!(found.len() * 2 >= table.len(), "{found:?}");
 }
 
 /// The built-in themes' own colours, as drawn (true colour, and quantized at 256): the pairs that fall short.
@@ -202,6 +215,23 @@ fn short_pairs(t: &Theme) -> Vec<String> {
                         "{:?} {fg:?} on {bg:?} {at}: {c:.2} < {floor}",
                         t.name
                     ));
+                }
+            }
+        }
+    }
+    // Code's accent on the backgrounds code is drawn on.
+    if resolve(Role::Paper).is_some() {
+        let a = t.code_accent();
+        for &(bg, floor) in theme::CODE_ACCENT_ON {
+            if let Some(b) = resolve(bg) {
+                for (f2, b2, at) in [(a, b, "true"), (a.quantized256(), b.quantized256(), "256")] {
+                    let c = f2.contrast(b2);
+                    if c < floor {
+                        out.push(format!(
+                            "{:?} code accent on {bg:?} {at}: {c:.2} < {floor}",
+                            t.name
+                        ));
+                    }
                 }
             }
         }

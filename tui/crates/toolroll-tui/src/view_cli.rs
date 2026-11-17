@@ -187,15 +187,79 @@ pub const STATUS_ROLES: [Role; 7] = [
 /// Said when a change would turn off something that alerts or shows the person.
 pub const OFF_IS_YOURS: &str = "Turning that off is yours to do: Settings, or tui.toml.";
 
-/// Whether these colours over this base keep every contrast floor; the reason when they don't.
-fn keeps_contrast(base: ThemeName, colors: &[(Role, Rgb)]) -> Result<(), String> {
-    // The terminal theme sits on whatever the terminal's background is: checked on a dark one and a light one.
-    let backgrounds: &[Option<Rgb>] = if base == ThemeName::Terminal {
+/// Said when the agent asks for a saved theme that colours statuses its own way.
+pub const THEME_STATUS: &str = "That theme changes status colours, so only you can switch to it.";
+
+/// Said when tui.toml changed between the agent's change being checked and being written.
+pub const CHANGED_MEANWHILE: &str = "Your settings changed meanwhile; ask again.";
+
+/// The backgrounds a base theme is drawn on: the terminal theme on whatever the terminal's is (a dark and a light one).
+fn backgrounds_of(base: ThemeName) -> &'static [Option<Rgb>] {
+    if base == ThemeName::Terminal {
         &[None, Some(Rgb(255, 255, 255)), Some(Rgb(0, 0, 0))]
     } else {
         &[None]
-    };
-    let refused: Vec<String> = backgrounds
+    }
+}
+
+/// Whether these role colours over this base give any status (or its badge) a colour the base itself doesn't.
+fn changes_statuses(base: ThemeName, roles: &[(Role, Rgb)]) -> bool {
+    roles
+        .iter()
+        .filter(|(r, _)| STATUS_ROLES.contains(r))
+        .any(|(r, c)| {
+            !backgrounds_of(base).iter().any(|b| {
+                Theme::build(base, Depth::TrueColor, *b, &[])
+                    .0
+                    .palette
+                    .get(*r)
+                    == crate::theme::Paint::Rgb(*c)
+            })
+        })
+}
+
+/// The status colours a settings file draws (its theme, its colours laid over), as the screen builds them.
+fn statuses_of(theme: ThemeName, colors: &[(Role, Rgb)]) -> Vec<crate::theme::Paint> {
+    let (t, _) = Theme::build(theme, Depth::TrueColor, None, colors);
+    STATUS_ROLES.iter().map(|r| t.palette.get(*r)).collect()
+}
+
+/// What an agent's change may never do, judged on the whole file before and after (the text about to be written): turn
+/// off a notification, the key bar or costs; remove a column; change keys; give statuses colours other than the ones
+/// they had, unless back to the theme's own; or break a contrast floor it didn't already break.
+fn agent_may(before: &Settings, after: &Settings) -> Result<(), String> {
+    let n = (&before.notify, &after.notify);
+    let off = |b: bool, a: bool| b && !a;
+    if off(n.0.asks, n.1.asks) || off(n.0.finished, n.1.finished) || off(n.0.failed, n.1.failed) {
+        return Err(OFF_IS_YOURS.into());
+    }
+    if off(before.key_bar, after.key_bar) || off(before.show_costs, after.show_costs) {
+        return Err(OFF_IS_YOURS.into());
+    }
+    if let Some(gone) = before.columns.iter().find(|c| !after.columns.contains(c)) {
+        return Err(format!(
+            "{} (the {} column).",
+            OFF_IS_YOURS.trim_end_matches('.'),
+            gone.key()
+        ));
+    }
+    if before.keymap != after.keymap {
+        return Err("Keys can't be changed here: they stay with the person.".into());
+    }
+    let now = statuses_of(after.theme, &after.colors);
+    if now != statuses_of(before.theme, &before.colors) && now != statuses_of(after.theme, &[]) {
+        return Err(THEME_STATUS.into());
+    }
+    if (after.theme, &after.colors) != (before.theme, &before.colors) {
+        keeps_contrast(after.theme, &after.colors)?;
+    }
+    Ok(())
+}
+
+/// Whether these colours over this base keep every contrast floor; the reason when they don't.
+fn keeps_contrast(base: ThemeName, colors: &[(Role, Rgb)]) -> Result<(), String> {
+    // The terminal theme sits on whatever the terminal's background is: checked on a dark one and a light one.
+    let refused: Vec<String> = backgrounds_of(base)
         .iter()
         .flat_map(|b| Theme::build(base, Depth::TrueColor, *b, colors).1)
         .collect();
@@ -261,6 +325,11 @@ fn edits_of(change: &Map<String, Value>, now: &Settings) -> Result<Vec<Edit>, St
                     theme_after = (t, vec![]);
                 } else if saved_names.iter().any(|n| n == name) {
                     if let Some(t) = now.saved_themes.iter().find(|t| t.name == name) {
+                        // A saved theme (an older one, or the person's own) may colour statuses its own way: only the
+                        // person may switch to that one.
+                        if changes_statuses(t.base, &t.roles) {
+                            return Err(THEME_STATUS.into());
+                        }
                         theme_after = (t.base, t.roles.clone());
                     }
                 } else {
@@ -370,6 +439,19 @@ fn edits_of(change: &Map<String, Value>, now: &Settings) -> Result<Vec<Edit>, St
 
 /// Apply a change (JSON on standard input) to tui.toml through the safe writer; its words, one per edit.
 pub fn set(env: &Env, input: &str) -> Result<Vec<String>, String> {
+    let prepared = prepare(env, input)?;
+    apply(env, prepared)
+}
+
+/// A change checked against one exact snapshot of tui.toml: the text it was checked against, and its edits.
+pub struct Prepared {
+    path: std::path::PathBuf,
+    snapshot: String,
+    edits: Vec<Edit>,
+}
+
+/// Read tui.toml once (the snapshot) and check a change against exactly that text.
+pub fn prepare(env: &Env, input: &str) -> Result<Prepared, String> {
     if input.len() > MAX_INPUT {
         return Err("That change is too long.".into());
     }
@@ -378,41 +460,67 @@ pub fn set(env: &Env, input: &str) -> Result<Vec<String>, String> {
     let Some(change) = change.as_object() else {
         return Err("A change is a JSON object.".into());
     };
-    let (now, path, file, _) = settings::load(env);
-    let Some(path) = path else {
+    let Some(path) = env.settings_path() else {
         return Err("There's no home folder to keep tui.toml in.".into());
     };
-    if let FileState::Ignored(why) = &file {
-        return Err(format!(
-            "tui.toml isn't changed while it is ignored ({why})."
-        ));
-    }
+    let snapshot = match settings::read_safely(&path, env.home.as_deref()) {
+        // No file: the writer starts from the fresh head, so that is the text checked against.
+        Ok(None) => settings::FRESH_HEAD.to_string(),
+        Ok(Some(text)) => text,
+        Err(why) => {
+            return Err(format!(
+                "tui.toml isn't changed while it is ignored ({why})."
+            ))
+        }
+    };
+    let (now, _) = settings::parse(&snapshot);
     let edits = edits_of(change, &now)?;
-    // Read back what will be written, with the screen's own reader: a change that it wouldn't use is never written.
-    let before_warnings = std::cell::RefCell::new(None::<usize>);
+    Ok(Prepared {
+        path,
+        snapshot,
+        edits,
+    })
+}
+
+/// Write a prepared change. Under the writer's lock (settings.rs lock_dir), the file is read again and must be exactly
+/// the snapshot the change was checked against (byte for byte), else nothing is written; the text about to be
+/// written is read back with the screen's own reader and judged whole (agent_may) before it replaces the file.
+pub fn apply(env: &Env, prepared: Prepared) -> Result<Vec<String>, String> {
+    let Prepared {
+        path,
+        snapshot,
+        edits,
+    } = prepared;
     let refused = std::cell::RefCell::new(None::<String>);
-    let apply = |text: &str| -> String {
-        let mut out = if text.is_empty() {
-            settings::FRESH_HEAD.to_string()
-        } else {
-            text.to_string()
-        };
+    let write = |text: &str| -> String {
+        if text != snapshot {
+            *refused.borrow_mut() = Some(CHANGED_MEANWHILE.into());
+            return text.to_string();
+        }
+        let mut out = text.to_string();
         for e in &edits {
             out = settings::set_in_toml(&out, &e.section, &e.key, &e.value);
         }
-        let (_, before) = settings::parse(text);
-        let (_, after) = settings::parse(&out);
-        *before_warnings.borrow_mut() = Some(before.len());
+        let (was, before) = settings::parse(text);
+        let (will, after) = settings::parse(&out);
         if after.len() > before.len() {
-            *refused.borrow_mut() = after.into_iter().find(|w| !before.contains(w));
+            let why = after
+                .into_iter()
+                .find(|w| !before.contains(w))
+                .unwrap_or_default();
+            *refused.borrow_mut() = Some(format!("That change wasn't written: {why}"));
+            return text.to_string();
+        }
+        if let Err(why) = agent_may(&was, &will) {
+            *refused.borrow_mut() = Some(why);
             return text.to_string();
         }
         out
     };
-    settings::write_safely(&path, env.home.as_deref(), &apply)
+    settings::write_safely(&path, env.home.as_deref(), &write)
         .map_err(|why| format!("tui.toml wasn't written ({why})."))?;
     if let Some(why) = refused.into_inner() {
-        return Err(format!("That change wasn't written: {why}"));
+        return Err(why);
     }
     Ok(edits.into_iter().map(|e| e.words).collect())
 }

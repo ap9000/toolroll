@@ -1,6 +1,8 @@
 //! A Flexible thread as one more live session (F3), drawn from the contract's fixtures: listed with the work, its panel
 //! (transcript, questions, the turn's level and cost) in each answer state, and the answer flow: `1-9` pins the
 //! question shown, Enter posts exactly what was pinned, and a question that changed meanwhile is refused.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -30,6 +32,7 @@ fn window() -> Value {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 

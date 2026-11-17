@@ -1,6 +1,8 @@
 //! The workbench's third quality-of-life slice (herdr-inspired), drawn from the fake console's scenario: the view kept
 //! per project, resizing and collapsing the list, zoom, the list's side, the narrow layout, jumping to what needs you
 //! and back, unread marks, searching a pane, opening it in an editor, and focus following the mouse.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
@@ -90,6 +92,7 @@ fn on(select: &str) -> App {
 fn draw(app: &mut App, w: u16, h: u16) -> Terminal<TestBackend> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     for cell in term.backend().buffer().content() {
         assert!(
             !matches!(

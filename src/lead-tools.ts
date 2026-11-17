@@ -145,7 +145,7 @@ import { steerStandingWords } from "./steer-status.js";
 import { agentQuestion, openAgentQuestions } from "./agent-board.js";
 import { utcMinute } from "./when-html.js";
 import { RECORD_WHOLE_MAX, recordActionWhole } from "./action-ledger.js";
-import { VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, viewChangeApplied, type ViewAnswer, type ViewRunner } from "./view-tools.js";
+import { VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, type ViewRunner } from "./view-tools.js";
 
 const REPO_ID = /^r[0-9]{1,3}$/;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -566,7 +566,7 @@ function viewRefusal(ctx: LeadToolContext): LeadToolResult | null {
 
 /** This person's workbench changes, newest last (the last VIEW_HISTORY_SCAN): each pending one with its final word, if any. */
 const VIEW_HISTORY_SCAN = 200;
-type ViewHistoryRow = { id: number; at: string; change: Record<string, unknown> | null; final: "done" | "failed" | null };
+type ViewHistoryRow = { id: number; at: string; change: Record<string, unknown> | null; final: "done" | "failed" | "uncertain" | null };
 function viewHistory(ctx: LeadToolContext): ViewHistoryRow[] {
   const rows = ctx.store.handle.prepare("SELECT id, at, outcome, detail FROM action_ledger WHERE actor = ? AND action = ? ORDER BY id DESC LIMIT ?")
     .all(ctx.who.name, VIEW_LEDGER_ACTION, VIEW_HISTORY_SCAN).reverse();
@@ -584,7 +584,7 @@ function viewHistory(ctx: LeadToolContext): ViewHistoryRow[] {
       const one: ViewHistoryRow = { id: Number(row["id"]), at: String(row["at"]), change: typeof change === "object" && change !== null ? change as Record<string, unknown> : null, final: null };
       pending.push(one);
       byId.set(one.id, one);
-    } else if (row["outcome"] === "done" || row["outcome"] === "failed") {
+    } else if (row["outcome"] === "done" || row["outcome"] === "failed" || row["outcome"] === "uncertain") {
       const of = byId.get(Number(detail?.["pending"]));
       if (of !== undefined && of.final === null) of.final = row["outcome"];
     }
@@ -592,17 +592,21 @@ function viewHistory(ctx: LeadToolContext): ViewHistoryRow[] {
   return pending;
 }
 
-/** Settle the person's changes left pending (a timeout or a crash between reserving and finishing): done when the file
- * shows the change now, failed when it doesn't. A read that can't be made leaves them pending (still counted). */
-function settleViewChanges(ctx: LeadToolContext, read: ViewAnswer | null): void {
-  const open = viewHistory(ctx).filter(one => one.final === null);
-  if (open.length === 0) return;
-  const now = read ?? ctx.view!("read");
-  if (!now.ok) return;
-  for (const one of open) {
-    const applied = one.change !== null && viewChangeApplied(one.change, now.body);
+/** A pending change older than this whose writer never answered (the process ended between reserving and finishing):
+ * marked uncertain. Longer than the writer's own time limit, so a change still being written is never marked. */
+const VIEW_UNCONFIRMED_MS = 60_000;
+
+/** The words an uncertain change carries in the history (the audit log shows them beside it). */
+export const VIEW_UNCERTAIN_WORDS = "This change may or may not have applied: the workbench never confirmed it.";
+
+/** The person's changes the writer never confirmed, left pending past VIEW_UNCONFIRMED_MS: marked uncertain. Never
+ * inferred from the file as it is now (a later write could make it look done or not done); an uncertain change keeps
+ * counting toward the limit while its time is in the window, as a done one does. */
+function settleViewChanges(ctx: LeadToolContext): void {
+  const stale = ctx.now.getTime() - VIEW_UNCONFIRMED_MS;
+  for (const one of viewHistory(ctx).filter(row => row.final === null && Date.parse(row.at) < stale)) {
     recordActionWhole(ctx.store.handle, { at: ctx.now.toISOString(), actor: ctx.who.name, repo: null, taskId: null, runId: null, action: VIEW_LEDGER_ACTION,
-      outcome: applied ? "done" : "failed", source: "request" }, { pending: one.id, settled: "on a later read, from the file" });
+      outcome: "uncertain", source: "request" }, { pending: one.id, said: VIEW_UNCERTAIN_WORDS });
   }
 }
 
@@ -2128,7 +2132,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (refused !== null) return refused;
       const read = ctx.view!("read");
       if (!read.ok) return { ok: false, message: read.why };
-      settleViewChanges(ctx, read);
+      settleViewChanges(ctx);
       const body = read.body;
       return { ok: true, body: { settings: body["settings"], colors: body["colors"], allowed: body["allowed"], roles: body["roles"], themes: body["themes"], guide: body["guide"] } };
     },
@@ -2148,8 +2152,8 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const text = JSON.stringify(change);
       if (text.length > RECORD_WHOLE_MAX - 64) return { ok: false, message: "That change is too large: change a few settings at a time." };
       // At most VIEW_CHANGES_PER_MINUTE changes a minute, counted in the ledger the changes are written to: every one
-      // reserved (pending, or done) counts; only one that failed doesn't. One left pending is settled first.
-      settleViewChanges(ctx, null);
+      // reserved counts (pending, done or uncertain); only one that failed doesn't.
+      settleViewChanges(ctx);
       const since = ctx.now.getTime() - 60_000;
       const recent = viewHistory(ctx).filter(one => Date.parse(one.at) > since && one.final !== "failed").length;
       if (recent >= VIEW_CHANGES_PER_MINUTE) return { ok: false, message: `That's ${VIEW_CHANGES_PER_MINUTE} workbench changes in a minute; wait a moment before the next.` };
@@ -2158,8 +2162,12 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const pending = recordActionWhole(ctx.store.handle, { ...entry, outcome: "pending" }, { change });
       const set = ctx.view!("set", text);
       if (!set.ok) {
-        // Unsure (no answer): it stays pending, counted, and is settled from the file on the next read.
-        if (set.unsure === true) return { ok: false, message: `${set.why}; whether it changed is checked from tui.toml on the next read.` };
+        // Unsure (no answer): the writer never confirmed it, so it may or may not have applied. Marked uncertain, and
+        // it keeps counting toward the limit.
+        if (set.unsure === true) {
+          recordActionWhole(ctx.store.handle, { ...entry, outcome: "uncertain" }, { pending, said: VIEW_UNCERTAIN_WORDS, why: set.why.slice(0, 200) });
+          return { ok: false, message: `${set.why}. This change may or may not have applied: read the workbench's settings before trying again.` };
+        }
         recordActionWhole(ctx.store.handle, { ...entry, outcome: "failed" }, { pending, why: set.why.slice(0, 500) });
         return { ok: false, message: set.why };
       }

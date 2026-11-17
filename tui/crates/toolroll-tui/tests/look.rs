@@ -1,5 +1,7 @@
 //! Themes, density, glyphs, the settings screen, the settings file and notifications: each theme and depth drawn with
 //! its styles (a letter per style, and what each letter is), and what notifies when the work list changes.
+#[path = "common/pairs.rs"]
+mod pairs;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
@@ -72,6 +74,7 @@ fn live_app(p: Prefs) -> App {
 fn draw(app: &mut App, w: u16, h: u16) -> Buffer {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().buffer().clone()
 }
 

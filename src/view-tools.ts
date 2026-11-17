@@ -20,7 +20,7 @@ import { engineContractDigest } from "./contracts/engine-api.js";
 
 export type ViewVerb = "read" | "set" | "reset";
 /** `unsure`: the workbench didn't answer (a timeout, a crash, words that aren't its JSON), so a change may or may not
- * have been written; the lead leaves it pending and settles it from the file on the next read. */
+ * have been written; the lead records it as uncertain, never as failed. */
 export type ViewAnswer = { ok: true; body: Record<string, unknown> } | { ok: false; why: string; unsure?: true };
 /** Runs `toolroll-tui view <verb>` (a change on standard input for set). Tests pass their own. */
 export type ViewRunner = (verb: ViewVerb, input?: string) => ViewAnswer;
@@ -76,41 +76,12 @@ export const BUILT_IN_THEMES = ["terminal", "light", "dark", "high-contrast"] as
 
 /** How many changes the person's lead may make in a minute. */
 export const VIEW_CHANGES_PER_MINUTE = 10;
-/** The ledger's word for a change made this way (store.recordActionWhole). Each change is two entries: "pending",
- * written before the workbench is touched, holding the whole change; then "done" or "failed", naming the pending one.
- * A pending one left behind (a timeout, a crash) counts toward the limit and is settled on the next read. */
+/** The ledger's word for a change made this way (action-ledger.ts recordActionWhole). Each change is two entries:
+ * "pending", written before the workbench is touched, holding the whole change; then "done" or "failed" when the
+ * workbench answered, or "uncertain" when it never did (a timeout, a crash; it may or may not have applied), naming
+ * the pending one. Pending, done and uncertain all count toward the limit. */
 export const VIEW_LEDGER_ACTION = "workbench look changed";
-export type ViewOutcome = "pending" | "done" | "failed";
-
-/** Whether the workbench's settings, as read now (`toolroll-tui view read`), hold everything `change` asked for: how a
- * pending change left behind is settled (done when the file shows it, else failed). */
-export function viewChangeApplied(change: Record<string, unknown>, read: Record<string, unknown>): boolean {
-  const settings = (read["settings"] ?? {}) as Record<string, unknown>;
-  const colors = (read["colors"] ?? {}) as Record<string, unknown>;
-  const saved = (((read["themes"] ?? {}) as Record<string, unknown>)["saved"] ?? []) as Record<string, unknown>[];
-  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const hex = (a: unknown) => typeof a === "string" ? a.toLowerCase() : a;
-  const colorsHeld = (want: unknown, have: Record<string, unknown>) =>
-    typeof want === "object" && want !== null && Object.entries(want).every(([role, c]) => hex(have[role]) === hex(c));
-  return Object.entries(change).every(([key, value]) => {
-    switch (key) {
-      case "theme": return settings["theme"] === value;
-      case "colors": return colorsHeld(value, colors);
-      case "save_theme": {
-        const want = (value ?? {}) as Record<string, unknown>;
-        const theme = saved.find(one => one["name"] === want["name"]);
-        if (theme === undefined || (want["base"] !== undefined && theme["base"] !== want["base"])) return false;
-        if (want["colors"] !== undefined && !colorsHeld(want["colors"], (theme["colors"] ?? {}) as Record<string, unknown>)) return false;
-        return want["use"] !== true || settings["theme"] === want["name"];
-      }
-      case "notifications": {
-        const have = (settings["notifications"] ?? {}) as Record<string, unknown>;
-        return typeof value === "object" && value !== null && Object.entries(value).every(([k, b]) => have[k] === b);
-      }
-      default: return same(settings[key], value);
-    }
-  });
-}
+export type ViewOutcome = "pending" | "done" | "failed" | "uncertain";
 
 /**
  * `toolroll view [show]`, `toolroll view theme set <name>`, `toolroll view reset`: the CLI's own way to the same

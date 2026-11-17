@@ -1,6 +1,8 @@
 //! The stranger test's third round (0.9.112): Stop retrying shows it worked and can be resumed; one build number and
 //! one clock on a screen; a status line about an old state goes; the cancel dialog says the real state; a cancelled
 //! task keeps its history; an agent's error shows on Live; what the agent said shows while it waits.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -24,6 +26,7 @@ fn code(c: KeyCode) -> KeyEvent {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 fn status(app: &App) -> String {

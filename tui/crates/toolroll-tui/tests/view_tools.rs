@@ -404,3 +404,80 @@ fn a_reload_never_changes_keys_while_running() {
     assert_ne!(next.settings.keymap, keys);
     let _ = std::fs::remove_dir_all(&h);
 }
+
+/// A saved theme that colours statuses its own way (an older one with running and failed swapped, badges too): the
+/// agent can't switch to it; the person still can (tui.toml), and from there the agent may change other things, or go
+/// back to a built-in theme's own statuses.
+#[test]
+fn a_saved_theme_with_swapped_statuses_is_only_the_persons_to_pick() {
+    use toolroll_tui::theme::{Depth, Paint, Theme};
+    let (dark, _) = Theme::build(ThemeName::Dark, Depth::TrueColor, None, &[]);
+    let hex = |r: Role| match dark.palette.get(r) {
+        Paint::Rgb(c) => c.hex(),
+        Paint::Terminal => unreachable!(),
+    };
+    let swapped = format!(
+        "theme = \"dark\"\n[themes.swap]\nbase = \"dark\"\nrunning = \"{}\"\nfailed = \"{}\"\nrunning-soft = \"{}\"\nfailed-soft = \"{}\"\n",
+        hex(Role::Failed), hex(Role::Running), hex(Role::FailedSoft), hex(Role::RunningSoft)
+    );
+    let h = home("swap");
+    write_file(&h, &swapped);
+    let env = env_of(&h);
+    // Refused when the change is checked (before anything is written), and again on the text about to be written.
+    let checked = view_cli::prepare(&env, r#"{"theme":"swap"}"#)
+        .err()
+        .unwrap();
+    assert_eq!(checked, view_cli::THEME_STATUS);
+    let why = view_cli::set(&env, r#"{"theme":"swap"}"#).unwrap_err();
+    assert_eq!(why, view_cli::THEME_STATUS);
+    assert_eq!(std::fs::read_to_string(file(&h)).unwrap(), swapped);
+    // Nor by saving over it and switching (its status lines would stay under the new base): the text about to be
+    // written is judged whole, and refused.
+    let resaved = view_cli::set(
+        &env,
+        r#"{"save_theme":{"name":"swap","base":"dark","use":true}}"#,
+    )
+    .unwrap_err();
+    assert_eq!(resaved, view_cli::THEME_STATUS);
+    assert_eq!(std::fs::read_to_string(file(&h)).unwrap(), swapped);
+    // The person picks it: the screen uses it.
+    let theirs = swapped.replacen("theme = \"dark\"", "theme = \"swap\"", 1);
+    write_file(&h, &theirs);
+    let (s, w) = settings::parse(&theirs);
+    assert!(
+        w.is_empty() && s.theme_label.as_deref() == Some("swap"),
+        "{w:?}"
+    );
+    // From there: other changes are fine (statuses as they were), and so is going back to dark's own.
+    view_cli::set(&env, r#"{"density":"compact"}"#).unwrap();
+    view_cli::set(&env, r#"{"theme":"dark"}"#).unwrap();
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+/// A change is checked against one exact snapshot of tui.toml and written only if the file is still that snapshot
+/// (under the writer's lock): a column the person added in between is never removed by a list checked before it.
+#[test]
+fn a_change_checked_against_an_older_file_is_never_written() {
+    let h = home("interleave");
+    write_file(&h, "columns = [\"agent\", \"step\"]\n");
+    let env = env_of(&h);
+    let prepared = view_cli::prepare(&env, r#"{"columns":["agent","step","cost"]}"#).unwrap();
+    // Meanwhile the person adds the project column.
+    let theirs = "columns = [\"agent\", \"step\", \"project\"]\n";
+    write_file(&h, theirs);
+    let why = view_cli::apply(&env, prepared).unwrap_err();
+    assert_eq!(why, view_cli::CHANGED_MEANWHILE);
+    assert_eq!(std::fs::read_to_string(file(&h)).unwrap(), theirs);
+    // Asked again, against the file as it is now, the same list would remove it: refused.
+    let again = view_cli::set(&env, r#"{"columns":["agent","step","cost"]}"#).unwrap_err();
+    assert!(again.contains("the project column"), "{again}");
+    // While another writer holds the folder's lock, nothing is written.
+    let dir = std::fs::File::open(h.join(".config/toolroll")).unwrap();
+    use std::os::fd::AsRawFd;
+    assert_eq!(unsafe { libc::flock(dir.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let locked = view_cli::set(&env, r#"{"density":"compact"}"#).unwrap_err();
+    assert!(locked.contains("being written"), "{locked}");
+    drop(dir);
+    view_cli::set(&env, r#"{"density":"compact"}"#).unwrap();
+    let _ = std::fs::remove_dir_all(&h);
+}

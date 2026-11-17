@@ -11,6 +11,7 @@ import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { executeLeadTool, LEAD_TOOLS, findLeadTools, type LeadToolContext } from "./lead-tools.js";
 import { GATEWAY_TOOL_INPUTS } from "./contracts/gateway-tools.js";
 import { detailShown } from "./action-ledger.js";
+import { VIEW_UNCERTAIN_WORDS } from "./lead-tools.js";
 import { binaryViewRunner, runViewCommand, viewAllowedFor, viewAnswerOf, VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, type ViewAnswer, type ViewRunner, type ViewVerb } from "./view-tools.js";
 
 const T0 = new Date("2026-11-16T12:00:00.000Z");
@@ -103,34 +104,47 @@ describe("the lead restyles the person's own workbench", () => {
     expect(detailShown(raw).endsWith("…")).toBe(true);
   });
 
-  test("no answer (a timeout or a crash): the change stays pending, counts toward the limit, and is settled from the file on the next read", () => {
-    let file: Record<string, unknown> = { theme: "dark", density: "comfortable" };
+  test("no answer (the response lost): the change is uncertain, never inferred from the file; a later write doesn't settle it, and it keeps counting", () => {
+    let lose = true;
     const flaky: ViewRunner = (verb, input) => {
       calls.push({ verb, ...(input === undefined ? {} : { input }) });
-      if (verb === "set") return { ok: false, why: "the terminal workbench didn't answer", unsure: true };
-      return { ok: true, body: { settings: file, colors: {}, themes: { built_in: [], saved: [] } } };
+      if (verb === "set" && lose) return { ok: false, why: "the terminal workbench didn't answer", unsure: true };
+      if (verb === "set") return { ok: true, body: { changed: ["glyphs → ascii"] } };
+      // The file now even shows the lost change: still not proof it was that write.
+      return { ok: true, body: { settings: { theme: "dark", density: "compact" }, colors: {}, themes: { built_in: [], saved: [] } } };
     };
     const lost = executeLeadTool(ctx({ view: flaky }), "toolroll_view_set", { density: "compact" });
-    expect(lost.ok ? "" : lost.message).toMatch(/checked from tui.toml on the next read/);
-    expect(history().map(one => one.outcome)).toEqual(["pending"]);
-    // Its write did land after all: the next read finds it in the file, so it's settled as done.
-    file = { ...file, density: "compact" };
-    expect(executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 1_000)), "toolroll_view_read", {}).ok).toBe(true);
+    expect(lost.ok ? "" : lost.message).toMatch(/may or may not have applied/);
     let rows = history();
-    expect(rows.map(one => one.outcome)).toEqual(["pending", "done"]);
-    expect(rows[1]!.detail).toMatchObject({ pending: rows[0]!.id });
-    // One whose write didn't land: failed on the next read.
-    executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 2_000)), "toolroll_view_set", { glyphs: "ascii" });
-    executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 3_000)), "toolroll_view_read", {});
+    expect(rows.map(one => one.outcome)).toEqual(["pending", "uncertain"]);
+    expect(rows[1]!.detail).toMatchObject({ pending: rows[0]!.id, said: VIEW_UNCERTAIN_WORDS });
+    // A different write lands; reads come and go: the lost one stays uncertain.
+    lose = false;
+    expect(executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 1_000)), "toolroll_view_set", { glyphs: "ascii" }).ok).toBe(true);
+    expect(executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 2_000)), "toolroll_view_read", {}).ok).toBe(true);
     rows = history();
-    expect(rows.map(one => one.outcome)).toEqual(["pending", "done", "pending", "failed"]);
-    expect(rows[3]!.detail).toMatchObject({ pending: rows[2]!.id });
+    expect(rows.map(one => one.outcome)).toEqual(["pending", "uncertain", "pending", "done"]);
+    // It still counts: with it, eight more fill the minute.
+    for (let i = 0; i < VIEW_CHANGES_PER_MINUTE - 2; i++) expect(executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 3_000 + i)), "toolroll_view_set", { glyphs: "ascii" }).ok).toBe(true);
+    const over = executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 30_000)), "toolroll_view_set", { glyphs: "ascii" });
+    expect(over.ok ? "" : over.message).toMatch(/in a minute/);
   });
 
-  test("pending changes count toward the limit as done ones do (while the workbench can't be read to settle them)", () => {
+  test("a change left pending by a crash (no final word at all) is marked uncertain once the writer's time is long past", () => {
+    const silent: ViewRunner = () => ({ ok: true, body: { settings: {}, colors: {}, themes: { built_in: [], saved: [] } } });
+    // A crash between reserving and finishing: only the pending row exists.
+    store.handle.prepare("INSERT INTO action_ledger(at,actor,repo,task_id,run_id,action,outcome,source,detail) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run(T0.toISOString(), "alex", null, null, null, VIEW_LEDGER_ACTION, "pending", "request", JSON.stringify({ change: { density: "compact" } }));
+    executeLeadTool(ctx({ view: silent }, new Date(T0.getTime() + 5_000)), "toolroll_view_read", {});
+    expect(history().map(one => one.outcome)).toEqual(["pending"]);
+    executeLeadTool(ctx({ view: silent }, new Date(T0.getTime() + 120_000)), "toolroll_view_read", {});
+    expect(history().map(one => one.outcome)).toEqual(["pending", "uncertain"]);
+  });
+
+  test("uncertain changes count toward the limit as done ones do", () => {
     const silent: ViewRunner = () => ({ ok: false, why: "the terminal workbench didn't answer", unsure: true });
     for (let i = 0; i < VIEW_CHANGES_PER_MINUTE; i++) executeLeadTool(ctx({ view: silent }, new Date(T0.getTime() + i * 1000)), "toolroll_view_set", { density: "compact" });
-    expect(history().filter(one => one.outcome === "pending")).toHaveLength(VIEW_CHANGES_PER_MINUTE);
+    expect(history().filter(one => one.outcome === "uncertain")).toHaveLength(VIEW_CHANGES_PER_MINUTE);
     const over = executeLeadTool(ctx({ view: silent }, new Date(T0.getTime() + 20_000)), "toolroll_view_set", { density: "compact" });
     expect(over.ok ? "" : over.message).toMatch(/in a minute/);
   });

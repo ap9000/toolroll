@@ -355,6 +355,18 @@ pub fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
 /// contrast check reads (Theme::problem). tests/drawn_pairs.rs draws the screens with every role its own colour and
 /// fails when a pair drawn isn't here, so the check can't fall behind what is drawn. A floor of 1.0 is decoration
 /// (a rule's line), never text.
+/// The backgrounds code is drawn on (the Diff tab: the sheet, raised blocks, a changed line's wash, the selected file
+/// row), and the floor its accent (Theme::code_accent: strings and numbers) keeps on each.
+pub const CODE_ACCENT_ON: &[(Role, f64)] = &[
+    (Role::Paper, MARK_FLOOR),
+    (Role::Raised, MARK_FLOOR),
+    (Role::PassedSoft, MARK_FLOOR),
+    (Role::FailedSoft, MARK_FLOOR),
+];
+
+/// A role drawn on itself: listed here only, never assumed.
+pub const SAME_ROLE_DRAWN: &[Role] = &[];
+
 pub const DRAWN_PAIRS: &[(Role, Role, f64)] = &[
     // Text: ink on every surface it is drawn on, and selected text on the selection.
     (Role::Ink, Role::Paper, TEXT_FLOOR),
@@ -365,6 +377,8 @@ pub const DRAWN_PAIRS: &[(Role, Role, f64)] = &[
     (Role::Ink, Role::PassedSoft, TEXT_FLOOR),
     (Role::Ink, Role::FailedSoft, TEXT_FLOOR),
     (Role::SelectionInk, Role::Selection, TEXT_FLOOR),
+    // A search match: the raised block's colour on ink (the match reversed out of its line).
+    (Role::Raised, Role::Ink, TEXT_FLOOR),
     // The one verb and the solid chip: the sheet's paper on ink, and on needs you.
     (Role::Paper, Role::Ink, TEXT_FLOOR),
     (Role::Paper, Role::NeedsYou, TEXT_FLOOR),
@@ -587,6 +601,29 @@ impl Theme {
                 problems.push((mine, format!("{who} would be too faint on {on}{at}")));
             }
         }
+        // Code's accent (fixed per theme) on every background code is drawn on.
+        let accent = self.code_accent();
+        for &(bg, floor) in CODE_ACCENT_ON {
+            let Some(b) = resolve(bg) else { continue };
+            let short = if accent.contrast(b) < floor {
+                Some("")
+            } else if accent.quantized256().contrast(b.quantized256()) < floor {
+                Some(" on a 256-colour terminal")
+            } else {
+                None
+            };
+            if let Some(at) = short {
+                let on = if bg == Role::Paper {
+                    "the background".to_string()
+                } else {
+                    bg.words().to_string()
+                };
+                problems.push((
+                    bg,
+                    format!("code's strings and numbers would be too faint on {on}{at}"),
+                ));
+            }
+        }
         for (i, a) in Role::MEANING.iter().enumerate() {
             for b in &Role::MEANING[i + 1..] {
                 if let (Some(ca), Some(cb)) = (resolve(*a), resolve(*b)) {
@@ -690,6 +727,16 @@ impl Theme {
         self.status(Role::Failed, Color::Red)
     }
 
+    /// The one accent code is drawn in (strings and numbers in the Diff tab): fixed per theme, never a role, so the
+    /// contrast check reads it against every background code is drawn on (CODE_ACCENT_ON).
+    pub fn code_accent(&self) -> Rgb {
+        match (self.name, self.dark) {
+            (ThemeName::HighContrast, _) => Rgb(0xe2, 0xb6, 0xff),
+            (_, true) => Rgb(0xc8, 0x9b, 0xff),
+            (_, false) => Rgb(0x82, 0x50, 0xdf),
+        }
+    }
+
     /// Code in the Diff tab (syntax.rs classes): never a meaning colour (no blue, green or red, no amber). Keywords
     /// and types are ink by weight, comments muted and italic, and strings and numbers one quiet violet (the
     /// terminal's magenta at 16 colours); with colour off only weight and slant remain.
@@ -704,11 +751,7 @@ impl Theme {
                     Color::Magenta
                 }),
                 _ => {
-                    let c = match (self.name, self.dark) {
-                        (ThemeName::HighContrast, _) => Rgb(0xe2, 0xb6, 0xff),
-                        (_, true) => Rgb(0xc8, 0x9b, 0xff),
-                        (_, false) => Rgb(0x82, 0x50, 0xdf),
-                    };
+                    let c = self.code_accent();
                     Style::default().fg(match self.depth {
                         Depth::TrueColor => Color::Rgb(c.0, c.1, c.2),
                         _ => Color::Indexed(c.ansi256()),

@@ -227,42 +227,157 @@ pub fn set_in_toml(text: &str, section: &str, key: &str, value: &str) -> String 
     out
 }
 
-/// Whether `dir` (an existing folder) and every folder above it, up to the root, can be trusted with a write to
-/// tui.toml: each one looked at with lstat on its real path, owned by this user or root, and changeable by nobody else;
-/// a shared folder with the sticky bit (/tmp) only strictly above the home folder (the reader's and the launcher's own
-/// rule). `dir` itself must be this user's. Anything else is named, in plain words.
+/// `dir` opened by walking down from `/` one name at a time, each opened relative to the folder before it with
+/// O_DIRECTORY|O_NOFOLLOW (never through a link) and judged by fstat on that open descriptor: owned by this user (or
+/// root, above the last), changeable by nobody else, except a sticky shared folder (/tmp) strictly above the home
+/// folder. So the chain judged IS the chain opened: no folder swapped in by name between a check and an open can
+/// redirect anything. `dir` must be absolute and plain (no `..`, no link anywhere in it: callers give a real path).
+/// A name missing on the way: made (mode 0700, relative to its open parent) when `create`, else Ok(None).
 #[cfg(unix)]
-pub(crate) fn trusted_chain(dir: &Path, home: Option<&Path>, me: u32) -> Result<PathBuf, String> {
-    use std::os::unix::fs::MetadataExt;
-    let real = std::fs::canonicalize(dir).map_err(|_| "its folder couldn't be read".to_string())?;
+pub(crate) fn walk_trusted(
+    dir: &Path,
+    home: Option<&Path>,
+    me: u32,
+    create: bool,
+) -> Result<Option<std::os::fd::OwnedFd>, String> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+    let names: Vec<&std::ffi::OsStr> = {
+        let mut out = vec![];
+        let mut parts = dir.components();
+        if parts.next() != Some(Component::RootDir) {
+            return Err("its folder isn't an absolute path".into());
+        }
+        for part in parts {
+            match part {
+                Component::Normal(n) => out.push(n),
+                Component::CurDir => {}
+                _ => return Err("its folder's path isn't plain".into()),
+            }
+        }
+        out
+    };
     let home = home.and_then(|h| std::fs::canonicalize(h).ok());
-    let mut at: Option<&Path> = Some(real.as_path());
-    while let Some(d) = at {
-        let m = std::fs::symlink_metadata(d)
-            .map_err(|_| "a folder above it couldn't be read".to_string())?;
-        let own = d == real.as_path();
-        let owner_ok = m.uid() == me || (!own && m.uid() == 0);
-        let shared = m.mode() & 0o022 != 0;
-        let above_home = home.as_deref().is_some_and(|h| h != d && h.starts_with(d));
-        let sticky_ok = !own && m.mode() & 0o1000 != 0 && above_home;
-        if !m.is_dir() || !owner_ok || (shared && !sticky_ok) {
+    const FLAGS: libc::c_int =
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: a valid C string; the descriptor is owned below.
+    let raw = unsafe { libc::open(c"/".as_ptr(), FLAGS) };
+    if raw < 0 {
+        return Err("a folder above it can't be looked at".into());
+    }
+    // SAFETY: raw was just opened by this call.
+    let mut fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    let mut at = PathBuf::from("/");
+    let judge_open = |fd: &OwnedFd, at: &Path, own: bool| -> Result<(), String> {
+        // SAFETY: a zeroed stat is valid storage for fstat to fill.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: fd is open; st is valid storage.
+        if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
+            return Err("a folder above it can't be looked at".into());
+        }
+        let mode = st.st_mode as u32;
+        let owner_ok = st.st_uid == me || (!own && st.st_uid == 0);
+        let shared = mode & 0o022 != 0;
+        let above_home = home
+            .as_deref()
+            .is_some_and(|h| h != at && h.starts_with(at));
+        let sticky_ok = !own && mode & 0o1000 != 0 && above_home;
+        if mode & libc::S_IFMT as u32 != libc::S_IFDIR as u32 || !owner_ok || (shared && !sticky_ok)
+        {
             return Err(if own {
                 "its folder can be changed by other people, or isn't yours".to_string()
             } else {
                 format!(
                     "a folder above it ({}) can be changed by other people, or isn't yours or the system's",
-                    clean(&d.display().to_string())
+                    clean(&at.display().to_string())
                 )
             });
         }
-        at = d.parent();
+        Ok(())
+    };
+    judge_open(&fd, &at, names.is_empty())?;
+    for (i, name) in names.iter().enumerate() {
+        let own = i + 1 == names.len();
+        let c = CString::new(name.as_bytes()).map_err(|_| "its name can't be used".to_string())?;
+        // SAFETY: fd is open; c is a valid C string.
+        let mut next = unsafe { libc::openat(fd.as_raw_fd(), c.as_ptr(), FLAGS) };
+        if next < 0 {
+            let err = std::io::Error::last_os_error().raw_os_error();
+            match err {
+                Some(libc::ENOENT) if create => {
+                    // SAFETY: fd is open; c is a valid C string.
+                    let made = unsafe { libc::mkdirat(fd.as_raw_fd(), c.as_ptr(), 0o700) };
+                    if made != 0
+                        && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
+                    {
+                        return Err("its folder couldn't be made".into());
+                    }
+                    // SAFETY: as above.
+                    next = unsafe { libc::openat(fd.as_raw_fd(), c.as_ptr(), FLAGS) };
+                    if next < 0 {
+                        return Err("its folder couldn't be opened".into());
+                    }
+                }
+                Some(libc::ENOENT) => return Ok(None),
+                Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
+                    return Err(format!(
+                        "a folder on its way ({}) is a link or not a folder",
+                        clean(&at.join(name).display().to_string())
+                    ))
+                }
+                _ => return Err("a folder above it can't be looked at".into()),
+            }
+        }
+        // SAFETY: next was just opened by this call.
+        fd = unsafe { OwnedFd::from_raw_fd(next) };
+        at.push(name);
+        judge_open(&fd, &at, own)?;
     }
-    Ok(real)
+    Ok(Some(fd))
 }
 
-/// Write tui.toml with `change` made to its text, safely. Every folder from the file's up to the root is trusted first
-/// (trusted_chain; before a missing folder is made, mode 0700, and again after). The folder is then opened (never
-/// through a link) and everything else is done relative to that open folder, so no folder swapped in by name can
+/// An exclusive lock (flock) on an open folder, waited for up to two seconds; released when the descriptor closes.
+#[cfg(unix)]
+pub(crate) fn lock_dir(fd: &std::os::fd::OwnedFd) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    for _ in 0..200 {
+        // SAFETY: fd is open.
+        if unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err("another change to it is being written; try again".into())
+}
+
+/// `dir` as a real path for walk_trusted: its longest existing part with links resolved (by name; the walk then
+/// re-checks every step by descriptor and refuses a link it meets), and the rest as given.
+#[cfg(unix)]
+pub(crate) fn real_path_of(dir: &Path) -> PathBuf {
+    let mut base = Some(dir);
+    let mut rest: Vec<&std::ffi::OsStr> = vec![];
+    while let Some(b) = base {
+        if let Ok(real) = std::fs::canonicalize(b) {
+            let mut out = real;
+            for r in rest.iter().rev() {
+                out.push(r);
+            }
+            return out;
+        }
+        match b.file_name() {
+            Some(n) => rest.push(n),
+            None => break,
+        }
+        base = b.parent();
+    }
+    dir.to_path_buf()
+}
+
+/// Write tui.toml with `change` made to its text, safely. Every folder from `/` down to the file's is opened and judged
+/// by descriptor (walk_trusted; a missing one made, mode 0700, relative to its open parent), the folder is locked
+/// against another writer (lock_dir), and everything else is done relative to that open folder, so no folder swapped in by name can
 /// redirect it: the file there is read only when it is a plain file of this user's nobody else can change (a link is
 /// never written through), and the new text goes to a fresh temporary file in it (mode 0600, never following a link),
 /// synced, then renamed over the name in the same folder, so the file is never half-written. No file: a fresh one.
@@ -290,64 +405,18 @@ pub(crate) fn write_within(
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::DirBuilderExt;
     // SAFETY: geteuid has no preconditions.
     let me = unsafe { libc::geteuid() };
     let dir = path.parent().ok_or("it has no folder")?;
     let name = path.file_name().ok_or("it has no name")?;
-    if std::fs::symlink_metadata(dir).is_err() {
-        // The nearest folder that exists, and all above it, before anything is made under them.
-        let mut base = dir.parent();
-        while let Some(b) = base {
-            if std::fs::symlink_metadata(b).is_ok() {
-                break;
-            }
-            base = b.parent();
-        }
-        if let Some(b) = base {
-            trusted_chain(b, home, me).map_err(|why| {
-                if why.starts_with("its folder") {
-                    format!(
-                        "a folder above it ({}) can be changed by other people, or isn't yours",
-                        clean(&b.display().to_string())
-                    )
-                } else {
-                    why
-                }
-            })?;
-        }
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|_| "its folder couldn't be made".to_string())?;
-    }
-    let real = trusted_chain(dir, home, me)?;
+    // Every folder from `/` down, opened and judged by descriptor (walk_trusted), a missing one made (0700) relative
+    // to its open parent: the folder written in is the one judged, never one swapped in by name.
+    let dfd =
+        walk_trusted(&real_path_of(dir), home, me, true)?.ok_or("its folder couldn't be made")?;
+    // One writer at a time (the Settings screen, an agent's change, a reset): an exclusive lock on the open folder,
+    // held until this write is done, so the text read below is the text replaced.
+    lock_dir(&dfd)?;
     let c = |bytes: &[u8]| CString::new(bytes).map_err(|_| "its name can't be used".to_string());
-    let dir_c = c(real.as_os_str().as_bytes())?;
-    // SAFETY: a valid C string; the descriptor is owned (closed) by OwnedFd from here.
-    let raw = unsafe {
-        libc::open(
-            dir_c.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if raw < 0 {
-        return Err("its folder couldn't be opened".into());
-    }
-    // SAFETY: raw is a descriptor this call just opened and nothing else owns.
-    let dfd = unsafe { OwnedFd::from_raw_fd(raw) };
-    // The folder opened is the one judged (not the name, which could change in between).
-    // SAFETY: a zeroed stat is valid storage for fstat to fill.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: dfd is open; st is valid storage.
-    if unsafe { libc::fstat(dfd.as_raw_fd(), &mut st) } != 0
-        || st.st_mode & libc::S_IFMT != libc::S_IFDIR
-        || st.st_uid != me
-        || st.st_mode & 0o022 != 0
-    {
-        return Err("its folder can be changed by other people, or isn't yours".into());
-    }
     let name_c = c(name.as_bytes())?;
     // The file there now, opened through the folder, never following a link.
     // SAFETY: dfd is open; name_c is a valid C string.
@@ -1121,75 +1190,44 @@ pub fn read_safely(path: &Path, home: Option<&Path>) -> Result<Option<String>, S
     use std::os::unix::fs::MetadataExt;
     // SAFETY: geteuid has no preconditions.
     let me = unsafe { libc::geteuid() };
-    // Its folder and every folder above it, as the writer checks them (trusted_chain): a folder that isn't there yet
-    // means no file; one that can't be looked at is refused, never taken for missing.
+    // Its folder, reached from `/` one name at a time by descriptor and judged on each open descriptor (walk_trusted,
+    // the writer's own walk): the folder the file is opened in is the folder judged. A folder not there yet means no
+    // file; one that can't be looked at is refused, never taken for missing.
     let Some(dir) = path.parent() else {
         return Err("it has no folder".into());
     };
-    match std::fs::symlink_metadata(dir) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Missing only when the folders above that do exist can be trusted, and the gap is a plain absence.
-            let mut up = dir.parent();
-            while let Some(d) = up {
-                match std::fs::symlink_metadata(d) {
-                    Ok(_) => {
-                        trusted_chain(d, home, me)?;
-                        break;
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => up = d.parent(),
-                    Err(_) => return Err("a folder above it can't be looked at".into()),
-                }
-            }
-            return Ok(None);
-        }
-        Err(_) => return Err("its folder can't be looked at".into()),
-        Ok(_) => {}
-    }
-    let trusted = trusted_chain(dir, home, me)?;
     let name = path.file_name().ok_or("it has no name")?;
-    let real = match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("it couldn't be opened".into()),
-        Ok(m) if m.file_type().is_symlink() => {
-            let home = home
+    let Some(held) = walk_trusted(&real_path_of(dir), home, me, false)? else {
+        return Ok(None);
+    };
+    let file = match open_at(&held, name) {
+        // A link (a dotfile manager's): followed only to a file strictly inside the home folder, whose own folder is
+        // walked and judged the same way, then opened relative to it (and a link there is refused).
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+            let home_real = home
                 .and_then(|h| std::fs::canonicalize(h).ok())
                 .ok_or("it is a link, and there's no home folder to check it against")?;
             let target =
                 std::fs::canonicalize(path).map_err(|_| "it is a link to nothing".to_string())?;
             // Real paths both, compared as bytes: strictly inside the home folder.
             use std::os::unix::ffi::OsStrExt;
-            let (t, h) = (target.as_os_str().as_bytes(), home.as_os_str().as_bytes());
+            let (t, h) = (
+                target.as_os_str().as_bytes(),
+                home_real.as_os_str().as_bytes(),
+            );
             if !(t.len() > h.len() && t.starts_with(h) && t[h.len()] == b'/') {
                 return Err("it links outside your home folder".into());
             }
-            let mut dir = target.parent();
-            while let Some(d) = dir {
-                let ok = std::fs::symlink_metadata(d)
-                    .is_ok_and(|m| m.is_dir() && m.uid() == me && m.mode() & 0o022 == 0);
-                if !ok {
-                    return Err(
-                        "it links into a folder other people can change, or that isn't yours"
-                            .into(),
-                    );
-                }
-                if d.as_os_str() == home.as_os_str() {
-                    break;
-                }
-                dir = d.parent();
-            }
-            target
+            let into = || {
+                "it links into a folder other people can change, or that isn't yours".to_string()
+            };
+            let target_dir = target.parent().ok_or("it is a link to nothing")?;
+            let held = walk_trusted(target_dir, home, me, false)
+                .map_err(|_| into())?
+                .ok_or("it is a link to nothing")?;
+            open_at(&held, target.file_name().ok_or("it is a link to nothing")?)
         }
-        // The file itself: opened relative to its trusted folder, itself opened once (O_DIRECTORY, never through a
-        // link), so a folder swapped in by name can't redirect the read.
-        Ok(_) => trusted.join(name),
-    };
-    let file = if real == trusted.join(name) {
-        open_in(&trusted, name)
-    } else {
-        // A link inside the home folder (checked above): its target's folders checked the same way, then opened.
-        let target_dir = real.parent().ok_or("it links to nothing")?;
-        let target_dir = trusted_chain(target_dir, home, me)?;
-        open_in(&target_dir, real.file_name().ok_or("it links to nothing")?)
+        other => other,
     };
     let mut file = match file {
         Ok(f) => f,
@@ -1217,31 +1255,20 @@ pub fn read_safely(path: &Path, home: Option<&Path>) -> Result<Option<String>, S
         .map_err(|_| "it isn't UTF-8 text".into())
 }
 
-/// `name` in the folder `dir`, opened read-only relative to that folder, which is opened first as a folder (never
-/// through a link); the file is never followed through a link either.
+/// `name` opened read-only relative to an open folder, never through a link (ELOOP when it is one).
 #[cfg(unix)]
-fn open_in(dir: &Path, name: &std::ffi::OsStr) -> std::io::Result<std::fs::File> {
+pub(crate) fn open_at(
+    dir: &std::os::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<std::fs::File> {
     use std::ffi::CString;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
-    let d = CString::new(dir.as_os_str().as_bytes()).map_err(|_| std::io::Error::other("nul"))?;
-    // SAFETY: a valid C string; the descriptor returned is owned below.
-    let dfd = unsafe {
-        libc::open(
-            d.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if dfd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: dfd is a fresh descriptor of ours.
-    let dfd = unsafe { OwnedFd::from_raw_fd(dfd) };
     let n = CString::new(name.as_bytes()).map_err(|_| std::io::Error::other("nul"))?;
     // SAFETY: a valid C string relative to an open folder; the descriptor returned is owned below.
     let fd = unsafe {
         libc::openat(
-            dfd.as_raw_fd(),
+            dir.as_raw_fd(),
             n.as_ptr(),
             libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
         )
@@ -1794,6 +1821,73 @@ pub fn settings_changes(a: &Settings, b: &Settings) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A private folder chain under the system's temp folder (its real path): base/a/b/c, each 0700.
+    #[cfg(unix)]
+    fn chain(tag: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("tr-walk-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let c = base.join("a/b/c");
+        std::fs::create_dir_all(&c).unwrap();
+        for d in [&base, &base.join("a"), &base.join("a/b"), &c] {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        (base, c)
+    }
+
+    /// The walker refuses a link at any depth of the path: each folder is opened with O_NOFOLLOW from its parent.
+    #[cfg(unix)]
+    #[test]
+    fn the_walk_refuses_a_linked_folder_at_every_depth() {
+        let me = unsafe { libc::geteuid() };
+        let (base, c) = chain("links");
+        assert!(walk_trusted(&c, None, me, false).unwrap().is_some());
+        for (i, part) in ["a", "a/b", "a/b/c"].iter().enumerate() {
+            let real = base.join(part);
+            let moved = base.join(format!("moved-{i}"));
+            std::fs::rename(&real, &moved).unwrap();
+            std::os::unix::fs::symlink(&moved, &real).unwrap();
+            let why = walk_trusted(&c, None, me, false).unwrap_err();
+            assert!(why.contains("is a link or not a folder"), "{part}: {why}");
+            std::fs::remove_file(&real).unwrap();
+            std::fs::rename(&moved, &real).unwrap();
+        }
+        // A folder others can change, at any depth below the temp folder: refused by the descriptor's own facts.
+        use std::os::unix::fs::PermissionsExt;
+        for part in ["a", "a/b", "a/b/c"] {
+            std::fs::set_permissions(base.join(part), std::fs::Permissions::from_mode(0o770))
+                .unwrap();
+            assert!(walk_trusted(&c, None, me, false).is_err(), "{part}");
+            std::fs::set_permissions(base.join(part), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The folder judged is the folder opened: once the walk holds it, a folder swapped in by name on the way (here
+    /// `b` renamed away and a planted one put in its place) changes nothing read through the held descriptor.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swapped_in_after_the_walk_is_never_what_is_read() {
+        use std::io::Read;
+        let me = unsafe { libc::geteuid() };
+        let (base, c) = chain("swap");
+        std::fs::write(c.join("tui.toml"), "theme = \"dark\"\n").unwrap();
+        let held = walk_trusted(&c, None, me, false).unwrap().unwrap();
+        std::fs::rename(base.join("a/b"), base.join("a/b-old")).unwrap();
+        std::fs::create_dir_all(base.join("a/b/c")).unwrap();
+        std::fs::write(base.join("a/b/c/tui.toml"), "theme = \"light\"\n").unwrap();
+        let mut text = String::new();
+        open_at(&held, std::ffi::OsStr::new("tui.toml"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "theme = \"dark\"\n");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn defaults() {

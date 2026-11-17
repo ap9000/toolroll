@@ -109,7 +109,8 @@ it within a second.
 - Only your own conversation in the console, from this computer, can do it:
   never a team chat, Telegram, a token, another person, or a task's agents.
   Each change is in the action history (written before the file is touched,
-  then marked done or failed), at most 10 a minute.
+  then marked done or failed; "uncertain" when the workbench never answered,
+  meaning it may or may not have applied), at most 10 a minute.
 
 Undo from the terminal:
 
