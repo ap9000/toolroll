@@ -1118,13 +1118,13 @@ impl App {
     }
 
     /// A task's steps arrived: when it is the task the status line spoke about and its state moved on from the one it
-    /// spoke in ("Building it." once it failed), the line goes, unless it is held (said just now, no key since).
+    /// spoke in (including a wait to retry), the line goes, unless it is held (said just now, no key since).
     fn status_follows(&mut self, steps: &StepCards) {
         self.state_seen(&steps.task.id, &steps.task.state);
     }
 
     /// Any read saw `task` in `state` (its steps, or its Work row's final word): when the status line spoke about that
-    /// task in another state ("Building it." once it failed), the line goes at once, or, while it is held (said just
+    /// task in another state (including a wait to retry), the line goes at once, or, while it is held (said just
     /// now, no key since), the moment the hold ends (tick), never at the next poll.
     fn state_seen(&mut self, task: &str, state: &str) {
         let Some((id, said_in)) = self.said_for.clone() else {
@@ -1135,8 +1135,12 @@ impl App {
         }
         let moved = match said_in {
             Some(said) => said != state,
-            // Said before its steps were read: only a final state is plainly news after it.
-            None => matches!(state, "failed" | "done" | "cancelled"),
+            // The first read establishes the state an acknowledgement preceded. Every later change matters,
+            // including a temporary failure queuing another attempt. A final first read is already stale.
+            None => {
+                self.said_for = Some((id, Some(state.to_string())));
+                matches!(state, "failed" | "done" | "cancelled")
+            }
         };
         if !moved {
             return;
@@ -1351,7 +1355,7 @@ impl App {
             }
             Msg::Acted(Ok(ActOutcome::Filed { words, task })) => {
                 // The new task is opened once it is listed, and what was said is about it (status_follows: once it
-                // fails or finishes, "Building it." goes).
+                // changes state, "Building it." goes).
                 self.say(Tone::Said, words);
                 self.said_for = Some((task.clone(), None));
                 self.following = Some(task.clone());

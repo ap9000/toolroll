@@ -1901,7 +1901,11 @@ fn failure_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     };
     // (The head's badge already says Failed.)
     let mut lines = vec![];
-    for l in wrap(&failure_words(failure), w) {
+    for l in if room.whole() {
+        vec![failure_words(failure)]
+    } else {
+        message_rows(&failure_words(failure), w, 0)
+    } {
         lines.push(Line::from(Span::styled(l, ink())));
     }
     if let Some(next) = failure.suggestion.as_deref().and_then(suggestion_words) {
@@ -1909,7 +1913,7 @@ fn failure_lines(app: &App, room: Room) -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled(l, dim())));
         }
     }
-    lines.extend(agent_said_lines(failure.agent_said.as_ref(), w));
+    lines.extend(agent_said_lines(failure.agent_said.as_ref(), room));
     let retry = key_name(app, Action::SendBack);
     if steps.retry.is_some() && !retry.is_empty() {
         if room.hints {
@@ -1984,7 +1988,7 @@ fn waiting_lines(app: &App, room: Room) -> Vec<Line<'static>> {
             )));
         }
     }
-    lines.extend(agent_said_lines(said, w));
+    lines.extend(agent_said_lines(said, room));
     if !room.hints {
         return lines;
     }
@@ -2009,9 +2013,11 @@ fn waiting_lines(app: &App, room: Room) -> Vec<Line<'static>> {
 /// At most this many of the agent's own last lines are drawn (the engine keeps at most 8).
 pub const AGENT_SAID_SHOWN: usize = 8;
 
-/// "What the agent said": the engine's cleaned tail of the agent's last output, cleaned again, each line cut to the
-/// width (never wrapped into more), at most AGENT_SAID_SHOWN of them.
-fn agent_said_lines(said: Option<&Vec<String>>, w: usize) -> Vec<Line<'static>> {
+/// Maximum drawn rows for one message; exports retain all of its text.
+pub const AGENT_SAID_ROWS: usize = 12;
+
+/// "What the agent said": the same wrapped rows for drawing and search, whole for export.
+fn agent_said_lines(said: Option<&Vec<String>>, room: Room) -> Vec<Line<'static>> {
     let Some(said) = said.filter(|s| !s.is_empty()) else {
         return vec![];
     };
@@ -2019,14 +2025,52 @@ fn agent_said_lines(said: Option<&Vec<String>>, w: usize) -> Vec<Line<'static>> 
         Line::raw(""),
         Line::from(Span::styled("What the agent said", ink())),
     ];
-    let from = said.len().saturating_sub(AGENT_SAID_SHOWN);
+    let from = if room.whole() {
+        0
+    } else {
+        said.len().saturating_sub(AGENT_SAID_SHOWN)
+    };
+    let mut rows = vec![];
     for l in &said[from..] {
-        lines.push(Line::from(Span::styled(
-            format!("  {}", fit(&clean(l), w.saturating_sub(2))),
-            dim(),
-        )));
+        let text = clean(l);
+        if room.whole() {
+            rows.push(format!("  {text}"));
+        } else {
+            rows.extend(message_rows(&text, room.w, 2));
+        }
     }
+    if !room.whole() {
+        cap_message_rows(&mut rows, room.w);
+    }
+    lines.extend(rows.into_iter().map(|l| Line::from(Span::styled(l, dim()))));
     lines
+}
+
+/// A hanging indent keeps continuations distinct. The ellipsis means the row cap, never the pane edge.
+fn message_rows(text: &str, w: usize, indent: usize) -> Vec<String> {
+    let indent = indent.min(w.saturating_sub(1));
+    let continuation = (indent + 2).min(w.saturating_sub(1));
+    let mut rows = wrap(text, w.saturating_sub(continuation));
+    cap_message_rows(&mut rows, w.saturating_sub(continuation));
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            format!(
+                "{}{l}",
+                " ".repeat(if i == 0 { indent } else { continuation })
+            )
+        })
+        .collect()
+}
+
+fn cap_message_rows(rows: &mut Vec<String>, w: usize) {
+    if rows.len() <= AGENT_SAID_ROWS {
+        return;
+    }
+    rows.truncate(AGENT_SAID_ROWS);
+    if let Some(last) = rows.last_mut() {
+        *last = fit(&format!("{last}…"), w);
+    }
 }
 
 /// What accepting the result on screen means, from the facts the engine already gave (the diff's totals, the step

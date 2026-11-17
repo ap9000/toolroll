@@ -525,36 +525,57 @@ pub fn apply(env: &Env, prepared: Prepared) -> Result<Vec<String>, String> {
     Ok(edits.into_iter().map(|e| e.words).collect())
 }
 
-/// tui.toml back to the defaults; the file it held kept beside it as tui.toml.bak, written the same safe way.
+/// Restore the look, retaining the person's exact keys table and a unique backup of the locked original.
 pub fn reset(env: &Env) -> Result<String, String> {
     let Some(path) = env.settings_path() else {
         return Err("There's no home folder to keep tui.toml in.".into());
     };
-    let previous = match settings::read_safely(&path, env.home.as_deref()) {
+    match settings::read_safely(&path, env.home.as_deref()) {
         Ok(None) => return Ok("Already the defaults: there's no tui.toml.".into()),
-        Ok(Some(text)) => text,
+        Ok(Some(_)) => (),
         Err(why) => {
             return Err(format!(
                 "tui.toml can't be read safely ({why}), so nothing was reset."
             ))
         }
-    };
-    let bak = path.with_file_name("tui.toml.bak");
-    settings::write_within(
-        &bak,
+    }
+    let backup = settings::write_with_backup(
+        &path,
         env.home.as_deref(),
-        "",
+        settings::FRESH_HEAD,
         settings::MAX_BYTES,
         false,
-        &|_| previous.clone(),
-    )
-    .map_err(|why| format!("The backup wasn't written ({why}), so nothing was reset."))?;
-    settings::write_safely(&path, env.home.as_deref(), &|_| {
-        settings::FRESH_HEAD.to_string()
-    })
-    .map_err(|why| format!("tui.toml wasn't reset ({why}); your backup is tui.toml.bak."))?;
-    Ok(
-        "Your workbench settings are back to the defaults; the previous file is tui.toml.bak."
-            .into(),
-    )
+        true,
+        &reset_text,
+    )?;
+    Ok(format!("Your workbench look is back to the defaults; your keys are unchanged. The previous file is {}.", backup.ok_or("No backup was made")?))
+}
+
+fn reset_text(text: &str) -> String {
+    let mut out = settings::FRESH_HEAD.to_string();
+    let mut keys = false;
+    let mut comments = String::new();
+    for raw in text
+        .strip_prefix(settings::FRESH_HEAD)
+        .unwrap_or(text)
+        .split_inclusive('\n')
+    {
+        let line = settings::without_comment(raw).trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            keys = line[1..line.len() - 1].trim() == "keys";
+            if keys {
+                out.push_str(&comments);
+            }
+            comments.clear();
+        } else if !keys && line.is_empty() {
+            comments.push_str(raw);
+            continue;
+        } else if !keys {
+            comments.clear();
+        }
+        if keys {
+            out.push_str(raw);
+        }
+    }
+    out
 }

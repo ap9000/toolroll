@@ -250,12 +250,14 @@ fn hostile_layouts_are_refused() {
     std::fs::remove_file(file(&h)).unwrap();
     symlink(&target, file(&h)).unwrap();
     assert!(view_cli::set(&env_of(&h), r#"{"theme":"light"}"#).is_err());
+    assert!(view_cli::reset(&env_of(&h)).is_err());
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept = true\n");
     let _ = std::fs::remove_dir_all(&h);
     // A folder above it others can change: refused.
     let h = home("ancestor");
     write_file(&h, "theme = \"dark\"\n");
     std::fs::set_permissions(h.join(".config"), std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(view_cli::reset(&env_of(&h)).is_err());
     let refused = view_cli::set(&env_of(&h), r#"{"theme":"light"}"#).unwrap_err();
     assert!(
         refused.contains("wasn't written") || refused.contains("ignored"),
@@ -272,24 +274,43 @@ fn hostile_layouts_are_refused() {
 #[test]
 fn reset_restores_the_defaults_and_keeps_a_backup() {
     let h = home("reset");
-    write_file(&h, "# mine\ntheme = \"dark\"\n");
+    let keys = "# My keys, keep this comment.\n[keys] # personal\npreset = \"vim\" # keep vim\naccept = [\"f2\", \"f3\"]\n# keep the trailing comment\n";
+    write_file(
+        &h,
+        &format!("# mine\ntheme = \"dark\"\n{keys}[colors]\ntext = \"#ffffff\"\n"),
+    );
     let env = env_of(&h);
-    view_cli::set(&env, SUMI).unwrap();
     let before = std::fs::read_to_string(file(&h)).unwrap();
-    let said = view_cli::reset(&env).unwrap();
-    assert!(said.contains("tui.toml.bak"), "{said}");
-    assert_eq!(
-        std::fs::read_to_string(file(&h)).unwrap(),
-        settings::FRESH_HEAD
-    );
-    let bak = h.join(".config/toolroll/tui.toml.bak");
-    assert_eq!(std::fs::read_to_string(&bak).unwrap(), before);
-    assert_eq!(
-        std::fs::metadata(&bak).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    let (s, w) = settings::parse(&std::fs::read_to_string(file(&h)).unwrap());
-    assert!(w.is_empty() && s.theme == ThemeName::Terminal);
+    for _ in 0..2 {
+        let said = view_cli::reset(&env).unwrap();
+        assert!(said.contains("tui.toml.bak."), "{said}");
+        let after = std::fs::read_to_string(file(&h)).unwrap();
+        assert_eq!(after, format!("{}{keys}", settings::FRESH_HEAD));
+        let (s, warnings) = settings::parse(&after);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.theme, ThemeName::Terminal);
+        assert_eq!(s.keymap.preset, toolroll_tui::keys::Preset::Vim);
+    }
+    let backups: Vec<_> = std::fs::read_dir(file(&h).parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("tui.toml.bak.")
+        })
+        .collect();
+    assert_eq!(backups.len(), 2);
+    assert!(backups
+        .iter()
+        .any(|p| std::fs::read_to_string(p).unwrap() == before));
+    for bak in backups {
+        assert_eq!(
+            std::fs::metadata(bak).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     let _ = std::fs::remove_dir_all(&h);
 }
 
