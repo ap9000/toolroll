@@ -194,7 +194,11 @@ side diff on a wide window. Notes stay with the result until you send them.
 
 Use **Move the list to the other side** in the palette to put it on the
 right. Settings → **List side** sets the default. The file setting is
-`list_side = "right"` (also accepted as `list-side`; use `"left"` to return).
+`list-side = "right"` (also accepted as `list_side`; use `"left"` to return).
+For `list-side`/`list_side` and `focus-follows-mouse`/`focus_follows_mouse`,
+the kebab-case spelling wins when both are present, regardless of order.
+An invalid kebab-case value uses the default. Saving writes the kebab-case
+key and keeps snake-case entries and their comments untouched.
 
 Below 64 columns, the workbench shows one column. Enter opens a task from
 the list, Esc returns to the list, and `b` switches between list and task.
