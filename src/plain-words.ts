@@ -37,7 +37,9 @@ export const PLAIN_WORDS: readonly PlainWord[] = [
   row("Draft a repair task", "draft\\s+a\\s+repair\\s+task", "Send back"),
   row("put away", "put(?:s|ting)?\\s+(?:it\\s+|them\\s+|tasks\\s+|old\\s+tasks\\s+)?away", "Archive"),
   row("tidy", "tidy|tidied|tidying", "Archive"),
-  row("run #N", "(?:run|attempt|result)\\s+#?\\d+", "build #N"),
+  // "attempt N" is a task's own count and may appear only beside the build it names ("attempt 3 (build #4)",
+  // "after attempt 2 (build #4)"): a bare count or a "run #N" still reads as the internal run id.
+  row("run #N", "(?:run|result)\\s+#?\\d+|attempt\\s+#?\\d+(?!\\s+\\(build\\s+#\\d+\\))", "build #N, or attempt N (build #M)"),
   row("reconcile", "reconcile[ds]?|reconciling|reconciliation", "Waiting: Toolroll is …"),
   row("requeue", "requeue[ds]?|requeuing", "Waiting: Toolroll is …"),
   row("claim", "claim|claimed", "Waiting: Toolroll is …"),
