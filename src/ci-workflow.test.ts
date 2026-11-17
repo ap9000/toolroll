@@ -1326,3 +1326,24 @@ describe("ci-speed-2: the test selection (scripts/ci-select.mjs), advisory until
     expect(readFileSync(join(import.meta.dirname, "..", ".gitignore"), "utf8").split("\n")).toContain("/.ci-test-selection");
   });
 });
+
+describe("ci-speed-2 item 5: caches never cross from a pull request into main or a release", () => {
+  test("the Rust checks cache crates and their build by OS, toolchain and lock file, pinned, on pull requests only", () => {
+    const rust = workflow("rust.yml");
+    expect(Object.keys(rust.on)).toEqual(["pull_request"]);
+    const cache = rust.jobs["rust"]!.steps!.filter(step => step.uses?.startsWith("actions/cache"));
+    expect(cache.map(step => step.uses)).toEqual(["actions/cache@caa296126883cff596d87d8935842f9db880ef25"]);
+    expect(readFileSync(join(folder, "rust.yml"), "utf8")).toContain("actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0");
+    expect(String(cache[0]!.with?.["key"])).toBe("rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-${{ hashFiles('tui/Cargo.lock') }}");
+    // A fallback never crosses toolchains.
+    expect(String(cache[0]!.with?.["restore-keys"]).trim()).toBe("rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-");
+  });
+  test("nothing that builds or proves a release restores a build cache: only setup-node's npm download cache, which npm ci checks against the lock file's hashes", () => {
+    for (const file of ["publish.yml", "package-build.yml", "release-candidate.yml", "main-push.yml", "nightly.yml"]) {
+      expect(readFileSync(join(folder, file), "utf8"), file).not.toMatch(/actions\/cache\b/);
+    }
+    // Only workflows a pull request (or the nightly, through ci.yml) runs may restore one.
+    const caching = workflows.filter(one => readFileSync(join(folder, one.file), "utf8").includes("actions/cache@")).map(one => one.file);
+    expect(caching).toEqual(["rust.yml"]);
+  });
+});

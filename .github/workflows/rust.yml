@@ -52,6 +52,21 @@ jobs:
           test -n "$toolchain"
           rustup toolchain install "$toolchain" --profile minimal --component rustfmt,clippy
           cd tui && cargo --version && rustc --version
+      # Cargo's downloaded crates and the workspace's build, by OS, architecture, the exact toolchain and Cargo.lock
+      # (docs/plans/ci-speed-2.md, item 5). This workflow runs on pull requests only, and GitHub scopes a pull request's
+      # caches to that pull request: a later push to it starts warm, and nothing it saves reaches main, a release or
+      # another pull request. Clippy and the tests still check every crate of the workspace; only unchanged compiled
+      # dependencies are reused, and Cargo rebuilds whatever changed.
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            tui/target
+          key: rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-${{ hashFiles('tui/Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tui/rust-toolchain.toml') }}-
       - name: Format
         working-directory: tui
         run: cargo fmt --all --check
