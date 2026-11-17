@@ -1,6 +1,6 @@
 # CI speed 2: measure, select, check, lint, cache
 
-Status: built on branch `ci-speed2`, 2026-11-16. Not merged. Follows [ci-speed.md](ci-speed.md) (balanced shards, the
+Status: built on branch `ci-speed2`, 2026-11-16. Not merged. Selection advisory on both lanes; oxlint advisory. Follows [ci-speed.md](ci-speed.md) (balanced shards, the
 macOS lane, journeys on pull requests, superseded-run cancellation).
 
 The goal: a pull request's CI takes less wall-clock time without proving less. The plan had five parts: measure, run
@@ -66,18 +66,20 @@ lists `test/ensure-build.ts`, `new URL(".", import.meta.url)` and a module that 
 linked the whole suite to everything). A test or script that names `dist` reaches the whole build. A test is selected
 when it reaches a changed path, is one, or always runs.
 
-**Always run** (200 files today):
+**Always run** (192 files today):
 
 - the attack suite, `test/attacks/**` (103 files);
 - gate tests (69): `src/ci-*.test.ts`, `src/password-*` and `src/server/password-*`, `src/public-hygiene*`, the route
   and handler inventories (`src/server/route-policy*`, `handler-registry`, `get-quiet*`, `src/serve.routes`,
   `src/serve.retired`), adapters (`src/*adapter*.test.ts`), `src/server/destinations.test.ts`, and every contract test
   (`src/contracts/*.test.ts`); the wire budgets are their own workflow;
-- tests whose inputs aren't imports: every test that lists a folder of the repository (an anchored path plus
-  `readdirSync`/`readdir`/`opendir`/`glob`/`walk`; 28 files, from `src/up.slow.test.ts` to
-  `src/server/adapter-inventory.test.ts`), and every test anchored on the checkout itself (`new URL("..", import.meta.url)`
-  reaches every file). Tests that read a named file (a fixture, a workflow, a schema, README.md) reach it through the
-  literal edges instead.
+- tests whose inputs aren't imports: every test that walks the repository (19 files) — it lists a folder (readdir,
+  opendir, glob, or its own listing helper) by a path from its own location (`import.meta`, `__dirname`,
+  `process.cwd()`, or a name assigned from one) or by a top-level folder's name (`walk("src")`); listing a temp folder
+  doesn't count — and every test anchored on the checkout itself (`new URL("..", import.meta.url)` reaches every file).
+  Tests that read a named file (a fixture, a workflow, a schema, README.md) reach it through the literal edges instead;
+- `ALWAYS_FILES`, by name, each from a backtest failure the graph can't reach: today only `src/up.slow.test.ts`, which
+  lost its reserved port to another process (EADDRINUSE) on #427, a change to `src/acp-gateway.slow.test.ts` alone.
 
 **Full run** (every file) when:
 
@@ -92,19 +94,25 @@ when it reaches a changed path, is one, or always runs.
 
 **Backtest.** The last 50 merged pull requests (#394–#446): 134 distinct `ci.yml` runs, each planned on its own head
 commit and its diff from the merge base. Failures from that pull request's own runs, every attempt: 121 failed shard jobs
-across 51 runs, 117 failing (run, file) pairs, read from the failed jobs' logs (a failing shard uploads no report). One
-macOS shard's log was gone; nothing else was unattributed.
+across 51 runs, 117 distinct failing (run, file) pairs (123 on Linux shards and 32 on macOS shards, counted per job), read
+from the failed jobs' logs (a failing shard uploads no report). One macOS shard's log was gone; nothing else was
+unattributed.
 
-- **Misses: 0.** No test that failed on any run would have been skipped.
+- **Misses: 0** on Linux and **0** on the macOS lane (judged against lane ∩ selection). The first version that read folder
+  walks precisely missed one: `src/up.slow.test.ts` on #427, the port race above; it is the one `ALWAYS_FILES` entry.
+  Without it the macOS saving below would be 597 → 324 s, with that one miss.
 - **Mode:** 101 of 134 runs plan the full suite (43 touch `scripts/`, 33 a contract, 7 a workflow, 7 test setup or
   helpers, 4 the notices, 4 are release branches, 2 delete a source file, 1 the lock file). 33 select: 25 of them 94–96%
   of the suite, 8 (workbench-only and documentation-only changes) 23%.
-- **Savings: about 4 s per run** on the slowest Linux shard (median 347 → 346 s), 257 worker-seconds of 6206 on average.
-  The 8 small selections take the slowest Linux shard from 343 to 283 s, and would take the macOS lane from 597 to 407 s
-  if the lane used the selection too; the other 25 selections save about 5 s.
+- **Savings, Linux: about 4.5 s per run** on the slowest shard's estimate (median 347 → 346 s), 267 worker-seconds of
+  6206 on average. The 8 small selections: 343 → 283 s; the other 25 save about 5 s.
+- **Savings, macOS lane** (lane ∩ selection, 3 shards): **12 s per run on average** on the slowest shard (602 → 589 s).
+  The 8 small selections run 101 of 232 lane files: **597 → 407 s, about 3 minutes off the macOS critical path** for
+  workbench- and documentation-only pull requests (6% of runs). The floor there is `src/up.slow.test.ts` (405 s on a
+  Mac). For everything else the lane still runs ~95% or all of its files.
 - **Why it can't save more:** the import graph is one component. `src/store.ts` imports 124 modules, and its closure
   (through `nightly-github → release-adapters → release-gate → desktop-update → desktop-host → operate → serve`) is
-  832 files; any change under `src/` that touches that component reaches ~641 tests by import alone, plus the 200 that
+  832 files; any change under `src/` that touches that component reaches ~641 tests by import alone, plus the 192 that
   always run. Coupling is also why the cheap alternative is unsafe: the same backtest with "the changed tests, the tests
   named after changed files, and the always-run set" misses **55 of the 117** failing (run, file) pairs — failures in
   this repository really do come from far away (`src/password-freshness.test.ts`, `src/up.slow.test.ts`,
@@ -117,21 +125,75 @@ same base and diff, and writes the plan to its job summary. Under `enforce` the 
 `.ci-test-selection` (read by `vitest.config.ts` only when `CI=true`; any copy the candidate committed is deleted first),
 and the join passes `--plan` to the verifier, so "every planned file ran exactly once" still holds: the shards must run
 exactly the join's own plan, no file missing and none extra (`scripts/ci-shards.mjs` `plannedFiles`). A full plan owes
-every file, as today. The macOS lane is not affected. The selector only takes effect once it is on main (the shards and
-the join run the base revision's copy).
+every file, as today. The macOS lane works the same way: its shards plan `--lane macos` (the lane's files the selection
+holds, or the whole lane when the selection holds none), and its join plans the same and, under `enforce`, holds the
+macOS shards to it; the Linux-skips check (`linuxSkipsProblem`) still applies. The selector only takes effect once it is
+on main (the shards and the joins run the base revision's copy).
 
 ## 3. The type checker
 
 The repository already runs TypeScript's native checker: `typescript` is pinned at 7.0.2, and TypeScript 7 *is* the Go
 port (`node_modules/typescript/bin/tsc` execs the platform binary from `@typescript/typescript-<platform>`); it has been
 since #50 (2026-09-23). `@typescript/native-preview` stopped at 7.0.0-dev.20260707 when 7.0 shipped. So there is no
-`tsgo` to add beside `tsc`: the required typecheck is already the fast one. Measured locally on the three configs:
-see "Measurements after the release" below.
+`tsgo` to add beside `tsc`, and no advisory job: the required typecheck is already the fast one.
+
+Measured on the build Mac (24 cores, load ~15 from other work; best of 3), against TypeScript 6.0.3's JavaScript `tsc`
+(the repository's `typescript-parser` alias):
+
+| Config | tsc 7.0.2 (native) | tsc 6.0.3 (JS) | Diagnostics |
+| --- | --: | --: | --- |
+| tsconfig.json (1799 files, 526k lines) | 1.8 s | 13.0 s | 0 and 0 |
+| tsconfig.browser.json | 1.8 s | 15.2 s | 0 and 0 |
+| tsconfig.tui.json | 0.1 s | 0.7 s | 0 and 0 |
+
+About 7.5× faster, and the same answer: both report nothing on the tree, and the same three errors (TS2322, TS18048,
+TS2305, same positions) on an injected probe file. In CI the typecheck step is 10–11 s on Linux and 15–22 s on macOS,
+mostly npm and process start-up around three ~2 s checks.
 
 ## 4. oxlint
 
-Planned: oxlint 1.90.0 (2026-10-27), exact, its correctness and suspicious categories, an advisory `oxlint · advisory`
-job (lint.yml), existing findings baselined per file. Not on this branch yet; see "Measurements after the release".
+oxlint 1.90.0 (2026-10-27), pinned exactly as a devDependency; `.oxlintrc.json` turns on its correctness and
+suspicious categories (126 rules over 2075 files, 0.2 s locally). `lint.yml` runs `oxlint --deny-warnings --format
+github` on every pull request; `oxlint · advisory` is in ADVISORY_PR_CHECKS. Until a release with that list is the
+deployed one, the deployed release tool treats the job as ordinary: the baseline keeps main clean, so it passes unless a
+change adds a finding.
+
+First run, 4758 findings over 31 rules:
+
+| Hits | Files | Rule |
+| --: | --: | --- |
+| 1818 | 678 | unicorn/consistent-function-scoping |
+| 941 | 394 | unicorn/no-array-sort |
+| 754 | 261 | no-shadow |
+| 510 | 111 | no-unused-vars |
+| 175 | 106 | no-control-regex |
+| 126 | 45 | no-underscore-dangle |
+| 103 | 82 | unicorn/no-array-reverse |
+| 76 | 46 | unicorn/no-useless-spread |
+| 66 | 44 | unicorn/prefer-string-starts-ends-with |
+| 42 | 24 | unicorn/no-useless-fallback-in-spread |
+| 28 | 15 | no-useless-escape |
+| 26 | 16 | no-unmodified-loop-condition |
+| 15 | 11 | preserve-caught-error |
+| 13 | 1 | typescript/no-this-alias |
+| 11 | 8 | no-useless-concat |
+| 9 | 7 | unicorn/no-array-fill-with-reference-type |
+| 8 | 4 | no-unsafe-optional-chaining |
+| 6 | 5 | unicorn/require-post-message-target-origin |
+| 5 each | 3–4 | no-unused-expressions, unicorn/no-new-array, unicorn/prefer-add-event-listener |
+| 4 | 4 | no-new |
+| 3 | 2 | no-loss-of-precision |
+| 2 | 1 | unicorn/no-thenable |
+| 1 each | 1 | no-confusing-non-null-assertion, no-extend-native, no-unsafe-finally, no-unneeded-ternary, no-useless-length-check, no-constant-binary-expression, no-useless-constructor |
+
+One real bug, fixed in its own commit: `scripts/app-e2e.mjs`'s running-release-check journey threw its collected
+problems from a `finally`, which replaced the journey's own failure (no-unsafe-finally). The rest, read case by case:
+loop flags set by signal handlers and async callbacks oxlint can't see (no-unmodified-loop-condition), deliberate test
+values (`9007199254740993`, `false && html…`, `Object.prototype` pollution probes, shared `.fill` references compared
+with `toEqual`), a `then:` string property, ANSI-stripping control regexes, and style. They are baselined: the
+remaining 4757 findings (30 rules, 1882 file and rule pairs) are per-file `overrides` in `.oxlintrc.json`, so a file
+keeps only the rules it already broke and a new file gets every rule. To retire a rule's debt, fix its files and delete
+its override.
 
 ## 5. Setup caching
 
@@ -148,6 +210,13 @@ job (lint.yml), existing findings baselined per file. Not on this branch yet; se
   push and would start warm.
 - **The workbench bundle's macOS job** caches the same way for the clippy and tests it now runs (below), in their own
   target folder (`tui/target-checks`); the package's binary in that job still builds from nothing in `tui/target`.
+- **Measured** on the build Mac (cargo 1.100.0, workspace clippy `-D warnings` then `cargo test`, registry already
+  local): cold 53.8 s (clippy 12.8 + tests 41.0); warm with nothing changed 20.1 s (clippy 0.5 + the tests themselves
+  19.6); warm after a one-line change in the workbench crate 33.2 s (clippy 2.3 + tests 30.9). So a later push saves
+  ~40% of the job (more when only tests or other crates change); the tests' own run (~20 s) is the floor. The cached
+  target is 1.5–2.2 GB, ~15–20 s to restore, so on CI's `rust · ubuntu-latest` (23 s clippy + 54 s tests) and the bundle
+  job's macOS checks (41 + 77 s cold) the net saving is about 30–45 s per warm run, off the critical path. Measured with
+  the machine under load from other work (it varies ±40%); the CI numbers come with the first pull request that runs it.
 - **The toolchain install** is 8–16 s (`rustup toolchain install`, minimal profile); caching `~/.rustup` would move
   hundreds of MB to save a few seconds. Not done.
 - **Not cached on purpose:** the package build (`package-build.yml`), which publish.yml calls: a release's binaries are
@@ -165,16 +234,16 @@ off the critical path. The macOS unit lane itself is unchanged (still 3 shards, 
 
 ## The new critical path, and what the owner decides
 
-Today: ~17 minutes median, set by the macOS lane (queue + ~12 minutes of job). This branch, as merged, changes none of
-that by itself: the selection is advisory, and even enforced it would save ~4 s per run on Linux, whose shards already
-finish minutes before the macOS lane. The Rust cache trims advisory, off-critical-path jobs.
+Today: ~17 minutes median, set by the macOS lane (queue + ~12 minutes of job). Merged as it is (advisory), the branch
+doesn't change that; the Rust cache and the folded macOS job trim advisory, off-critical-path jobs and macOS demand.
+With `TEST_SELECTION: enforce`, the expected macOS critical path: unchanged for ~94% of pull requests (12 s on average),
+and about 3 minutes shorter (597 → 407 s of tests) for workbench- and documentation-only ones. Linux never sets the path.
 
 Decisions for the owner:
 
-1. **Enforce the selection?** After a week of advisory runs, `TEST_SELECTION: enforce` is the one-line switch. The
-   backtest says it is safe (0 misses) and nearly worthless (4 s) for Linux. It only matters if the macOS lane uses it
-   too (lane ∩ selection, 597 → 407 s for workbench- and documentation-only pull requests); that is a follow-up, not on
-   this branch.
+1. **Enforce the selection?** After a week of advisory runs (the joins' summaries say what each run would have
+   selected), `TEST_SELECTION: enforce` is the one-line switch for both lanes. The backtest: 0 misses on both; worth
+   ~3 minutes on the 6% of pull requests that touch only the workbench or documentation, seconds elsewhere.
 2. **The required typecheck** is already TypeScript 7's native checker; nothing to switch. What remains is that it runs
    in all 9 shard jobs (10–22 s each, 22 s on the macOS critical path): one typecheck job instead would save ~22 s per
    run; `src/ci-workflow.test.ts` currently requires it in every shard.
@@ -184,6 +253,12 @@ Decisions for the owner:
    (b) the store's import closure, which makes any selection reach the whole suite — splitting `store.ts`'s imports
    (124 modules, reaching `serve.ts`) is what would make diff selection pay.
 
-## Measurements after the release
+## Checks run on this branch
 
-Pending: the local runs (the tests of this branch, tsc 6.0.3 against 7.0.2 on the three configs, oxlint 1.90.0's first run and baseline, cargo cold against warm) wait for the release check on the build machine to finish.
+`src/ci-select.test.ts`, `src/ci-shards.test.ts`, `src/ci-workflow.test.ts`, `src/ci-candidate.test.ts` (one Vitest
+process, all passing), each new rule reverted in the working tree to see its test fail (attacks always run, product
+literals, the whole tree as nodes, `plannedFiles`, the shards' `rm -f .ci-test-selection`, the cache key's toolchain,
+the scripts trigger, the macOS lane's `--lane`, `ALWAYS_FILES`, the walk rule, the empty-lane fallback, the oxlint
+advisory name and `--deny-warnings`), `oxlint --deny-warnings` clean on the baseline and failing a new file, and
+`node --check` on the edited journey. Not run here: the full suite, the journey itself, any CI run of these workflows
+(no pull request was opened).
