@@ -12,15 +12,33 @@ import { privateWords } from "./outbound-privacy.js";
 export const AGENT_SAID_LINES = 8;
 export const AGENT_SAID_CHARS = 200;
 
-/** CSI and OSC escape sequences, then every remaining control character but a newline or tab. */
+/** CSI and OSC escape sequences, then every remaining control character but a newline or tab, and every bidi control
+ * (the Arabic letter mark too). */
 const ESCAPES = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-_]/g;
-const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g;
+const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g;
 /** An absolute path (a file at the root too, "/secret.txt"; a bare "/login" command stays), a home-relative or named-home
- * one ("~/x", "~sam/x"), or a drive path. */
-const PATHS = /(^|[\s"'`(<[=:,])(?:(?:\/[^\s"'`)>\]/:,;]+){2,}\/?|\/[^\s"'`)>\]/:,;]*\.[^\s"'`)>\]/:,;]+|~[A-Za-z0-9._-]*\/[^\s"'`)>\]:,;]*|[A-Za-z]:[\\/][^\s"'`)>\]:,;]*)/g;
+ * one ("~/x", "~sam/x"), or a drive path. A path ends at every character a path may start after ("(", "<", "[", "=",
+ * as at a quote or a comma), so "a(C:\x" or "a=C:\x" glued to one is a path of its own, never a tail left behind. */
+const PATHS = /(^|[\s"'`(<[=:,])(?:(?:\/[^\s"'`()<>[\]/:,;=]+){2,}\/?|\/[^\s"'`()<>[\]/:,;=]*\.[^\s"'`()<>[\]/:,;=]+|~[A-Za-z0-9._-]*\/[^\s"'`()<>[\]:,;=]*|[A-Za-z]:[\\/][^\s"'`()<>[\]:,;=]*)/g;
 /** A web address's userinfo ("https://user:pass@") and its query and fragment (where tokens ride): hidden. */
 const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@"'`<>]+@/gi;
 const URL_QUERY = /\b([a-z][a-z0-9+.-]*:\/\/[^\s?#"'`<>]*)[?#][^\s"'`<>]*/gi;
+
+/** A web address and its query or fragment (the second group), as the cleaning above leaves them. */
+const ADDRESS_QUERY = /\b[a-z][a-z0-9+.-]*:\/\/[^\s?#"'`<>]*([?#][^\s"'`<>]*)?/gi;
+
+/** A line cut to AGENT_SAID_CHARS with "…": never inside a web address's hidden query (cleaning the result again would
+ * take the "…" for part of it), and never between the two halves of a character outside the BMP. */
+function shortened(line: string): string {
+  if (line.length <= AGENT_SAID_CHARS) return line;
+  let end = AGENT_SAID_CHARS - 1;
+  if (/[\ud800-\udbff]/.test(line[end - 1] ?? "")) end -= 1;
+  let kept = line.slice(0, end).trimEnd();
+  // A web address's query reaching the cut (cut inside it, or the cut's space trimmed): the cut moves before it.
+  const last = [...kept.matchAll(ADDRESS_QUERY)].at(-1);
+  if (last?.[1] !== undefined && last.index + last[0].length === kept.length) kept = kept.slice(0, kept.length - last[1].length).trimEnd();
+  return `${kept}…`;
+}
 
 /** The cleaned tail of an agent's output: [] when nothing is left to say. */
 export function agentSaidTail(text: string | null | undefined): string[] {
@@ -31,10 +49,11 @@ export function agentSaidTail(text: string | null | undefined): string[] {
   const redacted = redactSecretLines(addresses, scanForSecrets(addresses));
   const lines = redacted.split("\n")
     // A web address is never a folder on this computer: kept whole (its secrets hidden above) while paths are said as [path].
-    .map(line => line.split(/(\b[a-z][a-z0-9+.-]*:\/\/\S*)/i).map((part, at) => at % 2 === 1 ? part : part.replace(PATHS, "$1[path]")).join(""))
+    // It ends where its query does (a space, a quote or an angle bracket), so a path written right after it is still a path.
+    .map(line => line.split(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>]*)/i).map((part, at) => at % 2 === 1 ? part : part.replace(PATHS, "$1[path]")).join(""))
     .map(line => line.replace(/\s+/g, " ").trim()).filter(line => line !== "");
   return lines
-    .map(line => line.length <= AGENT_SAID_CHARS ? line : `${line.slice(0, AGENT_SAID_CHARS - 1).trimEnd()}…`)
+    .map(shortened)
     .filter(line => !privateWords(line))
     .slice(-AGENT_SAID_LINES);
 }

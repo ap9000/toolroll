@@ -251,6 +251,19 @@ describe("the secret scan (audit IV-7) — high confidence only", () => {
   });
 });
 
+describe("a key that ends in \"-\" (base64url), before a space or at the end of a line", () => {
+  // Made up, assembled here; found by outbound-privacy.property.test.ts (a plain \b after "-" never matched).
+  const body = (n: number) => ["Qz7", "pL2", "vX9", "kM4"].join("").repeat(4).slice(0, n - 1) + "-";
+  test.each([
+    ["google-api-key", `AIza${body(35)}`],
+    ["gitlab-token", `glpat-${body(20)}`],
+    ["openai-key", `sk-proj-${body(40)}`],
+    ["telegram-bot-token", `123456789:AA${body(33)}`],
+  ])("%s", (name, key) => {
+    for (const line of [`key ${key} here`, `key ${key}`]) expect(scanForSecrets(line).map(one => one.name), line).toEqual([name]);
+  });
+});
+
 describe("an AWS secret key, however its name is written", () => {
   // Made up, assembled here: 40 characters of the shape.
   const value = ["Wq7/", "Zt3+"].join("").repeat(5);

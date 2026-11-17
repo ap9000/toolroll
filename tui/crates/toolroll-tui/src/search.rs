@@ -11,6 +11,7 @@ use crate::text::clean;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
+use unicode_width::UnicodeWidthStr;
 
 /// At most this many characters are searched for.
 pub const MAX_QUERY: usize = 100;
@@ -117,34 +118,40 @@ pub fn matching(lines: &[String], query: &str) -> Vec<usize> {
         .collect()
 }
 
-/// Light every occurrence of the query drawn in `area` (reversed: it reads in every theme, colour off included).
+/// Light every occurrence of the query drawn in `area` (reversed: it reads in every theme, colour off included). Read
+/// as `matching` reads a line: each drawn character lower-cased whole (İ is two characters then), and a wide character
+/// (日) one character over both its cells, so a line counted as matching is lit where it is drawn.
 pub fn highlight(buf: &mut Buffer, area: Rect, query: &str) {
-    let q: Vec<char> = query.to_lowercase().chars().collect();
+    let q = query.to_lowercase();
     if q.is_empty() {
         return;
     }
     for y in area.top()..area.bottom() {
-        let cells: Vec<char> = (area.left()..area.right())
-            .map(|x| {
-                buf[(x, y)]
-                    .symbol()
-                    .chars()
-                    .next()
-                    .unwrap_or(' ')
-                    .to_lowercase()
-                    .next()
-                    .unwrap_or(' ')
-            })
-            .collect();
+        // The characters drawn on this row: where each starts, how many cells it covers, and its lower case.
+        let mut drawn: Vec<(u16, u16, String)> = vec![];
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            let width = (UnicodeWidthStr::width(symbol) as u16).clamp(1, area.right() - x);
+            drawn.push((x, width, symbol.to_lowercase()));
+            x += width;
+        }
         let mut i = 0;
-        while i + q.len() <= cells.len() {
-            if cells[i..i + q.len()] == q[..] {
-                for k in 0..q.len() {
-                    let x = area.left() + (i + k) as u16;
-                    let cell = &mut buf[(x, y)];
-                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+        while i < drawn.len() {
+            let mut text = String::new();
+            let mut j = i;
+            while j < drawn.len() && text.len() < q.len() {
+                text.push_str(&drawn[j].2);
+                j += 1;
+            }
+            if text.starts_with(&q) {
+                for (start, width, _) in &drawn[i..j] {
+                    for k in 0..*width {
+                        let cell = &mut buf[(start + k, y)];
+                        cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+                    }
                 }
-                i += q.len();
+                i = j;
             } else {
                 i += 1;
             }

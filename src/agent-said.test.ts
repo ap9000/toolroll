@@ -28,6 +28,16 @@ describe("the agent's last words, kept short and safe", () => {
   });
   test("a named home's folder and a file at the root are folders on this computer: [path]", () => {
     expect(agentSaidTail("~sam/notes/key.txt is unreadable\ncannot open /secret.txt\nrun /login, or /help")).toEqual(["[path] is unreadable", "cannot open [path]", "run /login, or /help"]);
+    // Found by agent-said.property.test.ts: a folder right after a web address or glued to another folder is its own.
+    expect(agentSaidTail("see https://x.example/a<~sam/notes and https://x.example/b\"/opt/srv/x")).toEqual(["see https://x.example/a<[path] and https://x.example/b\"[path]"]);
+    expect(agentSaidTail("/opt/a/b(C:\\Users\\me\\x /opt/a/b=/srv/c/d")).toEqual(["[path]([path] [path]=[path]"]);
+  });
+  test("the cut never leaves a mark a second cleaning would read as part of a hidden query, nor half a character", () => {
+    const line = `${"a".repeat(170)} https://x.example/p?token=1 and more after it`;
+    const once = agentSaidTail(line);
+    expect(agentSaidTail(once.join("\n"))).toEqual(once);
+    expect(agentSaidTail(`${"a".repeat(198)}\u{1f600}\u{1f600} more`)[0]!.isWellFormed()).toBe(true);
+    expect(agentSaidTail("left\u061cright")).toEqual(["leftright"]);
   });
   test("no folder on this computer and no key: paths said as [path], key lines hidden, and nothing private left", () => {
     const kept = agentSaidTail([
