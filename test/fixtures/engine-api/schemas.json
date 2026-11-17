@@ -1,5 +1,5 @@
 {
-  "digest": "9ca3fa96fdea87bc87bf0dc419632e3ec733a8bc49bf76e2bc5ab030a2c68257",
+  "digest": "8f8877cf49d4cc6cc348a544c6c9bf65c3cb0c21cad66f4aa25c72403961e8a2",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1945,6 +1945,81 @@
         "retry",
         "approval",
         "room"
+      ],
+      "additionalProperties": false
+    },
+    "approvalCard": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "task": {
+          "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nonce": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{32}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terms": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "words": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "words"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "task",
+        "key",
+        "digest",
+        "nonce",
+        "terms",
+        "problem"
       ],
       "additionalProperties": false
     },

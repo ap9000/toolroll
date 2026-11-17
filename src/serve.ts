@@ -2435,6 +2435,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get browserKeys(): ServerRuntime['browserKeys'] { return browserKeys; },
     get outsideAdmissions(): ServerRuntime['outsideAdmissions'] { return outsideAdmissions; },
     get localAgents(): ServerRuntime['localAgents'] { return localAgents; },
+    get heldApprovalNonce(): ServerRuntime['heldApprovalNonce'] { return heldApprovalNonce; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime, { listFor: tasksHandlers.workListFor, showOrder: tasksHandlers.showOrder });
@@ -2537,6 +2538,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const binding = localOwnerBinding(store);
     if (binding === null) return null;
     return holdSignInLink({ kind: "local-owner", ...binding, expires: Date.now() + SIGN_IN_LINK_MS });
+  }
+  /** The approval card's nonce (engine-api.ts): the one still held for this person, task and digest when there is one,
+   * else a new one. A card read again hands back the same nonce, so reading never grows the pool (or pushes another
+   * open form out of it). */
+  function heldApprovalNonce(name: string, taskId: string, digest: string): string {
+    const now = Date.now();
+    for (const [nonce, held] of approvalNonces) {
+      if (held.expiresAt >= now && held.name === name && held.taskId === taskId && held.digest === digest) return nonce;
+    }
+    return mintApprovalNonce(name, taskId, digest);
   }
   return Object.assign(server, { mintSignInLink, mintLocalLink, keyEpoch, closeCoding });
 }

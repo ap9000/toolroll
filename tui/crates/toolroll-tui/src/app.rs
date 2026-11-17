@@ -11,9 +11,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use toolroll_api::{
-    ActOutcome, AgentsRead, ApiError, LiveRecord, LiveSessionWindow, LiveSignal, LiveThreads,
-    NeedRow, Question, ResultDiff, ResultDiffContext, ResultDiffFile, Spend, StepCards, TermEvent,
-    TermSend, Window, WorkRow, WorkRows,
+    ActOutcome, AgentsRead, ApiError, ApprovalCard, LiveRecord, LiveSessionWindow, LiveSignal,
+    LiveThreads, NeedRow, Question, ResultDiff, ResultDiffContext, ResultDiffFile, Spend,
+    StepCards, TermEvent, TermSend, Window, WorkRow, WorkRows,
 };
 
 /// How the screen ended (the launcher reads it: tui-launch.ts TUI_EXIT).
@@ -370,6 +370,20 @@ pub enum Mode {
         scroll: usize,
         seen_end: bool,
     },
+    /// A plan waiting for this person's yes (a sent-back revision's, say): its exact terms, read whole as Build's are,
+    /// and Enter or y posts the task page's own approval (POST /t/<task>/approve) with the form's digest and the nonce
+    /// the engine minted for them; any other key approves nothing. Enter approves only once the view has drawn the end
+    /// of the terms (`seen_end`, set by view.rs).
+    Approve {
+        task: String,
+        /// The terms' key the card showed (its steps' `terms.key`): a refresh that says other terms closes it.
+        key: String,
+        digest: String,
+        nonce: FormNonce,
+        terms: Vec<(String, String)>,
+        scroll: usize,
+        seen_end: bool,
+    },
     /// Accept the result: a plain completion of the receipt read (no acceptance of anything not shown here). With
     /// `accept_attach`, the notes shown go with it (saved on the result first).
     ConfirmAccept(ReviewPin),
@@ -405,6 +419,30 @@ pub enum Mode {
         run: i64,
     },
 }
+
+/// A form's one-time nonce (an approval form's): posted once, never printed.
+#[derive(Clone, PartialEq)]
+pub struct FormNonce(pub String);
+
+impl std::fmt::Debug for FormNonce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<nonce>")
+    }
+}
+
+/// Said when a task's plan waits for this person's yes: what to press (the Live tab, and the status line).
+pub const APPROVAL_WAITS: &str =
+    "Waiting for your approval. Press a to read the plan's terms and approve them, or w to open it in your browser.";
+/// Said when an approval dialog closes, or its yes isn't sent, because the plan it showed no longer waits as shown.
+pub const APPROVAL_CHANGED: &str = "This plan changed — look again before approving.";
+/// Said when an approval dialog closes, or its yes isn't sent, because the plan still waits but on other terms.
+pub const TERMS_CHANGED: &str = "The terms changed — read them again before approving.";
+/// Said when the approval's answer isn't one this version can read: this task's problem, never the session's.
+pub const APPROVAL_UNREADABLE: &str =
+    "This version can't show this approval. Press w to approve it in your browser.";
+/// Said when Approve is pressed before the terms were read to the end.
+pub const READ_TERMS_FIRST: &str =
+    "Read the terms to the end first (j or Space), or press w to review them in the browser.";
 
 /// What opening a take-over means, said before the first one on a build (`attempt`: "attempt 2", attempt_words).
 pub fn take_over_scope(attempt: &str) -> String {
@@ -609,6 +647,8 @@ pub enum Effect {
     /// The agents on this computer (GET /engine/agents), read while there are no tasks: the first run's lines.
     FetchAgents,
     FetchSteps(String),
+    /// The approval waiting on a task (GET /t/<task>/approval), asked when the person presses Approve.
+    FetchApproval(String),
     FetchLive {
         run: i64,
         file: &'static str,
@@ -737,6 +777,7 @@ pub enum Msg {
     Work(Result<WorkRows, ApiError>),
     Agents(Result<AgentsRead, ApiError>),
     Steps(String, Result<StepCards, ApiError>),
+    Approval(String, Result<ApprovalCard, ApiError>),
     Live(i64, &'static str, Result<LiveSessionWindow, ApiError>),
     Diff(DiffAsk, Result<ResultDiff, ApiError>),
     DiffFile(FileAsk, Result<ResultDiffFile, ApiError>),
@@ -1084,6 +1125,19 @@ impl App {
     pub fn queued_here(&self) -> bool {
         self.steps_here()
             .is_some_and(|s| s.task.state == "queued" && s.live_run.is_none() && s.held.is_none())
+            && !self.approval_waiting()
+    }
+
+    /// The selected task's plan waits for this person's yes (a sent-back revision's, say): its Approval step is the
+    /// current one, needs them, and carries terms; nothing is building and no result waits.
+    pub fn approval_waiting(&self) -> bool {
+        self.steps_here().is_some_and(|s| {
+            s.live_run.is_none()
+                && s.review.is_none()
+                && s.cards.iter().flatten().any(|c| {
+                    c.key == "approve" && c.state == "current" && c.needs_you && c.terms.is_some()
+                })
+        })
     }
 
     /// The person's hold on the selected task (Stop retrying, or the task page's hold), when one stands.
@@ -1277,6 +1331,85 @@ impl App {
         vec![]
     }
 
+    /// The approval card asked for by `a` (Action::Accept on a plan waiting for this person): its terms open in the
+    /// Approve dialog only while that same task still waits, on its current version, and nothing else is open; else
+    /// what stands in the way is said and nothing opens.
+    fn approval_read(&mut self, task: String, read: Result<ApprovalCard, ApiError>) -> Vec<Effect> {
+        let card = match read {
+            Ok(card) => card,
+            Err(ApiError::SessionEnded) => return self.failed(ApiError::SessionEnded),
+            Err(ApiError::Contract(_)) => {
+                self.say(Tone::Refused, APPROVAL_UNREADABLE);
+                return vec![];
+            }
+            Err(e) => {
+                self.say(Tone::Refused, e.to_string());
+                return vec![];
+            }
+        };
+        if self.mode != Mode::Normal || self.selected_id().as_deref() != Some(task.as_str()) {
+            return vec![];
+        }
+        if let Some(problem) = card.problem {
+            self.say(Tone::Refused, clean(&problem));
+            return vec![];
+        }
+        let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit());
+        let (Some(digest), Some(nonce)) = (card.digest, card.nonce) else {
+            self.say(Tone::Refused, APPROVAL_UNREADABLE);
+            return vec![];
+        };
+        let Some(terms_key) = card.key.filter(|k| hex(k, 32)) else {
+            self.say(Tone::Refused, APPROVAL_UNREADABLE);
+            return vec![];
+        };
+        if !hex(&digest, 64) || !hex(&nonce, 32) || card.terms.is_empty() {
+            self.say(Tone::Refused, APPROVAL_UNREADABLE);
+            return vec![];
+        }
+        // The card's terms are the ones the steps say wait (the same key), on the task's current version.
+        if let Some(words) = self.approval_changed(&card.task, &terms_key) {
+            self.say(Tone::Refused, words);
+            return vec![];
+        }
+        self.status = None;
+        self.build_unfold = false;
+        self.mode = Mode::Approve {
+            task: card.task,
+            key: terms_key,
+            digest,
+            nonce: FormNonce(nonce),
+            terms: card
+                .terms
+                .into_iter()
+                .map(|t| (clean(&t.label), t.words))
+                .collect(),
+            scroll: 0,
+            seen_end: false,
+        };
+        vec![]
+    }
+
+    /// Why an approval of `task` (a task's current version) on terms `key` can't be given as shown, as the selected
+    /// task's steps last said: it no longer waits there (APPROVAL_CHANGED), or it waits on other terms (TERMS_CHANGED).
+    /// None: it waits, on exactly those terms.
+    fn approval_changed(&self, task: &str, key: &str) -> Option<&'static str> {
+        let Some(steps) = self
+            .steps_here()
+            .filter(|s| self.approval_waiting() && s.task.id == task)
+        else {
+            return Some(APPROVAL_CHANGED);
+        };
+        let waiting = steps
+            .cards
+            .iter()
+            .flatten()
+            .find(|c| c.key == "approve")
+            .and_then(|c| c.terms.as_ref())
+            .map(|t| t.key.as_str());
+        (waiting != Some(key)).then_some(TERMS_CHANGED)
+    }
+
     /// The selected task's steps couldn't be read by this version (steps_unreadable).
     pub fn steps_unreadable_here(&self) -> bool {
         self.steps.is_none()
@@ -1441,6 +1574,7 @@ impl App {
             }
             Msg::Steps(task, Err(ApiError::Contract(_))) => self.steps_unreadable(task),
             Msg::Steps(_, Err(e)) => self.read_failed(e),
+            Msg::Approval(task, read) => self.approval_read(task, read),
             Msg::Live(run, file, result) => {
                 let mut fx = match (&result, file) {
                     (Ok(window), "main") => self.watch_live(run, window),
@@ -2156,10 +2290,14 @@ impl App {
         if matches!(self.mode, Mode::ConfirmThread(_)) {
             self.say(Tone::Refused, crate::thread::THREAD_QUESTION_CHANGED);
         }
+        if matches!(self.mode, Mode::Approve { .. }) {
+            self.say(Tone::Refused, APPROVAL_CHANGED);
+        }
         if matches!(
             self.mode,
             Mode::ConfirmAnswer(_)
                 | Mode::ConfirmThread(_)
+                | Mode::Approve { .. }
                 | Mode::ConfirmAccept(_)
                 | Mode::ConfirmTakeOver { .. }
                 | Mode::ConfirmStop(_)
@@ -2465,6 +2603,105 @@ impl App {
                         scroll,
                         seen_end,
                     };
+                    vec![]
+                }
+            },
+            Mode::Approve {
+                task,
+                key: terms_key,
+                digest,
+                nonce,
+                terms,
+                scroll,
+                seen_end,
+            } => match key.code {
+                // Reading on: the view says when the end has been shown.
+                KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown | KeyCode::Char(' ') => {
+                    let by = if matches!(key.code, KeyCode::PageDown | KeyCode::Char(' ')) {
+                        10
+                    } else {
+                        1
+                    };
+                    self.mode = Mode::Approve {
+                        task,
+                        key: terms_key,
+                        digest,
+                        nonce,
+                        terms,
+                        scroll: scroll + by,
+                        seen_end,
+                    };
+                    vec![]
+                }
+                KeyCode::Char('k') | KeyCode::Up | KeyCode::PageUp => {
+                    let by = if key.code == KeyCode::PageUp { 10 } else { 1 };
+                    self.mode = Mode::Approve {
+                        task,
+                        key: terms_key,
+                        digest,
+                        nonce,
+                        terms,
+                        scroll: scroll.saturating_sub(by),
+                        seen_end,
+                    };
+                    vec![]
+                }
+                KeyCode::Char('f') | KeyCode::Char('w') => {
+                    let browser = key.code == KeyCode::Char('w');
+                    if !browser {
+                        // The Usual row: its summary, or every setting in it.
+                        self.build_unfold = !self.build_unfold;
+                    }
+                    self.mode = Mode::Approve {
+                        task,
+                        key: terms_key,
+                        digest,
+                        nonce,
+                        terms,
+                        scroll,
+                        seen_end,
+                    };
+                    if browser {
+                        self.say(Tone::Said, "Opening Toolroll in your browser…");
+                        return vec![Effect::OpenBrowser];
+                    }
+                    vec![]
+                }
+                KeyCode::Enter | KeyCode::Char('y') if !seen_end => {
+                    self.mode = Mode::Approve {
+                        task,
+                        key: terms_key,
+                        digest,
+                        nonce,
+                        terms,
+                        scroll,
+                        seen_end,
+                    };
+                    self.say(Tone::Refused, READ_TERMS_FIRST);
+                    vec![]
+                }
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.mode = Mode::Normal;
+                    if let Some(words) = self.approval_changed(&task, &terms_key) {
+                        self.say(Tone::Refused, words);
+                        return vec![];
+                    }
+                    // The task page's own approval: its digest, the nonce minted for it, and no password (the console
+                    // decides whether this person may approve this without one, and proves the rest again).
+                    let path = format!("/t/{}/approve", toolroll_api::client::encode(&task));
+                    self.act(
+                        path,
+                        vec![
+                            ("digest", digest),
+                            ("nonce", nonce.0),
+                            ("token", String::new()),
+                        ],
+                        "Approved. It builds next.".into(),
+                    )
+                }
+                _ => {
+                    self.mode = Mode::Normal;
+                    self.say(Tone::Said, "Nothing approved.");
                     vec![]
                 }
             },
@@ -2977,6 +3214,13 @@ impl App {
                 }
                 self.mode = Mode::NewThread(String::new());
                 vec![]
+            }
+            // A plan waiting for this person's yes: `a` reads its terms (the approval card), then asks.
+            Action::Accept if self.approval_waiting() => {
+                match item.as_ref().filter(|i| i.is_task) {
+                    Some(i) => vec![Effect::FetchApproval(i.id.clone())],
+                    None => vec![],
+                }
             }
             Action::Accept => {
                 let Some(pin) = self.pin_review() else {
@@ -4191,6 +4435,7 @@ impl App {
                 .answer_pin_stands(pin)
                 .is_none()
                 .then_some(QUESTION_CHANGED),
+            Mode::Approve { task, key, .. } => self.approval_changed(task, key),
             _ => None,
         };
         if let Some(words) = changed {
@@ -4249,7 +4494,7 @@ impl App {
             return vec![];
         }
         self.act(
-            format!("/t/{}/complete", toolroll_api::client::encode(&pin.task)),
+            self.complete_path(&pin),
             vec![("receipt", pin.receipt), ("run", pin.run.to_string())],
             "Accepted. The task is complete.".into(),
         )
@@ -4269,6 +4514,22 @@ impl App {
         };
         self.pending.insert(key, p.clone());
         p
+    }
+
+    /// Where a completion of the pinned result posts: the task version whose receipt it is (its steps' own task, a
+    /// sent-back task's revision; the console completes only the version that holds the receipt), read from the same
+    /// steps the pin was just proved against (review_pin_stands); the selected task when they don't say.
+    fn complete_path(&self, pin: &ReviewPin) -> String {
+        let version = self
+            .steps_here()
+            .filter(|s| {
+                s.review
+                    .as_ref()
+                    .is_some_and(|r| r.run == pin.run && r.receipt == pin.receipt)
+            })
+            .map(|s| s.task.id.clone())
+            .unwrap_or_else(|| pin.task.clone());
+        format!("/t/{}/complete", toolroll_api::client::encode(&version))
     }
 
     /// Accept with the notes shown: saved on the result as one note (POST /r/<run>/comment, the result page's own Save
@@ -4307,7 +4568,7 @@ impl App {
             });
         }
         acts.push(SendAct {
-            path: format!("/t/{}/complete", toolroll_api::client::encode(&pin.task)),
+            path: self.complete_path(&pin),
             fields: vec![
                 ("receipt".into(), pin.receipt),
                 ("run".into(), pin.run.to_string()),

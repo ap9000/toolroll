@@ -435,6 +435,44 @@ pub struct UsualTerm {
     pub words: String,
 }
 
+/// The approval waiting on a task, as its page's approval form carries it (GET /t/<task>/approval): every term the yes
+/// agrees to, the form's `digest` and a `nonce` minted for this person and digest. The yes is the page's own
+/// POST /t/<task>/approve with exactly these; `problem` (with neither) when nothing here can take this person's yes.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalCard {
+    pub version: u32,
+    pub task: String,
+    /// The terms' key (a step card's `terms.key`): which terms this card shows; the digest binds them.
+    pub key: Option<String>,
+    pub digest: Option<String>,
+    pub nonce: Option<String>,
+    pub terms: Vec<Term>,
+    pub problem: Option<String>,
+}
+
+/// One term a yes agrees to: its label and its words (a new line in them is a line of its own).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Term {
+    pub label: String,
+    pub words: String,
+}
+
+impl fmt::Debug for ApprovalCard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The nonce is a single-use form token: never printed.
+        f.debug_struct("ApprovalCard")
+            .field("task", &self.task)
+            .field("key", &self.key)
+            .field("digest", &self.digest)
+            .field("nonce", &self.nonce.as_ref().map(|_| "<held>"))
+            .field("terms", &self.terms.len())
+            .field("problem", &self.problem)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StepTask {
