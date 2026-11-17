@@ -443,6 +443,8 @@ pub struct UsualTerm {
 pub struct ApprovalCard {
     pub version: u32,
     pub task: String,
+    /// The terms' key (a step card's `terms.key`): which terms this card shows; the digest binds them.
+    pub key: Option<String>,
     pub digest: Option<String>,
     pub nonce: Option<String>,
     pub terms: Vec<Term>,
@@ -462,6 +464,7 @@ impl fmt::Debug for ApprovalCard {
         // The nonce is a single-use form token: never printed.
         f.debug_struct("ApprovalCard")
             .field("task", &self.task)
+            .field("key", &self.key)
             .field("digest", &self.digest)
             .field("nonce", &self.nonce.as_ref().map(|_| "<held>"))
             .field("terms", &self.terms.len())

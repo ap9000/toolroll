@@ -770,7 +770,7 @@ async fn approval(
     let Some(mut card) = st.approvals.get(&task).cloned() else {
         return json_answer(
             200,
-            json!({ "version": 1, "task": task, "digest": null, "nonce": null, "terms": [], "problem": "Nothing on this task is waiting for your approval." }),
+            json!({ "version": 1, "task": task, "key": null, "digest": null, "nonce": null, "terms": [], "problem": "Nothing on this task is waiting for your approval." }),
         );
     };
     if card["nonce"].is_string() {
@@ -793,9 +793,11 @@ pub fn revision_waiting(st: &mut State) {
     steps["task"]["root"] = json!("t-done");
     steps["task"]["title"] = json!("Add CSV export");
     steps["room"] = json!("task:t-done");
+    let key = steps["cards"][1]["terms"]["key"].clone();
     st.steps.insert("t-done".into(), steps);
     let mut card = fixture("approval-card.json");
     card["task"] = json!("t-done-v2");
+    card["key"] = key;
     st.approvals.insert("t-done".into(), card);
 }
 

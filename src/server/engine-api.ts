@@ -343,28 +343,29 @@ export function createEngineHandlers(runtime: ServerRuntime) {
   }
 
   /** GET /t/<task>/approval: the approval waiting on the task's current version, as its page's approval form carries it
-   * (contracts/engine-api.ts approvalCardSchema). A browser or terminal session only. The page's own assembly
-   * (taskViewData) decides whether a yes can be taken at all and mints the nonce exactly as the page does when it
-   * renders; nothing is minted for a yes this session couldn't give here (it needs a password: the browser asks). */
+   * (contracts/engine-api.ts approvalCardSchema). A terminal client's session presenting its own key only: this read
+   * mints, so a cookie alone (a browser, another port) is never enough; browser sessions use the task page. The page's
+   * own assembly (taskViewData) decides whether a yes can be taken at all; nothing is minted for a yes this session
+   * couldn't give here (it needs a password: the browser asks), and a card read again holds the same nonce
+   * (heldApprovalNonce), so reads never grow the shared pool. */
   async function taskApproval(ctx: HandlerContext): Promise<void> {
-    const { url, response, who } = ctx;
+    const { url, response, who, request } = ctx;
     if (who.via !== "cookie") return refusal(response, 403, "session");
+    if (!runtime.browserKeys.terminalKeyed(who, request)) return refusal(response, 403, "key");
     if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
     const family = familyAt(url, "approval");
     if (family === null) return refusal(response, 404, "task");
     const taskId = family.current.id;
-    const none = (problem: string) => sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, digest: null, nonce: null, terms: [], problem });
+    const none = (problem: string) => sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, key: null, digest: null, nonce: null, terms: [], problem });
     const waits = (view: NonNullable<ReturnType<typeof runtime.taskViewData>>) => view.nonce !== "" && view.approvalDigest != null && view.approvalSummary != null;
-    // Read first without minting: only a yes this session can give here gets a nonce.
-    const peek = runtime.taskViewData(taskId, who, null, { mintNonce: false });
-    if (peek === null) return refusal(response, 404, "task");
-    if (!waits(peek)) return none(NOTHING_TO_APPROVE);
-    if (peek.approvalLocal?.eligible !== true) return none(`${peek.approvalLocal?.eligible === false ? `${peek.approvalLocal.message} ` : "This approval needs your password. "}${APPROVE_IN_BROWSER}`);
-    const view = runtime.taskViewData(taskId, who, null);
+    // Read without minting (the page's own conditions say whether a yes can be taken); only a yes this session can give
+    // here gets a nonce, the one held for this person, task and digest if there is one.
+    const view = runtime.taskViewData(taskId, who, null, { mintNonce: false });
     if (view === null) return refusal(response, 404, "task");
-    if (!waits(view) || view.approvalLocal?.eligible !== true) return none(NOTHING_TO_APPROVE);
-    return sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, digest: view.approvalDigest, nonce: view.nonce,
-      terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null), problem: null });
+    if (!waits(view)) return none(NOTHING_TO_APPROVE);
+    if (view.approvalLocal?.eligible !== true) return none(`${view.approvalLocal?.eligible === false ? `${view.approvalLocal.message} ` : "This approval needs your password. "}${APPROVE_IN_BROWSER}`);
+    return sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, key: view.approvalSummary!.key, digest: view.approvalDigest,
+      nonce: runtime.heldApprovalNonce(who.name, taskId, view.approvalDigest!), terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null), problem: null });
   }
 
   /** GET /t/<task>/diff[?run=<id>[&file=<n>[&from=<line>&count=<n>]]]: the result's files, one file's hunks (which needs

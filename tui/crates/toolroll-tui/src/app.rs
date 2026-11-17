@@ -376,6 +376,8 @@ pub enum Mode {
     /// of the terms (`seen_end`, set by view.rs).
     Approve {
         task: String,
+        /// The terms' key the card showed (its steps' `terms.key`): a refresh that says other terms closes it.
+        key: String,
         digest: String,
         nonce: FormNonce,
         terms: Vec<(String, String)>,
@@ -433,6 +435,8 @@ pub const APPROVAL_WAITS: &str =
     "Waiting for your approval. Press a to read the plan's terms and approve them, or w to open it in your browser.";
 /// Said when an approval dialog closes, or its yes isn't sent, because the plan it showed no longer waits as shown.
 pub const APPROVAL_CHANGED: &str = "This plan changed — look again before approving.";
+/// Said when an approval dialog closes, or its yes isn't sent, because the plan still waits but on other terms.
+pub const TERMS_CHANGED: &str = "The terms changed — read them again before approving.";
 /// Said when the approval's answer isn't one this version can read: this task's problem, never the session's.
 pub const APPROVAL_UNREADABLE: &str =
     "This version can't show this approval. Press w to approve it in your browser.";
@@ -1273,18 +1277,24 @@ impl App {
             self.say(Tone::Refused, APPROVAL_UNREADABLE);
             return vec![];
         };
+        let Some(terms_key) = card.key.filter(|k| hex(k, 32)) else {
+            self.say(Tone::Refused, APPROVAL_UNREADABLE);
+            return vec![];
+        };
         if !hex(&digest, 64) || !hex(&nonce, 32) || card.terms.is_empty() {
             self.say(Tone::Refused, APPROVAL_UNREADABLE);
             return vec![];
         }
-        if !self.approval_stands(&card.task) {
-            self.say(Tone::Refused, APPROVAL_CHANGED);
+        // The card's terms are the ones the steps say wait (the same key), on the task's current version.
+        if let Some(words) = self.approval_changed(&card.task, &terms_key) {
+            self.say(Tone::Refused, words);
             return vec![];
         }
         self.status = None;
         self.build_unfold = false;
         self.mode = Mode::Approve {
             task: card.task,
+            key: terms_key,
             digest,
             nonce: FormNonce(nonce),
             terms: card
@@ -1298,9 +1308,24 @@ impl App {
         vec![]
     }
 
-    /// The approval of `task` (a task's current version) still waits on the selected task, as its steps last said.
-    fn approval_stands(&self, task: &str) -> bool {
-        self.approval_waiting() && self.steps_here().is_some_and(|s| s.task.id == task)
+    /// Why an approval of `task` (a task's current version) on terms `key` can't be given as shown, as the selected
+    /// task's steps last said: it no longer waits there (APPROVAL_CHANGED), or it waits on other terms (TERMS_CHANGED).
+    /// None: it waits, on exactly those terms.
+    fn approval_changed(&self, task: &str, key: &str) -> Option<&'static str> {
+        let Some(steps) = self
+            .steps_here()
+            .filter(|s| self.approval_waiting() && s.task.id == task)
+        else {
+            return Some(APPROVAL_CHANGED);
+        };
+        let waiting = steps
+            .cards
+            .iter()
+            .flatten()
+            .find(|c| c.key == "approve")
+            .and_then(|c| c.terms.as_ref())
+            .map(|t| t.key.as_str());
+        (waiting != Some(key)).then_some(TERMS_CHANGED)
     }
 
     /// The selected task's steps couldn't be read by this version (steps_unreadable).
@@ -2492,6 +2517,7 @@ impl App {
             },
             Mode::Approve {
                 task,
+                key: terms_key,
                 digest,
                 nonce,
                 terms,
@@ -2507,6 +2533,7 @@ impl App {
                     };
                     self.mode = Mode::Approve {
                         task,
+                        key: terms_key,
                         digest,
                         nonce,
                         terms,
@@ -2519,6 +2546,7 @@ impl App {
                     let by = if key.code == KeyCode::PageUp { 10 } else { 1 };
                     self.mode = Mode::Approve {
                         task,
+                        key: terms_key,
                         digest,
                         nonce,
                         terms,
@@ -2535,6 +2563,7 @@ impl App {
                     }
                     self.mode = Mode::Approve {
                         task,
+                        key: terms_key,
                         digest,
                         nonce,
                         terms,
@@ -2550,6 +2579,7 @@ impl App {
                 KeyCode::Enter | KeyCode::Char('y') if !seen_end => {
                     self.mode = Mode::Approve {
                         task,
+                        key: terms_key,
                         digest,
                         nonce,
                         terms,
@@ -2561,8 +2591,8 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Char('y') => {
                     self.mode = Mode::Normal;
-                    if !self.approval_stands(&task) {
-                        self.say(Tone::Refused, APPROVAL_CHANGED);
+                    if let Some(words) = self.approval_changed(&task, &terms_key) {
+                        self.say(Tone::Refused, words);
                         return vec![];
                     }
                     // The task page's own approval: its digest, the nonce minted for it, and no password (the console
@@ -4291,7 +4321,7 @@ impl App {
                 .answer_pin_stands(pin)
                 .is_none()
                 .then_some(QUESTION_CHANGED),
-            Mode::Approve { task, .. } => (!self.approval_stands(task)).then_some(APPROVAL_CHANGED),
+            Mode::Approve { task, key, .. } => self.approval_changed(task, key),
             _ => None,
         };
         if let Some(words) = changed {

@@ -10,7 +10,7 @@ use ratatui::Terminal;
 use toolroll_api::Client;
 use toolroll_fake_engine as fake;
 use toolroll_tui::app::{
-    App, Effect, Mode, Msg, Tab, APPROVAL_CHANGED, APPROVAL_WAITS, STEPS_UNREADABLE,
+    App, Effect, Mode, Msg, Tab, APPROVAL_CHANGED, APPROVAL_WAITS, STEPS_UNREADABLE, TERMS_CHANGED,
 };
 use toolroll_tui::review::{Kind, Row};
 
@@ -529,16 +529,17 @@ async fn send_back_then_approve_the_revision_in_the_workbench() {
     );
 }
 
-/// What is shown is what is approved: any other key approves nothing; a plan that changes while it is open closes it;
-/// and a card read before the plan changed is refused by the console (its digest), never approved.
+/// What is shown is what is approved: any other key approves nothing; unread terms can't be approved; terms that change
+/// while the card is open (the task still waiting for a yes) close it before anything is sent; and a card whose task no
+/// longer waits closes too. Nothing is ever posted.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_changed_or_unread_approval_is_never_sent() {
     let (engine, client, mut app) = sent_back().await;
+    let acts = engine.acts().len();
     // Any other key: nothing approved, nothing sent.
     let fx = app.key(key('a'));
     pump(&mut app, &client, fx).await;
     screen(&mut app, 160, 50);
-    let acts = engine.acts().len();
     assert!(app.key(key('x')).is_empty());
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(said(&app), "Nothing approved.");
@@ -548,29 +549,41 @@ async fn a_changed_or_unread_approval_is_never_sent() {
     screen(&mut app, 120, 12);
     assert!(app.key(enter()).is_empty());
     assert!(matches!(app.mode, Mode::Approve { .. }));
-    assert_eq!(engine.acts().len(), acts);
-    // The plan changes on the console while the card is open: the console refuses the digest it showed.
+    // Read to the end, then the terms change on the console while the card is open; the task still waits for a yes.
+    screen(&mut app, 160, 50);
+    {
+        let mut st = engine.state.lock().unwrap();
+        let steps = st.steps.get_mut("t-done").unwrap();
+        steps["cards"][1]["terms"]["key"] = serde_json::json!("f".repeat(32));
+        steps["cards"][1]["terms"]["rows"][0]["words"] =
+            serde_json::json!("Any file in the project");
+    }
+    pump(&mut app, &client, vec![Effect::FetchSteps("t-done".into())]).await;
+    assert!(app.approval_waiting(), "the plan still waits for a yes");
+    assert_eq!(app.mode, Mode::Normal, "the card on the old terms closes");
+    assert_eq!(said(&app), TERMS_CHANGED);
+    // An Enter that arrives after it closed sends nothing either.
+    assert!(app
+        .key(enter())
+        .iter()
+        .all(|e| !matches!(e, Effect::Act { .. })));
+    // A card read on terms the steps no longer show doesn't open (the console's card still has the old key).
+    let fx = app.key(key('a'));
+    pump(&mut app, &client, fx).await;
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(said(&app), TERMS_CHANGED);
+    // The console's card catches up: it opens; then the steps say the approval no longer waits (approved in the
+    // browser, say): it closes.
     engine
         .state
         .lock()
         .unwrap()
         .approvals
         .get_mut("t-done")
-        .unwrap()["digest"] = serde_json::json!("e".repeat(64));
-    screen(&mut app, 160, 50);
-    let fx = app.key(enter());
-    pump(&mut app, &client, fx).await;
-    assert_eq!(engine.acts().len(), acts + 1);
-    assert!(
-        said(&app).starts_with("the scope or plan changed"),
-        "{}",
-        said(&app)
-    );
-    assert!(app.approval_waiting(), "nothing was approved");
-    // The steps say the approval no longer waits (approved in the browser, say) while the card is open: it closes.
+        .unwrap()["key"] = serde_json::json!("f".repeat(32));
     let fx = app.key(key('a'));
     pump(&mut app, &client, fx).await;
-    assert!(matches!(app.mode, Mode::Approve { .. }));
+    assert!(matches!(app.mode, Mode::Approve { .. }), "{:?}", app.mode);
     engine
         .state
         .lock()
@@ -581,6 +594,6 @@ async fn a_changed_or_unread_approval_is_never_sent() {
     pump(&mut app, &client, vec![Effect::FetchSteps("t-done".into())]).await;
     assert_eq!(app.mode, Mode::Normal);
     assert_eq!(said(&app), APPROVAL_CHANGED);
-    assert_eq!(engine.acts().len(), acts + 1);
+    assert_eq!(engine.acts().len(), acts, "nothing was posted");
     let _ = APPROVAL_WAITS;
 }

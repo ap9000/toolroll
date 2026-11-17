@@ -1,6 +1,7 @@
 {
   "version": 1,
   "task": "result-1-v2",
+  "key": null,
   "digest": null,
   "nonce": null,
   "terms": [],

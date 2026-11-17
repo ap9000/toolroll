@@ -283,12 +283,16 @@ export const stepCardsSchema = z.object({
  * the same assembly): `terms`, every term the yes agrees to (approval-summary.ts summaryLines, the summary whose key the
  * digest binds, read into rows as Build's offer is, then what the plan changed and the notes sent back); `digest`, what
  * the page's form posts; and `nonce`, minted for this person, this task and this digest (single use, short-lived), as
- * the page mints one when it renders. The yes is POST /t/<task>/approve with `digest`, `nonce` and an empty `token`:
+ * the page mints one when it renders, and the same one again while it is held. Only a terminal client's session
+ * presenting its own key may read it (it mints); browser sessions use the task page. The yes is POST /t/<task>/approve with `digest`, `nonce` and an empty `token`:
  * the browser's own route, which proves everything again. `problem` (with no digest and no nonce) when nothing here can
  * take this person's yes: nothing waits, or this approval needs their password (the browser asks for it). */
 export const approvalCardSchema = z.object({
   version,
   task: z.string(),
+  /** The summary's key (the step card's `terms.key`): the terms this card shows, which the digest binds. A client
+   * compares it with the steps it reads later to know the terms it showed still stand. */
+  key: z.string().nullable(),
   digest: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
   nonce: z.string().regex(/^[0-9a-f]{32}$/).nullable(),
   terms: z.array(z.object({ label: z.string(), words: z.string() })),

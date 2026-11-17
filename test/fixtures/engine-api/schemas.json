@@ -1,5 +1,5 @@
 {
-  "digest": "784cc8ede455dc2bf6471a2a6ec8d6df4a5c6cf3b9f7f9980e1faaef5b279668",
+  "digest": "ff9288877b3d79bea50df5e650de518a466eca895799b5c2a0f79788aaf7ddc4",
   "version": 1,
   "responses": {
     "liveSessionWindow": {
@@ -1929,6 +1929,12 @@
         "task": {
           "type": "string"
         },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "digest": {
           "anyOf": [
             {
@@ -1980,6 +1986,7 @@
       "required": [
         "version",
         "task",
+        "key",
         "digest",
         "nonce",
         "terms",

@@ -7,12 +7,10 @@
  * the build may claim the task.
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { join } from "node:path";
-import { randomBytes } from "node:crypto";
-import { openLocalWorld, LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
-import { resultFixtures, RESULT_T0 } from "../../test/local-owner-results.js";
-import { plannerKeptTerms } from "../../test/serve-kit.js";
-import { approvalCardSchema, linkRedemptionSchema, stepCardsSchema } from "../contracts/engine-api.js";
+import { LOCAL_WORLD_SETUP_MS, type LocalWorld } from "../../test/local-owner-world.js";
+import { RESULT_T0 } from "../../test/local-owner-results.js";
+import { openApprovalWorld, type ApprovalWorld } from "../../test/approval-card-world.js";
+import { stepCardsSchema } from "../contracts/engine-api.js";
 import { approvalOf, approve } from "../scope.js";
 import { acquire } from "../claim.js";
 import { mintApiToken } from "../api-tokens.js";
@@ -20,50 +18,10 @@ import { asLocalOwner, type LocalPrincipal } from "../local-owner.js";
 import { withActor } from "../actor.js";
 import { APPROVE_IN_BROWSER, NOTHING_TO_APPROVE } from "./engine-api.js";
 
-let world: LocalWorld, fx: ReturnType<typeof resultFixtures>;
-beforeEach(async () => {
-  world = await openLocalWorld({ browserKey: true });
-  fx = resultFixtures(world, join(world.root, "evidence"));
-  fx.prepare();
-}, LOCAL_WORLD_SETUP_MS);
+let world: LocalWorld, terminal: ApprovalWorld["terminal"], sentBack: ApprovalWorld["sentBack"], card: ApprovalWorld["card"];
+beforeEach(async () => { ({ world, terminal, sentBack, card } = await openApprovalWorld()); }, LOCAL_WORLD_SETUP_MS);
 afterEach(async () => { await world.close(); });
 
-/** The local owner's terminal session, as the workbench redeems it (POST /login/once). */
-async function terminal() {
-  const link = world.server.mintLocalLink()!;
-  const redeemed = await world.send("/login/once", "POST", { "content-type": "application/json", "x-toolroll-client": "terminal" }, JSON.stringify({ code: link.slice("/login/once/".length) }));
-  const body = linkRedemptionSchema.parse(JSON.parse(redeemed.body));
-  const cookie = `${body.cookie.name}=${body.cookie.value}`;
-  const get = async (path: string, headers: Record<string, string> = { cookie }) => {
-    const answer = await world.send(path, "GET", { accept: "application/json", ...headers });
-    return { status: answer.status, body: answer.body };
-  };
-  // An act as the workbench posts it (client.rs act): form token, mutation key, its answer asked for in place.
-  const act = async (path: string, fields: Record<string, string>) => {
-    const answer = await world.send(path, "POST", { cookie, origin: world.origin, "content-type": "application/x-www-form-urlencoded", accept: "application/json",
-      "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf: body.csrf, ...fields }).toString());
-    return { status: answer.status, body: JSON.parse(answer.body) as { outcome: string; words: string } };
-  };
-  return { cookie, get, act };
-}
-
-/** A Ready result sent back from the workbench (its own road), and the revision planned with the terms kept. */
-async function sentBack(session: Awaited<ReturnType<typeof terminal>>): Promise<string> {
-  const result = fx.ready("ordinary");
-  const steps = stepCardsSchema.parse(JSON.parse((await session.get(`/t/${result.id}/steps`)).body));
-  expect(steps.review?.run).toBe(result.runId);
-  const sent = await session.act(`/r/${result.runId}/comment`, { intent: "revise", note: "Round the tax to cents.", request: randomBytes(16).toString("hex"), batch: "", source: steps.review!.source });
-  expect(sent.body).toEqual({ outcome: "done", words: "Sent back. The revision is filed." });
-  const revision = world.store.handle.prepare("SELECT consumed_by AS id FROM diff_comment WHERE run = ?").get(result.runId)?.["id"] as string;
-  plannerKeptTerms(world.store, revision);
-  return revision;
-}
-
-const card = async (session: Awaited<ReturnType<typeof terminal>>, task: string) => {
-  const answer = await session.get(`/t/${encodeURIComponent(task)}/approval`);
-  expect(answer.status).toBe(200);
-  return approvalCardSchema.parse(JSON.parse(answer.body));
-};
 const approved = (task: string) => approvalOf(world.store.getScope(task)).approved;
 
 test("send back, the revision waits, the workbench reads its exact terms and approves them on the page's own route; the build may then claim it", async () => {
@@ -91,7 +49,7 @@ test("send back, the revision waits, the workbench reads its exact terms and app
   expect(approved(revision)).toBe(true);
   // Spent: the same nonce again is a stale form, and the card now has nothing to approve (no nonce minted).
   expect((await session.act(`/t/${revision}/approve`, { digest: read.digest!, nonce: read.nonce!, token: "" })).body).toMatchObject({ outcome: "refused", words: "that approval form is stale — read it again" });
-  expect(await card(session, revision)).toEqual({ version: 1, task: revision, digest: null, nonce: null, terms: [], problem: NOTHING_TO_APPROVE });
+  expect(await card(session, revision)).toEqual({ version: 1, task: revision, key: null, digest: null, nonce: null, terms: [], problem: NOTHING_TO_APPROVE });
   // The build proceeds: a worker may claim the revision now.
   const ref = world.store.lookupRef(revision)!.id;
   expect(acquire(world.store, ref, "worker-1", { token: "tok-worker-1", now: new Date(), ttlMs: 60_000 })).toMatchObject({ ok: true });
@@ -121,7 +79,7 @@ test("a token is never a person: no card and no yes for an API token, and a lead
   const minted = mintApiToken();
   world.store.createApiToken({ id: minted.id, account: "alex", name: "lead", secretHash: minted.hash, access: "act", expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
   const bearer = { authorization: `Bearer ${minted.token}` };
-  expect((await session.get(`/t/${revision}/approval`, bearer)).status).toBeGreaterThanOrEqual(400);
+  expect((await session.get(`/t/${revision}/approval`, { ...bearer, "x-toolroll-key": session.key })).status).toBeGreaterThanOrEqual(400);
   const read = await card(session, revision);
   const posted = await world.send(`/t/${revision}/approve`, "POST", { ...bearer, "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
     new URLSearchParams({ digest: read.digest!, nonce: read.nonce!, token: "" }).toString());
@@ -146,3 +104,19 @@ test("work the local owner can't approve without a password gets no nonce: the c
   expect(read.problem).toContain(APPROVE_IN_BROWSER);
   expect(approved(revision)).toBe(false);
 });
+
+test("the card is a terminal's keyed read: a cookie without the key (or with another) gets no nonce, and reading again holds the same one", async () => {
+  const session = await terminal();
+  const revision = await sentBack(session);
+  for (const headers of [{ cookie: session.cookie }, { cookie: session.cookie, "x-toolroll-key": "0".repeat(64) }]) {
+    const refused = await session.get(`/t/${revision}/approval`, headers);
+    expect(refused).toEqual({ status: 403, body: JSON.stringify({ error: "key" }) });
+  }
+  const first = await card(session, revision);
+  expect(first.nonce).toMatch(/^[0-9a-f]{32}$/);
+  expect(first.key).toMatch(/^[0-9a-f]{32}$/);
+  for (let read = 0; read < 3; read += 1) expect((await card(session, revision)).nonce).toBe(first.nonce);
+  // Spent by its yes, the next read holds a new one.
+  expect((await session.act(`/t/${revision}/approve`, { digest: first.digest!, nonce: first.nonce!, token: "" })).body).toMatchObject({ outcome: "approved" });
+});
+
