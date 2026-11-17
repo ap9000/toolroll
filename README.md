@@ -5,7 +5,9 @@
   <img src="docs/media/wordmark-light.svg" alt="Toolroll" width="440">
 </picture>
 
-### Delegate a change. Review the diff here.
+### Your agents build. You decide.
+
+**Delegate a change. Review the diff here.**
 
 > **Terminal screenshot placeholder:** a current terminal-workbench capture belongs at
 > `docs/media/terminal-workbench.png` (not yet captured). The repository has web
