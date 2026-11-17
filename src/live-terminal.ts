@@ -49,6 +49,9 @@ export type Pty = {
   /** Stop and start reading the program's output (flow control: the program blocks on a full terminal meanwhile). */
   pause?(): void;
   resume?(): void;
+  /** Let go of typed bytes the program never read, when it is ending: they can't reach it, and writing them after the
+   * terminal closes fails (EIO, EBADF) where nothing handles it. */
+  dropInput?(): void;
 };
 export type PtySpawn = (file: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; cols: number; rows: number }) => Pty;
 
@@ -71,6 +74,19 @@ export function pendingInputOf(pty: unknown): number {
   return bytes;
 }
 
+/** Empty a pinned node-pty's queue of typed bytes not yet taken by the kernel, and cancel its next retry (the same
+ * shape pendingInputOf reads). False when the shape isn't the pinned one (nothing is touched then). */
+export function dropPendingInput(pty: unknown): boolean {
+  const stream = (pty as { _writeStream?: { _writeQueue?: unknown; _writeImmediate?: unknown } })?._writeStream;
+  if (stream === undefined || !Array.isArray(stream._writeQueue)) return false;
+  stream._writeQueue.length = 0;
+  if (stream._writeImmediate !== undefined) {
+    clearImmediate(stream._writeImmediate as NodeJS.Immediate);
+    stream._writeImmediate = undefined;
+  }
+  return true;
+}
+
 /** node-pty, if this install has it (an optional dependency with prebuilt binaries); null when it doesn't load. */
 export function loadPtySpawn(): PtySpawn | null {
   try {
@@ -88,6 +104,7 @@ export function loadPtySpawn(): PtySpawn | null {
         kill: signal => native.kill(signal),
         pause: () => native.pause(),
         resume: () => native.resume(),
+        dropInput: () => { dropPendingInput(native); },
       };
     };
   } catch {
@@ -485,6 +502,8 @@ export class TerminalHost {
         this.flow(session);
       });
       pty.onExit(({ exitCode, signal }) => {
+        // What was typed and never read can't reach it now: dropped, never written to a closed terminal.
+        try { pty.dropInput?.(); } catch { /* nothing queued */ }
         session.pty = null;
         if (session.flowTimer !== null) { clearInterval(session.flowTimer); session.flowTimer = null; }
         session.exitedAt = Date.now();
@@ -596,6 +615,7 @@ export class TerminalHost {
       this.flow(session);
     });
     pty.onExit(({ exitCode, signal }) => {
+      try { pty.dropInput?.(); } catch { /* nothing queued */ }
       session.pty = null;
       if (session.flowTimer !== null) { clearInterval(session.flowTimer); session.flowTimer = null; }
       session.exitedAt = Date.now();
@@ -854,6 +874,8 @@ export class TerminalHost {
     // table reads, still the leader that started. A table that can't be read signals the leader alone (the close is
     // uncertain then anyway).
     const signal = (found: ReadonlyMap<number, string>, name: "SIGHUP" | "SIGSTOP" | "SIGKILL") => {
+      // It is being closed: typed bytes it never read are let go first, so none is written after its terminal closes.
+      try { session.pty?.dropInput?.(); } catch { /* nothing queued */ }
       const table = this.processes();
       if (table === null) readable = false;
       const leaderStarted = session.known.get(session.leader);
@@ -872,6 +894,7 @@ export class TerminalHost {
     let cleanup: "clean" | "uncertain" = "uncertain";
     try {
       if (process.platform === "win32") {
+        try { session.pty?.dropInput?.(); } catch { /* nothing queued */ }
         try { session.pty?.kill(); } catch { /* gone */ }
         await Promise.race([session.exited, pause(grace)]);
         cleanup = leaderGone() ? "clean" : "uncertain";
