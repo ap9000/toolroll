@@ -1118,19 +1118,35 @@ pub fn judge(regular: bool, uid: u32, mode: u32, size: u64, me: u32) -> Result<(
 #[cfg(unix)]
 pub fn read_safely(path: &Path, home: Option<&Path>) -> Result<Option<String>, String> {
     use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::MetadataExt;
     // SAFETY: geteuid has no preconditions.
     let me = unsafe { libc::geteuid() };
-    if let Some(dir) = path.parent() {
-        match std::fs::metadata(dir) {
-            Err(_) => return Ok(None),
-            Ok(m) => {
-                if !m.is_dir() || m.uid() != me || m.mode() & 0o022 != 0 {
-                    return Err("its folder can be changed by other people, or isn't yours".into());
+    // Its folder and every folder above it, as the writer checks them (trusted_chain): a folder that isn't there yet
+    // means no file; one that can't be looked at is refused, never taken for missing.
+    let Some(dir) = path.parent() else {
+        return Err("it has no folder".into());
+    };
+    match std::fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Missing only when the folders above that do exist can be trusted, and the gap is a plain absence.
+            let mut up = dir.parent();
+            while let Some(d) = up {
+                match std::fs::symlink_metadata(d) {
+                    Ok(_) => {
+                        trusted_chain(d, home, me)?;
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => up = d.parent(),
+                    Err(_) => return Err("a folder above it can't be looked at".into()),
                 }
             }
+            return Ok(None);
         }
+        Err(_) => return Err("its folder can't be looked at".into()),
+        Ok(_) => {}
     }
+    let trusted = trusted_chain(dir, home, me)?;
+    let name = path.file_name().ok_or("it has no name")?;
     let real = match std::fs::symlink_metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("it couldn't be opened".into()),
@@ -1163,12 +1179,18 @@ pub fn read_safely(path: &Path, home: Option<&Path>) -> Result<Option<String>, S
             }
             target
         }
-        Ok(_) => path.to_path_buf(),
+        // The file itself: opened relative to its trusted folder, itself opened once (O_DIRECTORY, never through a
+        // link), so a folder swapped in by name can't redirect the read.
+        Ok(_) => trusted.join(name),
     };
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(&real);
+    let file = if real == trusted.join(name) {
+        open_in(&trusted, name)
+    } else {
+        // A link inside the home folder (checked above): its target's folders checked the same way, then opened.
+        let target_dir = real.parent().ok_or("it links to nothing")?;
+        let target_dir = trusted_chain(target_dir, home, me)?;
+        open_in(&target_dir, real.file_name().ok_or("it links to nothing")?)
+    };
     let mut file = match file {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -1193,6 +1215,42 @@ pub fn read_safely(path: &Path, home: Option<&Path>) -> Result<Option<String>, S
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| "it isn't UTF-8 text".into())
+}
+
+/// `name` in the folder `dir`, opened read-only relative to that folder, which is opened first as a folder (never
+/// through a link); the file is never followed through a link either.
+#[cfg(unix)]
+fn open_in(dir: &Path, name: &std::ffi::OsStr) -> std::io::Result<std::fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let d = CString::new(dir.as_os_str().as_bytes()).map_err(|_| std::io::Error::other("nul"))?;
+    // SAFETY: a valid C string; the descriptor returned is owned below.
+    let dfd = unsafe {
+        libc::open(
+            d.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if dfd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: dfd is a fresh descriptor of ours.
+    let dfd = unsafe { OwnedFd::from_raw_fd(dfd) };
+    let n = CString::new(name.as_bytes()).map_err(|_| std::io::Error::other("nul"))?;
+    // SAFETY: a valid C string relative to an open folder; the descriptor returned is owned below.
+    let fd = unsafe {
+        libc::openat(
+            dfd.as_raw_fd(),
+            n.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a fresh descriptor of ours.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
 }
 
 #[cfg(not(unix))]
@@ -1256,6 +1314,9 @@ pub fn start(env: &Env) -> Prefs {
 }
 
 // ---- what the screen holds ------------------------------------------------------------------------------------------
+
+/// Said when a reload of tui.toml changed `[keys]`: the running keys stay until the next start.
+pub const KEYS_NEXT_START: &str = "Key changes take effect next start.";
 
 /// The settings in use and where they came from, the theme drawn (which `t` changes for the session), and where
 /// notifications go.
@@ -1356,7 +1417,8 @@ impl Prefs {
     /// Change one setting (the Settings screen's Enter): for this session at once, and written to tui.toml. The words
     /// say what happened; Err when the file wasn't written (the change still holds for this session).
     /// tui.toml changed on disk: read it again with the same safe, strict reader. Ok: the words for what changed (to
-    /// show), now in use. Err: why it wasn't used; the last good settings stay.
+    /// show), now in use. Err: why it wasn't used; the last good settings stay. `[keys]` alone waits for the next start,
+    /// and says so (KEYS_NEXT_START): keys never change under a person's hands.
     pub fn reload(&mut self) -> Result<String, String> {
         let Some(path) = self.path.clone() else {
             return Err("there's no home folder to read tui.toml from".into());
@@ -1379,6 +1441,13 @@ impl Prefs {
                 ))
             }
         };
+        let mut next = next;
+        // Keys never change under the person's hands: a changed [keys] waits for the next start (and is said), so a key
+        // change no one meant is at least seen, never instant.
+        let keys_wait = next.keymap != self.settings.keymap;
+        if keys_wait {
+            next.keymap = self.settings.keymap.clone();
+        }
         let changes = settings_changes(&self.settings, &next);
         self.settings = next;
         let (theme, warnings) = Theme::build(
@@ -1394,10 +1463,15 @@ impl Prefs {
         } else {
             FileState::Missing
         };
-        Ok(if changes.is_empty() {
-            "Your workbench settings changed.".to_string()
+        let said = match (changes.is_empty(), keys_wait) {
+            (true, true) => String::new(),
+            (true, false) => "Your workbench settings changed.".to_string(),
+            (false, _) => format!("Your workbench settings changed: {}", changes.join(", ")),
+        };
+        Ok(if keys_wait {
+            format!("{said} {KEYS_NEXT_START}").trim_start().to_string()
         } else {
-            format!("Your workbench settings changed: {}", changes.join(", "))
+            said
         })
     }
 

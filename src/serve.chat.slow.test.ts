@@ -8,6 +8,7 @@ import { sizingOn } from "../test/sizing-on.js";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, readFileSync } from "node:fs";
 import { saveSlackCredentials } from "./slack-api.js";
+import { mintApiToken } from "./api-tokens.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -476,6 +477,10 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
   let subscriptionRequests: { history: { role: string; text?: string }[] }[];
   let clockNow: Date;
   let admittedRepos: string[];
+  /** Each request body the scripted provider was sent (a tool's result rides the next one). */
+  let sentBodies: string[];
+  /** What the stood-in workbench writer was asked to do. */
+  let viewCalls: { verb: string; input?: string }[];
 
   const url = (path: string) => `${base}${path}`;
   const T0 = new Date("2026-09-02T12:00:00.000Z");
@@ -523,6 +528,8 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     script = [];
     subscriptionAnswers = [];
     subscriptionRequests = [];
+    sentBodies = [];
+    viewCalls = [];
     const added = addApprover(store, "alex", T0);
     if (!added.ok) throw new Error("bootstrap failed");
     approverToken = added.token;
@@ -538,11 +545,17 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
       repo: repoDir,
       admittedRepos: () => admittedRepos,
       chatEnv: { ANTHROPIC_API_KEY: "sk-test-key" },
-      chatFetcher: (async () => {
+      chatFetcher: (async (_url: unknown, init?: { body?: unknown }) => {
+        sentBodies.push(String(init?.body ?? ""));
         const next = script.shift();
         if (next === undefined) throw new Error("the script ran out");
         return next();
       }) as typeof fetch,
+      // The workbench's writer, stood in: whether a lead turn was handed it at all is what the route decides.
+      viewRunner: (verb, input) => {
+        viewCalls.push({ verb, ...(input === undefined ? {} : { input }) });
+        return verb === "read" ? { ok: true, body: { settings: { theme: "dark" }, colors: {}, themes: { built_in: ["dark"], saved: [] } } } : { ok: true, body: { changed: ["theme → light"] } };
+      },
       subscriptionChatRunner: async request => {
         subscriptionRequests.push(request as unknown as { history: { role: string; text?: string }[] });
         const next = subscriptionAnswers.shift();
@@ -569,6 +582,71 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
   /** The enhanced send: the same endpoint and fields, asking for JSON. */
   const sendJson = (cookie: string, fields: Record<string, string>) =>
     fetch(url("/chat"), { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams(fields), redirect: "manual" });
+
+  describe("restyling the workbench (toolroll_view_set) through the real chat route", () => {
+    const VIEW_REFUSAL = "person's own conversation in the console on this computer";
+    const loginAs = async (name: string, token: string): Promise<string> => {
+      const response = await fetch(url("/login"), { method: "POST", body: new URLSearchParams({ name, token }), redirect: "manual" });
+      expect(response.status).toBe(303);
+      return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
+    };
+    const mintAs = async (cookie: string, token: string): Promise<string> => {
+      const csrf = csrfFrom(await page(cookie));
+      const minted = await post(cookie, "/chat/mate/mint", { csrf, "ceiling-usd": "50", token });
+      expect(minted.status).toBe(303);
+      return csrf;
+    };
+    /** The lead asks for the tool, then for a restyle, then answers. */
+    const restyleTurn = () => script.push(
+      () => answer([{ type: "tool_use", id: "f1", name: "find_tools", input: { query: "restyle the workbench theme" } }]),
+      () => answer([{ type: "tool_use", id: "v1", name: "toolroll_view_set", input: { theme: "light" } }]),
+      () => answer([{ type: "text", text: "Done." }]),
+    );
+    const ledgered = () => store.handle.prepare("SELECT actor, outcome FROM action_ledger WHERE action = 'workbench look changed' ORDER BY id").all();
+
+    test("the one person of this install, in a browser on this computer: the writer is handed the change", async () => {
+      const cookie = await login(); const csrf = await mint(cookie);
+      restyleTurn();
+      expect((await sendJson(cookie, { csrf, message: "Make my workbench light" })).status).toBe(202);
+      await settle();
+      expect(viewCalls.filter(one => one.verb === "set")).toEqual([{ verb: "set", input: JSON.stringify({ theme: "light" }) }]);
+      expect(sentBodies.at(-1)).not.toContain(VIEW_REFUSAL);
+      expect(ledgered()).toEqual([{ actor: "alex", outcome: "pending" }, { actor: "alex", outcome: "done" }]);
+    });
+
+    test("another person (a second approver of a team install), in their own browser session: refused, the writer never runs", async () => {
+      const sam = addApprover(store, "sam", T0, { name: "alex", token: approverToken });
+      if (!sam.ok) throw new Error("sam");
+      const cookie = await loginAs("sam", sam.token); const csrf = await mintAs(cookie, sam.token);
+      restyleTurn();
+      expect((await sendJson(cookie, { csrf, message: "Make the workbench light" })).status).toBe(202);
+      await settle();
+      expect(viewCalls).toEqual([]);
+      expect(sentBodies.at(-1)).toContain(VIEW_REFUSAL);
+      expect(ledgered()).toEqual([]);
+      // Nor alex, once the install has two people: the computer's look is no longer one person's.
+      const alex = await login(); const alexCsrf = await mint(alex);
+      restyleTurn();
+      expect((await sendJson(alex, { csrf: alexCsrf, message: "Make my workbench light" })).status).toBe(202);
+      await settle();
+      expect(viewCalls).toEqual([]);
+      expect(sentBodies.at(-1)).toContain(VIEW_REFUSAL);
+    });
+
+    // (A token's MCP tool list, a person's agent's: serve.mcp.test.ts; a task agent's: mcp.test.ts.)
+    test("a token (an API client or a person's agent) can't reach the conversation at all: refused, the writer never runs", async () => {
+      restyleTurn();
+      const minted = mintApiToken();
+      store.createApiToken({ id: minted.id, account: "alex", name: "alex-agent", secretHash: minted.hash, access: "act", expiresAt: new Date(T0.getTime() + 86_400_000).toISOString(), by: "alex" }, T0);
+      for (const authorization of [`Bearer alex:${approverToken}`, `Bearer ${minted.token}`]) {
+        const refused = await fetch(url("/chat"), { method: "POST", headers: { authorization, origin: base, accept: "application/json" },
+          body: new URLSearchParams({ message: "Make my workbench light" }), redirect: "manual" });
+        expect([401, 403]).toContain(refused.status);
+      }
+      expect(script).toHaveLength(3);
+      expect(viewCalls).toEqual([]);
+    });
+  });
 
   test('team cards reuse the review projection, retain CLI summaries, and confirm or dismiss through the existing door', async () => {
     const cookie = await login(), csrf = csrfFrom(await page(cookie));

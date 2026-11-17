@@ -38,13 +38,13 @@ agghhhhhhhhhhhhhhhhggggggggggggggggffffffffggaggnnoooooooooooooooonnnnnnnnnnnnnn
 aggkkkkkkkkkkkkkkkkggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnqqqqqqqqnnnnnnnnnnnnnngga
 aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 agghhhhhhhiiiggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-aggrssssssssssssssssssssssssttttteeeeeeeeeeggaggnnqqqquuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuunnnngga
-aggvvvvvvvvvvvvvvvtttttttttttttttttttttttttggaggnnqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
+aggrjjjjjjjjjjjjjjjjjjjjjjjjrrrrreeeeeeeeeeggaggnnqqqqsssssssssssssssssssssssssssssssssssssssnnnngga
+aggrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrggaggnnqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggmhggggggggggggggggggggggggggggeeeeeeeeeeggaggnnqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggnnqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
 aggggggggggggggggggggggggggggggggggggggggggggaggnnppnnnnnnnnnnnnqqqqqqqqqqqqqqqqqqqqnnnnnnnnnnnnngga
 agghhhhhhiiigggggggggggggggggggggggggggggggggaggnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnngga
-agglhggggggggggggggggggggggggggggwwwwwwwwwwggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
+agglhggggggggggggggggggggggggggggttttttttttggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggkkkkkkkkkkkkkkkgggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
 aggggggggggggggggggggggggggggggggggggggggggggaggggggggggggggggggggggggggggggggggggggggggggggggggggga
@@ -56,7 +56,7 @@ a = fg terminal bg #ededed
 b = fg terminal bg #ededed bold
 c = fg terminal bg #ebebeb bold
 d = fg #666666 bg #ededed
-e = fg #0d74ce bg #ddecf8
+e = fg #0d74ce bg #e2eef9
 f = fg terminal bg terminal bold reversed
 g = fg terminal bg terminal
 h = fg terminal bg terminal bold
@@ -69,9 +69,6 @@ n = fg terminal bg #f7f7f7
 o = fg #666666 bg #f7f7f7 bold
 p = fg #218358 bg #f7f7f7
 q = fg #666666 bg #f7f7f7
-r = fg #0d74ce bg #d4d4d4
-s = fg terminal bg #d4d4d4 bold
-t = fg #171717 bg #d4d4d4
-u = fg terminal bg #f7f7f7 bold
-v = fg #666666 bg #d4d4d4
-w = fg #218358 bg #e0eee8
+r = fg #171717 bg #d4d4d4
+s = fg terminal bg #f7f7f7 bold
+t = fg #218358 bg #e4f0eb

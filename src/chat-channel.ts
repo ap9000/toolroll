@@ -947,6 +947,16 @@ export const CHAT_ACTION_PARITY: Record<
     how: "The door refuses cancel from any card; the card links the exact task's Cancel control when a trusted https console-url is configured, and the cancel is armed there.",
     gap: "Incomplete phone action: no phone path to cancel by design; the button only opens the task.",
   },
+  toolroll_view_read: {
+    support: "missing",
+    how: "Refused on the phone by design: the workbench's look is the person's own conversation in the console on this computer (view-tools.ts); the tool answers in words and nothing is read or written.",
+    gap: "No phone path by design: restyle from the console on this computer, or edit tui.toml.",
+  },
+  toolroll_view_set: {
+    support: "missing",
+    how: "Refused on the phone by design: the workbench's look is the person's own conversation in the console on this computer (view-tools.ts); the tool answers in words and nothing is read or written.",
+    gap: "No phone path by design: restyle from the console on this computer, or edit tui.toml.",
+  },
 };
 
 /** Every tool the model can call, mapped; a new tool must name its phone road. */

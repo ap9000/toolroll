@@ -144,7 +144,8 @@ import { aboutYouOf, checkAboutYouLine } from "./lead-about.js";
 import { steerStandingWords } from "./steer-status.js";
 import { agentQuestion, openAgentQuestions } from "./agent-board.js";
 import { utcMinute } from "./when-html.js";
-import { VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, type ViewRunner } from "./view-tools.js";
+import { RECORD_WHOLE_MAX, recordActionWhole } from "./action-ledger.js";
+import { VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, viewChangeApplied, type ViewAnswer, type ViewRunner } from "./view-tools.js";
 
 const REPO_ID = /^r[0-9]{1,3}$/;
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -561,6 +562,48 @@ function viewRefusal(ctx: LeadToolContext): LeadToolResult | null {
     return { ok: false, message: "Restyling the workbench is for the person's own conversation in the console on this computer: ask there, or they can edit tui.toml themselves." };
   }
   return null;
+}
+
+/** This person's workbench changes, newest last (the last VIEW_HISTORY_SCAN): each pending one with its final word, if any. */
+const VIEW_HISTORY_SCAN = 200;
+type ViewHistoryRow = { id: number; at: string; change: Record<string, unknown> | null; final: "done" | "failed" | null };
+function viewHistory(ctx: LeadToolContext): ViewHistoryRow[] {
+  const rows = ctx.store.handle.prepare("SELECT id, at, outcome, detail FROM action_ledger WHERE actor = ? AND action = ? ORDER BY id DESC LIMIT ?")
+    .all(ctx.who.name, VIEW_LEDGER_ACTION, VIEW_HISTORY_SCAN).reverse();
+  const parsed = (text: unknown): Record<string, unknown> | null => {
+    if (typeof text !== "string") return null;
+    try { const value: unknown = JSON.parse(text); return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null; }
+    catch { return null; }
+  };
+  const pending: ViewHistoryRow[] = [];
+  const byId = new Map<number, ViewHistoryRow>();
+  for (const row of rows) {
+    const detail = parsed(row["detail"]);
+    if (row["outcome"] === "pending") {
+      const change = detail?.["change"];
+      const one: ViewHistoryRow = { id: Number(row["id"]), at: String(row["at"]), change: typeof change === "object" && change !== null ? change as Record<string, unknown> : null, final: null };
+      pending.push(one);
+      byId.set(one.id, one);
+    } else if (row["outcome"] === "done" || row["outcome"] === "failed") {
+      const of = byId.get(Number(detail?.["pending"]));
+      if (of !== undefined && of.final === null) of.final = row["outcome"];
+    }
+  }
+  return pending;
+}
+
+/** Settle the person's changes left pending (a timeout or a crash between reserving and finishing): done when the file
+ * shows the change now, failed when it doesn't. A read that can't be made leaves them pending (still counted). */
+function settleViewChanges(ctx: LeadToolContext, read: ViewAnswer | null): void {
+  const open = viewHistory(ctx).filter(one => one.final === null);
+  if (open.length === 0) return;
+  const now = read ?? ctx.view!("read");
+  if (!now.ok) return;
+  for (const one of open) {
+    const applied = one.change !== null && viewChangeApplied(one.change, now.body);
+    recordActionWhole(ctx.store.handle, { at: ctx.now.toISOString(), actor: ctx.who.name, repo: null, taskId: null, runId: null, action: VIEW_LEDGER_ACTION,
+      outcome: applied ? "done" : "failed", source: "request" }, { pending: one.id, settled: "on a later read, from the file" });
+  }
 }
 
 /** A fixed destination this person may open, checked once for show_control and for a card's Button. */
@@ -2085,12 +2128,13 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (refused !== null) return refused;
       const read = ctx.view!("read");
       if (!read.ok) return { ok: false, message: read.why };
+      settleViewChanges(ctx, read);
       const body = read.body;
       return { ok: true, body: { settings: body["settings"], colors: body["colors"], allowed: body["allowed"], roles: body["roles"], themes: body["themes"], guide: body["guide"] } };
     },
   },
   toolroll_view_set: {
-    description: "Restyle the person's terminal workbench (tui.toml) when they ask: a theme (built-in or saved), a saved theme of your own (save_theme: name, base, role colours; use: true switches to it, so 'make it look like X' is reusable), role colours, density, glyphs, list columns, list side, reduced motion, key bar, costs, notifications. Read toolroll_view_read first. Contrast is enforced: a change that makes text or a status too faint, or two statuses alike, is refused with the reason. Keys are never changed here (the person changes them). The running workbench repaints within a second; the person can undo with `toolroll view reset`.",
+    description: "Restyle the person's terminal workbench (tui.toml) when they ask: a theme (built-in or saved), a saved theme of your own (save_theme: name, base, role colours; use: true switches to it, so 'make it look like X' is reusable), role colours (never a status's), density, glyphs, list columns (add only), list side, reduced motion, key bar, costs, notifications (on only: turning anything off is the person's). Read toolroll_view_read first. Contrast is enforced on every colour pair drawn: a change that makes text too faint is refused with the reason. Keys are never changed here (the person changes them). The running workbench repaints within a second; the person can undo with `toolroll view reset`.",
     handle: (ctx, args) => {
       const refused = viewRefusal(ctx);
       if (refused !== null) return refused;
@@ -2101,16 +2145,26 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (unknown.length > 0) return { ok: false, message: `toolroll_view_set takes ${[...allowed].join(", ")}; not ${unknown.slice(0, 3).map(one => redactForLead(one.slice(0, 32), { repos: [], names: [] })).join(", ")}.` };
       const change = Object.fromEntries(Object.entries(raw).filter(([, value]) => value !== undefined));
       if (Object.keys(change).length === 0) return { ok: false, message: "Nothing to change: name at least one setting." };
-      // At most VIEW_CHANGES_PER_MINUTE changes a minute, counted in the ledger the changes are written to.
-      const since = new Date(ctx.now.getTime() - 60_000).toISOString();
-      const recent = Number(ctx.store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE actor = ? AND action = ? AND at > ?")
-        .get(ctx.who.name, VIEW_LEDGER_ACTION, since)?.["n"] ?? 0);
+      const text = JSON.stringify(change);
+      if (text.length > RECORD_WHOLE_MAX - 64) return { ok: false, message: "That change is too large: change a few settings at a time." };
+      // At most VIEW_CHANGES_PER_MINUTE changes a minute, counted in the ledger the changes are written to: every one
+      // reserved (pending, or done) counts; only one that failed doesn't. One left pending is settled first.
+      settleViewChanges(ctx, null);
+      const since = ctx.now.getTime() - 60_000;
+      const recent = viewHistory(ctx).filter(one => Date.parse(one.at) > since && one.final !== "failed").length;
       if (recent >= VIEW_CHANGES_PER_MINUTE) return { ok: false, message: `That's ${VIEW_CHANGES_PER_MINUTE} workbench changes in a minute; wait a moment before the next.` };
-      const set = ctx.view!("set", JSON.stringify(change));
-      if (!set.ok) return { ok: false, message: set.why };
+      // Reserved before the workbench is touched: whatever happens next, the history holds the whole change.
+      const entry = { at: ctx.now.toISOString(), actor: ctx.who.name, repo: null, taskId: null, runId: null, action: VIEW_LEDGER_ACTION, source: "request" as const };
+      const pending = recordActionWhole(ctx.store.handle, { ...entry, outcome: "pending" }, { change });
+      const set = ctx.view!("set", text);
+      if (!set.ok) {
+        // Unsure (no answer): it stays pending, counted, and is settled from the file on the next read.
+        if (set.unsure === true) return { ok: false, message: `${set.why}; whether it changed is checked from tui.toml on the next read.` };
+        recordActionWhole(ctx.store.handle, { ...entry, outcome: "failed" }, { pending, why: set.why.slice(0, 500) });
+        return { ok: false, message: set.why };
+      }
       const changed = Array.isArray(set.body["changed"]) ? set.body["changed"].filter((one): one is string => typeof one === "string").slice(0, 40) : [];
-      ctx.store.recordAction({ at: ctx.now.toISOString(), actor: ctx.who.name, repo: null, taskId: null, runId: null, action: VIEW_LEDGER_ACTION,
-        outcome: "changed", source: "request", detail: changed.join("; ").slice(0, 300) });
+      recordActionWhole(ctx.store.handle, { ...entry, outcome: "done" }, { pending, changed });
       return { ok: true, body: { changed, said: "Saved to tui.toml; the running workbench shows it within a second. `toolroll view reset` undoes it (the previous file is kept as tui.toml.bak)." } };
     },
   },

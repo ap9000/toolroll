@@ -93,6 +93,17 @@ function client(bearer: string) {
 }
 
 describe("people over /mcp", () => {
+  test("a person's agent (an act token over /mcp) has no way to restyle the workbench: not listed, refused if called", async () => {
+    people();
+    const agent = client(token("alex", "act", "alex-agent").token);
+    const names = await agent.tools();
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.filter(name => name.startsWith("toolroll_view"))).toEqual([]);
+    const called = await agent.rpc("tools/call", { name: "toolroll_view_set", arguments: { theme: "light" } });
+    const result = called.body?.["result"] as { isError?: boolean } | undefined;
+    expect(called.body?.["error"] !== undefined || result?.isError === true).toBe(true);
+  });
+
   test("each person's own session: their tools, their principal, source mcp and their token", async () => {
     people();
     const alexToken = token("alex", "act", "alex-laptop");

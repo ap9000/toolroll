@@ -683,6 +683,36 @@ fn nothing_notifies_when_switched_off_and_nothing_at_start() {
     assert!(notes(&fresh.update(Msg::Work(Ok(parse(asks))))).is_empty());
 }
 
+/// While a kind is off its changes aren't marked seen: turned back on, whatever still waits says so (once).
+#[test]
+fn a_kind_turned_back_on_says_what_still_waits() {
+    let off = Settings {
+        notify: settings::Notify {
+            asks: false,
+            finished: false,
+            failed: false,
+        },
+        ..Settings::default()
+    };
+    let mut app = live_app(prefs(off, Depth::TrueColor, None));
+    let mut asks = fake::scenario_work();
+    live_asks(&mut asks);
+    asks["rows"][3]["status"]["tone"] = "problem".into();
+    assert!(notes(&app.update(Msg::Work(Ok(parse(asks.clone()))))).is_empty());
+    assert!(notes(&app.update(Msg::Work(Ok(parse(asks.clone()))))).is_empty());
+    // Back on (as a reload of tui.toml does): the ask and the failure still there are said.
+    app.prefs.settings.notify = Settings::default().notify;
+    app.now += notify::GATHER_SECS;
+    let mut said = notes(&app.update(Msg::Work(Ok(parse(asks.clone())))));
+    app.now += notify::GATHER_SECS;
+    said.extend(notes(&app.update(Msg::Tick)));
+    assert_eq!(said, vec!["Toolroll: 1 needs you, 1 failed"], "{said:?}");
+    // And only once.
+    app.now += notify::GATHER_SECS;
+    assert!(notes(&app.update(Msg::Work(Ok(parse(asks))))).is_empty());
+    assert!(notes(&app.update(Msg::Tick)).is_empty());
+}
+
 #[test]
 fn an_agent_authored_title_is_cleaned_and_only_our_bytes_go_out() {
     let mut app = live_app(Prefs::default());

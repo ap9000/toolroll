@@ -107,12 +107,43 @@ fn keys_contrast_and_unknown_settings_are_refused_and_nothing_is_written() {
     assert!(keys.contains("Keys can't be changed here"), "{keys}");
     let faint = view_cli::set(&env, r##"{"colors":{"ink":"#202020"}}"##).unwrap_err();
     assert!(faint.contains("too faint"), "{faint}");
-    let alike = view_cli::set(
+    // Statuses are never the agent's to colour (a swap would make failed read as running).
+    let swap = view_cli::set(
         &env,
-        r##"{"colors":{"running":"#d9534f","failed":"#d9534f"}}"##,
+        r##"{"colors":{"running":"#e5484d","failed":"#0090ff"}}"##,
     )
     .unwrap_err();
-    assert!(alike.contains("look alike"), "{alike}");
+    assert!(swap.contains("is a status colour"), "{swap}");
+    for role in [
+        "needs-you",
+        "running",
+        "passed",
+        "failed",
+        "running-soft",
+        "passed-soft",
+        "failed-soft",
+    ] {
+        let change = format!(r##"{{"colors":{{"{role}":"#808080"}}}}"##);
+        assert!(
+            view_cli::set(&env, &change)
+                .unwrap_err()
+                .contains("status colour"),
+            "{role}"
+        );
+        let saved = format!(
+            r##"{{"save_theme":{{"name":"x","base":"dark","colors":{{"{role}":"#808080"}}}}}}"##
+        );
+        assert!(
+            view_cli::set(&env, &saved)
+                .unwrap_err()
+                .contains("status colour"),
+            "{role}"
+        );
+    }
+    // The selection the same as the ink drawn on it: the selected row's title would vanish.
+    let selection = view_cli::set(&env, r##"{"colors":{"selection":"#ededed"}}"##).unwrap_err();
+    assert!(selection.contains("too faint"), "{selection}");
+
     let theme = view_cli::set(
         &env,
         r##"{"save_theme":{"name":"murk","base":"dark","colors":{"ink":"#111111"},"use":true}}"##,
@@ -131,6 +162,82 @@ fn keys_contrast_and_unknown_settings_are_refused_and_nothing_is_written() {
     }
     assert_eq!(std::fs::read_to_string(file(&h)).unwrap(), before);
     let _ = std::fs::remove_dir_all(&h);
+}
+
+/// What alerts or shows the person is theirs to turn off: the agent may only turn it on.
+#[test]
+fn turning_off_what_alerts_or_shows_the_person_is_refused() {
+    let h = home("off");
+    write_file(&h, "theme = \"dark\"\n[notifications]\nasks = false\n");
+    let env = env_of(&h);
+    let before = std::fs::read_to_string(file(&h)).unwrap();
+    for off in [
+        r#"{"notifications":{"asks":false,"failed":false},"key_bar":false}"#,
+        r#"{"notifications":{"failed":false}}"#,
+        r#"{"notifications":{"finished":false}}"#,
+        r#"{"key_bar":false}"#,
+        r#"{"show_costs":false}"#,
+        r#"{"columns":["agent"]}"#,
+        r#"{"theme":"light","key_bar":false}"#,
+    ] {
+        let why = view_cli::set(&env, off).unwrap_err();
+        assert_eq!(
+            why.split(" (").next().unwrap().trim_end_matches('.'),
+            view_cli::OFF_IS_YOURS.trim_end_matches('.'),
+            "{off}: {why}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(file(&h)).unwrap(), before);
+    // On is fine: asks back on, the key bar, costs, reduced motion either way, and a column added.
+    view_cli::set(&env, r#"{"notifications":{"asks":true},"key_bar":true,"show_costs":true,"reduced_motion":false}"#).unwrap();
+    let (s, w) = settings::parse(&std::fs::read_to_string(file(&h)).unwrap());
+    assert!(w.is_empty(), "{w:?}");
+    assert!(s.notify.asks && s.key_bar);
+    let mut all: Vec<&str> = s.columns.iter().map(|c| c.key()).collect();
+    all.push("project");
+    all.dedup();
+    let change = serde_json::json!({ "columns": all }).to_string();
+    view_cli::set(&env, &change).unwrap();
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+/// At 16 colours a theme's own colours aren't drawn at all (the terminal's palette is), so statuses keep the
+/// terminal's blue, green and red whatever the colours say; at 256 the colours are checked as the terminal rounds them.
+#[test]
+fn sixteen_and_256_colour_terminals_keep_status_meaning() {
+    use ratatui::style::Color;
+    use toolroll_tui::theme::{Depth, Rgb, Theme};
+    let mine = [
+        (Role::Paper, Rgb(0x1b, 0x1a, 0x17)),
+        (Role::Selection, Rgb(0x30, 0x30, 0x30)),
+    ];
+    let (t, refused) = Theme::build(ThemeName::Dark, Depth::Ansi16, None, &mine);
+    assert!(refused[0].contains("weren't used"), "{refused:?}");
+    assert_eq!(t.running().fg, Some(Color::Blue));
+    assert_eq!(t.passed().fg, Some(Color::Green));
+    assert_eq!(t.failed().fg, Some(Color::Red));
+    assert_eq!(t.badge(Role::Failed).bg, None);
+    // A muted colour that reads in true colour (3.0 at least) but rounds to a 256-colour grey too close to the paper.
+    let (dark, _) = Theme::build(ThemeName::Dark, Depth::TrueColor, None, &[]);
+    let paper = match dark.palette.get(Role::Paper) {
+        toolroll_tui::theme::Paint::Rgb(c) => c,
+        _ => unreachable!(),
+    };
+    let faint = (0..52u8)
+        .flat_map(|r| (0..52u8).flat_map(move |g| (0..52u8).map(move |b| Rgb(r * 5, g * 5, b * 5))))
+        .find(|g| g.contrast(paper) >= 3.0 && g.quantized256().contrast(paper.quantized256()) < 3.0)
+        .expect("a colour that only fails once quantized");
+    let (_, refused) = Theme::build(
+        ThemeName::Dark,
+        Depth::Ansi256,
+        None,
+        &[(Role::Muted, faint)],
+    );
+    assert!(
+        refused.iter().any(|r| r.contains("256-colour")),
+        "{} {refused:?}",
+        faint.hex()
+    );
 }
 
 #[test]
@@ -223,5 +330,77 @@ fn a_running_workbench_reads_the_file_again_and_says_what_changed() {
     );
     assert_eq!(app.prefs.settings.theme_label.as_deref(), Some("sumi"));
     let _ = Prefs::default();
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+/// Every read of tui.toml checks every folder above it, as the writer does: an XDG folder under a folder others can
+/// change is refused at start, and on a reload while running (the last good settings stay).
+#[test]
+fn a_file_under_a_folder_others_can_change_is_refused_at_start_and_on_reload() {
+    let h = home("xdg");
+    let shared = h.join("shared");
+    let xdg = shared.join("cfg");
+    std::fs::create_dir_all(xdg.join("toolroll")).unwrap();
+    for d in [&shared, &xdg, &xdg.join("toolroll")] {
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let path = xdg.join("toolroll/tui.toml");
+    std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let env = Env {
+        xdg_config_home: Some(xdg.clone()),
+        ..env_of(&h)
+    };
+    // Safe: read, at start.
+    let mut prefs = settings::start(&env);
+    assert_eq!(prefs.settings.theme, ThemeName::Dark);
+    // The folder two above made group-writable: someone else could plant a file there.
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let (s, _, state, warnings) = settings::load(&env);
+    assert_eq!(s.theme, ThemeName::Terminal);
+    assert!(
+        matches!(state, settings::FileState::Ignored(_)),
+        "{state:?}"
+    );
+    assert!(
+        warnings[0].contains("can be changed by other people"),
+        "{warnings:?}"
+    );
+    // And while running: a planted change isn't used.
+    std::fs::write(&path, "theme = \"light\"\n").unwrap();
+    let why = prefs.reload().unwrap_err();
+    assert!(
+        why.contains("wasn't used") && why.contains("other people"),
+        "{why}"
+    );
+    assert_eq!(prefs.settings.theme, ThemeName::Dark);
+    // A folder above it that can't be looked at is refused too, never taken for "no file".
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (_, _, state, _) = settings::load(&env);
+    assert!(
+        matches!(state, settings::FileState::Ignored(_)),
+        "{state:?}"
+    );
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+/// A reload that changes [keys] keeps the running keys and says they take effect next start; the rest is used now.
+#[test]
+fn a_reload_never_changes_keys_while_running() {
+    let h = home("keys");
+    write_file(&h, "theme = \"dark\"\n");
+    let env = env_of(&h);
+    let mut prefs = settings::start(&env);
+    let keys = prefs.settings.keymap.clone();
+    write_file(&h, "theme = \"light\"\n[keys]\npreset = \"emacs\"\n");
+    let said = prefs.reload().unwrap();
+    assert!(said.ends_with(settings::KEYS_NEXT_START), "{said}");
+    assert!(said.contains("theme"), "{said}");
+    assert_eq!(prefs.settings.keymap, keys);
+    assert_eq!(prefs.settings.theme, ThemeName::Light);
+    // The next start uses them.
+    let next = settings::start(&env);
+    assert_ne!(next.settings.keymap, keys);
     let _ = std::fs::remove_dir_all(&h);
 }

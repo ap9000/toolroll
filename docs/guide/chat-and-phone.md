@@ -95,14 +95,21 @@ it within a second.
 
 - A look it makes up is saved as a theme of its own (a `[themes.<name>]`
   table: a built-in base and role colours), so you can switch back to it.
-- Contrast is kept: a change that makes text or a status too faint, or two
-  statuses look alike, is refused with the reason.
+- Contrast is kept for every colour pair the screen draws, as your terminal
+  shows it (at 256 colours too): a change that makes any text too faint is
+  refused with the reason. Status colours (needs you, running, passed,
+  failed and their badges) come from the themes only; an agent can't set them.
+- It can turn things on, never off: notifications, the key bar, costs and list
+  columns stay as you set them. Turning one off is yours to do, in Settings or
+  tui.toml.
 - Keys are never changed this way: an agent can't remap accept or cancel.
   Change keys yourself in tui.toml's `[keys]` or the workbench's Settings
-  screen.
+  screen. A running workbench keeps its keys when tui.toml changes; new keys
+  take effect the next time it starts.
 - Only your own conversation in the console, from this computer, can do it:
   never a team chat, Telegram, a token, another person, or a task's agents.
-  Each change is in the action history, at most 10 a minute.
+  Each change is in the action history (written before the file is touched,
+  then marked done or failed), at most 10 a minute.
 
 Undo from the terminal:
 

@@ -109,7 +109,7 @@
     "propose_answer": [{ "decision": 1, "option": "a", "rationale": "The reversible one first." }],
     "propose_cancel": [{ "task": "t-42", "reason": "Superseded by t-43." }],
     "toolroll_view_read": [{}],
-    "toolroll_view_set": [{ "theme": "dark" }, { "save_theme": { "name": "sumi", "base": "dark", "colors": { "paper": "#1b1a17", "ink": "#ece6d8" }, "use": true } }, { "colors": { "needs-you": "#f5a524" }, "density": "comfortable", "columns": ["step", "age"], "list_side": "right", "reduced_motion": true, "notifications": { "finished": true } }]
+    "toolroll_view_set": [{ "theme": "dark" }, { "save_theme": { "name": "sumi", "base": "dark", "colors": { "paper": "#1b1a17", "ink": "#ece6d8" }, "use": true } }, { "colors": { "muted": "#a39d8f" }, "density": "comfortable", "columns": ["step", "age"], "list_side": "right", "reduced_motion": true, "notifications": { "finished": true } }]
   },
   "gateway": {
     "get_project_context": [{ "repo": "/repo/demo", "query": "footer" }, { "repo": "/repo/demo", "query": "src/serve.ts", "mode": "impact" }],

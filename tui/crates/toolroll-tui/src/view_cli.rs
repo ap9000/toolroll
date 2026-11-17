@@ -15,11 +15,13 @@ use serde_json::{json, Map, Value};
 /// What `read` says about styling, for an agent that will change it.
 pub const GUIDE: &str = "Change the look with toolroll_view_set: a built-in theme (terminal, light, dark, high-contrast), \
 a saved theme (save_theme: a name, a built-in base and role colours; use: true switches to it), or role colours \
-(colors). Every colour must keep its contrast: text 4.5:1 on the background and on raised blocks, marks 3:1, and \
-needs you, running, passed and failed must not look alike — a change that breaks one is refused with the reason. At \
-16 colours (or with NO_COLOR) role colours aren't used and the base theme's terminal colours show, so pick a base \
-that suits the person's terminal. Keys can't be changed here: they stay with the person (tui.toml's [keys], or the \
-Settings screen), so an accept or a cancel never becomes a one-key accident.";
+(colors). Every pair of colours the screen draws must keep its contrast, as a 256-colour terminal shows it too: text \
+4.5:1, marks 3:1 — a change that breaks one is refused with the reason. Status colours (needs-you, running, passed, \
+failed and their -soft badges) come from the themes only and can't be set here. At 16 colours (or with NO_COLOR) role \
+colours aren't used and the base theme's terminal colours show, so pick a base that suits the person's terminal. \
+Notifications, the key bar, costs and columns can be turned on or added, never off or removed: that is the person's \
+to do. Keys can't be changed here: they stay with the person (tui.toml's [keys], or the Settings screen), so an \
+accept or a cancel never becomes a one-key accident.";
 
 /// The longest change accepted, and the most role colours in one.
 const MAX_INPUT: usize = 16 * 1024;
@@ -69,15 +71,15 @@ pub fn read(env: &Env) -> Value {
         "allowed": {
             "theme": "terminal | light | dark | high-contrast | a saved theme's name",
             "save_theme": { "name": format!("lowercase letters, digits and dashes, at most {}", settings::THEME_NAME_MAX), "base": "terminal | light | dark | high-contrast", "colors": "role → #rrggbb", "use": "true to switch to it" },
-            "colors": "role → #rrggbb (laid over the theme)",
+            "colors": "role → #rrggbb (laid over the theme; never a status role)",
             "density": ["compact", "comfortable"],
             "glyphs": ["unicode", "ascii", "nerd"],
-            "columns": settings::Column::ALL.iter().map(|c| c.key()).collect::<Vec<_>>(),
+            "columns": { "of": settings::Column::ALL.iter().map(|c| c.key()).collect::<Vec<_>>(), "rule": "add only: every column shown now stays" },
             "list_side": ["left", "right"],
             "reduced_motion": "true | false",
-            "key_bar": "true | false",
-            "show_costs": "true | false",
-            "notifications": { "asks": "true | false", "finished": "true | false", "failed": "true | false" },
+            "key_bar": "true (turning it off is the person's)",
+            "show_costs": "true (turning it off is the person's)",
+            "notifications": { "asks": "true", "finished": "true", "failed": "true", "off": "the person's to do" },
             "keys": "never here: the person changes keys"
         },
         "roles": Role::ALL.iter().map(|r| json!({ "role": r.key(), "colours": r.words() })).collect::<Vec<_>>(),
@@ -131,7 +133,7 @@ fn a_choice<'a>(v: &'a Value, what: &str, allowed: &[&str]) -> Result<&'a str, S
     }
 }
 
-/// Role colours from a JSON object: known roles, `#rrggbb` only.
+/// Role colours from a JSON object: known roles, `#rrggbb` only, and never a status's.
 fn role_colors(v: &Value, what: &str) -> Result<Vec<(Role, Rgb)>, String> {
     let Some(map) = v.as_object() else {
         return Err(format!("{what} is a table of role → \"#rrggbb\""));
@@ -152,6 +154,13 @@ fn role_colors(v: &Value, what: &str) -> Result<Vec<(Role, Rgb)>, String> {
                     .join(", ")
             ));
         };
+        // A status's colour is its meaning: it comes from the themes, never from here.
+        if STATUS_ROLES.contains(&r) {
+            return Err(format!(
+                "{} is a status colour: statuses keep their theme's colours (needs you, running, passed and failed, and their badges), so they always mean what they say",
+                r.key()
+            ));
+        }
         let hex = c.as_str().unwrap_or("");
         let ok = hex.len() == 7
             && hex.starts_with('#')
@@ -164,9 +173,32 @@ fn role_colors(v: &Value, what: &str) -> Result<Vec<(Role, Rgb)>, String> {
     Ok(out)
 }
 
+/// The roles whose colour is a status's meaning (and its badge's wash): set by themes only.
+pub const STATUS_ROLES: [Role; 7] = [
+    Role::NeedsYou,
+    Role::Running,
+    Role::Passed,
+    Role::Failed,
+    Role::RunningSoft,
+    Role::PassedSoft,
+    Role::FailedSoft,
+];
+
+/// Said when a change would turn off something that alerts or shows the person.
+pub const OFF_IS_YOURS: &str = "Turning that off is yours to do: Settings, or tui.toml.";
+
 /// Whether these colours over this base keep every contrast floor; the reason when they don't.
 fn keeps_contrast(base: ThemeName, colors: &[(Role, Rgb)]) -> Result<(), String> {
-    let (_, refused) = Theme::build(base, Depth::TrueColor, None, colors);
+    // The terminal theme sits on whatever the terminal's background is: checked on a dark one and a light one.
+    let backgrounds: &[Option<Rgb>] = if base == ThemeName::Terminal {
+        &[None, Some(Rgb(255, 255, 255)), Some(Rgb(0, 0, 0))]
+    } else {
+        &[None]
+    };
+    let refused: Vec<String> = backgrounds
+        .iter()
+        .flat_map(|b| Theme::build(base, Depth::TrueColor, *b, colors).1)
+        .collect();
     match refused.first() {
         None => Ok(()),
         Some(why) => Err(why
@@ -268,11 +300,19 @@ fn edits_of(change: &Map<String, Value>, now: &Settings) -> Result<Vec<Edit>, St
                         keys.push(k);
                     }
                 }
+                // Columns may be added, never taken away: a column the person sees stays (yours to change).
+                if let Some(gone) = now.columns.iter().find(|c| !keys.contains(&c.key())) {
+                    return Err(format!("{} (the {} column).", OFF_IS_YOURS.trim_end_matches('.'), gone.key()));
+                }
                 let value = format!("[{}]", keys.iter().map(|k| quoted(k)).collect::<Vec<_>>().join(", "));
                 edits.push(Edit { section: String::new(), key: "columns".into(), value: value.clone(), words: format!("columns → {value}") });
             }
             "reduced_motion" | "key_bar" | "show_costs" => {
                 let b = a_bool(v, key)?;
+                // The key bar and costs show the person something: on only, never off.
+                if !b && key != "reduced_motion" {
+                    return Err(OFF_IS_YOURS.into());
+                }
                 let toml_key = key.replace('_', "-");
                 edits.push(Edit { section: String::new(), key: toml_key.clone(), value: b.to_string(), words: format!("{toml_key} → {b}") });
             }
@@ -285,6 +325,10 @@ fn edits_of(change: &Map<String, Value>, now: &Settings) -> Result<Vec<Edit>, St
                         return Err("notifications holds asks, finished and failed".into());
                     }
                     let b = a_bool(b, k)?;
+                    // What alerts the person: on only, never off.
+                    if !b {
+                        return Err(OFF_IS_YOURS.into());
+                    }
                     edits.push(Edit { section: "notifications".into(), key: k.clone(), value: b.to_string(), words: format!("notifications.{k} → {b}") });
                 }
             }

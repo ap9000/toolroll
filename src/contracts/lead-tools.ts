@@ -56,14 +56,13 @@ export const CODE_MAP_VIEWS = ["overview", "area", "file", "search"] as const;
 /** A saved theme's name, as the workbench accepts it (view-tools.ts THEME_NAME). */
 const VIEW_THEME_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 /** The workbench's theme roles (tui/crates/toolroll-tui/src/theme.rs Role), each to a #rrggbb colour. */
-export const VIEW_ROLES = ["paper", "ink", "muted", "line", "selection", "selection-ink", "needs-you", "running", "passed", "failed",
-  "ground", "raised", "fill", "running-soft", "passed-soft", "failed-soft"] as const;
+/** The roles an agent may colour: never a status's (needs-you, running, passed, failed and their -soft badges), whose
+ * colours come from the themes only (view_cli.rs STATUS_ROLES refuses them too). */
+export const VIEW_ROLES = ["paper", "ink", "muted", "line", "selection", "selection-ink", "ground", "raised", "fill"] as const;
 const viewHex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const viewColors = z.strictObject({
   paper: viewHex.optional(), ink: viewHex.optional(), muted: viewHex.optional(), line: viewHex.optional(), selection: viewHex.optional(),
-  "selection-ink": viewHex.optional(), "needs-you": viewHex.optional(), running: viewHex.optional(), passed: viewHex.optional(),
-  failed: viewHex.optional(), ground: viewHex.optional(), raised: viewHex.optional(), fill: viewHex.optional(),
-  "running-soft": viewHex.optional(), "passed-soft": viewHex.optional(), "failed-soft": viewHex.optional(),
+  "selection-ink": viewHex.optional(), ground: viewHex.optional(), raised: viewHex.optional(), fill: viewHex.optional(),
 } satisfies Record<(typeof VIEW_ROLES)[number], z.ZodType>);
 /** Task states a list filters by. */
 export const LISTED_TASK_STATES = ["queued", "running", "done", "failed", "cancelled"] as const;

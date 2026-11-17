@@ -10,10 +10,12 @@ import { openStore, type Store } from "./store.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { executeLeadTool, LEAD_TOOLS, findLeadTools, type LeadToolContext } from "./lead-tools.js";
 import { GATEWAY_TOOL_INPUTS } from "./contracts/gateway-tools.js";
-import { runViewCommand, viewAllowedFor, viewAnswerOf, VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, type ViewAnswer, type ViewRunner, type ViewVerb } from "./view-tools.js";
+import { detailShown } from "./action-ledger.js";
+import { binaryViewRunner, runViewCommand, viewAllowedFor, viewAnswerOf, VIEW_CHANGES_PER_MINUTE, VIEW_LEDGER_ACTION, type ViewAnswer, type ViewRunner, type ViewVerb } from "./view-tools.js";
 
 const T0 = new Date("2026-11-16T12:00:00.000Z");
 const BIN = new URL("../tui/target/debug/toolroll-tui", import.meta.url).pathname;
+const RELEASE = new URL("../tui/target/release/toolroll-tui", import.meta.url).pathname;
 
 describe("the lead restyles the person's own workbench", () => {
   let store: Store, who: VerifiedApprover;
@@ -24,6 +26,9 @@ describe("the lead restyles the person's own workbench", () => {
     return { ok: true, body: { changed: ["theme: dark → sumi"] } };
   };
   const ctx = (extra: Partial<LeadToolContext> = {}, now = T0): LeadToolContext => ({ store, who, now, step: 1, readDecisions: new Map(), draft: () => null, ...extra });
+  /** This person's workbench history, oldest first, each detail parsed. */
+  const history = () => store.handle.prepare("SELECT id, actor, action, outcome, source, detail FROM action_ledger WHERE action = ? ORDER BY id").all(VIEW_LEDGER_ACTION)
+    .map(row => ({ id: Number(row["id"]), actor: row["actor"], action: row["action"], outcome: row["outcome"], source: row["source"], detail: JSON.parse(String(row["detail"])) as Record<string, unknown> }));
 
   beforeEach(() => {
     store = openStore(":memory:");
@@ -51,8 +56,11 @@ describe("the lead restyles the person's own workbench", () => {
     expect(set.ok).toBe(true);
     expect(calls.map(one => one.verb)).toEqual(["read", "set"]);
     expect(JSON.parse(calls[1]!.input!)).toEqual({ save_theme: { name: "sumi", base: "dark", colors: { ink: "#ece6d8" }, use: true } });
-    const rows = store.handle.prepare("SELECT actor, action, outcome, source, detail FROM action_ledger WHERE action = ?").all(VIEW_LEDGER_ACTION);
-    expect(rows).toEqual([{ actor: "alex", action: VIEW_LEDGER_ACTION, outcome: "changed", source: "request", detail: "theme: dark → sumi" }]);
+    const rows = history();
+    expect(rows.map(one => [one.actor, one.action, one.outcome, one.source])).toEqual([["alex", VIEW_LEDGER_ACTION, "pending", "request"], ["alex", VIEW_LEDGER_ACTION, "done", "request"]]);
+    // Reserved first with the whole change, then finished naming it.
+    expect(rows[0]!.detail).toEqual({ change: { save_theme: { name: "sumi", base: "dark", colors: { ink: "#ece6d8" }, use: true } } });
+    expect(rows[1]!.detail).toEqual({ pending: rows[0]!.id, changed: ["theme: dark → sumi"] });
   });
 
   test("keys are refused, as are unknown settings and bad values, before anything runs", () => {
@@ -73,11 +81,58 @@ describe("the lead restyles the person's own workbench", () => {
     expect(executeLeadTool(ctx({ view: fake }, new Date(T0.getTime() + 61_000)), "toolroll_view_set", { density: "compact" }).ok).toBe(true);
   });
 
-  test("a refusal from the workbench (contrast) is said in its words, and nothing is ledgered", () => {
+  test("a refusal from the workbench (contrast) is said in its words; the history holds it as failed, and it doesn't count", () => {
     const contrast: ViewRunner = verb => verb === "set" ? { ok: false, why: "The colour for text (#202020) can't be used: it would be too faint on the background." } : fake(verb);
     const result = executeLeadTool(ctx({ view: contrast }), "toolroll_view_set", { colors: { ink: "#202020" } });
     expect(result.ok ? "" : result.message).toMatch(/too faint/);
-    expect(store.handle.prepare("SELECT count(*) AS n FROM action_ledger WHERE action = ?").get(VIEW_LEDGER_ACTION)?.["n"]).toBe(0);
+    const rows = history();
+    expect(rows.map(one => one.outcome)).toEqual(["pending", "failed"]);
+    expect(rows[1]!.detail).toMatchObject({ pending: rows[0]!.id, why: expect.stringMatching(/too faint/) });
+    for (let i = 0; i < VIEW_CHANGES_PER_MINUTE; i++) expect(executeLeadTool(ctx({ view: fake }, new Date(T0.getTime() + 1000 + i)), "toolroll_view_set", { density: "compact" }).ok).toBe(true);
+  });
+
+  test("the whole change is kept (no 300-character cut), stored as JSON; a page shows its start", () => {
+    const colors = Object.fromEntries(["paper", "ink", "muted", "line", "selection", "selection-ink", "ground", "raised", "fill"].map((role, i) => [role, `#${String(i).repeat(6)}`]));
+    const change = { save_theme: { name: "a-rather-long-theme-name-kept", base: "dark", colors, use: true }, density: "comfortable", glyphs: "ascii", columns: ["agent", "step", "age", "cost", "project"] };
+    expect(JSON.stringify(change).length).toBeGreaterThan(300);
+    expect(executeLeadTool(ctx({ view: fake }), "toolroll_view_set", change).ok).toBe(true);
+    const [pending] = history();
+    expect(pending!.detail).toEqual({ change });
+    const raw = String(store.handle.prepare("SELECT detail FROM action_ledger WHERE id = ?").get(pending!.id)?.["detail"]);
+    expect(detailShown(raw).length).toBe(300);
+    expect(detailShown(raw).endsWith("…")).toBe(true);
+  });
+
+  test("no answer (a timeout or a crash): the change stays pending, counts toward the limit, and is settled from the file on the next read", () => {
+    let file: Record<string, unknown> = { theme: "dark", density: "comfortable" };
+    const flaky: ViewRunner = (verb, input) => {
+      calls.push({ verb, ...(input === undefined ? {} : { input }) });
+      if (verb === "set") return { ok: false, why: "the terminal workbench didn't answer", unsure: true };
+      return { ok: true, body: { settings: file, colors: {}, themes: { built_in: [], saved: [] } } };
+    };
+    const lost = executeLeadTool(ctx({ view: flaky }), "toolroll_view_set", { density: "compact" });
+    expect(lost.ok ? "" : lost.message).toMatch(/checked from tui.toml on the next read/);
+    expect(history().map(one => one.outcome)).toEqual(["pending"]);
+    // Its write did land after all: the next read finds it in the file, so it's settled as done.
+    file = { ...file, density: "compact" };
+    expect(executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 1_000)), "toolroll_view_read", {}).ok).toBe(true);
+    let rows = history();
+    expect(rows.map(one => one.outcome)).toEqual(["pending", "done"]);
+    expect(rows[1]!.detail).toMatchObject({ pending: rows[0]!.id });
+    // One whose write didn't land: failed on the next read.
+    executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 2_000)), "toolroll_view_set", { glyphs: "ascii" });
+    executeLeadTool(ctx({ view: flaky }, new Date(T0.getTime() + 3_000)), "toolroll_view_read", {});
+    rows = history();
+    expect(rows.map(one => one.outcome)).toEqual(["pending", "done", "pending", "failed"]);
+    expect(rows[3]!.detail).toMatchObject({ pending: rows[2]!.id });
+  });
+
+  test("pending changes count toward the limit as done ones do (while the workbench can't be read to settle them)", () => {
+    const silent: ViewRunner = () => ({ ok: false, why: "the terminal workbench didn't answer", unsure: true });
+    for (let i = 0; i < VIEW_CHANGES_PER_MINUTE; i++) executeLeadTool(ctx({ view: silent }, new Date(T0.getTime() + i * 1000)), "toolroll_view_set", { density: "compact" });
+    expect(history().filter(one => one.outcome === "pending")).toHaveLength(VIEW_CHANGES_PER_MINUTE);
+    const over = executeLeadTool(ctx({ view: silent }, new Date(T0.getTime() + 20_000)), "toolroll_view_set", { density: "compact" });
+    expect(over.ok ? "" : over.message).toMatch(/in a minute/);
   });
 
   test("the lead finds them by what the person asks; a task's agents and tokens never see them", () => {
@@ -116,7 +171,7 @@ describe("the lead restyles the person's own workbench", () => {
   });
 
   // With the workbench binary built (cargo build): the same road production takes, against a home of its own.
-  test.skipIf(!existsSync(BIN))("a stand-in lead turn reads then sets through the real writer: tui.toml changes, keys and faint colours don't", () => {
+  test.skipIf(!existsSync(BIN))("the binary directly: a stand-in lead turn reads then sets through the real writer; tui.toml changes, keys and faint colours don't", () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), "tr-view-")));
     try {
       chmodSync(home, 0o700);
@@ -150,6 +205,27 @@ describe("the lead restyles the person's own workbench", () => {
       expect(readFileSync(`${file}.bak`, "utf8")).toBe(text);
       mkdirSync(join(home, "x"));
       writeFileSync(join(home, "x", "y"), "");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // Production's own road: binaryViewRunner picks the binary as `toolroll` does (tui-launch's chooseTuiBinary: this
+  // checkout's release build, its self-check and contract, its identity rechecked before it runs), with only HOME given.
+  test.skipIf(!existsSync(RELEASE))("through the production chooser: binaryViewRunner finds this checkout's release build, checks it, and writes tui.toml", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "tr-view-prod-")));
+    try {
+      chmodSync(home, 0o700);
+      const runner = binaryViewRunner({ HOME: home, PATH: "/usr/bin:/bin" });
+      const read = runner("read");
+      expect(read.ok, read.ok ? "" : read.why).toBe(true);
+      const set = executeLeadTool(ctx({ view: runner }), "toolroll_view_set", { theme: "light", key_bar: true });
+      expect(set.ok, set.ok ? "" : set.message).toBe(true);
+      const file = join(home, ".config", "toolroll", "tui.toml");
+      expect(readFileSync(file, "utf8")).toContain('theme = "light"');
+      const off = executeLeadTool(ctx({ view: runner }), "toolroll_view_set", { notifications: { asks: false } });
+      expect(off.ok ? "" : off.message).toMatch(/Turning that off is yours to do: Settings, or tui\.toml/);
+      expect(history().map(one => one.outcome)).toEqual(["pending", "done", "pending", "failed"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
