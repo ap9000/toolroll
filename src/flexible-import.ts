@@ -41,14 +41,14 @@ import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { FLEXIBLE_UNAVAILABLE } from "./flexible.js";
-import { flexibleThread, flexibleThreadBranch, flexibleThreadPaths, withFlexibleThreadLock, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
+import { flexibleProjectKnown, flexibleThread, flexibleThreadBranch, flexibleThreadPaths, withFlexibleThreadLock, type FlexibleThreadPaths, type FlexibleThreadRow } from "./flexible-thread.js";
 import { readProjectRefs, refsChangedOutside, refSnapshotOf, saveRefSnapshot } from "./flexible-refs.js";
 import { PROTECTED_FILES, protectedChanges, protectedLinks } from "./agent-fence.js";
 import { scanPatchForSecrets } from "./evidence.js";
 import { PROOF_LIMITS } from "./proof.js";
 import { run, type ExecResult } from "./exec.js";
 import { hardenedGit, recordedCommonDir } from "./teardown-git.js";
-import { projectRowKnown, type Store } from "./store.js";
+import type { Store } from "./store.js";
 import type { Runner } from "./worktree.js";
 
 // ---- refusals ---------------------------------------------------------------------------------------------------------
@@ -282,7 +282,7 @@ function sourceOf(store: Store, id: string, limits: FlexibleImportLimits, deadli
   const thread = flexibleThread(store, id);
   if (thread === null) return pre("thread-unknown");
   if (thread.state !== "ready") return pre("thread-not-ready");
-  if (!projectRowKnown(store, thread.repo)) return pre("not-a-project");
+  if (!flexibleProjectKnown(store, thread.repo)) return pre("not-a-project");
   const state = stateFolderOf(store);
   if (state === null) return pre("repository-unusable", "no state folder");
   let project: string, objects: string;
