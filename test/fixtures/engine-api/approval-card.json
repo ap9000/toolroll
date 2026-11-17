@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "task": "result-1-v2",
+  "digest": "860ab35138e7306d3034a91ab28ee761b7e3564d76deec1a76438048cda0f36c",
+  "nonce": "36f84b8bcebb52b259ebb32a3e6f9d11",
+  "terms": [
+    {
+      "label": "Revision",
+      "words": "This revises build #1. It keeps the same limits."
+    },
+    {
+      "label": "Goal",
+      "words": "Fix the checkout total — apply the feedback recorded on build #1; the revision brief carries the exact batch"
+    },
+    {
+      "label": "Done when",
+      "words": "Totals add up. (runs automatically)"
+    },
+    {
+      "label": "Agent",
+      "words": "Claude Sonnet plans, builds, fixes and reviews"
+    },
+    {
+      "label": "Files",
+      "words": "only src/total.ts"
+    },
+    {
+      "label": "Network",
+      "words": "the agent's provider"
+    },
+    {
+      "label": "Tools",
+      "words": "file edits and routine commands; anything risky stops"
+    },
+    {
+      "label": "May cost",
+      "words": "No spend cap · stops at its time limit (20 min without progress)"
+    },
+    {
+      "label": "Usual",
+      "words": "Your usual project settings: sandboxed, writes only its checkout, Default checks\nWrites: only its checkout, its caches and its temp folder\nReads: your home folder, as in Anthropic's sandbox runtime; never Toolroll's own folders; other tasks' work read, never written\nTime limit: stops after 1000 turns or 20 min without progress\nFixes: on the same model, up to 4 turns and 5 min\nProject checks: sandboxed"
+    },
+    {
+      "label": "Sent back",
+      "words": "Round the tax to cents. (alex)"
+    }
+  ],
+  "problem": null
+}

@@ -1565,6 +1565,13 @@ pub fn situation_lines(app: &App, room: Room) -> Vec<Line<'static>> {
     if !failed.is_empty() {
         return failed;
     }
+    // A plan waiting for this person's yes (a sent-back revision's): what to press, above any earlier output.
+    if app.approval_waiting() {
+        return wrap(crate::app::APPROVAL_WAITS, room.w)
+            .into_iter()
+            .map(Line::raw)
+            .collect();
+    }
     waiting_lines(app, room)
 }
 
@@ -2745,6 +2752,7 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
     // Only the acts this task's state allows: steer while it builds, accept and send back while a result waits,
     // retry once it failed (r, the same key as send back).
     let review = app.review_waiting();
+    let approval = app.approval_waiting();
     let retry = !review && app.retry_pins().is_some();
     let live = app.live_run().is_some();
     let waiting = !live && app.queued_here();
@@ -2756,6 +2764,9 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
         if review {
             v.push((&[Accept], "accept"));
             v.push((&[SendBack], "send back"));
+        } else if approval {
+            v.push((&[Accept], "approve"));
+            v.push((&[Browser], "browser"));
         } else if retry {
             v.push((&[SendBack], "retry"));
         } else if held {
@@ -2776,6 +2787,8 @@ fn bar_keys(app: &App) -> Vec<(String, &'static str)> {
             if review {
                 v.push((&[Accept], "accept"));
                 v.push((&[SendBack], "send back"));
+            } else if approval {
+                v.push((&[Accept], "approve"));
             }
             v.push((&[PreviousFile, NextFile], "file"));
             v
@@ -3286,7 +3299,7 @@ fn draw_dialog(f: &mut Frame, app: &mut App, area: Rect) {
                 )
             }
         }
-        Mode::Build { .. } => return draw_build(f, app, area),
+        Mode::Build { .. } | Mode::Approve { .. } => return draw_build(f, app, area),
         Mode::ConfirmInstall { .. }
         | Mode::PickModel(_)
         | Mode::ConfirmModels(_)
@@ -3533,17 +3546,25 @@ pub fn dialog(f: &mut Frame, r: Rect, title: &str) -> Block<'static> {
 pub const TERMS_TOO_LONG: &str =
     "These terms are too long to show here — press w to review them in the browser.";
 
-/// Build's terms, every term and every line whole (wrapped, never cut), scrolled with j/k. The end having been drawn
-/// is what lets Enter build (app.rs Mode::Build `seen_end`): a person's yes is to exactly what they were shown.
+/// Build's terms, or a waiting plan's (Approve), every term and every line whole (wrapped, never cut), scrolled with
+/// j/k. The end having been drawn is what lets Enter build or approve (app.rs Mode::Build and Mode::Approve
+/// `seen_end`): a person's yes is to exactly what they were shown.
 fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
-    let Mode::Build {
-        terms,
-        scroll,
-        seen_end,
-        ..
-    } = &mut app.mode
-    else {
-        return;
+    let unfold = app.build_unfold;
+    let (approving, terms, scroll, seen_end) = match &mut app.mode {
+        Mode::Build {
+            terms,
+            scroll,
+            seen_end,
+            ..
+        } => (false, terms, scroll, seen_end),
+        Mode::Approve {
+            terms,
+            scroll,
+            seen_end,
+            ..
+        } => (true, terms, scroll, seen_end),
+        _ => return,
     };
     let w = area.width.saturating_sub(4).min(98);
     let h = area.height.saturating_sub(2);
@@ -3564,9 +3585,9 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         width: w,
         height: h,
     };
-    let block = dialog(f, r, " New task ");
+    let block = dialog(f, r, if approving { " Approve " } else { " New task " });
     if text_w < 16 || visible < 3 {
-        // Too small to show them: no in-terminal Build.
+        // Too small to show them: no in-terminal Build (or approval).
         *seen_end = false;
         let lines: Vec<Line<'static>> = wrap(TERMS_TOO_LONG, inner_w.max(8))
             .into_iter()
@@ -3576,7 +3597,6 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let mut body: Vec<Line<'static>> = vec![];
-    let unfold = app.build_unfold;
     for (label, words) in terms.iter() {
         let mut first = true;
         // The Usual row is its summary line, then each setting on its own line: folded to the summary, with how to
@@ -3625,7 +3645,14 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         *seen_end = true;
     }
     let mut lines = vec![
-        Line::from(Span::styled("Build approves exactly this:", ink())),
+        Line::from(Span::styled(
+            if approving {
+                "Approve exactly this:"
+            } else {
+                "Build approves exactly this:"
+            },
+            ink(),
+        )),
         Line::raw(""),
     ];
     lines.extend(body[*scroll..end].iter().cloned());
@@ -3637,6 +3664,25 @@ fn draw_build(f: &mut Frame, app: &mut App, area: Rect) {
         )));
     } else {
         lines.push(Line::raw(""));
+    }
+    if approving {
+        if *seen_end {
+            let mut keys = sheet::act("Enter", "Approve", true);
+            keys.push(Span::styled(" (or y)", dim()));
+            lines.push(Line::from(keys));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "Enter approves once you've read to the end.",
+                dim(),
+            )));
+        }
+        lines.push(Line::from(sheet::act("w", "Review in the browser", false)));
+        lines.push(Line::from(Span::styled(
+            "Any other key approves nothing.",
+            dim(),
+        )));
+        f.render_widget(Paragraph::new(lines).block(block), r);
+        return;
     }
     if *seen_end {
         lines.push(Line::from(sheet::act("Enter", "Build", true)));

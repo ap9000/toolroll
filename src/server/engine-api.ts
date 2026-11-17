@@ -28,7 +28,8 @@ import { admitFlexibleThreadOwner, answerFlexibleRequest, closeFlexibleSessions,
   recoverFlexibleHolders, startFlexibleThread, settleFlexibleStops, tickFlexibleSessions, waitFlexibleThreadChange, type FlexibleChoice, type FlexibleSessions } from "../flexible-session.js";
 import { createFlexibleLauncher, type FlexibleLauncher } from "../flexible-launcher.js";
 import { flexibleStartCard } from "../flexible-start.js";
-import { summaryLines } from "../approval-summary.js";
+import { summaryLines, type ApprovalSummary } from "../approval-summary.js";
+import { termsOfLines } from "../fast-terms.js";
 import { localActNow } from "../local-owner.js";
 import { authenticateApprover, type AuthMethod } from "../scope.js";
 import { defaultChainOf, installModeNow } from "../install-mode.js";
@@ -39,6 +40,7 @@ import { runLiveCommands, type Run } from "../store.js";
 import { agentsReadOf, resultDiffContextOf, resultDiffFileOf, resultDiffOf, resultRunsOf, stepCardsOf } from "../engine-reads.js";
 import type { EdgeContext, HandlerContext } from "./handler-context.js";
 import { handlersOf } from "./handler-registry.js";
+import type { PlanContractView, RevisionView } from "./render-tasks.js";
 import { matchTaskPath, respond } from "./http.js";
 import { rereadBrowser } from "./live.js";
 import { admitLink, saveLinkSession, spendLink } from "./link-redemption.js";
@@ -340,6 +342,31 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     return sendChecked(response, 200, "stepCards", stepCardsOf({ store, family, now: clock(), access: runtime.workAccess(), evidenceRoot, viewer: who.name }));
   }
 
+  /** GET /t/<task>/approval: the approval waiting on the task's current version, as its page's approval form carries it
+   * (contracts/engine-api.ts approvalCardSchema). A browser or terminal session only. The page's own assembly
+   * (taskViewData) decides whether a yes can be taken at all and mints the nonce exactly as the page does when it
+   * renders; nothing is minted for a yes this session couldn't give here (it needs a password: the browser asks). */
+  async function taskApproval(ctx: HandlerContext): Promise<void> {
+    const { url, response, who } = ctx;
+    if (who.via !== "cookie") return refusal(response, 403, "session");
+    if ([...url.searchParams.keys()].length > 0) return refusal(response, 400, "request");
+    const family = familyAt(url, "approval");
+    if (family === null) return refusal(response, 404, "task");
+    const taskId = family.current.id;
+    const none = (problem: string) => sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, digest: null, nonce: null, terms: [], problem });
+    const waits = (view: NonNullable<ReturnType<typeof runtime.taskViewData>>) => view.nonce !== "" && view.approvalDigest != null && view.approvalSummary != null;
+    // Read first without minting: only a yes this session can give here gets a nonce.
+    const peek = runtime.taskViewData(taskId, who, null, { mintNonce: false });
+    if (peek === null) return refusal(response, 404, "task");
+    if (!waits(peek)) return none(NOTHING_TO_APPROVE);
+    if (peek.approvalLocal?.eligible !== true) return none(`${peek.approvalLocal?.eligible === false ? `${peek.approvalLocal.message} ` : "This approval needs your password. "}${APPROVE_IN_BROWSER}`);
+    const view = runtime.taskViewData(taskId, who, null);
+    if (view === null) return refusal(response, 404, "task");
+    if (!waits(view) || view.approvalLocal?.eligible !== true) return none(NOTHING_TO_APPROVE);
+    return sendChecked(response, 200, "approvalCard", { version: ENGINE_API_VERSION, task: taskId, digest: view.approvalDigest, nonce: view.nonce,
+      terms: approvalTermsOf(view.approvalSummary!, view.planContract ?? null, view.revision ?? null), problem: null });
+  }
+
   /** GET /t/<task>/diff[?run=<id>[&file=<n>[&from=<line>&count=<n>]]]: the result's files, one file's hunks (which needs
    * the run it is of), or at most DIFF_CONTEXT_MAX lines of that file around them (which need the file). */
   async function taskDiff(ctx: HandlerContext): Promise<void> {
@@ -438,7 +465,7 @@ export function createEngineHandlers(runtime: ServerRuntime) {
     registrations: [
       ...handlersOf("pages", { "engine.hello": hello, "engine.agents": agents, "engine.agents-check": agentsCheck, "agents.live.run": liveRun, "agents.live.thread": liveThread, "agents.live.threads": liveThreads,
         "agents.live.thread.answer": threadAnswer, "agents.live.thread.start": threadStart }),
-      ...handlersOf("tasks", { "task.steps": taskSteps, "task.diff": taskDiff }),
+      ...handlersOf("tasks", { "task.steps": taskSteps, "task.approval": taskApproval, "task.diff": taskDiff }),
       ...handlersOf("people", {}, { "edge.login-link-json": redeemLink }),
     ],
   };
@@ -464,4 +491,27 @@ function bodyOf(request: IncomingMessage, cap: number): Promise<string | null> {
     request.on("end", () => resolve(over ? null : Buffer.concat(chunks).toString("utf8")));
     request.on("error", () => resolve(null));
   });
+}
+
+/** Said when a task has no approval this person could give right now (approved already, still planning, or closed). */
+export const NOTHING_TO_APPROVE = "Nothing on this task is waiting for your approval.";
+/** Where an approval that needs a password is given: the task page, which asks for it. */
+export const APPROVE_IN_BROWSER = "Press w to open it in your browser.";
+
+/** The approval card's terms: the summary whose key the form's digest binds (summaryLines, read as Build's offer reads its
+ * terms), then what the plan changed from the terms before it (the task page's amendment, said before the yes), then the
+ * notes a revision was sent back with (the page's revision card). */
+export function approvalTermsOf(summary: ApprovalSummary, contract: PlanContractView | null, revision: RevisionView | null): { label: string; words: string }[] {
+  const terms = termsOfLines(summaryLines(summary));
+  if (contract !== null && "problem" in contract) terms.push({ label: "Plan record", words: contract.problem });
+  else if (contract !== null && (contract.filed || contract.revision === true) && contract.changes.length > 0) {
+    const count = `${contract.changes.length} change${contract.changes.length === 1 ? "" : "s"}`;
+    terms.push({ label: "Plan changes", words: [contract.revision === true ? `The plan makes ${count} from your notes:` : `The plan makes ${count} to what you filed:`,
+      ...contract.changeWords, ...(contract.amendment === null ? [] : [`Why: ${contract.amendment}`])].join("\n") });
+  }
+  if (revision !== null && "problem" in revision) terms.push({ label: "Sent back", words: revision.problem });
+  else if (revision !== null && revision.comments.length > 0) {
+    terms.push({ label: "Sent back", words: revision.comments.map(one => `${one.path === null ? "" : `${one.path}${one.line === null ? "" : `:${one.line}`} — `}${one.note} (${one.author})`).join("\n") });
+  }
+  return terms;
 }

@@ -15,6 +15,8 @@
  *                                    interactive agent threads are on (liveThreads)
  *   GET  /work/rows                  the Work list's rows and Needs-you groups (workRows)
  *   GET  /t/<task>/steps             a task's step cards (stepCards)
+ *   GET  /t/<task>/approval          the approval waiting on a task, as the task page's approval form carries it, its
+ *                                    yes posted to POST /t/<task>/approve as the page's form is (approvalCard)
  *   GET  /t/<task>/diff              a result's changed files, or one file's hunks with ?run=&file= (resultDiff, resultDiffFile),
  *                                    or lines of that file around its hunks with ?run=&file=&from=&count= (resultDiffContext)
  *   POST /login/once                 a local-owner one-time link redeemed for a terminal client (linkRedemption)
@@ -276,6 +278,23 @@ export const stepCardsSchema = z.object({
   room: z.string(),
 });
 
+/** `GET /t/<task>/approval`: the approval waiting for this person's yes on a task (a sent-back revision's plan, say), read
+ * once when the person asks to approve it. It is the task page's own approval form as data (task-views.ts taskViewData,
+ * the same assembly): `terms`, every term the yes agrees to (approval-summary.ts summaryLines, the summary whose key the
+ * digest binds, read into rows as Build's offer is, then what the plan changed and the notes sent back); `digest`, what
+ * the page's form posts; and `nonce`, minted for this person, this task and this digest (single use, short-lived), as
+ * the page mints one when it renders. The yes is POST /t/<task>/approve with `digest`, `nonce` and an empty `token`:
+ * the browser's own route, which proves everything again. `problem` (with no digest and no nonce) when nothing here can
+ * take this person's yes: nothing waits, or this approval needs their password (the browser asks for it). */
+export const approvalCardSchema = z.object({
+  version,
+  task: z.string(),
+  digest: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  nonce: z.string().regex(/^[0-9a-f]{32}$/).nullable(),
+  terms: z.array(z.object({ label: z.string(), words: z.string() })),
+  problem: z.string().nullable(),
+});
+
 // ---- Result diff --------------------------------------------------------------------------------------------------
 
 const diffProblemSchema = z.string().nullable();
@@ -441,6 +460,7 @@ export const ENGINE_RESPONSES = {
   liveThreads: { route: "GET /agents/live/threads", schema: liveThreadsSchema },
   workRows: { route: "GET /work/rows", schema: workRowsSchema },
   stepCards: { route: "GET /t/<task>/steps", schema: stepCardsSchema },
+  approvalCard: { route: "GET /t/<task>/approval", schema: approvalCardSchema },
   resultDiff: { route: "GET /t/<task>/diff", schema: resultDiffSchema },
   resultDiffFile: { route: "GET /t/<task>/diff?run=&file=", schema: resultDiffFileSchema },
   resultDiffContext: { route: "GET /t/<task>/diff?run=&file=&from=&count=", schema: resultDiffContextSchema },
@@ -459,6 +479,7 @@ export type LiveThreads = z.infer<typeof liveThreadsSchema>;
 export type WorkRows = z.infer<typeof workRowsSchema>;
 export type StepCards = z.infer<typeof stepCardsSchema>;
 export type StepCard = z.infer<typeof stepCardSchema>;
+export type ApprovalCard = z.infer<typeof approvalCardSchema>;
 export type ResultDiff = z.infer<typeof resultDiffSchema>;
 export type ResultDiffFile = z.infer<typeof resultDiffFileSchema>;
 export type ResultDiffContext = z.infer<typeof resultDiffContextSchema>;
