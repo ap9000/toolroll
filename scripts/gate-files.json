@@ -13,6 +13,7 @@
     { "path": "src/ci-workflow.test.ts", "why": "holds the workflows to the release's check lists" },
     { "path": "src/release.ts", "why": "the checks a release waits for and the ones it leaves out (the whole file)" },
     { "path": "scripts/ci-shards.mjs", "why": "the shard verifier: which files must run and which skips are allowed" },
+    { "path": "scripts/ci-select.mjs", "why": "the test selection: which test files a pull request's shards owe" },
     { "path": "scripts/ci-no-skips.mjs", "why": "the git lanes' no-skip rule" },
     { "path": "scripts/ci-scope.mjs", "why": "which pull requests skip the area lanes" },
     { "path": "scripts/ci-native-wait.mjs", "why": "how the root lanes' verdicts are read" },

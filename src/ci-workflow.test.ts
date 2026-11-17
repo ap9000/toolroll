@@ -10,12 +10,13 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { parse } from "yaml";
 import { areaLanes, diffEntries, docsPath, parseNameStatus } from "../scripts/ci-scope.mjs";
 import { pullRequestChanges, upgradeScope } from "../scripts/ci-upgrade-scope.mjs";
 import { laneVerdict, NATIVE_JOBS, NATIVE_WORKFLOW, standingRun } from "../scripts/ci-native-wait.mjs";
 import { parseRequired, PROOF_EVENTS, proofProblem } from "../scripts/release-proof.mjs";
+import { fullTrigger } from "../scripts/ci-select.mjs";
 import { ADVISORY_PR_CHECKS, prChecksVerdict, RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, type CheckRun } from "./release.js";
 import { GIT_FLOOR_WORDS } from "./git-floor.js";
 
@@ -56,6 +57,9 @@ const RELEASE_BRANCH = "github.event_name != 'pull_request' || startsWith(github
 const LANE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}";
 const UPGRADE = "${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.upgrade == 'skip') }}";
 const UNPROVEN = "${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}";
+/** ci.yml's "unit suite · every file ran" (docs/plans/test-selection.md): both joins passed and neither ran a selection. */
+const WHOLE = "unit suite · every file ran";
+const WHOLE_IF = "${{ always() && needs.test.result == 'success' && needs.macos.result == 'success' && needs.test.outputs.selection == 'full' && needs.macos.outputs.selection == 'full' }}";
 const CONDITIONS: Record<string, (event: Event) => boolean> = {
   "${{ always() }}": () => true,
   [`\${{ ${RELEASE_BRANCH} }}`]: event => event.kind !== "pull_request" || event.branch.startsWith("release-"),
@@ -66,6 +70,10 @@ const CONDITIONS: Record<string, (event: Event) => boolean> = {
   [UPGRADE]: event => event.kind !== "pull_request" || upgradeScope(event.paths).run,
   // main-push.yml: the full CI whenever the merge commit isn't proven tested (these tests take it unproven).
   [UNPROVEN]: () => true,
+  // ci.yml's whole-suite check: it runs whenever the selector plans every file. Here, the part of that decision a path
+  // list decides (scripts/ci-select.mjs plan: not a pull request, a release-* branch, or a path that runs everything);
+  // a pull request the graph sends whole also runs it, which these events don't model.
+  [WHOLE_IF]: event => event.kind !== "pull_request" || event.branch.startsWith("release-") || event.paths.some(path => fullTrigger(path) !== null),
 };
 
 type Check = { name: string; runner: string; runs: boolean; workflow: string };
@@ -213,13 +221,14 @@ describe("the CI workflows", () => {
   test("every pull request reports every required check; Node 24 on Linux and macOS and the area lanes run, Node 22 only on a release-* branch", () => {
     expect(workflow("ci.yml").on["pull_request"]).toBeNull();
     expect(workflow("release-candidate.yml").on["pull_request"]).toBeNull();
-    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), LATEST, SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort();
+    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), LATEST, SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY, WHOLE].sort();
     const change = pr(["src/release.ts"]);
     // Skipped, Node 22's shards report once each, unexpanded (GitHub skips a matrix job before expanding it); the
     // required names are written out, so they report exactly.
     const skippedShards = ["node 22 · shard ${{ matrix.shard }}/6", "node 22 · macos shard ${{ matrix.shard }}/3"];
     expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
-    // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
+    // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never),
+    // and so does the whole-suite check when its shards run a selection.
     expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), LATEST, SCOPE, NATIVE_SCOPE, ...NATIVE, ...ADVISORY].sort());
     // The newest Node's SQLite checks run on every pull request, on the newest patch release, and are never required.
     expect((REQUIRED_PR_CHECKS as readonly string[]).includes(LATEST)).toBe(false);
@@ -351,7 +360,7 @@ describe("the CI workflows", () => {
     const conditional = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.if !== undefined).map(([id, job]) => `${one.file}: ${id} ${String(job.if)}`)).sort();
     expect(conditional).toEqual([
       `ci.yml: git-247 ${LANE}`, `ci.yml: git-floor ${LANE}`, `ci.yml: linux-fence ${LANE}`, `ci.yml: linux-native-containment ${LANE}`,
-      "ci.yml: macos ${{ always() }}", `ci.yml: native-windows ${LANE}`, "ci.yml: test ${{ always() }}",
+      "ci.yml: macos ${{ always() }}", `ci.yml: native-windows ${LANE}`, "ci.yml: test ${{ always() }}", `ci.yml: whole-suite ${WHOLE_IF}`,
       `main-push.yml: full ${UNPROVEN}`, `main-push.yml: native-lanes ${UNPROVEN}`,
       `native-lanes.yml: linux-fence ${LANE}`, `native-lanes.yml: linux-native-containment ${LANE}`, `native-lanes.yml: native-windows ${LANE}`,
       `release-candidate.yml: macos \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: macos-shard \${{ ${RELEASE_BRANCH} }}`,
@@ -397,9 +406,11 @@ describe("the CI workflows", () => {
     expect(pkg.permissions).toEqual({ contents: "read" });
     expect(build.permissions).toEqual({ contents: "read" });
     for (const job of [binary, assemble]) expect(job.permissions).toEqual({ contents: "read" });
-    // The list the proof reads is exactly the release gate's, each name from the same workflow.
-    expect(parseRequired(String(proof.env?.["REQUIRED_CHECKS"]))).toEqual({ ...REQUIRED_PR_CHECKS_WORKFLOW });
+    // The list the proof reads is exactly the release gate's, each name from the same workflow, and ci.yml's whole-suite
+    // check: a pull request whose shards ran a test selection is never a release's proven tree.
+    expect(parseRequired(String(proof.env?.["REQUIRED_CHECKS"]))).toEqual({ ...REQUIRED_PR_CHECKS_WORKFLOW, [WHOLE]: CI });
     expect(Object.keys(PROOF_EVENTS).sort()).toEqual([...new Set(Object.values(REQUIRED_PR_CHECKS_WORKFLOW))].sort());
+    expect((REQUIRED_PR_CHECKS as readonly string[]).includes(WHOLE)).toBe(false);
     expect(runsOf(proof).at(-1)).toBe(`node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS" --tag "$GITHUB_REF_NAME"`);
     expect(proof.steps?.at(-1)?.env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
     expect(runsOf(proof).some(run => run.includes(`git merge-base --is-ancestor "$GITHUB_SHA" origin/main`))).toBe(true);
@@ -510,8 +521,8 @@ describe("the CI workflows", () => {
     expect(runsOf(main.jobs["build"]!).filter(run => run !== "")).toEqual(["npm ci", "npm run typecheck", "npm run build"]);
     const proof = main.jobs["proof"]!;
     expect(proof.permissions).toEqual({ contents: "read", actions: "read", "pull-requests": "read" });
-    // The ci.yml part of the release gate's list.
-    expect(parseRequired(String(proof.env?.["REQUIRED_CHECKS"]))).toEqual(Object.fromEntries(Object.entries(REQUIRED_PR_CHECKS_WORKFLOW).filter(([, file]) => file === CI)));
+    // The ci.yml part of the release gate's list, and the whole-suite check: a selected pull request is never proven.
+    expect(parseRequired(String(proof.env?.["REQUIRED_CHECKS"]))).toEqual({ ...Object.fromEntries(Object.entries(REQUIRED_PR_CHECKS_WORKFLOW).filter(([, file]) => file === CI)), [WHOLE]: CI });
     expect(runsOf(proof).at(-1)).toContain(`if node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS"; then`);
     expect(proof.outputs).toEqual({ proven: "${{ steps.prove.outputs.proven }}" });
   });
@@ -520,7 +531,7 @@ describe("the CI workflows", () => {
     const nightly = workflow("nightly.yml");
     expect(nightly.on["schedule"]).toEqual([{ cron: expect.stringMatching(/^\d+ \d+ \* \* \*$/) }]);
     const ran = executed({ kind: "schedule" });
-    for (const name of [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22")]) expect(ran.filter(one => one.endsWith(` / ${name}`)), name).toHaveLength(1);
+    for (const name of [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), WHOLE]) expect(ran.filter(one => one.endsWith(` / ${name}`)), name).toHaveLength(1);
     expect(ran.filter(one => !one.startsWith("nightly"))).toEqual([]);
     expect(reported({ kind: "schedule" }).filter(one => /macos/.test(one.runner)).map(one => one.name.replace(/^.* \/ /, "")).sort())
       .toEqual([...shardNames("24"), ...shardNames("22")].filter(name => name.includes("macos shard")).sort());
@@ -533,9 +544,13 @@ describe("the CI workflows", () => {
       for (const [shard, join, platform] of [["test-shard", "test", "linux"], ["macos-shard", "macos", "darwin"]] as const) {
         const suite = (one.jobs[shard]?.steps ?? []).find(step => (step.run ?? "").includes("npm run test:all"));
         // macOS runs its lane (the nightly every file), and its join judges that lane.
-        expect(suite?.run, `${file} ${shard}`).toContain(`--env CI=true --env TOOLROLL_REQUIRE_NATIVE=${platform}${platform === "darwin" ? ' --env TOOLROLL_TEST_LANE="$LANE"' : ""} --report`);
+        // ci.yml's shards also hand the candidate the test selection, only when the selection step set it.
+        const selection = file === "ci.yml" ? ' ${TEST_SELECTION_LIST:+--env "TOOLROLL_TEST_SELECTION=$TEST_SELECTION_LIST"}' : "";
+        expect(suite?.run, `${file} ${shard}`).toContain(`--env CI=true --env TOOLROLL_REQUIRE_NATIVE=${platform}${platform === "darwin" ? ' --env TOOLROLL_TEST_LANE="$LANE"' : ""}${selection} --report`);
         expect(suite?.env, `${file} ${shard}`).toEqual(platform === "darwin" ? { LANE: "${{ inputs.macos_lane || 'macos' }}" } : undefined);
-        expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}$`));
+        // ci.yml's joins also take their own plan when it selected (docs/plans/test-selection.md).
+        const planned = file === "ci.yml" ? ' "\\$\\{planned\\[@\\]\\}"' : "";
+        expect(runsOf(one.jobs[join]!).at(-1)?.trimEnd(), `${file} ${join}`).toMatch(new RegExp(`--shards ${SHARDS[platform]} --native ${platform}${platform === "darwin" ? ` --lane "\\$LANE" --linux-reports "\\$RUNNER_TEMP/linux-shards" --linux-shards ${SHARDS.linux}` : ""}${planned}$`));
       }
       expect(one.jobs["macos-shard"]?.["runs-on"]).toBe("macos-latest");
     }
@@ -784,7 +799,7 @@ describe("ci-speed: superseded runs, the macOS lane and the scripted journeys", 
       expect(JSON.stringify(one.jobs["test-shard"])).not.toContain("TOOLROLL_TEST_LANE");
       const join = one.jobs["macos"]!;
       const verify = join.steps?.at(-1);
-      expect(verify?.env, file).toEqual({ LANE: "${{ inputs.macos_lane || 'macos' }}" });
+      expect(verify?.env, file).toEqual({ LANE: "${{ inputs.macos_lane || 'macos' }}", ...(file === "ci.yml" ? { MODE: "${{ steps.select.outputs.mode }}" } : {}) });
       // The lane's file list is the trusted base's verifier's; a base without one bootstraps on the candidate's, and says so.
       expect(verify?.run).toContain(`if ! grep -q "export function linuxSkipsProblem" "$verifier"; then echo "::warning::`);
       // The Linux shards' own reports, downloaded apart from the macOS ones.
@@ -1010,6 +1025,23 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
 
   test("the tagged commit, squash-merged from a pull request whose head tree it is and on which every required check passed, is proven", () => {
     expect(proofProblem(world())).toBeNull();
+  });
+
+  test("test selection: a pull request whose unit shards ran a selection is never proven, for main-push.yml or for publication", () => {
+    for (const file of ["main-push.yml", "publish.yml"]) {
+      const list = parseRequired(String(workflow(file).jobs["proof"]?.env?.["REQUIRED_CHECKS"]))!;
+      expect(list[WHOLE], file).toBe(CI);
+      const w = world();
+      w.required = list;
+      w.jobs.set(10, [...w.jobs.get(10)!, { ...jobsFor(10, CI)[0]!, name: WHOLE }]);
+      // Both joins ran every file: proven, as before.
+      expect(proofProblem(w), file).toBeNull();
+      // A selected run: the whole-suite job reports skipped (or, from a run before it existed, isn't there at all).
+      setJob(w, 10, WHOLE, { conclusion: "skipped" });
+      expect(proofProblem(w), file).toMatch(/unit suite · every file ran: skipped/);
+      w.jobs.set(10, w.jobs.get(10)!.filter(job => job.name !== WHOLE));
+      expect(proofProblem(w), file).toMatch(/unit suite · every file ran: no jobs/);
+    }
   });
 
   test("after the merge GitHub empties each run's PR binding; the branch's one PR into main still binds it", () => {
@@ -1344,5 +1376,153 @@ describe("the wire budgets (.github/workflows/wire-budgets.yml)", () => {
     expect(wire.permissions).toEqual({ contents: "read", actions: "read" });
     expect(readFileSync(join(folder, "wire-budgets.yml"), "utf8")).not.toMatch(/secrets\./);
     expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "persist-credentials": false });
+  });
+});
+
+/** The shard steps' last line for a selected plan: the list into the test step's environment (TEST_SELECTION_LIST). */
+const SELECTION_TO_ENV = '{ echo "TEST_SELECTION_LIST<<SELECTION_END"; cat "$RUNNER_TEMP/selected.txt"; echo "SELECTION_END"; } >> "$GITHUB_ENV"';
+
+describe("the test selection (scripts/ci-select.mjs, docs/plans/test-selection.md): enforcing on pull requests, every file otherwise", () => {
+  const raw = parse(readFileSync(join(folder, "ci.yml"), "utf8")) as { env?: Record<string, string> };
+  const jobs = workflow("ci.yml").jobs;
+  const step = (job: Job, name: string) => (job.steps ?? []).find(one => one.name === name);
+  const SELECTOR_ENV = { EVENT: "${{ github.event_name }}", HEAD_REF: "${{ github.head_ref }}", BASE_SHA: "${{ github.event.pull_request.base.sha }}" };
+
+  /** One workflow step's script, run as GitHub runs it (bash -e -o pipefail) in a scratch workspace whose base revision
+   * has `selector` as its scripts/ci-select.mjs (none when null). Returns what it wrote to GITHUB_ENV and GITHUB_OUTPUT. */
+  const runStep = (script: string, selector: string | null, env: Record<string, string>) => {
+    const scratch = realpathSync(mkdtempSync(join(tmpdir(), "selection-step-")));
+    try {
+      if (selector !== null) { mkdirSync(join(scratch, ".trusted-base/scripts"), { recursive: true }); writeFileSync(join(scratch, ".trusted-base/scripts/ci-select.mjs"), selector); }
+      const files = { GITHUB_ENV: join(scratch, "env"), GITHUB_OUTPUT: join(scratch, "output"), GITHUB_STEP_SUMMARY: join(scratch, "summary") };
+      for (const file of Object.values(files)) writeFileSync(file, "");
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script], {
+        cwd: scratch, encoding: "utf8",
+        env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, XDG_CONFIG_HOME: scratch, RUNNER_TEMP: scratch, GITHUB_WORKSPACE: scratch, TESTED_SHA: "b".repeat(40), ...files, ...env },
+      });
+      return { status: result.status, stderr: result.stderr, stdout: result.stdout, env: readFileSync(files.GITHUB_ENV, "utf8"), output: readFileSync(files.GITHUB_OUTPUT, "utf8") };
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  };
+  /** A stand-in selector: writes `list` to --list, `plan` to --out, prints `mode=<mode>`, exits `exit`. */
+  const stub = ({ list = "", mode = "selected", exit = 0 }: { list?: string; mode?: string; exit?: number }) => `
+const args = process.argv.slice(2), at = name => args[args.indexOf("--" + name) + 1];
+const fs = await import("node:fs");
+if (args.includes("--list")) fs.writeFileSync(at("list"), ${JSON.stringify(list)});
+if (args.includes("--out")) fs.writeFileSync(at("out"), JSON.stringify({ mode: ${JSON.stringify(mode)}, files: [] }));
+console.log("mode=" + ${JSON.stringify(mode)});
+process.exit(${exit});
+`;
+  const ORDINARY = { EVENT: "pull_request", HEAD_REF: "some-change", BASE_SHA: "a".repeat(40), TEST_SELECTION: "enforce" };
+
+  test("one switch, enforce; the newest Node's SQLite checks, the git lanes and the release candidate's Node 22 never select", () => {
+    expect(raw.env).toEqual({ TEST_SELECTION: "enforce" });
+    for (const id of ["node-latest", "git-floor", "git-247", "scope"]) expect(JSON.stringify(jobs[id]), id).not.toMatch(/ci-select|TEST_SELECTION|--plan/);
+    expect(JSON.stringify(workflow("release-candidate.yml"))).not.toMatch(/ci-select|TEST_SELECTION|--plan/);
+  });
+
+  test("each shard plans with the base revision's selector before the candidate's copy exists; the list only reaches the test step's environment", () => {
+    for (const [id, lane] of [["test-shard", false], ["macos-shard", true]] as const) {
+      const steps = jobs[id]!.steps ?? [];
+      const at = steps.findIndex(one => one.name === "Test selection");
+      expect(at, id).toBeGreaterThan(steps.findIndex(one => one.with?.["path"] === ".trusted-base"));
+      expect(at, id).toBeLessThan(steps.findIndex(one => (one.run ?? "").includes(" prepare ")));
+      const run = steps[at]!.run!;
+      expect(run).toContain("selector=.trusted-base/scripts/ci-select.mjs");
+      expect(run).toContain(`--root "$GITHUB_WORKSPACE"${lane ? ' --lane "$LANE"' : ""} --list "$RUNNER_TEMP/selected.txt"`);
+      expect(run.trimEnd().split("\n").at(-1)).toBe(SELECTION_TO_ENV);
+      expect(steps[at]!.env).toEqual(lane ? { ...SELECTOR_ENV, LANE: "${{ inputs.macos_lane || 'macos' }}" } : SELECTOR_ENV);
+      // A shard the selection leaves no file passes quickly, and reports so (its join accepts that only for a selected plan).
+      expect(runsOf(jobs[id]!).find(one => one.includes("npm run test:all"))).toMatch(/ \$\{TEST_SELECTION_LIST:\+--passWithNoTests\}'?$/);
+    }
+  });
+
+  test("a shard's selection step fails open: no selector, a selector that fails, advisory, a full plan or a strange name run every file", () => {
+    const run = step(jobs["test-shard"]!, "Test selection")!.run!;
+    const listed = "src/a.test.ts\ntest/attacks/b.test.ts\n";
+    const selected = runStep(run, stub({ list: listed }), ORDINARY);
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(selected.env).toBe(`TEST_SELECTION_LIST<<SELECTION_END\n${listed}SELECTION_END\n`);
+    for (const [why, selector, env] of [
+      ["no selector on the base", null, ORDINARY],
+      ["the selector failed", stub({ list: listed, exit: 1 }), ORDINARY],
+      ["the selector crashed", "throw new Error('graph');\n", ORDINARY],
+      ["advisory", stub({ list: listed }), { ...ORDINARY, TEST_SELECTION: "advisory" }],
+      ["a full plan writes no list", stub({ list: "", mode: "full" }), ORDINARY],
+      ["a name the selection never passes on", stub({ list: "src/a.test.ts\nsrc/b c.test.ts\n" }), ORDINARY],
+      ["a name that would end the list early", stub({ list: "src/a.test.ts\nSELECTION_END=1\n" }), ORDINARY],
+    ] as const) {
+      const result = runStep(run, selector, env);
+      expect(result.status, `${why}: ${result.stderr}`).toBe(0);
+      expect(result.env, why).toBe("");
+    }
+  });
+
+  test("each join plans again by itself, says `selected` only for a selected plan under enforce, and then holds its shards to it", () => {
+    for (const [id, lane, verifyName] of [["test", false, "Every shard ran the whole suite"], ["macos", true, "Every shard ran the whole lane"]] as const) {
+      const job = jobs[id]!, steps = job.steps ?? [];
+      expect(steps[0]?.with, id).toMatchObject({ ref: "${{ env.TESTED_SHA }}", "fetch-depth": 0, "persist-credentials": false });
+      const select = step(job, "Test selection")!;
+      expect(select.id).toBe("select");
+      expect(select.env).toEqual(lane ? { ...SELECTOR_ENV, LANE: "${{ inputs.macos_lane || 'macos' }}" } : SELECTOR_ENV);
+      expect(select.run).toContain(`--root "$GITHUB_WORKSPACE"${lane ? ' --lane "$LANE"' : ""} --out "$RUNNER_TEMP/selection.json" --summary "$GITHUB_STEP_SUMMARY" > "$RUNNER_TEMP/selection.out"`);
+      expect(steps.indexOf(select)).toBeLessThan(steps.findIndex(one => one.name === verifyName));
+      expect(steps.indexOf(select)).toBeGreaterThan(steps.findIndex(one => one.name === "Every shard passed"));
+      const verify = step(job, verifyName)!;
+      expect(verify.env?.["MODE"]).toBe("${{ steps.select.outputs.mode }}");
+      expect(verify.run).toContain('planned=(); if [ "$MODE" = selected ]; then planned=(--plan "$RUNNER_TEMP/selection.json"); fi');
+      expect(job.outputs).toEqual({ selection: "${{ steps.select.outputs.mode == 'selected' && 'selected' || 'full' }}" });
+      // The step itself: only a selector that succeeded and printed mode=selected, under enforce, makes a selected join.
+      const outcome = (selector: string | null, env: Record<string, string>) => runStep(select.run!, selector, { ...env, ...(lane ? { LANE: "macos" } : {}) });
+      expect(outcome(stub({}), ORDINARY).output).toBe("mode=selected\n");
+      for (const [why, selector, env] of [
+        ["no selector on the base", null, ORDINARY], ["the selector failed", stub({ exit: 1 }), ORDINARY], ["the selector crashed", "throw new Error('x');\n", ORDINARY],
+        ["a full plan", stub({ mode: "full" }), ORDINARY], ["advisory", stub({}), { ...ORDINARY, TEST_SELECTION: "advisory" }],
+      ] as const) {
+        const result = outcome(selector, env);
+        expect(result.status, `${id} ${why}: ${result.stderr}`).toBe(0);
+        expect(result.output, `${id} ${why}`).toBe("");
+      }
+    }
+  });
+
+  test("\"unit suite · every file ran\" passes only when both joins passed and neither ran a selection; it is never a required check", () => {
+    const whole = jobs["whole-suite"]!;
+    expect(whole.name).toBe(WHOLE);
+    expect(whole.needs).toEqual(["test", "macos"]);
+    expect(whole.if).toBe(WHOLE_IF);
+    expect(step(whole, "Neither join ran a selection")?.env).toEqual({ LINUX: "${{ needs.test.outputs.selection }}", MACOS: "${{ needs.macos.outputs.selection }}" });
+    expect(runsOf(whole).at(-1)).toBe('test "$LINUX" = full && test "$MACOS" = full');
+    expect((REQUIRED_PR_CHECKS as readonly string[]).includes(WHOLE)).toBe(false);
+    expect(Object.hasOwn(ADVISORY_PR_CHECKS, WHOLE)).toBe(false);
+    // A release-* branch, a push to main (main-push.yml's full CI), the nightly and a dispatch of it always run it.
+    expect(executed(pr(["src/release.ts"], "release-9.9.9"))).toContain(WHOLE);
+    expect(executed({ kind: "push", branch: "main" })).toContain(`main · full CI / ${WHOLE}`);
+    expect(executed({ kind: "schedule" }).filter(one => one.endsWith(` / ${WHOLE}`)).length).toBe(1);
+    // An ordinary pull request reports it skipped when it selects, run when its diff sends everything.
+    expect(names(pr(["src/release.ts"]))).toContain(WHOLE);
+    expect(executed(pr(["src/release.ts"]))).not.toContain(WHOLE);
+    expect(executed(pr(["scripts/ci-shards.mjs"]))).toContain(WHOLE);
+  });
+
+  test("vitest.config.ts takes a selection only from the harness's TOOLROLL_TEST_SELECTION, within the lane", async () => {
+    const config = readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8");
+    expect(config).toContain("const selection: string[] = selectedFiles(process.env);");
+    expect(config).not.toMatch(/readFileSync|existsSync/);
+    const saved = { selection: process.env["TOOLROLL_TEST_SELECTION"], lane: process.env["TOOLROLL_TEST_LANE"] };
+    const load = async () => { vi.resetModules(); return ((await import("../vitest.config.ts")) as { default: { test: { include: string[] } } }).default.test.include; };
+    try {
+      delete process.env["TOOLROLL_TEST_SELECTION"]; delete process.env["TOOLROLL_TEST_LANE"];
+      expect(await load()).toEqual(["src/**/*.test.ts", "test/attacks/**/*.test.ts"]);
+      process.env["TOOLROLL_TEST_SELECTION"] = "src/ci-select.test.ts\nsrc/ci-shards.test.ts\n";
+      expect(await load()).toEqual(["src/ci-select.test.ts", "src/ci-shards.test.ts"]);
+      // The macOS lane: the lane's files the selection holds (src/cli.test.ts is in the lane's smoke set).
+      process.env["TOOLROLL_TEST_LANE"] = "macos";
+      process.env["TOOLROLL_TEST_SELECTION"] = "src/cli.test.ts\nsrc/ci-select.test.ts\n";
+      expect(await load()).toEqual(["src/cli.test.ts"]);
+    } finally {
+      for (const [name, value] of [["TOOLROLL_TEST_SELECTION", saved.selection], ["TOOLROLL_TEST_LANE", saved.lane]] as const) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
   });
 });

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { spawnSync } from "node:child_process";
-import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
+import { INCLUDE, inventory, laneFiles, LANES, linuxSkipsProblem, NATIVE_PROBES, plannedFiles, readReport, reportsIn, selectedFiles, shardsProblem } from "../scripts/ci-shards.mjs";
 import { FILE_OVERHEAD_SECONDS, medianTimes, planShards } from "../scripts/ci-timings.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "ci-shards-"));
@@ -101,8 +101,8 @@ describe("pipeline-speed A: the shards' join", () => {
   test("the include policy is vitest.config.ts's, and finds exactly its files without following a symlinked folder", () => {
     const config = readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8");
     // The whole suite, unless TOOLROLL_TEST_LANE names a lane: then exactly that lane's files.
-    expect(JSON.parse(/include:[^\[]*\?\s*(\[[^\]]*\])/.exec(config)![1]!.replace(/'/g, "\""))).toEqual(INCLUDE);
-    expect(config).toContain(`: laneFiles(import.meta.dirname, lane),`);
+    expect(JSON.parse(/const suite: string\[\] =[^\[]*\?\s*(\[[^\]]*\])/.exec(config)![1]!.replace(/'/g, "\""))).toEqual(INCLUDE);
+    expect(config).toContain(`: laneFiles(import.meta.dirname, lane);`);
     const tree = join(scratch, "tree");
     for (const one of ["src/a.test.ts", "src/deep/b.test.ts", "src/helper.ts", "test/attacks/c.test.ts", "test/other.test.ts", "src/node_modules/x.test.ts"]) write(tree, one, "");
     mkdirSync(join(scratch, "outside"), { recursive: true });
@@ -289,5 +289,78 @@ describe("Codex review round 1, P1: what Linux skips, the macOS lane runs", () =
     write(lin, "shard-24-1/shard-report.json", JSON.stringify(report([{ name: join(tree, "src/plain.test.ts"), status: "passed", assertionResults: [{ status: "passed" }] }])));
     const passed = cli(["--linux-reports", lin, "--linux-shards", "1"]);
     expect(passed.status, passed.stderr).toBe(0);
+  });
+});
+
+describe("the join under a test selection (--plan, docs/plans/test-selection.md)", () => {
+  const at = (name: string, plan: unknown) => { const path = join(scratch, name); writeFileSync(path, typeof plan === "string" ? plan : JSON.stringify(plan)); return path; };
+  const selected = (files: string[], lane = "all") => ({ mode: "selected", lane, files });
+
+  test("a full plan owes every file; a selected one its files plus the always-run set; anything else is an error, never a smaller suite", () => {
+    expect(plannedFiles(listed, undefined)).toBeUndefined();
+    expect(plannedFiles(listed, at("full.json", { mode: "full", lane: "all", files: [] }))).toBeUndefined();
+    expect(plannedFiles(listed, at("some.json", selected(["src/a.test.ts", "src/a.test.ts"])), { always: ["test/attacks/d.test.ts", "test/attacks/gone.test.ts"] })).toEqual(["src/a.test.ts", "test/attacks/d.test.ts"]);
+    expect(() => plannedFiles(listed, at("stray.json", selected(["src/a.test.ts", "src/gone.test.ts"])))).toThrow(/names src\/gone\.test\.ts/);
+    // A plan for another lane (the whole suite's plan handed to the macOS join, or the other way) is no plan for this one.
+    expect(() => plannedFiles(listed, at("lane.json", selected(["src/a.test.ts"], "macos")))).toThrow(/whole suite/);
+    expect(() => plannedFiles(listed, at("lane2.json", selected(["src/a.test.ts"])), { lane: "macos" })).toThrow(/macos lane/);
+    for (const [name, plan] of [["empty.json", selected([])], ["shape.json", { mode: "some", lane: "all", files: ["src/a.test.ts"] }], ["bad.json", "{"], ["number.json", { mode: "selected", lane: "all", files: [1] }], ["nolane.json", { mode: "selected", files: ["src/a.test.ts"] }]] as const) {
+      expect(() => plannedFiles(listed, at(name, plan)), name).toThrow(/plan/);
+    }
+    expect(() => plannedFiles(listed, join(scratch, "missing.json"))).toThrow(/can't be read/);
+  });
+
+  test("a selected run passes when every owed file ran once; an empty shard is fine; a missing owed file fails", () => {
+    const owed = ["src/a.test.ts", "test/attacks/d.test.ts"];
+    const run = (reports: [number, unknown][]) => shardsProblem(new Map(reports), listed, { shards: 2, root, base, owed });
+    const empty = report([]);
+    expect(run([[1, report([file("src/a.test.ts"), file("test/attacks/d.test.ts")])], [2, empty]])).toBeNull();
+    expect(run([[1, report([file("src/a.test.ts")])], [2, report([file("test/attacks/d.test.ts")])]])).toBeNull();
+    // A selected file that ran nowhere: refused.
+    expect(run([[1, report([file("src/a.test.ts")])], [2, empty]])).toMatch(/1 test file ran in no shard \(test\/attacks\/d\.test\.ts\)/);
+    // An always-run file left out of the plan is still owed (plannedFiles adds it): refused when it didn't run.
+    const withAlways = plannedFiles(listed, at("always.json", selected(["src/a.test.ts"])), { always: ["test/attacks/d.test.ts"] })!;
+    expect(shardsProblem(new Map<number, unknown>([[1, report([file("src/a.test.ts")])], [2, empty]]), listed, { shards: 2, root, base, owed: withAlways })).toMatch(/ran in no shard \(test\/attacks\/d\.test\.ts\)/);
+    // More than the plan (a shard whose own selection failed ran everything) passes; never a file the inventory lacks,
+    // never one twice, never nothing at all.
+    expect(run([[1, report([file("src/a.test.ts"), file("src/b.test.ts")])], [2, report([file("test/attacks/d.test.ts")])]])).toBeNull();
+    expect(run([[1, report([file("src/a.test.ts"), file("src/z.test.ts")])], [2, report([file("test/attacks/d.test.ts")])]])).toMatch(/src\/z\.test\.ts, which the include policy doesn't find/);
+    expect(run([[1, report([file("src/a.test.ts"), file("test/attacks/d.test.ts")])], [2, report([file("src/a.test.ts")])]])).toMatch(/ran in shards 1 and 2/);
+    expect(run([[1, empty], [2, empty]])).toMatch(/ran no test file/);
+    // An empty shard still has to be a passing, consistent report, and a plan must owe something.
+    expect(run([[1, report([file("src/a.test.ts"), file("test/attacks/d.test.ts")])], [2, { ...empty, success: false }]])).toMatch(/didn't pass/);
+    expect(run([[1, report([file("src/a.test.ts"), file("test/attacks/d.test.ts")])], [2, { ...empty, numTotalTests: 3 }]])).toMatch(/no file but numTotalTests 3/);
+    expect(shardsProblem(new Map<number, unknown>([[1, report([file("src/a.test.ts")])], [2, empty]]), listed, { shards: 2, root, base, owed: [] })).toMatch(/owes no files/);
+    // Without a plan nothing changes: an empty shard fails.
+    expect(problem(swap(2, empty))).toMatch(/executed no tests/);
+  });
+
+  test("the command line: a selected plan is held to its files and the trusted always-run set; a full plan to every file", () => {
+    const tree = join(scratch, "planned-cli");
+    for (const one of ["src/a.test.ts", "src/b.test.ts", "test/attacks/x.test.ts"]) write(tree, one, "test('t', () => {});\n");
+    const ran = (names: string[]) => {
+      const folder = mkdtempSync(join(scratch, "planned-reports-"));
+      write(folder, "shard-24-1/shard-report.json", JSON.stringify(report(names.map(name => ({ name: join(tree, name), status: "passed", assertionResults: [{ status: "passed" }] })))));
+      return folder;
+    };
+    const cli = (reports: string, plan: string) => spawnSync(process.execPath, [join(REPO, "scripts/ci-shards.mjs"), "verify", reports, "--root", tree, "--base", tree, "--sha", "a".repeat(40), "--node", "24", "--shards", "1", "--plan", plan], { encoding: "utf8" });
+    const plan = at("cli-plan.json", selected(["src/a.test.ts", "test/attacks/x.test.ts"]));
+    const passed = cli(ran(["src/a.test.ts", "test/attacks/x.test.ts"]), plan);
+    expect(passed.status, passed.stderr).toBe(0);
+    expect(passed.stdout).toMatch(/the 2 test files of 3 the test selection planned/);
+    expect(cli(ran(["src/a.test.ts"]), plan).stderr).toMatch(/ran in no shard \(test\/attacks\/x\.test\.ts\)/);
+    // The attack suite always runs, by the verifier's own copy of the rules: a plan that leaves it out still owes it.
+    const short = at("cli-short.json", selected(["src/a.test.ts"]));
+    expect(cli(ran(["src/a.test.ts"]), short).stderr).toMatch(/ran in no shard \(test\/attacks\/x\.test\.ts\)/);
+    // A full plan owes every file, as without one.
+    const full = at("cli-full.json", { mode: "full", lane: "all", files: [] });
+    expect(cli(ran(["src/a.test.ts", "test/attacks/x.test.ts"]), full).stderr).toMatch(/ran in no shard \(src\/b\.test\.ts\)/);
+    expect(cli(ran(["src/a.test.ts", "src/b.test.ts", "test/attacks/x.test.ts"]), full).status).toBe(0);
+    expect(cli(ran(["src/a.test.ts"]), join(scratch, "no-such-plan.json")).stderr).toMatch(/can't be read/);
+  });
+
+  test("the selection reaches a shard only from TOOLROLL_TEST_SELECTION, one file per line", () => {
+    expect(selectedFiles({ CI: "true" })).toEqual([]);
+    expect(selectedFiles({ TOOLROLL_TEST_SELECTION: " src/a.test.ts \n\nsrc/b.test.ts\n" })).toEqual(["src/a.test.ts", "src/b.test.ts"]);
   });
 });

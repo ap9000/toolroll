@@ -8,6 +8,14 @@
  *
  *   node <trusted copy>/scripts/ci-shards.mjs verify <shards-folder> --root <candidate checkout> --base <trusted checkout>
  *     --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>]
+ *     [--plan <ci-select plan.json>]
+ *
+ * `--plan` (docs/plans/test-selection.md): the plan this trusted copy's own selector (scripts/ci-select.mjs) wrote for
+ * the tested commit. A `full` plan owes every file, as without one. A `selected` plan owes its files plus the
+ * always-run set (ci-select.mjs alwaysRunFiles), each exactly once; the shards may run more (a shard whose own
+ * selection failed runs everything: toward more, never fewer), each extra file still once, passing, and one the include
+ * policy finds; and a shard the selection left nothing may report no files. An unreadable or malformed plan is an
+ * error, never a smaller suite.
  *
  * `--lane macos` (docs/plans/ci-speed.md): the macOS shards ran the macOS lane, not the whole suite (`--lane all`, as the
  * nightly runs it, is the whole suite) — every file
@@ -133,12 +141,18 @@ export function skipPermitted(file, base, native) {
  * One shard's Vitest JSON report, checked: it passed, its counts agree with its own test results, it executed tests,
  * and every file is under `root`. Returns the files it ran (relative) and its counts, or why it can't stand.
  */
-export function readReport(report, { root, base, native }) {
+export function readReport(report, { root, base, native, allowEmpty = false }) {
   const no = problem => ({ ok: false, problem });
   if (report === null || typeof report !== "object" || !Array.isArray(report.testResults)) return no("isn't a Vitest JSON report");
   if (report.success !== true) return no("didn't pass");
   for (const key of ["numFailedTests", "numFailedTestSuites"]) if (report[key] !== 0) return no(`reports ${key} ${String(report[key])}`);
   if (report.numRuntimeErrorTestSuites !== undefined && report.numRuntimeErrorTestSuites !== 0) return no("reports a suite that errored");
+  // Under a selected plan only: a shard the selection left nothing (`--passWithNoTests`) reports no file and no test.
+  // What it owed is judged across the shards (shardsProblem): every planned file must have run in one of them.
+  if (allowEmpty && report.testResults.length === 0) {
+    for (const key of ["numTotalTests", "numPassedTests", "numTotalTestSuites"]) if ((report[key] ?? 0) !== 0) return no(`reports no file but ${key} ${String(report[key])}`);
+    return { ok: true, files: [], tests: { total: 0, passed: 0, notRun: 0 } };
+  }
   const counts = { total: 0, passed: 0, notRun: 0 };
   const files = [];
   for (const one of report.testResults) {
@@ -171,29 +185,68 @@ export function readReport(report, { root, base, native }) {
  * Why the shards of one Node version don't add up to a passing suite, or null when they do: exactly the shards 1..K,
  * each one report that stands (readReport), and the files they ran together exactly the inventory, each once.
  * `reports` maps a shard index to its parsed report (null when unreadable).
+ *
+ * `owed` (a selected plan, plannedFiles): the files that must have run, each once, instead of all of `listed`; any
+ * other file that ran must still be one of `listed`, and a shard may report no files. Never fewer than `owed`.
  */
-export function shardsProblem(reports, listed, { shards, root, base, native }) {
+export function shardsProblem(reports, listed, { shards, root, base, native, owed }) {
   if (!Number.isSafeInteger(shards) || shards < 1) return "no shard count";
   if (native !== undefined && !Object.hasOwn(NATIVE_PROBES, native)) return `no native policy for ${String(native)}`;
   if (!Array.isArray(listed) || listed.length === 0) return "the include policy finds no test files";
+  if (owed !== undefined && (!Array.isArray(owed) || owed.length === 0)) return "the test selection owes no files";
   for (let at = 1; at <= shards; at++) if (!reports.has(at)) return `shard ${at}/${shards} gave no report`;
   for (const at of reports.keys()) if (!Number.isSafeInteger(at) || at < 1 || at > shards) return `a report for shard ${at} of ${shards}`;
   const ran = new Map();
   for (const [at, report] of [...reports.entries()].sort((a, b) => a[0] - b[0])) {
     if (report === null) return `shard ${at}'s report can't be read`;
-    const read = readReport(report, { root, base, native });
+    const read = readReport(report, { root, base, native, allowEmpty: owed !== undefined });
     if (!read.ok) return `shard ${at}'s report ${read.problem}`;
     for (const file of read.files) {
       if (ran.has(file)) return `${file} ran in shards ${ran.get(file)} and ${at}`;
       ran.set(file, at);
     }
   }
-  const want = new Set(listed);
+  if (ran.size === 0) return "the shards ran no test file";
+  const listedSet = new Set(listed);
+  const outside = owed === undefined ? undefined : owed.find(file => !listedSet.has(file));
+  if (outside !== undefined) return `the test selection owes ${outside}, which the include policy doesn't find here`;
+  const want = new Set(owed ?? listed);
   const missing = [...want].filter(file => !ran.has(file));
   if (missing.length > 0) return `${missing.length} test file${missing.length === 1 ? "" : "s"} ran in no shard (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""})`;
-  const extra = [...ran.keys()].filter(file => !want.has(file));
+  // Without a selection the shards owe exactly the inventory; with one, more may run (toward more, never fewer), but
+  // only files the include policy finds here.
+  const extra = [...ran.keys()].filter(file => !listedSet.has(file));
   if (extra.length > 0) return `a shard ran ${extra[0]}, which the include policy doesn't find here`;
   return null;
+}
+
+/**
+ * What the shards owe under a test selection (docs/plans/test-selection.md): with `--plan <file>`, the plan this trusted
+ * copy's own selector wrote for the tested commit and this lane (`lane`: all or the lane's name). Undefined (every
+ * listed file, as without a plan) for a `full` plan. A `selected` plan owes its files plus `always` (the always-run set,
+ * ci-select.mjs alwaysRunFiles) among `listed`, sorted. Anything else about the plan (unreadable, another shape, another
+ * lane, a file the inventory doesn't hold) is an error, never a smaller suite.
+ */
+export function plannedFiles(listed, planFile, { lane = "all", always = [] } = {}) {
+  if (planFile === undefined) return undefined;
+  let plan;
+  try { plan = JSON.parse(readFileSync(planFile, "utf8")); } catch { throw new Error(`the test selection's plan ${planFile} can't be read`); }
+  if (plan === null || typeof plan !== "object" || plan.lane !== lane) throw new Error(`the test selection's plan isn't one for the ${lane === "all" ? "whole suite" : `${lane} lane`}`);
+  if (plan.mode === "full") return undefined;
+  if (plan.mode !== "selected" || !Array.isArray(plan.files) || plan.files.length === 0 || plan.files.some(one => typeof one !== "string")) throw new Error("the test selection's plan isn't one");
+  const have = new Set(listed);
+  const stray = plan.files.find(one => !have.has(one));
+  if (stray !== undefined) throw new Error(`the test selection names ${stray}, which the include policy doesn't find here`);
+  return [...new Set([...plan.files, ...always.filter(one => have.has(one))])].sort();
+}
+
+/**
+ * The test selection's files for a shard (docs/plans/test-selection.md): only what the trusted harness hands the
+ * candidate, TOOLROLL_TEST_SELECTION (one file per line; ci.yml passes it only for a selected plan). Never a file from
+ * the checkout. Unset or empty: the whole suite (or lane).
+ */
+export function selectedFiles(env) {
+  return String(env["TOOLROLL_TEST_SELECTION"] ?? "").split("\n").map(one => one.trim()).filter(one => one !== "");
 }
 
 /**
@@ -241,26 +294,32 @@ export function reportsIn(folder, node) {
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [command, folder, ...args] = process.argv.slice(2);
-  try {
-    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>]"); process.exit(2); }
+  (async () => {
+    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin] [--lane all|macos --linux-reports <folder> --linux-shards <K>] [--plan <file>]"); process.exit(2); }
     const shards = Number(flag(args, "shards")), sha = flag(args, "sha"), node = flag(args, "node"), root = flag(args, "root"), base = flag(args, "base"), native = flag(args, "native"), lane = flag(args, "lane");
     if (!SHA.test(sha ?? "")) throw new Error("no tested commit");
     if (typeof root !== "string" || typeof base !== "string") throw new Error("--root and --base are required");
     if (args.includes("--lane") && lane !== "all" && !Object.hasOwn(LANES, lane ?? "")) throw new Error(`--lane takes all or ${Object.keys(LANES).join(" or ")}`);
+    if (args.includes("--plan") && (flag(args, "plan") ?? "").startsWith("--")) throw new Error("--plan takes a file");
     const listed = lane === undefined || lane === "all" ? inventory(root) : laneFiles(root, lane);
+    // A selected plan owes its files and, by this trusted copy's own rules, everything that always runs.
+    const planFile = flag(args, "plan");
+    const always = planFile === undefined ? [] : (await import("./ci-select.mjs")).alwaysRunFiles(root, listed);
+    const owed = plannedFiles(listed, planFile, { lane: lane ?? "all", always });
     const reports = reportsIn(folder, node);
     if (args.includes("--native") && !Object.hasOwn(NATIVE_PROBES, native ?? "")) throw new Error(`--native takes ${Object.keys(NATIVE_PROBES).join(" or ")}`);
-    const problem = shardsProblem(reports, listed, { shards, root, base, native });
+    const problem = shardsProblem(reports, listed, { shards, root, base, native, owed });
     if (problem !== null) { console.error(`node ${node}: ${problem}`); process.exit(1); }
     // A lane, not the suite: what Linux skipped must be in it (--linux-reports <folder> --linux-shards <K>).
     const linuxFolder = flag(args, "linux-reports");
     if (lane !== undefined && lane !== "all" && linuxFolder === undefined) throw new Error("a lane needs --linux-reports: what Linux skipped must be in it");
     if (linuxFolder !== undefined) {
-      const ran = new Set([...reports.values()].flatMap(one => readReport(one, { root, base, native }).files ?? []));
+      const ran = new Set([...reports.values()].flatMap(one => readReport(one, { root, base, native, allowEmpty: owed !== undefined }).files ?? []));
       const skips = linuxSkipsProblem(reportsIn(linuxFolder, node), ran, { shards: Number(flag(args, "linux-shards")), root });
       if (skips !== null) { console.error(`node ${node}: ${skips}`); process.exit(1); }
     }
     const executed = [...reports.values()].reduce((n, one) => n + one.numPassedTests, 0);
-    console.log(`node ${node}: ${shards} shards passed on ${sha}, ${listed.length} test files${lane === undefined || lane === "all" ? "" : ` (the ${lane} lane)`}, ${executed} tests executed`);
-  } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    const files = owed === undefined ? `${listed.length} test files` : `the ${owed.length} test files of ${listed.length} the test selection planned`;
+    console.log(`node ${node}: ${shards} shards passed on ${sha}, ${files}${lane === undefined || lane === "all" ? "" : ` (the ${lane} lane)`}, ${executed} tests executed`);
+  })().catch(error => { console.error(String(error?.message ?? error)); process.exit(1); });
 }

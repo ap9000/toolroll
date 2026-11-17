@@ -19,6 +19,9 @@ const state = { user: "so-candidate", uid: 5501, gid: 5501, checkout: folder, ho
 describe("what the candidate is given", () => {
   test("only the named variables pass, never a credential by any spelling", () => {
     expect(allowedEnv(["CI=true", "TOOLROLL_REQUIRE_NATIVE=linux", "TOOLROLL_TEST_LANE=a=b"])).toEqual({ CI: "true", TOOLROLL_REQUIRE_NATIVE: "linux", TOOLROLL_TEST_LANE: "a=b" });
+    // The test selection's files, one per line (docs/plans/test-selection.md): the value may span lines; the name is exact.
+    expect(allowedEnv(["TOOLROLL_TEST_SELECTION=src/a.test.ts\nsrc/b.test.ts"])).toEqual({ TOOLROLL_TEST_SELECTION: "src/a.test.ts\nsrc/b.test.ts" });
+    expect(() => allowedEnv(["TOOLROLL_TEST_SELECTION_FILE=/x"])).toThrow();
     for (const one of ["GITHUB_TOKEN=x", "ACTIONS_RUNTIME_TOKEN=x", "PATH=/evil", "HOME=/evil", "NODE_OPTIONS=--require=/x", "CI", "ci=true", "CI\n=x"]) expect(() => allowedEnv([one]), one).toThrow();
   });
   test("its whole environment is built, never inherited: scratch home, cache and temp", () => {

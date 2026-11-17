@@ -3,6 +3,8 @@ name: Main push
 # A push to main (docs/plans/test-matrix.md): typecheck and build, and the full CI only when the merge commit can't be
 # proven tested. Proven means scripts/release-proof.mjs found it the squash merge of exactly one merged pull request
 # whose head commit has the same tree and passed every ci.yml check listed below in its pull request's newest ci.yml run.
+# A pull request whose unit shards ran a test selection reports "unit suite · every file ran" skipped, so it is never
+# proven: every selected merge gets the full CI here.
 # Not proven, or the proof job failed: ci.yml runs whole, called from here. A workflow of its own, so its runs never
 # supersede or stand in for ci.yml's on a pull request; nothing a release waits for comes from here.
 
@@ -24,7 +26,9 @@ jobs:
     outputs:
       proven: ${{ steps.prove.outputs.proven }}
     env:
-      # src/release.ts REQUIRED_PR_CHECKS that come from ci.yml (src/ci-workflow.test.ts holds them equal).
+      # src/release.ts REQUIRED_PR_CHECKS that come from ci.yml (src/ci-workflow.test.ts holds them equal), and ci.yml's
+      # "unit suite · every file ran": a pull request whose unit shards ran a test selection (docs/plans/test-selection.md)
+      # is never proven tested, so its merge commit gets the full CI here.
       REQUIRED_CHECKS: >-
         {"node 24 · ubuntu-latest": ".github/workflows/ci.yml",
         "node 24 · macos-latest": ".github/workflows/ci.yml",
@@ -32,7 +36,8 @@ jobs:
         "linux fence · sandbox-runtime": ".github/workflows/ci.yml",
         "Windows Job Object containment": ".github/workflows/ci.yml",
         "git 2.41 · debian trixie": ".github/workflows/ci.yml",
-        "git 2.47 · debian trixie": ".github/workflows/ci.yml"}
+        "git 2.47 · debian trixie": ".github/workflows/ci.yml",
+        "unit suite · every file ran": ".github/workflows/ci.yml"}
     steps:
       - uses: actions/checkout@v5
         with:

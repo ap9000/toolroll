@@ -43,7 +43,8 @@ jobs:
       pull-requests: read
     env:
       # Exactly src/release.ts REQUIRED_PR_CHECKS, each with the workflow it must come from (src/ci-workflow.test.ts holds
-      # them equal).
+      # them equal), and ci.yml's "unit suite · every file ran": a pull request whose unit shards ran a test selection
+      # is never a release's proven tree (docs/plans/test-selection.md; a release-* branch never selects).
       REQUIRED_CHECKS: >-
         {"node 24 · ubuntu-latest": ".github/workflows/ci.yml",
         "node 24 · macos-latest": ".github/workflows/ci.yml",
@@ -52,6 +53,7 @@ jobs:
         "Windows Job Object containment": ".github/workflows/ci.yml",
         "git 2.41 · debian trixie": ".github/workflows/ci.yml",
         "git 2.47 · debian trixie": ".github/workflows/ci.yml",
+        "unit suite · every file ran": ".github/workflows/ci.yml",
         "node 22 · ubuntu-latest": ".github/workflows/release-candidate.yml",
         "node 22 · macos-latest": ".github/workflows/release-candidate.yml"}
     steps:

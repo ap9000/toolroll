@@ -41,7 +41,9 @@ export const EXIT = { cleanup: 97, report: 98, usage: 2 };
 const REPORT_LIMIT = 512 * 1024 * 1024;
 
 /** The only variables a workflow may hand the candidate: names, never a credential's. */
-const ENV_NAME = /^(CI|SO_EXPECT_NATIVE_CONTAINMENT|TOOLROLL_REQUIRE_NATIVE|TOOLROLL_TEST_LANE)$/;
+// TOOLROLL_TEST_SELECTION: the test selection's files, one per line, written by the trusted base revision's selector
+// (ci.yml, a selected plan only; docs/plans/test-selection.md).
+const ENV_NAME = /^(CI|SO_EXPECT_NATIVE_CONTAINMENT|TOOLROLL_REQUIRE_NATIVE|TOOLROLL_TEST_LANE|TOOLROLL_TEST_SELECTION)$/;
 
 /** `NAME=VALUE` from a workflow, checked. Throws on anything else. */
 export function allowedEnv(pairs) {

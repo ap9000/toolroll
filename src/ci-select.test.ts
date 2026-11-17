@@ -1,0 +1,349 @@
+/**
+ * The test selection (scripts/ci-select.mjs, docs/plans/test-selection.md): which unit-suite files a pull request's diff can
+ * reach. It must never leave out a test the change can reach, so each way a reach could be missed is a row here, and each
+ * case that must run everything is one too.
+ */
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test } from "vitest";
+import { inventory } from "../scripts/ci-shards.mjs";
+import { ALWAYS_FILES, alwaysRunFiles, buildGraph, diskTree, FULL_TRIGGERS, fullTrigger, MAX_CHANGED, plan, references, resolveImport, walksRepository } from "../scripts/ci-select.mjs";
+
+type Tree = Record<string, string>;
+const treeOf = (files: Tree) => ({ list: () => Object.keys(files), read: (path: string) => files[path] ?? null });
+const TEST = /^src\/.*\.test\.ts$|^test\/attacks\/.*\.test\.ts$/;
+const testsOf = (files: Tree) => Object.keys(files).filter(path => TEST.test(path)).sort();
+const modified = (...paths: string[]) => paths.map(path => ({ status: "M", paths: [path] }));
+type Plan = { mode: string; why: string; files: string[]; reasons: Record<string, string> };
+const planFor = (files: Tree, entries: unknown, extra: { event?: string; headRef?: string } = {}) =>
+  plan({ event: extra.event ?? "pull_request", headRef: extra.headRef ?? "some-change", entries, tree: treeOf(files), tests: testsOf(files) }) as Plan;
+
+/** A small checkout: a chain a → b ← b.test, an unrelated c, data read by name, the build, the always-run kinds. */
+const world: Tree = {
+  "src/a.ts": "export const a = 1;\n",
+  "src/b.ts": 'import { a } from "./a.js";\nexport const b = a;\n',
+  "src/b.test.ts": 'import { b } from "./b.js";\ntest("b", () => {});\n',
+  "src/c.ts": "export const c = 3;\n",
+  "src/c.test.ts": 'import { c } from "./c.js";\ntest("c", () => {});\n',
+  "src/server/console.css": "body {}\n",
+  "src/server/pages.ts": 'import { readFileSync } from "node:fs";\nexport const css = () => readFileSync(new URL("console.css", import.meta.url), "utf8");\n',
+  "src/server/pages.test.ts": 'import { css } from "./pages.js";\ntest("p", () => {});\n',
+  "src/report.ts": 'export const NAMES = ["src/c.ts", "test/attacks/x.test.ts"];\n',
+  "src/report.test.ts": 'import { NAMES } from "./report.js";\ntest("r", () => {});\n',
+  "src/cli-run.test.ts": 'import { join } from "node:path";\nconst bin = join(import.meta.dirname, "..", "dist", "bin.js");\ntest("cli", () => {});\n',
+  "src/ci-workflow.test.ts": 'test("gate", () => {});\n',
+  "src/walks.test.ts": 'import { readdirSync } from "node:fs";\nconst all = readdirSync(import.meta.dirname);\ntest("w", () => {});\n',
+  "test/attacks/x.test.ts": 'test("attack", () => {});\n',
+  "docs/plans/p.md": "# plan\n",
+};
+
+describe("what must run everything", () => {
+  test("anything but an ordinary pull request: a push, the nightly, a call, a release-* branch", () => {
+    for (const event of ["push", "schedule", "workflow_call", "workflow_dispatch"]) expect(planFor(world, modified("docs/plans/p.md"), { event }).mode, event).toBe("full");
+    expect(planFor(world, modified("docs/plans/p.md"), { headRef: "release-0.9.200" }).mode).toBe("full");
+    expect(planFor(world, modified("docs/plans/p.md"), { headRef: "" }).mode).toBe("full");
+  });
+
+  test("a diff that can't be read, an empty one, and a deleted, renamed, copied or retyped source file", () => {
+    expect(planFor(world, null).why).toMatch(/couldn't be read/);
+    expect(planFor(world, []).why).toMatch(/empty/);
+    for (const status of ["D", "T"]) expect(planFor(world, [{ status, paths: ["src/c.ts"] }]).mode, status).toBe("full");
+    for (const status of ["R", "C"]) expect(planFor(world, [{ status, paths: ["src/c.ts", "src/d.ts"] }]).mode, status).toBe("full");
+    // Documentation can go or move without a full run.
+    expect(planFor(world, [{ status: "D", paths: ["docs/plans/old.md"] }]).mode).toBe("selected");
+    expect(planFor(world, [{ status: "R", paths: ["docs/a.md", "docs/b.md"] }]).mode).toBe("selected");
+  });
+
+  test.each([
+    ["package.json"], ["package-lock.json"], ["tsconfig.json"], ["tsconfig.build.json"], ["vitest.config.ts"], ["test/attacks/vitest.config.ts"],
+    ["test/setup-state.ts"], ["test/fresh-store.ts"], ["test/fixtures/cli/envelopes.txt"], ["test/timings.json"], ["test/attacks/harness.ts"],
+    [".github/workflows/ci.yml"], ["scripts/isolated-env.mjs"], ["scripts/fixtures/scripted-provider.mjs"], ["src/contracts/engine-api.ts"],
+    ["src/design/tokens.css"], ["tui/Cargo.lock"], ["tui/rust-toolchain.toml"], ["THIRD_PARTY_NOTICES.md"],
+  ])("a change to %s runs everything", path => {
+    expect(fullTrigger(path)).not.toBeNull();
+    expect(planFor({ ...world, [path]: "x\n" }, modified(path)).mode).toBe("full");
+  });
+
+  test("a file outside the inert folders that nothing in the graph reaches: its readers can't be found, so everything runs", () => {
+    const files = { ...world, "src/data/rules.json": "{}\n", "assets/logo.svg": "<svg/>\n" };
+    expect(planFor(files, modified("src/data/rules.json")).why).toMatch(/src\/data\/rules\.json: nothing in the graph reads it/);
+    expect(planFor(files, modified("assets/logo.svg")).mode).toBe("full");
+    // Codex review: source nothing imports by a path the graph reads is loaded some other way, if at all: everything runs,
+    // whether or not some test runs the build.
+    expect(planFor({ ...world, "src/orphan.ts": "export {};\n" }, modified("src/orphan.ts")).why).toMatch(/src\/orphan\.ts: nothing in the graph reads it/);
+  });
+
+  test("a diff wider than MAX_CHANGED paths, even of documentation alone, runs everything", () => {
+    const wide = Array.from({ length: MAX_CHANGED + 1 }, (_, at) => ({ status: "M", paths: [`docs/plans/p${at}.md`] }));
+    expect(planFor(world, wide).why).toMatch(new RegExp(`${MAX_CHANGED + 1} changed paths, more than ${MAX_CHANGED}`));
+    expect(planFor(world, wide.slice(0, MAX_CHANGED)).mode).toBe("selected");
+  });
+
+  test("a path with a character the selection never passes on (a newline, a colon, a space, a quote) runs everything, unprinted", () => {
+    for (const name of ["docs/a\nSELECTION_END\nNODE_OPTIONS=x.md", "docs/::error::x.md", "docs/a b.md", "docs/a'b.md"]) {
+      const result = planFor(world, modified(name));
+      expect(result.mode, name).toBe("full");
+      expect(result.why, name).not.toContain(name);
+    }
+    // A test file of that kind can't be handed to a shard either.
+    const odd = { ...world, "src/x y.test.ts": 'test("x", () => {});\n' };
+    expect(planFor(odd, modified("docs/plans/p.md")).why).toMatch(/test file's name/);
+  });
+
+  test("every trigger is anchored, so it names what it means and nothing else", () => {
+    for (const [pattern] of FULL_TRIGGERS) expect(String(pattern)).toMatch(/^\/(?:\^|\(\?:\^)/);
+    expect(fullTrigger("src/scripts/x.ts")).toBeNull();
+    expect(fullTrigger("docs/package.json.md")).toBeNull();
+  });
+});
+
+describe("what a selected plan holds", () => {
+  const always = ["src/ci-workflow.test.ts", "src/walks.test.ts", "test/attacks/x.test.ts"];
+
+  test("a documentation change: only what always runs (the attack suite, the gates, the tests that walk folders)", () => {
+    const result = planFor(world, modified("docs/plans/p.md"));
+    expect(result.mode).toBe("selected");
+    expect(result.files).toEqual(always);
+    expect(result.reasons).toEqual({ "src/ci-workflow.test.ts": "a gate test", "src/walks.test.ts": "walks the repository's folders", "test/attacks/x.test.ts": "the attack suite" });
+  });
+
+  test("a change reaches every test that imports it, however far, and every test that runs the build; not the others", () => {
+    const result = planFor(world, modified("src/a.ts"));
+    expect(result.files).toEqual([...always, "src/b.test.ts", "src/cli-run.test.ts"].sort());
+    expect(result.reasons["src/b.test.ts"]).toBe("reaches src/a.ts");
+    expect(result.reasons["src/cli-run.test.ts"]).toBe("runs the build, and src/ changed");
+  });
+
+  test("data a module reads by name reaches its importers' tests", () => {
+    expect(planFor(world, modified("src/server/console.css")).files).toContain("src/server/pages.test.ts");
+  });
+
+  test("a changed test runs; product code that merely names a file doesn't make it reach that file", () => {
+    expect(planFor(world, modified("src/c.test.ts")).files).toEqual([...always, "src/c.test.ts"].sort());
+    // src/report.ts lists "src/c.ts" as text: src/report.test.ts doesn't reach it.
+    expect(planFor(world, modified("src/c.ts")).files).not.toContain("src/report.test.ts");
+  });
+
+  test("a test or script that names code by path reaches it (and what it imports): tests start scripts and the CLI that way", () => {
+    const files = { ...world, "src/spawns.test.ts": 'import { join } from "node:path";\nconst cli = join(root, "src", "b.ts");\ntest("s", () => {});\n' };
+    expect(planFor(files, modified("src/a.ts")).files).toContain("src/spawns.test.ts");
+  });
+
+  test("found in this checkout's history: what product code names or anchors on is data, never code or this checkout's documents", () => {
+    // src/release-carry.ts reads new URL(".", import.meta.url): its folder's code isn't reached through it. src/graph.ts
+    // names "AGENTS.md" of the project it reads: this checkout's AGENTS.md isn't reached through it.
+    const files = { ...world, "AGENTS.md": "# rules\n", "src/carry.ts": 'const here = new URL(".", import.meta.url);\nconst rules = "AGENTS.md";\n', "src/carry.test.ts": 'import "./carry.js";\ntest("c", () => {});\n' };
+    expect(planFor(files, modified("src/c.ts")).files).not.toContain("src/carry.test.ts");
+    expect(planFor(files, modified("AGENTS.md")).files).not.toContain("src/carry.test.ts");
+    // A test anchored on the checkout itself may read anything under it: it runs for any change.
+    const anchored = { ...files, "src/root.test.ts": 'const root = new URL("..", import.meta.url);\ntest("r", () => {});\n' };
+    expect(planFor(anchored, modified("AGENTS.md")).files).toContain("src/root.test.ts");
+    expect(planFor(anchored, modified("docs/plans/p.md")).files).toContain("src/root.test.ts");
+  });
+
+  test("a lane plans its share of the selection; a lane that holds none of it runs whole", () => {
+    const lane = ["src/b.test.ts", "src/c.test.ts", "test/attacks/x.test.ts"];
+    const laneOnly = (entries: unknown) => plan({ event: "pull_request", headRef: "x", entries, tree: treeOf(world), tests: lane }) as Plan;
+    expect(laneOnly(modified("src/a.ts")).files).toEqual(["src/b.test.ts", "test/attacks/x.test.ts"]);
+    const none = plan({ event: "pull_request", headRef: "x", entries: modified("src/a.ts"), tree: treeOf(world), tests: ["src/c.test.ts"] }) as Plan;
+    expect(none.mode).toBe("full");
+    expect(none.files).toEqual(["src/c.test.ts"]);
+  });
+
+  test.each([
+    ["a computed import()", 'export const load = (name: string) => import(`./plugins/${name}.js`);'],
+    ["an import() of a variable", "export const load = (where: string) => import(where);"],
+    ["a comment inside import()", 'export const load = () => import(/* chunk */ "./c.js" + suffix);'],
+    ["require() of a variable", "export const load = (where: string) => require(where);"],
+    ["new URL() of a variable beside import.meta.url", "export const at = (name: string) => new URL(name, import.meta.url);"],
+    ["a relative path that isn't in the tree", 'export { gone } from "./gone.js";'],
+  ])("Codex review, medium: %s may load any file, so every test reaching it runs, whatever changed", (_, code) => {
+    const files = { ...world, "src/loader.ts": code, "src/loader.test.ts": 'import "./loader.js";\ntest("l", () => {});\n' };
+    for (const change of ["docs/plans/p.md", "src/c.ts"]) {
+      const result = planFor(files, modified(change));
+      expect(result.files, change).toContain("src/loader.test.ts");
+      expect(result.reasons["src/loader.test.ts"], change).toMatch(/reaches a load it can't read \(src\/loader\.ts\)|reaches/);
+    }
+    expect(references(code).dynamic.length + (code.includes("gone") ? 1 : 0)).toBeGreaterThan(0);
+  });
+
+  test("a computed folder with a plain file name last reaches every file of that name, and loads anything when there is none", () => {
+    const files = {
+      ...world, "evals/cases/a/oracle.mjs": "export const files = [];\n", "evals/cases/b/oracle.mjs": "export const files = [];\n",
+      "src/grade.ts": 'export const grade = (dir: string) => import(pathToFileURL(join(dir, "oracle.mjs")).href);\n',
+      "src/grade.test.ts": 'import "./grade.js";\ntest("g", () => {});\n',
+      "src/built.ts": 'export const load = (dist: string) => import(pathToFileURL(join(dist, "provider.js")).href);\n',
+      "src/built.test.ts": 'import "./built.js";\ntest("b", () => {});\n',
+    };
+    expect(references(files["src/grade.ts"]!)).toMatchObject({ byName: ["oracle.mjs"], dynamic: [] });
+    expect(planFor(files, modified("evals/cases/b/oracle.mjs")).reasons["src/grade.test.ts"]).toBe("reaches evals/cases/b/oracle.mjs");
+    expect(planFor(files, modified("docs/plans/p.md")).files).not.toContain("src/grade.test.ts");
+    // No file of that name here (the build's own provider.js): it may load anything.
+    expect(planFor(files, modified("docs/plans/p.md")).reasons["src/built.test.ts"]).toMatch(/reaches a load it can't read/);
+  });
+
+  test("found in this checkout: the grader's oracles are its cases' files, and a child started by a computed name loads anything", () => {
+    const root = `${import.meta.dirname}/..`;
+    const { edges, wild } = buildGraph(diskTree(root)) as { edges: Map<string, string[]>; wild: Map<string, string[]> };
+    expect(wild.get("src/eval-oracle.ts")).toBeUndefined();
+    expect(edges.get("src/eval-oracle.ts")!.filter(one => one.endsWith("/oracle.mjs")).length).toBeGreaterThan(5);
+    // src/learning-look.ts starts its children by `./${name}`: the graph can't read which, so whatever reaches it runs.
+    expect(wild.get("src/learning-look.ts")?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  test("loads the graph can read stay precise: one string, two behind a condition, a URL of a sibling, an import() in a comment or a string", () => {
+    const code = [
+      'const a = await import("./a.js");', 'const b = new URL(source ? "./b.ts" : "./b.js", import.meta.url);', "// import(anything)",
+      'const fixture = `import(${x}) and require(y)`;', 'const re = /["\x27`]/;', 'const page = new URL("https://toolroll.dev/x");',
+    ].join("\n");
+    expect(references(code)).toMatchObject({ imports: ["./a.js", "./b.js", "./b.ts"], dynamic: [] });
+  });
+
+  test("the same inputs give the same plan, sorted", () => {
+    const one = planFor(world, modified("src/a.ts", "docs/plans/p.md"));
+    const two = planFor(Object.fromEntries(Object.entries(world).reverse()), modified("docs/plans/p.md", "src/a.ts"));
+    expect(two).toEqual(one);
+    expect(one.files).toEqual([...one.files].sort());
+  });
+});
+
+describe("how the graph reads source", () => {
+  test("imports, re-exports, side-effect and dynamic imports, require, vi.mock and URL assets; only relative ones", () => {
+    const text = [
+      'import { x } from "./x.js";', 'export * from "../y.js";', 'import "./side.js";', 'const z = await import("./z.js");',
+      'const r = require("./r.cjs");', 'vi.mock("./m.js", () => ({}));', 'new URL("./worker.js", import.meta.url);', 'import { p } from "node:path";',
+    ].join("\n");
+    expect(references(text).imports).toEqual(["../y.js", "./m.js", "./r.cjs", "./side.js", "./worker.js", "./x.js", "./z.js"]);
+    expect(references('join(root, "test", "fixtures", "cli")').literals).toContain("test/fixtures/cli");
+    // Erased when the code runs: import type, export type … from, and import("…") in a type. `import { type A }` stays:
+    // verbatimModuleSyntax keeps it as `import {} from`, which loads its module (dist/store.js has two).
+    const types = [
+      'import type { A } from "./a.js";', 'import type {\n  B,\n  C,\n} from "./b.js";', 'export type { D } from "./d.js";',
+      'function room(): import("./rooms.js").RoomBackend { return x; }', 'let s: typeof import("./sqlite.js");',
+      'import { type E } from "./e.js";', 'const f = await import("./f.js");', 'import("./g.js").then(run);',
+    ].join("\n");
+    expect(references(types).imports).toEqual(["./e.js", "./f.js", "./g.js"]);
+  });
+
+  test("a walk of the repository is one from its own location or a top-level folder; listing a temp folder isn't", () => {
+    expect(walksRepository('const all = readdirSync(import.meta.dirname);')).toBe(true);
+    expect(walksRepository('const REPO = join(import.meta.dirname, "..");\nconst src = join(REPO, "src");\nfor (const f of readdirSync(src)) {}')).toBe(true);
+    expect(walksRepository('const files = (dir: string): string[] => readdirSync(dir).flatMap(one => [one]);\nconst all = files(join(root, "src"));')).toBe(true);
+    expect(walksRepository('const walk = (dir: string) => readdirSync(dir);\nwalk("scripts");')).toBe(true);
+    // Found in this checkout: src/up.slow.test.ts lists its run folder and uses process.cwd() only as a spawn's cwd.
+    expect(walksRepository('const previous = process.cwd();\nexpect(readdirSync(instanceRunDir(db))).toEqual([]);')).toBe(false);
+    expect(walksRepository('const dir = mkdtempSync(join(tmpdir(), "x"));\nexpect(readdirSync(dir)).toEqual([]);')).toBe(false);
+  });
+
+  test("TypeScript's .js specifiers resolve to .ts and .tsx, a folder to its index, and nothing outside the tree", () => {
+    const has = (path: string) => ["src/a.ts", "src/b.tsx", "src/kit/index.ts", "scripts/s.mjs"].includes(path);
+    expect(resolveImport("src/x.ts", "./a.js", has)).toBe("src/a.ts");
+    expect(resolveImport("src/x.ts", "./b.js", has)).toBe("src/b.tsx");
+    expect(resolveImport("src/x.ts", "./kit", has)).toBe("src/kit/index.ts");
+    expect(resolveImport("src/x.ts", "../scripts/s.mjs", has)).toBe("scripts/s.mjs");
+    expect(resolveImport("src/x.ts", "../../outside.js", has)).toBeNull();
+  });
+});
+
+describe("in this checkout", () => {
+  const root = `${import.meta.dirname}/..`;
+  const tree = diskTree(root);
+  const tests = inventory(root);
+  // One graph for every plan below (building it is most of a plan's time).
+  const graph = buildGraph(tree);
+
+  test("a documentation change still runs the whole attack suite and the gates", () => {
+    const result = plan({ event: "pull_request", headRef: "x", entries: modified("docs/plans/test-selection.md"), tree, tests, graph }) as Plan;
+    expect(result.mode).toBe("selected");
+    for (const file of tests.filter(one => one.startsWith("test/attacks/"))) expect(result.files, file).toContain(file);
+    for (const file of ["src/ci-workflow.test.ts", "src/ci-shards.test.ts", "src/ci-select.test.ts", "src/password-freshness.test.ts", "src/public-hygiene.test.ts"]) expect(result.files).toContain(file);
+  });
+
+  test("every file named to always run exists and says why", () => {
+    for (const [file, why] of Object.entries(ALWAYS_FILES)) { expect(tests, file).toContain(file); expect(why.length).toBeGreaterThan(10); }
+    const result = plan({ event: "pull_request", headRef: "x", entries: modified("docs/plans/test-selection.md"), tree, tests, graph }) as Plan;
+    for (const file of Object.keys(ALWAYS_FILES)) expect(result.files).toContain(file);
+  });
+
+  test("a change to the store reaches its own tests and the CLI's", () => {
+    const result = plan({ event: "pull_request", headRef: "x", entries: modified("src/store.ts"), tree, tests, graph }) as Plan;
+    for (const file of ["src/store.test.ts", "src/cli.test.ts"]) expect(result.files).toContain(file);
+  });
+
+  test("a test that reads a root file by URL runs when that file changes, inert or not (README.md, install.sh)", () => {
+    for (const [file, reader] of [["README.md", "src/cli.test.ts"], ["install.sh", "src/install-sh.test.ts"]]) {
+      const result = plan({ event: "pull_request", headRef: "x", entries: modified(file), tree, tests, graph }) as Plan;
+      expect(result.mode, file).toBe("selected");
+      expect(result.files, file).toContain(reader);
+    }
+  });
+});
+
+describe("the command line, as CI runs it: any doubt plans everything", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ci-select-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+  const repo = join(dir, "repo");
+  const git = (...args: string[]) => {
+    const ran = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", ...args], { cwd: repo, encoding: "utf8", env });
+    if (ran.status !== 0) throw new Error(ran.stderr);
+    return ran.stdout.trim();
+  };
+  const put = (file: string, text: string) => { mkdirSync(join(repo, file, ".."), { recursive: true }); writeFileSync(join(repo, file), text); };
+  const select = (args: string[]) => {
+    const list = join(dir, `list-${Math.random().toString(36).slice(2)}.txt`), out = `${list}.json`;
+    const ran = spawnSync(process.execPath, [join(import.meta.dirname, "..", "scripts", "ci-select.mjs"), "plan", "--root", repo, "--list", list, "--out", out, ...args], { encoding: "utf8", env });
+    return { status: ran.status, stdout: ran.stdout, stderr: ran.stderr, list: readFileSync(list, "utf8"), plan: JSON.parse(readFileSync(out, "utf8")) as { mode: string; why: string; lane: string; files: string[] } };
+  };
+  mkdirSync(repo, { recursive: true });
+  git("init", "-q");
+  for (const [file, text] of Object.entries(world)) put(file, text);
+  git("add", "-A"); git("commit", "-qm", "base");
+  const base = git("rev-parse", "HEAD");
+  put("docs/plans/p.md", "# plan, edited\n");
+  git("commit", "-qam", "docs");
+  const head = git("rev-parse", "HEAD");
+  const ordinary = ["--event", "pull_request", "--head-ref", "some-change", "--base", base, "--head", head];
+
+  test("an ordinary pull request's documentation change selects only what always runs, and lists those files", () => {
+    const result = select(ordinary);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("mode=selected\nfiles=3\n");
+    expect(result.list).toBe("src/ci-workflow.test.ts\nsrc/walks.test.ts\ntest/attacks/x.test.ts\n");
+    expect(result.plan).toMatchObject({ mode: "selected", lane: "all", files: ["src/ci-workflow.test.ts", "src/walks.test.ts", "test/attacks/x.test.ts"] });
+  });
+
+  test("a release-* head, a push, the nightly and a dispatch run everything", () => {
+    for (const args of [[...ordinary.slice(0, 2), "--head-ref", "release-0.9.200", ...ordinary.slice(4)], ["--event", "push", "--head-ref", "", "--base", base, "--head", head], ["--event", "schedule"], ["--event", "workflow_dispatch"]]) {
+      const result = select(args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout, args.join(" ")).toMatch(/^mode=full\n/);
+      expect(result.list, args.join(" ")).toBe("");
+    }
+  });
+
+  test("an unreadable diff runs everything: a base git doesn't have, a malformed commit, no base at all", () => {
+    for (const args of [["--event", "pull_request", "--head-ref", "x", "--base", "f".repeat(40), "--head", head], ["--event", "pull_request", "--head-ref", "x", "--base", "not-a-sha", "--head", head], ["--event", "pull_request", "--head-ref", "x", "--head", head]]) {
+      const result = select(args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/^mode=full\n/);
+      expect(result.plan.why).toBe("the diff couldn't be read whole");
+      expect(result.list).toBe("");
+    }
+  });
+
+  test("a selector that fails while planning (here, a lane it doesn't know) says so and plans everything", () => {
+    const result = select([...ordinary, "--lane", "no-such-lane"]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^mode=full\n/);
+    expect(result.plan.why).toMatch(/^the selector failed \(no lane no-such-lane\), so everything runs$/);
+    expect(result.list).toBe("");
+  });
+
+  test("the always-run set, by the same rules the plan uses: the attack suite, the gates and the tests that walk folders", () => {
+    expect(alwaysRunFiles(repo, ["src/b.test.ts", "src/ci-workflow.test.ts", "src/walks.test.ts", "test/attacks/x.test.ts", "src/missing.test.ts"]))
+      .toEqual(["src/ci-workflow.test.ts", "src/missing.test.ts", "src/walks.test.ts", "test/attacks/x.test.ts"]);
+  });
+});

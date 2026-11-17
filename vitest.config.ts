@@ -1,18 +1,25 @@
 import { availableParallelism } from "node:os";
 import { defineConfig } from "vitest/config";
 // @ts-expect-error plain ESM script without declarations
-import { laneFiles } from "./scripts/ci-shards.mjs";
+import { laneFiles, selectedFiles } from "./scripts/ci-shards.mjs";
 import TimedSequencer from "./test/shard-sequencer.js";
 
 /** TOOLROLL_TEST_LANE=macos: only the macOS lane's files (scripts/ci-shards.mjs LANES; CI's macOS shards run it, Linux
  * runs everything). Unset or `all`: the whole suite. */
 const lane = process.env["TOOLROLL_TEST_LANE"];
+/** The whole suite, or the lane's files. */
+const suite: string[] = lane === undefined || lane === "" || lane === "all" ? ["src/**/*.test.ts", "test/attacks/**/*.test.ts"] : laneFiles(import.meta.dirname, lane);
+/** The test selection's files, only when the trusted harness hands them over (TOOLROLL_TEST_SELECTION, set by ci.yml
+ * for a pull request's selected plan; scripts/ci-shards.mjs selectedFiles, docs/plans/test-selection.md). Nothing in the
+ * checkout is read for it. Unset or empty: the whole suite (or lane). The shards' joins judge the files run against
+ * their own plan. */
+const selection: string[] = selectedFiles(process.env);
 
 export default defineConfig({
   test: {
     // Review snapshots under output/ are artifacts, never runnable suites. The attack suite (test/attacks) runs with
     // everything else, and on its own through its config there.
-    include: lane === undefined || lane === "" || lane === "all" ? ["src/**/*.test.ts", "test/attacks/**/*.test.ts"] : laneFiles(import.meta.dirname, lane),
+    include: selection.length > 0 ? (lane === undefined || lane === "" || lane === "all" ? selection : suite.filter(one => selection.includes(one))) : suite,
     setupFiles: ["./test/setup-state.ts"],
     // The run's own temp root first (every worker inherits it; the teardown removes it), then the build.
     globalSetup: ["./test/temp-root.ts", "./test/ensure-build.ts"],

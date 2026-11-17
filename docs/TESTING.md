@@ -155,11 +155,17 @@ The summary reports observed concurrency and waits.
 ## CI
 
 The matrix is in `docs/plans/test-matrix.md`. Every pull request runs
-`.github/workflows/ci.yml`: the full suite on Ubuntu with Node 24 in six
+`.github/workflows/ci.yml`: the suite on Ubuntu with Node 24 in six
 shards, and on macOS its macOS lane (every file that can behave differently on
 a Mac, plus a smoke set; `scripts/ci-shards.mjs` LANES) in three, joined by the
 required `node 24 · ubuntu-latest` and `node 24 · macos-latest` checks (the
-nightly runs every file on macOS too). Shards are balanced by each file's
+nightly runs every file on macOS too). On an ordinary pull request the shards
+run only the test files its diff can reach plus everything that always runs
+(the attack suite, the gate tests, tests that walk the repository), chosen by
+the base revision's `scripts/ci-select.mjs`; anything it can't decide runs
+every file, and so do `release-*` branches, main and the nightly. A run that
+selected reports `unit suite · every file ran` skipped, so its merge commit
+gets the full CI on main (`docs/plans/test-selection.md`). Shards are balanced by each file's
 measured time (`test/timings.json`; refresh it with `node scripts/ci-timings.mjs
 refresh --run <ci run id> [--run <id>]...`, each file's median over the runs,
 see what each shard would take with `node
