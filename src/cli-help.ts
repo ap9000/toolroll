@@ -76,6 +76,12 @@ Reports
   toolroll graph            report which work graph is already here
   toolroll integrations     which integrations work, and what to do about the ones that don't (--json)
 
+Workbench look
+  toolroll view             the terminal workbench's theme and saved themes
+  toolroll view theme set <name>
+                               switch the workbench's theme (built in, or one your lead saved)
+  toolroll view reset       put the workbench's settings back to the defaults (keeps tui.toml.bak)
+
 Projects
   toolroll repos            list connected repositories, and how to adjust
   toolroll repos remove <path>

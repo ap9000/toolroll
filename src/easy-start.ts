@@ -29,6 +29,9 @@ import { underAgent } from "./prompt.js";
 import { savedLoginFile } from "./login-secrets.js";
 import type { TuiExit, TuiSession } from "./tui-contract.js";
 
+/** How often a starting console is looked for (easy start): a proof costs a few milliseconds. */
+const PROVE_EVERY_MS = 50;
+
 export { easyStartApplies, easyStartArgs, type EasyStartArgs } from "./easy-start-args.js";
 import type { EasyStartArgs } from "./easy-start-args.js";
 
@@ -218,13 +221,15 @@ export async function runEasyStart(mode: "start" | "open", args: EasyStartArgs, 
         stopOwned(child);
         return { ok: false, state: "refused", message: "it didn't answer in time" };
       }
-      await sleep(250);
+      // A proof is a read-only look (a few milliseconds): asked often, so the screen opens as soon as the console can.
+      await sleep(PROVE_EVERY_MS);
     }
   };
 
   let proof: AttachProof = first;
   if (!proof.ok) {
-    write("Starting Toolroll…");
+    // (Bare `toolroll` said it already, from its first line: bin.ts.)
+    if ((globalThis as Record<symbol, unknown>)[Symbol.for("toolroll.starting-said")] !== true) write("Starting Toolroll…");
     proof = seams.serviceInstalled() ? await seams.startService() : await startOwned();
     if (!proof.ok) {
       write(`Toolroll didn't start: ${proof.message}.`);

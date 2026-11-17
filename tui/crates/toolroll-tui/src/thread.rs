@@ -36,6 +36,9 @@ const PANEL_DETAIL: usize = 6;
 pub const THREAD_ANSWER_ELSEWHERE: &str =
     "This question can't be answered with a number here — it has more than one part or no options.";
 
+/// The look a thread's laid-out lines were coloured with.
+pub type ThreadLook = (crate::theme::Theme, crate::theme::Glyphs);
+
 /// The threads the console listed, and the one being watched.
 #[derive(Debug, Default)]
 pub struct Threads {
@@ -58,8 +61,8 @@ pub struct ThreadView {
     /// Reads in a row that changed nothing (polls back off with it), and ticks until the next one.
     pub quiet: u32,
     pub due: u32,
-    /// The transcript's laid-out lines for (transcript version, width): rebuilt only when either moves.
-    pub lines: Option<(u64, usize, Vec<Line<'static>>)>,
+    /// The transcript's laid-out lines for (transcript version, width, look): rebuilt only when one moves.
+    pub lines: Option<(u64, usize, ThreadLook, Vec<Line<'static>>)>,
 }
 
 /// A card's detail as lines, each cleaned (agent text: drawn inert).
@@ -329,10 +332,18 @@ pub fn draw_panel(f: &mut Frame, app: &mut App, item: &Item, area: Rect) {
         Some(v) if !v.transcript.main.is_empty() => {
             // Laid out again only when a record arrived or the width moved: an unchanged poll rebuilds nothing.
             let version = v.transcript.version;
-            if !matches!(&v.lines, Some((at, width, _)) if *at == version && *width == w) {
-                v.lines = Some((version, w, crate::transcript::lines(&v.transcript, w, 0)));
+            // And when the look changed (a reload of tui.toml, `t`): the lines carry its colours.
+            let look = (app.prefs.theme, app.prefs.settings.glyphs);
+            if !matches!(&v.lines, Some((at, width, was, _)) if *at == version && *width == w && *was == look)
+            {
+                v.lines = Some((
+                    version,
+                    w,
+                    look,
+                    crate::transcript::lines(&v.transcript, w, 0),
+                ));
             }
-            let all = &v.lines.as_ref().unwrap().2;
+            let all = &v.lines.as_ref().unwrap().3;
             let h = content.height as usize;
             all[all.len().saturating_sub(h)..].to_vec()
         }

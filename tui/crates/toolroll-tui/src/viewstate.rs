@@ -289,16 +289,20 @@ pub fn path(env: &crate::settings::Env) -> Option<PathBuf> {
 #[cfg(unix)]
 pub fn load(path: &Path, home: Option<&Path>) -> ViewFile {
     use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::MetadataExt;
     let read = || -> Option<String> {
         // SAFETY: geteuid has no preconditions.
         let me = unsafe { libc::geteuid() };
-        let dir = crate::settings::trusted_chain(path.parent()?, home, me).ok()?;
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-            .open(dir.join(path.file_name()?))
-            .ok()?;
+        // Every folder from `/` down opened and judged by descriptor; the file opened relative to the last, never
+        // through a link.
+        let dir = crate::settings::walk_trusted(
+            &crate::settings::real_path_of(path.parent()?),
+            home,
+            me,
+            false,
+        )
+        .ok()??;
+        let mut file = crate::settings::open_at(&dir, path.file_name()?).ok()?;
         let m = file.metadata().ok()?;
         if !m.file_type().is_file() || m.uid() != me || m.mode() & 0o077 != 0 || m.len() > MAX_BYTES
         {

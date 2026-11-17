@@ -2,6 +2,8 @@
 //! answer (a refusal in its words, never an assumed success); a status line about a new task goes once that task fails,
 //! with no key pressed; the waiting header names the attempt it follows; attempt numbers are the task's own; a newly
 //! filed task is selected and shown; and the wording fixes.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -26,6 +28,7 @@ fn code(c: KeyCode) -> KeyEvent {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 fn status(app: &App) -> Option<(Tone, String)> {

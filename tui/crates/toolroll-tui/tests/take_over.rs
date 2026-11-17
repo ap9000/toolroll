@@ -1,6 +1,8 @@
 //! Take over (solo-workbench T4): the Terminal tab's terminal and the Steps tab's live cards, drawn on ratatui's
 //! TestBackend from the fake console's scenario and held as insta snapshots; what each key sends, and to which
 //! terminal; and the emulator's rule that nothing a program writes reaches the real terminal as bytes.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::{Backend, CrosstermBackend, TestBackend};
 use ratatui::buffer::Buffer;
@@ -48,6 +50,7 @@ fn app_on(select: &str) -> App {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().to_string()
 }
 

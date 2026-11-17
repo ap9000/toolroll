@@ -1,5 +1,7 @@
 //! Themes, density, glyphs, the settings screen, the settings file and notifications: each theme and depth drawn with
 //! its styles (a letter per style, and what each letter is), and what notifies when the work list changes.
+#[path = "common/pairs.rs"]
+mod pairs;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
@@ -72,6 +74,7 @@ fn live_app(p: Prefs) -> App {
 fn draw(app: &mut App, w: u16, h: u16) -> Buffer {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     term.backend().buffer().clone()
 }
 
@@ -681,6 +684,36 @@ fn nothing_notifies_when_switched_off_and_nothing_at_start() {
     // The first read only learns what's there: what already waited doesn't notify.
     let mut fresh = App::new(false, None);
     assert!(notes(&fresh.update(Msg::Work(Ok(parse(asks))))).is_empty());
+}
+
+/// While a kind is off its changes aren't marked seen: turned back on, whatever still waits says so (once).
+#[test]
+fn a_kind_turned_back_on_says_what_still_waits() {
+    let off = Settings {
+        notify: settings::Notify {
+            asks: false,
+            finished: false,
+            failed: false,
+        },
+        ..Settings::default()
+    };
+    let mut app = live_app(prefs(off, Depth::TrueColor, None));
+    let mut asks = fake::scenario_work();
+    live_asks(&mut asks);
+    asks["rows"][3]["status"]["tone"] = "problem".into();
+    assert!(notes(&app.update(Msg::Work(Ok(parse(asks.clone()))))).is_empty());
+    assert!(notes(&app.update(Msg::Work(Ok(parse(asks.clone()))))).is_empty());
+    // Back on (as a reload of tui.toml does): the ask and the failure still there are said.
+    app.prefs.settings.notify = Settings::default().notify;
+    app.now += notify::GATHER_SECS;
+    let mut said = notes(&app.update(Msg::Work(Ok(parse(asks.clone())))));
+    app.now += notify::GATHER_SECS;
+    said.extend(notes(&app.update(Msg::Tick)));
+    assert_eq!(said, vec!["Toolroll: 1 needs you, 1 failed"], "{said:?}");
+    // And only once.
+    app.now += notify::GATHER_SECS;
+    assert!(notes(&app.update(Msg::Work(Ok(parse(asks))))).is_empty());
+    assert!(notes(&app.update(Msg::Tick)).is_empty());
 }
 
 #[test]

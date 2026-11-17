@@ -545,6 +545,8 @@ async fn event_loop(
     };
     let mut late = crate::theme::LateReply::new(Instant::now() + watch);
     app.prefs = prefs;
+    // tui.toml as it was read: a later change to it is read again and said (App::watch_settings).
+    app.settings_sig = app.prefs.path.as_deref().map(crate::app::settings_sig);
     if let Some((v, _)) = views.projects.get(&view_key).cloned() {
         app.apply_view(v);
     }

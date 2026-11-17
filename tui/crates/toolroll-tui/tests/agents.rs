@@ -1,6 +1,8 @@
 //! The Agents screen (agents.rs), drawn on ratatui's TestBackend from the contract's fixtures: each state held as a
 //! snapshot (and at 16 colours and with colour off), what each key asks the console to do, and what never happens:
 //! an install without its confirm, a models change without its confirm, a sign-in that isn't the agent's own.
+#[path = "common/pairs.rs"]
+mod pairs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
@@ -28,6 +30,7 @@ fn code(c: KeyCode) -> KeyEvent {
 fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| toolroll_tui::view::draw(f, app)).unwrap();
+    pairs::check(app, w, h);
     for cell in term.backend().buffer().content() {
         assert!(!matches!(
             cell.fg,
