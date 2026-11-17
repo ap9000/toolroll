@@ -148,6 +148,14 @@ describe("how the graph reads source", () => {
     ].join("\n");
     expect(references(text).imports).toEqual(["../y.js", "./m.js", "./r.cjs", "./side.js", "./worker.js", "./x.js", "./z.js"]);
     expect(references('join(root, "test", "fixtures", "cli")').literals).toContain("test/fixtures/cli");
+    // Erased when the code runs: import type, export type … from, and import("…") in a type. `import { type A }` stays:
+    // verbatimModuleSyntax keeps it as `import {} from`, which loads its module (dist/store.js has two).
+    const types = [
+      'import type { A } from "./a.js";', 'import type {\n  B,\n  C,\n} from "./b.js";', 'export type { D } from "./d.js";',
+      'function room(): import("./rooms.js").RoomBackend { return x; }', 'let s: typeof import("./sqlite.js");',
+      'import { type E } from "./e.js";', 'const f = await import("./f.js");', 'import("./g.js").then(run);',
+    ].join("\n");
+    expect(references(types).imports).toEqual(["./e.js", "./f.js", "./g.js"]);
   });
 
   test("a walk of the repository is one from its own location or a top-level folder; listing a temp folder isn't", () => {

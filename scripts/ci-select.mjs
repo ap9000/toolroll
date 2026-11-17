@@ -105,7 +105,8 @@ export function walksRepository(text) {
 const SPECIFIER = [
   /\bfrom\s*["']([^"'\n]+)["']/g,
   /\bimport\s*["']([^"'\n]+)["']/g,
-  /\bimport\(\s*["']([^"'\n]+)["']\s*\)/g,
+  // A dynamic import, but not one in a type (`: import("./x.js").Room`, `typeof import("./x.js")`), which is erased.
+  /(?<!typeof\s+)\bimport\(\s*["']([^"'\n]+)["']\s*\)(?!\s*\.\s*[A-Z])/g,
   /\brequire\(\s*["']([^"'\n]+)["']\s*\)/g,
   /\bvi\.(?:mock|doMock|unmock|importActual|importMock)\(\s*["']([^"'\n]+)["']/g,
   /\bnew URL\(\s*["']([^"'\n]+)["']\s*,\s*import\.meta\.url/g,
@@ -114,10 +115,15 @@ const LITERAL = /"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`([^`$\\]*)`/g;
 /** `join(a, "test", "fixtures")` and `resolve(…)`: consecutive literal arguments are one path. */
 const JOINED = /\b(?:join|resolve)\(([^()]*)\)/g;
 
-/** The relative import specifiers and the path-like string literals in a file's text. */
+/** `import type …` and `export type … from …`: erased when the code runs (verbatimModuleSyntax), so a test can't reach
+ * anything through one. `import { type A } from` stays: it is kept as `import {} from`, and loads its module. */
+const TYPE_ONLY = /^[ \t]*(?:import|export)\s+type\s+[^;]*?\bfrom\s*["'][^"'\n]+["'];?/gm;
+
+/** The relative import specifiers that load code when it runs, and the path-like string literals, in a file's text. */
 export function references(text) {
   const imports = new Set(), literals = new Set();
-  for (const re of SPECIFIER) for (const match of text.matchAll(re)) if (match[1].startsWith(".")) imports.add(match[1]);
+  const code = text.replace(TYPE_ONLY, "");
+  for (const re of SPECIFIER) for (const match of code.matchAll(re)) if (match[1].startsWith(".")) imports.add(match[1]);
   for (const match of text.matchAll(LITERAL)) {
     const value = match[1] ?? match[2] ?? match[3] ?? "";
     if (value.length > 1 && value.length < 300 && !/\s/.test(value) && (value.includes("/") || NAMED_EXT.test(value))) literals.add(value);
