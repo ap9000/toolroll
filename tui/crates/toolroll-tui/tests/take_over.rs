@@ -700,6 +700,14 @@ fn a_build_with_nothing_to_open_is_refused_before_any_confirm() {
         "no terminal window:\n{shown}"
     );
     assert!(!shown.contains("PgUp/PgDn scroll"), "{shown}");
+    // The Terminal tab itself says the same words, never "Press t to open it" (with the status line cleared).
+    app.status = None;
+    let shown = screen(&mut app, 120, 30);
+    assert!(
+        shown.contains("This build has no saved commit to open a terminal on."),
+        "{shown}"
+    );
+    assert!(!shown.contains("Press t to open it"), "{shown}");
 }
 
 #[test]

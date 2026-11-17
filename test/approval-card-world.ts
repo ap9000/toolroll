@@ -5,6 +5,7 @@
  * src/server/engine-api-approval.test.ts and its .slow sibling.
  */
 import { expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { openLocalWorld } from "./local-owner-world.js";
@@ -34,8 +35,8 @@ export async function openApprovalWorld() {
         "x-toolroll-key": body.key, "x-toolroll-act": "in-place", "x-toolroll-client": "terminal" }, new URLSearchParams({ csrf: body.csrf, ...fields }).toString());
       return { status: answer.status, body: JSON.parse(answer.body) as { outcome: string; words: string } };
     };
-    // The approval card: a read that mints, so the terminal's own key goes with it (as its acts carry it).
-    const keyed = { cookie, "x-toolroll-key": body.key };
+    // The approval card's read, with exactly the headers the workbench's own client sends on it (read from its source).
+    const keyed = workbenchApprovalReadHeaders({ cookie, key: body.key });
     return { cookie, key: body.key, get, keyed, act };
   }
 
@@ -57,4 +58,23 @@ export async function openApprovalWorld() {
     return approvalCardSchema.parse(JSON.parse(answer.body));
   };
   return { world, fx, terminal, sentBack, card };
+}
+
+/**
+ * The headers the workbench's client (tui/crates/toolroll-api/src/client.rs) sends when it reads the approval card,
+ * read from its source rather than restated here: the cookie and `accept` every read carries, and the session's key
+ * only if `approval` reads through `get_keyed` and `read` adds the key for a keyed read. A client that stops sending
+ * its key on this read makes every test using this fail against the real console (round 9's "Couldn't read the
+ * approval (key)").
+ */
+export function workbenchApprovalReadHeaders(creds: { cookie: string; key: string }): Record<string, string> {
+  const source = readFileSync(new URL("../tui/crates/toolroll-api/src/client.rs", import.meta.url), "utf8");
+  const approval = /pub async fn approval\([\s\S]*?\n {4}\}/.exec(source)?.[0] ?? "";
+  const read = /async fn read<[\s\S]*?\.send\(\)/.exec(source)?.[0] ?? "";
+  expect(approval, "client.rs approval").toContain("/approval");
+  expect(read).toContain('.header("cookie", self.creds.cookie.as_str())');
+  expect(read).toContain('.header("accept", "application/json")');
+  const keyedRead = /self\.get_keyed::</.test(approval);
+  const keySent = /if keyed \{\s*req = req\.header\("x-toolroll-key", self\.creds\.key\.as_str\(\)\);/.test(read);
+  return { cookie: creds.cookie, accept: "application/json", ...(keyedRead && keySent ? { "x-toolroll-key": creds.key } : {}) };
 }

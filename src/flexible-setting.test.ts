@@ -27,6 +27,7 @@ import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { runOperate, EXIT } from "./operate.js";
 import { FLEXIBLE_CLAUDE_ONLY } from "./server/engine-api.js";
+import { openLocalWorld, LOCAL_WORLD_SETUP_MS } from "../test/local-owner-world.js";
 import { FLEXIBLE_SETTING_WORDS } from "./server/settings-sections.js";
 import { threadWorld, type ThreadWorld } from "../test/flexible-thread-world.js";
 import { fakePid } from "../test/fake-pid.js";
@@ -232,6 +233,17 @@ describe("Settings → General, and a thread through the console", () => {
     expect(ledger(world).slice(before)).toEqual([{ actor: "alex", outcome: "on" }, { actor: "alex", outcome: "off" }]);
   });
 });
+
+test("a laptop's owner with no password yet hears how to set one; nothing changes and nothing is asked", async () => {
+  const laptop = await openLocalWorld();
+  try {
+    const lines: string[] = [];
+    const code = await runOperate("config", ["set", "flexible", "on", "--json", "--db", join(laptop.configDir, "state.db")], line => lines.push(line), {});
+    expect(code).toBe(EXIT.refused);
+    expect(JSON.parse(lines.join("\n"))).toMatchObject({ ok: false, reason: "local-owner", message: "You haven't set a password yet, and this needs one. Set it first with `toolroll password set`, then run this again." });
+    expect(flexibleAvailable(laptop.store)).toBe(false);
+  } finally { await laptop.close(); }
+}, LOCAL_WORLD_SETUP_MS);
 
 describe("turned off while a thread runs: stopped safely", () => {
   let world: ThreadWorld, sessions: FlexibleSessions, relay: FlexibleRelayServer, upstream: Server, thread: string, turn: string, launch: string, raw: DatabaseSync, upstreamCalls: number;

@@ -462,6 +462,30 @@ pub const NOTHING_CHANGED: &str = "Nothing changed.";
 /// The reason the workbench's Stop retrying gives its hold (and how it knows a hold is that one).
 pub const HOLD_REASON: &str = "stopped retrying from the terminal";
 
+/// The build Open build shell would open on: the result waiting, else the newest build attempt.
+pub fn shell_run_of(steps: &StepCards) -> Option<i64> {
+    let newest_build = steps
+        .cards
+        .iter()
+        .flatten()
+        .filter(|c| c.key == "build")
+        .flat_map(|c| c.runs.first().copied())
+        .next();
+    steps.review.as_ref().map(|r| r.run).or(newest_build)
+}
+
+/// Why Open build shell can't open on that build, in the console's words (no saved result, no saved commit), or None.
+/// Its refusal and the Terminal tab say the same words.
+pub fn shell_refusal_of(steps: &StepCards) -> Option<String> {
+    let run = shell_run_of(steps);
+    steps
+        .shell
+        .as_ref()
+        .filter(|s| Some(s.run) == run && Some(s.run) != steps.live_run)
+        .and_then(|s| s.why.as_deref())
+        .map(clean)
+}
+
 /// A task's current build: its newest build attempt (the build card's newest run), the one every surface names.
 pub fn current_build_of(steps: &StepCards) -> Option<i64> {
     steps
@@ -5482,23 +5506,11 @@ impl App {
             return vec![];
         };
         self.take_over_wanted = None;
-        let newest_build = steps
-            .cards
-            .iter()
-            .flatten()
-            .filter(|c| c.key == "build")
-            .flat_map(|c| c.runs.first().copied())
-            .next();
-        let run = steps.review.as_ref().map(|r| r.run).or(newest_build);
+        let run = shell_run_of(steps);
         // Nothing to open on (no saved result, no saved commit), as the console says: refused here, before anything is
         // confirmed, and nothing that looks like a terminal is shown.
-        if let Some(why) = steps
-            .shell
-            .as_ref()
-            .filter(|s| Some(s.run) == run && Some(s.run) != steps.live_run)
-            .and_then(|s| s.why.clone())
-        {
-            self.say(Tone::Refused, clean(&why));
+        if let Some(why) = shell_refusal_of(steps) {
+            self.say(Tone::Refused, why);
             return vec![];
         }
         match run {
