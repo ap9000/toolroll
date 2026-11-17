@@ -19,11 +19,22 @@ export type LearningRunner = (input: { databaseFile: string; evidenceRoot: strin
 /** Only what git and gh need from the environment (no NODE_OPTIONS, no other secrets). */
 const CHILD_ENV = ["PATH", "HOME", "TMPDIR", "LANG", "USER", "XDG_CONFIG_HOME", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "GH_CONFIG_DIR"];
 
+/** This build's own child entries, by name, as plain paths beside this module: the source under a test, the build when
+ * installed (docs/plans/ci-speed-2.md: a fixed table the test selection can read, where a computed `./${name}.ts` could
+ * have been any file). A name not here is no child of ours. */
+const OWN_CHILDREN: Readonly<Record<string, { source: () => URL; built: () => URL }>> = {
+  "learning-child": { source: () => new URL("./learning-child.ts", import.meta.url), built: () => new URL("./learning-child.js", import.meta.url) },
+  "first-tasks-child": { source: () => new URL("./first-tasks-child.ts", import.meta.url), built: () => new URL("./first-tasks-child.js", import.meta.url) },
+};
+
 /** One of this build's own child entries, given `input` as JSON, killed at the deadline. Its stdout, bounded. */
 function ownChild(name: string, input: unknown, deadlineMs: number): Promise<{ outcome: LearningOutcome; stdout: string }> {
   return new Promise(resolveOutcome => {
+    const own = Object.hasOwn(OWN_CHILDREN, name) ? OWN_CHILDREN[name] : undefined;
+    // As before, a name that is no child entry fails: before, Node was started on a file that didn't exist.
+    if (own === undefined) { resolveOutcome({ outcome: "failed", stdout: "" }); return; }
     const source = import.meta.url.endsWith(".ts");
-    const entry = fileURLToPath(new URL(source ? `./${name}.ts` : `./${name}.js`, import.meta.url));
+    const entry = fileURLToPath(source ? own.source() : own.built());
     const env: NodeJS.ProcessEnv = { ELECTRON_RUN_AS_NODE: "1" };
     for (const one of CHILD_ENV) if (process.env[one] !== undefined) env[one] = process.env[one];
     const child = spawn(process.execPath, [...(source ? ["--import", import.meta.resolve("tsx")] : []), entry, JSON.stringify(input)], {
