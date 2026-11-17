@@ -8,6 +8,7 @@
   "gates": [
     { "path": "scripts/gate-files.json", "why": "this list" },
     { "path": "scripts/gate-changes.mjs", "why": "the script that reads this list and the trailers" },
+    { "path": "scripts/guard-checks.mjs", "why": "the deterministic source guards run from the base revision" },
     { "path": ".github/workflows/**", "why": "what CI runs, and how" },
     { "path": "src/ci-workflow.test.ts", "why": "holds the workflows to the release's check lists" },
     { "path": "src/release.ts", "why": "the checks a release waits for and the ones it leaves out (the whole file)" },
